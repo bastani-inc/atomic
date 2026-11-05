@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { ReleasedChildReservationError } from "../../packages/intercom/broker/released-child-errors.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import {
 	type HeldSend,
@@ -128,21 +129,50 @@ describe("reservation ownership and takeover", () => {
 
 	test("a reservation created by takeover starts a wake that was already confirmed as confirmed (#4326)", () => {
 		const recipients = newRecipients();
-		recipients.reserve(RELEASED_KEY, "o1", CHILD, "default", [], { wake: true });
+		recipients.reserve(RELEASED_KEY, "o1", CHILD, "default", [], { dormant: true, wake: true });
 		hold(recipients, "m1");
 		assert.equal(recipients.extendHolds(CHILD, "o1")?.length, 1);
-		assert.equal(recipients.reserve(RELEASED_KEY, "o2", CHILD, "default", [], { wake: false }), undefined);
-		assert.deepEqual(recipients.extendHolds(CHILD, "o2"), []);
+		recipients.reserve("cap", "supervisor", CHILD, "default", []);
+		assert.equal(recipients.reserve(RELEASED_KEY, "supervisor", CHILD, "default", [], { wake: false }), undefined);
+		assert.deepEqual(recipients.extendHolds(CHILD, "supervisor"), []);
 	});
 
 	test("a reservation created by takeover keeps an unconfirmed wake extendable (#4326)", () => {
 		const recipients = newRecipients();
-		recipients.reserve(RELEASED_KEY, "o1", CHILD, "default", [], { wake: true });
+		recipients.reserve(RELEASED_KEY, "o1", CHILD, "default", [], { dormant: true, wake: true });
 		hold(recipients, "m1");
-		recipients.reserve(RELEASED_KEY, "o2", CHILD, "default", [], { wake: false });
-		const extended = recipients.extendHolds(CHILD, "o2");
+		recipients.reserve("cap", "supervisor", CHILD, "default", []);
+		recipients.reserve(RELEASED_KEY, "supervisor", CHILD, "default", [], { wake: false });
+		const extended = recipients.extendHolds(CHILD, "supervisor");
 		assert.equal(extended?.length, 1);
 		assert.equal(extended?.[0]?.held.messageId, "m1");
+	});
+
+	test("another session reserving a released child is refused not_owner and changes nothing, gone marker included (#4326)", () => {
+		const recipients = newRecipients();
+		recipients.reserve(RELEASED_KEY, "o1", CHILD, "default", [ID_A], { dormant: true, wake: true });
+		hold(recipients, "m1");
+		const before = { active: recipients.active(), sizes: recipients.sizes() };
+		const refusesIntruder = () =>
+			assert.throws(
+				() => recipients.reserve(RELEASED_KEY, "o2", CHILD, "elsewhere", [ID_B], { dormant: true, wake: false }),
+				(error: Error) =>
+					error instanceof ReleasedChildReservationError &&
+					error.code === "not_owner" &&
+					error.childName === CHILD,
+			);
+		refusesIntruder();
+		assert.deepEqual({ active: recipients.active(), sizes: recipients.sizes() }, before);
+		assert.equal(recipients.releasedOwner(CHILD.toUpperCase()), "o1");
+		assert.equal(recipients.extendHolds(CHILD, "o2"), undefined);
+		assert.equal(recipients.release(RELEASED_KEY, "o2", "taken"), undefined);
+		assert.equal(hold(recipients, "m2", "s1", ID_A).kind, "held");
+		assert.equal(recipients.extendHolds(CHILD, "o1")?.length, 2);
+		recipients.release(RELEASED_KEY, "o1", "crashed");
+		refusesIntruder();
+		assert.equal(recipients.releasedOwner(CHILD), "o1");
+		assert.deepEqual(recipients.dropOwner("o1"), []);
+		assert.equal(recipients.releasedOwner(CHILD), undefined);
 	});
 });
 

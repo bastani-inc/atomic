@@ -163,7 +163,9 @@ export type ReleasedChildRefusalCode =
 	| "invalid_alias"
 	| "too_many_aliases"
 	| "invalid_group"
-	| "unknown_released_child";
+	| "unknown_released_child"
+	| "not_owner"
+	| "group_not_allowed";
 
 /** The broker's typed refusal of a released-child request; `childName` names the offending item when there is one. */
 export interface ReleasedChildRefusal {

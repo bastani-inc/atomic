@@ -182,6 +182,15 @@ export async function openSqlRestoringReservationStore({
 			if (request.group.length === 0) return invalid("empty-group");
 			return database.transaction(async (tx) => {
 				const existing = await readRow(tx, request.reservationKey);
+				if (
+					existing !== undefined &&
+					existing.end_json === null &&
+					existing.owner_session_id !== request.ownerSessionId &&
+					isReleasedReservationKey(request.reservationKey) &&
+					(request.staleAfterMs === undefined || existing.age_ms <= request.staleAfterMs)
+				) {
+					return { status: "not-owner", ownerSessionId: existing.owner_session_id };
+				}
 				const superseded: string[] = [];
 				let fencingToken: number;
 				if (existing !== undefined && existing.end_json === null) {

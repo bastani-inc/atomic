@@ -182,6 +182,7 @@ async function startNode(
 			pendingQuestions: new PendingQuestionIndex(),
 			deliveredMessages: { lookupForTarget: () => "miss", lookupQuestionTarget: () => undefined },
 			dispatch: () => {},
+			revokeReleasedReservation: () => {},
 		},
 	});
 	cleanups.push(() => router.close());

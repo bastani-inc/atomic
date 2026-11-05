@@ -112,6 +112,21 @@ A workflow run that was interrupted and can continue with `/workflow resume` sta
 
 The background subagents that the run's stages launched stay addressable too. While the run waits, the launching session holds sends to them by name, Atomic session ID, or pre-restart Intercom session ID. When the stage runs again and restores them, it takes the hold over, so each held message is delivered once after the subagent reconnects. If another session takes over the run, it also takes over these targets, and senders still waiting for a subagent get an error that names the other session. A stage whose saved session cannot be read has no held subagents; the stage's own route is unaffected. See [Intercom operations](/intercom/operations#connection-states-and-recovery).
 
+### Released subagents
+
+A [released subagent](/subagents#released-subagents) stays addressable through the session that launched it: that session asks the broker to hold sends to the child's name and ids, and the broker tells it to wake the child when one arrives. Only that session owns the child's hold. The owner is the session that reserved the child first, or the one that authorized it as its supervisor when launching it. A session that reconnects with the same Intercom session id stays the owner. Another session cannot reserve, drop or acknowledge the child.
+
+A refused request changes nothing: when one child in a request is refused, no child in it is reserved or dropped. Requests to reserve, drop or acknowledge a released child are refused with these typed errors. Each carries `code`, `childName` when one child caused it, a `hint`, and `retryable: false`. Check `isIntercomReleasedChildError` or the class, never the message.
+
+| Class | `code` | When | What to do |
+| --- | --- | --- | --- |
+| `ReleasedChildReservationError` | `not_owner` | Another session owns the child: it reserved the child first, or authorized it as its supervisor. | Send the request from the owning session, or reconnect as that session. Otherwise launch a new child. |
+| `ReleasedChildReservationError` | `group_not_allowed` | The child is reserved in a `workflow:` group that this session is not a member of. Other groups, including subagent auto-groups and task groups, are allowed. | Reserve from a session in that workflow group, or omit `group`. |
+| `ReleasedChildReservationError` | `invalid_frame`, `invalid_child_name`, `invalid_alias`, `too_many_aliases`, `invalid_group` | The request is malformed: 1–500 children per frame, a non-empty name other than `*`, at most 4 session-id aliases, and a string group. | Fix the named child and send the request again. |
+| `UnknownReleasedChildError` | `unknown_released_child` | A wake acknowledgement names a child that no session has reserved. | Reserve the child first. |
+
+With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, a child reserved through one broker stays with its owner. A reservation that another session makes for it through a different broker is withdrawn as soon as the shared store refuses it.
+
 ### Groups
 
 Every session belongs to a non-empty set of intercom **groups**. Sessions with no group configured retain exactly the legacy behavior: they belong only to the implicit `"default"` group and can see and message each other. A session can ordinarily discover, resolve, and message another session when their membership sets intersect; exact-ID sends with no shared membership are rejected by the broker.

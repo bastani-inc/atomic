@@ -165,6 +165,7 @@ export interface MultiNodeHost {
 	readonly deliveredMessages: Pick<DeliveredMessageCache, "lookupForTarget" | "lookupQuestionTarget">;
 	/** Route a held send again as its sender, exactly like a new send (local delivery or the outbox). */
 	dispatch(socket: BrokerConnectedSession["socket"], clientMessage: SendClientMessage, senderId: string): void;
+	revokeReleasedReservation(reservationKey: string, ownerSessionId: string): void;
 }
 
 export interface MultiNodeRouterOptions {
@@ -573,7 +574,12 @@ export class MultiNodeRouter {
 				dormant,
 				wake,
 				...(options.replaceAliases === true ? { replaceAliases: true } : {}),
+				staleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
 			});
+			if (reserved.status === "not-owner") {
+				this.host.revokeReleasedReservation(reservationKey, ownerSessionId);
+				return;
+			}
 			if (reserved.status !== "reserved") return;
 			// The owner left (or its id was taken over) while the reserve was being written: its departure scanned the
 			// mirrors before this one existed, so end the reservation here instead of renewing it for a gone owner.

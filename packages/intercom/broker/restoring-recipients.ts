@@ -2,6 +2,7 @@ import type net from "node:net";
 import { hasGroup } from "../group.js";
 import type { DeliveryFailureReasonCode, SessionInfo } from "../types.js";
 import { sessionGroups } from "./group-membership.js";
+import { ReleasedChildReservationError } from "./released-child-errors.js";
 import { isReleasedReservationKey, normalizeReservationTarget, releasedReservationKey } from "./released-children.js";
 
 /** How long the broker holds a send for a subagent that is being restored; matches its owner's own wait (#3760). */
@@ -80,6 +81,17 @@ interface Reservation {
 	readonly held: Map<HeldSend, HeldEntry>;
 }
 
+export interface RestoringRecipientSizes {
+	readonly reservations: number;
+	readonly byTarget: number;
+	readonly byTargetMembers: number;
+	readonly byChild: number;
+	readonly byOwner: number;
+	readonly withHeld: number;
+	readonly heldSends: number;
+	readonly timers: number;
+}
+
 export interface ReserveOptions {
 	readonly dormant?: boolean;
 	readonly wake?: boolean;
@@ -141,6 +153,7 @@ export class RestoringRecipients {
 	private readonly byOwner = new Map<string, Set<Reservation>>();
 	private readonly withHeld = new Set<Reservation>();
 	private heldTotal = 0;
+	private liveTimers = 0;
 
 	constructor(private readonly onExpired: (held: HeldSend, reason: string, reasonCode: DeliveryFailureReasonCode) => void) {}
 
@@ -152,6 +165,25 @@ export class RestoringRecipients {
 	/** Sends held now, across every reservation. */
 	get heldSendCount(): number {
 		return this.heldTotal;
+	}
+
+	sizes(): RestoringRecipientSizes {
+		let byTargetMembers = 0;
+		for (const members of this.byTarget.values()) byTargetMembers += members.size;
+		return {
+			reservations: this.reservations.size,
+			byTarget: this.byTarget.size,
+			byTargetMembers,
+			byChild: this.byChild.size,
+			byOwner: this.byOwner.size,
+			withHeld: this.withHeld.size,
+			heldSends: this.heldTotal,
+			timers: this.liveTimers,
+		};
+	}
+
+	releasedOwner(childName: string): string | undefined {
+		return this.reservations.get(releasedReservationKey(childName))?.ownerSessionId;
 	}
 
 	/**
@@ -172,6 +204,9 @@ export class RestoringRecipients {
 		const childTarget = normalizeTarget(childName);
 		const existing = this.reservations.get(key);
 		const displaced = existing !== undefined && existing.ownerSessionId !== ownerSessionId ? existing : undefined;
+		if (displaced !== undefined && isReleasedReservationKey(key)) {
+			throw new ReleasedChildReservationError({ code: "not_owner", childName });
+		}
 		const kept = displaced === undefined ? existing : undefined;
 		const wasWakeable = kept?.wake === true;
 		let reservation = kept;
@@ -279,7 +314,7 @@ export class RestoringRecipients {
 		const extended: ExtendedHold[] = [];
 		for (const [held, entry] of reservation.held) {
 			const remaining = Math.max(0, entry.admittedAt + RESTORING_RECIPIENT_HOLD_MAX_MS - now);
-			clearTimeout(entry.timer);
+			this.disarm(entry);
 			this.arm(held, entry, remaining);
 			extended.push({ held, timeoutMs: remaining });
 		}
@@ -397,9 +432,21 @@ export class RestoringRecipients {
 	}
 
 	private arm(held: HeldSend, entry: HeldEntry, delayMs: number): void {
-		const timer = setTimeout(() => this.expire(held, entry), delayMs);
+		const timer = setTimeout(() => {
+			entry.timer = undefined;
+			this.liveTimers -= 1;
+			this.expire(held, entry);
+		}, delayMs);
 		timer.unref?.();
 		entry.timer = timer;
+		this.liveTimers += 1;
+	}
+
+	private disarm(entry: HeldEntry): void {
+		if (entry.timer === undefined) return;
+		clearTimeout(entry.timer);
+		entry.timer = undefined;
+		this.liveTimers -= 1;
 	}
 
 	private expire(held: HeldSend, entry: HeldEntry): void {
@@ -416,7 +463,7 @@ export class RestoringRecipients {
 	private detach(reservation: Reservation, held: HeldSend): void {
 		const entry = reservation.held.get(held);
 		if (entry === undefined) return;
-		clearTimeout(entry.timer);
+		this.disarm(entry);
 		reservation.held.delete(held);
 		this.heldTotal -= 1;
 		if (reservation.held.size > 0) return;
@@ -441,7 +488,7 @@ export class RestoringRecipients {
 
 	private take(reservation: Reservation): HeldSend[] {
 		const held = [...reservation.held.keys()];
-		for (const entry of reservation.held.values()) clearTimeout(entry.timer);
+		for (const entry of reservation.held.values()) this.disarm(entry);
 		this.heldTotal -= reservation.held.size;
 		reservation.held.clear();
 		reservation.extended = false;

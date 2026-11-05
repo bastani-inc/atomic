@@ -1024,6 +1024,44 @@ export function registerRestoringReservationStoreConformance(
 	);
 
 	check(
+		"keeps a released child's key with its live owner: another owner's reserve is not-owner and changes nothing (#4326)",
+		async (connect) => {
+			const [a, b, c] = [await connect(), await connect(), await connect()];
+			const releasedKey = "released:worker";
+			const first = await reserve(b, { reservationKey: releasedKey, wake: true, staleAfterMs: LIVE_MS });
+			const before = expectStatus(await a.read(releasedKey), "active").reservation;
+			const intruder = {
+				reservationKey: releasedKey,
+				ownerSessionId: "intruder-session",
+				ownerBrokerId: "broker-c",
+			};
+			const notOwner = { status: "not-owner", ownerSessionId: "supervisor-session" };
+			assert.deepEqual(
+				await c.reserve(reservationRequest({ ...intruder, aliases: [], wake: false, staleAfterMs: LIVE_MS })),
+				notOwner,
+			);
+			assert.deepEqual(await c.reserve(reservationRequest(intruder)), notOwner);
+			assert.deepEqual(expectStatus(await a.read(releasedKey), "active").reservation, before);
+			assert.deepEqual(await b.renew(first.lease), { status: "renewed" });
+			const again = await reserve(b, { reservationKey: releasedKey, wake: false, staleAfterMs: LIVE_MS });
+			assert.deepEqual(again.lease, first.lease);
+			const takeover = await reserve(c, {
+				...intruder,
+				ownerSessionId: "restarted-owner",
+				staleAfterMs: EXPIRED_MS,
+			});
+			assert.ok(takeover.lease.fencingToken > first.lease.fencingToken);
+			assert.deepEqual(await b.renew(first.lease), {
+				status: "stale",
+				currentFencingToken: takeover.lease.fencingToken,
+			});
+			assert.deepEqual(await c.release(takeover.lease), { status: "released" });
+			const reopened = await reserve(b, { reservationKey: releasedKey, staleAfterMs: LIVE_MS });
+			assert.equal(reopened.lease.ownerSessionId, "supervisor-session");
+		},
+	);
+
+	check(
 		"ends a released child's reservation when the child registers in its group, by name alone (#4326)",
 		async (connect) => {
 			const [a, b] = [await connect(), await connect()];

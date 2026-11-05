@@ -31,9 +31,14 @@ import intercom from "../../packages/intercom/index.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomConnectReason } from "../../packages/intercom/intercom-test-seams.js";
 import {
+	SUBAGENT_RESULT_INTERCOM_EVENT,
+	SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT,
+} from "../../packages/intercom/intercom-utils.js";
+import {
 	INTERCOM_CONNECTED_EVENT,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/intercom/session-recovery.js";
 
@@ -415,5 +420,62 @@ describe("lightweight extension: released child bus events", () => {
 		}
 		assert.deepEqual(dropCalls, []);
 		assert.deepEqual(acknowledgeCalls, []);
+	});
+});
+
+describe("heavy extension: supervisor authorizations of children that are no longer live", () => {
+	test("a reconnect re-authorizes only live children, not released, parked, dropped, gone or finished ones (#4326)", async () => {
+		const restored: string[] = [];
+		vi.spyOn(IntercomClient.prototype, "authorizeSupervisorChild").mockImplementation(
+			async (childName, capability) => {
+				if (capability !== undefined) restored.push(childName);
+				return {
+					childName,
+					capability: capability ?? `${childName}.capability`,
+					supervisorSessionId: BROKER_SESSION_ID,
+				};
+			},
+		);
+		vi.spyOn(IntercomClient.prototype, "releaseRestoringRecipient").mockResolvedValue();
+		vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
+		vi.spyOn(IntercomClient.prototype, "send").mockResolvedValue({ id: "relayed", delivered: true });
+		const harness = await startHeavy();
+		const children = ["live", "released", "parked", "dropped", "gone", "finished"].map(
+			(name) => `subagent-${name}-1`,
+		);
+		for (const childName of children) {
+			await request(harness, SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, { childName }).completion;
+		}
+		const [live, released, parked, dropped, gone, finished] = children as [
+			string,
+			string,
+			string,
+			string,
+			string,
+			string,
+		];
+		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, {
+			children: [
+				{ childName: released, wake: true },
+				{ childName: parked, wake: false },
+			],
+		}).completion;
+		await request(harness, SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, { childNames: [dropped], gone: "ended" })
+			.completion;
+		await request(harness, SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, {
+			capability: `${gone}.capability`,
+			gone: "its session file was deleted",
+		}).completion;
+		harness.pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, {
+			to: "subagent-parent",
+			message: "done",
+			runId: "run-1",
+			children: [{ intercomTarget: finished }],
+		});
+
+		state.connected = false;
+		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children: [] }).completion;
+		assert.equal(connectCount, 2);
+		assert.deepEqual(restored, [live]);
 	});
 });

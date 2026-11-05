@@ -39,10 +39,17 @@ async function connect(
 		ownerToken?: string;
 		supervisor?: { capability: string; supervisorSessionId: string };
 		messages?: string[];
+		returnAddress?: string;
+		preferredSessionId?: string;
+		group?: string;
 	} = {},
 ): Promise<Client> {
-	const client = new IntercomClient(randomUUID());
+	const client = new IntercomClient(
+		options.returnAddress ?? randomUUID(),
+		options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId },
+	);
 	if (options.messages !== undefined) recordMessages(client, options.messages);
+	const group = options.group ?? "default";
 	await client.connect(
 		{
 			name,
@@ -52,11 +59,13 @@ async function connect(
 			status: "idle",
 			startedAt: Date.now(),
 			lastActivity: Date.now(),
-			group: "default",
-			groups: ["default"],
+			group,
+			groups: [group],
 		},
 		options.supervisor,
 		options.ownerToken,
+		undefined,
+		group,
 	);
 	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	return client;
@@ -191,24 +200,147 @@ test(
 );
 
 test(
-	"acknowledging the wake of a child this connection did not reserve is a typed refusal (#4326)",
+	"acknowledging the wake of a child nobody reserved is unknown, and of another owner's child is not_owner (#4326)",
 	async () => {
 		const owner = await connect("ack-owner");
 		const other = await connect("ack-other");
 		await owner.reserveReleasedChildren([{ childName: "subagent-ack-1", wake: true }]);
-		for (const [client, childName] of [
-			[owner, "subagent-never-reserved-1"],
-			[other, "subagent-ack-1"],
-		] as const) {
-			const error = await client.acknowledgeReleasedChildWake(childName).then(
+		const rejectionOf = (client: Client, childName: string) =>
+			client.acknowledgeReleasedChildWake(childName).then(
 				() => undefined,
 				(rejection: Error) => rejection,
 			);
-			assert.ok(error instanceof UnknownReleasedChildError);
-			assert.equal(error.code, "unknown_released_child");
+		const unknown = await rejectionOf(owner, "subagent-never-reserved-1");
+		assert.ok(unknown instanceof UnknownReleasedChildError);
+		assert.equal(unknown.code, "unknown_released_child");
+		assert.equal(unknown.childName, "subagent-never-reserved-1");
+		const foreign = await rejectionOf(other, "subagent-ack-1");
+		assert.ok(foreign instanceof ReleasedChildReservationError);
+		assert.equal(foreign.code, "not_owner");
+		assert.equal(foreign.childName, "subagent-ack-1");
+		await owner.acknowledgeReleasedChildWake("subagent-ack-1");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"another session cannot take over, drop or acknowledge an owner's released child, and the owner keeps it after reconnecting as itself (#4326)",
+	async () => {
+		const childName = "subagent-owned-1";
+		const returnAddress = randomUUID();
+		const owner = await connect("owned-owner", { ownerToken: randomUUID(), returnAddress });
+		const ownerSessionId = owner.sessionId;
+		assert.ok(ownerSessionId);
+		await owner.authorizeSupervisorChild(childName);
+		const ownerWakes = recordWakes(owner);
+		await owner.reserveReleasedChildren([{ childName, wake: true }]);
+		const intruder = await connect("owned-intruder", { ownerToken: randomUUID() });
+		const intruderWakes = recordWakes(intruder);
+		const sender = await connect("owned-sender");
+		const firstSend = sender.send(childName, { text: "one" });
+		await waitForHeld(owner, 1);
+		assert.deepEqual(ownerWakes, [{ childName }]);
+		const before = await owner.brokerStatus();
+
+		const refusalOf = (attempt: Promise<void>) =>
+			attempt.then(
+				() => undefined,
+				(rejection: Error) => rejection,
+			);
+		const attempts = [
+			() =>
+				intruder.reserveReleasedChildren([
+					{ childName: "subagent-owned-free-1", wake: true },
+					{ childName, wake: true },
+				]),
+			() => intruder.dropReleasedChildren(["subagent-owned-free-1", childName], { gone: "taken" }),
+			() => intruder.acknowledgeReleasedChildWake(childName),
+		];
+		for (const attempt of attempts) {
+			const error = await refusalOf(attempt());
+			assert.ok(error instanceof ReleasedChildReservationError);
+			assert.equal(error.code, "not_owner");
 			assert.equal(error.childName, childName);
 		}
-		await owner.acknowledgeReleasedChildWake("subagent-ack-1");
+		const after = await owner.brokerStatus();
+		assert.equal(after?.reservations, before?.reservations, "nothing from a refused frame is reserved");
+		assert.equal(after?.heldSends, 1);
+		assert.deepEqual(intruderWakes, []);
+
+		await owner.disconnect();
+		assert.equal((await firstSend).delivered, false);
+		const inGap = await refusalOf(intruder.reserveReleasedChildren([{ childName, wake: true }]));
+		assert.ok(inGap instanceof ReleasedChildReservationError);
+		assert.equal(inGap.code, "not_owner");
+
+		const back = await connect("owned-owner", {
+			ownerToken: randomUUID(),
+			returnAddress,
+			preferredSessionId: ownerSessionId,
+		});
+		assert.equal(back.sessionId, ownerSessionId);
+		const backWakes = recordWakes(back);
+		await back.reserveReleasedChildren([{ childName, wake: true }]);
+		const secondSend = sender.send(childName, { text: "two" });
+		await waitForHeld(back, 1);
+		assert.deepEqual(backWakes, [{ childName }]);
+		await back.acknowledgeReleasedChildWake(childName);
+		await back.dropReleasedChildren([childName], { refusal: "the owner ended it" });
+		const second = await secondSend;
+		assert.equal(second.delivered, false);
+		assert.match(second.reason ?? "", /the owner ended it/);
+		assert.deepEqual(intruderWakes, []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"only a workflow group the owner is not in is refused, whole and typed; auto-group children reserve and re-reserve after a reconnect (#4326)",
+	async () => {
+		const returnAddress = randomUUID();
+		const owner = await connect("grouped-owner", { returnAddress });
+		const ownerSessionId = owner.sessionId;
+		assert.ok(ownerSessionId);
+		const before = (await owner.brokerStatus())?.reservations ?? 0;
+		const autoGroup = randomUUID();
+		const refused = await owner
+			.reserveReleasedChildren([
+				{ childName: "subagent-grouped-auto-1", group: autoGroup, wake: true },
+				{ childName: "subagent-grouped-workflow-1", group: "workflow:run-elsewhere/stage", wake: true },
+			])
+			.then(
+				() => undefined,
+				(rejection: Error) => rejection,
+			);
+		assert.ok(refused instanceof ReleasedChildReservationError);
+		assert.equal(refused.code, "group_not_allowed");
+		assert.equal(refused.childName, "subagent-grouped-workflow-1");
+		assert.equal((await owner.brokerStatus())?.reservations, before, "nothing from a refused frame is reserved");
+
+		const frame = [
+			{ childName: "subagent-grouped-auto-1", group: autoGroup, wake: true },
+			{ childName: "subagent-grouped-auto-2", group: autoGroup, wake: false },
+			{ childName: "subagent-grouped-team-1", group: "team-a", wake: true },
+		];
+		await owner.reserveReleasedChildren(frame);
+		assert.equal((await owner.brokerStatus())?.reservations, before + frame.length);
+		const ownerWakes = recordWakes(owner);
+		const sibling = await connect("grouped-sibling", { group: autoGroup });
+		const held = sibling.send("subagent-grouped-auto-1", { text: "from a sibling" });
+		await waitForHeld(owner, 1);
+		assert.deepEqual(ownerWakes, [{ childName: "subagent-grouped-auto-1" }]);
+
+		await owner.disconnect();
+		assert.equal((await held).delivered, false);
+		const back = await connect("grouped-owner", { returnAddress, preferredSessionId: ownerSessionId });
+		await back.reserveReleasedChildren(frame);
+		assert.equal((await back.brokerStatus())?.reservations, before + frame.length);
+
+		const stage = await connect("grouped-stage", { group: "workflow:run-grouped" });
+		await stage.reserveReleasedChildren([
+			{ childName: "subagent-grouped-stage-1", group: "workflow:run-grouped", wake: true },
+		]);
+		assert.equal((await stage.brokerStatus())?.reservations, before + frame.length + 1);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

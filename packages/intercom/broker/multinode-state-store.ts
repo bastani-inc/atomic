@@ -301,6 +301,7 @@ export interface RestoringReservationRequest {
 	readonly wake: boolean;
 	/** The aliases given are all the child has, not additions to those reserved before. */
 	readonly replaceAliases?: boolean;
+	readonly staleAfterMs?: number;
 }
 
 export interface RestoringReservation {
@@ -360,6 +361,7 @@ export interface RestoringReservationReleaseOutcome {
 export type RestoringReservationReserveResult =
 	/** `superseded` lists the reservations this one took over, in insertion order. */
 	| { readonly status: "reserved"; readonly lease: RestoringReservationLease; readonly superseded: string[] }
+	| { readonly status: "not-owner"; readonly ownerSessionId: string }
 	| InvalidStateInput;
 export type RestoringReservationLookupResult =
 	| { readonly status: "none" }
@@ -402,9 +404,11 @@ export type RestoringReservationReadResult =
 export interface RestoringReservationStore {
 	/**
 	 * Reserve the key, or add targets to it. The same owner keeps its token; another owner takes the reservation
-	 * over with a greater token, because holding the capability is the authority. A new or ended key supersedes
-	 * other active reservations of the same `childTarget` made by the same owner, or dormant in the same group,
-	 * merging their targets.
+	 * over with a greater token, because holding the capability is the authority. A released child's key is the
+	 * exception (#4326): while it is active under another owner that renewed it within `staleAfterMs` (any age when
+	 * absent), the reserve changes nothing and is `not-owner`. A new or ended key supersedes other active
+	 * reservations of the same `childTarget` made by the same owner, or dormant in the same group, merging their
+	 * targets.
 	 */
 	reserve(request: RestoringReservationRequest): Promise<RestoringReservationReserveResult>;
 	/**

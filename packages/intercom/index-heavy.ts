@@ -1635,6 +1635,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     sendIncomingMessage,
     ensureConnected,
     authorizeSupervisorChild: (childName) => supervisorAuthorizations.authorize(childName, () => ensureConnected("background")),
+    forgetSupervisedChildren: (childNames) => supervisorAuthorizations.forget(childNames),
     resolveSessionTarget: resolveSessionTargetId,
     homeGroup: currentIntercomGroup,
   });
@@ -1672,6 +1673,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
     if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
     const request = payload;
+    supervisorAuthorizations.forget(request.children.map((child) => child.childName));
     request.completion = ensureConnected("background").then((activeClient) =>
       activeClient.reserveReleasedChildren(request.children),
     );
@@ -1679,6 +1681,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   pi.events.on(SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, (payload) => {
     if (!isDropReleasedChildrenRequest(payload) || payload.completion) return;
     const request = payload;
+    supervisorAuthorizations.forget(request.childNames);
     const activeClient = client;
     request.completion = activeClient?.isConnected()
       ? activeClient.dropReleasedChildren(request.childNames, {
@@ -1698,6 +1701,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
     if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
     const request = payload;
+    if (request.gone !== undefined) supervisorAuthorizations.forgetCapability(request.capability);
     // A reservation ends with the connection that made it, so a disconnected client has nothing to release.
     const activeClient = client;
     request.completion = activeClient?.isConnected()

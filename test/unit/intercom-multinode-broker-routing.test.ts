@@ -32,6 +32,7 @@ import {
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "../../packages/intercom/broker/recipient-receipts.js";
+import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import { RESTORING_RECIPIENT_HOLD_MS } from "../../packages/intercom/broker/restoring-recipients.js";
 import {
 	type BrokerConnectedSession,
@@ -78,6 +79,7 @@ function fakeSocket(): FakeSocket {
 
 class Node {
 	readonly sessions = new Map<string, BrokerConnectedSession>();
+	readonly revoked: { readonly key: string; readonly ownerSessionId: string }[] = [];
 	readonly supervisorCache = new SupervisorChannelCache();
 	readonly pendingQuestions = new PendingQuestionIndex();
 	readonly deliveredMessages: DeliveredMessageCache;
@@ -123,6 +125,7 @@ class Node {
 				pendingQuestions: node.pendingQuestions,
 				deliveredMessages: node.deliveredMessages,
 				dispatch: (socket, clientMessage, senderId) => node.dispatch(socket, clientMessage, senderId),
+				revokeReleasedReservation: (key, ownerSessionId) => node.revoked.push({ key, ownerSessionId }),
 			},
 		});
 		return node;
@@ -1010,6 +1013,31 @@ test("a restoring reservation released while its shared reserve is still being w
 		30_000,
 	);
 	assert.equal(lookup.status, "none");
+});
+
+test("a released child reserved through one broker is not taken over through another: the store refuses and that broker revokes its own reservation (#4326)", async () => {
+	const [a, b] = await cluster();
+	const owner = await b!.connect("owner", { group: "crew" });
+	const intruder = await a!.connect("intruder", { group: "crew" });
+	const key = releasedReservationKey("released-child");
+	const options = { wake: true, replaceAliases: true } as const;
+	b!.router.restoringReserved(key, owner.info.id, "released-child", normalizeGroup("crew"), [], true, options);
+	await vi.waitFor(
+		async () => {
+			const read = await a!.opened.state.reservations.read(key);
+			assert.equal(read.status === "active" ? read.reservation.ownerSessionId : read.status, owner.info.id);
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+	a!.router.restoringReserved(key, intruder.info.id, "released-child", normalizeGroup("crew"), [], true, options);
+	await vi.waitFor(() => assert.deepEqual(a!.revoked, [{ key, ownerSessionId: intruder.info.id }]), {
+		timeout: CROSS_NODE_WAIT_MS,
+	});
+	const read = await a!.opened.state.reservations.read(key);
+	assert.equal(read.status, "active");
+	assert.equal(read.status === "active" ? read.reservation.ownerSessionId : undefined, owner.info.id);
+	assert.equal(read.status === "active" ? read.reservation.ownerBrokerId : undefined, b!.router.brokerId);
+	assert.deepEqual(b!.revoked, []);
 });
 
 test("a restoring reservation whose shared reserve is still being written when its supervisor leaves ends in the shared store", async () => {

@@ -3,7 +3,7 @@ import type net from "node:net";
 import { afterEach, test, vi } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import {
-	isReleasedChildError,
+	isIntercomReleasedChildError,
 	ReleasedChildReservationError,
 	UnknownReleasedChildError,
 } from "../../packages/intercom/broker/released-child-errors.js";
@@ -117,7 +117,7 @@ test("reserveReleasedChildren refuses an invalid child before any frame is sent,
 		(rejection: Error) => rejection,
 	);
 	assert.ok(error instanceof ReleasedChildReservationError);
-	assert.ok(isReleasedChildError(error));
+	assert.ok(isIntercomReleasedChildError(error));
 	assert.equal(error.name, "ReleasedChildReservationError");
 	assert.equal(error.code, "invalid_alias");
 	assert.equal(error.childName, CHILD);
@@ -128,7 +128,7 @@ test("reserveReleasedChildren refuses an invalid child before any frame is sent,
 		name: "UnknownReleasedChildError",
 		code: "unknown_released_child",
 	});
-	assert.ok(isReleasedChildError(structural));
+	assert.ok(isIntercomReleasedChildError(structural));
 	assert.ok(new UnknownReleasedChildError({ code: "unknown_released_child", childName: CHILD }) instanceof Error);
 });
 

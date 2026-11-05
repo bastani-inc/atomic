@@ -431,6 +431,15 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 			}
 			if (request.group.length === 0) return invalid("empty-group");
 			const existing = shared.records.get(request.reservationKey);
+			if (
+				existing !== undefined &&
+				existing.end === undefined &&
+				existing.ownerSessionId !== request.ownerSessionId &&
+				isReleasedReservationKey(request.reservationKey) &&
+				(request.staleAfterMs === undefined || isLive(existing.renewedAt, request.staleAfterMs))
+			) {
+				return { status: "not-owner", ownerSessionId: existing.ownerSessionId };
+			}
 			const superseded: string[] = [];
 			let record: ReservationRecord;
 			if (existing !== undefined && existing.end === undefined) {

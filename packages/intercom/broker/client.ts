@@ -22,13 +22,12 @@ import type {
 	IntercomDeliveryMode,
 	DeliveryFailureReasonCode,
 	ReleasedChildRefusal,
-	ReleasedChildRefusalCode,
 } from "../types.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { isDeliveryFailureReasonCode } from "./delivery-failure-reason.js";
-import { ReleasedChildReservationError, releasedChildErrorFor } from "./released-child-errors.js";
+import { isReleasedChildErrorCode, ReleasedChildReservationError, releasedChildErrorFor } from "./released-child-errors.js";
 import { RELEASED_CHILD_FRAME_MAX, validateReleasedChildFrame } from "./released-children.js";
 import { normalizeGroups } from "../group.js";
 import {
@@ -167,29 +166,24 @@ export interface ReleasedChildReservation {
 }
 
 export {
-	isReleasedChildError,
-	ReleasedChildError,
+	IntercomReleasedChildError,
+	isIntercomReleasedChildError,
+	isReleasedChildReservationError,
+	isUnknownReleasedChildError,
 	ReleasedChildReservationError,
+	rehydrateIntercomReleasedChildError,
+	serializeIntercomReleasedChildError,
 	UnknownReleasedChildError,
 } from "./released-child-errors.js";
-export type { ReleasedChildErrorCode } from "./released-child-errors.js";
+export type { IntercomReleasedChildErrorCode, SerializedIntercomReleasedChildError } from "./released-child-errors.js";
 
 function readReleasedChildRefusal(value: unknown): ReleasedChildRefusal | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const { code, childName } = value as { code?: unknown; childName?: unknown };
-	if (typeof code !== "string" || !RELEASED_CHILD_REFUSAL_CODES.has(code)) return undefined;
+	if (typeof code !== "string" || !isReleasedChildErrorCode(code)) return undefined;
 	if (childName !== undefined && typeof childName !== "string") return undefined;
-	return childName === undefined ? { code: code as ReleasedChildRefusalCode } : { code: code as ReleasedChildRefusalCode, childName };
+	return childName === undefined ? { code } : { code, childName };
 }
-
-const RELEASED_CHILD_REFUSAL_CODES: ReadonlySet<string> = new Set<ReleasedChildRefusalCode>([
-	"invalid_frame",
-	"invalid_child_name",
-	"invalid_alias",
-	"too_many_aliases",
-	"invalid_group",
-	"unknown_released_child",
-]);
 
 export interface SendResult {
   id: string;
@@ -1411,7 +1405,9 @@ export class IntercomClient extends EventEmitter {
    * #4326: reserve released subagents by child name for this connection, which becomes their owner: sends to
    * them are held, and the first one held asks this session to wake the child when `wake` is true. Children go in
    * frames of at most 500. Every item is validated before any frame is sent; an invalid item fails the call with a
-   * `ReleasedChildReservationError` naming its child, and reserves nothing from its frame or any later one.
+   * `ReleasedChildReservationError` naming its child, and reserves nothing from its frame or any later one. The
+   * broker refuses a whole frame the same way, with `not_owner` when another session owns one of its children and
+   * `group_not_allowed` for a workflow group this session is not a member of.
    * Reserving a child again replaces its aliases, group and wake flag and keeps the sends held for it.
    */
   async reserveReleasedChildren(children: readonly ReleasedChildReservation[]): Promise<void> {
@@ -1435,7 +1431,8 @@ export class IntercomClient extends EventEmitter {
 
   /**
    * #4326: end this connection's reservations for these child names, in frames of at most 500. `gone` and
-   * `refusal` behave as they do for `releaseRestoringRecipient`. A child this connection did not reserve is skipped.
+   * `refusal` behave as they do for `releaseRestoringRecipient`. A child nobody reserved is skipped; a frame naming
+   * a child another session owns fails with a `not_owner` `ReleasedChildReservationError` and drops nothing.
    */
   async dropReleasedChildren(childNames: readonly string[], outcome: { gone?: string; refusal?: string } = {}): Promise<void> {
     for (let start = 0; start < childNames.length; start += RELEASED_CHILD_FRAME_MAX) {
@@ -1450,8 +1447,9 @@ export class IntercomClient extends EventEmitter {
 
   /**
    * #4326: confirm this session is waking `childName`: the broker lengthens the hold of every send waiting for it,
-   * once per wake, up to 120 seconds from each send's admission. Fails with `UnknownReleasedChildError` when this
-   * connection holds no reservation for the child.
+   * once per wake, up to 120 seconds from each send's admission. Fails with `UnknownReleasedChildError` when no
+   * session holds a reservation for the child, and with a `not_owner` `ReleasedChildReservationError` when another
+   * session owns it.
    */
   acknowledgeReleasedChildWake(childName: string): Promise<void> {
     return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });

@@ -52,6 +52,7 @@ import type {
 	WorkflowFutureStageRosterEntry,
 	WorkflowRunParentAnnouncement,
 	PendingStageRouteRefusalCode,
+	ReleasedChildRefusal,
 } from "../types.js";
 import {
 	formatWorkflowStageTarget,
@@ -1950,8 +1951,9 @@ class IntercomBroker {
           throw new Error("Invalid reserve_released_children message");
         }
         const validation = validateReleasedChildFrame(clientMessage.children);
-        if (!validation.ok) {
-          writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal: validation.refusal });
+        const refusal = validation.ok ? this.releasedChildrenRefusal(owner, validation.children) : validation.refusal;
+        if (!validation.ok || refusal !== undefined) {
+          writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
           break;
         }
         for (const child of validation.children) this.reserveReleasedChild(currentId, owner.registrationGroup, child);
@@ -1960,7 +1962,9 @@ class IntercomBroker {
       }
 
       case "drop_released_children": {
+        const owner = this.sessions.get(currentId);
         if (
+          owner === undefined ||
           typeof clientMessage.requestId !== "string" ||
           !Array.isArray(clientMessage.childNames) ||
           clientMessage.childNames.length > RELEASED_CHILD_FRAME_MAX ||
@@ -1970,7 +1974,15 @@ class IntercomBroker {
         ) {
           throw new Error("Invalid drop_released_children message");
         }
-        for (const childName of clientMessage.childNames as string[]) {
+        const childNames = clientMessage.childNames as string[];
+        const refusal = childNames
+          .map((childName) => this.releasedChildOwnerRefusal(owner, childName))
+          .find((candidate) => candidate !== undefined);
+        if (refusal !== undefined) {
+          writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
+          break;
+        }
+        for (const childName of childNames) {
           this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -1978,17 +1990,19 @@ class IntercomBroker {
       }
 
       case "acknowledge_released_child_wake": {
-        if (typeof clientMessage.requestId !== "string" || typeof clientMessage.childName !== "string") {
+        const owner = this.sessions.get(currentId);
+        if (owner === undefined || typeof clientMessage.requestId !== "string" || typeof clientMessage.childName !== "string") {
           throw new Error("Invalid acknowledge_released_child_wake message");
         }
-        const extended = isValidChildName(clientMessage.childName)
-          ? this.restoringRecipients.extendHolds(clientMessage.childName, currentId)
-          : undefined;
+        const childName = clientMessage.childName;
+        const valid = isValidChildName(childName);
+        const refusal: ReleasedChildRefusal | undefined = valid ? this.releasedChildOwnerRefusal(owner, childName) : undefined;
+        const extended = valid && refusal === undefined ? this.restoringRecipients.extendHolds(childName, currentId) : undefined;
         if (extended === undefined) {
           writeMessageIfOpen(socket, {
             type: "released_children_ack",
             requestId: clientMessage.requestId,
-            refusal: { code: "unknown_released_child", childName: clientMessage.childName },
+            refusal: refusal ?? { code: "unknown_released_child", childName },
           });
           break;
         }
@@ -2483,6 +2497,7 @@ class IntercomBroker {
                 pendingQuestions: this.pendingQuestions,
                 deliveredMessages: this.deliveredMessages,
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
+                revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
               },
             });
           } catch (error) {
@@ -2579,6 +2594,44 @@ class IntercomBroker {
       child.aliases,
       { dormant: true, wake: child.wake, replaceAliases: true },
     );
+  }
+
+  private releasedChildrenRefusal(
+    owner: ConnectedSession,
+    children: readonly ParsedReleasedChild[],
+  ): ReleasedChildRefusal | undefined {
+    for (const child of children) {
+      const refusal = this.releasedChildGroupRefusal(owner, child) ?? this.releasedChildOwnerRefusal(owner, child.childName);
+      if (refusal !== undefined) return refusal;
+    }
+    return undefined;
+  }
+
+  private releasedChildGroupRefusal(owner: ConnectedSession, child: ParsedReleasedChild): ReleasedChildRefusal | undefined {
+    if (child.group === undefined) return undefined;
+    const group = normalizeGroup(child.group);
+    if (!group.startsWith("workflow:")) return undefined;
+    if (group === normalizeGroup(owner.registrationGroup) || hasGroup(sessionGroups(owner.info), group)) return undefined;
+    return { code: "group_not_allowed", childName: child.childName };
+  }
+
+  private releasedChildOwnerRefusal(requester: ConnectedSession, childName: string): ReleasedChildRefusal | undefined {
+    const reservedBy = this.restoringRecipients.releasedOwner(childName);
+    if (reservedBy !== undefined) return reservedBy === requester.info.id ? undefined : { code: "not_owner", childName };
+    const supervisor = this.supervisorChannel.supervisorOf(childName);
+    if (
+      supervisor === undefined ||
+      supervisor.supervisorId === requester.info.id ||
+      (requester.supervisorOwnerToken !== undefined && requester.supervisorOwnerToken === supervisor.ownerToken)
+    ) {
+      return undefined;
+    }
+    return { code: "not_owner", childName };
+  }
+
+  private revokeReleasedReservation(key: string, ownerSessionId: string): void {
+    const revoked = this.restoringRecipients.release(key, ownerSessionId, undefined);
+    for (const send of revoked?.held ?? []) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
   }
 
   private releaseReservation(key: string, ownerSessionId: string, gone: string | undefined, refusal: string | undefined): void {
