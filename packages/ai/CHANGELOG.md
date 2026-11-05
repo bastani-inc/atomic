@@ -30,6 +30,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Responses stream `error` and `response.failed` events keep the provider's error code on the thrown error ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Messages stream errors keep their structured provider type, request ID and retry hints, so a rejected Copilot request is not retried as a cut-off stream. Error guards reject malformed serialized payloads instead of rebuilding them without their context ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Fixed Azure GPT-6 Luna, Sol, GPT-6.1 Sol and GPT-6.1 Terra using a 272K context window instead of the 1,050,000 tokens Azure Foundry deploys them with, which made sessions compact far earlier than needed (upstream [#11781](https://github.com/earendil-works/pi/pull/11781))
+- Fixed `qwen-token-plan-individual` missing `glm-5.3`, which `qwen-token-plan` and `qwen-token-plan-cn` already list (upstream [#11785](https://github.com/earendil-works/pi/pull/11785))
 
 ## [0.9.71] - 2026-11-03
 
