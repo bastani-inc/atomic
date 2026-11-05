@@ -24,9 +24,12 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { WriterQueueBenchmarkWorkerError } from "./errors.js";
+import { type BenchmarkOptions, parseBenchmarkOptions, repository, storagePath } from "./options.js";
+import { reportFailure, WorkerChannel, withCleanup } from "./support.js";
 
 interface ProcessSpec {
 	readonly count: number;
@@ -77,44 +80,8 @@ const SCENARIOS: readonly Scenario[] = [
 	},
 ];
 
-interface Options {
-	readonly scenarios: readonly Scenario[];
-	readonly holds: readonly number[];
-	readonly repeats: number;
-	readonly warmupMs: number;
-	readonly measureMs: number;
-	readonly baseline: string;
-	readonly runtime: "node" | "bun";
-	readonly out?: string;
-}
+type Options = BenchmarkOptions<Scenario>;
 
-function parseOptions(argv: readonly string[]): Options {
-	const value = (name: string): string | undefined => {
-		const index = argv.indexOf(`--${name}`);
-		return index === -1 ? undefined : argv[index + 1];
-	};
-	const names = (value("scenarios") ?? SCENARIOS.map((scenario) => scenario.name).join(",")).split(",");
-	const scenarios = names.map((name) => {
-		const scenario = SCENARIOS.find((candidate) => candidate.name === name);
-		if (scenario === undefined) throw new Error(`Unknown scenario ${name}`);
-		return scenario;
-	});
-	const runtime = value("runtime") ?? "node";
-	if (runtime !== "node" && runtime !== "bun") throw new Error(`Unknown runtime ${runtime}`);
-	return {
-		scenarios,
-		holds: (value("holds") ?? "25,50,100,200,400").split(",").map(Number),
-		repeats: Number(value("repeats") ?? "3"),
-		warmupMs: Number(value("warmup") ?? "1000"),
-		measureMs: Number(value("measure") ?? "8000"),
-		baseline: value("baseline") ?? "77746f5",
-		runtime,
-		...(value("out") === undefined ? {} : { out: resolve(value("out")!) }),
-	};
-}
-
-const repository = fileURLToPath(new URL("../../../", import.meta.url));
-const storagePath = "packages/coding-agent/src/core/storage";
 const worker = fileURLToPath(new URL("./worker.mjs", import.meta.url));
 
 function git(args: readonly string[]): string {
@@ -173,41 +140,51 @@ function percentile(sorted: readonly number[], p: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)]!;
 }
 
-function lines(child: ReturnType<typeof spawn>): () => Promise<string> {
-	let buffered = "";
-	const waiting: ((line: string) => void)[] = [];
-	const queued: string[] = [];
-	child.stdout!.setEncoding("utf8");
-	child.stdout!.on("data", (chunk: string) => {
-		buffered += chunk;
-		for (let end = buffered.indexOf("\n"); end !== -1; end = buffered.indexOf("\n")) {
-			const line = buffered.slice(0, end);
-			buffered = buffered.slice(end + 1);
-			const next = waiting.shift();
-			if (next === undefined) queued.push(line);
-			else next(line);
-		}
-	});
-	return () => {
-		const line = queued.shift();
-		return line === undefined ? new Promise((resolve) => waiting.push(resolve)) : Promise.resolve(line);
-	};
+interface RunningWorker {
+	readonly channel: WorkerChannel;
+	readonly group: number;
+}
+
+function parseReport(channel: WorkerChannel, line: string): WorkerReport {
+	try {
+		return JSON.parse(line) as WorkerReport;
+	} catch (cause) {
+		throw new WriterQueueBenchmarkWorkerError(
+			"worker-protocol",
+			{ worker: channel.label, phase: "report" },
+			{ cause },
+		);
+	}
 }
 
 async function runOnce(scenario: Scenario, variant: Variant, options: Options, scratch: string): Promise<Sample> {
 	const directory = mkdtempSync(join(scratch, `${scenario.name}-`));
+	const workers: RunningWorker[] = [];
+	return withCleanup(
+		() => measureRun(scenario, variant, options, directory, workers),
+		async () => {
+			try {
+				await Promise.all(workers.map(({ channel }) => channel.stop()));
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+	);
+}
+
+async function measureRun(
+	scenario: Scenario,
+	variant: Variant,
+	options: Options,
+	directory: string,
+	workers: RunningWorker[],
+): Promise<Sample> {
 	const path = join(directory, "bench.sqlite");
 	const setup = new DatabaseSync(path);
 	setup.exec(
 		"PRAGMA journal_mode = WAL; CREATE TABLE bench(id INTEGER PRIMARY KEY, writer TEXT NOT NULL, lane INTEGER NOT NULL, seq INTEGER NOT NULL)",
 	);
 	setup.close();
-	const workers: {
-		child: ReturnType<typeof spawn>;
-		next: () => Promise<string>;
-		exited: Promise<unknown>;
-		group: number;
-	}[] = [];
 	let index = 0;
 	for (const [group, spec] of scenario.processes.entries())
 		for (let copy = 0; copy < spec.count; copy++) {
@@ -222,20 +199,22 @@ async function runOnce(scenario: Scenario, variant: Variant, options: Options, s
 				],
 				{ stdio: ["pipe", "pipe", "inherit"], cwd: repository },
 			);
-			workers.push({
-				child,
-				next: lines(child),
-				exited: new Promise((resolve) => child.once("exit", resolve)),
-				group,
-			});
+			workers.push({ channel: new WorkerChannel(child, label), group });
 		}
-	for (const { next } of workers) if ((await next()) !== "ready") throw new Error("worker failed to start");
+	await Promise.all(
+		workers.map(async ({ channel }) => {
+			if ((await channel.next("ready")) !== "ready")
+				throw new WriterQueueBenchmarkWorkerError("worker-protocol", { worker: channel.label, phase: "ready" });
+		}),
+	);
 	const startAt = Date.now() + 500;
 	const measureFrom = startAt + options.warmupMs;
 	const endAt = measureFrom + options.measureMs;
-	for (const { child } of workers) child.stdin!.end(`go ${startAt} ${endAt}\n`);
-	const reports = await Promise.all(workers.map(async ({ next }) => JSON.parse(await next()) as WorkerReport));
-	await Promise.all(workers.map(({ exited }) => exited));
+	for (const { channel } of workers) channel.send(`go ${startAt} ${endAt}`);
+	const reports = await Promise.all(
+		workers.map(async ({ channel }) => parseReport(channel, await channel.next("report"))),
+	);
+	await Promise.all(workers.map(({ channel }) => channel.finished("exit")));
 
 	const clip = (start: number, end: number) => Math.max(0, Math.min(end, endAt) - Math.max(start, measureFrom));
 	let heldMs = 0;
@@ -269,7 +248,6 @@ async function runOnce(scenario: Scenario, variant: Variant, options: Options, s
 	check.close();
 	if (rows !== recorded) throw new Error(`${rows} rows for ${recorded} reported transactions`);
 	if (integrity !== "ok") throw new Error(`integrity_check: ${integrity}`);
-	rmSync(directory, { recursive: true, force: true });
 	waits.sort((a, b) => a - b);
 	const seconds = options.measureMs / 1000;
 	return {
@@ -299,32 +277,38 @@ function median(values: readonly number[]): number {
 	return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-const options = parseOptions(process.argv.slice(2));
+process.on("uncaughtException", reportFailure);
+const options = parseBenchmarkOptions(process.argv.slice(2), SCENARIOS);
 const scratch = mkdtempSync(join(tmpdir(), "writer-queue-bench-"));
-const variants: Variant[] = [
-	{ name: "baseline", storage: materialize(options.baseline, scratch) },
-	...options.holds.map((holdMs) => ({
-		name: `current@${holdMs}`,
-		storage: join(repository, storagePath),
-		groupCommitHoldMs: holdMs,
-	})),
-];
+const variants: Variant[] = [];
 const results: Record<string, Record<string, Sample[]>> = {};
-for (let repeat = 0; repeat < options.repeats; repeat++)
-	for (const scenario of options.scenarios) {
-		// Interleave variants, rotating which goes first, so drift on the machine falls on all of them alike.
-		const order = variants.map((_, index) => variants[(index + repeat) % variants.length]!);
-		for (const variant of order) {
-			const sample = await runOnce(scenario, variant, options, scratch);
-			const byVariant = results[scenario.name] ?? {};
-			results[scenario.name] = byVariant;
-			byVariant[variant.name] = [...(byVariant[variant.name] ?? []), sample];
-			console.error(
-				`${scenario.name} ${variant.name} #${repeat + 1}: utilization ${(sample.utilization * 100).toFixed(1)}% commits/s ${sample.commitsPerSecond.toFixed(0)} tx/s ${sample.transactionsPerSecond.toFixed(0)} wait p50 ${sample.waitP50Ms.toFixed(1)} p95 ${sample.waitP95Ms.toFixed(1)} ms`,
-			);
-		}
-	}
-rmSync(scratch, { recursive: true, force: true });
+await withCleanup(
+	async () => {
+		variants.push(
+			{ name: "baseline", storage: materialize(options.baseline, scratch) },
+			...options.holds.map((holdMs) => ({
+				name: `current@${holdMs}`,
+				storage: join(repository, storagePath),
+				groupCommitHoldMs: holdMs,
+			})),
+		);
+		for (let repeat = 0; repeat < options.repeats; repeat++)
+			for (const scenario of options.scenarios) {
+				// Interleave variants, rotating which goes first, so drift on the machine falls on all of them alike.
+				const order = variants.map((_, index) => variants[(index + repeat) % variants.length]!);
+				for (const variant of order) {
+					const sample = await runOnce(scenario, variant, options, scratch);
+					const byVariant = results[scenario.name] ?? {};
+					results[scenario.name] = byVariant;
+					byVariant[variant.name] = [...(byVariant[variant.name] ?? []), sample];
+					console.error(
+						`${scenario.name} ${variant.name} #${repeat + 1}: utilization ${(sample.utilization * 100).toFixed(1)}% commits/s ${sample.commitsPerSecond.toFixed(0)} tx/s ${sample.transactionsPerSecond.toFixed(0)} wait p50 ${sample.waitP50Ms.toFixed(1)} p95 ${sample.waitP95Ms.toFixed(1)} ms`,
+					);
+				}
+			}
+	},
+	() => rmSync(scratch, { recursive: true, force: true }),
+);
 
 const environment = {
 	date: new Date().toISOString(),

@@ -85,40 +85,69 @@ function isVanishedTicket(error: unknown): boolean {
  * attempts the lock only once no live older ticket is ahead of it, and a writer that arrives while tickets wait
  * queues behind them instead of overtaking. Uncontended writers only list an absent or empty directory.
  *
- * Handing the lock on does not wait for anyone to poll (#4316): each queued writer watches its own ticket, and the
- * writer that lets go of the lock touches the oldest live ticket's access time, so its writer attempts the lock at
- * once. Only a ticket's owner moves its modification time, which is what keeps it live, so the wake never keeps a
- * dead or stopped waiter's ticket alive. A writer also rechecks on a timer, for the releases nobody announces: a
- * holder killed with the lock, a ticket ahead whose owner died, a raw SQLite client, an older Atomic.
+ * Handing the lock on does not wait for anyone to poll (#4316): each queued writer watches a release notice of its
+ * own, a file named like its ticket in a directory beside the queue's (`<file>-wakes`), and the writer that lets go
+ * of the lock touches the oldest live ticket's notice, so its writer attempts the lock at once. The two never
+ * share a file: only a ticket's owner moves the ticket's modification time, which is what keeps it live, so a
+ * notice neither keeps a dead or stopped waiter's ticket alive nor, sent late, rolls a live one back to an older
+ * time. A writer also rechecks on a timer, for the releases nobody announces: a holder killed with the lock, a
+ * ticket ahead whose owner died, a raw SQLite client, an older Atomic.
  */
 class SqliteWriteQueue {
 	private readonly directory: string;
+	private readonly noticeDirectory: string;
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
 
 	/** `degraded` records what the queue had to give up on without failing the transaction that met it. */
 	constructor(databasePath: string, degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void) {
 		this.directory = `${databasePath}-writers`;
+		this.noticeDirectory = `${databasePath}-wakes`;
 		this.degraded = degraded;
 	}
 
 	join(live = this.liveTickets()): SqliteWriteTicket {
-		mkdirSync(this.directory, { recursive: true });
 		const name = ticketName(live);
-		const path = join(this.directory, name);
-		writeFileSync(path, "", { flag: "wx" });
-		return new SqliteWriteTicket(this, name, path);
+		const ticket = new SqliteWriteTicket(this, name, join(this.directory, name), join(this.noticeDirectory, name));
+		this.create(ticket, "wx");
+		return ticket;
+	}
+
+	create(ticket: SqliteWriteTicket, flag: "wx" | "w"): void {
+		mkdirSync(this.directory, { recursive: true });
+		mkdirSync(this.noticeDirectory, { recursive: true });
+		writeFileSync(ticket.path, "", { flag });
+		try {
+			writeFileSync(ticket.noticePath, "");
+		} catch (error) {
+			ticket.leave();
+			throw error;
+		}
+	}
+
+	removeEntry(name: string): void {
+		for (const path of [join(this.noticeDirectory, name), join(this.directory, name)]) {
+			try {
+				unlinkSync(path);
+			} catch (error) {
+				if (isVanishedTicket(error)) continue;
+				this.degraded("stale-ticket-kept", error);
+				return;
+			}
+		}
 	}
 
 	/**
-	 * Hands the turn on once this connection has let go of the write lock: sets the oldest live ticket's access time,
-	 * which its writer watches, so that writer attempts the lock at once. The ticket's modification time is written
-	 * back unchanged: it marks the ticket live and only its owner moves it. A ticket that left meanwhile passes the
-	 * turn to the next one.
+	 * Hands the turn on once this connection has let go of the write lock: touches the release notice of the oldest
+	 * live ticket, which its writer watches, so that writer attempts the lock at once. The ticket itself is not
+	 * touched: its modification time marks it live and only its owner moves it, so a release can neither keep a dead
+	 * writer's ticket alive nor undo the owner's refresh that came after the queue was read. A ticket that left
+	 * meanwhile passes the turn to the next one.
 	 */
 	wakeNext(): void {
 		for (const ticket of this.liveTicketEntries()) {
 			try {
-				utimesSync(join(this.directory, ticket.name), new Date(), ticket.mtimeMs / 1000);
+				const now = new Date();
+				utimesSync(join(this.noticeDirectory, ticket.name), now, now);
 				return;
 			} catch (error) {
 				if (!isVanishedTicket(error)) throw error;
@@ -162,11 +191,7 @@ class SqliteWriteQueue {
 			const age = now - mtimeMs;
 			if (Math.abs(age) < TICKET_STALE_MS) live.push({ name, mtimeMs });
 			else if (Math.abs(age) > TICKET_REMOVE_AFTER_MS) {
-				try {
-					unlinkSync(join(this.directory, name));
-				} catch (error) {
-					if (!isVanishedTicket(error)) this.degraded("stale-ticket-kept", error);
-				}
+				this.removeEntry(name);
 			}
 		}
 		return live;
@@ -177,21 +202,22 @@ class SqliteWriteTicket {
 	private left = false;
 	private readonly queue: SqliteWriteQueue;
 	private readonly name: string;
-	private readonly path: string;
+	readonly path: string;
+	readonly noticePath: string;
 	/** When this writer last marked the ticket live, on the monotonic clock. */
 	private refreshed = performance.now();
 
-	constructor(queue: SqliteWriteQueue, name: string, path: string) {
+	constructor(queue: SqliteWriteQueue, name: string, path: string, noticePath: string) {
 		this.queue = queue;
 		this.name = name;
 		this.path = path;
+		this.noticePath = noticePath;
 	}
 
 	/**
 	 * Keeps this ticket live: refreshes it once `TICKET_REFRESH_MS` have passed since it was created or last
-	 * refreshed, recreating it in the place it had if it was removed as stale while this writer stalled. Refreshing
-	 * only that often keeps the writer's own refresh from waking it more than once per period. Returns whether the
-	 * file was recreated, which ends a watch on the removed one.
+	 * refreshed, recreating it and its release notice in the place it had if it was removed as stale while this
+	 * writer stalled. Returns whether the notice was recreated, which ends a watch on the removed one.
 	 */
 	keepLive(): boolean {
 		if (performance.now() - this.refreshed < TICKET_REFRESH_MS) return false;
@@ -202,7 +228,7 @@ class SqliteWriteTicket {
 			return false;
 		} catch (error) {
 			if (!isMissingFile(error)) throw error;
-			writeFileSync(this.path, "");
+			this.queue.create(this, "w");
 			return true;
 		}
 	}
@@ -212,25 +238,21 @@ class SqliteWriteTicket {
 		return this.queue.liveTickets(this.name).some((other) => other < this.name);
 	}
 
-	/** Watches this ticket for release notices: anything that touches the file, as a releasing writer does. */
+	/** Watches this writer's release notice: anything that touches the file, as a releasing writer does. */
 	watch(onUnavailable: (cause: Error) => void): ReleaseNotices {
-		return new ReleaseNotices(this.path, onUnavailable);
+		return new ReleaseNotices(this.noticePath, onUnavailable);
 	}
 
 	leave(): void {
 		if (this.left) return;
 		this.left = true;
-		try {
-			unlinkSync(this.path);
-		} catch {
-			// Already removed.
-		}
+		this.queue.removeEntry(this.name);
 	}
 }
 
 /**
- * The release notices a queued writer receives while it waits: a change to its ticket, which is how the writer that
- * lets go of the lock hands it the turn. The watch starts before the writer first checks the lock, and a notice can
+ * The release notices a queued writer receives while it waits: a change to its notice file, which is how the writer
+ * that lets go of the lock hands it the turn. The watch starts before the writer first checks the lock, and a notice can
  * only be delivered while the writer awaits `wait`, so one sent while it checks still ends its next wait at once.
  */
 class ReleaseNotices {

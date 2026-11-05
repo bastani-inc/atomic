@@ -17,6 +17,7 @@ vi.mock("node:fs", async (importOriginal) => {
 		...actual,
 		watch: vi.fn(actual.watch),
 		utimesSync: vi.fn(actual.utimesSync),
+		writeFileSync: vi.fn(actual.writeFileSync),
 		readdirSync: vi.fn(actual.readdirSync),
 		statSync: vi.fn(actual.statSync),
 		unlinkSync: vi.fn(actual.unlinkSync),
@@ -31,6 +32,7 @@ const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, 
 const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
 const watch = vi.mocked(fs.watch);
 const utimesSync = vi.mocked(fs.utimesSync);
+const writeFileSync = vi.mocked(fs.writeFileSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
 const unlinkSync = vi.mocked(fs.unlinkSync);
@@ -41,6 +43,7 @@ afterEach(async () => {
 	vi.useRealTimers();
 	watch.mockImplementation(actual.watch);
 	utimesSync.mockImplementation(actual.utimesSync);
+	writeFileSync.mockImplementation(actual.writeFileSync);
 	readdirSync.mockImplementation(actual.readdirSync);
 	statSync.mockImplementation(actual.statSync);
 	unlinkSync.mockImplementation(actual.unlinkSync);
@@ -91,21 +94,29 @@ function suppressWarnings(): void {
 	cleanups.push(() => spy.mockRestore());
 }
 
+function wakes(writers: string): string {
+	return writers.replace(/-writers$/, "-wakes");
+}
+
 function liveTicket(writers: string, pid: number, offsetMs = 0): string {
 	fs.mkdirSync(writers, { recursive: true });
+	fs.mkdirSync(wakes(writers), { recursive: true });
 	const name = `${String(Date.now() + offsetMs).padStart(15, "0")}-${pid}-1`;
 	fs.writeFileSync(join(writers, name), "");
+	fs.writeFileSync(join(wakes(writers), name), "");
+	const aged = new Date(Date.now() - 3_600_000);
+	actual.utimesSync(join(wakes(writers), name), aged, aged);
 	return name;
 }
 
-/** Runs the test body as if on Windows, where a deleted file still held open reads as EPERM. */
-async function onWindows(body: () => Promise<void>): Promise<void> {
-	const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-	Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+/** Runs the test body as if on `platform`, whatever the real one: on Windows a deleted file still held open reads as EPERM. */
+async function onPlatform(platform: NodeJS.Platform, body: () => Promise<void>): Promise<void> {
+	const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+	Object.defineProperty(process, "platform", { ...original, value: platform });
 	try {
 		await body();
 	} finally {
-		Object.defineProperty(process, "platform", platform);
+		Object.defineProperty(process, "platform", original);
 	}
 }
 
@@ -122,10 +133,31 @@ async function fixture() {
 		process.off("warning", onWarning);
 		if (holder.isTransaction) holder.exec("ROLLBACK");
 		holder.close();
+		await releaseWaiters(`${path}-writers`);
 		await database.close();
 		removeTempDirectory(directory);
 	});
 	return { path, database, holder, warnings, writers: `${path}-writers` };
+}
+
+/**
+ * Tells every writer still queued that the lock is free, as a releasing writer would. A raw holder's rollback
+ * announces nothing, so a writer left waiting by a failed assertion, its fake timers already gone, would otherwise
+ * keep the database from closing.
+ */
+async function releaseWaiters(writers: string): Promise<void> {
+	const notices = wakes(writers);
+	for (let attempt = 0; attempt < 100 && fs.existsSync(notices) && actual.readdirSync(notices).length > 0; attempt++) {
+		for (const name of actual.readdirSync(notices)) {
+			try {
+				const now = new Date();
+				actual.utimesSync(join(notices, name), now, now);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
+		await turn();
+	}
 }
 
 async function turn(): Promise<void> {
@@ -140,7 +172,7 @@ function degradations(warnings: readonly Error[]): StorageWriterQueueDegradedErr
 	return warnings.filter((warning) => isStorageWriterQueueDegradedError(warning));
 }
 
-test("a writer that cannot watch its ticket polls for the lock and reports the fallback once", async () => {
+test("a writer that cannot watch its release notice polls for the lock and reports the fallback once (#4316)", async () => {
 	const { database, holder, warnings } = await fixture();
 	watch.mockImplementation(() => {
 		throw Object.assign(new Error("ENOSPC: System limit for number of file watchers reached"), { code: "ENOSPC" });
@@ -167,7 +199,7 @@ test("a writer that cannot watch its ticket polls for the lock and reports the f
 	);
 });
 
-test("a watch that fails while the writer waits leaves it polling instead", async () => {
+test("a watch that fails while the writer waits leaves it polling instead (#4316)", async () => {
 	const { database, holder, warnings } = await fixture();
 	watch.mockImplementation(((path: fs.PathLike, listener: fs.WatchListener<string>) => {
 		const watcher = actual.watch(path, listener);
@@ -187,7 +219,7 @@ test("a watch that fails while the writer waits leaves it polling instead", asyn
 	assert.equal(degradations(warnings)[0]!.reason, "watch-unavailable");
 });
 
-test("a writer keeps one watch on its ticket for its whole wait and closes it once it holds the lock", async () => {
+test("a writer keeps one watch on its release notice for its whole wait and closes it once it holds the lock (#4316)", async () => {
 	const { database, holder, writers } = await fixture();
 	let watches = 0;
 	let closes = 0;
@@ -212,12 +244,13 @@ test("a writer keeps one watch on its ticket for its whole wait and closes it on
 	holder.exec("COMMIT");
 	const [name] = fs.readdirSync(writers);
 	const time = new Date();
-	actual.utimesSync(join(writers, name!), time, time);
+	actual.utimesSync(join(wakes(writers), name!), time, time);
 	await write;
 	assert.deepEqual([watches, closes], [1, 1]);
+	assert.deepEqual(fs.readdirSync(wakes(writers)), [], "its release notice left with it");
 });
 
-test("connections without a writers' queue report no fallback when they let go of the lock", async () => {
+test("connections without a writers' queue report no fallback when they let go of the lock (#4316)", async () => {
 	const { warnings } = await fixture();
 	const memory = await openNodeSqliteDatabase(":memory:");
 	await memory.transaction((tx) => tx.exec("CREATE TABLE items (value TEXT)"));
@@ -226,18 +259,17 @@ test("connections without a writers' queue report no fallback when they let go o
 	assert.deepEqual(degradations(warnings), []);
 });
 
-test("a writer that cannot hand the turn on still commits, and reports the fallback once", async () => {
+test("a writer that cannot hand the turn on still commits, and reports the fallback once (#4316)", async () => {
 	const { database, warnings, writers } = await fixture();
 	let ticket = "";
 	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
-		if (String(path).endsWith(ticket)) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+		if (ticket !== "" && basename(String(path)) === ticket)
+			throw Object.assign(new Error("EACCES"), { code: "EACCES" });
 		actual.utimesSync(path, atime, mtime);
 	}) as typeof fs.utimesSync);
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('committed')");
-		fs.mkdirSync(writers, { recursive: true });
-		ticket = `${String(Date.now()).padStart(15, "0")}-999999984-1`;
-		fs.writeFileSync(join(writers, ticket), "");
+		ticket = liveTicket(writers, 999_999_984);
 	});
 	await turn();
 	const [degraded, ...more] = degradations(warnings);
@@ -248,37 +280,31 @@ test("a writer that cannot hand the turn on still commits, and reports the fallb
 	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "committed" }]);
 });
 
-test("a releasing writer whose oldest waiter left as it looked hands the turn to the next one, and reports nothing", async () => {
+test("a releasing writer whose oldest waiter left as it looked hands the turn to the next one, and reports nothing (#4316)", async () => {
 	const { database, warnings, writers } = await fixture();
 	let gone = "";
 	let next = "";
 	let mtimeMs = 0;
 	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
-		if (gone !== "" && String(path).endsWith(gone))
+		if (gone !== "" && basename(String(path)) === gone)
 			throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
 		actual.utimesSync(path, atime, mtime);
 	}) as typeof fs.utimesSync);
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('handed on')");
-		fs.mkdirSync(writers, { recursive: true });
-		const now = Date.now();
-		gone = `${String(now).padStart(15, "0")}-999999985-1`;
-		next = `${String(now + 1).padStart(15, "0")}-999999986-1`;
-		for (const name of [gone, next]) {
-			fs.writeFileSync(join(writers, name), "");
-			const old = new Date(now - 1_000);
-			actual.utimesSync(join(writers, name), old, old);
-		}
+		gone = liveTicket(writers, 999_999_985);
+		next = liveTicket(writers, 999_999_986, 1);
+		const old = new Date(Date.now() - 1_000);
+		for (const name of [gone, next]) actual.utimesSync(join(writers, name), old, old);
 		mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
 	});
 	await turn();
-	const touched = actual.statSync(join(writers, next));
-	assert.ok(Date.now() - touched.atimeMs < 500, "the next ticket was touched");
-	assert.equal(touched.mtimeMs, mtimeMs, "and left with the liveness its owner gave it");
+	assert.ok(Date.now() - actual.statSync(join(wakes(writers), next)).mtimeMs < 500, "the next notice was touched");
+	assert.equal(actual.statSync(join(writers, next)).mtimeMs, mtimeMs, "and its ticket left with its owner's liveness");
 	assert.deepEqual(degradations(warnings), []);
 });
 
-test("a waiting writer that cannot refresh its own ticket fails the transaction as an unusable writers' queue", async () => {
+test("a waiting writer that cannot refresh its own ticket fails the transaction as an unusable writers' queue (#4316)", async () => {
 	const { database, holder, writers } = await fixture();
 	holder.exec("BEGIN IMMEDIATE");
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
@@ -405,7 +431,7 @@ test("on Windows a ticket deleted while another process holds it open (EPERM) co
 	const going = liveTicket(writers, 999_999_975);
 	liveTicket(writers, 999_999_976, 1);
 	failTicketStat(writers, "EPERM", [going]);
-	await onWindows(async () => {
+	await onPlatform("win32", async () => {
 		assert.equal(getWriterQueueStats(database).waiters, 1);
 		failTicketStat(writers, "EACCES", [going]);
 		assert.throws(
@@ -415,10 +441,12 @@ test("on Windows a ticket deleted while another process holds it open (EPERM) co
 		);
 		failTicketStat(writers, "EPERM", [going]);
 	});
-	assert.throws(
-		() => getWriterQueueStats(database),
-		(error: Error) => isStorageWriterQueueUnusableError(error) && error.errno === "EPERM",
-	);
+	await onPlatform("linux", async () => {
+		assert.throws(
+			() => getWriterQueueStats(database),
+			(error: Error) => isStorageWriterQueueUnusableError(error) && error.errno === "EPERM",
+		);
+	});
 	statSync.mockImplementation(actual.statSync);
 	for (const name of fs.readdirSync(writers)) fs.unlinkSync(join(writers, name));
 });
@@ -432,7 +460,7 @@ test("on Windows a release passes over a ticket deleted while another process ho
 		if (going !== "" && basename(String(path)) === going) throw failure("EPERM");
 		actual.utimesSync(path, atime, mtime);
 	}) as typeof fs.utimesSync);
-	await onWindows(async () => {
+	await onPlatform("win32", async () => {
 		await database.transaction(async (tx) => {
 			await tx.run("INSERT INTO items VALUES ('handed past a deleted ticket')");
 			going = liveTicket(writers, 999_999_977);
@@ -442,9 +470,8 @@ test("on Windows a release passes over a ticket deleted while another process ho
 			mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
 		});
 	});
-	const touched = actual.statSync(join(writers, next));
-	assert.ok(Date.now() - touched.atimeMs < 500, "the ticket after it was touched");
-	assert.equal(touched.mtimeMs, mtimeMs);
+	assert.ok(Date.now() - actual.statSync(join(wakes(writers), next)).mtimeMs < 500, "the notice after it was touched");
+	assert.equal(actual.statSync(join(writers, next)).mtimeMs, mtimeMs, "its ticket kept its owner's liveness");
 	await turn();
 	assert.deepEqual(degradations(warnings), []);
 });
@@ -466,7 +493,7 @@ test("a release wakes the oldest live ticket whatever order the directory lists 
 		later = liveTicket(writers, 999_999_980, 1);
 		for (const name of [oldest, later]) {
 			events.set(name, 0);
-			watchers.push(actual.watch(join(writers, name), () => events.set(name, events.get(name)! + 1)));
+			watchers.push(actual.watch(join(wakes(writers), name), () => events.set(name, events.get(name)! + 1)));
 		}
 	});
 	cleanups.push(() => {
@@ -481,7 +508,7 @@ test("a release wakes the oldest live ticket whatever order the directory lists 
 	);
 });
 
-test("a writer that cannot watch its ticket leaves the degradation readable on the handle where warnings are suppressed (#4316)", async () => {
+test("a writer that cannot watch its release notice leaves the degradation readable on the handle where warnings are suppressed (#4316)", async () => {
 	const { database, holder, path, warnings } = await fixture();
 	suppressWarnings();
 	watch.mockImplementation(() => {
@@ -558,7 +585,7 @@ test("an abandoned ticket that cannot be removed is recorded once and never fail
 		[degraded.code, degraded.reason, degraded.adapter, degraded.location, (degraded.cause as { code?: string }).code],
 		["writer-queue-degraded", "stale-ticket-kept", "node-sqlite", path, "EACCES"],
 	);
-	assert.match(degraded.hint, /remove them by hand/);
+	assert.match(degraded.hint, /remove abandoned entries by hand/);
 	assert.ok(fs.existsSync(join(writers, abandoned)), "it stays where it is");
 	await turn();
 	assert.deepEqual(warnings, []);
@@ -571,12 +598,13 @@ test("an abandoned ticket that another writer removed first, or that is going, r
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('raced')"));
 	assert.ok(fs.existsSync(join(writers, racing)), "the failed removal left it, as the race would have removed it");
 	failUnlink(writers, "EPERM");
-	await onWindows(async () => {
+	await onPlatform("win32", async () => {
 		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('deleted while open')"));
 	});
 	assert.deepEqual(getWriterQueueDegradation(database), []);
-	await onWindows(async () => {});
-	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('elsewhere')"));
+	await onPlatform("linux", async () => {
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('elsewhere')"));
+	});
 	const [degraded] = getWriterQueueDegradation(database);
 	assert.equal(degraded?.reason, "stale-ticket-kept", "EPERM is a failure to remove anywhere but Windows");
 	await turn();
@@ -635,4 +663,114 @@ test("a healthy file handle, an in-memory one and a wrapped one have no degradat
 		[error.code, error.operation, error.adapter, error.location],
 		["unsupported-operation", "getWriterQueueDegradation", "custom", "remote://db"],
 	);
+});
+
+test("a release does not roll back the refresh a waiting writer made between the release's read of the queue and its notice (#4316)", async () => {
+	const { database, warnings, writers } = await fixture();
+	let waiter = "";
+	let refreshedMs = 0;
+	let refreshes = 0;
+	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
+		if (waiter !== "" && basename(String(path)) === waiter && refreshes === 0) {
+			refreshes += 1;
+			const now = new Date();
+			actual.utimesSync(join(writers, waiter), now, now);
+			refreshedMs = actual.statSync(join(writers, waiter)).mtimeMs;
+		}
+		actual.utimesSync(path, atime, mtime);
+	}) as typeof fs.utimesSync);
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('released mid-refresh')");
+		waiter = liveTicket(writers, 999_999_959);
+		const earlier = new Date(Date.now() - 1_500);
+		actual.utimesSync(join(writers, waiter), earlier, earlier);
+	});
+	await turn();
+	assert.equal(refreshes, 1, "the release reached the waiter");
+	assert.equal(actual.statSync(join(writers, waiter)).mtimeMs, refreshedMs, "its refresh was not rolled back");
+	assert.ok(Date.now() - refreshedMs < 1_000);
+	assert.ok(Date.now() - actual.statSync(join(wakes(writers), waiter)).mtimeMs < 1_000, "and its notice was sent");
+	assert.equal(getWriterQueueStats(database).waiters, 1, "other writers still see it as live");
+	assert.deepEqual(degradations(warnings), []);
+});
+
+test("removing an abandoned ticket removes its release notice with it, so no sidecar outlives its ticket (#4316)", async () => {
+	const { database, writers } = await fixture();
+	const abandoned = abandonedTicket(writers, 999_999_958);
+	assert.ok(fs.existsSync(join(wakes(writers), abandoned)));
+	assert.equal(getWriterQueueStats(database).waiters, 0);
+	assert.equal(fs.existsSync(join(writers, abandoned)), false, "the ticket is removed");
+	assert.equal(fs.existsSync(join(wakes(writers), abandoned)), false, "and its notice");
+	assert.deepEqual(getWriterQueueDegradation(database), []);
+});
+
+test("an abandoned ticket whose notice cannot be removed stays for the next scan, recorded once, and never fails a transaction (#4316)", async () => {
+	const { database, writers } = await fixture();
+	suppressWarnings();
+	const abandoned = abandonedTicket(writers, 999_999_957);
+	unlinkSync.mockImplementation(((path: fs.PathLike) => {
+		if (dirname(String(path)) === wakes(writers)) throw failure("EACCES");
+		actual.unlinkSync(path);
+	}) as typeof fs.unlinkSync);
+	for (const value of ["first", "second"])
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
+	const [degraded, ...more] = getWriterQueueDegradation(database);
+	assert.ok(degraded && isStorageWriterQueueDegradedError(degraded));
+	assert.deepEqual(more, []);
+	assert.equal(degraded.reason, "stale-ticket-kept");
+	assert.ok(fs.existsSync(join(writers, abandoned)), "the ticket stays, so the removal is retried");
+	assert.ok(fs.existsSync(join(wakes(writers), abandoned)));
+	unlinkSync.mockImplementation(actual.unlinkSync);
+	assert.equal(getWriterQueueStats(database).waiters, 0);
+	assert.deepEqual(
+		[fs.existsSync(join(writers, abandoned)), fs.existsSync(join(wakes(writers), abandoned))],
+		[false, false],
+		"the retry removed both",
+	);
+});
+
+test("a writer that cannot create its release notice fails as an unusable writers' queue and leaves no ticket behind (#4316)", async () => {
+	const { database, holder, writers } = await fixture();
+	writeFileSync.mockImplementation(((path: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
+		if (dirname(String(path)) === wakes(writers)) throw failure("EACCES");
+		return (actual.writeFileSync as (...args: unknown[]) => void)(path, data, options);
+	}) as typeof fs.writeFileSync);
+	holder.exec("BEGIN IMMEDIATE");
+	const error = await database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
+		.then(
+			() => assert.fail("wrote under a held lock"),
+			(cause: unknown) => cause,
+		);
+	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+	assert.equal(error.errno, "EACCES");
+	assert.deepEqual(fs.readdirSync(writers), [], "its ticket did not stay to block the writers behind it");
+});
+
+test("a release passes over a live ticket that has no release notice to the next one, and reports nothing (#4316)", async () => {
+	const { database, warnings, writers } = await fixture();
+	let bare = "";
+	let next = "";
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('handed past a bare ticket')");
+		bare = liveTicket(writers, 999_999_955);
+		fs.unlinkSync(join(wakes(writers), bare));
+		next = liveTicket(writers, 999_999_956, 1);
+	});
+	await turn();
+	assert.ok(Date.now() - actual.statSync(join(wakes(writers), next)).mtimeMs < 500, "the next notice was touched");
+	assert.equal(fs.existsSync(join(wakes(writers), bare)), false, "no notice was made for the bare ticket");
+	assert.deepEqual(degradations(warnings), []);
+});
+
+test("an uncontended transaction does not list a queue directory that does not exist (#4316)", async () => {
+	const { database, writers } = await fixture();
+	const listed: string[] = [];
+	readdirSync.mockImplementation(((path: fs.PathLike, options?: Parameters<typeof actual.readdirSync>[1]) => {
+		if (String(path) === writers) listed.push(String(path));
+		return actual.readdirSync(path, options as never);
+	}) as typeof fs.readdirSync);
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));
+	assert.equal(fs.existsSync(writers), false);
+	assert.deepEqual(listed, [], "no listing, not even a failed one");
 });

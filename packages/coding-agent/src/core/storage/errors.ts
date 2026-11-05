@@ -227,9 +227,9 @@ export class StorageUnsupportedOperationError extends StorageError {
 export type StorageWriterQueueDegradedCode = "writer-queue-degraded";
 const WRITER_QUEUE_DEGRADED_REASONS = ["watch-unavailable", "wake-failed", "stale-ticket-kept"] as const;
 /**
- * What degraded: `"watch-unavailable"`, a waiting writer cannot watch its ticket for release notices and polls
- * instead; `"wake-failed"`, a writer letting go of the lock could not read the queue or notify the next writer;
- * `"stale-ticket-kept"`, a long-abandoned ticket could not be removed and stays in the queue directory, ignored.
+ * What degraded: `"watch-unavailable"`, a waiting writer cannot watch its release notice and polls instead;
+ * `"wake-failed"`, a writer letting go of the lock could not read the queue or notify the next writer;
+ * `"stale-ticket-kept"`, a ticket or its notice could not be removed, either when its writer left or after abandonment.
  */
 export type StorageWriterQueueDegradedReason = (typeof WRITER_QUEUE_DEGRADED_REASONS)[number];
 
@@ -237,14 +237,14 @@ const WRITER_QUEUE_DEGRADED_HINTS: Readonly<Record<StorageWriterQueueDegradedRea
 	"watch-unavailable":
 		"Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux)",
 	"wake-failed":
-		"Writers still take the lock in turn, but the next writer notices a released lock at its next check instead of at once; make the writers' queue directory next to the database readable and writable",
+		"Writers still take the lock in turn, but the next writer notices a released lock at its next check instead of at once; make the writers' queue directories next to the database (<file>-writers and <file>-wakes) readable and writable",
 	"stale-ticket-kept":
-		"Abandoned entries stay in the writers' queue directory next to the database and are ignored; remove them by hand, or make the directory writable for every process that writes the database",
+		"An entry or release notice could not be removed from the writers' queue directories next to the database (<file>-writers and <file>-wakes); a remaining live ticket may delay other writers until it becomes stale. Make the directories writable for every writer, or remove abandoned entries by hand",
 };
 
 /**
- * Not a failure: a node-sqlite connection fell back from the prompt handoff of the write lock, or kept an abandoned
- * ticket it could not remove. Transactions keep working. Each reason is recorded once on the connection, readable with
+ * Not a failure: a node-sqlite connection fell back from the prompt handoff of the write lock, or kept a ticket or
+ * notice it could not remove. Transactions keep working. Each reason is recorded once on the connection, readable with
  * `getWriterQueueDegradation`, and emitted once as a process warning (`process.on("warning")`), which Atomic's own
  * processes suppress.
  */
@@ -272,11 +272,11 @@ export class StorageWriterQueueDegradedError extends StorageError {
 export type StorageWriterQueueUnusableCode = "writer-queue-unusable";
 
 const WRITER_QUEUE_UNUSABLE_HINT =
-	"Make the writers' queue directory next to the database (<file>-writers) readable and writable for every process that writes the database";
+	"Make the writers' queue directories next to the database (<file>-writers and <file>-wakes) readable and writable for every process that writes the database";
 
 /**
  * A node-sqlite transaction could not use the writers' queue next to the database: it could not read the queue
- * directory, or add, refresh, or read a ticket in it. Nothing of the transaction ran. It is a
+ * directory, or add, refresh, or read a ticket or its release notice. Nothing of the transaction ran. It is a
  * `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix.
  */
 export class StorageWriterQueueUnusableError extends StorageUnavailableError {

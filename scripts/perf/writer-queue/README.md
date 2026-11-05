@@ -107,3 +107,28 @@ On the runner above, 5 samples per gap, baseline and this change interleaved (ti
 | 100 ms | about 1900 ms | 1926 ms (1895-1963) | 1902 ms (1886-1903) |
 | 1000 ms | about 1000 ms | 1035 ms (1006-1055) | 1001 ms (996-1001) |
 | 1500 ms | about 500 ms | 522 ms (511-569) | 498 ms (488-502) |
+
+## Separate-notice recheck
+
+After moving release notices into `<file>-wakes`, the same benchmark was rerun on a 64-vCPU crabbox runner with Node 22.23.4 writers and Bun 1.4.4. Three interleaved repeats used 500 ms warm-up, 2000 ms measurement, and the unchanged 100 ms hold budget, against the same `77746f5` baseline. Medians:
+
+| Scenario | Baseline utilization | Separate notices | Baseline tx/s | Separate notices tx/s | Baseline wait p50 ms | Separate notices wait p50 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| uncontended | 97.4% | 97.5% | 1910 | 1910 | 0.0 | 0.0 |
+| serial-30 | 2.1% | 69.6% | 27 | 1198 | 1133.3 | 24.1 |
+| bursty-8x16 | 20.6% | 98.0% | 408 | 1912 | 307.4 | 62.5 |
+| pool-like | 6.6% | 94.8% | 122 | 1703 | 1125.8 | 59.3 |
+| heavy-batches | 35.7% | 98.3% | 183 | 521 | 1098.2 | 361.1 |
+
+No transaction failed, and every sample checked its row count and `integrity_check`. A one-sample-per-gap dead-head recheck measured 1902, 1000, and 497 ms after commit for the 100, 1000, and 1500 ms gaps. Only the owner now writes a ticket's heartbeat: a release cannot undo a refresh made after the queue scan, and cannot change its timestamp through a floating-point conversion.
+
+## Failures
+
+Both scripts check every flag before they create a directory or start a writer process, stop every writer they started and remove their scratch files when a run fails, and print one message (plus the stack only when `ATOMIC_PERF_DEBUG=1`) with exit code 1. A writer that exits, fails to start, or closes its output before the script reads what it waits for fails the run instead of leaving it waiting. Configuration and worker-protocol errors extend `WriterQueueBenchmarkError` (`retryable` is always `false`; `cleanupCause` holds a cleanup failure that followed the primary one) and have guards (`isWriterQueueBenchmarkError`, `isWriterQueueBenchmarkConfigError`, `isWriterQueueBenchmarkWorkerError`) in `errors.ts`.
+
+| Class | Code | When | Fields | What to do |
+|---|---|---|---|---|
+| `WriterQueueBenchmarkConfigError` | `invalid-option` | A flag is unknown, repeated, valueless, out of range, or names a baseline or output path that cannot be used | `source` (`"cli"`), `field`, `reason`, `hint`; `cause` for `git-unavailable` | Fix the flag named in `field`; `reason` is one of `unexpected-argument`, `unknown-flag`, `repeated-flag`, `missing-value`, `out-of-range`, `unknown-scenario`, `unknown-runtime`, `unknown-revision`, `missing-storage-directory`, `not-a-file-path`, `git-unavailable` |
+| `WriterQueueBenchmarkWorkerError` | `worker-exited` | A writer exited (any code or signal) before the line the script waited for, or with a failing status at the end | `worker`, `phase`, `exitCode`, `signal` | Read the writer's own error on stderr, fix it, rerun |
+| `WriterQueueBenchmarkWorkerError` | `worker-error` | A writer process could not be started | `worker`, `phase`, `cause` | Check the runtime named by `--runtime` or `NODE` exists |
+| `WriterQueueBenchmarkWorkerError` | `worker-protocol` | A writer sent a line the script cannot use, or closed its output while still running | `worker`, `phase`, `cause` | Read the writer's stderr; rerun |

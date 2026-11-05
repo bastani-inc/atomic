@@ -17,18 +17,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { WriterQueueBenchmarkWorkerError } from "./errors.js";
+import { parseDeadHeadOptions, repository, storagePath } from "./options.js";
+import { reportFailure, WorkerChannel, withCleanup } from "./support.js";
 
-const argv = process.argv.slice(2);
-const value = (name: string, fallback: string): string => {
-	const index = argv.indexOf(`--${name}`);
-	return index === -1 ? fallback : argv[index + 1]!;
-};
-const gaps = value("gaps", "100,1000,1500").split(",").map(Number);
-const repeats = Number(value("repeats", "5"));
-const baseline = value("baseline", "77746f5");
+process.on("uncaughtException", reportFailure);
+const { gaps, repeats, baseline } = parseDeadHeadOptions(process.argv.slice(2));
 
-const repository = fileURLToPath(new URL("../../../", import.meta.url));
-const storagePath = "packages/coding-agent/src/core/storage";
 const worker = fileURLToPath(new URL("./dead-head-worker.mjs", import.meta.url));
 
 function git(args: readonly string[]): string {
@@ -46,89 +41,95 @@ function materialize(revision: string, into: string): string {
 	return directory;
 }
 
-function start(storage: string, path: string, role: "hold" | "write") {
+function start(storage: string, path: string, role: "hold" | "write", label: string): WorkerChannel {
 	const child = spawn(process.env.NODE ?? "node", [worker, storage, path, role], {
 		stdio: ["pipe", "pipe", "inherit"],
 		cwd: repository,
 	});
-	const exited = new Promise((resolve) => child.once("exit", resolve));
-	let buffered = "";
-	const waiting: ((line: string) => void)[] = [];
-	const queued: string[] = [];
-	child.stdout.setEncoding("utf8");
-	child.stdout.on("data", (chunk: string) => {
-		buffered += chunk;
-		for (let end = buffered.indexOf("\n"); end !== -1; end = buffered.indexOf("\n")) {
-			const line = buffered.slice(0, end);
-			buffered = buffered.slice(end + 1);
-			const next = waiting.shift();
-			if (next === undefined) queued.push(line);
-			else next(line);
-		}
-	});
-	return {
-		child,
-		exited,
-		next: () => {
-			const line = queued.shift();
-			return line === undefined ? new Promise<string>((resolve) => waiting.push(resolve)) : Promise.resolve(line);
-		},
-		send: () => child.stdin.end("go\n"),
-	};
+	return new WorkerChannel(child, label);
 }
 
-async function untilQueued(writers: string, pid: number): Promise<void> {
-	while (!(existsSync(writers) && readdirSync(writers).some((name) => name.split("-")[1] === String(pid))))
+async function untilQueued(writers: string, writer: WorkerChannel): Promise<void> {
+	while (!(existsSync(writers) && readdirSync(writers).some((name) => name.split("-")[1] === String(writer.pid)))) {
+		writer.assertRunning("queue ticket");
 		await Bun.sleep(2);
+	}
 }
 
 async function sample(storage: string, scratch: string, gapMs: number): Promise<number> {
 	const directory = mkdtempSync(join(scratch, "dead-head-"));
+	const started: WorkerChannel[] = [];
+	return withCleanup(
+		() => measure(storage, directory, gapMs, started),
+		async () => {
+			try {
+				await Promise.all(started.map((channel) => channel.stop()));
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+	);
+}
+
+async function measure(storage: string, directory: string, gapMs: number, started: WorkerChannel[]): Promise<number> {
 	const path = join(directory, "probe.sqlite");
 	const setup = new DatabaseSync(path);
 	setup.exec("PRAGMA journal_mode = WAL; CREATE TABLE probe(role TEXT)");
 	setup.close();
-	const holder = start(storage, path, "hold");
-	if ((await holder.next()) !== "locked") throw new Error("holder did not take the lock");
-	const dead = start(storage, path, "write");
-	const behind = start(storage, path, "write");
-	for (const writer of [dead, behind]) if ((await writer.next()) !== "ready") throw new Error("writer did not start");
-	dead.send();
-	await untilQueued(`${path}-writers`, dead.child.pid!);
-	behind.send();
-	await untilQueued(`${path}-writers`, behind.child.pid!);
-	dead.child.kill("SIGKILL");
-	await dead.exited;
+	const begin = (role: "hold" | "write", label: string) => {
+		const channel = start(storage, path, role, label);
+		started.push(channel);
+		return channel;
+	};
+	const holder = begin("hold", "holder");
+	if ((await holder.next("locked")) !== "locked")
+		throw new WriterQueueBenchmarkWorkerError("worker-protocol", { worker: "holder", phase: "locked" });
+	const dead = begin("write", "dead");
+	const behind = begin("write", "behind");
+	await Promise.all(
+		[dead, behind].map(async (writer) => {
+			if ((await writer.next("ready")) !== "ready")
+				throw new WriterQueueBenchmarkWorkerError("worker-protocol", { worker: writer.label, phase: "ready" });
+		}),
+	);
+	dead.send("go");
+	await untilQueued(`${path}-writers`, dead);
+	behind.send("go");
+	await untilQueued(`${path}-writers`, behind);
+	await dead.stop();
 	await Bun.sleep(gapMs);
-	const committed = holder.next();
-	const started = behind.next();
-	holder.send();
-	const committedAt = Number((await committed).split(" ")[1]);
-	const startedAt = Number((await started).split(" ")[1]);
-	await Promise.all([holder.exited, behind.exited]);
-	rmSync(directory, { recursive: true, force: true });
-	return startedAt - committedAt;
+	const committed = holder.next("commit");
+	const lockHeld = behind.next("lock");
+	holder.send("go");
+	const [committedLine, startedLine] = await Promise.all([committed, lockHeld]);
+	await Promise.all([holder.finished("exit"), behind.finished("exit")]);
+	return Number(startedLine.split(" ")[1]) - Number(committedLine.split(" ")[1]);
 }
 
 const median = (values: readonly number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 const scratch = mkdtempSync(join(tmpdir(), "dead-head-"));
-const variants = [
-	{ name: "baseline", storage: materialize(baseline, scratch) },
-	{ name: "current", storage: join(repository, storagePath) },
-];
+const variants: { name: string; storage: string }[] = [];
 const results: Record<string, Record<number, number[]>> = {};
-for (let repeat = 0; repeat < repeats; repeat++)
-	for (const gapMs of gaps)
-		for (const variant of repeat % 2 === 0 ? variants : [...variants].reverse()) {
-			const waitedMs = await sample(variant.storage, scratch, gapMs);
-			const byGap = results[variant.name] ?? {};
-			results[variant.name] = byGap;
-			byGap[gapMs] = [...(byGap[gapMs] ?? []), waitedMs];
-			console.error(
-				`${variant.name} gap ${gapMs} ms #${repeat + 1}: next writer held the lock ${waitedMs} ms after the commit`,
-			);
-		}
-rmSync(scratch, { recursive: true, force: true });
+await withCleanup(
+	async () => {
+		variants.push(
+			{ name: "baseline", storage: materialize(baseline, scratch) },
+			{ name: "current", storage: join(repository, storagePath) },
+		);
+		for (let repeat = 0; repeat < repeats; repeat++)
+			for (const gapMs of gaps)
+				for (const variant of repeat % 2 === 0 ? variants : [...variants].reverse()) {
+					const waitedMs = await sample(variant.storage, scratch, gapMs);
+					const byGap = results[variant.name] ?? {};
+					results[variant.name] = byGap;
+					byGap[gapMs] = [...(byGap[gapMs] ?? []), waitedMs];
+					console.error(
+						`${variant.name} gap ${gapMs} ms #${repeat + 1}: next writer held the lock ${waitedMs} ms after the commit`,
+					);
+				}
+	},
+	() => rmSync(scratch, { recursive: true, force: true }),
+);
 console.log("| killed before the commit | expected | baseline (median, range) | current (median, range) |");
 console.log("|---:|---:|---:|---:|");
 for (const gapMs of gaps) {

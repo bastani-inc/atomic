@@ -139,7 +139,7 @@ test("a member that ends the shared transaction fails the members before it and 
 	assert.deepEqual(await rows(database), ["taken", "behind", "statement", "later"]);
 });
 
-test("members left after an abandoned group commit take a fresh transaction without the transactions requested since", async () => {
+test("members left after an abandoned group commit take a fresh transaction without the transactions requested since (#4316)", async () => {
 	const { database, counts } = countingDatabase();
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL UNIQUE)");
 	await database.run("INSERT INTO items VALUES ('taken')");

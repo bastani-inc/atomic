@@ -80,12 +80,15 @@ const children: SpawnedProcess[] = [];
 const directories: string[] = [];
 
 afterEach(async () => {
-	for (const child of children.splice(0)) {
-		child.kill("SIGCONT");
-		child.kill("SIGKILL");
-		await child.exited;
+	try {
+		for (const child of children.splice(0)) {
+			if (process.platform !== "win32") child.kill("SIGCONT");
+			child.kill("SIGKILL");
+			await child.exited;
+		}
+	} finally {
+		for (const directory of directories.splice(0)) removeTempDirectory(directory);
 	}
-	for (const directory of directories.splice(0)) removeTempDirectory(directory);
 });
 
 function database(prefix: string): { readonly path: string; readonly writers: string } {
@@ -190,6 +193,17 @@ function holderRowExists(path: string): boolean {
 	}
 }
 
+function describeTickets(writers: string): string {
+	const now = Date.now();
+	return JSON.stringify(
+		existsSync(writers)
+			? readdirSync(writers)
+					.sort()
+					.map((name) => `${name} age=${Math.round(now - statSync(join(writers, name)).mtimeMs)}ms`)
+			: [],
+	);
+}
+
 /** Re-dates every ticket in the queue, as a clock step after their writers last refreshed them leaves them. */
 function shiftTickets(writers: string, offsetMs: number): void {
 	for (const name of readdirSync(writers)) {
@@ -210,6 +224,7 @@ test(
 			await untilQueued(writers, writer.pid);
 			queued.push(writer);
 		}
+		const queuedTickets = describeTickets(writers);
 		await holder.commit();
 		const reports = await Promise.all(queued.map((writer) => writer.report()));
 		assert.deepEqual(
@@ -219,6 +234,7 @@ test(
 		assert.deepEqual(
 			rows(path).map((row) => row.writer),
 			["first", "second", "third", "fourth", "fifth"],
+			`tickets when the holder committed: ${queuedTickets}`,
 		);
 		assertIntact(path);
 	},
@@ -236,9 +252,10 @@ test(
 		const behind = await startWriter(path, { label: "behind" });
 		behind.go();
 		await untilQueued(writers, behind.pid);
-		const killedAt = Date.now();
+		const queuedTickets = describeTickets(writers);
 		killed.child.kill("SIGKILL");
 		await killed.child.exited;
+		const timeAtDeath = statSync(join(writers, abandoned)).mtimeMs;
 		await holder.commit();
 		const report = await behind.report();
 		assert.equal(report.committed, 1, JSON.stringify(report));
@@ -247,9 +264,11 @@ test(
 			["behind"],
 		);
 		assert.ok(existsSync(join(writers, abandoned)), "the abandoned ticket was passed over, not needed gone");
-		assert.ok(
-			statSync(join(writers, abandoned)).mtimeMs <= killedAt,
-			"no other writer kept the dead writer's ticket live after it died",
+		const timeAfterRelease = statSync(join(writers, abandoned)).mtimeMs;
+		assert.equal(
+			timeAfterRelease,
+			timeAtDeath,
+			`no other writer kept the dead writer's ticket live after it died; tickets before the kill: ${queuedTickets}; now: ${describeTickets(writers)}`,
 		);
 		assertIntact(path);
 	},

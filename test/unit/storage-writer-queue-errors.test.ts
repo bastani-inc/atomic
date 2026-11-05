@@ -93,8 +93,9 @@ test("each way the writers' queue degrades has its own remedy", () => {
 	});
 	assert.equal(new Set(hints).size, 3);
 	assert.match(hints[0]!, /file-watch limits/);
-	assert.match(hints[1]!, /readable and writable/);
-	assert.match(hints[2]!, /remove them by hand/);
+	assert.match(hints[1]!, /<file>-writers and <file>-wakes\) readable and writable/);
+	assert.match(hints[2]!, /remaining live ticket may delay other writers until it becomes stale/);
+	assert.match(hints[2]!, /remove abandoned entries by hand/);
 });
 
 test("a storage configuration error keeps its message without a hint and has a stable code", () => {
@@ -407,7 +408,7 @@ test("a writers' queue it cannot use renders what failed, the errno, its code, a
 	);
 	assert.equal(
 		error.message,
-		"Storage unavailable: node-sqlite at /data/journal.sqlite: the writers' queue next to the database is unusable: EACCES: permission denied, scandir '/data/journal.sqlite-writers' (writer-queue-unusable). Make the writers' queue directory next to the database (<file>-writers) readable and writable for every process that writes the database",
+		"Storage unavailable: node-sqlite at /data/journal.sqlite: the writers' queue next to the database is unusable: EACCES: permission denied, scandir '/data/journal.sqlite-writers' (writer-queue-unusable). Make the writers' queue directories next to the database (<file>-writers and <file>-wakes) readable and writable for every process that writes the database",
 	);
 	assert.ok(error.message.endsWith(error.hint));
 	assert.equal(Object.hasOwn(new StorageWriterQueueUnusableError(descriptor, new Error("no code")), "errno"), false);
