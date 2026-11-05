@@ -4,10 +4,10 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
 import {
+	ATTEMPT_TERMINALS,
 	abortDisposition,
 	assertChaosInvariants,
 	assertLocalSqliteReport,
-	ATTEMPT_TERMINALS,
 	CHAOS_ERROR_CAUSE_DEPTH,
 	CHAOS_INVARIANTS,
 	ChaosInvariantError,
