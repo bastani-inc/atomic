@@ -657,6 +657,11 @@ describe("workspace bindings across resume (#3109)", () => {
 		const apiA = workspace({ repo: repoA, branch: "feat/a", label: "nightly" });
 		const apiB = workspace({ repo: repoB, branch: "feat/b", label: "nightly" });
 		let failFirst = true;
+		let worked = 0;
+		let bothWorked!: () => void;
+		const bothChildrenWorked = new Promise<void>((resolve) => {
+			bothWorked = resolve;
+		});
 		const flaky = workflow({
 			name: "flaky",
 			description: "",
@@ -664,7 +669,11 @@ describe("workspace bindings across resume (#3109)", () => {
 			outputs: { cwd: Type.String() },
 			run: async (ctx) => {
 				await ctx.task("work", { prompt: "work" });
-				if (failFirst) throw new Error("interrupted before finishing");
+				if (failFirst) {
+					if (++worked === 2) bothWorked();
+					await bothChildrenWorked;
+					throw new Error("interrupted before finishing");
+				}
 				return { cwd: ctx.cwd ?? "" };
 			},
 		});

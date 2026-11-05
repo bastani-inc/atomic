@@ -37,6 +37,13 @@ export interface WorkspaceSandboxDirs {
 	cleanup(): void;
 }
 
+/**
+ * Windows can keep a directory busy for seconds after a process that worked in it, such as a cancelled `gh` whose
+ * working directory was a shared store, has been terminated; a sandbox removal retries for up to this long.
+ */
+const SANDBOX_REMOVAL_RETRIES = 100;
+const SANDBOX_REMOVAL_RETRY_DELAY_MS = 100;
+
 /** A temporary root with its own Atomic home, so shared stores and auto worktrees never touch the real one. */
 export function workspaceSandbox(prefix: string): WorkspaceSandboxDirs {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
@@ -50,7 +57,12 @@ export function workspaceSandbox(prefix: string): WorkspaceSandboxDirs {
 		cleanup() {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
-			rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+			rmSync(root, {
+				recursive: true,
+				force: true,
+				maxRetries: SANDBOX_REMOVAL_RETRIES,
+				retryDelay: SANDBOX_REMOVAL_RETRY_DELAY_MS,
+			});
 		},
 	};
 }
