@@ -27,9 +27,12 @@ import {
 	GitUnavailableError,
 	isWorkspaceDriftError,
 	isWorkspaceRestoreError,
+	rehydrateWorkspaceError,
 	setWorktreeSnapshotGit,
 	WorkspaceConfigError,
+	type WorkspaceError,
 	WorkspaceRestoreError,
+	WorkspaceSnapshotError,
 } from "../src/index.ts";
 import { createHarness, type Harness } from "./suite/harness.js";
 
@@ -131,7 +134,7 @@ describe("session worktree snapshots", () => {
 		await harness.session.prompt("generate");
 		const reasons = harness.eventsOfType("worktree_snapshot_unavailable").map((event) => event.reason);
 		assert.deepEqual(
-			reasons.map((reason) => [reason.code, reason.fields.subject]),
+			reasons.map((reason) => [reason.code, reason.fields?.subject]),
 			[["not-a-repository", harness.tempDir]],
 		);
 	});
@@ -144,9 +147,11 @@ describe("session worktree snapshots", () => {
 		const harness = await harnessFor(manager);
 		await writeTurn(harness, join(clone, "a.txt"), "a\n");
 		await writeTurn(harness, join(clone, "a.txt"), "b\n");
-		const reasons = harness.eventsOfType("worktree_snapshot_unavailable").map((event) => event.reason);
+		const reasons = harness
+			.eventsOfType("worktree_snapshot_unavailable")
+			.map((event) => rehydrateWorkspaceError(event.reason) as WorkspaceError);
 		assert.equal(reasons.length, 1);
-		assert.equal(reasons[0]?.name, "WorkspaceSnapshotError");
+		assert.ok(reasons[0] instanceof WorkspaceSnapshotError);
 		assert.equal(reasons[0]?.code, "blob-store-unsupported");
 		assert.equal(snapshotEntries(manager).length, 0);
 	});
@@ -162,7 +167,9 @@ describe("session worktree snapshots", () => {
 		});
 		await writeTurn(harness, join(clone, "a.txt"), "a\n");
 		await writeTurn(harness, join(clone, "a.txt"), "b\n");
-		const reasons = harness.eventsOfType("worktree_snapshot_unavailable").map((event) => event.reason);
+		const reasons = harness
+			.eventsOfType("worktree_snapshot_unavailable")
+			.map((event) => rehydrateWorkspaceError(event.reason));
 		assert.equal(reasons.length, 1);
 		assert.ok(reasons[0] instanceof GitUnavailableError);
 		assert.equal(snapshotEntries(manager).length, 0);
