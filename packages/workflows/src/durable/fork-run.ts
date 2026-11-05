@@ -446,11 +446,11 @@ export async function* durableForkPoints(
 				continue;
 			}
 			sessions ??= await sourceSessionStoreFor(journalBackend, source.handle, options, options.cwd ?? process.cwd());
-			const session = await loadSession(sessions, record.sessionId, {
+			const snapshot = await loadSession(sessions, record.sessionId, {
 				runId: source.runId,
 				stagePath: record.stagePath,
 			});
-			const entryId = session.entries.at(-1)?.id;
+			const entryId = snapshot.entries.at(-1)?.id;
 			yield {
 				stagePath: record.stagePath,
 				sessionId: record.sessionId,
@@ -1033,18 +1033,20 @@ function checkpointKey(checkpoint: DurableCheckpoint): string {
 	return JSON.stringify([E.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 }
 
+/** The copies the fork made in one session store. */
 interface CopiedSessions {
 	readonly store: SessionStore;
-	readonly ids: readonly string[];
+	/** Each copy and the run its header names, so cleanup removes only the fork's own copies. */
+	readonly copies: { readonly id: string; readonly runId: string }[];
 	/** Whether the fork opened the store, and so closes it. */
 	readonly owned: boolean;
 }
 
-async function removeSessions(copied: CopiedSessions, forkRunId: string): Promise<void> {
+async function removeSessions(copied: CopiedSessions): Promise<void> {
 	const failures: Error[] = [];
-	for (const id of copied.ids) {
+	for (const { id, runId } of copied.copies) {
 		try {
-			if ((await copied.store.readHeader(id))?.workflow?.runId !== forkRunId) continue;
+			if ((await copied.store.readHeader(id))?.workflow?.runId !== runId) continue;
 			await copied.store.delete(id);
 		} catch (error) {
 			failures.push(error as Error);
@@ -1056,12 +1058,13 @@ async function removeSessions(copied: CopiedSessions, forkRunId: string): Promis
 			: new AggregateError(failures, `${failures.length} copied fork sessions were not removed`);
 }
 
-function removeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {
-	return cleanup.step("remove-copied-sessions", forkRunId, () => removeSessions(copied, forkRunId));
+async function removeCopies(copied: readonly CopiedSessions[], forkRunId: string, cleanup: ForkCleanup): Promise<void> {
+	for (const group of copied) await cleanup.step("remove-copied-sessions", forkRunId, () => removeSessions(group));
 }
 
-async function closeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {
-	if (copied.owned) await cleanup.step("close-destination-sessions", forkRunId, () => copied.store.close());
+async function closeCopies(copied: readonly CopiedSessions[], forkRunId: string, cleanup: ForkCleanup): Promise<void> {
+	for (const group of copied)
+		if (group.owned) await cleanup.step("close-destination-sessions", forkRunId, () => group.store.close());
 }
 
 /**
@@ -1221,10 +1224,10 @@ export async function forkDurableRun<
 				}
 			}
 		} catch (error) {
-			if (copied !== undefined && !retainCopies) await removeCopies(copied, ids.forkRunId, cleanup);
+			if (!retainCopies) await removeCopies(copied, ids.forkRunId, cleanup);
 			throw error;
 		} finally {
-			if (copied !== undefined) await closeCopies(copied, ids.forkRunId, cleanup);
+			await closeCopies(copied, ids.forkRunId, cleanup);
 		}
 		await inJournal(journalBackend.journal, { runId: source.runId, phase: "hydrate", forkRunId: ids.forkRunId }, () =>
 			backend.hydrateWorkflow(ids.forkRunId),
@@ -1279,6 +1282,12 @@ async function readSessions(
 	}
 }
 
+/**
+ * Copies the source's stage sessions under new ids, each where the fork's stage reopens it. A run with local workers
+ * runs its child workflows on them, so the session of a stage in a child run is copied into the journal's pool tables,
+ * which the child's work takes over once queued (`claimSessions`). Every other session goes to the fork's session
+ * store. A copy's header names the stage's own run, as the session it copies does.
+ */
 async function copySessions(
 	source: ForkSource,
 	sessions: readonly { readonly sessionId: string; readonly checkpoint: DurableStageCheckpoint }[],
@@ -1286,24 +1295,49 @@ async function copySessions(
 	request: ResolvedForkRequest,
 	cleanup: ForkCleanup,
 	claim: SourceClaim,
-): Promise<CopiedSessions | undefined> {
-	if (sessions.length === 0) return undefined;
+): Promise<readonly CopiedSessions[]> {
+	if (sessions.length === 0) return [];
 	await claim.assertHeld();
 	const snapshots = await readSessions(source, sessions, request, cleanup, claim);
 	request.signal?.throwIfAborted();
 	await claim.assertHeld();
-	const owned = request.sessionStore === undefined;
-	const created: string[] = [];
-	let destination: SessionStore | undefined;
+	const copied: CopiedSessions[] = [];
+	let project: CopiedSessions | undefined;
+	let pool: CopiedSessions | undefined;
+	const destinationFor = async (pooled: boolean): Promise<CopiedSessions> => {
+		if (pooled) {
+			if (pool === undefined) {
+				const store = await poolSessionStore(source.backend);
+				if (store === undefined) throw new Error("The journal has no pool session tables for the fork's workers");
+				pool = { store, copies: [], owned: true };
+				copied.push(pool);
+			}
+			return pool;
+		}
+		if (project === undefined) {
+			project = {
+				store:
+					request.sessionStore ??
+					(await stageSessionStore({ cwd: forkSessionStoreCwd(source.handle, request.cwd) })),
+				copies: [],
+				owned: request.sessionStore === undefined,
+			};
+			copied.push(project);
+		}
+		return project;
+	};
 	try {
-		destination =
-			request.sessionStore ?? (await stageSessionStore({ cwd: forkSessionStoreCwd(source.handle, request.cwd) }));
 		for (const [sessionId, { entries, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
+			const stageRun = checkpoint.topology?.run?.runId;
+			const destination = await destinationFor(
+				source.handle.resources?.localWorkers !== undefined && stageRun !== undefined && stageRun !== source.runId,
+			);
 			const id = randomUUID();
-			created.push(id);
-			await destination.create(
+			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
+			destination.copies.push({ id, runId });
+			await destination.store.create(
 				{
 					id,
 					version: 4,
@@ -1312,23 +1346,20 @@ async function copySessions(
 					parentSessionId: sessionId,
 					internal: true,
 					workflow: {
-						runId: ids.forkRunId,
+						runId,
 						stageId: checkpoint.topology?.stageId ?? checkpoint.checkpointId,
 						stageName: checkpoint.name,
 					},
 				},
 				entries,
 			);
-			const file = (await SessionManager.open(destination, id, request.cwd)).getSessionFile();
+			const file = (await SessionManager.open(destination.store, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
-		return { store: destination, ids: created, owned };
+		return copied;
 	} catch (error) {
-		if (destination !== undefined) {
-			const partial = { store: destination, ids: created, owned };
-			await removeCopies(partial, ids.forkRunId, cleanup);
-			await closeCopies(partial, ids.forkRunId, cleanup);
-		}
+		await removeCopies(copied, ids.forkRunId, cleanup);
+		await closeCopies(copied, ids.forkRunId, cleanup);
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;
 		// A source taken over mid-copy is the claim's failure, not a failure of the copy itself.
 		if (error instanceof ForkSourceBusyError) throw error;

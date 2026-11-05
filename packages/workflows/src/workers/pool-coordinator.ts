@@ -5,7 +5,7 @@ import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { setDebugSetting } from "@bastani/atomic";
-import { isJournalStoreError, JournalShardUnavailableError, serializeJournalStoreError } from "@bastani/atomic/storage";
+import { JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
@@ -47,7 +47,11 @@ import type {
 	PoolRootProjection,
 	PoolWorkToken,
 } from "./coordinator-protocol.js";
-import { POOL_COORDINATION_STATS_INTERVAL_MS, POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
+import {
+	failedCoordinatorReply,
+	POOL_COORDINATION_STATS_INTERVAL_MS,
+	POOL_SUMMARY_INTERVAL_MS,
+} from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
@@ -610,13 +614,7 @@ export class PoolCoordinator {
 				.within(kind, () => this.execute(command))
 				.then(
 					(value) => this.port.send({ kind: "reply", id: command.id, value }),
-					(error: Error) =>
-						this.port.send({
-							kind: "reply",
-							id: command.id,
-							error: error.message,
-							...(isJournalStoreError(error) ? { failure: serializeJournalStoreError(error) } : {}),
-						}),
+					(error: Error) => this.port.send(failedCoordinatorReply(command.id, error)),
 				);
 			this.inflight.add(handled);
 			void handled.finally(() => this.inflight.delete(handled));
@@ -916,6 +914,7 @@ export class PoolCoordinator {
 			let enqueued = await this.whileRootLate(queue, () =>
 				queue.enqueue(lease, command.descriptor, command.boundary, {
 					acceptEntryChanges: command.acceptEntryChanges === true,
+					...(command.claimSessions === undefined ? {} : { claimSessions: command.claimSessions }),
 				}),
 			);
 			// A child an earlier incarnation completed with a failure of the pool's own, such as a stage that lost its

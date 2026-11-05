@@ -19,7 +19,8 @@ export type ForkErrorCode =
 	| "copy-failed"
 	| "claim-release-failed"
 	| "session-unavailable"
-	| "cleanup-failed";
+	| "cleanup-failed"
+	| "session-claim-refused";
 
 export type ForkErrorName =
 	| "ForkTargetNotFoundError"
@@ -35,7 +36,8 @@ export type ForkErrorName =
 	| "ForkCopyFailedError"
 	| "ForkClaimReleaseError"
 	| "ForkSessionUnavailableError"
-	| "ForkCleanupError";
+	| "ForkCleanupError"
+	| "ForkSessionClaimError";
 
 export type ForkErrorFieldValue =
 	| string
@@ -105,6 +107,7 @@ const FORK_ERROR_CODE_BY_NAME: Readonly<Record<ForkErrorName, ForkErrorCode>> = 
 	ForkClaimReleaseError: "claim-release-failed",
 	ForkSessionUnavailableError: "session-unavailable",
 	ForkCleanupError: "cleanup-failed",
+	ForkSessionClaimError: "session-claim-refused",
 };
 
 interface ForkErrorInit {
@@ -819,6 +822,81 @@ export class ForkCleanupError extends ForkError {
 	}
 }
 
+/**
+ * Why a forked child's work could not take over a stage session the fork copied for it: the stage is outside the
+ * work's scope, another work owns the session, the session is not in the pool tables, it is not a fork's copy, or its
+ * header names another run than the stage.
+ */
+export type ForkSessionClaimReason =
+	| "outside-scope"
+	| "owned-by-other-work"
+	| "missing"
+	| "not-fork-copy"
+	| "run-mismatch";
+
+const CLAIM_SUBJECTS: Record<ForkSessionClaimReason, string> = {
+	"outside-scope": "its stage is outside the child's scope",
+	"owned-by-other-work": "another work owns it",
+	missing: "it is not in the pool tables",
+	"not-fork-copy": "it is not a copy the fork made",
+	"run-mismatch": "its header names another run than its stage",
+};
+
+/**
+ * A forked run's child could not be queued on its local workers because a stage session the fork copied for it could
+ * not be handed to the child's work. This enqueue attempt changes no session owners; existing work may remain.
+ */
+export class ForkSessionClaimError extends ForkError {
+	declare readonly name: "ForkSessionClaimError";
+	declare readonly code: "session-claim-refused";
+	declare readonly retryable: false;
+	readonly reason: ForkSessionClaimReason;
+	readonly sessionId: string;
+	/** The forked root whose child was being queued. */
+	readonly rootRunId: string;
+	/** The forked child run being queued, and the scope of its boundary. */
+	readonly childRunId: string;
+	readonly scope: string;
+	/** The stage that recorded the session, and the run that stage belongs to. */
+	readonly replayKey: string;
+	readonly stageRunId: string;
+
+	constructor(input: {
+		readonly reason: ForkSessionClaimReason;
+		readonly sessionId: string;
+		readonly rootRunId: string;
+		readonly childRunId: string;
+		readonly scope: string;
+		readonly replayKey: string;
+		readonly stageRunId: string;
+	}) {
+		super({
+			name: "ForkSessionClaimError",
+			code: "session-claim-refused",
+			what: "Fork session claim refused",
+			subject: `session ${input.sessionId} of forked run ${input.rootRunId} was not given to child run ${input.childRunId} because ${CLAIM_SUBJECTS[input.reason]}`,
+			hint: `This enqueue attempt changed no session owners. Inspect /workflow status ${input.rootRunId} before retrying; resume only with the fork's original journal and session copies. Do not fork again or reassign session owners blindly.`,
+			retryable: false,
+			fields: {
+				reason: input.reason,
+				sessionId: input.sessionId,
+				rootRunId: input.rootRunId,
+				childRunId: input.childRunId,
+				scope: input.scope,
+				replayKey: input.replayKey,
+				stageRunId: input.stageRunId,
+			},
+		});
+		this.reason = input.reason;
+		this.sessionId = input.sessionId;
+		this.rootRunId = input.rootRunId;
+		this.childRunId = input.childRunId;
+		this.scope = input.scope;
+		this.replayKey = input.replayKey;
+		this.stageRunId = input.stageRunId;
+	}
+}
+
 export type KnownForkError =
 	| ForkTargetNotFoundError
 	| ForkDefinitionMismatchError
@@ -833,7 +911,8 @@ export type KnownForkError =
 	| ForkCopyFailedError
 	| ForkClaimReleaseError
 	| ForkSessionUnavailableError
-	| ForkCleanupError;
+	| ForkCleanupError
+	| ForkSessionClaimError;
 
 interface ForkErrorShape {
 	readonly name?: string;
@@ -885,6 +964,15 @@ export const isForkCopyFailedError = guard(ForkCopyFailedError, "ForkCopyFailedE
 export const isForkClaimReleaseError = guard(ForkClaimReleaseError, "ForkClaimReleaseError");
 export const isForkSessionUnavailableError = guard(ForkSessionUnavailableError, "ForkSessionUnavailableError");
 export const isForkCleanupError = guard(ForkCleanupError, "ForkCleanupError");
+/** True when a {@link ForkSessionClaimError} is in `value`'s cause chain, within {@link FORK_ERROR_MAX_CAUSE_DEPTH} links. */
+export function isForkSessionClaimError(value: unknown): boolean {
+	let current = value as ForkErrorShape | undefined;
+	for (let depth = 0; depth < FORK_ERROR_MAX_CAUSE_DEPTH && current != null; depth++) {
+		if (current instanceof ForkSessionClaimError || hasForkShape(current, "ForkSessionClaimError")) return true;
+		current = current.cause;
+	}
+	return false;
+}
 
 /** The first fork error in `value`'s cause chain, walking at most {@link FORK_ERROR_MAX_CAUSE_DEPTH} links. */
 export function findForkError(value: unknown): ForkError | undefined {
@@ -1084,6 +1172,16 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 			{ runId: text(f, "runId"), claimExpiresInMs: Number(f.claimExpiresInMs ?? 0) },
 			{ cause: cause ?? new Error("The release failure's cause was not serialized.") },
 		),
+	ForkSessionClaimError: (f) =>
+		new ForkSessionClaimError({
+			reason: text(f, "reason") as ForkSessionClaimReason,
+			sessionId: text(f, "sessionId"),
+			rootRunId: text(f, "rootRunId"),
+			childRunId: text(f, "childRunId"),
+			scope: text(f, "scope"),
+			replayKey: text(f, "replayKey"),
+			stageRunId: text(f, "stageRunId"),
+		}),
 	ForkCleanupError: (f, cause) =>
 		new ForkCleanupError(
 			{ runId: text(f, "runId"), step: text(f, "step") as ForkCleanupStep, forkRunId: optionalText(f, "forkRunId") },

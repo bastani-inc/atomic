@@ -12,6 +12,8 @@ import {
 	type ForkErrorFields,
 	ForkJournalUnavailableError,
 	ForkJournalUnsupportedError,
+	ForkSessionClaimError,
+	type ForkSessionClaimReason,
 	ForkSessionNotFoundError,
 	ForkSessionUnavailableError,
 	ForkSourceBusyError,
@@ -28,6 +30,7 @@ import {
 	isForkError,
 	isForkJournalUnavailableError,
 	isForkJournalUnsupportedError,
+	isForkSessionClaimError,
 	isForkSessionNotFoundError,
 	isForkSessionUnavailableError,
 	isForkSourceBusyError,
@@ -433,6 +436,68 @@ test("isForkSourceOwnershipError finds the error in a bounded cause chain, also 
 	assert.deepEqual([cause.runId, cause.reason, cause.retryable], [runId, "owner-unavailable", false]);
 });
 
+function claimError(reason: ForkSessionClaimReason): ForkSessionClaimError {
+	return new ForkSessionClaimError({
+		reason,
+		sessionId: "copy",
+		rootRunId: forkRunId,
+		childRunId: "child",
+		scope: "workflow:impl:fp:1",
+		replayKey: "workflow:impl:fp:1:stage:implement:1",
+		stageRunId: "child",
+	});
+}
+
+test("ForkSessionClaimError renders each reason with the session, forked run and child as a stable message and hint (#4321)", () => {
+	const hint = `This enqueue attempt changed no session owners. Inspect /workflow status ${forkRunId} before retrying; resume only with the fork's original journal and session copies. Do not fork again or reassign session owners blindly.`;
+	const because: Record<ForkSessionClaimReason, string> = {
+		"outside-scope": "its stage is outside the child's scope",
+		"owned-by-other-work": "another work owns it",
+		missing: "it is not in the pool tables",
+		"not-fork-copy": "it is not a copy the fork made",
+		"run-mismatch": "its header names another run than its stage",
+	};
+	assertCases(
+		(Object.keys(because) as ForkSessionClaimReason[]).map((reason) => ({
+			error: claimError(reason),
+			message: `Fork session claim refused: session copy of forked run ${forkRunId} was not given to child run child because ${because[reason]} (session-claim-refused). ${hint}`,
+			hint,
+			fields: {
+				reason,
+				sessionId: "copy",
+				rootRunId: forkRunId,
+				childRunId: "child",
+				scope: "workflow:impl:fp:1",
+				replayKey: "workflow:impl:fp:1:stage:implement:1",
+				stageRunId: "child",
+			},
+		})),
+	);
+	const wrap = (cause: unknown, links: number): unknown => {
+		let value = cause;
+		for (let index = 0; index < links; index++) value = new Error(`wrapper ${index}`, { cause: value });
+		return value;
+	};
+	assert.equal(isForkSessionClaimError(wrap(claimError("missing"), FORK_ERROR_MAX_CAUSE_DEPTH - 1)), true);
+	assert.equal(isForkSessionClaimError(wrap(claimError("missing"), FORK_ERROR_MAX_CAUSE_DEPTH)), false);
+	const back = rehydrateForkError(
+		JSON.parse(JSON.stringify(claimError("owned-by-other-work"))) as SerializedForkError,
+	);
+	assert.ok(back instanceof ForkSessionClaimError);
+	assert.deepEqual(
+		[back.reason, back.sessionId, back.rootRunId, back.childRunId, back.scope, back.replayKey, back.stageRunId],
+		[
+			"owned-by-other-work",
+			"copy",
+			forkRunId,
+			"child",
+			"workflow:impl:fp:1",
+			"workflow:impl:fp:1:stage:implement:1",
+			"child",
+		],
+	);
+});
+
 test("ForkJournalUnsupportedError and ForkCopyFailedError render stable messages and hints (#4321)", () => {
 	const retry = "Retry the fork; the source run was not changed.";
 	const cause = new Error("disk full");
@@ -656,6 +721,7 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 		guard: isForkSessionUnavailableError,
 	},
 	{ error: new ForkSourceOwnershipError({ runId, reason: "foreign-owner" }), guard: isForkSourceOwnershipError },
+	{ error: claimError("run-mismatch"), guard: isForkSessionClaimError },
 	{
 		error: new ForkCleanupError(
 			{ runId, step: "remove-copied-sessions", forkRunId },
@@ -1107,6 +1173,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"ForkSessionUnavailableError",
 		"ForkCleanupError",
 		"ForkSourceOwnershipError",
+		"ForkSessionClaimError",
 		"isForkError",
 		"isForkTargetNotFoundError",
 		"isForkDefinitionMismatchError",
@@ -1122,6 +1189,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"isForkSessionUnavailableError",
 		"isForkCleanupError",
 		"isForkSourceOwnershipError",
+		"isForkSessionClaimError",
 		"isRetryableForkError",
 		"findForkError",
 		"serializeForkError",

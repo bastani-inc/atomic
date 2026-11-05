@@ -8,6 +8,7 @@ import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/se
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	ForkCleanupError,
+	ForkCopyFailedError,
 	ForkSessionNotFoundError,
 	ForkSessionUnavailableError,
 	isForkCleanupError,
@@ -263,4 +264,137 @@ test("an unexpected pool reader exception propagates instead of being recast as 
 		(await backend.journal.listRuns()).map((run) => run.runId),
 		[runId],
 	);
+});
+
+/**
+ * A paused run with local workers: a root stage finished in the host's store, and a stage of its child, which ran on a
+ * worker, stopped mid-conversation with its session in the pool tables.
+ */
+async function pausedWorkerSource(seed: string) {
+	const directory = makeTempDirectory("fork-pool-paused-");
+	cleanups.push(() => removeTempDirectory(directory));
+	const backend = await JournalDurableBackend.open(
+		await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } }),
+	);
+	cleanups.push(() => backend.close());
+	await openSqlPoolQueue(backend.journal);
+	const pool = await poolSessionStore(backend);
+	assert.ok(pool !== undefined);
+	const host = new MemorySessionStore();
+	const runId = testRunId(seed);
+	const childId = testRunId(`${seed}-child`);
+	const scope = "workflow:impl:fp:1";
+	const plan = await SessionManager.create(host, directory);
+	await plan.appendMessage({ role: "user", content: "plan in the root", timestamp: 1 });
+	const worker = await SessionManager.create(pool, directory);
+	await worker.appendMessage({ role: "user", content: "implement on a worker", timestamp: 1 });
+	const workerEntries = (await pool.load(worker.getSessionId())).entries;
+	await pool.close();
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: definition.name,
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+		invocationCwd: directory,
+		resources: { localWorkers: { count: 1, definitions: [] } },
+	});
+	await backend.commitCheckpoint({
+		kind: "stage",
+		workflowId: runId,
+		checkpointId: "stage:plan",
+		name: "plan",
+		replayKey: "stage:plan:1",
+		output: "planned",
+		sessionId: plan.getSessionId(),
+		completedAt: 1,
+		topology: { version: 1, stageId: "plan-id", parentIds: [], run: { runId, runName: "root" } },
+	});
+	await backend.commitCheckpoint({
+		kind: "stage",
+		workflowId: runId,
+		checkpointId: `${scope}:session:${worker.getSessionId()}:1`,
+		name: "implement",
+		replayKey: `${scope}:stage:implement:1`,
+		sessionId: worker.getSessionId(),
+		completedAt: 2,
+		topology: {
+			version: 1,
+			stageId: "implement-id",
+			parentIds: [],
+			run: { runId: childId, runName: "impl", parentRunId: runId, rootRunId: runId },
+		},
+	});
+	return { backend, runId, childId, host, workerSession: worker.getSessionId(), workerEntries, directory };
+}
+
+async function poolSession(backend: JournalDurableBackend, id: string) {
+	const pool = await poolSessionStore(backend);
+	assert.ok(pool !== undefined);
+	try {
+		return await pool.readHeader(id);
+	} finally {
+		await pool.close();
+	}
+}
+
+test("a fork of a run with local workers copies a child stage's session into the pool tables for the fork's child run, and a root stage's into the fork's store (#4321)", async () => {
+	const source = await pausedWorkerSource("fork-pool-paused");
+	const destination = new MemorySessionStore();
+	const fork = await forkDurableRun(
+		source.backend,
+		forkRequest(source.runId, source.directory, source.host, destination),
+	);
+	const resumed = source.backend.getStageSession(fork.runId, "workflow:impl:fp:1:stage:implement:1");
+	assert.ok(resumed?.sessionId !== undefined && resumed.sessionId !== source.workerSession);
+	assert.equal(resumed.sessionFile, undefined, "a worker reopens its session by id");
+	const [checkpoint] = source.backend
+		.listCheckpoints(fork.runId)
+		.filter((entry) => entry.kind === "stage" && entry.sessionId === resumed.sessionId);
+	const forkedChild = checkpoint?.kind === "stage" ? checkpoint.topology?.run?.runId : undefined;
+	assert.ok(forkedChild !== undefined && forkedChild !== source.childId && forkedChild !== fork.runId);
+	const header = await poolSession(source.backend, resumed.sessionId);
+	assert.deepEqual(
+		header && {
+			parentSessionId: header.parentSessionId,
+			internal: header.internal,
+			workflow: header.workflow,
+		},
+		{
+			parentSessionId: source.workerSession,
+			internal: true,
+			workflow: { runId: forkedChild, stageId: "implement-id", stageName: "implement" },
+		},
+	);
+	const pool = await poolSessionStore(source.backend);
+	assert.deepEqual((await pool!.load(resumed.sessionId)).entries, source.workerEntries);
+	await pool!.close();
+	const copies = await sessionIds(destination);
+	assert.equal(copies.length, 1, "only the root stage's session goes to the fork's store");
+	assert.equal((await destination.load(copies[0]!)).header.workflow?.runId, fork.runId);
+	assert.equal(await destination.readHeader(resumed.sessionId), undefined);
+});
+
+test("a fork whose journal write fails removes its copies from the pool tables and the fork's store (#4321)", async () => {
+	const source = await pausedWorkerSource("fork-pool-paused-write-fails");
+	const destination = new MemorySessionStore();
+	const created: string[] = [];
+	const create = SqlSessionStore.prototype.create;
+	vi.spyOn(SqlSessionStore.prototype, "create").mockImplementation(async function (
+		this: SqlSessionStore,
+		header,
+		entries,
+	) {
+		created.push(header.id);
+		return create.call(this, header, entries);
+	});
+	vi.spyOn(source.backend.journal, "createRunWithEvents").mockRejectedValue(new Error("disk full"));
+	await assert.rejects(
+		forkDurableRun(source.backend, forkRequest(source.runId, source.directory, source.host, destination)),
+		(error: unknown) => error instanceof ForkCopyFailedError && error.cleanupCause === undefined,
+	);
+	assert.equal(created.length, 1, "the child stage's session was copied into the pool tables");
+	assert.equal(await poolSession(source.backend, created[0]!), undefined, "and removed again");
+	assert.ok((await poolSession(source.backend, source.workerSession)) !== undefined, "the source's session stays");
+	assert.deepEqual(await sessionIds(destination), []);
 });
