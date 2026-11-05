@@ -19,6 +19,11 @@ import {
  * Unix only: on Windows the deadline cannot kill background processes once the shell pid is gone, so the
  * tool keeps waiting until their output pauses; this test would hang there.
  */
+/** libuv keeps loop time in whole milliseconds, so a 1000 ms timer can fire a fraction of a millisecond early. */
+const TIMER_EARLY_FIRE_TOLERANCE_MS = 2;
+/** The timeout path kills the process group and drains its pipes; well above that under load, far below a hang. */
+const TIMEOUT_UPPER_BOUND_MS = 20_000;
+
 describe.skipIf(process.platform === "win32")("pi #11613 bash timeout after the shell exited", () => {
 	const bashTool = createBashTool(tmpdir());
 
@@ -39,7 +44,7 @@ describe.skipIf(process.platform === "win32")("pi #11613 bash timeout after the 
 		assert.ok(error.message.includes("boom"));
 		assert.match(
 			error.message,
-			/Command timed out after 1 seconds\. The shell exited with code 3 after 0\.\d seconds, but background processes it started kept writing output until the timeout\.$/,
+			/Command timed out after 1 seconds\. The shell exited with code 3 after \d+(?:\.\d)? seconds, but background processes it started kept writing output until the timeout\.$/,
 		);
 		const timeout = error.cause;
 		assert.ok(timeout instanceof ShellTimeoutError);
@@ -47,7 +52,13 @@ describe.skipIf(process.platform === "win32")("pi #11613 bash timeout after the 
 		assert.equal(timeout.phase, "draining-output");
 		assert.equal(timeout.timeoutMs, 1000);
 		assert.equal(timeout.shellExit?.exitCode, 3);
-		assert.ok(timeout.elapsedMs >= 1000);
+		const afterSeconds = timeout.shellExit?.afterSeconds ?? Number.NaN;
+		assert.ok(afterSeconds > 0 && afterSeconds <= timeout.timeoutMs / 1000, `shell exited after ${afterSeconds} s`);
+		assert.ok(
+			timeout.elapsedMs >= timeout.timeoutMs - TIMER_EARLY_FIRE_TOLERANCE_MS,
+			`elapsed ${timeout.elapsedMs} ms`,
+		);
+		assert.ok(timeout.elapsedMs < TIMEOUT_UPPER_BOUND_MS, `elapsed ${timeout.elapsedMs} ms`);
 		assert.equal(timeout.retryable, false);
 		assert.ok(timeout.hint?.includes("Redirect its output"));
 	});
