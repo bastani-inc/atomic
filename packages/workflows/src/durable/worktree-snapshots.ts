@@ -1,5 +1,7 @@
 import { isAbsolute, join, relative, sep } from "node:path";
 import {
+	canonicalizeWorktreePath,
+	isHeadOnlyAdvance,
 	isWorkspaceDriftError,
 	isWorkspaceSnapshotError,
 	removeRestoredWorktree,
@@ -69,28 +71,35 @@ export function workflowSnapshotFrontier(
 	return [...latest.values()].sort((a, b) => a.seq - b.seq);
 }
 
-/** Maps an absolute path within a restored root while preserving its repository-relative suffix. */
+/**
+ * Maps an absolute path within a restored root while preserving its repository-relative suffix. Roots are Git's physical
+ * top levels, so the path and both ends of every mapping are compared with their symbolic links resolved: a working
+ * directory reached through a link maps like the directory it points at. The result lies under the mapping's `to`.
+ */
 export function mapWorkflowWorktreePath(path: string, mappings: readonly WorktreeRootMapping[]): string {
-	if (!isAbsolute(path)) return path;
+	if (!isAbsolute(path) || mappings.length === 0) return path;
+	const physical = canonicalizeWorktreePath(path);
 	let selected: { readonly source: string; readonly target: string } | undefined;
 	for (const mapping of mappings) {
 		const root = originalRoot(mapping.from, mappings);
 		const target =
 			mappings.findLast((candidate) => originalRoot(candidate.from, mappings) === root)?.to ?? mapping.to;
-		for (const source of [mapping.from, mapping.to]) {
-			const suffix = relative(source, path);
+		for (const source of [mapping.from, mapping.to].map(canonicalizeWorktreePath)) {
+			const suffix = relative(source, physical);
 			if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) continue;
 			if (selected === undefined || source.length >= selected.source.length) selected = { source, target };
 		}
 	}
-	return selected === undefined ? path : join(selected.target, relative(selected.source, path));
+	return selected === undefined ? path : join(selected.target, relative(selected.source, physical));
 }
 
+/** The root a restored root descends from, comparing physical paths so a link in a recorded spelling cannot break the chain. */
 function originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): string {
 	const seen = new Set<string>();
 	while (!seen.has(root)) {
 		seen.add(root);
-		const prior = mappings.findLast((mapping) => mapping.to === root);
+		const physical = canonicalizeWorktreePath(root);
+		const prior = mappings.findLast((mapping) => canonicalizeWorktreePath(mapping.to) === physical);
 		if (prior === undefined) break;
 		root = prior.from;
 	}
@@ -126,6 +135,7 @@ export async function resolveWorkflowSnapshotFrontier(
 				await verifyWorktree(snapshot, mapped, { settings: options.settings, signal: options.signal });
 				continue;
 			} catch (error) {
+				if (isWorkspaceDriftError(error) && (await isHeadOnlyAdvance(error, options.signal))) continue;
 				if (isWorkspaceDriftError(error)) drift = error;
 				else if (isWorkspaceSnapshotError(error)) {
 					drift = new WorkspaceDriftError(
