@@ -10,7 +10,14 @@ import {
 	WorkspaceConfigError,
 	WorkspaceSnapshotError,
 } from "./errors.ts";
-import { type GitRunOptions, gitText, nulFields, redactUrlCredentials, runGit } from "./git.ts";
+import {
+	type GitRunOptions,
+	gitText,
+	installedGitUnavailable,
+	nulFields,
+	redactUrlCredentials,
+	runGit,
+} from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath, loadSnapshotPathPolicy, type SnapshotPathPolicy } from "./policy.ts";
 import { resolveWorktreeSnapshotSettings, type WorktreeSnapshotSettingsInput } from "./settings.ts";
@@ -427,6 +434,8 @@ async function captureCheckout(
 	options: CaptureWorktreeSnapshotOptions,
 ): Promise<WorktreeSnapshotCapture> {
 	const { signal } = options;
+	const gitUnavailable = await installedGitUnavailable();
+	if (gitUnavailable !== undefined) return { status: "unavailable", reason: gitUnavailable };
 	const checkout = await locateCheckout(dir, signal);
 	if (checkout instanceof Error) return { status: "unavailable", reason: checkout };
 	const { root, head } = checkout;

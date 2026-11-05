@@ -1,4 +1,4 @@
-import type { SqliteDatabase } from "../storage/database.js";
+import type { SqliteDatabase, SqliteExecutor } from "../storage/database.js";
 import { validateStoragePrefix } from "../storage/prefix.js";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -59,17 +59,25 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		this.table = table;
 	}
 
+	/**
+	 * Opens the table, creating it in its own transaction when it is missing. A store that already has the table opens
+	 * without taking the write lock.
+	 */
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const table = `${validateStoragePrefix(prefix)}snapshot_blobs`;
 		const exists = await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", table);
-		if (!exists) {
-			await database.transaction(async (transaction) => {
-				await transaction.exec(
-					`CREATE TABLE IF NOT EXISTS ${table} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
-				);
-			});
-		}
+		if (!exists) await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction, prefix));
 		return new SqlSnapshotBlobStore(database, table);
+	}
+
+	/**
+	 * Creates the table inside the caller's transaction, so a store that creates its own tables, such as a new run
+	 * journal, takes the write lock once for both.
+	 */
+	static async initialize(transaction: SqliteExecutor, prefix = ""): Promise<void> {
+		await transaction.exec(
+			`CREATE TABLE IF NOT EXISTS ${validateStoragePrefix(prefix)}snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
+		);
 	}
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {

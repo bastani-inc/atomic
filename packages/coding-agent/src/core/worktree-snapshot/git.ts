@@ -1,10 +1,17 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { getBinDir } from "../../config.ts";
+import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
-import { GitUnavailableError, gitInstallCommand, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
+import { isGitProvisionError } from "../../utils/git-errors.ts";
+import {
+	GitUnavailableError,
+	gitInstallCommand,
+	isGitUnavailableError,
+	WorkspaceGitError,
+	WorkspaceSnapshotError,
+} from "./errors.ts";
 
 /** The Git executable snapshot operations run, with the environment it needs (a provisioned Git may need some). */
 export interface GitExecutable {
@@ -14,10 +21,39 @@ export interface GitExecutable {
 
 export type GitExecutableResolver = (signal?: AbortSignal) => Promise<GitExecutable>;
 
-let resolveExecutable: GitExecutableResolver = async (signal) => {
-	const { resolveGit } = await import("../../utils/tools-manager.js");
+const provisionedGit: GitExecutableResolver = async (signal) => {
+	const { resolveGit } = await import("../../utils/tools-manager.ts");
 	return resolveGit({ signal });
 };
+let resolveExecutable: GitExecutableResolver = provisionedGit;
+
+/**
+ * Why a snapshot cannot be recorded with the Git already on this machine, checked without downloading one: recording
+ * only uses an installed or provisioned Git, so a session or workflow run that never needs Git otherwise starts no
+ * download (#4322). Undefined when such a Git exists, or when an injected resolver decides.
+ */
+export async function installedGitUnavailable(): Promise<GitUnavailableError | undefined> {
+	if (resolveExecutable !== provisionedGit) return undefined;
+	const { resolveGitSync } = await import("../../utils/tools-manager.ts");
+	try {
+		resolveGitSync();
+		return undefined;
+	} catch (error) {
+		if (isGitUnavailableError(error)) return error;
+		if (!isGitProvisionError(error)) throw error;
+		// An earlier download in this process failed another way, such as timing out: no Git is installed.
+		return new GitUnavailableError(
+			{
+				code: "not-installed",
+				platform: process.platform,
+				arch: process.arch,
+				installDir: join(getBinDir(), "git"),
+				installCommand: gitInstallCommand(process.platform),
+			},
+			{ cause: error },
+		);
+	}
+}
 
 /**
  * The single place every worktree snapshot Git invocation gets its executable from. Returns the previous resolver so
