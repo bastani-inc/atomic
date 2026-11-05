@@ -9,6 +9,13 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+/** @param {string | undefined} code @param {string | undefined} phase */
+export function expectedForkRetryable(code, phase) {
+	return code === "journal-unavailable"
+		? phase === "read" || phase === "claim"
+		: code === "source-busy" || code === "copy-failed" || code === "session-unavailable";
+}
+
 
 /** The invariants every report must carry, each with `pass: true`, for the round to pass. */
 export const CHAOS_INVARIANTS = Object.freeze([

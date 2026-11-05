@@ -9,6 +9,7 @@ import {
 	CHAOS_ERROR_CAUSE_DEPTH,
 	CHAOS_INVARIANTS,
 	ChaosInvariantError,
+	expectedForkRetryable,
 	findChaosInvariantError,
 	isChaosInvariantError,
 	readChaosReport,
@@ -20,6 +21,17 @@ const unixTest = process.platform === "win32" ? test.skip : test;
 const temporary: string[] = [];
 afterEach(() => {
 	for (const directory of temporary.splice(0)) removeTempDirectory(directory);
+});
+
+test("fork chaos retryability follows the journal phase, including uncertain and confirmed commits (#4321)", () => {
+	for (const phase of ["read", "claim"])
+		assert.equal(expectedForkRetryable("journal-unavailable", phase), true, phase);
+	for (const phase of ["commit", "commit-confirmed", "hydrate", undefined])
+		assert.equal(expectedForkRetryable("journal-unavailable", phase), false, phase);
+	for (const code of ["source-busy", "copy-failed", "session-unavailable"])
+		assert.equal(expectedForkRetryable(code, undefined), true, code);
+	for (const code of ["invalid-option", "source-not-found", "cleanup-failed", undefined])
+		assert.equal(expectedForkRetryable(code, undefined), false, code);
 });
 
 const BRANCH = "feat-issue-4321-fork-and-time-travel";

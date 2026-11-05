@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/index.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "../../../packages/workflows/src/durable/run-result.js";
 import { type Json, LEDGER_TABLE, loadConfig, NAMED_TOOLS, openSharedStorage } from "./shared.js";
-import { assertChaosInvariants, ChaosInvariantError } from "./verdict.mjs";
+import { assertChaosInvariants, ChaosInvariantError, expectedForkRetryable } from "./verdict.mjs";
 
 type Row = Record<string, string | number | bigint | null | Uint8Array>;
 
@@ -53,8 +53,6 @@ interface Checkpoint {
 	};
 }
 
-/** Fork error codes documented as retryable; every other code must carry `retryable: false`. */
-const RETRYABLE_FORK_CODES: ReadonlySet<string> = new Set(["source-busy", "copy-failed", "journal-unavailable"]);
 const num = (value: Row[string] | undefined): number => Number(value ?? 0);
 const str = (value: Row[string] | undefined): string => (value === null || value === undefined ? "" : String(value));
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
@@ -691,10 +689,7 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 				byCode,
 				`${phase}:${error.code}${error.reason === undefined ? "" : `:${error.reason}`}${error.copyPhase === undefined ? "" : `@${error.copyPhase}`}`,
 			);
-			const shouldRetry =
-				error.code === "journal-unavailable"
-					? error.copyPhase !== "hydrate"
-					: RETRYABLE_FORK_CODES.has(error.code ?? "");
+			const shouldRetry = expectedForkRetryable(error.code, error.copyPhase);
 			if (error.retryable !== shouldRetry)
 				typed.fail({ attempt: record.id ?? null, problem: "retryable flag", code: error.code ?? null });
 		} else {
