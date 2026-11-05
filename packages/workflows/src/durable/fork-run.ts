@@ -363,13 +363,14 @@ async function loadSession(
 		return await sessions.store.load(sessionId);
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
-		if (failure === undefined) throw error;
 		const details = { sessionId, ...context, storage: storageScope(sessions.store.descriptor) };
+		if (failure === "not-found")
+			throw new ForkSessionNotFoundError(
+				{ ...details, storeSource: sessions.owned ? "project" : "supplied" },
+				{ cause: error as Error },
+			);
 		if (failure === "unavailable") throw new ForkSessionUnavailableError(details, { cause: error as Error });
-		throw new ForkSessionNotFoundError(
-			{ ...details, storeSource: sessions.owned ? "project" : "supplied" },
-			{ cause: error as Error },
-		);
+		throw error;
 	}
 }
 
