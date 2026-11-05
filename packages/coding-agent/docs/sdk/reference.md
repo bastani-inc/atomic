@@ -859,6 +859,28 @@ await runRpcMode(runtime);
 
 See [RPC documentation](/rpc) for the JSON protocol.
 
+## Session start errors
+
+An in-process subagent that does not start within its start budget fails with a `SessionStartTimeoutError`; see [Subagent start timeouts](/subagents#subagent-start-timeouts) for the budget and how to change it. The child's result carries it serialized as `startError`, and its `error` text is the error's `message`. Every error in this family extends `SessionStartError`. Branch on the class, a guard, or `code`, never on the message:
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `SessionStartTimeoutError` | `session-start-timeout` | A subagent did not open its session, load its resources, create its agent session (including any resource-admission wait) and dispatch its task within its start budget. `retryable` is `true`. | `subject` (the child), `phase` (`admission`, `setup`, `dispatch` or `event-loop`: what blocked it), `step` (`opening-session`, `loading-resources`, `creating-session`, `awaiting-admission` or `dispatching-task`), `timeoutMs`, `elapsedMs`, `stepElapsedMs`, `steps` (each step's `elapsedMs`, in order), `eventLoop` (`turns`, `meanTurnMs`, `maxTurnMs` sampled during the budget), `hint` | Act on `phase` as [Subagent start timeouts](/subagents#subagent-start-timeouts) describes, then launch the child again. |
+| `SessionStartConfigError` | `invalid-session-start-timeout` | A start budget is not a whole number of milliseconds from 1 to 2147483647. The subagent runner throws it for an invalid `sessionStartTimeoutMs` option before it admits the child; an invalid `sessionStartTimeoutMs` in the subagent `config.json` is reported once and ignored. `retryable` is `false`. | `source` (`sdk`, `cli`, `env` or `settings`), `field`, `reason` (`not-a-positive-integer` or `exceeds-maximum`), `value` (the rejected value as JSON text, at most 64 characters), `hint` | Correct that field. |
+
+Guards check the class first and then `name` and `code` (plus `phase` or `field`), so they also match an error from another realm. `isSessionStartError(value)`, `isSessionStartTimeoutError(value)` and `isSessionStartConfigError(value)` test one value. `findSessionStartError(error)` returns the first session start error in an error's `cause` chain, looking at most eight levels deep, and `isRetryableSessionStartError(error)` tells whether that error is retryable.
+
+`serializeSessionStartError(error)` returns JSON-safe `{ name, code, message, hint, retryable, fields, cause }`, with causes bounded at eight levels. `rehydrateSessionStartError(serialized)` returns the same class with the same fields. An unknown name, or fields that no longer fit its class, rehydrates into `SessionStartError` with the original `name`, `code`, `message` and `fields`. `parseSessionStartTimeoutMs(value, source, field)` validates a budget the same way the runner does: it returns `undefined` for `undefined`, the number for a valid budget, and throws `SessionStartConfigError` otherwise.
+
+```typescript
+import { isRetryableSessionStartError, rehydrateSessionStartError } from "@bastani/atomic";
+
+const startError = result.startError && rehydrateSessionStartError(result.startError);
+if (startError && isRetryableSessionStartError(startError)) {
+  // Act on startError.phase, then launch the child again.
+}
+```
+
 ## Exports
 
 The main entry point exports:
@@ -928,6 +950,30 @@ WorkflowStageAmbiguousError
 WorkflowStageResumeUnsupportedError
 WorkflowRunStorageError
 WorkflowRunControlUnavailableError
+
+// Session start errors
+SessionStartError
+SessionStartTimeoutError
+SessionStartConfigError
+isSessionStartError
+isSessionStartTimeoutError
+isSessionStartConfigError
+findSessionStartError
+isRetryableSessionStartError
+serializeSessionStartError
+rehydrateSessionStartError
+parseSessionStartTimeoutMs
+MAX_SESSION_START_TIMEOUT_MS
+type SessionStartErrorCode
+type SessionStartPhase
+type SessionStartStep
+type SessionStartStepTiming
+type SessionStartEventLoopSample
+type SessionStartTimeoutDetails
+type SessionStartConfigSource
+type SessionStartConfigReason
+type SerializedSessionStartError
+type SerializedSessionStartCause
 
 // Tool factories
 createCodingTools

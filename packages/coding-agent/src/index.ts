@@ -471,6 +471,33 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
+export {
+	findSessionStartError,
+	isRetryableSessionStartError,
+	isSessionStartConfigError,
+	isSessionStartError,
+	isSessionStartTimeoutError,
+	MAX_SESSION_START_TIMEOUT_MS,
+	parseSessionStartTimeoutMs,
+	rehydrateSessionStartError,
+	type SerializedSessionStartCause,
+	type SerializedSessionStartError,
+	SessionStartConfigError,
+	type SessionStartConfigReason,
+	type SessionStartConfigSource,
+	SessionStartError,
+	type SessionStartErrorCode,
+	type SessionStartEventLoopSample,
+	type SessionStartFailureCause,
+	type SessionStartFields,
+	type SessionStartFieldValue,
+	type SessionStartPhase,
+	type SessionStartStep,
+	type SessionStartStepTiming,
+	type SessionStartTimeoutDetails,
+	SessionStartTimeoutError,
+	serializeSessionStartError,
+} from "./core/session-start-errors.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
 	type CompactionModelOverride,
