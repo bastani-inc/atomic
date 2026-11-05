@@ -7,7 +7,6 @@ import { type BashOperations, createBashToolDefinition } from "../src/core/tools
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
-import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
 import { createPowerShellToolDefinition } from "../src/core/tools/powershell.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
@@ -21,12 +20,6 @@ function getTextOutput(result: { content?: Array<{ type: string; text?: string }
 			.map((c) => c.text ?? "")
 			.join("\n") ?? ""
 	);
-}
-
-function tagFrom(output: string): string {
-	const tag = output.match(/#([0-9A-F]{4})/)?.[1];
-	if (!tag) throw new Error(`missing hashline tag in output: ${output}`);
-	return tag;
 }
 
 function fakeCtx(cwd: string): ExtensionContext {
@@ -80,29 +73,18 @@ describe("tool cwd resolution", () => {
 		expect(readFileSync(join(testDir, "ctx-cwd-write.txt"), "utf-8")).toBe("written via ctx.cwd");
 	});
 
-	// Adapted: Atomic's edit tool is the hashline patcher, so the edit is a `[PATH#TAG]` script
-	// whose tag comes from a read through the same snapshot store, not upstream's
-	// `{ path, edits: [{ oldText, newText }] }` shape.
 	it("edit uses ctx.cwd when provided", async () => {
 		const testFile = join(testDir, "ctx-cwd-edit.txt");
-		writeFileSync(testFile, "old text\n");
-		const store = createHashlineSnapshotStore();
-		const read = createReadToolDefinition(factoryDir, { hashlineStore: store });
-		const edit = createEditToolDefinition(factoryDir, { hashlineStore: store });
-		const ctx = fakeCtx(testDir);
-
-		const tag = tagFrom(
-			getTextOutput(await read.execute("read", { path: "ctx-cwd-edit.txt" }, undefined, undefined, ctx)),
-		);
-		await edit.execute(
+		writeFileSync(testFile, "old text");
+		const tool = createEditToolDefinition(factoryDir);
+		await tool.execute(
 			"test-edit-ctx-cwd",
-			{ input: `[ctx-cwd-edit.txt#${tag}]\nreplace 1..1:\n+new text` },
+			{ path: "ctx-cwd-edit.txt", edits: [{ oldText: "old text", newText: "new text" }] },
 			undefined,
 			undefined,
-			ctx,
+			fakeCtx(testDir),
 		);
-
-		expect(readFileSync(testFile, "utf-8")).toBe("new text\n");
+		expect(readFileSync(testFile, "utf-8")).toBe("new text");
 	});
 
 	it("grep uses ctx.cwd when provided", async () => {
@@ -170,34 +152,6 @@ describe("tool cwd resolution", () => {
 		expect(readFileSync(join(factoryDir, "factory-cwd-write.txt"), "utf-8")).toBe("factory");
 	});
 
-	// Atomic-specific: the hashline patcher keeps per-cwd state (filesystem, patcher, no-op
-	// counters, parallel-edit batcher), so two execution cwds must not share a scope.
-	it("keeps edit scopes separate per execution cwd", async () => {
-		writeFileSync(join(testDir, "same-name.txt"), "from ctx dir\n");
-		writeFileSync(join(factoryDir, "same-name.txt"), "from factory dir\n");
-		const store = createHashlineSnapshotStore();
-		const read = createReadToolDefinition(factoryDir, { hashlineStore: store });
-		const edit = createEditToolDefinition(factoryDir, { hashlineStore: store });
-		const ctx = fakeCtx(testDir);
-
-		const factoryTag = tagFrom(getTextOutput(await read.execute("read-factory", { path: "same-name.txt" })));
-		await edit.execute("edit-factory", { input: `[same-name.txt#${factoryTag}]\nreplace 1..1:\n+factory edited` });
-
-		const ctxTag = tagFrom(
-			getTextOutput(await read.execute("read-ctx", { path: "same-name.txt" }, undefined, undefined, ctx)),
-		);
-		await edit.execute(
-			"edit-ctx",
-			{ input: `[same-name.txt#${ctxTag}]\nreplace 1..1:\n+ctx edited` },
-			undefined,
-			undefined,
-			ctx,
-		);
-
-		expect(readFileSync(join(factoryDir, "same-name.txt"), "utf-8")).toBe("factory edited\n");
-		expect(readFileSync(join(testDir, "same-name.txt"), "utf-8")).toBe("ctx edited\n");
-	});
-
 	// `search`, not `grep`, is the invokable Atomic builtin: `grep` is absent from `ToolName` and
 	// is not SDK-exported, so an extension only ever reaches content search through `search`.
 	// `search` is an Atomic-owned wrapper with no upstream counterpart, so upstream #8627 could
@@ -217,32 +171,28 @@ describe("tool cwd resolution", () => {
 		expect(getTextOutput(result)).toContain("NEEDLE in the ctx root");
 	});
 
-	// The decisive case. `search` stamps hashline tags on the content it returns, so if the
-	// content comes from `ctx.cwd` while the tag is computed against the factory cwd, `edit`
-	// rejects a tag `search` just issued and the search-then-edit round-trip is broken.
-	it("search and edit agree on hashline tags across execution cwds", async () => {
+	it("search and edit resolve the same file across execution cwds", async () => {
 		writeFileSync(join(factoryDir, "target.txt"), "decoy NEEDLE factory\n");
 		writeFileSync(join(testDir, "target.txt"), "real NEEDLE ctx\n");
-		const store = createHashlineSnapshotStore();
-		const search = createSearchToolDefinition(factoryDir, { hashlineStore: store });
-		const edit = createEditToolDefinition(factoryDir, { hashlineStore: store });
+		const search = createSearchToolDefinition(factoryDir);
+		const edit = createEditToolDefinition(factoryDir);
 		const ctx = fakeCtx(testDir);
 
 		const output = getTextOutput(
 			await search.execute("search-ctx", { pattern: "NEEDLE", paths: "target.txt" }, undefined, undefined, ctx),
 		);
-		expect(output).toContain("real NEEDLE ctx");
+		expect(output).toContain("target.txt:1: real NEEDLE ctx");
 		expect(output).not.toContain("decoy NEEDLE factory");
 
 		await edit.execute(
 			"edit-after-search",
-			{ input: `[target.txt#${tagFrom(output)}]\nreplace 1..1:\n+edited via search tag` },
+			{ path: "target.txt", edits: [{ oldText: "real NEEDLE ctx", newText: "edited after search" }] },
 			undefined,
 			undefined,
 			ctx,
 		);
 
-		expect(readFileSync(join(testDir, "target.txt"), "utf-8")).toBe("edited via search tag\n");
+		expect(readFileSync(join(testDir, "target.txt"), "utf-8")).toBe("edited after search\n");
 		expect(readFileSync(join(factoryDir, "target.txt"), "utf-8")).toBe("decoy NEEDLE factory\n");
 	});
 

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
@@ -8,7 +8,6 @@ import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
-import { createHashlineSnapshotStore, type HashlineSnapshotStore, recordHashlineSnapshot } from "./hashline.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
@@ -73,7 +72,6 @@ export const searchToolSystemPromptContribution = Object.freeze({
 } as const);
 export type SearchToolInput = Static<typeof searchSchema>;
 export type SearchToolOptions = GrepToolOptions & {
-	hashlineStore?: HashlineSnapshotStore;
 	contextBefore?: number;
 	contextAfter?: number;
 };
@@ -330,11 +328,13 @@ async function searchFileLineRanges(
 	return filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter);
 }
 
+const SEARCH_ROW_PATH = /^(.+?)(?::[^:]+: |:\d+: |-\d+- )/;
+
 function groupSearchOutput(text: string): SearchOutputGroup[] {
 	const groups: SearchOutputGroup[] = [];
 	const byPath = new Map<string, SearchOutputGroup>();
 	for (const line of text.split("\n")) {
-		const match = line.match(/^(.+?)(?::[^:]+: |:\d+: |-\d+- )/);
+		const match = line.match(SEARCH_ROW_PATH);
 		if (!match) continue;
 		const filePath = match[1]!;
 		let current = byPath.get(filePath);
@@ -351,45 +351,35 @@ function isVirtualSearchTarget(target: SearchTarget | undefined): boolean {
 	return !!(target?.archive || target?.sqlite || target?.internal);
 }
 
-async function addHashlineHeadersToSearchOutput(
-	text: string,
-	cwd: string,
-	targetPath: string,
-	hashlineStore: HashlineSnapshotStore,
-): Promise<string> {
+function displaySearchPath(absolutePath: string, cwd: string): string {
+	const relativePath = relative(cwd, absolutePath);
+	const displayPath =
+		relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath) ? relativePath : absolutePath;
+	return displayPath.split(sep).join("/");
+}
+
+/** Rewrite grep's search-root-relative paths in `text` so every row names its file relative to `cwd`. */
+async function cwdRelativeSearchOutput(text: string, cwd: string, targetPath: string): Promise<string> {
 	const groups = groupSearchOutput(text);
 	if (groups.length === 0) return text;
 	const searchRoot = resolveToCwd(targetPath, cwd);
 	const targetIsFile = await fsStat(searchRoot)
 		.then((stat) => stat.isFile())
 		.catch(() => false);
-	const rendered: string[] = [];
-	let lastDir = "";
+	const displayPaths = new Map<string, string>();
 	for (const group of groups) {
-		let absolutePath = targetIsFile ? searchRoot : join(searchRoot, group.path);
-		try {
-			await fsReadFile(absolutePath);
-		} catch {
-			absolutePath = resolvePath(cwd, group.path);
-		}
-		try {
-			const content = await fsReadFile(absolutePath, "utf-8");
-			const snapshot = recordHashlineSnapshot(absolutePath, cwd, content, hashlineStore);
-			const dir = dirname(snapshot.displayPath);
-			if (dir !== "." && dir !== lastDir) {
-				rendered.push(`# ${dir}/`);
-				lastDir = dir;
-			}
-			rendered.push(`[${snapshot.displayPath}#${snapshot.tag}]`);
-			for (const line of group.lines) {
-				const match = line.match(/^.+?(?::(\d+): |-(\d+)- )(.*)$/);
-				if (match) rendered.push(`${match[1] ? "*" : " "}${match[1] ?? match[2]}:${match[3] ?? ""}`);
-			}
-		} catch {
-			rendered.push(...group.lines);
-		}
+		const rootPath = targetIsFile ? searchRoot : join(searchRoot, group.path);
+		const absolutePath = existsSync(rootPath) ? rootPath : resolvePath(cwd, group.path);
+		displayPaths.set(group.path, displaySearchPath(absolutePath, cwd));
 	}
-	return rendered.join("\n");
+	return text
+		.split("\n")
+		.map((line) => {
+			const filePath = line.match(SEARCH_ROW_PATH)?.[1];
+			const displayPath = filePath && displayPaths.get(filePath);
+			return filePath && displayPath ? `${displayPath}${line.slice(filePath.length)}` : line;
+		})
+		.join("\n");
 }
 
 function applyDefaultSearchContext(text: string, before = 1, after = 3): string {
@@ -451,12 +441,9 @@ function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileL
 function dedupeRenderedSearchOutput(content: string): string {
 	const out: string[] = [],
 		seen = new Set<string>();
-	let header = "",
-		sawContinuationHint = false,
+	let sawContinuationHint = false,
 		sawCapHint = false;
 	for (const line of content.split("\n")) {
-		const h = line.match(/^\[([^\]#]+)#[0-9A-F]{4}\]$/);
-		if (h) header = h[1]!;
 		if (/^\[\d+ matching files shown\. Use skip=\d+ to view more\.\]$/.test(line)) {
 			if (sawContinuationHint) continue;
 			sawContinuationHint = true;
@@ -465,8 +452,8 @@ function dedupeRenderedSearchOutput(content: string): string {
 			if (sawCapHint) continue;
 			sawCapHint = true;
 		}
-		const m = header ? line.match(/^[* ]?(\d+):/) : undefined;
-		const key = m ? `${header}:${m[1]}` : "";
+		const row = line.match(/^(.+?)(?::(\d+): |-(\d+)- )/);
+		const key = row ? `${row[1]}:${row[2] ?? row[3]}` : "";
 		if (key && seen.has(key)) continue;
 		if (key) seen.add(key);
 		out.push(line);
@@ -499,7 +486,6 @@ export function createSearchToolDefinition(
 	options?: SearchToolOptions,
 ): ToolDefinition<typeof searchSchema, SearchToolDetails | undefined> {
 	const grepDefinition = createGrepToolDefinition(cwd, { ...options, nativeCache: false });
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
 		...grepDefinition,
 		name: "search",
@@ -758,9 +744,7 @@ export function createSearchToolDefinition(
 					remainingMatches--;
 					if (raw)
 						renderedPages.push(
-							item.virtual
-								? raw
-								: await addHashlineHeadersToSearchOutput(raw, executionCwd, item.targetPath, hashlineStore),
+							item.virtual ? raw : await cwdRelativeSearchOutput(raw, executionCwd, item.targetPath),
 						);
 				}
 				const hasMorePages = groups.slice(skip + limit).length > 0;
@@ -797,7 +781,7 @@ export function createSearchToolDefinition(
 				if (text && text !== "No matches found") {
 					const renderedText = isVirtualSearchTarget(targets[0])
 						? text
-						: await addHashlineHeadersToSearchOutput(text, executionCwd, targets[0]?.path ?? ".", hashlineStore);
+						: await cwdRelativeSearchOutput(text, executionCwd, targets[0]?.path ?? ".");
 					const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
 					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
 					if (truncation.truncated)
@@ -847,12 +831,7 @@ export function createSearchToolDefinition(
 					if (!text || text === "No matches found") return `# ${targets[index]?.path ?? "."}\n${text}`;
 					return isVirtualSearchTarget(targets[index])
 						? text
-						: await addHashlineHeadersToSearchOutput(
-								text,
-								executionCwd,
-								targets[index]?.path ?? ".",
-								hashlineStore,
-							);
+						: await cwdRelativeSearchOutput(text, executionCwd, targets[index]?.path ?? ".");
 				}),
 			);
 			const content = dedupeRenderedSearchOutput(

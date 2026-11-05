@@ -3,7 +3,6 @@ import type { CacheWarmingMode, Settings } from "./settings-schema.ts";
 export const CACHE_WARMING_MODES = ["off", "streaming", "idle"] as const satisfies readonly CacheWarmingMode[];
 
 export type {
-	BashInterceptorSettings,
 	BranchSummarySettings,
 	CacheWarmingMode,
 	CodemodeMode,

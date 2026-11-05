@@ -981,6 +981,11 @@ createReadOnlyTools
 createReadTool, createBashTool, createEditTool, createWriteTool
 createGrepTool, createFindTool, createLsTool
 
+// Edit and write errors (see Built-in tools: Edit and write errors)
+EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorError, FileToolAbortedError
+isEditToolError, isEditInputError, isEditMatchError, isEditTargetError, isWriteSelectorError, isFileToolAbortedError
+serializeFileToolError, rehydrateEditToolError, rehydrateWriteSelectorError
+
 // Types
 type CreateAgentSessionOptions
 type CreateAgentSessionResult

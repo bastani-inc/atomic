@@ -5,7 +5,6 @@
 import { isAbsolute, relative, sep } from "node:path";
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Patch } from "../tools/hashline-engine/index.ts";
 import { resolveToCwd } from "../tools/path-utils.ts";
 import { sliceHead } from "../tools/truncate.ts";
 import type { LineRange } from "./compaction-types.js";
@@ -54,9 +53,6 @@ function addFileOp(
 	fileOps: FileOperations,
 	cwd?: string,
 ): void {
-	if (name === "edit" && typeof args?.input === "string") {
-		for (const path of hashlineEditPaths(args.input)) fileOps.edited.add(normalizeFileOpPath(path, cwd));
-	}
 	const path = typeof args?.path === "string" ? args.path : undefined;
 	if (!path) return;
 	const normalizedPath = normalizeFileOpPath(path, cwd);
@@ -72,14 +68,6 @@ export function normalizeFileOpPath(path: string, cwd?: string): string {
 	return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
 		? absolutePath
 		: relativePath || ".";
-}
-
-function hashlineEditPaths(input: string): string[] {
-	try {
-		return Patch.parse(input).sections.map((section) => section.path);
-	} catch {
-		return [];
-	}
 }
 
 /**

@@ -14,7 +14,7 @@ Look up exact commands, settings, types, and tool contracts here. For a walkthro
 - [Settings](/settings) — every settings field, with defaults and constraints.
 - [Environment variables](/environment-variables) — Atomic/Pi aliases, provider credentials, and bash session metadata.
 - [Keybindings](/keybindings) — default shortcuts and custom keybinding actions.
-- [Built-in tools](/tools), including [hashline editing](/tools#edit).
+- [Built-in tools](/tools), including [exact-text editing](/tools#edit).
 - [MCP Servers](/mcp-servers) for server configuration, tool discovery, and authentication.
 
 ## Domain contracts

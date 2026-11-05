@@ -114,7 +114,7 @@ function sessionOptions(root: string, options: CreateAgentSessionOptions = {}): 
 		cwd: root,
 		agentDir: root,
 		sessionManager: SessionManager.inMemory(root),
-		settingsManager: SettingsManager.inMemory({ bashInterceptor: { enabled: false } }),
+		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
 		tools: ["bash"],
 		...options,

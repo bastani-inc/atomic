@@ -16,15 +16,9 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
-import type { BashResult } from "../bash-executor.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import type { WaitPolicy } from "../tasks/contracts.js";
 import { validateTaskHeartbeatMs } from "../tasks/heartbeat-notice.js";
-import {
-	type BashInterceptorRule,
-	checkBashInterceptionCandidates,
-	DEFAULT_BASH_INTERCEPTOR_RULES,
-} from "./bash-interceptor.ts";
 import { stripLeadingCdCommand } from "./bash-leading-cd.ts";
 import {
 	executeNativePty,
@@ -327,13 +321,6 @@ function resolveSpawnContext(
 	applyBashSessionEnvironment(baseContext.env, sessionEnvironment);
 	return spawnHook ? spawnHook(baseContext) : baseContext;
 }
-export interface BashInterceptorResult {
-	operations?: BashOperations;
-	result?: BashResult;
-}
-export type BashInterceptor = (
-	context: BashSpawnContext,
-) => Promise<BashInterceptorResult | undefined> | BashInterceptorResult | undefined;
 export interface BashToolOptions {
 	operations?: BashOperations;
 	/** Trusted host ownership; never supplied by model arguments. */
@@ -348,11 +335,6 @@ export interface BashToolOptions {
 	shellDialect?: "posix" | "powershell";
 	/** Last-mile hook for rewriting the command/cwd/env spawn context. */
 	spawnHook?: BashSpawnHook;
-	/** Optional command interceptor used by extensions and parity tests. */
-	interceptor?: BashInterceptor;
-	interceptorEnabled?: boolean | (() => boolean);
-	availableTools?: string[];
-	interceptorRules?: BashInterceptorRule[];
 	/**
 	 * Session-scoped directory for overflow logs, resolved per execution so a
 	 * session switch (fork, branch, resume) follows the live transcript session.
@@ -375,21 +357,6 @@ export const BASH_SHELL_PRESENTATION: ShellToolPresentation = {
 	tempFilePrefix: `${APP_NAME}-bash`,
 };
 const BASH_UPDATE_THROTTLE_MS = 100;
-function bashResultToToolResult(result: BashResult): {
-	content: Array<{ type: "text"; text: string }>;
-	details: BashToolDetails | undefined;
-} {
-	const details: BashToolDetails | undefined = result.truncated
-		? { fullOutputPath: result.fullOutputPath }
-		: undefined;
-	const status = result.cancelled
-		? "Command aborted"
-		: result.exitCode && result.exitCode !== 0
-			? `Command exited with code ${result.exitCode}`
-			: undefined;
-	const text = `${result.output || "(no output)"}${status ? `\n\n${status}` : ""}`;
-	return { content: [{ type: "text", text }], details };
-}
 function formatBashCall(
 	args: { command?: string; timeout?: number; action?: string; id?: string } | undefined,
 	prompt: string,
@@ -460,13 +427,6 @@ export function createBashToolDefinition(
 	const commandPrefix = options?.commandPrefix,
 		exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
-	const interceptor = options?.interceptor;
-	const isInterceptorEnabled = (): boolean =>
-		typeof options?.interceptorEnabled === "function"
-			? options.interceptorEnabled()
-			: (options?.interceptorEnabled ?? !!interceptor);
-	const availableTools = options?.availableTools ?? ["read", "search", "find", "edit", "write"];
-	const interceptorRules = options?.interceptorRules ?? DEFAULT_BASH_INTERCEPTOR_RULES;
 	const sessionTempDirOption = options?.sessionTempDir;
 	const resolveSessionTempDir = (): string | undefined =>
 		typeof sessionTempDirOption === "function" ? sessionTempDirOption() : sessionTempDirOption;
@@ -516,10 +476,6 @@ export function createBashToolDefinition(
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
 			const hasExplicitCwd = typeof bashCommand.cwd === "string";
-			const rawStrippedContext = hasExplicitCwd ? undefined : stripLeadingCdCommand(command, executionCwd);
-			const interceptorEnabled = isInterceptorEnabled();
-			if (interceptorEnabled)
-				checkBashInterceptionCandidates([command, rawStrippedContext?.command], availableTools, interceptorRules);
 			const cwdInput = hasExplicitCwd
 					? await expandShellInternalUrls(bashCommand.cwd!, executionCwd, resourceCtx)
 					: executionCwd,
@@ -546,18 +502,6 @@ export function createBashToolDefinition(
 						spawnHook,
 					)
 				: undefined;
-			if (interceptorEnabled)
-				checkBashInterceptionCandidates(
-					[
-						expandedCommand,
-						strippedExpandedContext?.command,
-						resolvedCommand,
-						spawnContext.command,
-						strippedCdContext?.command,
-					],
-					availableTools,
-					interceptorRules,
-				);
 			let expandedEnv: NodeJS.ProcessEnv | undefined;
 			if (bashCommand.env) {
 				expandedEnv = {};
@@ -570,15 +514,7 @@ export function createBashToolDefinition(
 			if (strippedCdContext && expandedEnv) strippedCdContext.env = { ...strippedCdContext.env, ...expandedEnv };
 			applyBashSessionEnvironment(spawnContext.env, sessionEnvironment);
 			if (strippedCdContext) applyBashSessionEnvironment(strippedCdContext.env, sessionEnvironment);
-			const primaryInterception = interceptorEnabled && interceptor ? await interceptor(spawnContext) : undefined;
-			const fallbackInterception =
-				!primaryInterception && strippedCdContext && interceptorEnabled && interceptor
-					? await interceptor(strippedCdContext)
-					: undefined;
-			const intercepted = primaryInterception ?? fallbackInterception;
-			if (intercepted?.result) return bashResultToToolResult(intercepted.result);
-			const ops = intercepted?.operations ?? defaultOps;
-			const executionContext = primaryInterception ? spawnContext : (strippedCdContext ?? spawnContext);
+			const executionContext = strippedCdContext ?? spawnContext;
 			const output = new OutputAccumulator({
 				tempFilePrefix: presentation.tempFilePrefix,
 				tempDir: resolveSessionTempDir(),
@@ -681,7 +617,7 @@ export function createBashToolDefinition(
 				let exitCode: number | null;
 				let observation: SupervisedCommandResult["observation"];
 				try {
-					const result = await ops.exec(executionContext.command, executionContext.cwd, {
+					const result = await defaultOps.exec(executionContext.command, executionContext.cwd, {
 						onData: handleData,
 						signal,
 						timeout,

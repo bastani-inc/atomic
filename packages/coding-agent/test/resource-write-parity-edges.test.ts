@@ -2,12 +2,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
-import { sqlite } from "./helpers/sqlite.ts";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.js";
+import { sqlite } from "./helpers/sqlite.js";
 
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map((item) => item.text ?? "").join("\n");
@@ -22,40 +19,14 @@ describe("resource write parity edges", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("returns compact write headers and stripped hashline notes", async () => {
-		const store = createHashlineSnapshotStore();
-		const write = createWriteToolDefinition(testDir, { hashlineStore: store });
+	it("writes plain files verbatim, including text that looks like old read headers", async () => {
+		const write = createToolDefinition("write", testDir);
+		const content = "[copy.txt#1A2B]\n1:hello\n";
 		const writeOutput = text(
-			await write.execute(
-				"plain-write",
-				{ path: "plain.txt", content: "hello\n" },
-				undefined,
-				undefined,
-				{} as never,
-			),
+			await write.execute("plain-write", { path: "copy.txt", content }, undefined, undefined, {} as never),
 		);
-		expect(writeOutput).toMatch(/^\[plain\.txt#[0-9A-F]{4}\]\nSuccessfully wrote to /);
-		expect(writeOutput).not.toContain("1:hello");
-		const readOutput = text(
-			await createReadToolDefinition(testDir, { hashlineStore: store }).execute(
-				"read-plain",
-				{ path: "plain.txt" },
-				undefined,
-				undefined,
-				{} as never,
-			),
-		);
-		const copied = text(
-			await write.execute(
-				"copy-write",
-				{ path: "copy.txt", content: readOutput },
-				undefined,
-				undefined,
-				{} as never,
-			),
-		);
-		expect(copied).toContain("Note: stripped copied hashline headers");
-		expect(readFileSync(join(testDir, "copy.txt"), "utf8")).toBe("hello\n");
+		expect(writeOutput).toBe("Successfully wrote to copy.txt");
+		expect(readFileSync(join(testDir, "copy.txt"), "utf8")).toBe(content);
 	});
 
 	it("rejects malformed zip member bounds", () => {
@@ -69,7 +40,7 @@ describe("resource write parity edges", () => {
 	});
 	it("rejects archive directory write targets", async () => {
 		await expect(
-			createWriteToolDefinition(testDir).execute(
+			createToolDefinition("write", testDir).execute(
 				"zip-dir",
 				{ path: "a.zip:dir/", content: "x" },
 				undefined,
@@ -88,7 +59,7 @@ describe("resource write parity edges", () => {
 		} finally {
 			db.close();
 		}
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-default",
 			{ path: "data.sqlite:t", content: "{}" },
 			undefined,
@@ -103,12 +74,11 @@ describe("resource write parity edges", () => {
 		}
 	});
 
-	it("returns conflict resolution snapshot headers usable by edit", async () => {
-		const store = createHashlineSnapshotStore(),
-			file = join(testDir, "conflict.txt");
+	it("resolves a conflict, and edit then changes the result by exact text", async () => {
+		const file = join(testDir, "conflict.txt");
 		writeFileSync(file, "pre\n<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\npost\n", "utf8");
 		const writeOutput = text(
-			await createWriteToolDefinition(testDir, { hashlineStore: store }).execute(
+			await createToolDefinition("write", testDir).execute(
 				"resolve",
 				{ path: "conflict://1", content: "@ours" },
 				undefined,
@@ -116,11 +86,10 @@ describe("resource write parity edges", () => {
 				{} as never,
 			),
 		);
-		const tag = writeOutput.match(/\[conflict\.txt#([0-9A-F]{4})\]/)?.[1];
-		expect(tag).toBeTruthy();
-		await createEditToolDefinition(testDir, { hashlineStore: store }).execute(
+		expect(writeOutput).toBe("Resolved conflict 1");
+		await createToolDefinition("edit", testDir).execute(
 			"edit",
-			{ input: `[conflict.txt#${tag}]\ninsert tail:\n+tail` },
+			{ path: "conflict.txt", edits: [{ oldText: "post\n", newText: "post\ntail\n" }] },
 			undefined,
 			undefined,
 			{} as never,
@@ -138,7 +107,7 @@ describe("resource write parity edges", () => {
 			db.close();
 		}
 		let output = text(
-			await createWriteToolDefinition(testDir).execute(
+			await createToolDefinition("write", testDir).execute(
 				"sqlite-miss-update",
 				{ path: "data.sqlite:users:missing", content: "{name:'Ada'}" },
 				undefined,
@@ -148,7 +117,7 @@ describe("resource write parity edges", () => {
 		);
 		expect(output).toContain("No row updated");
 		output = text(
-			await createWriteToolDefinition(testDir).execute(
+			await createToolDefinition("write", testDir).execute(
 				"sqlite-miss-delete",
 				{ path: "data.sqlite:users:missing", content: "" },
 				undefined,

@@ -23,10 +23,10 @@ import {
 	type SessionSummary,
 } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
-import { createWriteToolDefinition } from "../src/core/tools/write.js";
 
 function assertIncludes(text: string, part: string): void {
 	assert.ok(text.includes(part), `expected ${JSON.stringify(part)} in:\n${text}`);
@@ -402,7 +402,7 @@ describe("history:// URLs (#4252)", () => {
 
 	it("is read-only", async () => {
 		await assert.rejects(
-			createWriteToolDefinition(PROJECT).execute(
+			createToolDefinition("write", PROJECT).execute(
 				"write",
 				{ path: "history://sessions", content: "x" },
 				undefined,

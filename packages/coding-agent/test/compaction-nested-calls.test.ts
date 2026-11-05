@@ -30,28 +30,25 @@ test("compaction retains file operations performed by nested tools", () => {
 
 for (const nested of [false, true]) {
 	for (const cwd of [undefined, resolve("/repo")]) {
-		test(`compaction tracks ${nested ? "nested" : "direct"} multi-file hashline edits${cwd ? " with cwd-normalized paths" : ""} (#3656)`, () => {
+		test(`compaction tracks ${nested ? "nested" : "direct"} edits across files${cwd ? " with cwd-normalized paths" : ""} (#3656)`, () => {
 			const operations = createFileOps();
-			const calls = [
+			const replace = [{ oldText: "a", newText: "b" }];
+			const calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [
 				{ id: "read-source", name: "read", arguments: { path: cwd ? resolve(cwd, "source.ts") : "source.ts" } },
 				{ id: "read-notes", name: "read", arguments: { path: "notes.md" } },
 				{ id: "read-web", name: "read", arguments: { path: "https://example.com/guide" } },
 				{ id: "read-skill", name: "read", arguments: { path: "skill://tdd/SKILL.md" } },
 				{ id: "read-written", name: "read", arguments: { path: cwd ? resolve(cwd, "written.ts") : "written.ts" } },
 				{ id: "write", name: "write", arguments: { path: "written.ts", content: "created" } },
-				{
-					id: "edit",
-					name: "edit",
-					arguments: {
-						input: "[source.ts#A1B2]\nreplace 1..1:\n+changed\n[another file.ts#c3d4]\ninsert tail:\n+[payload.ts#ABCD]",
-					},
-				},
-				{ id: "edit-again", name: "edit", arguments: { input: "[./source.ts#E5F6]\ndelete 2" } },
+				{ id: "edit", name: "edit", arguments: { path: "source.ts", edits: replace } },
+				{ id: "edit-other", name: "edit", arguments: { path: "another file.ts", edits: replace } },
+				{ id: "edit-again", name: "edit", arguments: { path: "./source.ts", edits: replace } },
+				{ id: "edit-old-session", name: "edit", arguments: { input: "[old.ts#A1B2]\ndelete 1" } },
 			];
 			if (cwd)
 				calls.push(
 					{ id: "read-outside", name: "read", arguments: { path: resolve(cwd, "../repo-other/source.ts") } },
-					{ id: "edit-outside", name: "edit", arguments: { input: "[../repo-other/source.ts#A1B2]\ndelete 1" } },
+					{ id: "edit-outside", name: "edit", arguments: { path: "../repo-other/source.ts", edits: replace } },
 				);
 			extractFileOpsFromMessage(
 				nested

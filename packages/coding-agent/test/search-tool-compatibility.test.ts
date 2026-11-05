@@ -3,10 +3,10 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createFindToolDefinition } from "../src/core/tools/find.ts";
-import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { createFindToolDefinition } from "../src/core/tools/find.js";
+import { createGrepToolDefinition } from "../src/core/tools/grep.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -323,8 +323,7 @@ describe("find and search builtins", () => {
 			}),
 		);
 
-		expect(output).toMatch(/\[a\.txt#[0-9A-F]{4}\]/);
-		expect(output).toContain("*2:Needle one");
+		expect(output).toContain("a.txt-1- before\na.txt:2: Needle one\na.txt-3- after");
 		expect(output).not.toContain("b.txt");
 	});
 
@@ -369,7 +368,7 @@ describe("find and search builtins", () => {
 		writeFileSync(join(testDir, "a.txt"), "needle\n");
 		await createSearchToolDefinition(testDir).execute("prime-search", { pattern: "needle", paths: "." });
 		await createFindToolDefinition(testDir).execute("prime-find", { paths: ["*.txt"] });
-		await createWriteToolDefinition(testDir).execute("write-new", { path: "b.txt", content: "needle\n" });
+		await createToolDefinition("write", testDir).execute("write-new", { path: "b.txt", content: "needle\n" });
 
 		const searchOutput = textOutput(
 			await createSearchToolDefinition(testDir).execute("search-new", { pattern: "needle", paths: "." }),
@@ -456,7 +455,7 @@ describe("find and search builtins", () => {
 				paths: "range.txt:3-3",
 			}),
 		);
-		expect(ranged).toContain("*3:needle three");
+		expect(ranged).toContain("range.txt:3: needle three");
 		expect(ranged).not.toContain("needle one");
 
 		const skippedSingleFile = textOutput(
@@ -466,7 +465,7 @@ describe("find and search builtins", () => {
 				skip: 1,
 			}),
 		);
-		expect(skippedSingleFile).toContain("*1:needle one");
+		expect(skippedSingleFile).toContain("range.txt:1: needle one");
 	});
 
 	it("renders configured context around search line-range matches", async () => {
@@ -477,10 +476,7 @@ describe("find and search builtins", () => {
 				paths: "scoped.txt:2-2",
 			}),
 		);
-		expect(output).toContain(" 1:pre");
-		expect(output).toContain("*2:needle");
-		expect(output).toContain(" 3:post");
-		expect(output).toContain(" 4:more");
+		expect(output).toContain("scoped.txt-1- pre\nscoped.txt:2: needle\nscoped.txt-3- post\nscoped.txt-4- more");
 	});
 
 	it("finds ranged matches beyond the internal raw grep cap", async () => {
@@ -492,7 +488,7 @@ describe("find and search builtins", () => {
 				paths: "many.txt:100002",
 			}),
 		);
-		expect(output).toContain("*100002:needle");
+		expect(output).toContain("many.txt:100002: needle");
 		expect(output).not.toContain("No matches found");
 	});
 
@@ -504,11 +500,10 @@ describe("find and search builtins", () => {
 				paths: "range-context.txt:1-3",
 			}),
 		);
-		expect(output).toContain(" 1:alpha");
-		expect(output).toContain("*2:needle");
-		expect(output).toContain(" 3:omega");
-		expect(output).toContain(" 4:outside");
-		expect(output).not.toContain("*4:outside");
+		expect(output).toContain(
+			"range-context.txt-1- alpha\nrange-context.txt:2: needle\nrange-context.txt-3- omega\nrange-context.txt-4- outside",
+		);
+		expect(output).not.toContain("range-context.txt:4: outside");
 	});
 
 	it("uses backend regex semantics for direct ranged file searches", async () => {
@@ -519,7 +514,7 @@ describe("find and search builtins", () => {
 				paths: "inline-case.txt:1-1",
 			}),
 		);
-		expect(output).toContain("*1:Needle");
+		expect(output).toContain("inline-case.txt:1: Needle");
 	});
 
 	it("uses search.skip to page by matching files", async () => {
@@ -535,7 +530,7 @@ describe("find and search builtins", () => {
 			}),
 		);
 
-		expect((output.match(/\.txt#/g) ?? []).length).toBe(2);
+		expect((output.match(/\.txt:1: needle/g) ?? []).length).toBe(2);
 		expect(output).toContain("needle");
 	});
 

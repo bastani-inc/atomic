@@ -4,13 +4,12 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { isDocumentPath } from "../src/core/tools/read-document-extract.ts";
-import type { InternalResourceContext } from "../src/core/tools/resource-selectors.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
-import { TestSqliteDatabase } from "./helpers/sqlite.ts";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
+import { isDocumentPath } from "../src/core/tools/read-document-extract.js";
+import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { TestSqliteDatabase } from "./helpers/sqlite.js";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -66,7 +65,7 @@ describe("resource selector tools", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 	it("reads writes and searches zip archive members", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-write",
 			{ path: "bundle.zip:src/a.txt", content: "alpha\nneedle\nabc\n" },
@@ -109,7 +108,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("keeps archive regex semantics and splits delimiter-joined archive search paths", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-case-write",
 			{ path: "case.zip:a.txt", content: "Needle\n" },
@@ -155,7 +154,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("honors verbose regex comments for archive and internal resource searches", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-verbose-comment",
 			{ path: "verbose.zip:a.txt", content: "foobar\n" },
 			undefined,
@@ -187,7 +186,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("preserves archive members with delimiters and ripgrep inline flags", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-space-member",
 			{ path: "space.zip:a b.txt", content: "needle spaced\n" },
@@ -244,7 +243,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("does not steal archive member names that look like read suffixes", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-raw-member",
 			{ path: "z.zip:raw", content: "hello\nthere\n" },
 			undefined,
@@ -283,7 +282,7 @@ describe("resource selector tools", () => {
 			),
 		);
 		expect(rawRange).toBe("there");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-normal-member",
 			{ path: "z.zip:a.txt", content: "one\ntwo\n" },
 			undefined,
@@ -304,7 +303,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("honors raw and conflict suffixes for extensionless archive members", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-readme",
 			{ path: "extless.zip:README", content: "hello\n" },
@@ -349,7 +348,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("honors archive read suffixes for colon members and before ranges", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-colon-member",
 			{ path: "colon.zip:dir:file.txt", content: "needle\n" },
@@ -408,7 +407,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("filters conflict-only reads for archive members", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-conflict-member",
 			{
 				path: "conflict.zip:file.txt",
@@ -436,7 +435,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("reads and searches archive members named like line selectors", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-number-member",
 			{ path: "num.zip:1", content: "needle\ninside\n" },
@@ -487,14 +486,14 @@ describe("resource selector tools", () => {
 	});
 
 	it("does not strip suffix-looking archive member path segments", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-raw-segment",
 			{ path: "seg.zip:raw:notes.txt", content: "right\n" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-plain-notes",
 			{ path: "seg.zip:notes.txt", content: "wrong\n" },
 			undefined,
@@ -512,7 +511,7 @@ describe("resource selector tools", () => {
 		);
 		expect(output).toContain("right");
 		expect(output).not.toContain("wrong");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-conflicts-segment",
 			{ path: "seg.zip:conflicts:notes.txt", content: "conflict name\n" },
 			undefined,
@@ -555,7 +554,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("surfaces pagination for archive search pages", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		for (let index = 1; index <= 21; index++)
 			await write.execute(
 				"zip-page-write",
@@ -590,7 +589,7 @@ describe("resource selector tools", () => {
 	it("resolves archive paths when probing later search pages", async () => {
 		for (let index = 1; index <= 20; index++)
 			writeFileSync(join(testDir, `first-${String(index).padStart(2, "0")}.txt`), "needle\n");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"later-zip-write",
 			{ path: "later.zip:a.txt", content: "needle later\n" },
 			undefined,
@@ -615,7 +614,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("does not return resource search context when selected range has no match", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-range-write",
 			{ path: "range.zip:a.txt", content: "alpha\nneedle\nomega\n" },
 			undefined,
@@ -635,7 +634,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("writes selected zip members without inflating unrelated entries", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		await write.execute(
 			"zip-write-small",
 			{ path: "mixed.zip:small.txt", content: "old\n" },
@@ -672,7 +671,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("blocks oversized archive member reads like file reads", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-write-big",
 			{ path: "big.zip:big.txt", content: `sentinel\n${"x".repeat(50_001)}` },
 			undefined,
@@ -693,7 +692,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("blocks multibyte archive member reads by byte size", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-write-emoji",
 			{ path: "emoji.zip:big.txt", content: "🙂".repeat(20_000) },
 			undefined,
@@ -713,7 +712,7 @@ describe("resource selector tools", () => {
 		expect(output).not.toContain("🙂🙂🙂");
 	});
 	it("pages search results across archive and filesystem targets", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-write-skip",
 			{ path: "bundle.zip:a.txt", content: "needle zip\n" },
 			undefined,
@@ -736,7 +735,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("limits first-page archive search results", async () => {
-		const write = createWriteToolDefinition(testDir);
+		const write = createToolDefinition("write", testDir);
 		for (let index = 1; index <= 21; index++) {
 			await write.execute(
 				`zip-write-page-${index}`,
@@ -760,7 +759,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("searches multiline regex patterns in archive and internal resources", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-write-multiline",
 			{ path: "multi.zip:a.txt", content: "foo\nbar\n" },
 			undefined,
@@ -796,7 +795,7 @@ describe("resource selector tools", () => {
 		const originalPath = process.env.PATH;
 		process.env.PATH = "";
 		try {
-			const write = createWriteToolDefinition(testDir);
+			const write = createToolDefinition("write", testDir);
 			await write.execute(
 				"tar-write",
 				{ path: "bundle.tar:src/a.txt", content: "alpha\nneedle\n" },
@@ -853,14 +852,9 @@ describe("resource selector tools", () => {
 
 	it("treats existing non-SQLite .db files as plain files", async () => {
 		writeFileSync(join(testDir, "notes.db"), "one\ntwo\n");
-		// The read and the write below share one store because a session gives every tool the
-		// same one. Separate default stores would make the overwrite at the end look like it
-		// came from another session, which is a fact about ownership rather than about whether
-		// a bare `.db` path routes to SQLite.
-		const hashlineStore = createHashlineSnapshotStore();
 		expect(
 			textOutput(
-				await createReadToolDefinition(testDir, { hashlineStore }).execute(
+				await createReadToolDefinition(testDir).execute(
 					"plain-db-read",
 					{ path: "notes.db" },
 					undefined,
@@ -919,7 +913,7 @@ describe("resource selector tools", () => {
 				),
 			),
 		).toContain("two");
-		await createWriteToolDefinition(testDir, { hashlineStore }).execute(
+		await createToolDefinition("write", testDir).execute(
 			"plain-db-write",
 			{ path: "notes.db", content: "plain\n" },
 			undefined,
@@ -930,7 +924,7 @@ describe("resource selector tools", () => {
 	});
 
 	it("creates missing bare .db paths as plain files", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"plain-db-create",
 			{ path: "new-notes.db", content: "hello\n" },
 			undefined,
@@ -1013,21 +1007,21 @@ describe("resource selector tools", () => {
 		db.run("insert into users values ('42', 'Alan')");
 		db.run("insert into users values ('abc', 'Ada Text')");
 		db.close();
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-write",
 			{ path: "data.sqlite:users:42", content: "{name: 'Ada',}" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-insert",
 			{ path: "data.sqlite:users", content: "{id: '7', name: 'Grace'}" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-json5-numbers",
 			{ path: "data.sqlite:numbers", content: "{flags: 0x10, score: +1}" },
 			undefined,
@@ -1045,7 +1039,7 @@ describe("resource selector tools", () => {
 				),
 			),
 		).toContain('"flags":16');
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-hex-string",
 			{ path: "data.sqlite:users:42", content: "{name: '0x10'}" },
 			undefined,
@@ -1063,7 +1057,7 @@ describe("resource selector tools", () => {
 				),
 			),
 		).toContain("0x10");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-hex-number",
 			{ path: "data.sqlite:users:42", content: "{name: 0x10}" },
 			undefined,
@@ -1096,7 +1090,7 @@ describe("resource selector tools", () => {
 				),
 			),
 		).toContain("File read blocked");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-json5-comments",
 			{ path: "data.sqlite:users:42", content: "{name: 'Ada', // user\n}" },
 			undefined,
@@ -1312,7 +1306,7 @@ describe("resource selector tools", () => {
 				),
 			),
 		).toContain("Grace");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-delete",
 			{ path: "data.sqlite:users:7", content: "" },
 			undefined,
@@ -1331,7 +1325,7 @@ describe("resource selector tools", () => {
 			),
 		).toBe("");
 		await expect(
-			createWriteToolDefinition(testDir).execute(
+			createToolDefinition("write", testDir).execute(
 				"sqlite-missing",
 				{ path: "missing.sqlite:users:1", content: JSON.stringify({ name: "Nope" }) },
 				undefined,
@@ -1340,7 +1334,7 @@ describe("resource selector tools", () => {
 			),
 		).rejects.toThrow(/SQLite database/);
 		await expect(
-			createWriteToolDefinition(testDir).execute(
+			createToolDefinition("write", testDir).execute(
 				"sqlite-empty-table",
 				{ path: "data.sqlite:users", content: "" },
 				undefined,
@@ -1349,7 +1343,7 @@ describe("resource selector tools", () => {
 			),
 		).rejects.toThrow(/empty content/);
 		await expect(
-			createWriteToolDefinition(testDir).execute(
+			createToolDefinition("write", testDir).execute(
 				"sqlite-array",
 				{ path: "data.sqlite:users", content: "[]" },
 				undefined,
@@ -1358,7 +1352,7 @@ describe("resource selector tools", () => {
 			),
 		).rejects.toThrow(/JSON object/);
 		await expect(
-			createWriteToolDefinition(testDir).execute(
+			createToolDefinition("write", testDir).execute(
 				"sqlite-unknown-query-write",
 				{ path: "data.sqlite:users?foo=bar", content: "{name:'Ada'}" },
 				undefined,
@@ -1366,7 +1360,7 @@ describe("resource selector tools", () => {
 				{} as never,
 			),
 		).rejects.toThrow(/query parameters/);
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"sqlite-long",
 			{ path: "data.sqlite:users:42", content: `{name:'${"x".repeat(2200)}needle'}` },
 			undefined,
@@ -1395,7 +1389,7 @@ describe("resource selector tools", () => {
 				},
 			},
 		};
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"artifact-write",
 			{ path: "artifact://notes/a.txt", content: "needle\n" },
 			undefined,
@@ -1403,7 +1397,7 @@ describe("resource selector tools", () => {
 			ctx as never,
 		);
 		await expect(
-			createWriteToolDefinition(testDir).execute(
+			createToolDefinition("write", testDir).execute(
 				"conflict-scope-write",
 				{ path: "conflict://abc/ours", content: "resolved\n" },
 				undefined,
@@ -1436,7 +1430,7 @@ describe("resource selector tools", () => {
 	});
 	it("splices conflict id and bulk writes without clobbering surrounding content", async () => {
 		writeFileSync(join(testDir, "one.txt"), "before\n<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\nafter\n");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"conflict-one",
 			{ path: "conflict://1", content: "@theirs\n" },
 			undefined,
@@ -1453,7 +1447,7 @@ describe("resource selector tools", () => {
 			undefined,
 			{} as never,
 		);
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"conflict-registered",
 			{ path: "conflict://1", content: "@theirs\n" },
 			undefined,
@@ -1464,7 +1458,7 @@ describe("resource selector tools", () => {
 		expect(readFileSync(join(testDir, "z.txt"), "utf8")).toContain("<<<<<<< ours");
 		writeFileSync(join(testDir, "a.txt"), "A\n<<<<<<< ours\no\n=======\nt\n>>>>>>> theirs\nZ\n");
 		writeFileSync(join(testDir, "b.txt"), "B\n<<<<<<< ours\no2\n=======\nt2\n>>>>>>> theirs\nY\n");
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"conflict-all",
 			{ path: "conflict://*", content: "resolved\n" },
 			undefined,
@@ -1473,19 +1467,6 @@ describe("resource selector tools", () => {
 		);
 		expect(readFileSync(join(testDir, "a.txt"), "utf8")).toBe("A\nresolved\nZ\n");
 		expect(readFileSync(join(testDir, "b.txt"), "utf8")).toBe("B\nresolved\nY\n");
-	});
-
-	it("rejects generated plain-file overwrites", async () => {
-		writeFileSync(join(testDir, "gen.ts"), "// @generated\nold\n");
-		await expect(
-			createWriteToolDefinition(testDir).execute(
-				"generated-write",
-				{ path: "gen.ts", content: "new\n" },
-				undefined,
-				undefined,
-				{} as never,
-			),
-		).rejects.toThrow(/generated file/);
 	});
 
 	it("truncates resource-backed search lines", async () => {

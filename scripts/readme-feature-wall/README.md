@@ -1,10 +1,10 @@
 # README feature wall
 
-The root `README.md` splits 38 capability rows into a six-row **Atomic Verifiable Runtime**
-showcase directly after the user metrics and a 32-row table after the complete **Get started**
-section. Together they cover all 27 core lessons from the
+The root `README.md` splits 37 capability rows into a six-row **Atomic Verifiable Runtime**
+showcase directly after the user metrics and a 31-row table after the complete **Get started**
+section. Together they cover 26 of the 27 core lessons from the
 [Atomic crash course](https://github.com/bastani-inc/atomic-crash-course), three distinct
-workflow-use paths, and eight remaining Extras between A.1 and A.10. One manifest owns the exact 6+32
+workflow-use paths, and eight remaining Extras between A.1 and A.10. One manifest owns the exact 6+31
 order, and every row has its own real recording.
 
 Nothing here is mocked. Every frame is the installed `atomic` binary driven by real
@@ -16,7 +16,7 @@ or model response is fabricated.
 
 | Path | What it is |
 |---|---|
-| `manifest.json` | The single source of truth: exact six-feature and 32-remaining order, 38 exact lesson labels, optional visible `display_title`, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
+| `manifest.json` | The single source of truth: exact six-feature and 31-remaining order, 37 exact lesson labels, optional visible `display_title`, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
 | `tapes/<id>.tape` | The visible beats for one row, in VHS tape syntax |
 | `tapes/<id>.prepare.sh` | Optional off-camera setup for one row; it may seed lesson files but never visible output |
 | `lib/theme.tape` | Shared terminal size, font, and colours |
@@ -52,7 +52,7 @@ the complete `## Get started` section and contains every other row in this exact
 
 ```text
 W.1 → A.10 → W.3 → 5.2 → 5.4 → A.9 → 5.5 → 5.1
-→ 6.3 → 6.1 → W.2 → 2.2 → 1.2 → 1.3 → A.2 → 3.2 → 3.3 → 4.3
+→ 6.3 → 6.1 → W.2 → 2.2 → 1.3 → A.2 → 3.2 → 3.3 → 4.3
 → 3.1 → 3.4 → 4.2 → 4.1 → 2.1 → 2.3 → 1.1 → 1.4 → 5.6 → A.7
 → A.4 → A.3 → A.1 → 3.5
 ```
@@ -62,7 +62,7 @@ The stable markers are `feature-wall:featured:start/end` and
 owns a course-bound `lesson`, `title`, `docs.label`, and full `docs.url`; only a declared
 `display_title` can change the visible `<h4>`. `build-readme.mjs` renders the public link as
 `Atomic docs · <label>` above the unchanged crash-course lesson link. `validate.mjs` keeps
-proves all 38 records and all 76 media paths appear once across the two tables.
+proves all 37 records and all 74 media paths appear once across the two tables.
 
 ## Running it
 

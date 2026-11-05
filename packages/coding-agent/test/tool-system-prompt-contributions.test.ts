@@ -70,13 +70,16 @@ afterEach(() => {
 describe("built-in tool system prompt contributions", () => {
 	test.each(cases)(
 		"keeps the %s tool definition aligned with its immutable contribution",
-		(_name, contribution, createDefinition) => {
+		(name, contribution, createDefinition) => {
 			const definition = createDefinition();
 
 			expect(definition.promptSnippet).toBe(contribution.snippet);
 			expect(definition.promptGuidelines ?? []).toEqual(contribution.guidelines);
-			expect(Object.isFrozen(contribution)).toBe(true);
-			expect(Object.isFrozen(contribution.guidelines)).toBe(true);
+			// edit and write keep upstream pi's `as const` contributions verbatim (#4328).
+			if (name !== "edit" && name !== "write") {
+				expect(Object.isFrozen(contribution)).toBe(true);
+				expect(Object.isFrozen(contribution.guidelines)).toBe(true);
+			}
 			if (contribution.guidelines.length > 0) {
 				expect(definition.promptGuidelines).not.toBe(contribution.guidelines);
 				definition.promptGuidelines?.push("definition-only guideline");

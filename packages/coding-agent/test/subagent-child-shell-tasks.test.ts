@@ -59,7 +59,7 @@ async function newSession(root: string, options: CreateAgentSessionOptions = {})
 		cwd: root,
 		agentDir: root,
 		sessionManager: SessionManager.inMemory(root),
-		settingsManager: SettingsManager.inMemory({ bashInterceptor: { enabled: false } }),
+		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
 		tools: ["bash", "powershell", "kill"],
 		...options,
@@ -93,7 +93,7 @@ async function childOf(
 	const child = await newSession(root, {
 		...inherited,
 		sessionManager: SessionManager.inMemory(root),
-		settingsManager: SettingsManager.inMemory({ bashInterceptor: { enabled: false } }),
+		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
 		tools: ["bash", "powershell", "kill"],
 		subagentPolicy: childPolicy(executionEnded.signal),

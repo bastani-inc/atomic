@@ -15,8 +15,6 @@ interface SettingsManagerResourceAccessors {
 	setQuietStartup(quiet: QuietStartup): void;
 	getShellCommandPrefix(): string | undefined;
 	setShellCommandPrefix(prefix: string | undefined): void;
-	getBashInterceptorEnabled(): boolean;
-	setBashInterceptorEnabled(enabled: boolean): void;
 	getSearchContextBefore(): number;
 	getSearchContextAfter(): number;
 	/** Default task heartbeat cadence in milliseconds; `0` disables. Invalid values use the default. */
@@ -121,17 +119,6 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.shellCommandPrefix = prefix;
 		state.markModified("shellCommandPrefix");
-		state.save();
-	},
-
-	getBashInterceptorEnabled() {
-		return settingsInternals(this).settings.bashInterceptor?.enabled ?? SETTINGS_DEFAULTS.bashInterceptor.enabled;
-	},
-
-	setBashInterceptorEnabled(enabled) {
-		const state = settingsInternals(this);
-		state.globalSettings.bashInterceptor = { ...(state.globalSettings.bashInterceptor ?? {}), enabled };
-		state.markModified("bashInterceptor");
 		state.save();
 	},
 

@@ -55,12 +55,12 @@ const components: Array<{ name: string; create: (outputPad: number) => OutputPad
 	{ name: "tool execution", create: (outputPad) => createTool(tool, outputPad) },
 	{ name: "tool execution without a definition", create: (outputPad) => createTool(undefined, outputPad) },
 	{
-		name: "edit result",
+		name: "self-rendered edit result",
 		create: (outputPad) => {
 			const component = new ToolExecutionComponent(
 				"edit",
 				"id",
-				{ input: "[file.txt#abcd]" },
+				{ path: "file.txt", edits: [{ oldText: "old", newText: "new" }] },
 				{ outputPad },
 				createEditToolDefinition("/"),
 				ui,

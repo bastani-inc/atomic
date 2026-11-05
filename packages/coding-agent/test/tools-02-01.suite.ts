@@ -2,17 +2,9 @@ import { mkdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createBashTool } from "../src/core/tools/bash.ts";
-import { createGrepTool } from "../src/core/tools/grep.ts";
-import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
+import { createWriteTool } from "../src/index.js";
 
-const _readTool = createReadTool(process.cwd());
 const writeTool = createWriteTool(process.cwd());
-const _editTool = createEditTool(process.cwd());
-const _bashTool = createBashTool(process.cwd());
-const _grepTool = createGrepTool(process.cwd());
-const _findTool = createFindTool(process.cwd());
-const _lsTool = createLsTool(process.cwd());
 
 // Helper to extract text from content blocks
 function getTextOutput(result: any): string {
@@ -22,10 +14,6 @@ function getTextOutput(result: any): string {
 			.map((c: any) => c.text)
 			.join("\n") || ""
 	);
-}
-
-function _shellQuoteForTest(value: string): string {
-	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 describe("Coding Agent Tools", () => {
@@ -49,22 +37,17 @@ describe("Coding Agent Tools", () => {
 
 			const result = await writeTool.execute("test-call-3", { path: testFile, content });
 
-			// Pi sync (e583b290, upstream #8979): the confirmation no longer reports a
-			// byte count, because it was counting UTF-16 code units. Atomic prefixes the
-			// message with its hashline header, so this asserts the tail rather than the
-			// whole output the way upstream's `toBe` does.
-			expect(getTextOutput(result)).toContain(`Successfully wrote to ${testFile}`);
-			expect(getTextOutput(result)).not.toMatch(/Successfully wrote \d+ bytes/);
-			expect(result.details?.resolvedPath).toBe(testFile);
+			expect(getTextOutput(result)).toBe(`Successfully wrote to ${testFile}`);
+			expect(result.details).toBeUndefined();
 		});
+
 		it("should create parent directories", async () => {
 			const testFile = join(testDir, "nested", "dir", "test.txt");
 			const content = "Nested content";
 
 			const result = await writeTool.execute("test-call-4", { path: testFile, content });
 
-			expect(getTextOutput(result)).toContain(`Successfully wrote to ${testFile}`);
-			expect(getTextOutput(result)).not.toMatch(/Successfully wrote \d+ bytes/);
+			expect(getTextOutput(result)).toContain("Successfully wrote");
 		});
 	});
 });

@@ -161,29 +161,26 @@ describe("native bash PTY execution", () => {
 		expect(result.content[0]?.text).toContain("tty");
 	});
 
-	it("checks bashInterceptor before commandPrefix is prepended", async () => {
+	it("runs shell file commands that have dedicated tools without blocking them", async () => {
+		const executed: string[] = [];
 		const bash = createBashToolDefinition(testDir, {
 			commandPrefix: "echo setup",
-			interceptorEnabled: true,
-			operations: { exec: async () => ({ exitCode: 0 }) },
+			operations: {
+				exec: async (command) => {
+					executed.push(command);
+					return { exitCode: 0 };
+				},
+			},
 		});
-		await expect(
-			bash.execute("prefix-intercept", { command: "cat file.txt" }, undefined, undefined, {} as never),
-		).rejects.toThrow(/Use the read tool/);
+		for (const command of ["cat file.txt", "sed -i 's/a/b/' file.txt", "grep -r needle ."])
+			await bash.execute(command, { command }, undefined, undefined, {} as never);
+		expect(executed).toEqual([
+			"echo setup\ncat file.txt",
+			"echo setup\nsed -i 's/a/b/' file.txt",
+			"echo setup\ngrep -r needle .",
+		]);
 	});
 
-	it("honors dynamic bashInterceptor setting changes", async () => {
-		let enabled = false;
-		const bash = createBashToolDefinition(testDir, {
-			interceptorEnabled: () => enabled,
-			operations: { exec: async () => ({ exitCode: 0 }) },
-		});
-		await bash.execute("dynamic-off", { command: "cat file.txt" }, undefined, undefined, {} as never);
-		enabled = true;
-		await expect(
-			bash.execute("dynamic-on", { command: "cat file.txt" }, undefined, undefined, {} as never),
-		).rejects.toThrow(/Use the read tool/);
-	});
 	it("returns timeout and wall-time metadata for valid local execution", async () => {
 		const bash = createBashToolDefinition(testDir, { operations: { exec: async () => ({ exitCode: 0 }) } });
 		const result = await bash.execute(

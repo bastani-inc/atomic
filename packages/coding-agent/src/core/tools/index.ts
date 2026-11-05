@@ -22,17 +22,33 @@ export {
 	type EditToolOptions,
 	editToolSystemPromptContribution,
 } from "./edit.ts";
-export {
-	FILE_MUTATION_CONFLICT_CODE,
-	FileMutationConflict,
-	type FileMutationConflictDetails,
-	type FileMutationConflictEvidence,
-	type FileMutationConflictReason,
-	type FileMutationLiveState,
-	type MutationRequester,
-	type MutationRequesterResolver,
-} from "./file-mutation-coordinator.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
+export {
+	EditInputError,
+	type EditInputErrorCode,
+	EditMatchError,
+	type EditMatchErrorCode,
+	EditTargetError,
+	type EditTargetErrorCode,
+	EditToolError,
+	type EditToolErrorCode,
+	type EditToolErrorFields,
+	FileToolAbortedError,
+	isEditInputError,
+	isEditMatchError,
+	isEditTargetError,
+	isEditToolError,
+	isFileToolAbortedError,
+	isWriteSelectorError,
+	rehydrateEditToolError,
+	rehydrateWriteSelectorError,
+	type SerializedErrorCause,
+	type SerializedFileToolError,
+	serializeFileToolError,
+	WriteSelectorError,
+	type WriteSelectorErrorCode,
+	type WriteSelectorErrorFields,
+} from "./file-tool-errors.ts";
 export {
 	createFindTool,
 	createFindToolDefinition,
@@ -105,7 +121,6 @@ export {
 export {
 	createWriteTool,
 	createWriteToolDefinition,
-	type WriteFileOptions,
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,
@@ -119,17 +134,17 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
-import type { MutationRequesterResolver } from "./file-mutation-coordinator.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
-import { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashline.ts";
 import { createKillTool, createKillToolDefinition, type KillToolOptions } from "./kill.ts";
+import { localEditOperations, localWriteOperations, withNotebookEditPreview } from "./local-file-operations.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createSearchTool, createSearchToolDefinition, type SearchToolOptions } from "./search.ts";
 import { createTodoToolDefinition } from "./todos.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
-import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
+import { createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
+import { withWriteSelectors } from "./write-selectors.ts";
 
 export type Tool = AgentTool<TSchema, unknown>;
 export type ToolDef = ToolDefinition<TSchema, unknown>;
@@ -198,23 +213,27 @@ export interface ToolsOptions {
 	find?: FindToolOptions;
 	search?: SearchToolOptions;
 	ls?: LsToolOptions;
-	hashlineStore?: HashlineSnapshotStore;
-	/**
-	 * Session-scoped identity for whichever mutation gets rejected, forwarded to the two tools
-	 * that can raise a conflict. Deliberately not defaulted the way `hashlineStore` is: absence
-	 * means no identity is available, which the conflict path already handles.
-	 */
-	resolveMutationRequester?: MutationRequesterResolver;
+}
+
+function builtinEditOptions(options?: EditToolOptions): EditToolOptions {
+	return { ...options, operations: options?.operations ?? localEditOperations };
+}
+
+function createBuiltinEditToolDefinition(cwd: string, options?: EditToolOptions) {
+	return withNotebookEditPreview(createEditToolDefinition(cwd, builtinEditOptions(options)));
+}
+
+function createBuiltinWriteToolDefinition(cwd: string, options?: WriteToolOptions) {
+	return withWriteSelectors(
+		createWriteToolDefinition(cwd, { ...options, operations: options?.operations ?? localWriteOperations }),
+		cwd,
+	);
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
-	// Default a shared store so the singular factories don't hand read/edit/
-	// write/search isolated stores (which silently degrades drift recovery).
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	const resolveMutationRequester = options?.resolveMutationRequester;
 	switch (toolName) {
 		case "read":
-			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore });
+			return createReadToolDefinition(cwd, options?.read);
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
 		case "powershell":
@@ -222,21 +241,13 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "kill":
 			return createKillToolDefinition(options?.kill);
 		case "edit":
-			return createEditToolDefinition(cwd, {
-				...options?.edit,
-				hashlineStore,
-				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-			});
+			return createBuiltinEditToolDefinition(cwd, options?.edit);
 		case "write":
-			return createWriteToolDefinition(cwd, {
-				...options?.write,
-				hashlineStore,
-				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-			});
+			return createBuiltinWriteToolDefinition(cwd, options?.write);
 		case "find":
 			return createFindToolDefinition(cwd, options?.find);
 		case "search":
-			return createSearchToolDefinition(cwd, { ...options?.search, hashlineStore });
+			return createSearchToolDefinition(cwd, options?.search);
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "ask_user_question":
@@ -249,11 +260,9 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 }
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	const resolveMutationRequester = options?.resolveMutationRequester;
 	switch (toolName) {
 		case "read":
-			return createReadTool(cwd, { ...options?.read, hashlineStore });
+			return createReadTool(cwd, options?.read);
 		case "bash":
 			return createBashTool(cwd, options?.bash);
 		case "powershell":
@@ -261,21 +270,13 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 		case "kill":
 			return createKillTool(options?.kill);
 		case "edit":
-			return createEditTool(cwd, {
-				...options?.edit,
-				hashlineStore,
-				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-			});
+			return createEditTool(cwd, builtinEditOptions(options?.edit));
 		case "write":
-			return createWriteTool(cwd, {
-				...options?.write,
-				hashlineStore,
-				...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-			});
+			return wrapToolDefinition(createBuiltinWriteToolDefinition(cwd, options?.write));
 		case "find":
 			return createFindTool(cwd, options?.find);
 		case "search":
-			return createSearchTool(cwd, { ...options?.search, hashlineStore });
+			return createSearchTool(cwd, options?.search);
 		case "ls":
 			return createLsTool(cwd, options?.ls);
 		case "ask_user_question":
@@ -288,56 +289,35 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 }
 
 export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	const resolveMutationRequester = options?.resolveMutationRequester;
 	return [
-		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
+		createReadToolDefinition(cwd, options?.read),
 		createBashToolDefinition(cwd, options?.bash),
 		createKillToolDefinition(options?.kill),
-		createEditToolDefinition(cwd, {
-			...options?.edit,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
-		createWriteToolDefinition(cwd, {
-			...options?.write,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
+		createBuiltinEditToolDefinition(cwd, options?.edit),
+		createBuiltinWriteToolDefinition(cwd, options?.write),
 		createFindToolDefinition(cwd, options?.find),
-		createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
+		createSearchToolDefinition(cwd, options?.search),
 	];
 }
 
 export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
-		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
+		createReadToolDefinition(cwd, options?.read),
 		createFindToolDefinition(cwd, options?.find),
-		createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
+		createSearchToolDefinition(cwd, options?.search),
 		createLsToolDefinition(cwd, options?.ls),
 	];
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): BuiltinToolMap<ToolDef> {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	const resolveMutationRequester = options?.resolveMutationRequester;
 	const definitions: BuiltinToolMap<ToolDef> = {
-		read: createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
+		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		kill: createKillToolDefinition(options?.kill),
-		edit: createEditToolDefinition(cwd, {
-			...options?.edit,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
-		write: createWriteToolDefinition(cwd, {
-			...options?.write,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
+		edit: createBuiltinEditToolDefinition(cwd, options?.edit),
+		write: createBuiltinWriteToolDefinition(cwd, options?.write),
 		find: createFindToolDefinition(cwd, options?.find),
-		search: createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
+		search: createSearchToolDefinition(cwd, options?.search),
 		ls: createLsToolDefinition(cwd, options?.ls),
 		ask_user_question: createAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
@@ -349,56 +329,35 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): B
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	const resolveMutationRequester = options?.resolveMutationRequester;
 	return [
-		createReadTool(cwd, { ...options?.read, hashlineStore }),
+		createReadTool(cwd, options?.read),
 		createBashTool(cwd, options?.bash),
 		createKillTool(options?.kill),
-		createEditTool(cwd, {
-			...options?.edit,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
-		createWriteTool(cwd, {
-			...options?.write,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
+		createEditTool(cwd, builtinEditOptions(options?.edit)),
+		wrapToolDefinition(createBuiltinWriteToolDefinition(cwd, options?.write)),
 		createFindTool(cwd, options?.find),
-		createSearchTool(cwd, { ...options?.search, hashlineStore }),
+		createSearchTool(cwd, options?.search),
 	];
 }
 
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
-		createReadTool(cwd, { ...options?.read, hashlineStore }),
+		createReadTool(cwd, options?.read),
 		createFindTool(cwd, options?.find),
-		createSearchTool(cwd, { ...options?.search, hashlineStore }),
+		createSearchTool(cwd, options?.search),
 		createLsTool(cwd, options?.ls),
 	];
 }
 
 export function createAllTools(cwd: string, options?: ToolsOptions): BuiltinToolMap<Tool> {
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	const resolveMutationRequester = options?.resolveMutationRequester;
 	const tools: BuiltinToolMap<Tool> = {
-		read: createReadTool(cwd, { ...options?.read, hashlineStore }),
+		read: createReadTool(cwd, options?.read),
 		bash: createBashTool(cwd, options?.bash),
 		kill: createKillTool(options?.kill),
-		edit: createEditTool(cwd, {
-			...options?.edit,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
-		write: createWriteTool(cwd, {
-			...options?.write,
-			hashlineStore,
-			...(resolveMutationRequester ? { resolveMutationRequester } : {}),
-		}),
+		edit: createEditTool(cwd, builtinEditOptions(options?.edit)),
+		write: wrapToolDefinition(createBuiltinWriteToolDefinition(cwd, options?.write)),
 		find: createFindTool(cwd, options?.find),
-		search: createSearchTool(cwd, { ...options?.search, hashlineStore }),
+		search: createSearchTool(cwd, options?.search),
 		ls: createLsTool(cwd, options?.ls),
 		ask_user_question: wrapToolDefinition(createAskUserQuestionToolDefinition()),
 		todo: wrapToolDefinition(createTodoToolDefinition(cwd)),

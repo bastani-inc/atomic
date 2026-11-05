@@ -51,7 +51,7 @@ describe("Coding Agent Tools", () => {
 
 			const result = await readTool.execute("test-call-1", { path: testFile });
 
-			expect(getTextOutput(result)).toMatch(/\[.*test\.txt#[0-9A-F]{4}\]\n1:Hello, world!\n2:Line 2\n3:Line 3/);
+			expect(getTextOutput(result)).toBe(content);
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Continue with path selector");
 			expect(result.details?.meta?.source).toBe(testFile);
@@ -104,8 +104,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).not.toContain("File read blocked");
 			expect(result.details?.oversizedRead).toBeUndefined();
 			expect(result.details?.meta?.source).toBe(testFile);
-			expect(output).toMatch(/^\[.*threshold-allowed\.txt#[0-9A-F]{4}\]\n1:/);
-			expect(output).toContain(content);
+			expect(output).toBe(content);
 		});
 		it("should block text reads above the oversized-read char threshold without leaking content", async () => {
 			const testFile = join(testDir, "too-large.txt");
@@ -236,27 +235,19 @@ describe("Coding Agent Tools", () => {
 			const raw = getTextOutput(await readTool.execute("test-call-selector-raw", { path: `${testFile}:raw` }));
 			expect(raw).toBe("one\ntwo\nthree\nfour");
 			const ranged = getTextOutput(await readTool.execute("test-call-selector", { path: `${testFile}:2-3` }));
-			expect(ranged).toContain("1:one");
-			expect(ranged).toContain("2:two");
-			expect(ranged).toContain("3:three");
-			expect(ranged).toContain("4:four");
+			expect(ranged).toBe("one\ntwo\nthree\nfour");
 			const counted = getTextOutput(await readTool.execute("test-call-selector-plus", { path: `${testFile}:3+1` }));
-			expect(counted).toContain("3:three");
-			expect(counted).toContain("4:four");
+			expect(counted).toBe("[Lines 2-4 of 4]\ntwo\nthree\nfour");
 			const outOfRange = getTextOutput(
 				await readTool.execute("test-call-selector-oob", { path: `${testFile}:5-5` }),
 			);
 			expect(outOfRange).toContain("Requested line 5 is beyond end of file");
 			const open = getTextOutput(await readTool.execute("test-call-selector-open", { path: `${testFile}:2` }));
-			expect(open).toContain("2:two");
-			expect(open).toContain("4:four");
+			expect(open).toBe("two\nthree\nfour");
 			const comma = getTextOutput(
 				await readTool.execute("test-call-selector-comma", { path: `${testFile}:2-2,4-4` }),
 			);
-			expect(comma).toContain("1:one");
-			expect(comma).toContain("2:two");
-			expect(comma).toContain("3:three");
-			expect(comma).toContain("4:four");
+			expect(comma).toBe("one\ntwo\nthree\nfour");
 		});
 
 		it("should handle open-ended line selector", async () => {

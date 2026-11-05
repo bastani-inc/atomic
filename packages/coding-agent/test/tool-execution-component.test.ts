@@ -208,7 +208,7 @@ describe("ToolExecutionComponent parity", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-2",
-			{ input: "[README.md#ABCD]\nreplace 1..1:\n+after" },
+			{ path: "README.md", oldText: "before", newText: "after" },
 			{},
 			overrideDefinition,
 			createFakeTui(),

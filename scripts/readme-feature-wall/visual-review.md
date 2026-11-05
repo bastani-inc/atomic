@@ -62,7 +62,6 @@ hold is 0.41 seconds.
 | Row | Named feature visible in sampled frames | Crop, legibility, and privacy | Result |
 |---|---|---|---|
 | 1.1 | `@greeter.ts` is read, explained, and run with `!bun greeter.ts`. | Prompt, tool result, and shell result remain readable; statusline private fields are painted. | Pass |
-| 1.2 | A tagged hashline edit changes the greeting, then a second edit shows the fresh tag and final source. | Edit hunks and outcomes fit the frame; no provider label is visible. | Pass |
 | 1.3 | The full-screen structured question UI moves through format and comments questions to review. | Options and active selection are clear at half width. | Pass |
 | 1.4 | The todo tool creates two file-based todos and lists both with states and tags. | Todo ids, titles, and status remain readable. | Pass |
 | 2.1 | Session tree output, branch choice, and fork-from-message picker are shown. | Tree labels and branch point are readable. | Pass |

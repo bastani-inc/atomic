@@ -22,7 +22,7 @@ async function sessionHarness(settings: Parameters<typeof createHarness>[0] = {}
 	const harness = await createHarness({
 		initialActiveToolNames: ["bash"],
 		...settings,
-		settings: { bashInterceptor: { enabled: false }, ...settings.settings },
+		settings: { ...settings.settings },
 	});
 	harnesses.push(harness);
 	return harness;

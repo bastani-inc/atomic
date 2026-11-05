@@ -35,9 +35,6 @@ export const SETTINGS_DEFAULTS = {
 	showCacheMissNotices: false,
 	quietStartup: false,
 	defaultProjectTrust: "ask",
-	bashInterceptor: {
-		enabled: false,
-	},
 	search: {
 		contextBefore: 1,
 		contextAfter: 3,

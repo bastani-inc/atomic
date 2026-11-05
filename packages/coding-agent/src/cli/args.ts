@@ -537,7 +537,7 @@ ${chalk.bold("Built-in Tool Names:")}
   read              - Read path selectors (files, dirs, archives, URLs)
   bash              - Execute shell commands
   powershell        - Execute PowerShell commands on Windows
-  edit              - Apply hashline-anchored source edits
+  edit              - Edit files with find/replace
   write             - Create or overwrite writable path selectors
   find              - Find filesystem paths by glob pattern (default)
   search            - Search file contents with regex (default)
