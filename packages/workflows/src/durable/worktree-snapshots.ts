@@ -79,7 +79,7 @@ export function mapWorkflowWorktreePath(path: string, mappings: readonly Worktre
 			mappings.findLast((candidate) => originalRoot(candidate.from, mappings) === root)?.to ?? mapping.to;
 		for (const source of [mapping.from, mapping.to]) {
 			const suffix = relative(source, path);
-			if (suffix !== "" && (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix))) continue;
+			if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) continue;
 			if (selected === undefined || source.length >= selected.source.length) selected = { source, target };
 		}
 	}
