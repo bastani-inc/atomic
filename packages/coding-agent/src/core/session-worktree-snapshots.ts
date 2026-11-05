@@ -7,12 +7,14 @@ import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
 import {
 	captureWorktreeSnapshot,
 	locateCheckout,
+	type WorktreeSnapshotUnavailableReason,
 	withScratchDirectory,
 	writeWorkingTree,
 } from "./worktree-snapshot/capture.ts";
 import { sha256Hex } from "./worktree-snapshot/env-hash.ts";
 import {
 	findWorkspaceError,
+	type GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceDriftError,
 	isWorkspaceError,
@@ -34,6 +36,9 @@ import type {
 	WorktreeSnapshotSettings,
 } from "./worktree-snapshot/types.ts";
 
+/** Why a turn's snapshot could not be recorded: Git is unavailable, or a typed workspace failure. */
+export type WorktreeSnapshotUnavailable = WorkspaceError | GitUnavailableError;
+
 /** Built-in tools that can change files: a turn that called one records a snapshot. */
 export const FILE_WRITING_TOOLS: ReadonlySet<string> = new Set(["bash", "edit", "write", "powershell"]);
 const PATH_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]);
@@ -45,7 +50,7 @@ export interface TurnSnapshotDependencies {
 	/** Whether a registered tool declares `writesFiles`. */
 	readonly declaresWrites: (toolName: string) => boolean;
 	/** Called once per distinct reason a snapshot could not be recorded. */
-	readonly onUnavailable: (reason: WorkspaceError) => void;
+	readonly onUnavailable: (reason: WorktreeSnapshotUnavailable) => void;
 }
 
 function isInside(parent: string, child: string): boolean {
@@ -65,7 +70,7 @@ export class SessionWorktreeSnapshotRecorder {
 		this.deps = deps;
 	}
 
-	private report(reason: WorkspaceError): void {
+	private report(reason: WorktreeSnapshotUnavailable): void {
 		const key = `${reason.code}\0${JSON.stringify(reason.fields)}`;
 		if (this.reported.has(key)) return;
 		this.reported.add(key);
@@ -135,7 +140,7 @@ export class SessionWorktreeSnapshotRecorder {
 	}
 
 	private reportFailure(error: unknown): void {
-		const reason = findWorkspaceError(error);
+		const reason = isGitUnavailableError(error) ? error : findWorkspaceError(error);
 		if (!reason) throw error;
 		this.report(reason);
 	}
@@ -164,7 +169,7 @@ export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMap
 
 export type SessionWorktreeResume =
 	| { readonly status: "none" }
-	| { readonly status: "unavailable"; readonly reason: WorkspaceError }
+	| { readonly status: "unavailable"; readonly reason: GitUnavailableError }
 	| { readonly status: "verified"; readonly snapshot: WorktreeSnapshot; readonly cwd: string }
 	| {
 			readonly status: "restored";
@@ -437,7 +442,7 @@ export function describeSnapshotExport(
 
 export type WorktreeSnapshotComparison =
 	| { readonly status: "match"; readonly tree: string }
-	| { readonly status: "missing"; readonly reason: WorkspaceError }
+	| { readonly status: "missing"; readonly reason: WorktreeSnapshotUnavailableReason }
 	| {
 			readonly status: "differs";
 			readonly head: string;

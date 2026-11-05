@@ -6,6 +6,7 @@ import {
 	captureWorktreeSnapshot,
 	findWorkspaceError,
 	GitUnavailableError,
+	gitInstallCommand,
 	isGitUnavailableError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,
@@ -47,11 +48,15 @@ const drift = () =>
 
 describe("WorkspaceError rendering", () => {
 	test("each class renders <what failed>: <subject> (<code>). <hint>", () => {
-		const git = new GitUnavailableError("/opt/git/bin/git");
+		const git = new GitUnavailableError("not-installed", "/opt/git/bin/git");
 		assert.equal(
 			git.message,
-			`Git is unavailable: /opt/git/bin/git could not be started, and worktree snapshots need it to read and rebuild repository state (git-unavailable). Install Git with \`${git.installCommand}\` or put it on PATH, then retry.`,
+			`Git is unavailable: /opt/git/bin/git could not be started, and worktree snapshots need it to read and rebuild repository state (not-installed). Install Git with \`${gitInstallCommand()}\` or put it on PATH, then retry.`,
 		);
+		assert.equal(git.hint, `Install Git with \`${gitInstallCommand()}\` or put it on PATH, then retry.`);
+		assert.equal(gitInstallCommand("darwin"), "xcode-select --install");
+		assert.equal(gitInstallCommand("win32"), "winget install --id Git.Git -e");
+		assert.equal(gitInstallCommand("aix"), "install Git from https://git-scm.com/downloads");
 		assert.equal(
 			new WorkspaceConfigError("settings", "snapshots.fullEvery", "a positive integer").message,
 			"Invalid worktree snapshot setting: snapshots.fullEvery from settings (invalid-setting). Set snapshots.fullEvery to a positive integer.",
@@ -109,7 +114,10 @@ describe("WorkspaceError guards and chains", () => {
 		assert.equal(isWorkspaceError(new Error("tree-drift")), false);
 		assert.equal(isWorkspaceError(null), false);
 		assert.equal(isWorkspaceError("WorkspaceError"), false);
-		assert.equal(isGitUnavailableError(new GitUnavailableError("git")), true);
+		assert.equal(isGitUnavailableError(new GitUnavailableError("offline", "git")), true);
+		assert.equal(isGitUnavailableError({ name: "GitUnavailableError", code: "checksum-mismatch" }), true);
+		assert.equal(isGitUnavailableError({ name: "GitUnavailableError", code: "tree-drift" }), false);
+		assert.equal(isWorkspaceError(new GitUnavailableError("not-installed", "git")), false);
 		assert.equal(
 			isWorkspaceGitError(new WorkspaceGitError({ operation: "x", cwd: "/", exitCode: 1, detail: "" })),
 			true,
@@ -151,13 +159,14 @@ describe("WorkspaceError guards and chains", () => {
 		assert.ok(restore.cause instanceof WorkspaceGitError);
 		assert.equal(restore.cause.exitCode, 128);
 		for (const error of [
-			new GitUnavailableError("git"),
+			new GitUnavailableError("unsupported-platform", "git"),
 			new WorkspaceConfigError("env", "F", "x"),
 			new WorkspaceSnapshotError("blob-store-unsupported", "jsonl"),
 		]) {
 			const back = rehydrateWorkspaceError(serializeWorkspaceError(error));
 			assert.equal(back.constructor, error.constructor);
 			assert.deepEqual((back as WorkspaceError).fields, error.fields);
+			assert.equal((back as WorkspaceError).code, error.code);
 		}
 	});
 
@@ -197,7 +206,7 @@ describe("fail-fast setup errors", () => {
 			}),
 			(error: unknown) => {
 				assert.ok(error instanceof GitUnavailableError);
-				assert.equal(error.code, "git-unavailable");
+				assert.equal(error.code, "not-installed");
 				assert.match(error.hint, /Install Git with `.+`/);
 				return true;
 			},

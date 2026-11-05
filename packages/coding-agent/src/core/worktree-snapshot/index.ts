@@ -16,6 +16,7 @@ export {
 	findWorkspaceError,
 	GitUnavailableError,
 	type GitUnavailableErrorCode,
+	gitInstallCommand,
 	isGitUnavailableError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,

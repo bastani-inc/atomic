@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
-import { isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
+import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -352,7 +352,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 		this.startSessionRecovery("resume");
 		return result;
 	} catch (error: unknown) {
-		if (isWorkspaceError(error)) {
+		if (isWorkspaceError(error) || isGitUnavailableError(error)) {
 			this.showError(error.message);
 			return { cancelled: true };
 		}

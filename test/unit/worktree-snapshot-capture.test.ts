@@ -49,9 +49,10 @@ describe("captureWorktreeSnapshot availability", () => {
 		const reason = (result as Extract<WorktreeSnapshotCapture, { status: "unavailable" }>).reason;
 		assert.ok(reason instanceof GitUnavailableError);
 		assert.ok(isGitUnavailableError(reason));
-		assert.equal(reason.code, "git-unavailable");
+		assert.equal(reason.code, "not-installed");
 		assert.equal((reason as GitUnavailableError).executable, sandbox.path("missing-git"));
-		assert.equal(reason.retryable, false);
+		assert.equal((reason as GitUnavailableError).platform, process.platform);
+		assert.equal((reason as GitUnavailableError).retryable, false);
 	});
 
 	test("records nothing outside a repository (#4245)", async () => {

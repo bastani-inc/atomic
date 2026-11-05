@@ -71,7 +71,7 @@ import {
 } from "./core/storage/process-selection.js";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
-import { isWorkspaceError } from "./core/worktree-snapshot/errors.ts";
+import { isGitUnavailableError, isWorkspaceError } from "./core/worktree-snapshot/errors.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import {
 	type AppMode,
@@ -583,7 +583,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			sessionManager = await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd);
 		}
 	} catch (error) {
-		if (!isWorkspaceError(error)) throw error;
+		if (!isWorkspaceError(error) && !isGitUnavailableError(error)) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${error.message}`));
 		process.exit(1);

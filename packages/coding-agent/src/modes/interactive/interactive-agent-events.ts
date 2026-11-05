@@ -29,7 +29,7 @@ import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
 /** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
-const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["git-unavailable", "not-a-repository", "unborn-head"]);
+const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["not-installed", "not-a-repository", "unborn-head"]);
 
 InteractiveModeBase.prototype.maybeShowInstallChangeWarning = function (this: InteractiveModeBase): boolean {
 	if (this.installChangeWarningShown) return true;
