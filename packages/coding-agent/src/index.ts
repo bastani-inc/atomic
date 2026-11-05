@@ -748,6 +748,15 @@ export * from "./index-extensions.js";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 export {
+	isStartupBenchmarkConfigError,
+	isStartupBenchmarkError,
+	rehydrateStartupBenchmarkError,
+	StartupBenchmarkConfigError,
+	StartupBenchmarkError,
+	type StartupBenchmarkErrorCode,
+	type StartupBenchmarkUnsupportedMode,
+} from "./main-startup-benchmark.js";
+export {
 	InteractiveMode,
 	type InteractiveModeOptions,
 	type ModelInfo,

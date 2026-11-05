@@ -32,7 +32,6 @@ import {
 	ENV_OFFLINE,
 	ENV_SESSION_DIR,
 	ENV_SKIP_VERSION_CHECK,
-	ENV_STARTUP_BENCHMARK,
 	getAgentDir,
 	getEnvValue,
 	getPackageDir,
@@ -102,6 +101,11 @@ import {
 	validateSessionIdFlags,
 } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
+import {
+	isStartupBenchmarkError,
+	measureInteractiveStartup,
+	resolveStartupBenchmark,
+} from "./main-startup-benchmark.js";
 import {
 	collectSettingsDiagnostics,
 	drainProcessStdio,
@@ -409,6 +413,14 @@ export async function main(argv: string[], options?: MainOptions) {
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	let isolateInteractiveHost =
 		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
+	let startupBenchmark: boolean;
+	try {
+		startupBenchmark = resolveStartupBenchmark(appMode, engineEnv);
+	} catch (error) {
+		if (!isStartupBenchmarkError(error)) throw error;
+		console.error(chalk.red(`Error: ${error.message}`));
+		process.exit(1);
+	}
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
@@ -995,13 +1007,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
-	const startupBenchmark = isTruthyEnvFlag(getEnvValue(ENV_STARTUP_BENCHMARK));
-	if (startupBenchmark && appMode !== "interactive") {
-		console.error(chalk.red(`Error: ${ENV_STARTUP_BENCHMARK} only supports interactive mode`));
-		startupEarlyInputCapture?.consume();
-		process.exit(1);
-	}
-
 	if (appMode === "rpc") {
 		// Standalone RPC preserves its eager catalog refresh. The isolated
 		// interactive engine does not: /model owns its bounded refresh, while an
@@ -1052,12 +1057,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		});
 		options?.internalInteractiveHarness?.onMode?.(interactiveMode);
 		if (startupBenchmark) {
-			await interactiveMode.init();
-			time("interactiveMode.init");
-			await interactiveMode.ensureDeferredStartupComplete();
-			printTimings();
-			interactiveMode.stop();
-			await runtime.dispose();
+			await measureInteractiveStartup(interactiveMode, runtime);
 			stopThemeWatcher();
 			if (process.stdout.writableLength > 0) {
 				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
