@@ -23,8 +23,7 @@ export const DEFAULT_AGENT_WAIT_BUDGET_MS = 30000;
 /**
  * How long a command's process admission waits while the owner's own commands hold process permits for cleanup that
  * is not confirmed, before it fails with a `TaskCleanupAdmissionTimeoutError`. A quarantined command keeps its permit
- * until its cleanup is confirmed or the owner closes, so this wait has no other end; capacity that live work holds is
- * still waited for however long it takes.
+ * until its cleanup is confirmed or the owner closes. Waiting on capacity held only by live work has no added bound.
  */
 export const QUARANTINED_ADMISSION_WAIT_MS = 5_000;
 /** These objects are live authority, not DTOs, restart tokens or model arguments. */
@@ -824,7 +823,8 @@ export class TaskSupervisor {
 			return await admission.acquire("process", AbortSignal.any([external, refusal.signal]));
 		} catch (error) {
 			const { blocked } = outcome;
-			if (!blocked || external.aborted) throw error;
+			if (external.aborted) throw external.reason;
+			if (!blocked) throw error;
 			throw new TaskCleanupAdmissionTimeoutError(
 				blocked.holders,
 				{ timeoutMs: QUARANTINED_ADMISSION_WAIT_MS, elapsedMs: blocked.elapsedMs },

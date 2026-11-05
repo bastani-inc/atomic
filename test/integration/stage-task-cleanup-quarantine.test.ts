@@ -8,8 +8,9 @@ import {
 	type TaskCleanupError,
 } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session-types.js";
+import { withResourceAdmission } from "../../packages/coding-agent/src/core/resource-admission-scope.js";
 import type { ResourceAdmission, ResourcePermit } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId, ResourceFailure, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
@@ -453,9 +454,13 @@ class PermitAdmission implements ResourceAdmission {
 	acquired = 0;
 	releaseCalls = 0;
 	failure: Error | undefined;
+	abortCleanup: (() => Promise<void>) | undefined;
+	readonly signals: AbortSignal[] = [];
 	private readonly waiters: Array<() => void> = [];
 	constructor(private readonly limit: number) {}
-	acquire(_kind: "session" | "process", signal?: AbortSignal): Promise<ResourcePermit> {
+	acquire(kind: "session" | "process", signal?: AbortSignal): Promise<ResourcePermit> {
+		assert.equal(kind, "process");
+		if (signal) this.signals.push(signal);
 		if (signal?.aborted) return Promise.reject(signal.reason);
 		return new Promise((resolve, reject) => {
 			if (this.failure) {
@@ -491,7 +496,9 @@ class PermitAdmission implements ResourceAdmission {
 					const index = this.waiters.indexOf(grant);
 					if (index < 0) return;
 					this.waiters.splice(index, 1);
-					reject(signal.reason);
+					const cleanup = this.abortCleanup?.();
+					if (cleanup) cleanup.then(() => reject(signal.reason), reject);
+					else reject(signal.reason);
 				},
 				{ once: true },
 			);
@@ -518,7 +525,7 @@ function settle(promise: Promise<unknown>): Promise<unknown> {
 	);
 }
 
-function holderHost(dir: string, admission: ResourceAdmission) {
+function holderHost(dir: string, admission?: ResourceAdmission, onQuarantine?: (taskId: TaskId) => void) {
 	let reportQuarantine!: (taskId: TaskId) => void;
 	const quarantined = within(
 		new Promise<TaskId>((resolve) => {
@@ -532,16 +539,27 @@ function holderHost(dir: string, admission: ResourceAdmission) {
 		scope: { kind: "session", sessionId: randomUUID() },
 		authorizeLaunch() {},
 		resourceAdmission: admission,
-		onTaskCleanupQuarantined: (ref) => reportQuarantine(ref.taskId),
+		onTaskCleanupQuarantined: (ref) => {
+			reportQuarantine(ref.taskId);
+			onQuarantine?.(ref.taskId);
+		},
 	});
 	const { supervisor, owner } = host.ownerBinding;
-	const launch = (command: string, signal: AbortSignal = blockedLaunchSignal()) =>
-		supervisor.startCommandTask(
-			owner,
-			{ kind: "command", command, terminal: { kind: "pipe" } },
-			randomUUID() as OperationId,
-			signal,
+	const launch = (command: string, signal?: AbortSignal) => {
+		const guard = new AbortController();
+		const timeout = setTimeout(
+			() => guard.abort(new Error("the command admission exceeded its test guard")),
+			BLOCKED_LAUNCH_LIMIT_MS,
 		);
+		return supervisor
+			.startCommandTask(
+				owner,
+				{ kind: "command", command, terminal: { kind: "pipe" } },
+				randomUUID() as OperationId,
+				signal ? AbortSignal.any([signal, guard.signal]) : guard.signal,
+			)
+			.finally(() => clearTimeout(timeout));
+	};
 	const ready = launch(escapedHolderCommand(dir)).then(async (first) => {
 		assert.ok(first.ok, "the first command was admitted");
 		await waitForPidFile(dir, "holder");
@@ -557,11 +575,18 @@ function holderHost(dir: string, admission: ResourceAdmission) {
 	return { host, ready, quarantined, launch, cleanup };
 }
 
-function assertTimedOutBehind(error: unknown, taskId: TaskId): void {
+function assertTimedOutBehind(
+	error: unknown,
+	taskId: TaskId,
+	options: { maximumElapsedMs?: number; cause?: Error } = {},
+): void {
 	assert.ok(isTaskCleanupAdmissionTimeoutError(error), String(error));
 	assert.equal(error.phase, "command-admission");
 	assert.equal(error.timeoutMs, QUARANTINED_ADMISSION_WAIT_MS);
 	assert.ok(error.elapsedMs >= QUARANTINED_ADMISSION_WAIT_MS - TIMER_JITTER_MS, String(error.elapsedMs));
+	assert.equal(error.cause, options.cause);
+	if (options.maximumElapsedMs !== undefined)
+		assert.ok(error.elapsedMs <= options.maximumElapsedMs + TIMER_JITTER_MS, String(error.elapsedMs));
 	assert.equal(isRetryableTaskError(error), true);
 	assert.deepEqual(
 		error.failures.map((failure) => failure.taskId),
@@ -579,7 +604,9 @@ test.runIf(process.platform === "linux")(
 			await ready;
 			const firstTaskId = await quarantined;
 			assert.equal(admission.held, 1);
-			assertTimedOutBehind(await settle(launch("echo SECOND")), firstTaskId);
+			const beganAt = performance.now();
+			const error = await settle(launch("echo SECOND"));
+			assertTimedOutBehind(error, firstTaskId, { maximumElapsedMs: performance.now() - beganAt });
 			assert.equal(admission.held, 1);
 			assert.equal(admission.releaseCalls, 0);
 			assert.equal(admission.acquired, 1);
@@ -691,9 +718,14 @@ test.runIf(process.platform === "linux")(
 		try {
 			await ready;
 			await quarantined;
+			writeTextSync(`${dir}/release`, "");
+			const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
+			while (admission.held > 0) {
+				assert.ok(Date.now() < deadline, "the confirmed cleanup never released its permit");
+				await sleep(10);
+			}
 			const live = launch(`while [ ! -e '${dir}/finish' ]; do sleep 0.05; done; echo LIVE`);
 			const next = settle(launch("echo NEXT"));
-			writeTextSync(`${dir}/release`, "");
 			assert.ok((await live).ok, "the live command was admitted once the quarantined permit returned");
 			const probe = await Promise.race([next, sleep(PENDING_PROBE_MS).then(() => "still waiting")]);
 			assert.equal(probe, "still waiting", "live work holding the permit is waited for without a timeout");
@@ -726,6 +758,156 @@ test.runIf(process.platform === "linux")(
 			assert.equal(admission.held, 1);
 			assert.equal(admission.releaseCalls, 0);
 		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"caller cancellation during admission refusal cleanup preserves the caller's reason (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-refusal-cancel-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		let reportRefusal!: () => void;
+		const refused = new Promise<void>((resolve) => {
+			reportRefusal = resolve;
+		});
+		let finishCleanup!: () => void;
+		const cleanupFinished = new Promise<void>((resolve) => {
+			finishCleanup = resolve;
+		});
+		const timers = vi.spyOn(globalThis, "setTimeout");
+		try {
+			await ready;
+			await quarantined;
+			admission.abortCleanup = async () => {
+				reportRefusal();
+				await cleanupFinished;
+			};
+			const controller = new AbortController();
+			const waiting = settle(launch("echo SECOND", blockedLaunchSignal(controller.signal)));
+			await within(refused, BLOCKED_LAUNCH_LIMIT_MS, "the admission was never refused");
+			await sleep(QUARANTINE_OBSERVATION_MS);
+			assert.equal(timers.mock.calls.filter(([, delay]) => delay === QUARANTINED_ADMISSION_WAIT_MS).length, 1);
+			const cancellation = new Error("caller cancelled while admission cleanup was pending");
+			controller.abort(cancellation);
+			finishCleanup();
+			assert.equal((await waiting) === cancellation, true, "the admission abort replaced the caller's cancellation");
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			timers.mockRestore();
+			finishCleanup();
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a pending admission gets a fresh bound when one quarantine reaps and another starts (#4338)",
+	async () => {
+		const firstDir = makeTempDirectory("atomic-admission-first-quarantine-");
+		const nextDir = makeTempDirectory("atomic-admission-next-quarantine-");
+		const admission = new PermitAdmission(1);
+		let reportNext!: (event: { taskId: TaskId; at: number }) => void;
+		const nextQuarantine = new Promise<{ taskId: TaskId; at: number }>((resolve) => {
+			reportNext = resolve;
+		});
+		let reports = 0;
+		const { ready, quarantined, launch, cleanup } = holderHost(firstDir, admission, (taskId) => {
+			if (++reports === 2) reportNext({ taskId, at: performance.now() });
+		});
+		try {
+			await ready;
+			await quarantined;
+			const next = launch(escapedHolderCommand(nextDir));
+			const waiting = settle(launch("echo THIRD"));
+			writeTextSync(`${firstDir}/release`, "");
+			assert.ok((await next).ok);
+			const event = await within(nextQuarantine, QUARANTINE_EVENT_LIMIT_MS, "the next cleanup never quarantined");
+			const error = await waiting;
+			const elapsedMs = performance.now() - event.at;
+			assertTimedOutBehind(error, event.taskId);
+			assert.ok(elapsedMs >= QUARANTINED_ADMISSION_WAIT_MS - TIMER_JITTER_MS, String(elapsedMs));
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 1);
+		} finally {
+			writeTextSync(`${nextDir}/release`, "");
+			await cleanup();
+			const holder = pidFile(nextDir, "holder");
+			if (holder !== undefined) await waitUntilGone(holder);
+			removeTempDirectory(nextDir);
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a timeout keeps the admission's distinct cleanup rejection as its cause (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-refusal-cause-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			const firstTaskId = await quarantined;
+			const failure = new Error("admission cleanup rejected");
+			admission.abortCleanup = async () => {
+				throw failure;
+			};
+			assertTimedOutBehind(await settle(launch("echo SECOND")), firstTaskId, { cause: failure });
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"completed admissions never abort their granted signals when another task's cleanup quarantines (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-disposed-watch-");
+		const admission = new PermitAdmission(2);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			await quarantined;
+			assert.ok((await launch(`while [ ! -e '${dir}/finish' ]; do sleep 0.05; done`)).ok);
+			await sleep(PENDING_PROBE_MS);
+			assert.equal(admission.signals.length, 2);
+			assert.ok(admission.signals.every((signal) => !signal.aborted));
+			assert.equal(admission.held, 2);
+		} finally {
+			writeTextSync(`${dir}/finish`, "");
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"quarantined work that holds no permit does not bound an admission waiting on live capacity (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-unreserved-quarantine-");
+		const admission = new PermitAdmission(1);
+		let release: ResourcePermit | undefined = await admission.acquire("process");
+		const { ready, quarantined, launch, cleanup } = holderHost(dir);
+		try {
+			await ready;
+			await quarantined;
+			const waiting = withResourceAdmission(admission, () => launch("echo SECOND"));
+			const probe = await Promise.race([settle(waiting), sleep(PENDING_PROBE_MS).then(() => "still waiting")]);
+			assert.equal(probe, "still waiting");
+			await release();
+			release = undefined;
+			assert.ok((await waiting).ok);
+		} finally {
+			await release?.();
 			await cleanup();
 		}
 	},

@@ -62,7 +62,7 @@ export class TaskCleanupError extends Error {
 	}
 }
 
-/** The wait a command admission gave up on, and how long it had lasted when it did. */
+/** The bound and elapsed time of the continuous wait while this owner holds unconfirmed-cleanup permits. */
 export interface TaskCleanupAdmissionTiming {
 	readonly timeoutMs: number;
 	readonly elapsedMs: number;
@@ -73,9 +73,9 @@ export interface TaskCleanupAdmissionTiming {
  * for cleanup that was not confirmed: such a permit stays held until its cleanup is confirmed or the owner closes, so
  * the wait could have no end. It keeps the family's `code`, told apart by its `name` and its `phase`, `command-admission`.
  * The command never started, and no permit was taken or released on its account.
- * `failures` names the tasks holding permits when the wait ended. `cause` is the admission's own rejection when it
- * rejected with something other than the abort that ended the wait; otherwise there is none. A copy that crossed a
- * process boundary does not carry it.
+ * `failures` names the tasks holding permits when the wait ended. `elapsedMs` measures the continuous wait since
+ * unconfirmed permit holders last appeared. `cause` preserves a distinct admission rejection, including a wrapped
+ * abort; a direct abort adds no cause. A copy that crossed a process boundary does not carry it.
  */
 export class TaskCleanupAdmissionTimeoutError extends TaskCleanupError {
 	override readonly name = TASK_CLEANUP_ADMISSION_TIMEOUT_ERROR_NAME;

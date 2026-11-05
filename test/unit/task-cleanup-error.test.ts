@@ -605,9 +605,15 @@ test("a TaskCleanupAdmissionTimeoutError copy rehydrates into the subtype with i
 		{ ...copy, elapsedMs: "5012" },
 		{ ...copy, timeoutMs: -1 },
 		{ ...copy, elapsedMs: Number.NaN },
+		{ ...copy, timeoutMs: Number.POSITIVE_INFINITY },
+		{ ...copy, elapsedMs: Number.NEGATIVE_INFINITY },
 		{ ...copy, failures: [{ taskId: 1, resources: [] }] },
 	])
 		assert.equal(rehydrateTaskCleanupError(malformed), undefined, JSON.stringify(malformed));
+	const zero = rehydrateTaskCleanupError({ ...copy, timeoutMs: 0, elapsedMs: 0 });
+	assert.ok(zero instanceof TaskCleanupAdmissionTimeoutError);
+	assert.equal(zero.timeoutMs, 0);
+	assert.equal(zero.elapsedMs, 0);
 	const base = rehydrateTaskCleanupError({ ...copy, name: "TaskCleanupError" });
 	assert.ok(base instanceof TaskCleanupError && !(base instanceof TaskCleanupAdmissionTimeoutError));
 	assert.equal(base.phase, "command-admission");
