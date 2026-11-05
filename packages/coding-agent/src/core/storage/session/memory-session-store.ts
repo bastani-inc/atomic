@@ -22,6 +22,14 @@ import { validateSessionEntries, validateSessionHeader, validateSessionText } fr
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
+const COMMA = 0x2c;
+const NO_ENTRIES = new Uint8Array(0);
+
+interface StoredSession {
+	readonly header: Uint8Array;
+	readonly entries: Uint8Array[];
+	lastSeq: number;
+}
 
 const privateStores = new WeakSet<MemorySessionStore>();
 
@@ -39,10 +47,10 @@ export function isPrivateMemorySessionStore(store: SessionStore): boolean {
 /**
  * Sessions held in process memory. Each record is kept as UTF-8 JSON bytes, not a string: one character outside
  * Latin-1 makes the engine store a whole string at two bytes per character, which would double every idle agent's
- * history (#4326).
+ * history (#4326). An append encodes only the entries it adds, and a load joins what was appended since the last one.
  */
 export class MemorySessionStore implements SessionStore {
-	private records = new Map<string, Uint8Array>();
+	private records = new Map<string, StoredSession>();
 	private closed = false;
 
 	private readonly cwdMatcher?: SessionCwdMatcher;
@@ -60,7 +68,7 @@ export class MemorySessionStore implements SessionStore {
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
 		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
-		this.records.set(header.id, this.encode({ header, entries, lastSeq: entries.length }));
+		this.records.set(header.id, this.encodeSession(header, entries));
 		return { lastSeq: entries.length };
 	}
 
@@ -69,14 +77,11 @@ export class MemorySessionStore implements SessionStore {
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }> {
-		const previous = this.forWrite(sessionId, options);
+		const record = this.forWrite(sessionId, options);
 		validateSessionEntries(entries);
-		const lastSeq = previous.lastSeq + entries.length;
-		this.records.set(
-			sessionId,
-			this.encode({ header: previous.header, entries: [...previous.entries, ...entries], lastSeq }),
-		);
-		return { lastSeq };
+		if (entries.length > 0) record.entries.push(this.encodeEntries(entries));
+		record.lastSeq += entries.length;
+		return { lastSeq: record.lastSeq };
 	}
 
 	async replace(
@@ -89,7 +94,7 @@ export class MemorySessionStore implements SessionStore {
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
 		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-		this.records.set(sessionId, this.encode({ header, entries, lastSeq: entries.length }));
+		this.records.set(sessionId, this.encodeSession(header, entries));
 		return { lastSeq: entries.length };
 	}
 
@@ -100,7 +105,8 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
-		return this.read(sessionId)?.header;
+		const record = this.stored(sessionId);
+		return record === undefined ? undefined : (JSON.parse(utf8Decoder.decode(record.header)) as SessionRecordHeader);
 	}
 
 	async delete(sessionId: string): Promise<void> {
@@ -119,7 +125,7 @@ export class MemorySessionStore implements SessionStore {
 		for (const record of this.records.values()) {
 			this.assertOpen();
 			query.signal?.throwIfAborted();
-			const snapshot = JSON.parse(utf8Decoder.decode(record)) as SessionSnapshot;
+			const snapshot = this.decode(record);
 			if (matchesCwd && !matchesCwd(snapshot.header.cwd)) continue;
 			if (!query.includeInternal && snapshot.header.internal) continue;
 			yield summarizeSession(snapshot);
@@ -154,27 +160,66 @@ export class MemorySessionStore implements SessionStore {
 		if (this.closed) throw new StoreClosedError(this.descriptor);
 	}
 
-	private read(sessionId: string): SessionSnapshot | undefined {
+	private stored(sessionId: string): StoredSession | undefined {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		const record = this.records.get(sessionId);
-		return record === undefined ? undefined : (JSON.parse(utf8Decoder.decode(record)) as SessionSnapshot);
+		return this.records.get(sessionId);
 	}
 
-	private forWrite(sessionId: string, options: SessionWriteOptions): SessionSnapshot {
-		const snapshot = this.read(sessionId);
-		if (!snapshot) throw new SessionNotFoundError(sessionId);
-		if (options.expectSeq !== snapshot.lastSeq) {
-			throw new SessionConflictError(sessionId, options.expectSeq, snapshot.lastSeq);
+	private read(sessionId: string): SessionSnapshot | undefined {
+		const record = this.stored(sessionId);
+		return record === undefined ? undefined : this.decode(record);
+	}
+
+	private forWrite(sessionId: string, options: SessionWriteOptions): StoredSession {
+		const record = this.stored(sessionId);
+		if (!record) throw new SessionNotFoundError(sessionId);
+		if (options.expectSeq !== record.lastSeq) {
+			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
 		}
-		return snapshot;
+		return record;
 	}
 
-	private encode(snapshot: SessionSnapshot): Uint8Array {
+	private decode(record: StoredSession): SessionSnapshot {
+		return {
+			header: JSON.parse(utf8Decoder.decode(record.header)) as SessionRecordHeader,
+			entries: JSON.parse(`[${utf8Decoder.decode(joinEntries(record))}]`) as SessionEntry[],
+			lastSeq: record.lastSeq,
+		};
+	}
+
+	private encodeSession(header: SessionRecordHeader, entries: readonly SessionEntry[]): StoredSession {
+		return {
+			header: this.encode(() => JSON.stringify(header)),
+			entries: entries.length === 0 ? [] : [this.encodeEntries(entries)],
+			lastSeq: entries.length,
+		};
+	}
+
+	private encodeEntries(entries: readonly SessionEntry[]): Uint8Array {
+		return this.encode(() => JSON.stringify(entries).slice(1, -1));
+	}
+
+	private encode(text: () => string): Uint8Array {
 		try {
-			return utf8Encoder.encode(JSON.stringify(snapshot));
+			return utf8Encoder.encode(text());
 		} catch (cause) {
 			throw new StorageUnavailableError(this.descriptor, cause as Error);
 		}
 	}
+}
+
+function joinEntries(record: StoredSession): Uint8Array {
+	if (record.entries.length <= 1) return record.entries[0] ?? NO_ENTRIES;
+	let size = record.entries.length - 1;
+	for (const chunk of record.entries) size += chunk.byteLength;
+	const joined = new Uint8Array(size);
+	let offset = 0;
+	for (const [index, chunk] of record.entries.entries()) {
+		if (index > 0) joined[offset++] = COMMA;
+		joined.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	record.entries.splice(0, record.entries.length, joined);
+	return joined;
 }

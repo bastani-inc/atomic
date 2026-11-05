@@ -19,6 +19,7 @@ import { createEventBus } from "../src/core/event-bus.ts";
 import type { ToolDefinition } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionConflictError } from "../src/core/storage/session/errors.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
 import { resetSessionTempCleanupScheduleForTesting } from "../src/core/tools/session-temp-cleanup.ts";
@@ -351,5 +352,57 @@ describe("in-memory history costs its UTF-8 size (#4326)", () => {
 			grown >= sessions * expected * 0.9 && grown <= sessions * expected * 1.1,
 			`expected about ${sessions * expected} bytes of UTF-8, the store grew by ${grown}`,
 		);
+	});
+
+	test("an append encodes only the entries it adds and reads nothing back, however long the session already is (#4326)", async () => {
+		const store = new MemorySessionStore();
+		const header = { id: "s-long", version: 4 as const, createdAt: "2026-11-05T00:00:00.000Z", cwd: "/repo" };
+		const entry = (index: number) => ({
+			type: "custom" as const,
+			id: `e-${index}`,
+			parentId: null,
+			timestamp: "2026-11-05T00:00:00.000Z",
+			customType: "note",
+			data: { text: `note ${index} → ${"x".repeat(400)}` },
+		});
+		const appends = 300;
+		await store.create(header, []);
+		const encode = vi.spyOn(TextEncoder.prototype, "encode");
+		const decode = vi.spyOn(TextDecoder.prototype, "decode");
+		const encodedPerAppend: number[] = [];
+		let encodedByConflict: number;
+		try {
+			for (let index = 0; index < appends; index++) {
+				encode.mockClear();
+				await store.append(header.id, [entry(index)], { expectSeq: index });
+				encodedPerAppend.push(encode.mock.results.reduce((sum, result) => sum + result.value.byteLength, 0));
+			}
+			encode.mockClear();
+			await assert.rejects(
+				store.append(header.id, [entry(appends)], { expectSeq: appends - 1 }),
+				(error: Error) => error instanceof SessionConflictError,
+			);
+			encodedByConflict = encode.mock.calls.length;
+			assert.equal(decode.mock.calls.length, 0);
+		} finally {
+			encode.mockRestore();
+			decode.mockRestore();
+		}
+
+		assert.deepEqual(
+			encodedPerAppend,
+			Array.from({ length: appends }, (_, index) => Buffer.byteLength(JSON.stringify(entry(index)))),
+		);
+		assert.equal(encodedByConflict, 0);
+		const loaded = await store.load(header.id);
+		assert.deepEqual(loaded, {
+			header,
+			entries: Array.from({ length: appends }, (_, index) => entry(index)),
+			lastSeq: appends,
+		});
+		assert.deepEqual(await store.load(header.id), loaded, "loading again returns the same snapshot");
+		const reopened = await store.reopen();
+		await reopened.append(header.id, [entry(appends)], { expectSeq: appends });
+		assert.deepEqual((await store.load(header.id)).entries.at(-1), entry(appends), "a reopened store shares records");
 	});
 });
