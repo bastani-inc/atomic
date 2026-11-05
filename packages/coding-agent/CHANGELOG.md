@@ -28,6 +28,7 @@
 
 - A node-sqlite writers' queue directory (`<file>-writers`) that exists but cannot be read now fails transactions with `StorageWriterQueueUnusableError`, a `StorageUnavailableError` naming the cause, instead of letting them skip the queue unnoticed. A writer that cannot read the queue when it lets go of the lock still commits and reports a `StorageWriterQueueDegradedError` warning ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
 - The default model for the `anthropic` and `anthropic-api` providers is now Claude Opus 5.5 (`claude-opus-5-5`) instead of Claude Opus 4.8 (upstream b425754a)
+- Default models moved to newer models at the same or a lower price: `amazon-bedrock` Claude Opus 5.5, `azure` GPT-6.1 Sol, `google` and `google-vertex` Gemini 4 Argon, `vercel-ai-gateway` GLM 5.3, `minimax` and `minimax-cn` MiniMax-M3, `qwen-token-plan` and `qwen-token-plan-cn` Qwen3.8 Max, `opencode-go` Kimi K3.1 Pro, and Kimi K2.7 Code instead of Kimi K2.6 for `moonshotai`, `moonshotai-cn`, `huggingface`, `opencode`, `openrouter`, `cloudflare-workers-ai` and `cloudflare-ai-gateway` (upstream d84123b3)
 
 ### Fixed
 
