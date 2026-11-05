@@ -262,14 +262,15 @@ function restoreMessage(
 				];
 			}
 			const push = `Push commit ${fields.head} (with its history) to a recorded remote`;
+			const deniedPaths = fields.paths?.length ? ` ${fields.paths.join(", ")}` : "";
 			return [
 				`Cannot restore snapshot ${snapshot}: commit ${fields.head} is not on ${remotes} and its unpushed history ${
 					fields.reason === "denied-history"
-						? `touches denied paths ${fields.paths?.join(", ")}`
+						? `touches denied paths${deniedPaths}`
 						: "exceeded the snapshot size cap"
 				}`,
 				fields.reason === "denied-history"
-					? `${push}, then retry.${fields.commits?.length ? ` Commits ${fields.commits.join(", ")} add or change denied paths ${fields.paths?.join(", ")}, so pushing publishes those files.` : ""}`
+					? `${push}, then retry.${fields.commits?.length ? ` Commits ${fields.commits.join(", ")} add or change denied paths${deniedPaths}, so pushing publishes those files.` : ""}`
 					: `${push}, or raise snapshots.maxSnapshotBytes and record a new snapshot, then retry.`,
 			];
 		}
@@ -355,7 +356,7 @@ export interface WorkspaceDriftErrorFields {
 }
 
 /** The code, summary and remediation of a typed restore failure, which a drift error shows in place of its own. */
-function restoreFailure(cause: Error): { code: string; summary: string; hint: string } | undefined {
+function restoreFailure(cause: Error | undefined): { code: string; summary: string; hint: string } | undefined {
 	if (isGitUnavailableError(cause))
 		return { code: cause.code, summary: `Git is unavailable (${cause.code})`, hint: cause.hint };
 	const typed = findWorkspaceError(cause);
@@ -380,7 +381,7 @@ export class WorkspaceDriftError extends WorkspaceError implements WorkspaceDrif
 	declare readonly restoreCode?: string;
 
 	constructor(fields: WorkspaceDriftErrorFields, cause?: Error) {
-		const failure = fields.reason === "restore-failed" && cause !== undefined ? restoreFailure(cause) : undefined;
+		const failure = fields.reason === "restore-failed" ? restoreFailure(cause) : undefined;
 		super(
 			"tree-drift",
 			`Worktree drifted from its recorded snapshot: ${fields.root} has tree ${fields.actualTree ?? "none"} at ${fields.actualHead ?? "no HEAD"}, expected ${fields.expectedTree} at ${fields.expectedHead}${

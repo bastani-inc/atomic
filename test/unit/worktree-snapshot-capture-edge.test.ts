@@ -414,3 +414,19 @@ describe("snapshot blob store contract", () => {
 		assert.deepEqual(await store.listBlobHashes(), []);
 	});
 });
+
+describe.skipIf(process.platform === "win32")("the user's own Git settings during capture", () => {
+	test("a global attributes file still applies, so a capture hashes files as the user's Git does (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "note.txt"), "alpha\n");
+		const attributes = sandbox.path("global-attributes");
+		writeFileSync(attributes, "*.txt filter=host\n");
+		const { readFileSync } = await import("node:fs");
+		writeFileSync(
+			sandbox.globalConfig,
+			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\tattributesFile = ${attributes}\n[filter "host"]\n\tclean = sed s/alpha/omega/g\n`,
+		);
+		const result = captured(await captureWorktreeSnapshot(clone));
+		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${result.snapshot.tree}:note.txt`), "omega");
+	});
+});
