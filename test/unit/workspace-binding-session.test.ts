@@ -360,6 +360,9 @@ describe("workspace session helpers (#3109)", () => {
 		]);
 		const same = await bindSessionWorkspace(workspace({ repo, branch: "recorded" }), session);
 		assert.equal(same.label, "first");
+		const branchless = await bindSessionWorkspace(workspace({ repo }), session);
+		assert.equal(branchless.branch, "recorded", "a workspace without a branch restores the recorded one");
+		assert.equal(branchless.label, "first");
 		const sameBase = await bindSessionWorkspace(workspace({ repo, base: "main", branch: "recorded" }), session);
 		assert.equal(sameBase.label, "first", "an explicit base that matches the record restores it");
 		assert.equal(same.head, recorded.head);
@@ -398,6 +401,23 @@ describe("workspace session helpers (#3109)", () => {
 		);
 		assert.equal("label" in plain, false);
 		assert.equal(await bindSessionWorkspace(recorded, session), recorded);
+	});
+
+	test("cancel both restoring and resolving a session's workspace with signal.reason (#3109)", async () => {
+		const repo = createRepository(dirs.root, "cancelled-session");
+		const recorded = await resolveWorkspace(workspace({ repo, branch: "recorded" }));
+		const session = fakeSession([{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: recorded }]);
+		const controller = new AbortController();
+		const reason = new Error("session cancelled");
+		controller.abort(reason);
+		assert.equal(
+			await rejection(bindSessionWorkspace(workspace({ repo, branch: "recorded" }), session, controller.signal)),
+			reason,
+		);
+		assert.equal(
+			await rejection(bindSessionWorkspace(workspace({ repo, branch: "fresh" }), session, controller.signal)),
+			reason,
+		);
 	});
 
 	test("record a binding once per change (#3109)", async () => {
@@ -441,6 +461,19 @@ describe("sessions without a workspace (#3109)", () => {
 		const fallback = await createAgentSession(sessionOptions({}));
 		assert.equal((fallback.session as unknown as { _cwd: string })._cwd, process.cwd());
 		fallback.session.dispose();
+	});
+
+	test("a resumed session created without a workspace records nothing about its earlier one (#3109)", async () => {
+		const binding = await resolveWorkspace(workspace({ repo: createRepository(dirs.root, "earlier") }));
+		const sessionManager = SessionManager.inMemory(dirs.root);
+		await sessionManager.appendCustomEntry(WORKSPACE_BINDING_ENTRY_TYPE, binding);
+		const bindings = () =>
+			sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === WORKSPACE_BINDING_ENTRY_TYPE);
+		const resumed = await createAgentSession(sessionOptions({ sessionManager }));
+		assert.equal(bindings().length, 1);
+		resumed.session.dispose();
 	});
 
 	test("an unstarted host mirror does not write the binding entry (#3109)", async () => {

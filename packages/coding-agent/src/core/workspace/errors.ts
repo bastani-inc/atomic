@@ -19,6 +19,7 @@ export type WorkspaceBindingErrorCode =
 	| "cwd-outside-worktree"
 	| "git-unavailable"
 	| "git-failed"
+	| "filesystem-failed"
 	| "drift"
 	| "writer-conflict";
 
@@ -131,6 +132,8 @@ interface Described {
 	readonly hint: string;
 }
 
+const OUT_OF_SPACE_ERRNOS: ReadonlySet<string> = new Set(["ENOSPC", "EDQUOT"]);
+
 function describeBinding(
 	code: WorkspaceBindingErrorCode,
 	reason: WorkspaceBindingErrorReason | undefined,
@@ -196,6 +199,14 @@ function describeBinding(
 				subject: `${text(fields, "command")} exited with status ${text(fields, "status")} during ${text(fields, "phase")}`,
 				hint: "Check the repository, network access and credentials, then retry.",
 			};
+		case "filesystem-failed":
+			return {
+				what: "Workspace filesystem operation failed",
+				subject: `${text(fields, "operation")} ${text(fields, "path")} failed with ${text(fields, "errno")}`,
+				hint: OUT_OF_SPACE_ERRNOS.has(text(fields, "errno"))
+					? `Free disk space on the volume that holds ${text(fields, "path")}, then retry.`
+					: `Check that ${text(fields, "path")} is writable by this user, then retry.`,
+			};
 		case "drift":
 			return {
 				what: "Workspace changed unexpectedly",
@@ -216,6 +227,7 @@ function describeBinding(
 
 const RETRYABLE_BINDING_CODES: ReadonlySet<WorkspaceBindingErrorCode> = new Set(["writer-conflict"]);
 const RETRYABLE_GIT_PHASES: ReadonlySet<string> = new Set(["clone", "fetch", "push"]);
+const RETRYABLE_ERRNOS: ReadonlySet<string> = new Set([...OUT_OF_SPACE_ERRNOS, "EAGAIN", "EBUSY", "EMFILE", "ENFILE"]);
 
 export interface WorkspaceBindingErrorInit {
 	readonly code: WorkspaceBindingErrorCode;
@@ -240,7 +252,8 @@ export class WorkspaceBindingError extends WorkspaceError {
 			fields: init.fields,
 			retryable:
 				RETRYABLE_BINDING_CODES.has(init.code) ||
-				(init.code === "git-failed" && RETRYABLE_GIT_PHASES.has(String(init.fields.phase))),
+				(init.code === "git-failed" && RETRYABLE_GIT_PHASES.has(String(init.fields.phase))) ||
+				(init.code === "filesystem-failed" && RETRYABLE_ERRNOS.has(String(init.fields.errno))),
 			cause: init.cause,
 		});
 	}

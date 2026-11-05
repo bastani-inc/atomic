@@ -5,6 +5,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.ts";
 import {
 	acquireWorkspaceWriterLease,
 	isRetryableWorkspaceError,
@@ -12,7 +13,10 @@ import {
 	resolveWorkspace,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import { closeAfter } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 import { createRepository, git, type WorkspaceSandboxDirs, workspaceSandbox } from "../helpers/workspace-repos.ts";
+
+const DEFAULT_LOCK_WAIT_MS = 5_000;
 
 let dirs: WorkspaceSandboxDirs;
 
@@ -160,7 +164,6 @@ describe("workspace writer lease (#3109)", () => {
 		await first.release();
 		const blocker = new DatabaseSync(leaseFile(worktree));
 		blocker.exec("BEGIN IMMEDIATE");
-		const started = Date.now();
 		try {
 			const error = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "second", lockWaitMs: 200 }));
 			assert.ok(isWorkspaceBindingError(error));
@@ -169,7 +172,11 @@ describe("workspace writer lease (#3109)", () => {
 			assert.equal(error.fields.holderPid, null);
 			assert.equal(error.fields.holderHost, null);
 			assert.equal((error.cause as { name?: string }).name, "StorageUnavailableError");
-			assert.ok(Date.now() - started < 20_000, "gave up within its lock wait instead of the default");
+			const waited = Number(/gave up after (\d+) ms/.exec(String((error.cause as Error).message))?.[1]);
+			assert.ok(
+				waited >= 200 && waited < DEFAULT_LOCK_WAIT_MS,
+				`waited ${waited} ms: its own lock wait, not the default`,
+			);
 		} finally {
 			blocker.exec("ROLLBACK");
 			blocker.close();
@@ -177,5 +184,37 @@ describe("workspace writer lease (#3109)", () => {
 		const after = await acquireWorkspaceWriterLease({ worktree }, { owner: "after" });
 		assert.equal(after.holder.owner, "after");
 		await after.release();
+	});
+
+	test("reports a malformed lease store as the storage failure it is, not as another writer (#3109)", async () => {
+		const worktree = await boundWorktree("malformed");
+		const database = new DatabaseSync(leaseFile(worktree));
+		database.exec("CREATE TABLE writer (id INTEGER PRIMARY KEY)");
+		database.close();
+		const error = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "malformed" }));
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.equal(isWorkspaceBindingError(error), false);
+		assert.match(error.message, /no such column: token/);
+	});
+
+	test("closing after a failure records a close failure without replacing the failure (#3109)", async () => {
+		const failure = new Error("body failed");
+		const closeFailure = new Error("close failed");
+		const error = await rejection(
+			closeAfter({ close: () => Promise.reject(closeFailure) }, () => Promise.reject(failure)),
+		);
+		assert.equal(error, failure);
+		assert.equal((error as { cleanupCause?: unknown }).cleanupCause, closeFailure);
+		let closed = 0;
+		const value = await closeAfter(
+			{
+				close: async () => {
+					closed += 1;
+				},
+			},
+			async () => "done",
+		);
+		assert.equal(value, "done");
+		assert.equal(closed, 1);
 	});
 });

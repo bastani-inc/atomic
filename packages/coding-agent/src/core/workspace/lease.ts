@@ -3,8 +3,8 @@ import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { SqliteExecutor } from "../storage/database.js";
-import { StorageUnavailableError } from "../storage/errors.js";
 import { openNodeSqliteDatabase } from "../storage/node-sqlite.js";
+import { isSqliteBusy } from "../storage/write-ahead-log.js";
 import { attachCleanupCause, WorkspaceBindingError } from "./errors.ts";
 import { gitOutput } from "./git.ts";
 import type { BoundWorkspace } from "./resolve.ts";
@@ -90,11 +90,12 @@ function conflict(worktree: string, lockFile: string, holder: HolderRow | undefi
 			holderPid: holder?.pid ?? null,
 			holderHost: holder?.host ?? null,
 		},
-		...(cause !== undefined ? { cause } : {}),
+		cause,
 	});
 }
 
-async function closeAfter<T>(database: { close(): Promise<void> }, body: () => Promise<T>): Promise<T> {
+/** Run `body`, then close `database`. A close failure after `body` failed is recorded as its `cleanupCause`. */
+export async function closeAfter<T>(database: { close(): Promise<void> }, body: () => Promise<T>): Promise<T> {
 	let result: T;
 	try {
 		result = await body();
@@ -147,7 +148,7 @@ export async function acquireWorkspaceWriterLease(
 				return undefined;
 			});
 		} catch (error) {
-			if (error instanceof StorageUnavailableError) throw conflict(binding.worktree, lockFile, undefined, error);
+			if (isSqliteBusy(error)) throw conflict(binding.worktree, lockFile, undefined, error);
 			throw error;
 		}
 	});

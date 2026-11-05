@@ -28,8 +28,10 @@ import {
 	isWorkspaceConfigError,
 	isWorkspaceTimeoutError,
 	resolveWorkspace,
+	restoreWorkspace,
 	WorkspaceBindingError,
 	workspace,
+	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { sharedStorePath } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
@@ -39,7 +41,9 @@ import {
 	createRemote,
 	createRepository,
 	git,
+	gitTranscript,
 	type WorkspaceSandboxDirs,
+	withInjectedGit,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 
@@ -302,6 +306,7 @@ describe("workspace resolution (#3109)", () => {
 		assert.ok(isWorkspaceConfigError(result));
 		assert.equal(result.field, "workspace");
 		assert.equal(result.source, "sdk");
+		assert.equal(result.fields.expected, "a value returned by workspace({ … })");
 		assert.equal(commands.length, 0);
 	});
 });
@@ -681,6 +686,24 @@ describe("workspace git runner (#3109)", () => {
 			assert.ok(isWorkspaceBindingError(stdoutOnly));
 			assert.equal(stdoutOnly.fields.detail, "only-stdout");
 			assert.equal(stdoutOnly.fields.status, 3);
+			const stderrFirst = await rejection(
+				runWorkspaceGit({
+					cwd: dirs.root,
+					args: ["-c", "alias.fail=!echo ignored-stdout; echo '  from-stderr  ' >&2; exit 4", "fail"],
+					phase: "probe",
+				}),
+			);
+			assert.ok(isWorkspaceBindingError(stderrFirst));
+			assert.equal(stderrFirst.fields.detail, "from-stderr");
+			const long = await rejection(
+				runWorkspaceGit({
+					cwd: dirs.root,
+					args: ["-c", "alias.fail=!printf '%0900d' 0 >&2; exit 5", "fail"],
+					phase: "probe",
+				}),
+			);
+			assert.ok(isWorkspaceBindingError(long));
+			assert.equal(long.fields.detail, "0".repeat(400), "git's output is cut to 400 characters");
 			const killed = await rejection(
 				runWorkspaceGit({ cwd: dirs.root, args: ["-c", "alias.die=!kill -KILL $PPID", "die"], phase: "probe" }),
 			);
@@ -704,6 +727,18 @@ describe("workspace git runner (#3109)", () => {
 			assert.match(String(directory.fields.detail), /EACCES/);
 		} finally {
 			restore();
+		}
+		const longPath = join(dirs.root, "g".repeat(200), "i".repeat(200), "git");
+		const undo = setWorkspaceGitExecutableResolver(async () => ({ path: longPath, env: {} }));
+		try {
+			const long = await rejection(
+				runWorkspaceGit({ cwd: join(dirs.root, "gone"), args: ["--version"], phase: "probe" }),
+			);
+			assert.ok(isWorkspaceBindingError(long));
+			assert.equal(long.code, "git-failed");
+			assert.equal(long.fields.detail, `spawn ${longPath} ENOENT`.slice(0, 400));
+		} finally {
+			undo();
 		}
 	});
 
@@ -736,14 +771,259 @@ describe("workspace git runner (#3109)", () => {
 				assert.ok(isWorkspaceBindingError(missing));
 				assert.equal(missing.code, "git-unavailable");
 				symlinkSync(gitPath, link);
-				const { commands } = await countGitCommands(async () => {
+				const { transcript } = await gitTranscript(async () => {
 					await assertWorkspaceGitAvailable();
 					await assertWorkspaceGitAvailable();
 				});
-				assert.deepEqual(commands, [["--version"]]);
+				assert.deepEqual(transcript, ["probe: --version"]);
 			} finally {
 				restore();
 			}
 		},
 	);
+});
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+const SHA = /\b[0-9a-f]{40}\b/g;
+
+function transcriptOf(root: string) {
+	return <T>(body: () => Promise<T>) =>
+		gitTranscript(body, [
+			[root, "<root>"],
+			[UUID, "<uuid>"],
+			[SHA, "<sha>"],
+		]).then(({ result, transcript }) => ({
+			result,
+			transcript: transcript.filter((line) => line !== "probe: --version"),
+		}));
+}
+
+describe("workspace git phases (#3109)", () => {
+	test("runs every git command of a binding in its phase, network ones as clone or fetch (#3109)", async () => {
+		const remote = createRemote(dirs.root, "phases");
+		const record = transcriptOf(dirs.root);
+		const fresh = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/x" })));
+		const store = "<root>/atomic-home/repos/file<root>/phases.git";
+		const worktrees = "<root>/atomic-home/worktrees/file<root>/phases";
+		const snapshot = [
+			"probe: rev-parse --show-toplevel --git-common-dir",
+			"probe: symbolic-ref --short HEAD",
+			"snapshot: rev-parse HEAD",
+			"snapshot: read-tree HEAD",
+			"snapshot: add --all",
+			"snapshot: write-tree",
+			"probe: config --get-regexp ^remote\\..*\\.url$",
+			"probe: merge-base <sha> HEAD",
+		];
+		assert.deepEqual(fresh.transcript, [
+			`clone: clone --bare file://<root>/phases.git ${store}.tmp-<uuid>`,
+			"clone: config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*",
+			"fetch: fetch origin",
+			"validate: symbolic-ref --short HEAD",
+			"probe: rev-parse --verify origin/main^{commit}",
+			"validate: worktree list --porcelain",
+			"worktree-add: worktree prune",
+			"probe: rev-parse --verify refs/heads/feat/x^{commit}",
+			"probe: rev-parse --verify refs/remotes/origin/feat/x^{commit}",
+			`worktree-add: worktree add -b feat/x ${worktrees}/feat/x <sha>`,
+			...snapshot,
+		]);
+		const existing = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "main" })));
+		assert.deepEqual(existing.transcript, [
+			"validate: symbolic-ref --short HEAD",
+			"probe: rev-parse --verify refs/heads/main^{commit}",
+			"probe: rev-parse --verify origin/main^{commit}",
+			"validate: worktree list --porcelain",
+			"worktree-add: worktree prune",
+			"probe: rev-parse --verify refs/heads/main^{commit}",
+			`worktree-add: worktree add ${worktrees}/main main`,
+			...snapshot,
+		]);
+		const fetched = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/y" })));
+		assert.deepEqual(fetched.transcript.slice(0, 3), [
+			"validate: symbolic-ref --short HEAD",
+			"probe: rev-parse --verify refs/heads/feat/y^{commit}",
+			"fetch: fetch origin",
+		]);
+		commitFile(existing.result.worktree, "change.txt", "change\n");
+		const changes = await record(() => workspaceChangeSet(existing.result));
+		assert.deepEqual(changes.transcript, [
+			"change-set: rev-parse HEAD",
+			"change-set: diff --numstat --no-renames <sha> <sha>",
+		]);
+	});
+
+	test("restores a deleted worktree with a network fetch and local worktree commands (#3109)", async () => {
+		const remote = createRemote(dirs.root, "restore-phases");
+		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
+		rmSync(binding.worktree, { recursive: true, force: true });
+		const { transcript } = await transcriptOf(dirs.root)(() => restoreWorkspace(binding));
+		assert.deepEqual(transcript, [
+			"fetch: fetch origin",
+			"worktree-add: worktree prune",
+			"probe: rev-parse --verify refs/heads/main^{commit}",
+			"worktree-add: worktree add <root>/atomic-home/worktrees/file<root>/restore-phases/main main",
+			"probe: rev-parse --show-toplevel --git-common-dir",
+			"probe: symbolic-ref --short HEAD",
+			"validate: merge-base --is-ancestor <sha> HEAD",
+			"probe: config --get-regexp ^remote\\..*\\.url$",
+		]);
+		git(binding.worktree, "reset", "-q", "--hard", "HEAD");
+		git(binding.worktree, "commit", "-q", "--amend", "-m", "rewritten");
+		const drift = await transcriptOf(dirs.root)(() => rejection(restoreWorkspace(binding)));
+		assert.ok(isWorkspaceBindingError(drift.result));
+		assert.equal(drift.result.code, "drift");
+		assert.deepEqual(drift.transcript.slice(-2), [
+			"validate: merge-base --is-ancestor <sha> HEAD",
+			"validate: rev-parse HEAD",
+		]);
+	});
+
+	test("fails fast on a missing repository path without running git in it (#3109)", async () => {
+		const { result, commands } = await countGitCommands(() =>
+			rejection(resolveWorkspace(workspace({ repo: join(dirs.root, "absent") }))),
+		);
+		assert.ok(isWorkspaceBindingError(result));
+		assert.equal(result.reason, "not-a-repository");
+		assert.deepEqual(
+			commands.filter((args) => args[0] !== "--version"),
+			[],
+		);
+	});
+
+	test("reports a store directory it cannot create as a typed filesystem failure before cloning (#3109)", async () => {
+		const remote = createRemote(dirs.root, "unwritable-home");
+		writeFileSync(join(dirs.home, "repos"), "a file where the store directory belongs\n");
+		const { result, commands } = await countGitCommands(() =>
+			rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" }))),
+		);
+		assert.ok(isWorkspaceBindingError(result));
+		assert.equal(result.code, "filesystem-failed");
+		assert.equal(result.fields.operation, "create directory");
+		assert.equal(result.fields.errno, "ENOTDIR");
+		assert.equal(result.fields.path, dirname(sharedStorePath(classifyRepository(remote.url) as never)));
+		assert.equal(result.retryable, false);
+		assert.equal((result.cause as NodeJS.ErrnoException).code, "ENOTDIR");
+		assert.deepEqual(
+			commands.filter((args) => args[0] !== "--version"),
+			[],
+			"nothing was cloned",
+		);
+	});
+
+	test("derives the branch from a remote base by dropping only a leading origin/ (#3109)", async () => {
+		const remote = createRemote(dirs.root, "base-branches");
+		const bare = remote.url.replace(/^file:\/\//, "");
+		git(remote.seed, "push", "-q", bare, "HEAD:refs/heads/release");
+		git(remote.seed, "push", "-q", bare, "HEAD:refs/heads/upstream/origin/x");
+		const release = await resolveWorkspace(workspace({ repo: remote.url, base: "origin/release" }));
+		assert.equal(release.branch, "release");
+		const nested = await resolveWorkspace(workspace({ repo: remote.url, base: "upstream/origin/x" }));
+		assert.equal(nested.branch, "upstream/origin/x");
+	});
+
+	test("a waiter's abort listener is removed when the shared clone settles either way (#3109)", async () => {
+		const remote = createRemote(dirs.root, "listeners");
+		const controller = new AbortController();
+		await resolveWorkspace(workspace({ repo: remote.url, branch: "one" }), { signal: controller.signal });
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+		const url = `file://${join(dirs.root, "missing-remote.git")
+			.replaceAll("\\", "/")
+			.replace(/^(?=[A-Za-z]:)/, "/")}`;
+		const failed = await rejection(
+			resolveWorkspace(workspace({ repo: url, branch: "x" }), { signal: controller.signal }),
+		);
+		assert.ok(isWorkspaceBindingError(failed));
+		assert.equal(failed.fields.phase, "clone");
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+	});
+});
+
+// POSIX: the fake git is a shell script.
+describe.skipIf(process.platform === "win32")("workspace resolution under injected git failures (#3109)", () => {
+	function withFakeGit<T>(mode: string, body: () => Promise<T>): Promise<T> {
+		return withInjectedGit(dirs.root, { FAKE_GIT_MODE: mode }, body);
+	}
+
+	function storeParent(url: string): string {
+		const remote = classifyRepository(url);
+		assert.ok(remote?.kind === "remote");
+		return dirname(sharedStorePath(remote));
+	}
+
+	test("removes a staging clone whose fetch failed and reports the fetch (#3109)", async () => {
+		const remote = createRemote(dirs.root, "staging-fetch");
+		const error = await withFakeGit("staging-fetch", () =>
+			rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" }))),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.fields.phase, "fetch");
+		assert.equal(error.fields.detail, "injected fetch failure");
+		assert.equal(error.cleanupCause, undefined);
+		assert.deepEqual(readdirSync(storeParent(remote.url)), []);
+	});
+
+	test("keeps the fetch failure primary when the staging clone cannot be removed (#3109)", async () => {
+		const remote = createRemote(dirs.root, "unremovable-staging");
+		const error = await withFakeGit("unremovable-staging", () =>
+			rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" }))),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.fields.detail, "injected fetch failure");
+		assert.equal((error.cleanupCause as NodeJS.ErrnoException | undefined)?.code, "ENOTDIR");
+	});
+
+	test("uses the store a concurrent clone completed when its own clone failed (#3109)", async () => {
+		const remote = createRemote(dirs.root, "winner-store");
+		const binding = await withFakeGit("winner-store", () =>
+			resolveWorkspace(workspace({ repo: remote.url, branch: "x" })),
+		);
+		assert.equal(binding.repository, realpathSync(sharedStorePath(classifyRepository(remote.url) as never)));
+		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), git(remote.seed, "rev-parse", "HEAD"));
+	});
+
+	test("does not mistake a store directory without HEAD for a completed clone (#3109)", async () => {
+		const remote = createRemote(dirs.root, "empty-store");
+		const error = await withFakeGit("empty-store", () =>
+			rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" }))),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.fields.detail, "injected fetch failure");
+	});
+
+	test("replaces an empty leftover store directory with a fresh clone (#3109)", async () => {
+		const remote = createRemote(dirs.root, "leftover-store");
+		const store = sharedStorePath(classifyRepository(remote.url) as never);
+		mkdirSync(store, { recursive: true });
+		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "x" }));
+		assert.equal(existsSync(join(store, "HEAD")), true);
+		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), git(remote.seed, "rev-parse", "HEAD"));
+	});
+
+	test("a snapshot that fails before its index exists reports the git failure, not the index cleanup (#3109)", async () => {
+		const repo = createRepository(dirs.root, "read-tree");
+		const error = await withFakeGit("read-tree", () => rejection(resolveWorkspace(workspace({ repo }))));
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.fields.phase, "snapshot");
+		assert.equal(error.fields.detail, "injected read-tree failure");
+	});
+
+	test("a second resolution waits for a worktree another one is still adding (#3109)", async () => {
+		const remote = createRemote(dirs.root, "slow-add");
+		await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
+		const store = sharedStorePath(classifyRepository(remote.url) as never);
+		const target = join(
+			dirname(store).replace(join(dirs.home, "repos"), join(dirs.home, "worktrees")),
+			"slow-add",
+			"race",
+		);
+		await withFakeGit("slow-worktree-add", async () => {
+			const first = resolveWorkspace(workspace({ repo: remote.url, branch: "race" }));
+			while (!existsSync(target)) await new Promise((resolve) => setTimeout(resolve, 10));
+			const second = resolveWorkspace(workspace({ repo: remote.url, branch: "race" }));
+			const [a, b] = await Promise.all([first, second]);
+			assert.equal(a.worktree, realpathSync(target));
+			assert.equal(b.worktree, a.worktree);
+		});
+	});
 });

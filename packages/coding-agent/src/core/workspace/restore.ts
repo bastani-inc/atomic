@@ -29,7 +29,8 @@ async function hasCommit(cwd: string, ref: string, signal: AbortSignal | undefin
 /** Add a deleted worktree back from its branch, or from the remote's copy of the branch. */
 async function readd(binding: BoundWorkspace, root: string, signal: AbortSignal | undefined): Promise<void> {
 	const run = (args: readonly string[]) => runWorkspaceGit({ cwd: root, args, phase: "worktree-add", signal });
-	if (classifyRepository(binding.repo)?.kind === "remote") await run(["fetch", "origin"]);
+	if (classifyRepository(binding.repo)?.kind === "remote")
+		await runWorkspaceGit({ cwd: root, args: ["fetch", "origin"], phase: "fetch", signal });
 	await run(["worktree", "prune"]);
 	if (await hasCommit(root, `refs/heads/${binding.branch}`, signal)) {
 		await run(["worktree", "add", binding.worktree, binding.branch]);

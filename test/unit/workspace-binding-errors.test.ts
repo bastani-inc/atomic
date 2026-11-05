@@ -185,6 +185,38 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(attachCleanupCause(untouched, undefined), untouched);
 		assert.equal(untouched.cleanupCause, undefined);
 		assert.equal(attachCleanupCause("not an error", cleanup), "not an error");
+		const succeeded = new Error("cleanup succeeded");
+		attachCleanupCause(succeeded, undefined);
+		assert.equal(Object.hasOwn(succeeded, "cleanupCause"), false, "a successful cleanup adds nothing");
+	});
+
+	test("a filesystem failure is retryable only when space or handles may free up (#3109)", () => {
+		const failure = (errno: string) =>
+			new WorkspaceBindingError({
+				code: "filesystem-failed",
+				fields: { operation: "rename", path: "/home/u/.atomic/repos/x.git", errno },
+			});
+		for (const errno of ["ENOSPC", "EDQUOT", "EAGAIN", "EBUSY", "EMFILE", "ENFILE"])
+			assert.equal(failure(errno).retryable, true, errno);
+		for (const errno of ["EACCES", "EROFS", "ENOTDIR"]) assert.equal(failure(errno).retryable, false, errno);
+		assert.equal(
+			failure("EDQUOT").hint,
+			"Free disk space on the volume that holds /home/u/.atomic/repos/x.git, then retry.",
+		);
+		assert.equal(
+			failure("EACCES").hint,
+			"Check that /home/u/.atomic/repos/x.git is writable by this user, then retry.",
+		);
+		const rehydrated = rehydrateWorkspaceError(serializeWorkspaceError(failure("ENOSPC")));
+		assert.ok(rehydrated instanceof WorkspaceBindingError);
+		assert.equal(rehydrated.code, "filesystem-failed");
+		assert.equal(rehydrated.retryable, true);
+		assert.deepEqual(rehydrated.fields, failure("ENOSPC").fields);
+	});
+
+	test("a null cause serializes as no cause (#3109)", () => {
+		const error = new WorkspaceBindingError({ code: "wrong-branch", fields: { repo: "/r" }, cause: null });
+		assert.equal(serializeWorkspaceError(error).cause, undefined);
 	});
 
 	test("serialized errors rehydrate into the same class with fields, cause chain and message intact (#3109)", () => {
@@ -378,6 +410,7 @@ describe("workspace() validates its options before any work (#3109)", () => {
 			const error = thrown(() => workspace(notObject as never));
 			assert.ok(isWorkspaceConfigError(error));
 			assert.equal(error.field, "workspace");
+			assert.equal(error.source, "sdk");
 			assert.equal(error.fields.expected, "an object");
 		}
 		assert.equal(isWorkspace(workspace({ repo: "/r" })), true);
@@ -487,6 +520,9 @@ describe("workspace error messages (#3109)", () => {
 			holderPid: 42,
 			holderHost: "host",
 			lockFile: "/w/.git/lease",
+			operation: "create directory",
+			path: "/w/repos",
+			errno: "ENOSPC",
 		};
 		const binding: [string, string | null, string][] = [
 			[
@@ -543,6 +579,11 @@ describe("workspace error messages (#3109)", () => {
 				"git-failed",
 				null,
 				"Workspace git command failed: git fetch exited with status 128 during fetch (git-failed). Check the repository, network access and credentials, then retry.",
+			],
+			[
+				"filesystem-failed",
+				null,
+				"Workspace filesystem operation failed: create directory /w/repos failed with ENOSPC (filesystem-failed). Free disk space on the volume that holds /w/repos, then retry.",
 			],
 			[
 				"drift",

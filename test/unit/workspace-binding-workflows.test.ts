@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.ts";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import { setWorkspaceGitExecutableResolver } from "../../packages/coding-agent/src/core/workspace/git.ts";
+import {
+	observeWorkspaceGitCommands,
+	setWorkspaceGitExecutableResolver,
+} from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	type BoundWorkspace,
 	findWorkspaceError,
+	GitUnavailableError,
 	isWorkspaceBindingError,
 	type Workspace,
 	WorkspaceBindingError,
@@ -24,7 +28,13 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { WorkflowGracefulQuitError } from "../../packages/workflows/src/engine/workflow-tool-abort.js";
 import { createAgentSessionAdapter } from "../../packages/workflows/src/extension/wiring.js";
+import {
+	cloneWorkflowChildReplaySnapshot,
+	workflowChildReplaySnapshot,
+} from "../../packages/workflows/src/runs/foreground/executor-child-helpers.js";
+import { stageOptionsWithInputDefaults } from "../../packages/workflows/src/runs/foreground/executor-direct-helpers.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowModelCatalogPort } from "../../packages/workflows/src/shared/types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
@@ -35,6 +45,7 @@ import {
 	createRepository,
 	git,
 	type WorkspaceSandboxDirs,
+	withInjectedGit,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 import {
@@ -1237,5 +1248,544 @@ describe("workspace plumbing in the engine (#3109)", () => {
 		} finally {
 			restore();
 		}
+	});
+});
+
+describe("unbound children and binding failures (#3109)", () => {
+	test("results, stage snapshots and replays of unbound children carry no changeSet (#3109)", async () => {
+		const journalPath = join(dirs.root, "unbound-journal.sqlite");
+		let failFirst = true;
+		const children: unknown[] = [];
+		const plain = workflow({
+			name: "plain-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("plain-work", {}, async () => "ok");
+				return {};
+			},
+		});
+		const exiting = workflow({
+			name: "exiting-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => ctx.exit({ status: "completed", reason: "nothing to do" }),
+		});
+		const parent = workflow({
+			name: "unbound-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				children.push(await ctx.workflow(plain), await ctx.workflow(exiting));
+				await ctx.tool("gate", {}, async () => {
+					if (failFirst) throw new Error("interrupted");
+					return "open";
+				});
+				return {};
+			},
+		});
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const failed = await run(parent, {}, { store: createStore(), durableBackend: firstBackend });
+		assert.equal(failed.status, "failed");
+		assert.equal(Object.hasOwn(failed, "workspaceError"), false, "a failure without a workspace error adds none");
+		assert.deepEqual(
+			children.map((child) => [(child as { exited: boolean }).exited, Object.hasOwn(child as object, "changeSet")]),
+			[
+				[false, false],
+				[true, false],
+			],
+		);
+		const snapshots = failed.stages.flatMap((stage) =>
+			stage.workflowChild === undefined ? [] : [stage.workflowChild],
+		);
+		assert.equal(snapshots.length, 2);
+		for (const snapshot of snapshots) assert.equal(Object.hasOwn(snapshot, "changeSet"), false);
+		await firstBackend.close();
+		failFirst = false;
+		const resumedBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const resumed = await run(
+			parent,
+			{},
+			{ runId: failed.runId, store: createStore(), durableBackend: resumedBackend },
+		);
+		assert.equal(resumed.status, "completed", resumed.error);
+		const cached = resumed.stages.flatMap((stage) =>
+			stage.workflowChild === undefined ? [] : [stage.workflowChild],
+		);
+		assert.equal(cached.length, 2);
+		for (const snapshot of cached) assert.equal(Object.hasOwn(snapshot, "changeSet"), false);
+		await resumedBackend.close();
+	});
+
+	test("a child whose workspace cannot be bound fails its boundary with the binding error (#3109)", async () => {
+		const repo = createRepository(dirs.root, "unbindable");
+		let caught: unknown;
+		const parent = workflow({
+			name: "unbindable-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				caught = await rejection(
+					ctx.workflow(implement, { workspace: workspace({ repo, base: "nowhere", branch: "never" }) }),
+				);
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { store: createStore(), durableBackend: await createMemoryTestBackend() });
+		assert.equal(result.status, "completed", result.error);
+		assert.ok(isWorkspaceBindingError(caught));
+		assert.equal(caught.code, "unknown-base");
+		const boundary = result.stages.find((stage) => stage.name === "workflow:implement");
+		assert.equal(boundary?.status, "failed");
+		assert.equal(boundary?.error, caught.message);
+	});
+
+	test("a lease release failure after a failed child is recorded on the child's failure (#3109)", async () => {
+		const repo = createRepository(dirs.root, "release-fails");
+		let caught: unknown;
+		const breaking = workflow({
+			name: "breaks-its-lease",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("break-lease", {}, async () => {
+					const gitDir = git(ctx.cwd ?? "", "rev-parse", "--absolute-git-dir");
+					const lockFile = join(gitDir, "atomic-writer-lease.sqlite");
+					rmSync(lockFile, { force: true });
+					mkdirSync(lockFile);
+					return "broken";
+				});
+				throw new Error("child failed after breaking its lease");
+			},
+		});
+		const parent = workflow({
+			name: "release-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				caught = await rejection(ctx.workflow(breaking, { workspace: workspace({ repo, branch: "breaks" }) }));
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { store: createStore(), durableBackend: await createMemoryTestBackend() });
+		assert.equal(result.status, "completed", result.error);
+		assert.match(String((caught as Error).message), /child failed after breaking its lease/);
+		assert.ok((caught as { cleanupCause?: unknown }).cleanupCause instanceof Error);
+	});
+
+	test("a git_worktree_dir input conflicts even when the child binds its worktree to another input (#3109)", async () => {
+		const repo = createRepository(dirs.root, "both-inputs");
+		const both = workflow({
+			name: "both-inputs",
+			description: "",
+			inputs: { tree: Type.String({ default: "" }), git_worktree_dir: Type.String({ default: "" }) },
+			outputs: {},
+			worktreeFromInputs: { gitWorktreeDir: "tree" },
+			run: async () => ({}),
+		});
+		let caught: unknown;
+		const parent = workflow({
+			name: "both-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				caught = await rejection(
+					ctx.workflow(both, { workspace: workspace({ repo }), inputs: { git_worktree_dir: "/elsewhere" } }),
+				);
+				await ctx.tool("tracked", {}, async () => "ok");
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { store: createStore(), durableBackend: await createMemoryTestBackend() });
+		assert.equal(result.status, "completed", result.error);
+		assert.ok(isWorkspaceBindingError(caught));
+		assert.equal(caught.code, "conflicting-worktree-input");
+		assert.equal(caught.fields.input, "git_worktree_dir");
+	});
+
+	test("only worktree inputs conflict with a workspace, whatever the child's other inputs are named (#3109)", async () => {
+		const repo = createRepository(dirs.root, "other-inputs");
+		const oddlyNamed = workflow({
+			name: "oddly-named",
+			description: "",
+			inputs: { "": Type.String({ default: "" }) },
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("ran", {}, async () => "ok");
+				return {};
+			},
+		});
+		const parent = workflow({
+			name: "odd-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const child = await ctx.workflow(oddlyNamed, {
+					workspace: workspace({ repo, branch: "odd" }),
+					inputs: { "": "not a worktree" },
+				});
+				assert.equal(child.status, "completed");
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { store: createStore(), durableBackend: await createMemoryTestBackend() });
+		assert.equal(result.status, "completed", result.error);
+	});
+
+	test("a binding failure that races a workflow exit surfaces the exit (#3109)", async () => {
+		const repo = createRepository(dirs.root, "exit-race");
+		let exiting: () => void = () => {};
+		const exited = new Promise<void>((resolve) => {
+			exiting = resolve;
+		});
+		let childError: unknown;
+		const restore = setWorkspaceGitExecutableResolver(async () => {
+			await exited;
+			throw new GitUnavailableError({ gitPath: "git" });
+		});
+		try {
+			const parent = workflow({
+				name: "exit-race",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					ctx.workflow(implement, { workspace: workspace({ repo, branch: "race" }) }).catch((error: unknown) => {
+						childError = error;
+					});
+					await ctx.tool("before-exit", {}, async () => "ok");
+					exiting();
+					return ctx.exit({ status: "completed", reason: "stop now" });
+				},
+			});
+			const result = await run(
+				parent,
+				{},
+				{ store: createStore(), durableBackend: await createMemoryTestBackend() },
+			);
+			assert.equal(result.exited, true);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.ok(childError !== undefined);
+			assert.equal(isWorkspaceBindingError(childError), false, "the exit, not the losing binding failure");
+			assert.equal(result.stages.find((stage) => stage.name === "workflow:implement")?.status, "skipped");
+		} finally {
+			restore();
+		}
+	});
+
+	test("a quit while binding leaves the boundary unfailed for the resumed run (#3109)", async () => {
+		const repo = createRepository(dirs.root, "quit-bind");
+		const quit = new WorkflowGracefulQuitError("quit-run", "workspace binding");
+		let childError: unknown;
+		const restore = setWorkspaceGitExecutableResolver(async () => {
+			throw quit;
+		});
+		try {
+			const parent = workflow({
+				name: "quit-bind",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					childError = await rejection(
+						ctx.workflow(implement, { workspace: workspace({ repo, branch: "quit" }) }),
+					);
+					await ctx.tool("after", {}, async () => "ok");
+					return {};
+				},
+			});
+			const result = await run(
+				parent,
+				{},
+				{ store: createStore(), durableBackend: await createMemoryTestBackend() },
+			);
+			assert.equal(childError, quit);
+			assert.notEqual(result.stages.find((stage) => stage.name === "workflow:implement")?.status, "failed");
+		} finally {
+			restore();
+		}
+	});
+
+	test("continuation replay of an unbound child returns no changeSet (#3109)", async () => {
+		let failOnce = true;
+		const children: unknown[] = [];
+		const plain = workflow({
+			name: "plain-replayed",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("plain-work", {}, async () => "ok");
+				return {};
+			},
+		});
+		const parent = workflow({
+			name: "unbound-replay-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				children.push(await ctx.workflow(plain));
+				await ctx.task("after", { prompt: "after" });
+				return {};
+			},
+		});
+		const recording = recordingAdapter();
+		const adapters = {
+			...recording.adapters,
+			agentSession: {
+				async create(options: CreateAgentSessionOptions): Promise<StageSessionRuntime> {
+					const session = await recording.adapters.agentSession.create(options);
+					return {
+						...session,
+						async prompt() {
+							if (failOnce) {
+								failOnce = false;
+								throw new Error("fail once after the child");
+							}
+							appendProseTurn(session.messages);
+						},
+					};
+				},
+			},
+		};
+		const store = createStore();
+		const backend = await createMemoryTestBackend();
+		const first = await run(parent, {}, { store, durableBackend: backend, adapters });
+		assert.equal(first.status, "failed");
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const replayed = await run(
+			parent,
+			{},
+			{
+				store: createStore(),
+				durableBackend: backend,
+				adapters,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+			},
+		);
+		assert.equal(replayed.status, "completed", replayed.error);
+		assert.equal(children.length, 2);
+		assert.equal(Object.hasOwn(children[1] as object, "changeSet"), false);
+	});
+
+	test("replay snapshots copy a child's changeSet only when it has one (#3109)", () => {
+		const changeSet = {
+			repo: "/r",
+			baseCommit: "a".repeat(40),
+			branch: "b",
+			headCommit: "c".repeat(40),
+			diffStat: { files: 1, insertions: 2, deletions: 0 },
+		};
+		const bare = {
+			alias: "child",
+			workflow: "child",
+			runId: "run-1",
+			status: "completed" as const,
+			exited: false,
+			outputs: { answer: 1 },
+		};
+		assert.deepStrictEqual(cloneWorkflowChildReplaySnapshot(bare), bare);
+		assert.deepStrictEqual(cloneWorkflowChildReplaySnapshot({ ...bare, changeSet }), { ...bare, changeSet });
+		const result = {
+			workflow: "child",
+			runId: "run-1",
+			status: "completed" as const,
+			exited: false as const,
+			outputs: { answer: 1 },
+		};
+		assert.deepStrictEqual(workflowChildReplaySnapshot("child", result), bare);
+		assert.deepStrictEqual(workflowChildReplaySnapshot("child", { ...result, changeSet }), { ...bare, changeSet });
+	});
+
+	test("stage options without their own options take every input default (#3109)", () => {
+		assert.deepStrictEqual(stageOptionsWithInputDefaults(undefined, { gitWorktreeDir: "/w", baseBranch: "main" }), {
+			gitWorktreeDir: "/w",
+			baseBranch: "main",
+		});
+	});
+});
+
+/** Resolves when the first workspace git command running `subcommand firstArgument` starts. */
+function gitCommandStarted(command: string): Promise<void> {
+	return new Promise((resolve) => {
+		const stop = observeWorkspaceGitCommands((observed) => {
+			if (observed.args.slice(0, 2).join(" ") === command) {
+				stop();
+				resolve();
+			}
+		});
+	});
+}
+
+// POSIX: the slow git is a shell script.
+describe.skipIf(process.platform === "win32")("a workflow exit cancels workspace git work (#3109)", () => {
+	function slowGit(command: string) {
+		const marker = join(dirs.root, `finished-${command.replaceAll(" ", "")}`);
+		return { marker, env: { FAKE_GIT_SLOW: command, FAKE_GIT_SLEEP: "2", FAKE_GIT_MARKER: marker } };
+	}
+
+	const noop = workflow({
+		name: "noop-child",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("noop", {}, async () => "ok");
+			return {};
+		},
+	});
+
+	for (const kind of ["task", "child"] as const) {
+		test(`kills the change-set git of a bound ${kind} (#3109)`, async () => {
+			const repo = createRepository(dirs.root, `exit-${kind}`);
+			const { marker, env } = slowGit("diff --numstat");
+			const diffing = gitCommandStarted("diff --numstat");
+			let outcome: Promise<unknown> | undefined;
+			const parent = workflow({
+				name: `exit-during-${kind}-diff`,
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					const api = workspace({ repo, branch: `exit-${kind}` });
+					const pending =
+						kind === "task"
+							? ctx.task("bound", { prompt: "work", workspace: api })
+							: ctx.workflow(noop, { workspace: api });
+					outcome = pending.then(
+						() => "resolved",
+						(error: unknown) => error,
+					);
+					await ctx.tool("wait-for-diff", {}, async () => {
+						await diffing;
+						return "seen";
+					});
+					return ctx.exit({ status: "completed", reason: "stop" });
+				},
+			});
+			const backend = await createMemoryTestBackend();
+			const result = await withInjectedGit(dirs.root, env, () =>
+				run(parent, {}, { store: createStore(), durableBackend: backend, adapters: recordingAdapter().adapters }),
+			);
+			assert.equal(result.exited, true);
+			assert.notEqual(await outcome, "resolved");
+			assert.equal(existsSync(marker), false, "the change-set git was killed, not left to finish");
+		});
+	}
+
+	test("kills the worktree re-verification of a bound task after its session (#3109)", async () => {
+		const repo = createRepository(dirs.root, "exit-verify");
+		const armed = join(dirs.root, "session-finished");
+		const { marker, env } = slowGit("rev-parse --show-toplevel");
+		let verifying: Promise<void> = new Promise(() => {});
+		const recording = recordingAdapter();
+		const adapters = {
+			...recording.adapters,
+			agentSession: {
+				async create(options: CreateAgentSessionOptions): Promise<StageSessionRuntime> {
+					const session = await recording.adapters.agentSession.create(options);
+					return {
+						...session,
+						async prompt() {
+							verifying = gitCommandStarted("rev-parse --show-toplevel");
+							writeFileSync(armed, "");
+							appendProseTurn(session.messages);
+						},
+					};
+				},
+			},
+		};
+		let outcome: Promise<unknown> | undefined;
+		const parent = workflow({
+			name: "exit-during-verify",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				outcome = ctx.task("bound", { prompt: "work", workspace: workspace({ repo, branch: "verify" }) }).then(
+					() => "resolved",
+					(error: unknown) => error,
+				);
+				await ctx.tool("wait-for-verify", {}, async () => {
+					while (!existsSync(armed)) await new Promise((resolve) => setTimeout(resolve, 10));
+					await verifying;
+					return "seen";
+				});
+				return ctx.exit({ status: "completed", reason: "stop" });
+			},
+		});
+		const result = await withInjectedGit(dirs.root, { ...env, FAKE_GIT_ARMED: armed }, async () =>
+			run(parent, {}, { store: createStore(), durableBackend: await createMemoryTestBackend(), adapters }),
+		);
+		assert.equal(result.exited, true);
+		assert.notEqual(await outcome, "resolved");
+		assert.equal(existsSync(marker), false, "the re-verification git was killed, not left to finish");
+	});
+
+	test("kills the restore git of a resumed bound child (#3109)", async () => {
+		const journalPath = join(dirs.root, "exit-restore.sqlite");
+		const repo = createRepository(dirs.root, "exit-restore");
+		const { marker, env } = slowGit("merge-base --is-ancestor");
+		let failFirst = true;
+		let outcome: Promise<unknown> | undefined;
+		const flaky = workflow({
+			name: "flaky-restore",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("work", {}, async () => "worked");
+				if (failFirst) throw new Error("interrupted");
+				return {};
+			},
+		});
+		const restoring = gitCommandStarted("merge-base --is-ancestor");
+		const parent = workflow({
+			name: "exit-during-restore",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const pending = ctx.workflow(flaky, {
+					workspace: workspace({ repo, branch: "restored" }),
+					stageName: "restored",
+				});
+				if (failFirst) {
+					await pending;
+					return {};
+				}
+				outcome = pending.then(
+					() => "resolved",
+					(error: unknown) => error,
+				);
+				await ctx.tool("wait-for-restore", {}, async () => {
+					await restoring;
+					return "seen";
+				});
+				return ctx.exit({ status: "completed", reason: "stop" });
+			},
+		});
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const failed = await run(parent, {}, { store: createStore(), durableBackend: firstBackend });
+		assert.equal(failed.status, "failed");
+		await firstBackend.close();
+		failFirst = false;
+		const resumedBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const resumed = await withInjectedGit(dirs.root, env, () =>
+			run(parent, {}, { runId: failed.runId, store: createStore(), durableBackend: resumedBackend }),
+		);
+		assert.equal(resumed.exited, true);
+		assert.notEqual(await outcome, "resolved");
+		assert.equal(existsSync(marker), false, "the restore git was killed, not left to finish");
+		await resumedBackend.close();
 	});
 });

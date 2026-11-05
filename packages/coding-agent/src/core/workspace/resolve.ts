@@ -104,6 +104,17 @@ function repositoryKey(spec: WorkspaceRepository, root: string): string[] {
 	return ["local", `${safeSegment(basename(root))}-${digest}`];
 }
 
+/** Run a filesystem step; a failure with an errno code becomes a typed `filesystem-failed` binding error. */
+async function filesystem<T>(operation: string, path: string, step: () => Promise<T>): Promise<T> {
+	try {
+		return await step();
+	} catch (error) {
+		const errno = (error as { readonly code?: unknown }).code;
+		if (typeof errno !== "string") throw error;
+		throw new WorkspaceBindingError({ code: "filesystem-failed", fields: { operation, path, errno }, cause: error });
+	}
+}
+
 function git(cwd: string, args: readonly string[], phase: WorkspaceGitPhase, signal?: AbortSignal) {
 	return gitOutput({ cwd, args, phase, signal });
 }
@@ -140,12 +151,12 @@ async function openLocal(
 
 async function cloneStore(spec: Extract<WorkspaceRepository, { kind: "remote" }>, store: string): Promise<void> {
 	const staging = `${store}.tmp-${randomUUID()}`;
-	await mkdir(dirname(store), { recursive: true });
+	await filesystem("create directory", dirname(store), () => mkdir(dirname(store), { recursive: true }));
 	try {
 		await git(dirname(store), ["clone", "--bare", spec.url, staging], "clone");
 		await git(staging, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], "clone");
 		await git(staging, ["fetch", "origin"], "fetch");
-		await rename(staging, store);
+		await filesystem("rename", staging, () => rename(staging, store));
 	} catch (error) {
 		const cleanupCause = await rm(staging, { recursive: true, force: true }).then(
 			() => undefined,
@@ -293,7 +304,7 @@ async function listWorktrees(repository: OpenRepository): Promise<ListedWorktree
 }
 
 async function addWorktree(repository: OpenRepository, path: string, branch: string, baseTip: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true });
+	await filesystem("create directory", dirname(path), () => mkdir(dirname(path), { recursive: true }));
 	await git(repository.root, ["worktree", "prune"], "worktree-add");
 	if ((await commitOf(repository, `refs/heads/${branch}`)) !== undefined) {
 		await git(repository.root, ["worktree", "add", path, branch], "worktree-add");
@@ -459,9 +470,7 @@ export async function resolveWorkspace(
 	}
 	const started = bindNew(input);
 	resolutions.set(input, started);
-	started.catch(() => {
-		if (resolutions.get(input) === started) resolutions.delete(input);
-	});
+	started.catch(() => resolutions.delete(input));
 	return (await waitFor(started, signal)).binding;
 }
 

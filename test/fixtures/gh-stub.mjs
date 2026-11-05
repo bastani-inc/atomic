@@ -19,6 +19,10 @@ if (args[0] === "auth") {
 		process.stderr.write("GraphQL: something went wrong\n");
 		process.exit(1);
 	}
+	if (mode === "create-fails-long") {
+		process.stderr.write("x".repeat(1000));
+		process.exit(1);
+	}
 	if (mode === "killed") process.kill(process.pid, "SIGKILL");
 	process.stdout.write("Creating pull request\nhttps://example.test/pr/8\n");
 	process.exit(0);

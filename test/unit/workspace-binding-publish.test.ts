@@ -19,6 +19,7 @@ import {
 	createRemote,
 	createRepository,
 	git,
+	gitTranscript,
 	type WorkspaceSandboxDirs,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
@@ -253,5 +254,34 @@ describe("publishPullRequest (#3109)", () => {
 		const pending = publishPullRequest(changeSet, { signal: controller.signal });
 		setTimeout(() => controller.abort(reason), 300);
 		assert.equal(await rejection(pending), reason);
+	});
+
+	test("publishes under a live signal, running origin lookup and push as network commands (#3109)", async () => {
+		const { changeSet } = await committedChangeSet("live-signal");
+		const { result, transcript } = await gitTranscript(
+			() => publishPullRequest(changeSet, { signal: new AbortController().signal }),
+			[[changeSet.headCommit, "<head>"]],
+		);
+		assert.equal(result.created, true);
+		assert.deepEqual(
+			transcript.filter((line) => line.startsWith("push: ")),
+			["push: remote get-url origin", "push: push origin <head>:refs/heads/feat/publish"],
+		);
+	});
+
+	test("cuts long gh output to 400 characters and reads an scp-style origin (#3109)", async () => {
+		const { changeSet } = await committedChangeSet("long-output");
+		process.env.GH_STUB_MODE = "create-fails-long";
+		const long = await rejection(publishPullRequest(changeSet));
+		assert.ok(isWorkspacePublicationError(long));
+		assert.equal(long.fields.detail, "x".repeat(400));
+		const scp = createRepository(dirs.root, "scp-origin");
+		git(scp, "remote", "add", "origin", "git@github.example:acme/widgets.git");
+		const binding = await resolveWorkspace(workspace({ repo: scp }));
+		process.env.GH_STUB_MODE = "unauthenticated";
+		const unauthenticated = await rejection(publishPullRequest(await workspaceChangeSet(binding)));
+		assert.ok(isWorkspacePublicationError(unauthenticated));
+		assert.equal(unauthenticated.reason, "gh-unauthenticated");
+		assert.deepEqual(ghCalls().at(-1), ["auth", "status", "--hostname", "github.example"]);
 	});
 });
