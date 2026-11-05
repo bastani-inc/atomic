@@ -127,11 +127,11 @@ export function waitResultTail({ observation, truncated, fullOutputPath }: WaitR
 }
 
 function cleanupSentence(cleanup: Cleanup): string {
-	if (cleanup.kind !== "failed") return `Cleanup: ${cleanup.kind}.`;
+	if (cleanup.kind !== "failed" && cleanup.kind !== "quarantined") return `Cleanup: ${cleanup.kind}.`;
 	const resources = cleanup.resources.map(
 		(entry) => `${entry.resource} (${entry.code}): ${withoutTrailingPeriods(firstLine(entry.message))}`,
 	);
-	return `Cleanup failed: ${resources.join("; ")}.`;
+	return `Cleanup ${cleanup.kind === "failed" ? "failed" : "quarantined, still being confirmed"}: ${resources.join("; ")}.`;
 }
 
 /** Model-facing text of a `kill` result. The receipt itself stays in the result details. */

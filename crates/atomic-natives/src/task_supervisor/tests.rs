@@ -417,6 +417,73 @@ fn cancellation_with_failed_cleanup_settles_and_keeps_the_failure() {
 	assert_eq!(a.snapshot(&o).unwrap().tasks[0].cleanup, Cleanup::Reaped {});
 }
 
+// #4338: quarantined cleanup follows a settled result, keeps the owner closing, and ends reaped or failed.
+#[test]
+fn quarantined_cleanup_holds_close_until_it_resolves_4338() {
+	let (a, _, o, t, r) = setup();
+	let quarantine = Cleanup::Quarantined {
+		resources: vec![ResourceFailure {
+			resource: "process-group:1".into(),
+			code: "CleanupUnconfirmed".into(),
+			message: "Output reader drain was not confirmed".into(),
+		}],
+	};
+	let failure = Cleanup::Failed {
+		resources: vec![ResourceFailure {
+			resource: "process-group:1".into(),
+			code: "CleanupFailed".into(),
+			message: "Output reader drain was not confirmed".into(),
+		}],
+	};
+	assert_eq!(a.acknowledge_cleanup(&r, quarantine.clone()).unwrap_err().code, "ReportConflict");
+	let settled = a.outcome(&r, outcome("natural")).unwrap();
+	a.acknowledge_cleanup(&r, quarantine.clone()).unwrap();
+	assert_eq!(a.acknowledge_cleanup(&r, quarantine.clone()).unwrap(), quarantine);
+	assert_eq!(a.acknowledge_cleanup(&r, Cleanup::Draining {}).unwrap_err().code, "ReportConflict");
+	let other = Cleanup::Quarantined { resources: vec![] };
+	assert_eq!(a.acknowledge_cleanup(&r, other).unwrap_err().code, "ReportConflict");
+	a.begin_close(&o).unwrap();
+	assert!(a.close_receipt(&o).unwrap().is_none(), "quarantine must keep the owner closing");
+	let receipt = a.cancel(&t, CancelCause::User).unwrap();
+	assert_eq!(receipt.cleanup, quarantine);
+	assert_eq!(receipt.execution, Execution::Settled { result: settled.result.clone() });
+	a.acknowledge_cleanup(&r, failure.clone()).unwrap();
+	assert_eq!(a.close_receipt(&o).unwrap_err().code, "CleanupFailed");
+	assert_eq!(a.acknowledge_cleanup(&r, quarantine.clone()).unwrap_err().code, "ReportConflict");
+	assert_eq!(
+		a.snapshot(&o).unwrap().tasks[0].execution,
+		Execution::Settled { result: settled.result }
+	);
+	a.acknowledge_cleanup(&r, Cleanup::Reaped {}).unwrap();
+	assert!(a.close_receipt(&o).unwrap().is_some());
+	assert_eq!(a.acknowledge_cleanup(&r, quarantine).unwrap_err().code, "ReportConflict");
+}
+
+// #4338: a stop whose cleanup is quarantined ends as a stop at once, like a failed one, then confirms later.
+#[test]
+fn cancellation_with_quarantined_cleanup_settles_then_reaps_4338() {
+	let (a, _, o, t, r) = setup();
+	a.cancel(&t, CancelCause::Pause).unwrap();
+	let quarantine = Cleanup::Quarantined {
+		resources: vec![ResourceFailure {
+			resource: "fake-runner".into(),
+			code: "CleanupUnconfirmed".into(),
+			message: "not yet stopped".into(),
+		}],
+	};
+	a.acknowledge_cleanup(&r, quarantine.clone()).unwrap();
+	let task = a.snapshot(&o).unwrap().tasks[0].clone();
+	assert_eq!(
+		task.execution,
+		Execution::Settled {
+			result: TaskResult::Cancelled { cause: CancelCause::Pause, output: None }
+		}
+	);
+	assert_eq!(task.cleanup, quarantine);
+	a.acknowledge_cleanup(&r, Cleanup::Reaped {}).unwrap();
+	assert_eq!(a.snapshot(&o).unwrap().tasks[0].cleanup, Cleanup::Reaped {});
+}
+
 // RFC #2884: shutdown fences an unresolved close rather than waiting forever for dead JS.
 #[test]
 fn environment_shutdown_releases_pending_close_without_false_reaping() {

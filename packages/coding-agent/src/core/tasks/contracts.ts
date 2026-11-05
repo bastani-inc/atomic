@@ -131,10 +131,15 @@ export type Execution =
 	| { kind: "cancelling"; cause: CancelCause }
 	| { kind: "settled"; result: TaskResult };
 export type ResourceFailure = { resource: string; code: string; message: string };
+/**
+ * `quarantined`: a command's result settled before its process-group exit or output drain was confirmed. Its process
+ * permit stays held while cleanup is confirmed in the background, until it ends `reaped` or `failed`.
+ */
 export type Cleanup =
 	| { kind: "active" }
 	| { kind: "draining" }
 	| { kind: "reaped" }
+	| { kind: "quarantined"; resources: Array<ResourceFailure> }
 	| { kind: "failed"; resources: Array<ResourceFailure> };
 export type PromptRoute = { sessionId: string; promptId: string; stageAttemptId?: string };
 export type Attention =

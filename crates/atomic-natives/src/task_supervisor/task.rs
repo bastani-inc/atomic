@@ -183,12 +183,15 @@ pub struct ResourceFailure {
 	#[napi(ts_type = "string")]
 	pub message: JsString,
 }
+/// `Quarantined` is a command whose result settled before its process-group exit or output drain was confirmed: its
+/// resources stay charged while the supervisor keeps confirming in the background, until they end `Reaped` or `Failed`.
 #[napi(discriminant = "kind", discriminant_case = "kebab-case")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cleanup {
 	Active {},
 	Draining {},
 	Reaped {},
+	Quarantined { resources: Vec<ResourceFailure> },
 	Failed { resources: Vec<ResourceFailure> },
 }
 #[napi(object)]
@@ -685,15 +688,14 @@ impl Actor {
 		if t.record.cleanup == cleanup {
 			return Ok(cleanup);
 		}
+		let stopped =
+			matches!(t.record.execution, Execution::Settled { .. } | Execution::Cancelling { .. });
 		if matches!(t.record.cleanup, Cleanup::Reaped {})
 			|| matches!(cleanup, Cleanup::Active {})
-			|| (matches!(t.record.cleanup, Cleanup::Failed { .. })
-				&& matches!(cleanup, Cleanup::Draining {}))
-			|| (matches!(cleanup, Cleanup::Reaped {})
-				&& !matches!(
-					t.record.execution,
-					Execution::Settled { .. } | Execution::Cancelling { .. }
-				)) {
+			|| (matches!(t.record.cleanup, Cleanup::Failed { .. } | Cleanup::Quarantined { .. })
+				&& matches!(cleanup, Cleanup::Draining {} | Cleanup::Quarantined { .. }))
+			|| (matches!(cleanup, Cleanup::Reaped {} | Cleanup::Quarantined { .. }) && !stopped)
+		{
 			return Err(fail("ReportConflict"));
 		}
 		if matches!(cleanup, Cleanup::Reaped {})
@@ -716,7 +718,7 @@ impl Actor {
 		// A stop whose cleanup could not be confirmed still ends; it never stays "stopping".
 		// The cleanup record keeps the failure. A command reports it as its result, while an
 		// agent keeps its stop cause, so a paused agent stays resumable.
-		if let Cleanup::Failed { resources } = &cleanup
+		if let Cleanup::Failed { resources } | Cleanup::Quarantined { resources } = &cleanup
 			&& let Execution::Cancelling { cause } = s.owners[oi].tasks[ti].record.execution
 		{
 			let output = s.owners[oi].tasks[ti].cancellation_output.take();
