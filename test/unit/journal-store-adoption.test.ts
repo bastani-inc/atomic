@@ -1380,3 +1380,85 @@ test("a journal whose migrations hold only other markers still has its legacy ru
 		await sql.close();
 	}
 });
+
+test("recovery follows where the catalog names a run when it settles, not where it named it when the consolidation began (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [path]);
+	const target = await withCatalog((catalog) => catalog.homeShard("r"));
+	raw(path, "UPDATE wf_leases SET holder_id = ?, epoch = epoch + 1", `${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}crashed`);
+	await journal(target.path, []);
+	const copy = new DatabaseSync(target.path);
+	copy.exec(`ATTACH DATABASE '${path}' AS source`);
+	for (const table of ["wf_runs", "wf_events", "wf_leases"])
+		copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
+	copy.close();
+	await withCatalog((catalog) => catalog.moveRun("r", 1, target.id));
+	const events = Number(scalar(path, EVENTS));
+	let interleaved = false;
+	const report = await withCatalog(async (catalog) => {
+		// Another consolidation undoes the move after this one began, a resume adds an event, and a third consolidation
+		// fences the file again and stops: the world changes once, before this consolidation settles anything.
+		const interleave = async () => {
+			if (interleaved) return;
+			interleaved = true;
+			assert.equal(await catalog.moveRun("r", target.id, 1), true);
+			for (const table of ["wf_events", "wf_leases", "wf_runs"])
+				raw(target.path, `DELETE FROM ${table} WHERE run_id = 'r'`);
+			raw(
+				path,
+				"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('r', ?, 9, 'resumed', 'SummaryRecorded', 'null', 0)",
+				events + 1,
+			);
+			raw(
+				path,
+				"UPDATE wf_leases SET holder_id = ?, epoch = epoch + 1 WHERE run_id = 'r'",
+				`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}other`,
+			);
+		};
+		for (const method of ["shard", "locate"] as const) {
+			const original = catalog[method].bind(catalog) as (...args: never[]) => Promise<unknown>;
+			Reflect.set(catalog, method, async (...args: never[]) => {
+				await interleave();
+				return original(...args);
+			});
+		}
+		let ownersTaken = 0;
+		const owners = catalog.owners.bind(catalog);
+		Reflect.set(catalog, "owners", async () => {
+			ownersTaken++;
+			const snapshot = await owners();
+			await interleave();
+			return snapshot;
+		});
+		const result = await consolidateJournalStore(catalog);
+		assert.equal(ownersTaken, 0, "recovery asks the catalog where the run is, not for a map taken at the start");
+		return result;
+	});
+	assert.equal(interleaved, true);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+		"the run is moved, not reported as having no journal",
+	);
+	const located = (await withCatalog((catalog) => catalog.locate("r")))!.shard;
+	assert.notEqual(located.path, path);
+	assert.equal(
+		scalar(located.path, EVENTS),
+		events + 1,
+		"every event, the resume's included, is in the shard the catalog names",
+	);
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+});
+
+function countCalls<T extends object>(target: T, methods: readonly (keyof T & string)[]): Record<string, number> {
+	const counts: Record<string, number> = {};
+	for (const method of methods) {
+		counts[method] = 0;
+		const original = (target[method] as (...args: never[]) => unknown).bind(target);
+		Reflect.set(target, method, (...args: never[]) => {
+			counts[method]!++;
+			return original(...args);
+		});
+	}
+	return counts;
+}

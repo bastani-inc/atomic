@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { JournalAdoptError, JournalCatalog, JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -433,4 +442,24 @@ test("atomic storage consolidate reports each distinct failure once and exits 1,
 	);
 	const again = await storage(["consolidate"]);
 	assert.equal(again.out.filter((line) => line.startsWith("Journal shard unavailable: ")).length, 2);
+});
+
+test("atomic storage status leaves an adopted journal in rollback-journal mode byte for byte as it was (#4325)", async () => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const file = join(root, "rollback", "journal.sqlite");
+	await journalFile(file, [{ id: "44444444-4444-4444-8444-444444444444", status: "failed" }]);
+	const converted = new DatabaseSync(file);
+	converted.exec("PRAGMA journal_mode=DELETE");
+	converted.close();
+	assert.equal((await storage(["adopt", file])).code, 0);
+	const listing = () => readdirSync(join(root, "rollback")).sort();
+	const before = { bytes: readFileSync(file), modified: statSync(file).mtimeMs, files: listing() };
+	const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
+	assert.deepEqual(status.domains.find((entry) => entry.domain === "journal")?.journalStore?.unavailable, []);
+	assert.deepEqual(readFileSync(file), before.bytes, "the file's bytes are unchanged");
+	assert.equal(statSync(file).mtimeMs, before.modified);
+	assert.deepEqual(listing(), before.files, "no write-ahead log or journal file appeared");
+	const reread = new DatabaseSync(file, { readOnly: true });
+	assert.equal(reread.prepare("PRAGMA journal_mode").get()?.journal_mode, "delete");
+	reread.close();
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -1250,4 +1250,51 @@ for (const [failure, outcome] of [
 		}
 		assert.equal(await placed, "created", "the failed write does not stop the new root");
 		assert.equal(journal.catalogBacklog().failure, failure);
+	});
+
+for (const [label, unreadable] of [
+	["is gone", (path: string) => rmSync(path)],
+	[
+		"is not a database",
+		(path: string) => writeFileSync(path, "not a database, though long enough to be read as one's header"),
+	],
+	[
+		"does not hold the run",
+		(path: string) => {
+			const shard = new DatabaseSync(path);
+			for (const table of ["wf_events", "wf_leases", "wf_runs"])
+				shard.exec(`DELETE FROM ${table} WHERE run_id = 'a-unreadable'`);
+			shard.close();
+		},
+	],
+] as const)
+	test(`the reconciliation skips a running root whose shard ${label} and still reconciles the roots after it (#4325)`, async () => {
+		const first = await open();
+		await start(first, "a-unreadable");
+		const finished = await start(first, "z-finished");
+		await first.append(finished, { type: "StatusChanged", payload: { status: "completed" } });
+		await first.release(finished);
+		const unreadablePath = first.shardOf("a-unreadable")!.path;
+		assert.notEqual(unreadablePath, first.shardOf("z-finished")!.path);
+		await first.close();
+		unreadable(unreadablePath);
+		const catalogFile = new DatabaseSync(join(store, "catalog.sqlite"));
+		catalogFile.exec("UPDATE catalog_runs SET status = 'running' WHERE run_id = 'z-finished'");
+		catalogFile.close();
+		const journal = await open();
+		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+		const written: unknown[][] = [];
+		const setStatus = catalog.setStatus.bind(catalog);
+		Reflect.set(catalog, "setStatus", async (...args: [string, string]) => {
+			written.push(args);
+			return setStatus(...args);
+		});
+		assert.equal(
+			await journal.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 3, status: "running" }),
+			"created",
+		);
+		assert.deepEqual(journal.catalogBacklog(), { pending: 0 });
+		assert.deepEqual(written, [["z-finished", "completed"]], "one write, of a status that exists");
+		assert.equal((await catalog.locate("z-finished"))?.run.status, "completed");
+		assert.equal((await catalog.locate("a-unreadable"))?.run.status, "running", "the unreadable root is unchanged");
 	});

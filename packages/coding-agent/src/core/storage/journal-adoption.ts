@@ -728,7 +728,6 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 		const holder = `${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}${randomUUID()}`;
 		const results: JournalConsolidationRun[] = [];
 		const shards = await catalog.shards();
-		const owners = await catalog.owners();
 		const targets = new Map<number, SqliteDatabase>();
 		const target = async (record: JournalShardRecord): Promise<SqliteDatabase> => {
 			let database = targets.get(record.id);
@@ -759,8 +758,7 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 					await withCleanup(
 						async () => {
 							const legacyOnly = !(await hasJournalTables(source));
-							if (!legacyOnly)
-								results.push(...(await finishInterruptedMoves(catalog, source, owners, shard, target)));
+							if (!legacyOnly) results.push(...(await finishInterruptedMoves(catalog, source, shard, target)));
 							for (const run of await catalog.runs({ shard: shard.id }))
 								results.push(
 									legacyOnly
@@ -787,7 +785,6 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 async function finishInterruptedMoves(
 	catalog: JournalCatalog,
 	source: SqliteDatabase,
-	owners: ReadonlyMap<string, number>,
 	from: JournalShardRecord,
 	target: (record: JournalShardRecord) => Promise<SqliteDatabase>,
 ): Promise<JournalConsolidationRun[]> {
@@ -797,10 +794,10 @@ async function finishInterruptedMoves(
 		`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`,
 	);
 	for (const lease of fenced) {
-		const owner = owners.get(lease.run_id);
-		if (owner === undefined || owner === from.id) continue;
-		const destination = await catalog.shard(owner);
-		if (destination === undefined) continue;
+		// Where the catalog names the run now, not where it did when this consolidation began: another consolidation may
+		// have repointed it since, and a fence it left on this file is then not an interrupted move to finish.
+		const destination = (await catalog.locate(lease.run_id))?.shard;
+		if (destination === undefined || destination.id === from.id) continue;
 		const same = sameFileSkip(catalog, from, destination, lease.run_id);
 		if (same !== undefined) {
 			skipped.push(same);
