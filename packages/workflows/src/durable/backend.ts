@@ -1,5 +1,6 @@
 /** Durable workflow contract and private journal projection. */
 import { closeSync, openSync, readSync } from "node:fs";
+import type { JournalShardUnavailableError } from "@bastani/atomic/storage";
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
@@ -67,6 +68,8 @@ export interface DurableWorkflowCatalogEntries {
 	readonly resumable: readonly ResumableWorkflowEntry[];
 	readonly completed: readonly ResumableWorkflowEntry[];
 	readonly completedAll?: readonly ResumableWorkflowEntry[];
+	/** Shard files of the journal store that could not be opened, so their runs are missing from this listing. */
+	readonly unavailableShards?: readonly JournalShardUnavailableError[];
 }
 export { durableHash } from "./durable-hash.js";
 /** Replace one logical run's bucket without mutating root or sibling run messages. */

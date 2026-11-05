@@ -300,11 +300,11 @@ export async function POST(request: Request): Promise<Response> {
 
 ### Choose workflow storage
 
-By default, `run()` persists workflow state in the local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Keep it on durable local storage when your service needs restart recovery. If several replicas must inspect or resume each other's runs, have them share a remote SQLite-compatible database through an adapter. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
+By default, `run()` persists workflow state in the local [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`. Keep it on durable local storage when your service needs restart recovery. If several replicas must inspect or resume each other's runs, have them share a remote SQLite-compatible database through an adapter. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 Use `journal: { path: "/var/lib/my-service/workflows.sqlite" }` to select a file for a run, or `journal: { memory: true }` for process-local state that cannot survive a restart. Supply a caller-owned async SQLite facade as `{ database, prefix? }`; Atomic does not close it. You can also supply a `RunJournal` instance or `{ adapter, options?, secrets?, prefix? }` for a user-installed driver module.
 
-`RunOpts.journal` (or `createAgentSession({ journal })` for sessions) overrides `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`, then the default file. Nearer settings replace whole selections. Relative settings paths resolve against Atomic home. Configuration or storage failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
+`RunOpts.journal` (or `createAgentSession({ journal })` for sessions) overrides `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`, then the default journal store. Nearer settings replace whole selections. Relative settings paths resolve against Atomic home. Configuration or storage failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
 ## Secure the endpoint
 

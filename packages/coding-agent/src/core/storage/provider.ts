@@ -12,6 +12,7 @@ import {
 	type StorageFailureCause,
 	StorageUnavailableError,
 } from "./errors.js";
+import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { RunJournal } from "./run-journal.js";
@@ -37,7 +38,12 @@ export type StorageSelection =
 			readonly options?: AdapterOptions;
 			readonly secrets?: Readonly<Record<string, SecretRef>>;
 			readonly prefix?: string;
-	  };
+	  }
+	/**
+	 * The local journal store (#4325): one logical run journal kept as a catalog plus SQLite shard files in `dir`. It is
+	 * the default workflow journal and holds no sessions.
+	 */
+	| { readonly kind: "sharded"; readonly dir: string };
 export interface StorageOpenContext {
 	readonly agentDir: string;
 	/** `intercom`: the shared Intercom broker state that multi-node brokers open on the top-level selection. */
@@ -61,6 +67,15 @@ export interface StorageAdapterModule {
 export interface JournalFactories {
 	memory(descriptor: StorageDescriptor): RunJournal;
 	sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<RunJournal>;
+	/**
+	 * Opens the journal store in `directory`, each of whose shard files `openShard` opens as a SQLite run journal, and
+	 * adopts `legacyJournal` in place when it holds workflow runs.
+	 */
+	store?(
+		directory: string,
+		openShard: (path: string) => Promise<RunJournal>,
+		legacyJournal: string,
+	): Promise<RunJournal>;
 	/** Live modules a journal adapter imports by specifier, such as the running `@bastani/atomic/workflows`. */
 	readonly hostModules?: Readonly<Record<string, object>>;
 }
@@ -91,6 +106,7 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 		const path = selection.path === "" || selection.path === ":memory:" ? selection.path : resolve(selection.path);
 		return JSON.stringify(["sqlite", path, selection.prefix ?? ""]);
 	}
+	if (selection.kind === "sharded") return JSON.stringify(["sharded", resolve(selection.dir)]);
 	if (selection.kind === "adapter") {
 		const options = Object.entries(selection.options ?? {})
 			.sort(([a], [b]) => a.localeCompare(b))
@@ -322,6 +338,18 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 	async openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal> {
 		const journals = this.journals;
 		if (!journals) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
+		if (selection?.kind === "sharded") {
+			if (typeof selection.dir !== "string" || selection.dir.length === 0)
+				throw new StorageConfigError("sdk", "dir", "invalid-dir");
+			if (!journals.store) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
+			return withIdempotentClose(
+				await journals.store(
+					selection.dir,
+					(path) => this.openRunJournal({ kind: "sqlite", path }, context),
+					legacyDefaultJournalPath(selection.dir),
+				),
+			);
+		}
 		return this.open<RunJournal>(selection, context, {
 			memory: () => journals.memory({ adapter: "memory", location: ":memory:" }),
 			hostModules: journals.hostModules,
@@ -353,6 +381,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		if (selection === null || typeof selection !== "object" || Array.isArray(selection)) {
 			throw new StorageConfigError("sdk", "storage", "selection-object-required");
 		}
+		if (selection.kind === "sharded") throw new StorageConfigError("sdk", "dir", "adapter-domain-unsupported");
 		if (!["memory", "jsonl", "sqlite", "database", "adapter"].includes(selection.kind)) {
 			throw new StorageConfigError("sdk", "storage", "invalid-kind");
 		}

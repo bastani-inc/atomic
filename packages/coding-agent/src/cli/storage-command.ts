@@ -2,6 +2,8 @@
  * `atomic storage status` shows which storage each domain (sessions, workflow runs, Intercom) selects, where the
  * selection comes from, whether its adapter loads and its database answers, and what the running Intercom broker
  * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
+ * `atomic storage adopt` registers existing journal files in the journal store in place, and `atomic storage
+ * consolidate` moves their finished runs into the store's own shards.
  */
 
 import { randomUUID } from "node:crypto";
@@ -12,6 +14,12 @@ import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
 import { resolvePackageStorageAdapter } from "../core/package-manager-storage-adapters.js";
 import { SettingsManager } from "../core/settings-manager.ts";
 import type { Settings } from "../core/settings-schema.ts";
+import { isJournalStoreError } from "../core/storage/errors.js";
+import {
+	adoptJournals,
+	consolidateJournalStore,
+	defaultJournalStoreDirectory,
+} from "../core/storage/journal-adoption.js";
 import { validateStoragePrefix } from "../core/storage/prefix.js";
 import { loadStorageAdapter } from "../core/storage/provider.js";
 import { selectStorage } from "../core/storage/selection.js";
@@ -20,6 +28,7 @@ import {
 	type DomainStatus,
 	describeStorageError,
 	describeStorageSelection,
+	effectiveJournalSelection,
 	type StorageStatus,
 } from "../core/storage/storage-status.js";
 
@@ -31,6 +40,8 @@ export const STORAGE_TOKEN_FILE = "storage-token";
 const HELP = `Usage:
   ${APP_NAME} storage status [--json]
   ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]
+  ${APP_NAME} storage adopt <path>... [--no-discover]
+  ${APP_NAME} storage consolidate
 
 Commands:
   status   Show, for sessions, workflow runs, and Intercom, the selected storage and where the
@@ -42,19 +53,31 @@ Commands:
            with ${LIBSQL_ADAPTER_PACKAGE}, store the token in the agent directory (mode 600), and
            write only the global \`storage\` setting. Reports environment variables and settings that
            override it. Creates no tables; Atomic creates them on first use.
+  adopt    Register existing workflow journal files in the journal store in place, without copying,
+           so their runs resolve by ID for status, resume, attach, fork and history://. Each <path>
+           is a journal .sqlite file or a directory holding journal.sqlite. Every path is checked
+           before the first is registered. Journals the adopted runs were written to are adopted
+           too unless --no-discover is given.
+  consolidate
+           Move finished runs (completed, failed or cancelled, not leased, without local workers)
+           from adopted journals into the journal store's own shards. Other runs stay where they
+           are. An interrupted consolidation leaves every run readable; run it again to finish.
 
 Options:
   --json                Print the status as JSON
   --token-file <path>   File holding the database token, for example from \`turso db tokens create\`;
                         surrounding whitespace is removed. Required except for file: URLs
-  --prefix <prefix>     Table prefix, to share one database between projects or teams`;
+  --prefix <prefix>     Table prefix, to share one database between projects or teams
+  --no-discover         adopt: register only the given paths`;
 
 const HELP_HINT = `Use "${APP_NAME} storage --help" for usage.`;
 
 export type StorageCommand =
 	| { readonly kind: "help" }
 	| { readonly kind: "status"; readonly json: boolean }
-	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string };
+	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string }
+	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
+	| { readonly kind: "consolidate" };
 
 export class StorageCommandError extends Error {}
 
@@ -77,10 +100,15 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	const positional: string[] = [];
 	const values = new Map<string, string>();
 	let json = false;
+	let discover = true;
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index]!;
 		if (command === "status" && arg === "--json") {
 			json = true;
+			continue;
+		}
+		if (command === "adopt" && arg === "--no-discover") {
+			discover = false;
 			continue;
 		}
 		if (command === "join" && (arg === "--token-file" || arg === "--prefix")) {
@@ -131,6 +159,15 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			...(prefix === undefined ? {} : { prefix }),
 		};
 	}
+	if (command === "adopt") {
+		if (positional.length === 0)
+			throw new StorageCommandError(`Usage: ${APP_NAME} storage adopt <path>... [--no-discover]`);
+		return { kind: "adopt", paths: positional, discover };
+	}
+	if (command === "consolidate") {
+		if (positional.length > 0) throw new StorageCommandError(`Usage: ${APP_NAME} storage consolidate`);
+		return { kind: "consolidate" };
+	}
 	throw new StorageCommandError(`Unknown storage command "${command}".\n${HELP_HINT}`);
 }
 
@@ -159,7 +196,8 @@ function failed(domain: DomainStatus): boolean {
 	return (
 		domain.error !== undefined ||
 		domain.probe?.adapter?.loaded === false ||
-		domain.probe?.connection.status === "failed"
+		domain.probe?.connection.status === "failed" ||
+		(domain.journalStore?.unavailable.length ?? 0) > 0
 	);
 }
 
@@ -196,6 +234,17 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			lines.push(
 				`  brokers:     ${domain.liveBrokers.length} live in the database${domain.liveBrokers.length === 0 ? "" : ` (${[...new Set(domain.liveBrokers)].join(", ")})`}`,
 			);
+		}
+		const store = domain.journalStore;
+		if (store !== undefined) {
+			lines.push(
+				`  journals:    ${store.shards} shard${store.shards === 1 ? "" : "s"}, ${store.adopted} adopted journal${store.adopted === 1 ? "" : "s"}, ${store.runs} run${store.runs === 1 ? "" : "s"}`,
+			);
+			for (const shard of store.unavailable)
+				lines.push(
+					`  unavailable: ${shard.path} (${shard.kind}, ${shard.code === "shard-missing" ? "no longer exists" : "cannot be opened"}: ${shard.code}${shard.detail === undefined ? "" : `, ${shard.detail}`})`,
+				);
+			for (const skipped of store.skipped) lines.push(`  skipped:     ${skipped.path} (${skipped.reason})`);
 		}
 	}
 	const broker = status.broker;
@@ -402,11 +451,73 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 			return 0;
 		}
 		if (command.kind === "status") return await status(command.json, options, log);
+		if (command.kind === "adopt") return await adopt(command, options, log);
+		if (command.kind === "consolidate") return await consolidate(options, log);
 		return await joinStorage(command, options, (...lines) => {
 			for (const line of lines) log(line);
 		});
 	} catch (caught) {
+		if (isJournalStoreError(caught)) {
+			error(caught.message);
+			if (caught.hint !== undefined) error(caught.hint);
+			return 1;
+		}
 		error(caught instanceof StorageCommandError ? caught.message : `Error: ${errorText(caught as Error)}`);
 		return 1;
 	}
+}
+
+/** A note when this directory's workflow runs use another journal than the journal store `adopt` writes to. */
+function storeSelectionNote(options: StorageCommandOptions, directory: string): string | undefined {
+	const selection = effectiveJournalSelection(options.cwd, options.agentDir);
+	if (selection.kind === "sharded") return undefined;
+	return `Note: workflow runs here use ${describeStorageSelection(selection)}, so they see the journal store ${directory} only once that selection is removed.`;
+}
+
+async function adopt(
+	command: Extract<StorageCommand, { kind: "adopt" }>,
+	options: StorageCommandOptions,
+	log: (line: string) => void,
+): Promise<number> {
+	const directory = defaultJournalStoreDirectory(options.agentDir);
+	const report = await adoptJournals(
+		directory,
+		command.paths.map((path) => resolve(options.cwd, path)),
+		{ discover: command.discover },
+	);
+	for (const outcome of report.adopted) {
+		log(
+			outcome.status === "adopted"
+				? `Adopted ${outcome.path} in place (shard ${outcome.shardId}, ${outcome.runs} run${outcome.runs === 1 ? "" : "s"}).`
+				: `Already registered: ${outcome.path} (shard ${outcome.shardId}).`,
+		);
+	}
+	for (const record of report.discovered) {
+		log(
+			record.outcome === "skipped"
+				? `Skipped ${record.path}, referenced by runs in ${record.referencedBy} (${record.reason}).`
+				: `Adopted ${record.path}, referenced by runs in ${record.referencedBy}.`,
+		);
+	}
+	const note = storeSelectionNote(options, directory);
+	if (note !== undefined) log(note);
+	return 0;
+}
+
+async function consolidate(options: StorageCommandOptions, log: (line: string) => void): Promise<number> {
+	const directory = defaultJournalStoreDirectory(options.agentDir);
+	const report = await consolidateJournalStore(directory);
+	log(`Moved ${report.moved} finished run${report.moved === 1 ? "" : "s"} into the journal store's shards.`);
+	const reasons = new Map<string, number>();
+	for (const run of report.runs)
+		if (run.outcome === "skipped") reasons.set(run.reason, (reasons.get(run.reason) ?? 0) + 1);
+	for (const [reason, count] of reasons)
+		log(`Skipped completing consolidation for ${count} run${count === 1 ? "" : "s"}: ${reason}.`);
+	const failures = new Map<string, string>();
+	for (const run of report.runs)
+		if (run.error !== undefined) failures.set(run.error.message, `${run.error.message} ${run.error.hint}`);
+	for (const failure of failures.values()) log(failure);
+	const note = storeSelectionNote(options, directory);
+	if (note !== undefined) log(note);
+	return failures.size === 0 ? 0 : 1;
 }

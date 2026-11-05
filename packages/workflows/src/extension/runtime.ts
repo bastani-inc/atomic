@@ -53,6 +53,8 @@ import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 // ---------------------------------------------------------------------------
 
 export interface ExtensionRuntimeOpts {
+	/** Reports a background warning once, without writing over an interactive host's terminal. */
+	reportWarning?: (message: string) => void;
 	/** Root runs this runtime starts or resumes send their console output to the workflow log (#4175): a terminal-UI owner. */
 	routeConsoleToLog?: boolean;
 	/** Journal selection retained for this runtime's execution and recovery. */
@@ -471,6 +473,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			baseRunOpts: (policy) => runOptions(policy),
 			beforeRestoreCompleted,
 			...(jobs !== undefined ? { jobs } : {}),
+			...(opts.reportWarning === undefined ? {} : { reportWarning: opts.reportWarning }),
 		}),
 	};
 }

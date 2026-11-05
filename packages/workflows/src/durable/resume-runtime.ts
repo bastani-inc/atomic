@@ -1,3 +1,4 @@
+import type { JournalCatalogError } from "@bastani/atomic/storage";
 import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
@@ -19,6 +20,7 @@ import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { forkDurableWorkflow } from "./fork-workflow.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
@@ -40,6 +42,8 @@ export type ResumeDurableResult =
 				| "different_project"
 				| "startup_failed";
 			message: string;
+			/** Set when this machine's storage does not hold the run: `run-not-found`, naming the storage searched. */
+			error?: JournalCatalogError;
 	  };
 
 export interface ResumeDurableDeps {
@@ -194,6 +198,10 @@ async function resumeDurableWorkflowClaimed(
 				reason: "not_registered",
 				message: `Workflow ${workflowId} has no valid journal state.`,
 			};
+		}
+		if (direct === undefined) {
+			const error = durableRunNotFoundError(backend, workflowId);
+			return { ok: false, reason: "not_registered", message: formatRunNotFound(error), error };
 		}
 		return {
 			ok: false,

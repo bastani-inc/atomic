@@ -301,7 +301,9 @@ export default workflow({
 
 		await assertRejectsHeadlessCommand(
 			() => handler(`status ${MISSING_RUN_ID}`, headlessNoOpCtx()),
-			new RegExp(`Run not found: ${MISSING_RUN_ID}`),
+			new RegExp(
+				`Workflow run not found: ${MISSING_RUN_ID} in this session's workflow store \\(run-not-found\\)\\.\\n.*atomic storage join <url> --token-file <path>`,
+			),
 		);
 	});
 

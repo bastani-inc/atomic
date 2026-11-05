@@ -9,6 +9,8 @@ export type {
 	StorageDescriptor,
 } from "./database.js";
 export * from "./errors.js";
+export * from "./journal-adoption.js";
+export * from "./journal-catalog.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
 	getWriterQueueDegradation,

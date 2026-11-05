@@ -201,7 +201,7 @@ A turn that a delivered message starts (an extension's `sendMessage`, `sendMessa
 
 ### Session storage
 
-`createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, sharing the file with workflow runs under separate `session_` and `wf_` table prefixes. Pass `sessionStore` to choose storage explicitly:
+`createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, under `session_` table prefixes; workflow runs default to the [journal store](/storage#the-workflow-journal-store). Pass `sessionStore` to choose storage explicitly:
 
 ```typescript
 const { session } = await createAgentSession({
@@ -323,7 +323,7 @@ Use `{ database, prefix? }` for an async `SqliteDatabase` facade; Atomic never c
 
 Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease, expectSeq?)` for atomic lease-fenced deletion with an optional sequence check. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Open a facade-backed journal with `await SqlRunJournal.open(database, { prefix })`, or use `await openSqlRunJournal(pathOrDatabase?)` for the node adapter. Validate custom journals with `registerRunJournalConformance`; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
-To choose the journal for the model-facing `workflow` tool of one SDK session, pass the same selection to `createAgentSession`. Each session in a process can use its own journal without setting `ATOMIC_WORKFLOW_JOURNAL_PATH`:
+To choose the journal for the model-facing `workflow` tool of one SDK session, pass the same selection to `createAgentSession`. A session can use its own journal, for example to isolate tests, without setting `ATOMIC_WORKFLOW_JOURNAL_PATH`:
 
 ```typescript
 const first = await createAgentSession({ journal: { path: "./first-runs.sqlite" } });
@@ -332,7 +332,7 @@ const second = await createAgentSession({ journal: { memory: true } });
 
 Without a `journal` option, the session's own `workflows.journal` setting applies, including settings passed through `SettingsManager.inMemory({ workflows: { journal: { path: "./runs.sqlite" } } })`. A `memory: true` journal selected this way belongs to that session alone. Disposing a session closes the journals Atomic opened for it once no other session is using them, so runs kept in a memory journal end with the session. Atomic never closes a database or journal you supply.
 
-Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` wins, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`. Setting both journal variables is a conflict. Nearer-scope settings replace whole selections. Relative settings paths resolve against Atomic home. The default journal is `~/.atomic/workflows/journal.sqlite`; an empty shared selection uses `~/.atomic/storage.sqlite`. Keep the original journal and working directory to resume saved runs. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage) and [Selecting storage per process](/storage#selecting-storage-per-process).
+Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` wins, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`. Setting both journal variables is a conflict. Nearer-scope settings replace whole selections. Relative settings paths resolve against Atomic home. The default journal is the [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`, which finds any of its runs by ID; an empty shared selection uses `~/.atomic/storage.sqlite`. A run saved in an explicitly selected journal resumes from that journal, or from the store after `atomic storage adopt`. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage) and [Selecting storage per process](/storage#selecting-storage-per-process).
 
 ### Intercom in standalone workflows
 

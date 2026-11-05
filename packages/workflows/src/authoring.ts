@@ -256,6 +256,19 @@ export {
 } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
 export type {
+	WorkflowAdmissionConfigErrorCode,
+	WorkflowAdmissionErrorCode,
+	WorkflowAdmissionMismatchReason,
+	WorkflowAdmissionSource,
+} from "./workers/admission-errors.js";
+export {
+	findWorkflowAdmissionError,
+	isWorkflowAdmissionConfigError,
+	isWorkflowAdmissionError,
+	WorkflowAdmissionConfigError,
+	WorkflowAdmissionError,
+} from "./workers/admission-errors.js";
+export type {
 	LocalWorkerOptionsErrorCode,
 	LocalWorkerOptionsErrorReason,
 	LocalWorkerOptionsSource,

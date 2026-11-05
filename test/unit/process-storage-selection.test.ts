@@ -129,9 +129,17 @@ test("the workflow journal follows SDK journal, --storage, journal variables, AT
 	setCliStorageSelection(undefined);
 	assert.deepEqual(selectRunJournal({ settings }), { kind: "memory" });
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({}));
+	assert.deepEqual(selectRunJournal({ settings }), { kind: "sharded", dir: join(root, "workflows", "journal") });
+	assert.deepEqual(selectProcessStorage("journal", agentDir), {
+		selection: { kind: "sharded", dir: join(root, "workflows", "journal") },
+		source: "env",
+		field: WORKFLOWS_JOURNAL_ENV,
+	});
+	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ prefix: "env_" }));
 	assert.deepEqual(selectRunJournal({ settings }), {
 		kind: "sqlite",
 		path: join(root, "workflows", "journal.sqlite"),
+		prefix: "env_",
 	});
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, "");
 	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: join(root, "shared-env.sqlite") });

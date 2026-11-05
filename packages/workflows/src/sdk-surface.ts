@@ -93,6 +93,19 @@ export {
 	serializeWorkflowInfrastructureError,
 	WorkflowInfrastructureError,
 } from "./shared/workflow-infrastructure-error.js";
+export type {
+	WorkflowAdmissionConfigErrorCode,
+	WorkflowAdmissionErrorCode,
+	WorkflowAdmissionMismatchReason,
+	WorkflowAdmissionSource,
+} from "./workers/admission-errors.js";
+export {
+	findWorkflowAdmissionError,
+	isWorkflowAdmissionConfigError,
+	isWorkflowAdmissionError,
+	WorkflowAdmissionConfigError,
+	WorkflowAdmissionError,
+} from "./workers/admission-errors.js";
 export { loadWorkerWorkflow } from "./workers/definitions.js";
 export type {
 	LocalWorkerOptionsErrorCode,

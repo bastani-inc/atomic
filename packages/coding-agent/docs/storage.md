@@ -1,6 +1,6 @@
 # SQLite storage API
 
-The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions and workflow runs default to one local file, `~/.atomic/workflows/journal.sqlite`, with `session_` and `wf_` table prefixes. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module, or [select storage per process](#selecting-storage-per-process) without editing settings. A failed persistent store never falls back to memory.
+The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions default to the local file `~/.atomic/workflows/journal.sqlite`, with `session_` table prefixes. Workflow runs default to the [workflow journal store](#the-workflow-journal-store) in `~/.atomic/workflows/journal/`, one logical journal that Atomic splits into shard files by itself. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module, or [select storage per process](#selecting-storage-per-process) without editing settings. A failed persistent store never falls back to memory.
 
 For CLI storage selection and resume commands, see [Choosing a store](/sessions#choosing-a-store).
 
@@ -106,6 +106,55 @@ The running Intercom broker keeps the selection it started with. `atomic interco
 It also notes project settings that are not applied because the project is not trusted, and a project `storage` setting, which Intercom never uses. Run it in the project directory to see that project's selection. `--json` prints the same report as JSON. The command reports settings load errors instead of silently checking defaults, and exits 1 when settings cannot load, a selection is invalid, an adapter cannot load, or a database does not answer. Adapter loading, database operations, and connection cleanup each have a 15-second wait limit, so a stalled close cannot leave the command waiting indefinitely.
 
 When the shared `storage` selection (global settings, `--storage`, or `ATOMIC_STORAGE`) names an adapter that the running Atomic cannot load, interactive and print sessions warn at startup, naming the adapter and the cause. The Intercom broker would otherwise leave multi-node routing off with only a line in its log.
+
+## The workflow journal store
+
+With no journal selected, workflow runs go to the journal store in `~/.atomic/workflows/journal/` (under the agent directory's parent when `ATOMIC_CODING_AGENT_DIR` is set). It is one logical journal: a small catalog, `catalog.sqlite`, and SQLite shard files, `shard-0001.sqlite` and up. You never choose or create these files. `{}` as `workflows.journal` or `ATOMIC_WORKFLOWS_JOURNAL` also selects the store.
+
+- Each root run, with everything recorded for its child runs and its local workers, lives on one shard, so runs on different shards never wait for each other's write lock.
+- A new root goes to a shard with no running root. When every shard has one, Atomic adds a shard, up to 32. Runs never move to another shard on their own. A shard file that is lost stops taking new roots, and its runs fail with `shard-missing` until the file is restored.
+- Status, stages, resume, attach, fork, `history://` and the resume picker find any run ID through the catalog, whichever shard holds it.
+- Local workers and their coordinator open only their root's shard.
+
+`atomic storage status` shows the store with its shard and adopted journal counts, every shard file, native or adopted, that no longer exists (`shard-missing`) or cannot be opened (`shard-open-failed`), and journals the store skipped. The command exits with status 1 while any shard file is unavailable.
+
+### Adopting existing journal files
+
+Runs recorded in other journal files, such as a file selected earlier with `ATOMIC_WORKFLOW_JOURNAL_PATH`, become visible and resumable from the store once you adopt the file:
+
+```sh
+atomic storage adopt ~/campaigns/journal-1/journal.sqlite ~/campaigns/journal-2
+```
+
+Each path is a journal `.sqlite` file, or a directory holding `journal.sqlite`. Adoption registers the file in place: nothing is copied, and its runs keep writing to it when resumed. An adopted file takes no new runs. Every path is checked before the first one is registered, and a failed check registers nothing. Adopting a file that is already registered does nothing.
+
+Adoption also follows the journal files that the adopted runs were written to and adopts each one that is still a journal. The store itself adopts `~/.atomic/workflows/journal.sqlite`, the default journal of earlier Atomic versions, the first time it opens, when that file holds workflow runs. Files that cannot be adopted are recorded with the reason and shown by `atomic storage status`. Pass `--no-discover` to register only the given paths.
+
+`atomic storage consolidate` moves finished runs (completed, failed or cancelled) out of adopted files into the store's own shards. It leaves a run where it is when another process holds its lease, when it ran local workers (their pool state stays in its file), or when it uses the table format of Atomic before 0.9.38. Each run moves on its own: its file copy is fenced, copied, checked, and deleted only once the new shard is checked to hold everything it held. If the command is interrupted, every run stays readable in one place, and running it again finishes the move; a run whose new shard file is missing stays in its old file and is reported as `shard-unavailable` until the file is restored. Two consolidations at once, or a resume of a run that is being moved, lose no checkpoint and never replace each other's lease: a move whose source fence was taken over is undone and reported as `leased` when nothing was written to the new shard; if a resume took over or wrote to the new shard, the run stays there and is reported as `leased`, and as `conflict` when the old file gained events the new shard lacks, in which case both copies are kept. The command exits `1` when any run was left because of an error (`shard-unavailable`, `conflict`), and `0` when the runs were left for the reasons above.
+
+From the SDK, `adoptJournals(directory, paths)` and `consolidateJournalStore(directory)` do the same, and `JournalCatalog.open(directory)` reads the catalog. `defaultJournalStoreDirectory(agentDir)` gives the store's directory.
+
+```ts
+import { adoptJournals, defaultJournalStoreDirectory, isJournalAdoptError } from "@bastani/atomic/storage";
+
+try {
+  const report = await adoptJournals(defaultJournalStoreDirectory(agentDir), ["/srv/old/journal.sqlite"]);
+  console.log(report.adopted, report.discovered);
+} catch (error) {
+  if (isJournalAdoptError(error)) console.error(error.message, error.hint);
+  else throw error;
+}
+```
+
+Each entry of `report.discovered` names the journal that referenced it and, when it was skipped, the `reason`. `consolidateJournalStore` reports each run as `moved`, with the shard it moved `to`, or `skipped` with a `reason`, and for `conflict` or `shard-unavailable` the typed `error`. When adoption, consolidation or opening the catalog fails and closing a file then fails too, the original typed error is thrown with the close failure as its `cleanupCause`.
+
+A `skipped` result means consolidation did not finish, not that the run stayed in its original file. When another process resumed the destination during a move, the catalog keeps that destination selected. Check the catalog's current location before comparing copies or retrying consolidation.
+
+### When to select a journal
+
+Select a journal file only to isolate runs, for example in tests or a sandbox: `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, `RunOpts.journal` and `createAgentSession({ journal })` keep working as one file. You do not need separate journals for performance: the store already keeps concurrent roots apart. A shared libSQL or Turso database stays one selection; the adapter scales it.
+
+`admission.userLimits` counts across the runs of one database, so it needs an explicit journal file: set `workflows.journal.path` and use that path as `userDatabase`.
 
 ## Bring your own driver
 
@@ -418,7 +467,27 @@ Journal errors include:
 | `JournalMetaCorruptError` | `path`, `rowCount`. Inspect or restore the affected database. |
 | `JournalClosedError` | Open another journal before issuing new operations. |
 
-Workflow execution can also fail with `JournalOwnershipError` with `runId` and `holderId`, `JournalBackendClosedError`, `JournalOperationAbortedError` with `runId` and optional `cause`, or `JournalExecutionRetiredError` with `runId`. Stop work after losing ownership or cancellation; do not keep using a closed or retired execution. A local database failure does not justify deleting the shared file, which may hold both session and workflow history.
+Journal store errors are exported from `@bastani/atomic/storage` with their code unions and guards (`isJournalStoreError`, `isJournalCatalogError`, `isJournalShardUnavailableError`, `isJournalAdoptError`, and `isRetryableJournalStoreError`, which walks the cause chain). Each has a stable `code`, JSON-safe `fields`, a `hint` naming what to do, and `retryable`. All extend `JournalStoreError`, which extends `StorageError`. `serializeJournalStoreError` and `rehydrateJournalStoreError` carry them between processes.
+
+| Error | Code | When | Fields | What to do |
+|---|---|---|---|---|
+| `JournalCatalogError` | `catalog-unavailable` | The catalog cannot be opened or read | `catalogPath`, `detail` | Make the store directory readable and writable and free disk space |
+| | `schema-version` | A newer Atomic wrote the catalog | `found`, `supported` | Upgrade Atomic |
+| | `corrupt` | The catalog breaks a consistency rule | `rule` | Move `catalog.sqlite` aside, then adopt every `shard-*.sqlite` file in the store directory again |
+| | `write-failed` | A catalog write failed; retryable when another process held the lock | `phase`, `runId`, `detail` | Free disk space or wait for the lock; checkpoints already written stay on their shard |
+| | `run-conflict` | `consolidate` found different histories for a run | `runId`, `shardPath` | Compare both preserved copies and check the catalog's current location; a concurrent resume may have kept the run on the destination |
+| | `run-moved` | A consolidation moved a run while it was read and its new shard did not continue the history; retryable | `runId`, `shardId`, `shardPath`, `lastSeq` | Read the run again |
+| | `run-not-found` | No run with this ID is in this machine's storage | `runId`, `selection`, `localOnly` | With local-only storage, join the machine that ran it with `atomic storage join <url> --token-file <path>`, or adopt an older journal file |
+| `JournalShardUnavailableError` | `shard-missing` | The file holding a run is gone | `shardId`, `shardPath`, `runId` | Restore the file at that path; its runs stay registered there |
+| | `shard-open-failed` | The file cannot be opened; retryable when it was locked | `shardId`, `shardPath`, `detail` | Check permissions and free disk space |
+| `JournalAdoptError` | `path-not-found` | The path does not exist | `path` | Pass a journal file or its directory |
+| | `not-a-journal` | Not SQLite, no workflow tables, the store's own catalog, or a directory without `journal.sqlite` | `path`, `reason` | Pass a journal file |
+| | `schema-version` | The journal's schema is not supported | `found`, `supported` | Adopt it with the Atomic version that wrote it |
+| | `run-conflict` | A run in it is already in the store elsewhere, for example a second copy of one journal | `runId`, `existingPath` | Adopt only one copy |
+
+A failed adoption registers nothing. A listing skips a shard that cannot be opened instead of failing; using one of its runs raises `JournalShardUnavailableError`.
+
+Workflow execution can also fail with `JournalOwnershipError` with `runId` and `holderId`, `JournalBackendClosedError`, `JournalOperationAbortedError` with `runId` and optional `cause`, or `JournalExecutionRetiredError` with `runId`. Stop work after losing ownership or cancellation; do not keep using a closed or retired execution. A local database failure does not justify deleting a journal or shard file; restore access to it instead.
 
 Session listings accept an `AbortSignal`. Cancellation rejects with the original `signal.reason`, including a custom reason, rather than wrapping it as a storage failure. Callers can compare the caught value to `signal.reason`. With `controller.abort()`, the reason is the standard `AbortError`.
 

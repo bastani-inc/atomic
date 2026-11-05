@@ -59,7 +59,7 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
 		pooledSessionStore: async () => {
 			const backend = requireStoreDurableBackend(deps.store ?? store, runId);
 			const { poolSessionStore } = await import("../workers/pool-session-store.js");
-			return poolSessionStore(backend);
+			return poolSessionStore(backend, backend.getWorkflow(runId)?.rootWorkflowId ?? runId);
 		},
 	};
 }

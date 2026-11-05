@@ -6,9 +6,10 @@ import { ENV_SESSION_DIR } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settings-schema.ts";
 import { StorageConfigError, StoragePrefixError } from "./errors.js";
+import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
-import { selectStorage } from "./selection.js";
+import { selectStorage, selectsDefaultJournalStore } from "./selection.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";
@@ -117,7 +118,10 @@ function environmentChoices(agentDir: string) {
 	): ProcessStorageChoice | undefined => {
 		const text = environmentValue(field);
 		if (text === undefined) return undefined;
-		return choose(parseSelection(text, schema, "env", field), "env", field, agentDir, defaultPath);
+		const value = parseSelection(text, schema, "env", field);
+		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
+			return { selection: { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) }, source: "env", field };
+		return choose(value, "env", field, agentDir, defaultPath);
 	};
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault),

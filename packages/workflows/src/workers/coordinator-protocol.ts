@@ -1,4 +1,5 @@
 import type { ProviderRateLimitObservation } from "@bastani/atomic";
+import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import type { PoolControl, PoolWork, PoolWorkDescriptor } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import type { Lease } from "../durable/journal/types.js";
@@ -58,6 +59,8 @@ export interface PoolRootProjection {
 export interface PoolCoordinatorOptions {
 	/** The SQLite database holding the pool's tables: the root's journal itself, or its coordination database beside it. */
 	readonly journalPath: string;
+	/** The catalog shard id of `journalPath` when it is the root's shard in the journal store, which must exist. */
+	readonly journalShard?: number;
 	/** Where the root's durable journal is when it is not the database at `journalPath`. */
 	readonly durable?: PoolDurableJournal;
 	readonly workers: number;
@@ -160,6 +163,8 @@ export interface CoordinatorReply {
 	readonly id: number;
 	readonly value?: unknown;
 	readonly error?: string;
+	/** A journal store failure, serialized so the root rehydrates it into its typed class. */
+	readonly failure?: SerializedJournalStoreError;
 }
 
 /** An attempt's latest publication as its worker sent it: every run it holds, in full. */

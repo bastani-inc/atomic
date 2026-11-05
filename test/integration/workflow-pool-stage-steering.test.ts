@@ -20,7 +20,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { poolSessionStore } from "../../packages/workflows/src/workers/pool-session-store.js";
-import { testRunId } from "../helpers/run-id.js";
+import { rootOf, testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
@@ -117,7 +117,7 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			assert.equal(registry.get(target.runId, target.stage.id), undefined, "a finished stage leaves the registry");
 
-			const sessions = await poolSessionStore(backend);
+			const sessions = await poolSessionStore(backend, rootOf(backend, target.runId));
 			assert.ok(sessions !== undefined);
 			const users = (await SessionManager.open(sessions, target.stage.sessionId!))
 				.buildSessionContext()

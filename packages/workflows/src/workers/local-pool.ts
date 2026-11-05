@@ -13,9 +13,11 @@ import {
 	type QuestionnaireResult,
 	reportDebug,
 } from "@bastani/atomic";
+import { rehydrateJournalStoreError } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
+import { rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import {
 	openSqlPoolQueue,
 	type PoolControl,
@@ -362,6 +364,8 @@ export class LocalWorkerPool {
 		private readonly options: {
 			/** The SQLite database holding the pool's tables: the root's journal, or its coordination database. */
 			readonly journalPath: string;
+			/** The catalog shard id of `journalPath` when it is the root's shard in the journal store. */
+			readonly journalShard?: number;
 			/** Where the root's durable journal is when it is not the database at `journalPath`. */
 			readonly durable?: PoolDurableJournal;
 			readonly rootId?: string;
@@ -443,7 +447,7 @@ export class LocalWorkerPool {
 	}
 	async prepare(root: string, store?: Store): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
-		const poolJournal = await this.poolJournal();
+		const poolJournal = await this.poolJournal(root);
 		if (this.root !== undefined && this.root !== root) throw new Error("Local worker pool belongs to another root");
 		this.root = root;
 		if (store) this.store = store;
@@ -482,6 +486,7 @@ export class LocalWorkerPool {
 				lease,
 				options: {
 					journalPath: this.options.journalPath,
+					...(this.options.journalShard === undefined ? {} : { journalShard: this.options.journalShard }),
 					...(this.options.durable === undefined ? {} : { durable: this.options.durable }),
 					workers: this.options.workers,
 					leaseMs: this.leaseMs,
@@ -501,9 +506,9 @@ export class LocalWorkerPool {
 		})();
 		return this.connecting;
 	}
-	/** The journal whose database holds the pool's tables: the root's own, or the coordination database. */
-	private async poolJournal(): Promise<RunJournal> {
-		const journal = this.backend.journal;
+	/** The journal whose database holds the pool's tables: the root's own (its shard in a journal store), or the coordination database. */
+	private async poolJournal(root: string): Promise<RunJournal> {
+		const journal = await rootRunJournal(this.backend.journal, root);
 		if (this.options.durable === undefined) {
 			if (
 				!(journal instanceof SqlRunJournal) ||
@@ -518,7 +523,7 @@ export class LocalWorkerPool {
 				"Local workers share a local SQLite journal as it is; a durable journal selection does not apply",
 			);
 		const coordination = await openCoordinationJournal(this.options.journalPath);
-		registerPoolJournal(journal, coordination);
+		registerPoolJournal(this.backend.journal, coordination);
 		return coordination;
 	}
 	async control(state: PoolControl["state"]): Promise<void> {
@@ -1434,7 +1439,8 @@ export class LocalWorkerPool {
 			case "reply": {
 				const pending = this.commands.get(event.id);
 				this.commands.delete(event.id);
-				if (event.error !== undefined) pending?.reject(new Error(event.error));
+				if (event.failure !== undefined) pending?.reject(rehydrateJournalStoreError(event.failure));
+				else if (event.error !== undefined) pending?.reject(new Error(event.error));
 				else pending?.resolve(event.value);
 				return;
 			}
