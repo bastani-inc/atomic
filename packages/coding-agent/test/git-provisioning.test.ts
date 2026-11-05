@@ -13,7 +13,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
@@ -85,6 +85,7 @@ vi.mock("proper-lockfile", async () => {
 });
 
 const isWindows = process.platform === "win32";
+const HOST_TAG = createHash("sha256").update(hostname()).digest("hex").slice(0, 8);
 /** Node timers may fire up to a millisecond before `Date.now()` shows the full delay. */
 const TIMER_EARLY_FIRE_TOLERANCE_MS = 2;
 const ORIGINAL_PATH = process.env.PATH ?? "";
@@ -848,8 +849,9 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		mkdirSync(lockPath, { recursive: true });
 		const future = new Date(Date.now() + 3_600_000);
 		utimesSync(lockPath, future, future);
-		const git = await tools.withGitProvisionSettingsForTest({ release: fake.release, lockPollMs: 20 }, () =>
-			tools.resolveGit(),
+		const git = await tools.withGitProvisionSettingsForTest(
+			{ release: fake.release, lockPollMs: 20, lockStaleMs: 200 },
+			() => tools.resolveGit(),
 		);
 		assert.equal(git.source, "provisioned");
 		assert.equal(existsSync(lockPath), false);
@@ -899,16 +901,21 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		serveArchive(fake.bytes);
 		const binDir = join(agentDir, "bin");
 		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-		const abandoned = join(binDir, `.git-staging-${exitedPid}-abandoned`);
-		const live = join(binDir, `.git-staging-${process.pid}-live`);
+		const abandoned = join(binDir, `.git-staging-${HOST_TAG}-${exitedPid}-abandoned`);
+		const live = join(binDir, `.git-staging-${HOST_TAG}-${process.pid}-live`);
 		const foreign = join(binDir, ".git-staging-unowned");
-		for (const dir of [abandoned, live, foreign]) mkdirSync(dir, { recursive: true });
+		const otherHost = join(
+			binDir,
+			`.git-staging-${HOST_TAG === "00000000" ? "11111111" : "00000000"}-${exitedPid}-x`,
+		);
+		for (const dir of [abandoned, live, foreign, otherHost]) mkdirSync(dir, { recursive: true });
 		const skewedPast = new Date(Date.now() - 48 * 3_600_000);
 		utimesSync(live, skewedPast, skewedPast);
 		await tools.withGitProvisionSettingsForTest({ release: fake.release }, () => tools.resolveGit());
 		assert.equal(existsSync(abandoned), false);
 		assert.equal(existsSync(live), true);
 		assert.equal(existsSync(foreign), true);
+		assert.equal(existsSync(otherHost), true);
 	});
 
 	it("never publishes a staged tree that lost archive entries after extraction", async () => {
@@ -1556,7 +1563,7 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		assert.equal(warning?.type, "warning");
 		assert.match(
 			warning?.message ?? "",
-			/^Could not remove the git staging directory .*\.git-staging-\d+-.*: Error: EBUSY: staging in use$/,
+			/^Could not remove the git staging directory .*\.git-staging-[0-9a-f]{8}-\d+-.*: Error: EBUSY: staging in use$/,
 		);
 	});
 
@@ -1597,8 +1604,8 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		const fake = healthy();
 		serveArchive(fake.bytes);
 		const binDir = join(agentDir, "bin");
-		const initOwned = join(binDir, ".git-staging-1-init");
-		const lookalike = join(binDir, `old.git-staging-${runProcess(process.execPath, ["-e", ""]).pid}-x`);
+		const initOwned = join(binDir, `.git-staging-${HOST_TAG}-1-init`);
+		const lookalike = join(binDir, `old.git-staging-${HOST_TAG}-${runProcess(process.execPath, ["-e", ""]).pid}-x`);
 		for (const dir of [initOwned, lookalike]) mkdirSync(dir, { recursive: true });
 		await provision({ release: fake.release });
 		assert.equal(existsSync(initOwned), true);
@@ -1648,5 +1655,28 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 			"git not found. Downloading portable git 2.56.0...",
 			`git 2.56.0 installed to ${installDir}`,
 		]);
+	});
+
+	it("never takes over a lock whose holder keeps refreshing it, even with a clock far behind", async () => {
+		const fake = healthy();
+		const fetchMock = serveArchive(fake.bytes);
+		const lockPath = join(agentDir, "bin", "git.install.lock");
+		mkdirSync(lockPath, { recursive: true });
+		let stamp = Date.now() - 6 * 3_600_000;
+		const refresh = setInterval(() => {
+			stamp += 50;
+			utimesSync(lockPath, new Date(stamp), new Date(stamp));
+		}, 50);
+		try {
+			const pending = provision({ release: fake.release, lockPollMs: 20, lockStaleMs: 300 });
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
+			assert.equal(fetchMock.mock.calls.length, 0);
+			assert.equal(existsSync(lockPath), true);
+			clearInterval(refresh);
+			assert.equal((await pending).source, "provisioned");
+			assert.equal(fetchMock.mock.calls.length, 1);
+		} finally {
+			clearInterval(refresh);
+		}
 	});
 });

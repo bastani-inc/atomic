@@ -152,7 +152,7 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 	function leftoverStagingPids(): number[] {
 		return readdirSync(join(agentDir, "bin"))
 			.filter((name) => name.startsWith(".git-staging-"))
-			.map((name) => Number(name.slice(".git-staging-".length).split("-")[0]));
+			.map((name) => Number(name.slice(".git-staging-".length).split("-")[1]));
 	}
 
 	test(

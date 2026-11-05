@@ -12,7 +12,7 @@ import {
 	statSync,
 } from "fs";
 import { writeFile } from "fs/promises";
-import { arch, platform } from "os";
+import { arch, hostname, platform } from "os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
 import { setTimeout as delay } from "timers/promises";
@@ -1045,10 +1045,14 @@ type GitInstallLock =
 	| { readonly kind: "held"; readonly release: () => Promise<void>; readonly compromised: () => Error | undefined }
 	| { readonly kind: "installed"; readonly version: string };
 
+/** proper-lockfile never declares a lock stale by itself: wall-clock staleness breaks under clock skew. */
+const LOCK_NEVER_STALE_MS = 2 ** 31 - 1;
+
 /**
- * Serialize installs across processes so concurrent starts download once. Correctness does not depend on the lock:
- * the distribution is published by an atomic rename, so a holder that is killed, stopped, or loses the lock never
- * exposes a partial install.
+ * Serialize installs across processes so concurrent starts download once. A waiter treats the lock as abandoned only
+ * after its mtime stops changing for `lockStaleMs` of the waiter's own monotonic time, so neither clock skew nor a
+ * live holder's slow download breaks it. Correctness does not depend on the lock: the distribution is published by
+ * an atomic rename, so a holder that is killed, stopped, or loses the lock never exposes a partial install.
  */
 async function acquireGitInstallLock(
 	target: GitDistributionTarget,
@@ -1058,7 +1062,9 @@ async function acquireGitInstallLock(
 ): Promise<GitInstallLock> {
 	const binDir = dirname(layout.root);
 	const lockPath = join(binDir, "git.install.lock");
-	const startedAt = Date.now();
+	const startedAt = performance.now();
+	let observedMtimeMs: number | undefined;
+	let observedSince = startedAt;
 	let announced = false;
 	for (;;) {
 		signal.throwIfAborted();
@@ -1068,7 +1074,7 @@ async function acquireGitInstallLock(
 				lockfilePath: lockPath,
 				realpath: false,
 				retries: 0,
-				stale: gitProvisionSettings.lockStaleMs,
+				stale: LOCK_NEVER_STALE_MS,
 				update: gitProvisionSettings.lockUpdateMs,
 				onCompromised: (error) => {
 					compromised = error;
@@ -1080,10 +1086,15 @@ async function acquireGitInstallLock(
 		}
 		const version = probeProvisionedGit(layout);
 		if (version !== undefined) return { kind: "installed", version };
-		const lockStats = statSync(lockPath, { throwIfNoEntry: false });
-		if (lockStats !== undefined && lockStats.mtimeMs - Date.now() > gitProvisionSettings.lockStaleMs)
+		const now = performance.now();
+		const mtimeMs = statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs;
+		if (mtimeMs !== observedMtimeMs) {
+			observedMtimeMs = mtimeMs;
+			observedSince = now;
+		} else if (mtimeMs !== undefined && now - observedSince >= gitProvisionSettings.lockStaleMs) {
 			rmSync(lockPath, { recursive: true, force: true });
-		const elapsedMs = Date.now() - startedAt;
+		}
+		const elapsedMs = Math.round(now - startedAt);
 		if (elapsedMs >= gitProvisionSettings.lockWaitTimeoutMs)
 			throw new GitProvisionTimeoutError({
 				phase: "lock",
@@ -1111,10 +1122,16 @@ function isProcessAlive(pid: number): boolean {
  * Remove staging directories whose installer process has exited. Ownership comes from the pid in the name, never
  * from timestamps, so a skewed clock cannot make a live installer's staging look abandoned.
  */
+/** Staging names carry the host and pid, so a sweep never judges another host's or container's installer. */
+function stagingOwnerTag(): string {
+	return createHash("sha256").update(hostname()).digest("hex").slice(0, 8);
+}
+
 function removeAbandonedStagingDirectories(binDir: string): void {
+	const host = stagingOwnerTag();
 	for (const entry of readdirSync(binDir)) {
-		const owner = /^\.git-staging-(\d+)-/.exec(entry)?.[1];
-		if (owner !== undefined && !isProcessAlive(Number(owner)))
+		const owner = /^\.git-staging-([0-9a-f]{8})-(\d+)-/.exec(entry);
+		if (owner !== null && owner[1] === host && !isProcessAlive(Number(owner[2])))
 			rmSync(join(binDir, entry), { recursive: true, force: true });
 	}
 }
@@ -1357,7 +1374,7 @@ async function installUnderLock(
 	let staging: string;
 	try {
 		removeAbandonedStagingDirectories(binDir);
-		staging = mkdtempSync(join(binDir, `${GIT_STAGING_PREFIX}${process.pid}-`));
+		staging = mkdtempSync(join(binDir, `${GIT_STAGING_PREFIX}${stagingOwnerTag()}-${process.pid}-`));
 	} catch (error) {
 		throw installFailed("stage", target, layout, error);
 	}
