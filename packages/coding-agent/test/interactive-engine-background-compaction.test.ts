@@ -4,6 +4,8 @@
  */
 
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import {
@@ -13,6 +15,7 @@ import {
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.js";
 import { createHarness } from "./suite/harness.ts";
+import { createHarness as createFileSettingsHarness } from "./test-harness.ts";
 
 let pair: EngineHostPair | undefined;
 
@@ -122,6 +125,39 @@ test("background compaction settings apply before optional resources finish load
 		assert.equal(waitForResources.mock.calls.length, 0);
 		assert.equal(harness.session.backgroundCompactionEnabled, false);
 		assert.equal(harness.session.backgroundCompactionThresholdPercent, 60);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("get_state keeps answering after a reload loads an invalid background setting (#4330)", async () => {
+	const harness = await createFileSettingsHarness();
+	const runtime = new AgentSessionRuntime(
+		harness.session,
+		{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+	);
+	const handle = createRpcCommandHandler({
+		runtimeHost: runtime,
+		getSession: () => harness.session,
+		rebindSession: async () => {},
+		output: vi.fn(),
+	});
+	try {
+		writeFileSync(
+			join(harness.tempDir, "settings.json"),
+			JSON.stringify({ compaction: { backgroundThresholdPercent: 150 } }),
+		);
+		await harness.settingsManager.reload();
+		const response = await handle({ id: "state", type: "get_state" });
+		assert.ok(response?.success === true && response.command === "get_state");
+		assert.equal(response.data.backgroundCompactionEnabled, false);
+		assert.equal(response.data.backgroundCompactionThresholdPercent, 75);
+		assert.equal(response.data.compaction?.state, "failed");
+		assert.equal(response.data.compaction?.error?.code, "invalid-setting");
+		assert.equal(response.data.compaction?.error?.fields.reason, "out-of-range");
 	} finally {
 		harness.cleanup();
 	}

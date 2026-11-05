@@ -112,7 +112,7 @@ Resume uses the saved compacted text without rerunning planning. The TUI shows a
 
 | Field | Present | Meaning |
 |---|---|---|
-| `state` | always | `idle`, `running` (a task is compacting), `ready` (a saved result waits for the next turn boundary) or `failed` |
+| `state` | always | `idle`, `running` (a task is compacting), `ready` (a saved result waits for the next turn boundary) or `failed` (the last task failed, or applying the saved result failed and waits for its retry) |
 | `upToEntryId` | except `idle` | Last session entry of the history the task compacts |
 | `startedAt` | except `idle` | ISO time the task started |
 | `error` | `failed` | The typed error; serialized as `{ name, code, message, hint, retryable, phase, fields, cause }` over RPC and in workflow status |
@@ -128,8 +128,9 @@ All background compaction errors extend `BackgroundCompactionError`, exported fr
 | `BackgroundCompactionPlanningError` | `planner-failed` | Every planner and fallback model failed, or a `session_before_compact` handler returned empty text; `cause` holds the underlying error | `upToEntryId`, `attempt` | Nothing; Atomic retries with backoff. Check the compaction model and its credentials if it repeats |
 | `BackgroundCompactionNotCompactableError` | `not-compactable` | The frozen history had too few compactable lines | `upToEntryId` | Nothing; a later turn tries again |
 | `BackgroundCompactionPersistError` | `result-persist-failed` | Saving the result to session storage failed; `cause` holds the storage error | `upToEntryId` | Check that session storage is writable; Atomic retries with backoff |
+| `BackgroundCompactionCommitError` | `commit-failed` | Applying a saved result as a boundary failed (the backup or the boundary write); `cause` holds the storage error. The turn continues without it | `upToEntryId`, `resultEntryId`, `attempt` | Check that session storage is writable; Atomic retries applying the same result with backoff, and a foreground compaction at the `reserveTokens` threshold or on overflow does not wait for the backoff. If the store reported an unknown outcome and the boundary was in fact written, the result counts as applied when the session is reopened |
 | `BackgroundCompactionDiscardedError` | `result-discarded` | A saved result no longer fits the branch | `upToEntryId`, `reason`: `superseded`, `off-branch`, `context-edited` or `malformed` | Nothing; history is unchanged and a later turn compacts again if needed |
-| `BackgroundCompactionConfigError` | `invalid-setting` | `compaction.background` is not a boolean, or `compaction.backgroundThresholdPercent` is not a number above 0 and below 100 | `source` (`settings` or `sdk`), `field`, `reason` | Fix the named setting. `createAgentSession` rejects an invalid settings file before opening the session |
+| `BackgroundCompactionConfigError` | `invalid-setting` | `compaction.background` is not a boolean, or `compaction.backgroundThresholdPercent` is not a number above 0 and below 100 | `source` (`settings` or `sdk`), `field`, `reason` | Fix the named setting. `createAgentSession` rejects an invalid settings file before opening the session; one loaded later by a reload turns background compaction off until it is fixed |
 
 ## Extension hooks
 
@@ -290,6 +291,8 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. It is an **input-side** reserve only and never caps planner output. |
 | `background` | `true` | Compact older context in the background once usage passes `backgroundThresholdPercent`, and apply the result at the next turn boundary. `false` restores blocking compaction at the `reserveTokens` threshold. Requires `enabled`. |
 | `backgroundThresholdPercent` | `75` | Percentage of the context window at which background compaction starts. Must be above 0 and below 100; another value is a `BackgroundCompactionConfigError`. |
+
+An invalid `background` or `backgroundThresholdPercent` in a settings file is reported as a settings warning when settings load or reload. Until it is fixed, background compaction stays off: `session.compaction` and RPC `get_state` report `failed` with the `invalid-setting` error, and `session.backgroundCompactionEnabled` and `session.backgroundCompactionThresholdPercent` read `false` and `75`. Writing a valid value through `/settings` or the SDK setters clears the failure.
 
 The top-level `compactionModel` setting defaults to `"auto"`, using the session model. An exact registered chat-model, classifier, or compactor ID selects a separate compactor. See [Compaction model](/compaction#compaction-model).
 

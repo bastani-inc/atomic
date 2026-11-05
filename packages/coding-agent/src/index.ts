@@ -255,6 +255,7 @@ export {
 	serializeBackgroundCompactionState,
 } from "./core/compaction/background-compaction.ts";
 export {
+	BackgroundCompactionCommitError,
 	BackgroundCompactionConfigError,
 	type BackgroundCompactionConfigReason,
 	type BackgroundCompactionConfigSource,
@@ -267,6 +268,7 @@ export {
 	BackgroundCompactionPersistError,
 	type BackgroundCompactionPhase,
 	BackgroundCompactionPlanningError,
+	isBackgroundCompactionCommitError,
 	isBackgroundCompactionConfigError,
 	isBackgroundCompactionDiscardedError,
 	isBackgroundCompactionError,

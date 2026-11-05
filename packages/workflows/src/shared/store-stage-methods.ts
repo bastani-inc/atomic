@@ -174,6 +174,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if (!run) return false;
 			const stage = context.findStage(run, stageId);
 			if (!stage) return false;
+			if (compaction.state === "idle" && stage.compaction === undefined) return false;
 			stage.compaction = compaction;
 			context.bumpAndNotify({ runId, stageId });
 			return true;

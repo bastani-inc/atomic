@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -15,6 +15,7 @@ import {
 	type CompactionReadyWake,
 } from "../src/core/compaction/background-compaction.ts";
 import {
+	BackgroundCompactionCommitError,
 	BackgroundCompactionConfigError,
 	BackgroundCompactionPersistError,
 	BackgroundCompactionPlanningError,
@@ -31,6 +32,7 @@ import {
 	SessionManager,
 } from "../src/core/session-manager.ts";
 import type { Settings } from "../src/core/settings-manager.ts";
+import { StorageUnavailableError } from "../src/core/storage/errors.ts";
 import { createHarnessWithExtensions, type FauxResponseInput, type Harness } from "./test-harness.ts";
 
 const longPrompt = Array.from({ length: 24 }, (_, index) => `context line ${index + 1}`).join("\n");
@@ -1385,5 +1387,307 @@ describe("foreground compaction with background compaction off (#4330)", () => {
 		} finally {
 			harness.cleanup();
 		}
+	});
+});
+
+describe("background compaction commit failures (#4330)", () => {
+	const harnesses: Harness[] = [];
+	afterEach(() => {
+		vi.useRealTimers();
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
+
+	const AFTER: FauxResponseInput[] = ["next answer", "third answer", "fourth answer", "fifth answer", "sixth answer"];
+
+	async function readyWith(responses: FauxResponseInput[], options: HarnessOptions = {}) {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(responses, planner, options);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		return { harness, planner };
+	}
+
+	/** Make the boundary append fail `failures` times (every time when undefined) and count the attempts. */
+	function failCommits(harness: Harness, failures?: number) {
+		const append = harness.sessionManager.appendCompaction.bind(harness.sessionManager);
+		const attempts = { count: 0, cause: new Error("injected storage write failure") };
+		harness.sessionManager.appendCompaction = async (...args) => {
+			attempts.count += 1;
+			if (failures === undefined || attempts.count <= failures) throw attempts.cause;
+			return append(...args);
+		};
+		return attempts;
+	}
+
+	async function promptAndCountRequests(harness: Harness, text: string): Promise<number> {
+		const before = harness.faux.callCount;
+		await harness.session.prompt(text);
+		return harness.faux.callCount - before;
+	}
+
+	test("a failed commit keeps the turn running, reports commit-failed, and is applied once after the backoff", async () => {
+		vi.useFakeTimers({ toFake: ["performance"] });
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		const [stored] = resultEntries(harness.sessionManager);
+		const attempts = failCommits(harness, 1);
+
+		assert.equal(await promptAndCountRequests(harness, "next"), 1, "the prompt still reaches the provider");
+		assert.equal(harness.session.getLastAssistantText(), "next answer");
+		const failed = harness.session.compaction;
+		assert.equal(failed.state, "failed");
+		assert.ok(failed.error instanceof BackgroundCompactionCommitError);
+		assert.equal(failed.error.code, "commit-failed");
+		assert.equal(failed.error.phase, "commit");
+		assert.equal(failed.error.retryable, true);
+		assert.equal(failed.error.cause, attempts.cause);
+		assert.equal(failed.error.resultEntryId, stored.id);
+		assert.equal(failed.error.attempt, 1);
+		assert.equal(failed.upToEntryId, stored.data?.upToEntryId);
+		assert.equal(harness.eventsOfType("compaction_end").length, 0, "a failed background commit is not a compaction");
+		assert.equal(backgroundStates(harness).at(-1), "failed");
+
+		vi.advanceTimersByTime(BACKGROUND_COMPACTION_RETRY_BASE_MS - 1);
+		assert.equal(await promptAndCountRequests(harness, "third"), 1);
+		assert.equal(attempts.count, 1, "no new attempt inside the backoff");
+
+		vi.advanceTimersByTime(1);
+		assert.equal(await promptAndCountRequests(harness, "fourth"), 1);
+		assert.equal(attempts.count, 2);
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "applied exactly once");
+		assert.equal(harness.eventsOfType("compaction_end").filter((event) => event.background).length, 1);
+		assert.equal(harness.session.compaction.state, "idle");
+	});
+
+	test("a commit that keeps failing never blocks a prompt and is attempted only as the backoff allows", async () => {
+		vi.useFakeTimers({ toFake: ["performance"] });
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		const attempts = failCommits(harness);
+		for (const [advanceMs, text, expectedAttempts] of [
+			[0, "next", 1],
+			[0, "third", 1],
+			[BACKGROUND_COMPACTION_RETRY_BASE_MS, "fourth", 2],
+			[BACKGROUND_COMPACTION_RETRY_BASE_MS, "fifth", 2],
+			[BACKGROUND_COMPACTION_RETRY_BASE_MS, "sixth", 3],
+		] as const) {
+			vi.advanceTimersByTime(advanceMs);
+			assert.equal(await promptAndCountRequests(harness, text), 1, text);
+			assert.equal(attempts.count, expectedAttempts, text);
+		}
+		const state = harness.session.compaction;
+		assert.equal(state.state, "failed");
+		assert.equal(state.error instanceof BackgroundCompactionCommitError && state.error.attempt, 3);
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+	});
+
+	test("a failed next-turn commit still sends the tool turn's follow-up request", async () => {
+		const planner = new Planner(true);
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					toolCalls: [{ id: "call-b", name: "echo", args: {} }],
+					usage: { input: 770, output: 10 },
+					beforeEmit: async () => {
+						await harness.session.awaitBackgroundCompaction();
+						failCommits(harness);
+					},
+				},
+				{ text: "done", usage: { input: 780, output: 10 } },
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		assert.equal(harness.session.getLastAssistantText(), "done");
+		assert.equal(harness.session.compaction.error?.code, "commit-failed");
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+	});
+
+	test("a hard-threshold turn whose ready commit fails compacts in the foreground", async () => {
+		const planner = new Planner();
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					text: "over the hard threshold",
+					usage: { input: 850, output: 10 },
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						failCommits(harness, 1);
+					},
+				},
+				"after",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+		const [boundary] = compactionEntries(harness.sessionManager);
+		assert.ok(boundary, "the foreground compaction wrote its own boundary");
+		assert.equal(boundary.coveredThroughEntryId, undefined);
+		assert.equal(planner.calls.at(-1)?.foreground, true);
+		assert.equal(harness.eventsOfType("compaction_end").at(-1)?.background, undefined);
+		assert.equal(harness.session.compaction.state, "idle", "the superseded result no longer reports a failure");
+		await harness.session.prompt("after");
+		const discarded = harness.eventsOfType("background_compaction").at(-1);
+		assert.equal(discarded?.compaction.state, "idle");
+		assert.equal(discarded?.discarded?.fields.reason, "superseded");
+	});
+
+	test("a JSONL session whose backup fails reports the storage error as the cause", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "background-compaction-commit-failure-"));
+		try {
+			const sessionManager = await SessionManager.create(directory, join(directory, "sessions"));
+			const { harness } = await readyWith([...TRIGGER, ...AFTER], { sessionManager });
+			const unavailable = new StorageUnavailableError({ adapter: "jsonl", location: "backup" }, new Error("EIO"));
+			harness.sessionManager.writeBackupSnapshot = async () => {
+				throw unavailable;
+			};
+			assert.equal(await promptAndCountRequests(harness, "next"), 1);
+			const state = harness.session.compaction;
+			assert.equal(state.error?.code, "commit-failed");
+			assert.equal(state.error?.cause, unavailable);
+			assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("a commit failure stops holding back new tasks once a newer boundary covers its result", async () => {
+		vi.useFakeTimers({ toFake: ["performance"] });
+		const { harness, planner } = await readyWith([...TRIGGER, ...AFTER]);
+		const [stored] = resultEntries(harness.sessionManager);
+		failCommits(harness, 1);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(harness.session.compaction.error?.code, "commit-failed");
+		harness.session._backgroundCompaction.announcedResultEntryId = undefined;
+		await harness.sessionManager.appendCompaction(
+			"[User]: newer",
+			null,
+			900,
+			stored.data?.details as never,
+			undefined,
+			stored.data?.upToEntryId,
+		);
+		await harness.sessionManager.appendMessage({ role: "user", content: longPrompt, timestamp: 9 });
+
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(harness.session.compaction.state, "idle");
+		harness.session._maybeStartBackgroundCompaction(900);
+		assert.equal(harness.session.compaction.state, "running", "the commit backoff no longer applies");
+		planner.release();
+		await harness.session.awaitBackgroundCompaction();
+	});
+
+	test("a failed commit of a result loaded from storage is still reported when it is discarded", async () => {
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		const [stored] = resultEntries(harness.sessionManager);
+		harness.session._backgroundCompaction.announcedResultEntryId = undefined;
+		const attempts = failCommits(harness, 1);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(attempts.count, 1);
+		await harness.sessionManager.appendCompaction(
+			"[User]: newer",
+			null,
+			900,
+			stored.data?.details as never,
+			undefined,
+			stored.data?.upToEntryId,
+		);
+		await harness.session._commitReadyBackgroundCompaction();
+		const discarded = harness.eventsOfType("background_compaction").at(-1);
+		assert.equal(discarded?.discarded?.fields.reason, "superseded");
+		assert.equal(discarded?.compaction.state, "idle");
+	});
+
+	test("a foreground compaction applies a result whose commit failed without waiting for the backoff", async () => {
+		vi.useFakeTimers({ toFake: ["performance"] });
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		failCommits(harness, 1);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined, "an ordinary boundary waits");
+		assert.ok(await harness.session._commitReadyBackgroundCompaction({ foreground: true }));
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		assert.equal(harness.session.compaction.state, "idle");
+	});
+
+	test("a commit failure during disposal is not recorded", async () => {
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		harness.sessionManager.appendCompaction = async () => {
+			await harness.session.dispose();
+			throw new Error("closed");
+		};
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(harness.session.compaction.state, "ready");
+	});
+});
+
+describe("background compaction settings changed on disk (#4330)", () => {
+	const harnesses: Harness[] = [];
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
+
+	async function reloadWith(harness: Harness, compaction: Record<string, unknown>) {
+		harness.settingsManager.drainErrors();
+		writeFileSync(join(harness.tempDir, "settings.json"), JSON.stringify({ compaction }));
+		await harness.settingsManager.reload();
+		return harness.settingsManager.drainErrors().map(({ error }) => error);
+	}
+
+	test("an invalid value loaded by a reload keeps status reads working, and a valid write clears it", async () => {
+		const harness = await createBackgroundHarness(["unused"], new Planner(true));
+		harnesses.push(harness);
+		const errors = await reloadWith(harness, { backgroundThresholdPercent: 150 });
+		assert.equal(errors.length, 1);
+		assert.ok(errors[0] instanceof BackgroundCompactionConfigError);
+		assert.equal(errors[0].reason, "out-of-range");
+		assert.equal(errors[0].source, "settings");
+
+		assert.equal(harness.session.backgroundCompactionThresholdPercent, 75, "the default Atomic falls back to");
+		assert.equal(harness.session.backgroundCompactionEnabled, false, "off while a setting is invalid");
+		const failed = harness.session.compaction;
+		assert.equal(failed.state, "failed");
+		assert.ok(failed.error instanceof BackgroundCompactionConfigError);
+		assert.equal(failed.error.field, "compaction.backgroundThresholdPercent");
+		harness.session._maybeStartBackgroundCompaction(900);
+		assert.deepEqual(backgroundStates(harness), ["failed"], "reported once however often it is read");
+
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.equal(harness.session.compaction.state, "failed", "the threshold is still invalid");
+		assert.deepEqual(backgroundStates(harness), ["failed"]);
+
+		harness.session.setBackgroundCompactionThresholdPercent(60);
+		assert.equal(harness.session.compaction.state, "idle");
+		assert.equal(harness.session.backgroundCompactionEnabled, true);
+		assert.equal(harness.session.backgroundCompactionThresholdPercent, 60);
+		assert.deepEqual(backgroundStates(harness), ["failed", "idle"]);
+	});
+
+	test("a reload that replaces one invalid value with another reports the new one", async () => {
+		const harness = await createBackgroundHarness(["unused"], new Planner(true));
+		harnesses.push(harness);
+		await reloadWith(harness, { backgroundThresholdPercent: "75" });
+		const first = harness.session.compaction.error;
+		assert.ok(first instanceof BackgroundCompactionConfigError);
+		assert.equal(first.reason, "not-a-number");
+		const errors = await reloadWith(harness, { background: "yes" });
+		assert.equal(errors.length, 1);
+		assert.equal(harness.session.backgroundCompactionEnabled, false);
+		const state = harness.session.compaction;
+		assert.ok(state.error instanceof BackgroundCompactionConfigError);
+		assert.equal(state.error.field, "compaction.background");
+		assert.equal(state.error.reason, "not-a-boolean");
+		assert.deepEqual(backgroundStates(harness), ["failed", "failed"]);
 	});
 });

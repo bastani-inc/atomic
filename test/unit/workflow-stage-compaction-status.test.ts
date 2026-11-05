@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { BackgroundCompactionCommitError } from "../../packages/coding-agent/src/core/compaction/background-compaction-errors.js";
 import { summarizeStage } from "../../packages/workflows/src/extension/workflow-stage-results.js";
+import { stageSessionCompaction } from "../../packages/workflows/src/runs/foreground/stage-background-compaction.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
@@ -58,4 +60,44 @@ test("records a stage's background compaction state and publishes it to observer
 	} finally {
 		unsubscribe();
 	}
+});
+
+test("a stage that never compacted shows no compaction state; one that did keeps its final idle (#4330)", () => {
+	const store = createStore();
+	store.recordRunStart(run());
+	let notifications = 0;
+	const unsubscribe = store.subscribeInvalidation(() => {
+		notifications += 1;
+	});
+	try {
+		assert.equal(store.recordStageCompaction("run-1", "s1", { state: "idle" }), false);
+		assert.equal(notifications, 0);
+		assert.equal(store.graphRun("run-1")?.stages[0]?.compaction, undefined);
+
+		assert.equal(
+			store.recordStageCompaction("run-1", "s1", { state: "running", upToEntryId: "e1", startedAt: "t" }),
+			true,
+		);
+		assert.equal(store.recordStageCompaction("run-1", "s1", { state: "idle" }), true);
+		assert.equal(notifications, 2);
+		assert.deepEqual(store.graphRun("run-1")?.stages[0]?.compaction, { state: "idle" });
+	} finally {
+		unsubscribe();
+	}
+});
+
+test("a stage session reports its current compaction state for stage status, when it has one (#4330)", () => {
+	assert.equal(stageSessionCompaction(undefined), undefined);
+	assert.equal(stageSessionCompaction({ prompt() {} }), undefined, "a custom session runtime without the state");
+	const error = new BackgroundCompactionCommitError(
+		{ upToEntryId: "e4", resultEntryId: "r4", attempt: 2 },
+		{ cause: new Error("disk full") },
+	);
+	const reported = stageSessionCompaction({
+		compaction: { state: "failed", upToEntryId: "e4", startedAt: "2026-11-05T00:00:00.000Z", error },
+	});
+	assert.equal(reported?.state, "failed");
+	assert.equal(reported?.error?.code, "commit-failed");
+	assert.deepEqual(reported?.error?.fields, { upToEntryId: "e4", resultEntryId: "r4", attempt: 2 });
+	assert.equal(JSON.parse(JSON.stringify(reported)).error.cause.message, "disk full");
 });

@@ -279,16 +279,23 @@ export async function planVerbatimCompaction(
 	};
 }
 
+/** A boundary entry that has been written but not yet announced. */
+export interface AppendedVerbatimBoundary {
+	readonly entryId: string;
+	readonly details: VerbatimCompactionDetails;
+	readonly backupPath: string | undefined;
+}
+
 /**
- * Persist a planned compaction as one boundary, refresh the in-memory context, and notify
- * `session_compact` listeners. `coveredThroughEntryId` marks a background result whose later
- * entries replay unchanged.
+ * Back up the session and append a planned compaction as one boundary. Nothing else changes, so a
+ * failure here leaves history and the in-memory context as they were. `coveredThroughEntryId` marks a
+ * background result whose later entries replay unchanged.
  */
-export async function commitVerbatimCompaction(
+export async function appendVerbatimBoundary(
 	this: AgentSession,
 	planned: PlannedVerbatimCompaction,
-	options: { reason: "manual" | "threshold" | "overflow"; backupLabel: string; coveredThroughEntryId?: string },
-): Promise<VerbatimCompactionResult> {
+	options: { backupLabel: string; coveredThroughEntryId?: string },
+): Promise<AppendedVerbatimBoundary> {
 	const backupPath = await this.sessionManager.writeBackupSnapshot(options.backupLabel);
 	const details: VerbatimCompactionDetails = { ...planned.details, ...(backupPath ? { backupPath } : {}) };
 	const entryId = await this.sessionManager.appendCompaction(
@@ -299,6 +306,17 @@ export async function commitVerbatimCompaction(
 		planned.usage,
 		options.coveredThroughEntryId,
 	);
+	return { entryId, details, backupPath };
+}
+
+/** Refresh the in-memory context after an appended boundary and notify `session_compact` listeners. */
+export async function finishVerbatimCommit(
+	this: AgentSession,
+	planned: PlannedVerbatimCompaction,
+	appended: AppendedVerbatimBoundary,
+	reason: "manual" | "threshold" | "overflow",
+): Promise<VerbatimCompactionResult> {
+	const { entryId, details, backupPath } = appended;
 	this._refreshFinalizedContext();
 	const result: VerbatimCompactionResult = {
 		compactedText: planned.text,
@@ -320,7 +338,7 @@ export async function commitVerbatimCompaction(
 	try {
 		await this._extensionRunner.emit({
 			type: "session_compact",
-			reason: options.reason,
+			reason,
 			parameters: details.parameters,
 			result,
 			compactionEntry,
@@ -343,7 +361,8 @@ export async function _applyVerbatimCompaction(
 ): Promise<VerbatimCompactionResult | undefined> {
 	const planned = await planVerbatimCompaction.call(this, options, this.sessionManager.getBranch());
 	if (!planned) return undefined;
-	return commitVerbatimCompaction.call(this, planned, { reason: options.reason, backupLabel: options.backupLabel });
+	const appended = await appendVerbatimBoundary.call(this, planned, { backupLabel: options.backupLabel });
+	return finishVerbatimCommit.call(this, planned, appended, options.reason);
 }
 
 export async function emitSessionCompactFailed(

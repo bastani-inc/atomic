@@ -2,16 +2,17 @@
  * Typed errors of background compaction (#4330).
  *
  * One family, `BackgroundCompactionError`, with a stable `code` per concrete class. A failure of the
- * background task itself (`planner-failed`, `not-compactable`, `result-persist-failed`) leaves history
- * unchanged and is retried with backoff. A ready result that no longer fits the branch is discarded with
- * `result-discarded`. An invalid setting is `invalid-setting`. Cancellation is never wrapped: an aborted task
- * returns to `idle` without an error.
+ * background task itself (`planner-failed`, `not-compactable`, `result-persist-failed`) or of applying its
+ * stored result (`commit-failed`) leaves history unchanged and is retried with backoff. A ready result that
+ * no longer fits the branch is discarded with `result-discarded`. An invalid setting is `invalid-setting`.
+ * Cancellation is never wrapped: an aborted task returns to `idle` without an error.
  */
 
 export type BackgroundCompactionErrorCode =
 	| "planner-failed"
 	| "not-compactable"
 	| "result-persist-failed"
+	| "commit-failed"
 	| "result-discarded"
 	| "invalid-setting";
 
@@ -144,6 +145,38 @@ export class BackgroundCompactionPersistError extends BackgroundCompactionError 
 	}
 }
 
+/** Applying a stored result as a boundary failed. The turn continues; the commit is retried with backoff. */
+export class BackgroundCompactionCommitError extends BackgroundCompactionError {
+	override readonly name = "BackgroundCompactionCommitError" as const;
+	declare readonly code: "commit-failed";
+	declare readonly upToEntryId: string;
+	declare readonly retryable: true;
+	/** The stored result entry that could not be applied. */
+	readonly resultEntryId: string;
+	/** One-based count of consecutive failed attempts. */
+	readonly attempt: number;
+
+	constructor(fields: { upToEntryId: string; resultEntryId: string; attempt: number }, options?: ErrorOptions) {
+		super(
+			{
+				code: "commit-failed",
+				phase: "commit",
+				retryable: true,
+				subject: `applying the result for entry ${fields.upToEntryId} (attempt ${fields.attempt})`,
+				hint: "History is unchanged; the turn continues and Atomic retries applying the saved result with backoff at a later turn boundary. Check that session storage is writable",
+				upToEntryId: fields.upToEntryId,
+			},
+			options,
+		);
+		this.resultEntryId = fields.resultEntryId;
+		this.attempt = fields.attempt;
+	}
+
+	override fields(): BackgroundCompactionErrorFields {
+		return { upToEntryId: this.upToEntryId, resultEntryId: this.resultEntryId, attempt: this.attempt };
+	}
+}
+
 /** A ready result no longer fits the current branch and was dropped without changing history. */
 export class BackgroundCompactionDiscardedError extends BackgroundCompactionError {
 	override readonly name = "BackgroundCompactionDiscardedError" as const;
@@ -227,6 +260,7 @@ const BACKGROUND_COMPACTION_ERROR_CODES: ReadonlySet<string> = new Set<Backgroun
 	"planner-failed",
 	"not-compactable",
 	"result-persist-failed",
+	"commit-failed",
 	"result-discarded",
 	"invalid-setting",
 ]);
@@ -236,6 +270,7 @@ const BACKGROUND_COMPACTION_ERROR_NAMES: ReadonlySet<string> = new Set([
 	"BackgroundCompactionPlanningError",
 	"BackgroundCompactionNotCompactableError",
 	"BackgroundCompactionPersistError",
+	"BackgroundCompactionCommitError",
 	"BackgroundCompactionDiscardedError",
 	"BackgroundCompactionConfigError",
 ]);
@@ -278,6 +313,10 @@ export function isBackgroundCompactionPersistError(error: unknown): error is Bac
 	return (
 		error instanceof BackgroundCompactionPersistError || isStructurally(error, "BackgroundCompactionPersistError")
 	);
+}
+
+export function isBackgroundCompactionCommitError(error: unknown): error is BackgroundCompactionCommitError {
+	return error instanceof BackgroundCompactionCommitError || isStructurally(error, "BackgroundCompactionCommitError");
 }
 
 export function isBackgroundCompactionDiscardedError(error: unknown): error is BackgroundCompactionDiscardedError {
@@ -395,6 +434,12 @@ export function rehydrateBackgroundCompactionError(
 		case "BackgroundCompactionPersistError":
 			if (upToEntryId !== undefined) return new BackgroundCompactionPersistError({ upToEntryId }, options);
 			break;
+		case "BackgroundCompactionCommitError": {
+			const resultEntryId = stringField(fields, "resultEntryId");
+			if (upToEntryId !== undefined && resultEntryId !== undefined && typeof attempt === "number")
+				return new BackgroundCompactionCommitError({ upToEntryId, resultEntryId, attempt }, options);
+			break;
+		}
 		case "BackgroundCompactionDiscardedError": {
 			const reason = stringField(fields, "reason");
 			if (upToEntryId !== undefined && oneOf(reason, DISCARD_REASONS)) {

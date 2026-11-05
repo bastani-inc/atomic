@@ -336,3 +336,22 @@ export function resolveBackgroundCompactionThresholdPercent(
 		throw new BackgroundCompactionConfigError({ source, field, reason: "out-of-range" });
 	return value;
 }
+
+/** The typed errors for the background compaction values a settings file holds. Absent values are valid. */
+export function backgroundCompactionSettingErrors(
+	compaction: { readonly background?: unknown; readonly backgroundThresholdPercent?: unknown } | undefined,
+): BackgroundCompactionConfigError[] {
+	const errors: BackgroundCompactionConfigError[] = [];
+	for (const resolve of [
+		() => resolveBackgroundCompactionEnabled(compaction?.background, "settings"),
+		() => resolveBackgroundCompactionThresholdPercent(compaction?.backgroundThresholdPercent, "settings"),
+	]) {
+		try {
+			resolve();
+		} catch (error) {
+			if (!(error instanceof BackgroundCompactionConfigError)) throw error;
+			errors.push(error);
+		}
+	}
+	return errors;
+}

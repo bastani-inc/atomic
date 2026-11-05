@@ -151,7 +151,7 @@ Background compaction is on by default. When context usage passes `compaction.ba
 2. **The result waits for a turn boundary.** When the task finishes, Atomic saves the result in the session and applies it before the next model request, or before the next prompt when the agent is idle. It is applied once. Messages added after the frozen copy stay exactly as they were and follow the compacted text.
 3. **Blocking compaction is only the fallback.** If the context reaches the `reserveTokens` threshold, or a request overflows, Atomic first applies a ready background result. It compacts in the foreground only when no result is ready, or the ready one does not free enough space. A foreground compaction cancels a background task that is still running.
 
-If the background task fails, history stays unchanged. `session.compaction` reports `failed` with a typed error, and Atomic tries again at a later turn with an increasing delay (15 seconds after the first failure, doubling up to 15 minutes). Overflow still compacts in the foreground in the meantime.
+If the background task fails, or applying its saved result fails, history stays unchanged and the turn continues. `session.compaction` reports `failed` with a typed error, and Atomic tries again at a later turn with an increasing delay (15 seconds after the first failure, doubling up to 15 minutes). Overflow and the `reserveTokens` threshold still compact in the foreground in the meantime.
 
 Applying a result changes the start of the prompt, so the next request misses the provider's prompt cache. With **Cache miss notices** on in `/settings`, the chat shows the expected miss when the result is applied.
 

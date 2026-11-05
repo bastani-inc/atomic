@@ -24,6 +24,7 @@ import {
 	shouldStartBackgroundCompaction,
 } from "../src/core/compaction/background-compaction.ts";
 import {
+	BackgroundCompactionCommitError,
 	BackgroundCompactionConfigError,
 	type BackgroundCompactionConfigReason,
 	BackgroundCompactionDiscardedError,
@@ -32,6 +33,7 @@ import {
 	BackgroundCompactionNotCompactableError,
 	BackgroundCompactionPersistError,
 	BackgroundCompactionPlanningError,
+	isBackgroundCompactionCommitError,
 	isBackgroundCompactionConfigError,
 	isBackgroundCompactionDiscardedError,
 	isBackgroundCompactionError,
@@ -518,6 +520,15 @@ describe("BackgroundCompactionError (#4330)", () => {
 		assert.equal(persist.retryable, true);
 		assert.equal(persist.phase, "persist");
 
+		const commit = new BackgroundCompactionCommitError({ upToEntryId: "u5", resultEntryId: "r5", attempt: 2 });
+		assert.equal(commit.name, "BackgroundCompactionCommitError");
+		assert.equal(commit.code, "commit-failed");
+		assert.equal(commit.retryable, true);
+		assert.equal(commit.phase, "commit");
+		assert.equal(commit.resultEntryId, "r5");
+		assert.equal(commit.attempt, 2);
+		assert.deepEqual(commit.fields(), { upToEntryId: "u5", resultEntryId: "r5", attempt: 2 });
+
 		const discarded = new BackgroundCompactionDiscardedError({ upToEntryId: "u4", reason: "context-edited" });
 		assert.equal(discarded.name, "BackgroundCompactionDiscardedError");
 		assert.equal(discarded.code, "result-discarded");
@@ -556,6 +567,10 @@ describe("BackgroundCompactionError (#4330)", () => {
 		assert.equal(
 			new BackgroundCompactionPersistError({ upToEntryId: "u3" }).message,
 			"Background compaction failed: saving the result for entry u3 (result-persist-failed). History is unchanged; Atomic retries with backoff. Check that session storage is writable",
+		);
+		assert.equal(
+			new BackgroundCompactionCommitError({ upToEntryId: "u5", resultEntryId: "r5", attempt: 1 }).message,
+			"Background compaction failed: applying the result for entry u5 (attempt 1) (commit-failed). History is unchanged; the turn continues and Atomic retries applying the saved result with backoff at a later turn boundary. Check that session storage is writable",
 		);
 		assert.equal(
 			new BackgroundCompactionDiscardedError({ upToEntryId: "u4", reason: "superseded" }).message,
@@ -665,6 +680,10 @@ describe("BackgroundCompactionError (#4330)", () => {
 			),
 			new BackgroundCompactionDiscardedError({ upToEntryId: "u4", reason: "off-branch", phase: "persist" }),
 			new BackgroundCompactionConfigError({ source: "settings", field: "f", reason: "out-of-range" }),
+			new BackgroundCompactionCommitError(
+				{ upToEntryId: "u5", resultEntryId: "r5", attempt: 3 },
+				{ cause: new Error("disk full") },
+			),
 		];
 		for (const error of errors) {
 			const wire = JSON.parse(JSON.stringify(serializeBackgroundCompactionError(error)));
@@ -689,6 +708,11 @@ describe("BackgroundCompactionError (#4330)", () => {
 			JSON.parse(JSON.stringify(serializeBackgroundCompactionError(errors[2]))),
 		);
 		assert.ok(persist.cause instanceof BackgroundCompactionNotCompactableError);
+		const commit = rehydrateBackgroundCompactionError(
+			JSON.parse(JSON.stringify(serializeBackgroundCompactionError(errors[5]))),
+		);
+		assert.ok(commit instanceof BackgroundCompactionCommitError);
+		assert.equal((commit.cause as Error).message, "disk full");
 	});
 
 	test("an unknown or mismatched envelope rehydrates into the family base with name and code intact", () => {
@@ -1129,6 +1153,11 @@ describe("BackgroundCompactionError guards and envelopes (#4330)", () => {
 		BackgroundCompactionPlanningError: new BackgroundCompactionPlanningError({ upToEntryId: "u", attempt: 1 }),
 		BackgroundCompactionNotCompactableError: new BackgroundCompactionNotCompactableError({ upToEntryId: "u" }),
 		BackgroundCompactionPersistError: new BackgroundCompactionPersistError({ upToEntryId: "u" }),
+		BackgroundCompactionCommitError: new BackgroundCompactionCommitError({
+			upToEntryId: "u",
+			resultEntryId: "r",
+			attempt: 1,
+		}),
 		BackgroundCompactionDiscardedError: new BackgroundCompactionDiscardedError({
 			upToEntryId: "u",
 			reason: "malformed",
@@ -1144,6 +1173,7 @@ describe("BackgroundCompactionError guards and envelopes (#4330)", () => {
 		BackgroundCompactionPlanningError: isBackgroundCompactionPlanningError,
 		BackgroundCompactionNotCompactableError: isBackgroundCompactionNotCompactableError,
 		BackgroundCompactionPersistError: isBackgroundCompactionPersistError,
+		BackgroundCompactionCommitError: isBackgroundCompactionCommitError,
 		BackgroundCompactionDiscardedError: isBackgroundCompactionDiscardedError,
 		BackgroundCompactionConfigError: isBackgroundCompactionConfigError,
 	};
@@ -1164,6 +1194,7 @@ describe("BackgroundCompactionError guards and envelopes (#4330)", () => {
 	test("each class keeps its phase through serialization", () => {
 		assert.equal(errorInstances().BackgroundCompactionNotCompactableError.phase, "plan");
 		assert.equal(errorInstances().BackgroundCompactionPlanningError.phase, "plan");
+		assert.equal(errorInstances().BackgroundCompactionCommitError.phase, "commit");
 		const persistPhase = new BackgroundCompactionDiscardedError({
 			upToEntryId: "u",
 			reason: "off-branch",
@@ -1196,6 +1227,9 @@ describe("BackgroundCompactionError guards and envelopes (#4330)", () => {
 			envelope("BackgroundCompactionPlanningError", { upToEntryId: "u", attempt: "1" }),
 			envelope("BackgroundCompactionNotCompactableError", {}),
 			envelope("BackgroundCompactionPersistError", {}),
+			envelope("BackgroundCompactionCommitError", { resultEntryId: "r", attempt: 1 }),
+			envelope("BackgroundCompactionCommitError", { upToEntryId: "u", attempt: 1 }),
+			envelope("BackgroundCompactionCommitError", { upToEntryId: "u", resultEntryId: "r" }),
 			envelope("BackgroundCompactionDiscardedError", { reason: "superseded" }),
 			envelope("BackgroundCompactionDiscardedError", { upToEntryId: "u" }),
 			envelope("BackgroundCompactionConfigError", { source: "sdk", reason: "out-of-range" }),

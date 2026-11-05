@@ -2,6 +2,7 @@ import { join } from "path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
+import { backgroundCompactionSettingErrors } from "./compaction/background-compaction.ts";
 import { deepMergeSettings } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
@@ -145,8 +146,8 @@ export class SettingsManager {
 		}
 	}
 
-	private static validateLoadedSettings(_scope: SettingsScope, _settings: Settings): SettingsError[] {
-		return [];
+	private static validateLoadedSettings(scope: SettingsScope, settings: Settings): SettingsError[] {
+		return backgroundCompactionSettingErrors(settings.compaction).map((error) => ({ scope, error }));
 	}
 
 	/** Migrate old settings format to new format */
