@@ -31,6 +31,7 @@ const running = poolWorkFixture("running");
 const finished = poolWorkFixture("finished");
 const LEASE_MS = 60_000;
 const ROUNDS = 5;
+const SQLITE_BUSY = 5;
 const SQLITE_IOERR = 10;
 const SQLITE_READONLY = 8;
 const staleWork = { message: STALE_WORK_LEASE };
@@ -315,13 +316,34 @@ test("the pool reader refuses writes (#4314)", async () => {
 	}
 });
 
-function failReaderRollbacks(f: PooledRoot): void {
+/**
+ * Fails the next ROLLBACK on a reader connection. With `leaveOpen` the statement never runs, so that reader stays
+ * inside its read transaction; with `failClose` closing that reader also fails, after it closed.
+ */
+function failNextReaderRollback(
+	f: PooledRoot,
+	options: { readonly leaveOpen?: boolean; readonly failClose?: boolean } = {},
+) {
 	const exec = DatabaseSync.prototype.exec;
+	const close = DatabaseSync.prototype.close;
+	const failed: { reader?: DatabaseSync } = {};
+	const readers = new Set<DatabaseSync>();
+	const closed: DatabaseSync[] = [];
 	vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
-		exec.call(this, sql);
-		if (this !== f.connection && sql === "ROLLBACK")
-			throw Object.assign(new Error("disk I/O error"), { errcode: SQLITE_IOERR });
+		if (this === f.connection) return exec.call(this, sql);
+		readers.add(this);
+		if (sql !== "ROLLBACK" || failed.reader !== undefined) return exec.call(this, sql);
+		failed.reader = this;
+		if (!options.leaveOpen) exec.call(this, sql);
+		throw Object.assign(new Error("disk I/O error"), { errcode: SQLITE_IOERR });
 	});
+	vi.spyOn(DatabaseSync.prototype, "close").mockImplementation(function (this: DatabaseSync) {
+		closed.push(this);
+		close.call(this);
+		if (options.failClose && this === failed.reader)
+			throw Object.assign(new Error("unable to close due to unfinalized statements"), { errcode: SQLITE_BUSY });
+	});
+	return { failed, readers, closed };
 }
 
 function assertReaderRollbackFailure(cleanupCause: unknown): void {
@@ -334,7 +356,7 @@ test("a failed read keeps its own error when its rollback fails too, with the ro
 	const f = await pooledRoot();
 	try {
 		await f.pool.assertCurrent(f.lease, f.attempt);
-		failReaderRollbacks(f);
+		failNextReaderRollback(f);
 		const refused = await f.pool.assertCurrent(f.lease, { ...f.attempt, generation: 0 }).then(
 			() => assert.fail("a stale attempt was authorized"),
 			(error: unknown) => error,
@@ -359,7 +381,7 @@ test("a read that fails with something other than an Error, and whose rollback f
 	const f = await pooledRoot();
 	try {
 		await f.pool.assertCurrent(f.lease, f.attempt);
-		failReaderRollbacks(f);
+		failNextReaderRollback(f);
 		const thrown = { reason: "not an Error" };
 		const refused = await sqlPoolStorage(f.journal)!
 			.read(() => Promise.reject(thrown))
@@ -373,6 +395,55 @@ test("a read that fails with something other than an Error, and whose rollback f
 		assertReaderRollbackFailure(
 			(refused as StorageUnavailableError & { readonly cleanupCause?: unknown }).cleanupCause,
 		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a reader whose rollback fails is closed and replaced, so the reads queued behind it see later commits (#4314)", async () => {
+	const f = await pooledRoot();
+	try {
+		await f.pool.assertCurrent(f.lease, f.attempt);
+		const { failed, readers, closed } = failNextReaderRollback(f, { leaveOpen: true });
+		const [refused, control] = await Promise.all([
+			f.pool.assertCurrent(f.lease, { ...f.attempt, generation: 0 }).then(
+				() => assert.fail("a stale attempt was authorized"),
+				(error: unknown) => error,
+			),
+			f.pool.control(f.lease),
+		]);
+		assert.ok(refused instanceof Error);
+		assert.equal(refused.message, STALE_WORK_LEASE);
+		assertReaderRollbackFailure((refused as Error & { readonly cleanupCause?: unknown }).cleanupCause);
+		assert.deepEqual(control, { state: "running", revision: 0 });
+		assert.deepEqual(closed, [failed.reader], "the retired reader is closed");
+		const paused = await f.pool.setControl(f.lease, "paused");
+		assert.deepEqual(await f.pool.control(f.lease), paused);
+		assert.equal(readers.size, 2, "the reads after the failure run on a new reader");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a retired reader that also fails to close keeps the read's error, with the rollback failure and then the close failure attached (#4314)", async () => {
+	const f = await pooledRoot();
+	try {
+		await f.pool.assertCurrent(f.lease, f.attempt);
+		const { failed, closed } = failNextReaderRollback(f, { leaveOpen: true, failClose: true });
+		const refused = await f.pool.assertCurrent(f.lease, { ...f.attempt, generation: 0 }).then(
+			() => assert.fail("a stale attempt was authorized"),
+			(error: unknown) => error,
+		);
+		assert.ok(refused instanceof Error);
+		assert.equal(refused.message, STALE_WORK_LEASE);
+		const rollbackFailure = (refused as Error & { readonly cleanupCause?: unknown }).cleanupCause;
+		assertReaderRollbackFailure(rollbackFailure);
+		const closeFailure = (rollbackFailure as StorageUnavailableError).cleanupCause;
+		assert.ok(closeFailure instanceof StorageUnavailableError);
+		assert.equal(closeFailure.adapter, "node-sqlite");
+		assert.equal((closeFailure.cause as { readonly errcode?: number }).errcode, SQLITE_BUSY);
+		assert.deepEqual(closed, [failed.reader]);
+		assert.deepEqual(await f.pool.control(f.lease), { state: "running", revision: 0 });
 	} finally {
 		await f.close();
 	}

@@ -86,8 +86,27 @@ async function sharedFile(database: SqliteDatabase, tx: SqliteExecutor): Promise
 	return file === "" ? undefined : file;
 }
 
-/** A failed read keeps its own error; a rollback that also fails is attached to it, never thrown in its place. */
-async function readTransaction<T>(reader: SqliteDatabase, body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
+/** `error`, as an Error, with `cleanupCause` attached: a failure while cleaning up after it never replaces it. */
+function withCleanupCause(
+	error: StorageFailureCause,
+	cleanupCause: StorageFailureCause,
+	descriptor: StorageDescriptor,
+): Error {
+	const primary = error instanceof Error ? error : new StorageUnavailableError(descriptor, error);
+	Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, configurable: true });
+	return primary;
+}
+
+/**
+ * A failed read keeps its own error. A rollback that also fails is attached to it and retires the reader, which may
+ * still be inside the read transaction: closing it ends that transaction, and a failure to close is attached to the
+ * rollback failure in turn.
+ */
+async function readTransaction<T>(
+	reader: SqliteDatabase,
+	body: (executor: SqliteExecutor) => Promise<T>,
+	retire: () => void,
+): Promise<T> {
 	await reader.exec("BEGIN");
 	try {
 		const value = await body(reader);
@@ -96,13 +115,15 @@ async function readTransaction<T>(reader: SqliteDatabase, body: (executor: Sqlit
 	} catch (error) {
 		try {
 			await reader.exec("ROLLBACK");
-		} catch (cleanupCause) {
-			const primary =
-				error instanceof Error
-					? error
-					: new StorageUnavailableError(reader.descriptor, error as StorageFailureCause);
-			Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, configurable: true });
-			throw primary;
+		} catch (rollbackFailure) {
+			retire();
+			let cleanupCause = rollbackFailure as StorageFailureCause;
+			try {
+				await reader.close();
+			} catch (closeFailure) {
+				cleanupCause = withCleanupCause(cleanupCause, closeFailure as StorageFailureCause, reader.descriptor);
+			}
+			throw withCleanupCause(error as StorageFailureCause, cleanupCause, reader.descriptor);
 		}
 		throw error;
 	}
@@ -117,7 +138,7 @@ export class SqlRunJournal implements RunJournal {
 	private readonly legacy: LegacyJournalRuns | undefined;
 	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
 	private readonly readerFile: string | undefined;
-	private reader?: Promise<SqliteDatabase | undefined>;
+	private reader?: Promise<SqliteDatabase>;
 	private readerTail: Promise<void> = Promise.resolve();
 
 	private constructor(
@@ -219,20 +240,20 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	private async readSnapshot<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
-		const reader = await this.openedReader();
-		if (reader === undefined) return body(this.database);
-		const result = this.readerTail.then(() => readTransaction(reader, body));
+		const readerFile = this.readerFile;
+		if (readerFile === undefined) return body(this.database);
+		const result = this.readerTail.then(async () =>
+			readTransaction(await this.openedReader(readerFile), body, () => {
+				this.reader = undefined;
+			}),
+		);
 		this.readerTail = Promise.allSettled([result]).then(() => {});
 		return result;
 	}
 
-	/** A reader that failed to open fails the reads waiting for it, and the next read opens another. */
-	private async openedReader(): Promise<SqliteDatabase | undefined> {
-		if (this.reader === undefined)
-			this.reader =
-				this.readerFile === undefined
-					? Promise.resolve(undefined)
-					: openNodeSqliteDatabase(this.readerFile, { readOnly: true });
+	/** Opened by a read in turn: the first one, and the one after a reader failed to open or was retired. */
+	private async openedReader(file: string): Promise<SqliteDatabase> {
+		if (this.reader === undefined) this.reader = openNodeSqliteDatabase(file, { readOnly: true });
 		try {
 			return await this.reader;
 		} catch (error) {

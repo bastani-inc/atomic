@@ -37,6 +37,8 @@ const staleWork = { message: STALE_WORK_LEASE };
 const CONCURRENT_WRITERS = 8;
 /** Fences the writers commit while the pool keeps reading, before they are stopped. */
 const FENCES_UNDER_READS = 200;
+/** Rounds of reads the pool makes while the writers commit, however fast they commit. */
+const READ_ROUNDS_UNDER_WRITERS = 200;
 const FILL_BYTES = 16 * 1024 * 1024;
 const FILL_HEADROOM_BYTES = 256 * 1024;
 
@@ -224,7 +226,7 @@ test(
 			const start = await progress(f);
 			for (let index = 0; index < CONCURRENT_WRITERS; index++)
 				writers.push(chaosWriter(["fence", f.path, f.attempt.id, stopPath]));
-			for (const writer of writers) assert.equal(await readLine(writer), "writing");
+			for (const writer of writers) assert.equal(await readLine(writer), "ready");
 			const exec = DatabaseSync.prototype.exec;
 			let writeLocksTaken = 0;
 			vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
@@ -234,7 +236,11 @@ test(
 			const refusedGenerations = new Set<number>();
 			let lastRevision = start.revision;
 			let observed = start.generation;
-			while (observed < start.generation + FENCES_UNDER_READS) {
+			for (
+				let round = 0;
+				round < READ_ROUNDS_UNDER_WRITERS || observed < start.generation + FENCES_UNDER_READS;
+				round++
+			) {
 				const snapshot = await progress(f);
 				assert.equal(
 					snapshot.revision - start.revision,

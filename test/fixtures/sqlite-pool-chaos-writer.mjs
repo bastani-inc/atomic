@@ -1,11 +1,12 @@
 // Another process writing a pool journal with raw node:sqlite, for the pool read chaos tests (#4314).
 //   hold <path> <sql>: begin a write transaction, run `sql`, print "locked", and commit on a line from stdin.
-//   fence <path> <workId> <stopPath>: until `stopPath` exists, commit transactions that each advance the attempt's
-//     generation and the pool's control revision together; print "writing" after the first, the commit count at the end.
+//   fence <path> <workId> <stopPath>: print "ready", then until `stopPath` exists commit transactions that each advance
+//     the attempt's generation and the pool's control revision together; print the commit count at the end.
 //   fill <path> <workId> <bytes>: one transaction that fences the attempt and writes `bytes` more; print its outcome.
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
+const SQLITE_BUSY = 5;
 const [mode, path, ...rest] = process.argv.slice(2);
 const database = new DatabaseSync(path);
 database.exec("PRAGMA busy_timeout=10000");
@@ -13,6 +14,8 @@ const fence = (workId) => {
 	database.prepare("UPDATE wf_runs_work SET generation = generation + 1 WHERE id = ?").run(workId);
 	database.prepare("UPDATE wf_runs_pool_control SET revision = revision + 1").run();
 };
+const pause = new Int32Array(new SharedArrayBuffer(4));
+const sleep = (ms) => Atomics.wait(pause, 0, 0, ms);
 
 if (mode === "hold") {
 	database.exec("BEGIN IMMEDIATE");
@@ -22,14 +25,30 @@ if (mode === "hold") {
 	database.exec("COMMIT");
 	process.stdout.write("committed\n");
 } else if (mode === "fence") {
+	// SQLite queues no lock waiters, and its busy handler sleeps ever longer: a writer that takes the lock again the
+	// moment it commits starves the others. So each writer retries the lock itself every few milliseconds, with jitter,
+	// and pauses after every commit.
 	const [workId, stopPath] = rest;
+	database.exec("PRAGMA busy_timeout=0");
+	const begin = () => {
+		for (;;) {
+			try {
+				database.exec("BEGIN IMMEDIATE");
+				return;
+			} catch (error) {
+				if ((error.errcode & 0xff) !== SQLITE_BUSY) throw error;
+				sleep(1 + Math.random() * 4);
+			}
+		}
+	};
+	process.stdout.write("ready\n");
 	let commits = 0;
 	while (!existsSync(stopPath)) {
-		database.exec("BEGIN IMMEDIATE");
+		begin();
 		fence(workId);
 		database.exec("COMMIT");
 		commits += 1;
-		if (commits === 1) process.stdout.write("writing\n");
+		sleep(Math.random() * 2);
 	}
 	process.stdout.write(`${commits}\n`);
 } else if (mode === "fill") {
