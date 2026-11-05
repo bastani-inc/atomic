@@ -530,7 +530,9 @@ test(
 		released.resolve();
 		await new Promise((settle) => setTimeout(settle, 1_000));
 		assert.equal(faulty.registrations + faulty.verifiedRegistrations, 0);
-		await stale.catch(() => {});
+		const staleResult = await stale;
+		assert.equal(staleResult.isError, true);
+		assert.equal(staleResult.content[0]?.text, "Intercom not connected: Intercom runtime no longer active");
 	},
 	STUCK_STATUS_TEST_TIMEOUT_MS,
 );
@@ -735,6 +737,28 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
+test(
+	"a verified registration that expects routing the broker does not have is refused with a code clients act on and a reason older clients can show (#4320)",
+	async () => {
+		startBrokerWithStorage("");
+		await brokerRouting("off");
+
+		const raw = sendRawFrame({
+			type: "register_verified",
+			session: RAW_SESSION,
+			expectedRouting: { acrossMachines: true },
+		});
+		await raw.closed;
+
+		assert.equal(raw.frames.length, 1);
+		const refusal = raw.frames[0] as { readonly type?: string; readonly code?: string; readonly reason?: string };
+		assert.deepEqual([refusal.type, refusal.code], ["registration_failed", "broker_routing_changed"]);
+		assert.match(refusal.reason ?? "", /routing changed .*verify it again/);
+		assert.equal(await sessionsOnBroker(), 0);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
 async function waitForOffBrokerWithStorage(): Promise<void> {
 	await vi.waitFor(
 		async () => {
@@ -868,6 +892,66 @@ test(
 		assert.equal((await alpha.run(alphaContext, { action: "join", group: "reviewers" })).isError, false);
 
 		await alpha.stop(alphaContext, "reload");
+		await alpha.start(alphaContext, "reload");
+
+		const status = await alpha.status(alphaContext);
+		assert.equal(status.isError, false, status.content[0]?.text);
+		assert.deepEqual([...(status.details?.groups ?? [])].sort(), ["default", "reviewers"]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a session that ends while it is registering is reported as no longer active, and its home group is read without the session's context (#4320)",
+	async () => {
+		startBrokerWithStorage(sharedStorage());
+		await brokerRouting("on");
+		vi.stubEnv("ATOMIC_STORAGE", sharedStorage());
+		const alphaContext = sessionContext(
+			repository("alpha", "git@github.com:acme/alpha.git"),
+			"ends-while-registering",
+		);
+		const alpha = await loadExtension();
+		const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+		const connect = vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(async () => {
+			await alpha.stop(alphaContext);
+		});
+		cleanups.push(() => connect.mockRestore());
+		await alpha.start(alphaContext);
+
+		const ended = await alpha.status(alphaContext);
+
+		assert.equal(ended.isError, true, ended.content[0]?.text);
+		assert.equal(ended.content[0]?.text, "Intercom not connected: Intercom runtime no longer active");
+		assert.equal(await sessionsOnBroker(), 0);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a reloaded session keeps the groups it retained over an older saved record for the same home group (#4320)",
+	async () => {
+		startBrokerWithStorage("");
+		await brokerRouting("off");
+		const stale = {
+			type: "custom",
+			customType: "intercom_session_memberships",
+			data: { sessionId: "reload-stale-record", homeGroup: "default", groups: ["default", "older-choice"] },
+		};
+		const alphaContext = sessionContext(
+			repository("alpha", "git@github.com:acme/alpha.git"),
+			"reload-stale-record",
+			undefined,
+			[],
+		);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+		assert.equal((await alpha.run(alphaContext, { action: "join", group: "reviewers" })).isError, false);
+
+		await alpha.stop(alphaContext, "reload");
+		const entries = (alphaContext.sessionManager as unknown as { getEntries(): unknown[] }).getEntries();
+		entries.push(stale);
 		await alpha.start(alphaContext, "reload");
 
 		const status = await alpha.status(alphaContext);
