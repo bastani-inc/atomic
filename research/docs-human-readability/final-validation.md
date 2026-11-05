@@ -28,7 +28,7 @@ Inspected meaningful changes to compaction, security, Intercom recovery, SDK lif
 - SDK keeps awaited disposal, cleanup failures, old-capability restrictions, borrowed-resource independence, deadlock warnings, and explicit queue resumption. Raw native supervisor and S1 fake-runner details move to `readability-b/task-supervision.md`; exported host contracts and public fences remain in the SDK references.
 - Security keeps trust scope, arbitrary-code authority, no-sandbox boundary, credential export restrictions, and downstream stdout risk. Wrapper implementation and negative-test history move to authentication notes.
 - Subagent reference retains the 30-second shared routing deadline, three schema repairs, null versus off, ineligible/stale/auth/cancellation failures, no duplicate launch, suffix precedence, and binding-does-not-create-owner warning. Snapshot recovery fields move to lifecycle notes.
-- Hashline source constants become a maintainer table of names and values; inactive diagnostics remain explicitly inactive. Public syntax, active warnings, examples, and repair guidance remain in tools. This is not a change to parsing behavior.
+- Line-anchored patch source constants become a maintainer table of names and values; inactive diagnostics remain explicitly inactive. Public syntax, active warnings, examples, and repair guidance remain in tools. This is not a change to parsing behavior.
 
 ### Inline-literal differences that are not exact destination matches
 

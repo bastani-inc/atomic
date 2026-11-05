@@ -166,7 +166,7 @@ Every row is a real Atomic session recorded from the installed product. Open the
 </tr>
 </table>
 
-<p><a href="#more-atomic-capabilities"><strong>Explore 32 more Atomic capabilities ↓</strong></a></p>
+<p><a href="#more-atomic-capabilities"><strong>Explore 31 more Atomic capabilities ↓</strong></a></p>
 
 <!-- feature-wall:featured:end -->
 
@@ -573,22 +573,6 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <picture>
 <source srcset="assets/feature-wall/06-verbatim-compaction.gif" type="image/gif">
 <img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Hashline edits</h4>
-<p>Edits are anchored to a 4-hex snapshot tag, so a file that changed behind the model's back fails loudly instead of being overwritten.</p>
-<p><a href="https://docs.bastani.ai/tools"><sub>Atomic docs · Built-in tools</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#12-hashline-edits"><sub>Crash course · 1.2 Hashline edits</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#12-hashline-edits">
-<picture>
-<source srcset="assets/feature-wall/02-hashline-edits.gif" type="image/gif">
-<img src="assets/feature-wall/02-hashline-edits.jpg" alt="Atomic applying a hashline edit anchored to a snapshot tag, showing the replace operation and the fresh tag it returns" width="100%">
 </picture>
 </a>
 </td>

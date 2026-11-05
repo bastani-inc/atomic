@@ -45,14 +45,13 @@ rather than a compile error.
 
 Running the CLI is not covered by that, so build it yourself before using the
 agent from a fresh checkout. Without the compiled binding, `pty:true` bash falls
-back to pipes and native grep/find/tree-sitter block resolution fall back to
-slower JS paths.
+back to pipes and native grep/find fall back to slower JS paths.
 
 What is **not** a graceful degradation is the test suites. Since the in-process
 subagent runner landed, `packages/subagents` reaches the Rust control plane
 through a *static* import, so a missing binding throws while the module graph is
 still loading and takes roughly twenty root unit and integration files with it —
-not just `bash-pty-native`, `search-tool-*`, and `hashline-tools`. The errors
+not just `bash-pty-native` and `search-tool-*`. The errors
 name whatever imported the extension, such as `workflow-stage-bundled-resources`,
 so the failure reads like a regression in an unrelated subsystem. CI builds the
 module explicitly for the same reason (see `.github/workflows/test.yml`).

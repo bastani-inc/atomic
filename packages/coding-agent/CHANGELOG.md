@@ -6,6 +6,11 @@
 
 - `SessionStore.list` now rejects cancellation with the original `AbortSignal.reason` across JSONL, SQL and in-memory stores. Callers supplying a custom reason should compare the caught value to `signal.reason` rather than expecting a new `AbortError`; `controller.abort()` without a custom reason still produces the standard `AbortError` ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
 - Removed `readFile` from `GrepOperations`. The grep tool takes context lines from ripgrep and no longer reads matched files itself; `GrepOperations` only covers the directory check. To search a remote system, override grep's `execute()` (upstream [#11705](https://github.com/earendil-works/pi/pull/11705))
+- `edit` is upstream pi's exact-text tool: it takes `path` and `edits: [{ oldText, newText }]` instead of a hashline `input` script with `[PATH#TAG]` sections, line ranges and block anchors. It no longer needs a snapshot tag from an earlier `read`, so a file changed by `bash` (`sed -i`, `python -c`, heredocs) or another program is edited by its current text ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
+- `write` is upstream pi's tool for file paths: it no longer requires a prior read before overwriting, does not strip copied hashline output, does not refuse files with generated-file markers, and does not make files that start with `#!` executable. Archive, SQLite, `conflict://` and `local://` targets keep working in the built-in tool ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
+- `WriteOperations` has pi's shape again: `writeFile(path, content)` and `mkdir(dir)`. Remove `readFile` and the `exclusive` option from custom implementations; the `WriteFileOptions` type is gone ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
+- Removed SDK exports: `FileMutationConflict`, `FILE_MUTATION_CONFLICT_CODE` and their detail, reason, evidence and requester types, and the `hashlineStore` and `resolveMutationRequester` tool options ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
+- Removed the bash interceptor: the `bashInterceptor.enabled` setting, its **Bash Interceptor** `/settings` item, and the `interceptor`, `interceptorEnabled`, `interceptorRules` and `availableTools` options of `createBashToolDefinition`. Model `bash` calls always run, and extensions no longer receive them as `user_bash` events; interactive `!` commands still do. An existing `bashInterceptor` entry in `settings.json` is ignored ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
 
 ### Added
 
@@ -25,6 +30,7 @@
 - Added the Qwen Token Plan (Individual, China) provider, `qwen-token-plan-individual-cn`: the Individual subscription catalog on the China endpoint, with `QWEN_TOKEN_PLAN_CN_API_KEY` and `qwen3.8-max` as its default model (upstream [#7989](https://github.com/earendil-works/pi/pull/7989))
 - `LlamaServerError`, `LlamaServerUnreachableError` and `LlamaServerRequestError`, with `isLlamaServerError()`, `isLlamaServerUnreachableError()`, `isLlamaServerRequestError()`, `isRetryableLlamaServerError()`, `findLlamaServerError()` and `rehydrateLlamaServerError()`, and the `SerializedTypedError` shape their `toJSON()` produces, are exported from `@bastani/atomic`
 - `ShellToolError` and `ShellTimeoutError` (code `shell-timeout`, with `timeoutMs`, `elapsedMs`, `phase` and `shellExit`), with `isShellToolError()`, `isShellTimeoutError()` and `rehydrateShellToolError()`, are exported from `@bastani/atomic`. The local shell backend of `createLocalBashOperations()` throws `ShellTimeoutError`, whose message stays `timeout:<seconds>`
+- `edit` and `write` failures are typed: `EditInputError`, `EditMatchError` and `EditTargetError` (family `EditToolError`) and `WriteSelectorError`, each with a stable `code`, structured `fields` and a `hint`, plus guards, `serializeFileToolError` and rehydration helpers. A cancelled `edit` or `write` throws `FileToolAbortedError` with the signal's reason as `cause` ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
 
 ### Changed
 
@@ -32,6 +38,8 @@
 - The default model for the `anthropic` and `anthropic-api` providers is now Claude Opus 5.5 (`claude-opus-5-5`) instead of Claude Opus 4.8 (upstream b425754a)
 - Default models moved to newer models at the same or a lower price: `amazon-bedrock` Claude Opus 5.5, `azure` GPT-6.1 Sol, `google` and `google-vertex` Gemini 4 Argon, `vercel-ai-gateway` GLM 5.3, `minimax` and `minimax-cn` MiniMax-M3, `qwen-token-plan` and `qwen-token-plan-cn` Qwen3.8 Max, `opencode-go` Kimi K3.1 Pro, and Kimi K2.7 Code instead of Kimi K2.6 for `moonshotai`, `moonshotai-cn`, `huggingface`, `opencode`, `openrouter`, `cloudflare-workers-ai` and `cloudflare-ai-gateway` (upstream d84123b3)
 - Mermaid diagrams render with lovely-mermaid 0.3.3 instead of grok-mermaid: pie charts and other new diagram types render, `classDef` styles from the diagram apply over the theme colors, and `click` links become terminal hyperlinks on the node label when the terminal supports them (upstream [#8158](https://github.com/earendil-works/pi/pull/8158))
+- `read` and `search` return plain text without `[path#TAG]` headers or `LINE:` prefixes. `read` shows file content as is; `search` rows are `path:LINE: text` for matches and `path-LINE- text` for context, with paths relative to the working directory. Line ranges, `:raw`, conflict views, archives, SQLite, URLs and internal resources such as `history://` work as before ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
+- The interactive `edit` row previews its diff as soon as the call's arguments are complete, as upstream pi does ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
 
 ### Fixed
 

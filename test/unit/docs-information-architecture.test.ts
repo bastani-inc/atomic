@@ -1078,7 +1078,7 @@ describe("human-facing tool documentation", () => {
 		assert.ok(!navPages.includes("mcp"));
 		assert.ok(navPages.includes("mcp-servers"));
 		assert.equal(frontmatterOf("mcp-servers").title, "MCP Servers");
-		for (const anchor of ["edit", "inputs", "worked-examples", "errors", "warnings"]) {
+		for (const anchor of ["edit", "write", "edit-and-write-errors"]) {
 			assert.ok(anchorResolves("/tools", anchor), `the moved reference must retain ${anchor}`);
 		}
 		const redirects = new Map(docsJson.redirects?.map(({ source, destination }) => [source, destination]));

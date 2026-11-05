@@ -637,7 +637,7 @@
       "page": "tools.md",
       "status": "revised",
       "batch": "c",
-      "reason": "Revised persisted-output introduction and age/cleanup policy into separate location, scheduling, and safety paragraphs. Kept all hashline syntax/errors/warnings and examples verbatim, byte caps, permissions, cleanup exclusions, retention timing, and exact path/config literals.",
+      "reason": "Revised persisted-output introduction and age/cleanup policy into separate location, scheduling, and safety paragraphs. Kept all line-anchored patch syntax/errors/warnings and examples verbatim, byte caps, permissions, cleanup exclusions, retention timing, and exact path/config literals.",
       "audience_reason": "Revised editing, writes, search, URL protection and output storage. Keeps canonical syntax, active diagnostics, all examples, conflicts, adapter obligations, caps and retention actions. Moves parser constants/inactive messages, native backend choices, ACL cache/cleanup locks and trusted-test escape hatch to `tool-storage-and-editing.md`.",
       "audience_review": "batch-c.md"
     },
@@ -2570,10 +2570,10 @@
         "HUNK_LIKE_LITERAL_WARNING": [
           "docs/maintainer/readability-c/tool-storage-and-editing.md"
         ],
-        "Hashline Patcher requires a SnapshotStore; section tags are opaque store pointers.": [
+        "Line-anchored patch Patcher requires a SnapshotStore; section tags are opaque store pointers.": [
           "docs/maintainer/readability-c/tool-storage-and-editing.md"
         ],
-        "Hashline edit for <path> did not change the file.": [
+        "Line-anchored patch edit for <path> did not change the file.": [
           "docs/maintainer/readability-c/tool-storage-and-editing.md"
         ],
         "Invalid line reference. Expected a bare line number from read/search output plus the section header content-hash tag (for example [src/foo.ts#1A2B] and line \"160\") Received \"abc\"..": [

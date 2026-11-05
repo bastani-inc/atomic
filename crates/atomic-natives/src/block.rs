@@ -1,7 +1,6 @@
 //! Resolve the syntactic block that begins on a given 1-indexed source line.
 //!
-//! Backs the hashline `replace block N:` / `delete block N` / `insert after
-//! block N:` operators. Given a line, parse the source with tree-sitter and
+//! Given a line, parse the source with tree-sitter and
 //! return the line span of the outermost named node that *begins* on that line
 //! (excluding the whole-file root). Pointing at a continuation line or a lone
 //! closing delimiter resolves to nothing.

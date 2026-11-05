@@ -10,7 +10,7 @@ Atomic enables these coding tools in normal sessions by default: `read`, `write`
 - [Read files and select lines](#read-and-path-selectors).
 - [Find paths and search contents](#find-and-search).
 - [Edit existing files](#edit) or [write files](#write).
-- [Run shell commands](#bash-and-bashinterceptor) or [stop background shells](#kill).
+- [Run shell commands](#bash) or [stop background shells](#kill).
 
 Bundled integrations also provide [public repository search](#code_search), [web fetching](/web-access), and [MCP tools](/mcp-servers).
 
@@ -79,367 +79,60 @@ Answers depend on DeepWiki's repository indexing and availability. Check the rep
 
 ## `edit`
 
-### Hashline editing anchors
+`edit` changes one existing file by exact text replacement. It takes a `path` and an `edits` array of `{ oldText, newText }` replacements:
 
-`read`, `search`, `write`, and successful `edit` results for local text files emit an editable, session-scoped hashline header:
-
-```text
-[src/example.ts#A1B2]
-1:const value = 1;
-2:console.log(value);
+```json
+{
+  "path": "src/example.ts",
+  "edits": [
+    { "oldText": "const value = 1;", "newText": "const value = 2;" },
+    { "oldText": "console.log(value);", "newText": "console.info(value);" }
+  ]
+}
 ```
 
-Use that header and the original line numbers to edit the existing file:
-
-```text
-[src/example.ts#A1B2]
-replace 1..1:
-+const value = 2;
-insert tail:
-+// done
-```
-
-If a file or its parent directory becomes inaccessible after `edit` prepares a patch, the edit is refused with `FILE_MUTATION_CONFLICT:target_unreadable` and the filesystem error code, such as `EACCES`. No changes are written. Restore access, then read the file again before retrying.
-
-### Inputs
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `input` | `string` | Yes | One or more hashline file sections. The value must be non-empty. |
-
-Each section starts with `[PATH#TAG]`. `TAG` is the four-hex snapshot tag emitted by the latest `read`, `search`,
-`write`, or successful `edit` in the active tool/session store. Tags from another session do not authorize an edit.
-Hashline edits existing files; use `write` to create a file.
-
-The operations are:
-
-- `replace N..M:` — replace inclusive original lines N through M with the following body rows.
-- `replace block N:` — replace the syntactic block beginning on N with the following body rows.
-- `delete N..M` — delete inclusive original lines N through M. It has no body.
-- `delete block N` — delete the syntactic block beginning on N. It has no body.
-- `insert before N:` — insert body rows immediately before original line N.
-- `insert after N:` — insert body rows immediately after original line N.
-- `insert after block N:` — insert body rows after the end of the syntactic block beginning on N.
-- `insert head:` — insert body rows at the start of the file.
-- `insert tail:` — insert body rows at the end of the file.
-
-Line numbers refer to the original tagged snapshot and do not shift as hunks in one call apply. A body-bearing header is
-followed by one or more `+TEXT` rows. The `+` is syntax; `TEXT` is inserted verbatim with leading whitespace preserved,
-and `+` alone inserts a blank line. There are no old-text or context rows. To insert a literal row beginning with `-` or
-`+`, write `+-text` or `++text`.
-
-#### Block resolution
-
-`replace block`, `delete block`, and `insert after block` select the outermost syntactic node beginning on N when syntax-aware resolution is available. A brace/indent fallback may be used otherwise. Where a language folds a decorator or annotation into its construct, such as Python `@dec` plus `def` or TypeScript/Java annotations, anchoring at the first decorator resolves both. A Rust `#[attr]` and doc- or line-comments are separate sibling nodes: anchoring there resolves that node
-alone, and replacing it with a construct body duplicates the untouched construct. Use `replace N..M:` or `delete N..M`
-with explicit lines to take both, and confirm the `→ resolved lines A-B (K lines)` echo before continuing.
-
-For `insert after block N:`, N is the opener, never the closing delimiter or last visible line. If the last line is already
-known, use `insert after M:`. A successful resolution is echoed as
-`replace block N → resolved lines A-B (K lines)` or `delete block N → resolved lines A-B (K lines)`; insert-after adds
-`; body lands after line B` to `insert after block N → resolved lines A-B (K lines)`.
-
-A replace/delete block cannot resolve when the language is unsupported, the anchor is blank or a closer, no syntactic node
-begins there, the subtree does not parse, or no resolver is configured. Use `replace N..M:` or `delete N..M`. An unresolved
-`insert after block N:` is instead lowered to `insert after N:` with a warning; use `insert after M:` when the explicit end
-line is known. Streaming preview drops unresolved replace/delete block operations, while the authoritative apply rejects
-them.
-
-### Tolerated input shapes
-
-Atomic's hand parser deliberately accepts these non-canonical shapes:
-
-- Leading blank lines, a leading byte-order mark, and an optional `*** Begin Patch` envelope are ignored.
-  `*** End Patch` and `*** Abort` stop parsing; operations before either marker remain.
-- Hex tags are case-insensitive on input and normalized to uppercase.
-- Quoted header paths are unquoted. Absolute paths inside the execution working directory become relative display paths.
-- Some malformed bracketed headers are recovered after removing apply-patch path noise such as `Update File:`, `Add File:`,
-  `Delete File:`, `Move to:`, and extra leading `***`. A recovered edit section still needs a valid four-hex tag.
-- `replace N:` is a single-line replacement. `delete N` is a single-line deletion.
-- `replace N-M:`, `replace N…M:`, and `replace N M:` are accepted as `replace N..M:`. The same separators are accepted for
-  `delete` ranges.
-- The trailing colon is optional on body-bearing `replace` and `insert` headers.
-- An empty concrete `replace N..M:` is accepted as deletion of that range. Prefer `delete N..M`; empty `replace block` is
-  rejected.
-- Bare body rows under a body-bearing hunk are treated as literal rows, auto-prefixed with `+`, and warned. When every bare,
-  nonblank row has a `LINE:`/`*LINE:` read-output prefix, those prefixes are stripped as a pasted snapshot; mixed rows and
-  explicit `+` rows are preserved. A body made entirely of quoted or numeric values keeps its numeric keys.
-- Repeated sections for the same authored path are merged in first-occurrence order when their tags do not conflict.
-- A run of comment lines beginning with `#` is skipped only when an operation header is the immediately next token. If a
-  blank line, end of input, or the next `[PATH#TAG]` header intervenes, the deferred comment is replayed as body content and
-  rejected with the payload-line error. Once a hunk is open, a `#` line is body content: under `delete` it triggers the
-  delete-takes-no-body rejection; under a body-bearing hunk it is auto-prefixed and written as a literal line. Blank layout
-  rows before a body or after its final row are ignored; proven interior blank body rows are preserved.
-
-The parser does **not** tolerate `delete N..M:` or a body under `delete`/`delete block`, `-` diff rows, apply-patch file
-sentinels inside the patch, unified-diff/`@@` hunk headers, bare numeric hunk headers, malformed/absent section headers,
-unsafe or non-positive anchors, oversized ranges, empty `insert`/`insert after block`, or empty `replace block` hunks.
-Use the canonical syntax above even when a compatibility form is accepted.
-
-### Outputs
-
-A successful edit returns one compact text block per written section. Each starts with a fresh `[path#TAG]` header for the
-post-edit content, followed by warnings and block-resolution lines, then a compact diff preview (or a
-`First changed line: N` fallback). Warnings are emitted as diagnostic lines directly beneath the header rather than under a
-separate `Warnings:` label. Multi-section results are separated by a blank line.
-
-Block echoes have these exact shapes:
-
-```text
-replace block N → resolved lines A-B (K lines)
-delete block N → resolved lines A-B (K lines)
-insert after block N → resolved lines A-B (K lines); body lands after line B
-```
-
-The tool's `details` value is `EditToolDetails`:
-
-- `diff`: the combined rendered diff string.
-- `patch`: the combined unified patch string.
-- `firstChangedLine`: optional first changed post-edit line.
-
-Each successful `write` or `edit` records and returns a fresh snapshot tag. Plain `write` output is also compact: a refreshed
-header plus a success confirmation, not a full file reprint. `write` strips copied hashline headers and `LINE:`/`*LINE:`
-display prefixes only when they match a known snapshot in the current store, reports that stripping, and preserves whether
-a complete copied snapshot had a terminal newline. A copied `Successfully wrote to <path>` confirmation (with or without the
-legacy `N bytes` wording) counts as tool chrome only when `<path>` is the complete path the write was asked for — the `path`
-argument exactly as given, its resolved absolute form, or its cwd-relative form — or the copied snapshot's own path. A bare
-basename is not enough, so a user-authored line such as `Successfully wrote to notes.md` is preserved even when the target is
-`deep/dir/notes.md`. Unknown or literal hashline-looking content is preserved.
-
-Parallel `edit` calls sharing the same `[path#TAG]` are applied as one snapshot-anchored batch, so one sibling does not fail
-only because another sibling minted a new tag first. A later call arriving after that batch committed still attempts
-snapshot recovery for provably non-overlapping drift.
-
-Atomic verifies every target against its tagged snapshot before writing. A recognized stale tag can recover a provably
-non-overlapping external or in-session change and emits the corresponding warning. Unknown tags, overlapping stale edits,
-and unrecoverable drift fail with the current hash and anchor context and leave the section unchanged. All sections are
-prepared before writes begin, but this is preflight atomicity, not transactional rollback: a filesystem failure during
-sequential commits can leave earlier sections written, and the error names written and unwritten sections.
-
-A byte-identical edit returns a no-op diagnostic without writing. The same identical payload escalates to an error on its
-third attempt.
-
-### Worked examples
-
-Reference file in the exact shape `read` returns:
-
-```text
-[a.ts#0A3B]
-1:const X = "a";
-2:const Y = X;
-3:
-4:console.log(X);
-5:console.log(Y);
-6:export { X, Y };
-```
-
-Replace line 1 with two lines:
-
-```text
-[a.ts#0A3B]
-replace 1..1:
-+const X = "b";
-+export const Y = X;
-```
-
-Insert below or above line 5:
-
-```text
-[a.ts#0A3B]
-insert after 5:
-+console.log(X + Y);
-insert before 5:
-+console.log(X + Y);
-```
-
-Delete lines 4 through 5:
-
-```text
-[a.ts#0A3B]
-delete 4..5
-```
-
-Insert at both file boundaries:
-
-```text
-[a.ts#0A3B]
-insert head:
-+// header
-insert tail:
-+// trailer
-```
-
-Replace or delete a complete block by anchoring its opener:
-
-```text
-[service.ts#7B2E]
-replace block 10:
-+function load() {
-+	return cache.get("key");
-+}
-delete block 30
-```
-
-Edit two files in one preflighted call:
-
-```text
-[src/a.ts#0A3B]
-replace 4..4:
-+const enabled = true;
-[src/b.ts#1F7C]
-delete 20
-```
-
-### Limits and caps
-
-- Tags contain four hexadecimal characters and belong to the current session.
-- Anchors must be positive safe integers no greater than `Number.MAX_SAFE_INTEGER`.
-- Numeric ranges are limited to 100,000 lines.
-- Mismatch and unresolved-block previews show up to two lines on either side of an anchor.
-- An identical no-op payload returns a diagnostic twice; the third attempt fails with `STOP.`. Re-read and verify the anchor instead of repeating it.
-- Recovery never slides a hunk to a nearby duplicate. Explicit `+TEXT` resembling a hunk header remains literal and produces a warning.
-
-Across whole-file, truncated, and range/offset reads of LF or CRLF text, numbered output treats a terminal newline as a
-separator, not an extra synthetic row. Genuine blank lines—including one immediately before that terminal newline—remain
-visible, and truncation totals and continuation selectors count real lines. Bare-CR files retain their existing
-compatibility behavior and are outside this guarantee.
-
-### Errors
-
-The templates below quote Atomic's literal messages. `N`, `M`, `A`, `B`, `PATH`, `TAG`, `<path>`, `<message>`, and similar
-angle-bracketed names stand for runtime substitutions. Parser errors that originate within a section include the authored
-`line N:` prefix shown.
-
-#### Tool boundary and filesystem
-
-- `edit input must be a non-empty hashline script with [PATH#TAG] sections.`
-- `Operation aborted`
-- `Could not edit file: <path>. <message>.` (`<message>` is `Error code: <code>` when the error exposes a code.)
-- `Multiple hashline sections resolve to the same file (<first path> and <second path>). Merge their ops under one header before applying.`
-- `Stale hashline tag for <path>: file content changed before write. Re-read before editing.`
-- `Failed to write <path>: <message>`; when applicable it appends ` Sections already written: <paths>.` and/or
-  ` Sections not written: <paths>.`
-
-#### Section headers and snapshot tags
-
-- `input must begin with "[PATH#HASH]" on the first non-blank line for anchored edits; got: <preview>. Example: "[src/foo.ts#1A2B]" then edit ops.`
-- `Input header must be [PATH] or [PATH#TAG] with a 4-hex content-hash tag; got <header>.`
-- `Input header "[]" is empty; provide a file path.`
-- `Patch input did not produce any sections.`
-- ``Missing hashline snapshot tag for <path>; use `[<path>#tag]` from your latest read/search output. To create a new file, use the write tool.``
-- `Conflicting hashline snapshot tags for <path>: #<first tag> and #<second tag>. Re-read the file and retry with one current header.`
-- If a host reports that its snapshot store is unavailable, report the integration error rather than inventing a tag.
-- `File not found: <path>. Use the write tool to create new files.`
-
-#### Tokenizer and anchors
-
-- `line N: line anchor "<digits>" is not a safe integer; line numbers must be positive safe integers no greater than 9007199254740991.`
-- `line N: expected a line number such as "119", "112", "7"; got "<input>". Use [PATH#hash] from your latest read for file-version binding.`
-- `Line N does not exist (file has M lines)`
-
-#### Ranges, bodies, and hunk conflicts
-
-- `line N: range A..B ends before it starts.`
-- `line N: range A..B expands to K lines; numeric ranges are limited to 100,000 lines.`
-- `line N: payload line has no preceding hunk header. Got "+<text>".`
-- ``line N: payload line has no preceding hunk header. Use `replace N..M:`, `delete N..M`, or `insert before|after|head|tail:` above the body. Got "<text>".``
-- ``line N: `-` rows are not valid; the range already names the lines being changed. For a literal `-` line, write `+-…`.``
-- ``line N: `delete N..M` does not take body rows. Remove the body, or use `replace N..M:`.``
-- ``line N: `delete block N` does not take body rows. Remove the body, or use `replace block N:`.``
-- ``line N: `insert` needs at least one `+TEXT` body row.``
-- ``line N: `replace block N:` needs at least one `+TEXT` body row. To delete a block, use `delete block N`.``
-- `line N: anchor line A is already targeted by another hunk on line M. Issue ONE hunk per range; payload is only the final desired content, never a before/after pair.`
-
-A concrete `replace N..M:` with no body is accepted as deletion. Prefer `delete N..M` to make the intent clear.
-
-#### Contamination and malformed hunk headers
-
-- ``unified-diff hunk header (`@@ -N,M +N,M @@`) is not valid in hashline. File sections start with `[path#HASH]`; use `replace`, `delete`, or `insert` ops.``
-- ``line N: apply_patch sentinel "<preview>" is not valid in hashline. File sections start with `[path#HASH]` (no `Update File:` / `Add File:` keyword). Use `replace N..M:`, `delete N..M`, or `insert before|after|head|tail:` ops.``
-- ``line N: unified-diff hunk header (`@@ -N,M +N,M @@`) is not valid in hashline. Use `replace N..M:`, `delete N..M`, or `insert before|after|head|tail:` ops.``
-- ``line N: `@@`-bracketed hunk header "<preview>" is not valid in hashline. Drop the `@@ ... @@` brackets and write a verb header such as `replace N..M:`.``
-- ``line N: `delete N..M` has no colon and no body. Remove the colon and body rows.``
-- ``line N: hunk headers need a verb. Use `replace A..A:` to replace, or `delete A` to delete.``
-- ``line N: bare range hunk header "A..B" is not valid. Hunk headers need a verb: write `replace A..B:` or `delete A..B`.``
-
-#### Block resolution and internal apply invariants
-
-- With a resolver, replace/delete failure is
-  ``line N: `replace block A:` could not resolve a syntactic block beginning on line A (unsupported language, blank/closer line, or parse error). Use `replace A..M:` with explicit lines.`` or
-  ``line N: `delete block A` could not resolve a syntactic block beginning on line A (unsupported language, blank/closer line, or parse error). Use `delete A..M` with explicit lines.``
-  Numbered, `*`-marked context follows after a blank line when the anchor is in range.
-- Without a resolver:
-  ``line N: `replace block`/`delete block`/`insert after block` are not available here (no block resolver configured). Use a concrete line range.``
-- An internal apply error indicates a host integration problem. Report the exact diagnostic; use explicit ranges when block resolution is unavailable.
-
-`insert after block` resolution failure is a warning and lowering, not an error.
-
-#### Snapshot mismatch
-
-An unknown or cross-session tag emits these two lines, followed by numbered anchor context when available:
-
-```text
-Edit rejected for <path>: hash #<expected tag> is not from this session.
-The current file hashes to #<actual tag>. Re-read the file with `read` to copy a current [path#tag] header — never invent the tag and never reuse one from a prior session.
-```
-
-A recognized tag whose snapshot no longer matches and cannot be recovered emits:
-
-```text
-Edit rejected for <path>: file changed between read and edit.
-Section is bound to #<expected tag>, but the current file hashes to #<actual tag>. If a prior edit in this session modified this file, copy the [path#newhash] header from that edit's response; otherwise re-read the file with `read` to refresh the tag before retrying.
-```
-
-#### No-op edits
-
-A single-file or all-no-op call returns this text without writing on attempts one and two:
-
-```text
-Edits to <path> parsed and applied cleanly, but produced no change: your body row(s) are byte-identical to the file at the targeted lines. The bug is somewhere else — re-read the file before issuing another edit. Do NOT widen the payload or add lines; verify the anchor first.
-```
-
-From attempt two onward, the result includes `No-op count for this identical payload: N.` Attempt three fails with `STOP.`. A no-op in a mixed multi-section call also fails. Re-read the file and verify the intended change before retrying.
-
-### Warnings
-
-Warnings that have active emission sites are emitted verbatim beneath the refreshed section header:
-
-- ``Auto-prefixed bare body row(s) with `+`. Body rows must be `+TEXT` literal lines.``
-- `Literal +TEXT row resembles a valid hunk header; it was kept as literal payload text.`
-- `Recovered from a stale file hash using a previous read snapshot (file changed externally between read and edit).`
-- `Recovered from a stale file hash using an earlier in-session snapshot (a prior edit in this session advanced the hash).`
-- `Recovered by replaying your edits onto the current file content (a prior in-session edit changed the lines you re-targeted with a stale hash). Verify the diff matches your intent.`
-- ``Applied the `insert head:`/`insert tail:` edit despite a stale snapshot tag (file changed since your read) — head/tail position is content-independent. Re-read if the drift was unexpected.``
-- `` `insert after block N:` anchors on a closing delimiter, so it was applied as plain `insert after N:`. Anchor on the line that OPENS the construct. ``
-- `` `insert after block N:` could not resolve a syntactic block on line N, so it was applied as plain `insert after N:`. Verify the landing line; anchor on a line that OPENS a construct. ``
-- `insert after N: body indented shallower than the anchor, so the landing moved past K closing line(s) to after line M. For the deeper position inside the block, re-issue with the body indented to match.`
-  The emitted phrase is `1 closing line` for one crossed line and `K closing lines` otherwise.
-- ``insert after block N: body indented deeper than closing line A, so it was placed inside the block, after line M. `insert after block` lands AFTER the block at sibling depth — if inside was intended, use plain `insert after A:`.``
-- `Auto-repaired a replacement boundary echo at line N: dropped A leading and B trailing payload line(s) already present outside the range. Issue the payload as the final desired content for the selected range only — never restate unchanged lines bordering the range.`
-- `Auto-repaired a delimiter-balance mismatch in the replacement at line N: <repair action>. Issue the payload as the final desired content only — never restate or omit a closing bracket bordering the range.`
-  The repair action is one of `dropped K duplicated trailing payload line(s) already present below the range`,
-  `dropped K duplicated leading payload line(s) already present above the range`, or
-  `kept K structural closing line(s) the range deleted without restating`.
-- `Applied N parallel edit calls as one snapshot-anchored batch.`
+- Every `oldText` must match exactly one region of the file as it is when the edit runs, including whitespace and newlines. Edits are matched against the original file, not one after another, and must not overlap. Merge changes to the same or nearby lines into one edit.
+- `edit` does not depend on an earlier `read`. A file changed by `bash`, another tool, or another program is edited by its current text.
+- When no exact match exists, `edit` retries after normalizing trailing whitespace, Unicode quotes, dashes, and spaces, and leaves lines outside the replaced regions byte-for-byte unchanged.
+- A UTF-8 byte-order mark and the file's line endings (LF or CRLF) are kept.
+- Either every edit applies or the file is left unchanged.
+- In the built-in tool, a notebook (`.ipynb`) is edited through the same `# %% [code] cell:N` text that `read` shows; cell metadata, outputs, and execution counts are kept.
+
+The result reports how many replacements were applied. `details` holds a display `diff`, a unified `patch`, and `firstChangedLine`. The interactive view previews the diff as soon as the call's arguments are complete.
 
 ## `write`
 
-Read an existing file before overwriting it with `write`. Atomic checks that the content still matches what this session observed, so another agent's changes are not silently discarded. Creating a new file does not require a prior read.
+`write` creates a file or replaces its whole content. It takes `path` and `content`, creates missing parent directories, and returns `Successfully wrote to <path>`. It does not require an earlier `read`. Use `edit` for targeted changes to an existing file.
 
-Two refusals use the `FILE_MUTATION_CONFLICT` code and include the requester identity:
+The built-in `write` also accepts these targets, described under [Lines and local resources](#lines-and-local-resources): archive members, SQLite table and row selectors, `conflict://` resolutions, and `local://` resources.
 
-- `no_prior_observation`: this session has not read, written, or edited the file. Another session's read, including one from a previous run, does not count.
-- `changed_since_observation`: the file changed. The error names the first diverging line and shows the expected and current content. Read the file again before retrying.
+## Edit and write errors
 
-If cancellation arrives after bytes reach disk, a retry still recognizes this session's write.
+`edit` and `write` failures are typed. Branch on the class or `code`, not on the message. Messages match upstream pi's wording. Each error has a `hint` with the next step and `retryable: false`.
 
-Standalone `createWriteToolDefinition(cwd)` and `createWriteTool(cwd)` instances retain their own observations across `local://` writes, just as they do for plain paths, even when no `hashlineStore` is supplied. Separate instances still need an explicitly shared store to share observations.
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `EditInputError` | `edits-empty` | `edits` is empty or missing | `path`, `totalEdits` | Pass at least one replacement. |
+| `EditInputError` | `old-text-empty` | An `oldText` is empty | `path`, `editIndex`, `totalEdits` | Copy at least one character of the current file into `oldText`. |
+| `EditMatchError` | `text-not-found` | An `oldText` does not occur in the file | `path`, `editIndex`, `totalEdits` | Read the file again and copy `oldText` exactly. |
+| `EditMatchError` | `text-not-unique` | An `oldText` occurs more than once | `path`, `editIndex`, `totalEdits`, `occurrences` | Add surrounding lines until it matches once. |
+| `EditMatchError` | `edits-overlap` | Two edits touch the same region | `path`, `editIndex`, `overlapsEditIndex`, `totalEdits` | Merge them into one edit. |
+| `EditMatchError` | `no-change` | The edits leave the file identical | `path`, `totalEdits` | Make `newText` differ from `oldText`. |
+| `EditTargetError` | `target-inaccessible` | The file cannot be read and written | `path`, `errnoCode` when the filesystem gave one; the filesystem error is `cause` | Check that the file exists and is writable. |
+| `WriteSelectorError` | `sqlite-query-parameters` | A SQLite write selector has `?` query parameters | `path` | Write to a table or row selector. |
+| `WriteSelectorError` | `sqlite-not-found` | The SQLite selector's database does not exist or is not SQLite | `path` | Check the database path. |
+| `WriteSelectorError` | `conflict-target-required` | `conflict://` names no conflict | `path` | Write to `conflict://<id>` or `conflict://*`. |
+| `WriteSelectorError` | `conflict-side-read-only` | The target is a side such as `conflict://1/ours` | `path` | Write the resolution to `conflict://<id>`. |
+| `WriteSelectorError` | `conflict-markers-not-found` | No conflict markers exist under the working directory | `path` | Read `conflict://*` to list conflicts. |
+| `WriteSelectorError` | `conflict-target-invalid` | The conflict id is not a number | `path`, `conflictId` | Use an id from `conflict://*`. |
+| `WriteSelectorError` | `conflict-id-not-found` | No conflict has that id | `path`, `conflictId` | Read `conflict://*` again. |
+| `WriteSelectorError` | `unsupported-scheme` | The path is a URL that is not an Atomic resource | `path` | Write to a file path or a supported selector. |
 
-If a file appears between the absence check and creation, local `write` refuses with `target_exists` rather than overwriting it. An unreadable existing file produces `target_unreadable`, with a filesystem code when available.
+`EditInputError`, `EditMatchError`, and `EditTargetError` extend `EditToolError`. Guards (`isEditToolError`, `isEditInputError`, `isEditMatchError`, `isEditTargetError`, `isWriteSelectorError`) also recognize copies from another process by `name` and `code`. `serializeFileToolError` turns an error into JSON with its cause chain; `rehydrateEditToolError` and `rehydrateWriteSelectorError` rebuild it, keeping an unknown `name` or `code` on the family base class.
 
-Custom `WriteOperations` implementations must read from the same filesystem they write to. Return `undefined` only for absence and reject other read failures. Honor exclusive-create requests to protect against writers outside Atomic; adapters that ignore them lose that protection.
+A cancelled `edit` or `write` throws `FileToolAbortedError` (`name: "AbortError"`, `code: "aborted"`, message `Operation aborted`) with the signal's `reason` as `cause`. It is a cancellation, not an edit failure. Other filesystem failures while writing, such as `EACCES` or `EISDIR`, are the filesystem's own errors.
 
-## `bash` and `bashInterceptor`
+## `bash`
 
 The `bash` tool executes shell commands in the session workspace. It accepts `cwd`, `env`, `timeout`, `pty`, and `heartbeatMs`.
 
@@ -450,23 +143,13 @@ The `bash` tool executes shell commands in the session workspace. It accepts `cw
 
 Foreground results include `timeoutSeconds`, `requestedTimeoutSeconds`, `wallTimeMs`, and non-zero `exitCode` metadata. Truncated output is saved at `fullOutputPath`.
 
-### Bash interception
-
-`bashInterceptor.enabled` defaults to `false`. When enabled, interceptor rules block common shell substitutes such as `cat`, `grep`, `find`, in-place `sed`, and redirection only when the corresponding first-class tool is available. Enabled calls are also offered to `user_bash` extension handlers before local execution.
-
-Atomic checks the original command, internal-URL-expanded command, configured-prefix forms, and `spawnHook` rewrites. When structured `cwd` is omitted, it also checks a form with a leading `cd path && command` or `cd path; command` removed. This lets interceptors route by effective working directory without overriding explicit `cwd`.
+When structured `cwd` is omitted, a command that starts with `cd path && command` or `cd path; command` runs `command` with `path` as its working directory.
 
 Shell internal-URL expansion only touches URLs that stand in plain shell words. For example, `printf %s local://notes.txt` is supported and the resolved path is shell-quoted automatically, including paths containing spaces or shell metacharacters. A URL inside quotes, a heredoc body, a comment, an escape or a command substitution is left exactly as written, so text that merely mentions a scheme, such as a quoted `gh issue comment` body, runs unchanged; use a filesystem path where a quoted argument must be a resolved path. A URL must also start a word: one directly after a character such as `$`, `[` or a quote is left as written. The shell does not read a quoted word in arithmetic (`((…))`, `$[…]`), an array subscript (`a[…]`) or a compound array assignment (`a=(…)`), so from the first `((`, `=(` or `[` other than the test commands `[` and `[[` to the end of the command, no URL is expanded. In PowerShell, typographic quotes (`‘…’`, `“…”`) count as quotes, `<#…#>` is a comment, and nothing after the stop-parsing token `--%` is expanded. Only `skill://`, `local://` and `artifact://` resolve to filesystem paths, and URLs of other schemes are ordinary text. URL expansion in structured `cwd` and `env` values is unchanged.
 
 The `powershell` tool uses PowerShell single-quoted literals for resolved paths, doubling both ASCII apostrophes and PowerShell's smart single-quote delimiters (U+2018–U+201B). Bash keeps POSIX quoting, including when Bash runs on Windows. SDK adapters using `createBashToolDefinition` with custom PowerShell operations can set `shellDialect: "powershell"` for generated path literals; this option does not select the executable or rewrite deliberate shell code.
 
 Configured command prefixes and SDK `spawnHook` rewrites remain executable shell syntax, not a sandbox. Balanced setup commands such as quoted exports remain supported. A prefix that leaves a quote, substitution, or heredoc open across the following command can invalidate the generated path quoting; automatic URL expansion does not validate that composed shell context. Do not combine URL expansion with such wrappers. Use structured `cwd` and `env` for path data instead.
-
-```json
-{
-  "bashInterceptor": { "enabled": true }
-}
-```
 
 ## `kill`
 
@@ -503,7 +186,7 @@ Results include `scopePath`, `fileCount`, `files`, truncation and missing-path m
 
 Local search limits files to 4 MiB and truncates long lines. Hidden files and `.gitignore` rules follow the selected options.
 
-Details include scope, counts, file lists, per-file match counts, missing paths, and displayed-content metadata. `fileLimitReached` and `meta.limits.fileLimit` indicate more matching files. Hashline rows distinguish matches (`*LINE:...`) from context (` LINE:...`).
+Output is plain text. A match is `path:LINE: text` and a context line is `path-LINE- text`, with `path` relative to the working directory. Details include scope, counts, file lists, per-file match counts, missing paths, and displayed-content metadata. `fileLimitReached` and `meta.limits.fileLimit` indicate more matching files.
 
 ## `read` and path selectors
 
@@ -511,13 +194,13 @@ Directory reads show a depth-2 tree sorted by most-recent modification time, wit
 
 ### Lines and local resources
 
-`read` and `search` accept selectors such as `file.ts:5-16`, `file.ts:5+3`, `file.ts:5-16,960-973`, and `https://example.test/page:5-8`. Bounded reads include one leading and three trailing context lines. Use `:raw` for unformatted content. Out-of-range selectors report that the range is beyond EOF.
+`read` returns plain text without line numbers. Line endings are shown as LF and a file's final newline is dropped. `read` and `search` accept selectors such as `file.ts:5-16`, `file.ts:5+3`, `file.ts:5-16,960-973`, and `https://example.test/page:5-8`. Bounded reads include one leading and three trailing context lines, and a limited read ends with the selector that continues it. Use `:raw` for the exact bytes, including CRLF line endings and a notebook's JSON. Out-of-range selectors report that the range is beyond EOF.
 
 `read` and `search` support the following, and `write` supports all of them except `skill://`, `artifact://` and `history://`:
 
 - Local zip/jar/tar/tgz/gzip archive members without a Python dependency. Member names may include `raw`, `conflicts`, `1`, `L1`, or `raw:notes.txt`.
 - SQLite table and row selectors, with `limit`, `offset`, `where`, `order`, `schema`, and `sampleRows` query parameters.
-- `skill://` (read and search only; edit a skill file by its path) and source-backed `local://` selectors. Editable hashline labels and snapshots use the underlying filesystem path.
+- `skill://` (read and search only; edit a skill file by its path) and source-backed `local://` selectors. Search output and `write` results name the underlying filesystem path.
 - `artifact://<id>` for saved tool output (read-only), and `conflict://` for merge conflicts under the working directory.
 - `history://` for the current project's past sessions and workflow runs (read-only), through whichever session store and workflow journal are configured. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
@@ -535,9 +218,7 @@ Workspace-scoped selectors reject lexical and symlink escapes outside the worksp
 
 ### Conflict resolution and file writes
 
-`conflict://<id>` and `conflict://*` writes replace conflict marker regions, expand `@ours`, `@theirs`, and `@base`, and return fresh hashline headers. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
-
-Plain `write` refuses to overwrite files with generated-file markers near the top. Writes containing a shebang make the file executable and report `madeExecutable`.
+`conflict://<id>` and `conflict://*` writes replace conflict marker regions and expand `@ours`, `@theirs`, and `@base`. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
 
 ### Documents and URLs
 
