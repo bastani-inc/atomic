@@ -323,7 +323,7 @@ jobs:
       - name: Install cargo-zigbuild for portable Linux builds
         if: matrix.platform == 'linux'
         timeout-minutes: 3
-        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-zigbuild@0.23.0
       # Both Windows targets compile on x64 Ubuntu with its installed LLVM 18.
