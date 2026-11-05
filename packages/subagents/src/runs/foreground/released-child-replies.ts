@@ -1,5 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { AgentWakeDispatcher, DetachedToolCall, DetachedToolResult, SessionManager } from "@bastani/atomic";
+import type {
+	AgentWake,
+	AgentWakeDispatcher,
+	DetachedToolCall,
+	DetachedToolResult,
+	SessionManager,
+} from "@bastani/atomic";
 import type { Message } from "../../../../intercom/types.js";
 import type { IntercomEventBus } from "../../shared/types.js";
 import { ReleasedChildError } from "./released-child-errors.js";
@@ -10,7 +16,7 @@ import {
 	type ReleasedReplyPayload,
 	type ReleasedReplyWaitData,
 } from "./released-reply-protocol.js";
-import type { SubagentChildWaitingCall } from "./subagent-child-records.js";
+import type { SubagentChildRecord, SubagentChildWaitingCall } from "./subagent-child-records.js";
 
 /** Read only plain correlation facts from the child's saved session, for calls that actually detached. */
 export function releasedChildWaitingCalls(
@@ -50,8 +56,29 @@ export function releasedChildWaitingCalls(
 	});
 }
 
+const REPLY_TIMEOUT_PREFIX = "reply-timeout:";
+
 export function releasedReplyTimeoutId(questionId: string): string {
-	return `reply-timeout:${questionId}`;
+	return `${REPLY_TIMEOUT_PREFIX}${questionId}`;
+}
+
+/**
+ * Give each deadline wake the timeout result of the call it is for, built from the child's record, and drop one whose
+ * call already has its result or is no longer waited on: a deadline carries no payload of its own, so a released
+ * asker costs the dispatcher one plain node, and a reply that came first is never overtaken by its own deadline.
+ */
+export function withReleasedReplyTimeouts(
+	record: Pick<SubagentChildRecord, "waitingOn" | "heldToolResults">,
+	wakes: readonly AgentWake[],
+): AgentWake[] {
+	return wakes.flatMap((wake): AgentWake[] => {
+		if (!wake.id.startsWith(REPLY_TIMEOUT_PREFIX)) return [wake];
+		const questionId = wake.id.slice(REPLY_TIMEOUT_PREFIX.length);
+		const call = record.waitingOn?.find((waiting) => waiting.replyWait?.questionId === questionId);
+		if (call === undefined || (record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId))
+			return [];
+		return [{ ...wake, toolResult: releasedReplyTimeout(call) }];
+	});
 }
 
 const outsideAnyTask = AsyncLocalStorage.snapshot();
@@ -68,11 +95,7 @@ export function scheduleReleasedReplyTimeouts(
 			if (wait === undefined) continue;
 			dispatcher.schedule(
 				wakeKey,
-				{
-					id: releasedReplyTimeoutId(wait.questionId),
-					kind: "tool-result",
-					toolResult: releasedReplyTimeout(call),
-				},
+				{ id: releasedReplyTimeoutId(wait.questionId), kind: "tool-result" },
 				wait.deadline - Date.now(),
 			);
 		}

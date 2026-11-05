@@ -12,7 +12,11 @@ import {
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
-import { releasedReplyTimeoutId, scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
+import {
+	releasedReplyTimeoutId,
+	scheduleReleasedReplyTimeouts,
+	withReleasedReplyTimeouts,
+} from "./released-child-replies.js";
 import { type ReleasedChildResumeWake, setReleasedChildWakeActive, settleResumeWake } from "./released-child-resume.js";
 import { isReleasedReplyHandoffResult } from "./released-reply-protocol.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
@@ -335,16 +339,10 @@ export function handleReleasedChildWakes(
 					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);
 				if (redispatch) await actions.redispatch?.(record);
 				const current = redispatch ? await latest(childId) : record;
-				const others = wakes.filter((wake) => {
-					if (isRedispatchWake(wake)) return false;
-					if (!wake.id.startsWith("reply-timeout:")) return true;
-					const questionId = wake.id.slice("reply-timeout:".length);
-					const call = current.waitingOn?.find((item) => item.replyWait?.questionId === questionId);
-					return (
-						call !== undefined &&
-						!(current.heldToolResults ?? []).some((item) => item.toolCallId === call.toolCallId)
-					);
-				});
+				const others = withReleasedReplyTimeouts(
+					current,
+					wakes.filter((wake) => !isRedispatchWake(wake)),
+				);
 				if (others.length === 0) return;
 				const resumes = others.filter((wake): wake is ReleasedChildResumeWake => wake.id.startsWith("resume:"));
 				if (resumes.length > 0 && actions.resume !== undefined) {
@@ -366,7 +364,9 @@ export function handleReleasedChildWakes(
 				if (decision.kind === "hold") await actions.hold(current, decision.toolResults);
 				else if (decision.kind === "wake") await actions.wake(current, decision);
 			} catch (error) {
-				const results = wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
+				const results = withReleasedReplyTimeouts(record, wakes).flatMap((wake) =>
+					wake.toolResult === undefined ? [] : [wake.toolResult],
+				);
 				await actions.fail?.(record, results, wakeFailureOf(error as Error, childId)).catch((secondary: Error) => {
 					observeChildRecordFailure(ownerSessionId, wakeFailureOf(secondary, childId));
 				});
