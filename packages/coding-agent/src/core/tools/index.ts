@@ -136,7 +136,7 @@ import { type BashToolOptions, createBashTool, createBashToolDefinition } from "
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createKillTool, createKillToolDefinition, type KillToolOptions } from "./kill.ts";
-import { localEditOperations, localWriteOperations } from "./local-file-operations.ts";
+import { localEditOperations, localWriteOperations, withNotebookEditPreview } from "./local-file-operations.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createPowerShellTool, createPowerShellToolDefinition, type PowerShellToolOptions } from "./powershell.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
@@ -219,6 +219,10 @@ function builtinEditOptions(options?: EditToolOptions): EditToolOptions {
 	return { ...options, operations: options?.operations ?? localEditOperations };
 }
 
+function createBuiltinEditToolDefinition(cwd: string, options?: EditToolOptions) {
+	return withNotebookEditPreview(createEditToolDefinition(cwd, builtinEditOptions(options)));
+}
+
 function createBuiltinWriteToolDefinition(cwd: string, options?: WriteToolOptions) {
 	return withWriteSelectors(
 		createWriteToolDefinition(cwd, { ...options, operations: options?.operations ?? localWriteOperations }),
@@ -237,7 +241,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "kill":
 			return createKillToolDefinition(options?.kill);
 		case "edit":
-			return createEditToolDefinition(cwd, builtinEditOptions(options?.edit));
+			return createBuiltinEditToolDefinition(cwd, options?.edit);
 		case "write":
 			return createBuiltinWriteToolDefinition(cwd, options?.write);
 		case "find":
@@ -289,7 +293,7 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 		createReadToolDefinition(cwd, options?.read),
 		createBashToolDefinition(cwd, options?.bash),
 		createKillToolDefinition(options?.kill),
-		createEditToolDefinition(cwd, builtinEditOptions(options?.edit)),
+		createBuiltinEditToolDefinition(cwd, options?.edit),
 		createBuiltinWriteToolDefinition(cwd, options?.write),
 		createFindToolDefinition(cwd, options?.find),
 		createSearchToolDefinition(cwd, options?.search),
@@ -310,7 +314,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): B
 		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		kill: createKillToolDefinition(options?.kill),
-		edit: createEditToolDefinition(cwd, builtinEditOptions(options?.edit)),
+		edit: createBuiltinEditToolDefinition(cwd, options?.edit),
 		write: createBuiltinWriteToolDefinition(cwd, options?.write),
 		find: createFindToolDefinition(cwd, options?.find),
 		search: createSearchToolDefinition(cwd, options?.search),

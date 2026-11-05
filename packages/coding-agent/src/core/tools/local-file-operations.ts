@@ -1,7 +1,7 @@
 import { constants } from "fs";
 import { access, mkdir, readFile, writeFile } from "fs/promises";
 import { stripBom } from "../../utils/text.ts";
-import type { EditOperations } from "./edit.ts";
+import type { createEditToolDefinition, EditOperations } from "./edit.ts";
 import { normalizeToLF } from "./edit-diff.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
 import { invalidateNativeSearchCache } from "./search-native.ts";
@@ -23,6 +23,40 @@ export const localEditOperations: EditOperations = {
 	},
 	access: (path) => access(path, constants.R_OK | constants.W_OK),
 };
+
+type EditToolDefinition = ReturnType<typeof createEditToolDefinition>;
+type EditCallArgs = Parameters<NonNullable<EditToolDefinition["renderCall"]>>[0];
+
+function withoutNotebookEdits<T extends EditCallArgs | undefined>(args: T): T {
+	const path = (args as { file_path?: unknown } | undefined)?.file_path ?? args?.path;
+	if (typeof path !== "string" || !isNotebookPath(path)) return args;
+	const {
+		edits: _edits,
+		oldText: _oldText,
+		newText: _newText,
+		...rest
+	} = args as EditCallArgs & {
+		oldText?: unknown;
+		newText?: unknown;
+	};
+	return rest as T;
+}
+
+/**
+ * The built-in `edit` changes a notebook through `read`'s cell projection, but pi's preview diffs the raw `.ipynb`
+ * JSON, where that text never matches. Notebook calls therefore render without a preview until the result's diff
+ * arrives.
+ */
+export function withNotebookEditPreview(definition: EditToolDefinition): EditToolDefinition {
+	const { renderCall, renderResult } = definition;
+	return {
+		...definition,
+		renderCall: (args, theme, context) =>
+			renderCall!(withoutNotebookEdits(args), theme, { ...context, args: withoutNotebookEdits(context.args) }),
+		renderResult: (result, options, theme, context) =>
+			renderResult!(result, options, theme, { ...context, args: withoutNotebookEdits(context.args) }),
+	};
+}
 
 /** Local filesystem operations behind Atomic's built-in `write`; every write drops the file from the scan cache. */
 export const localWriteOperations: WriteOperations = {

@@ -184,6 +184,17 @@ describe("range selections label their lines (#4328)", () => {
 		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:38-39")).toBe(`[Lines 37-40 of 40]\n${rows(37, 40)}`);
 	});
 
+	it("sorts multi-range reads and rejects open-ended plus selectors", async () => {
+		expect(await readFixture("lines.txt", "one\ntwo\nthree\nfour\n", "lines.txt:3-3,1-1:raw")).toBe("one\nthree");
+		const thirty = `${Array.from({ length: 30 }, (_, index) => `r${index + 1}`).join("\n")}\n`;
+		const sorted = Array.from({ length: 5 }, (_, index) => `r${index + 2}`).join("\n");
+		const later = Array.from({ length: 5 }, (_, index) => `r${index + 19}`).join("\n");
+		expect(await readFixture("long.txt", thirty, "long.txt:20-20,3-3")).toBe(
+			`[Lines 2-6 of 30]\n${sorted}\n[Lines 19-23 of 30]\n${later}\n\n[7 more lines in file. Continue with path selector :24.]`,
+		);
+		expect(() => splitReadLineSelector("lines.txt:2+")).toThrow(/\+ requires a line count/);
+	});
+
 	it("keeps raw multi-range reads to the exact lines, unlabelled", async () => {
 		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:10-11,30-31:raw")).toBe("row10\nrow11\nrow30\nrow31");
 	});

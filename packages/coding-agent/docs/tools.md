@@ -98,7 +98,7 @@ Answers depend on DeepWiki's repository indexing and availability. Check the rep
 - Either every edit applies or the file is left unchanged.
 - In the built-in tool, a notebook (`.ipynb`) is edited through the same `# %% [code] cell:N` text that `read` shows; cell metadata, outputs, and execution counts are kept.
 
-The result reports how many replacements were applied. `details` holds a display `diff`, a unified `patch`, and `firstChangedLine`. The interactive view previews the diff as soon as the call's arguments are complete.
+The result reports how many replacements were applied. `details` holds a display `diff`, a unified `patch`, and `firstChangedLine`. The interactive view previews the diff as soon as the call's arguments are complete; for a notebook, the diff appears with the result.
 
 ## `write`
 
