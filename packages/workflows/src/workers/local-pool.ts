@@ -444,6 +444,9 @@ export class LocalWorkerPool {
 		if (!state || state.holderId !== this.backend.holderId)
 			throw new Error("Local worker pool requires the root owner");
 		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
+		// The root's children run on this pool's workers, which keep their own checkpoints: the root keeps only its own
+		// in memory and reads a child's back when it needs them (#4318).
+		await this.backend.retainOwnCheckpoints(root);
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(

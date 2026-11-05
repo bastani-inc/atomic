@@ -182,8 +182,9 @@ export async function completedWorkflowRunSnapshots(
 export function durableWorkflowRunSnapshots(
 	backend: DurableWorkflowBackend,
 	handle: import("./types.js").DurableWorkflowHandle,
+	/** Every checkpoint of the root, when its backend leaves some in storage (`readDurableCheckpoints`). */
+	checkpoints: readonly DurableCheckpoint[] = backend.listCheckpoints(handle.workflowId),
 ): readonly RunSnapshot[] {
-	const checkpoints = backend.listCheckpoints(handle.workflowId);
 	if (checkpoints.length === 0) {
 		return [rootSnapshot(backend, handle, { stages: [], toolNodes: [] })];
 	}
@@ -312,6 +313,7 @@ export function durableNestedRunCatalog(
 		handle.name,
 		handle.updatedAt,
 		ACTIVE_INSPECTION_RECONSTRUCTION,
+		(scope) => backend.checkpointScopeReleased?.(rootWorkflowId, scope) === true,
 	).filter((run) => run.id !== rootWorkflowId);
 	const catalog = nestedRunCatalog(runs, checkpoints);
 	if (version !== undefined) {
@@ -486,6 +488,8 @@ function runSnapshotsFromCheckpoints(
 	rootRunName: string,
 	fallbackCompletedAt: number,
 	policy: ReconstructionPolicy = COMPLETED_RECONSTRUCTION,
+	/** Whether the records of the root child boundary scope `scope` are left out of `checkpoints` on purpose. */
+	releasedChildScope?: (scope: string) => boolean,
 ): RunSnapshot[] {
 	const index = new CheckpointCatalogIndex(checkpoints);
 	if (!validBoundaryRecordSet(index, policy.requireTerminal)) return [];
@@ -578,7 +582,7 @@ function runSnapshotsFromCheckpoints(
 	// Groups under a failed or skipped boundary are pruned like a finished root does; any other dropped group
 	// means an active graph is incomplete.
 	if (!retainReachableRunGroups(grouped, rootRunId) && policy.failOnUnreachable) return [];
-	if (!validateRunGroups(grouped, rootRunId, toolsByRun, index, policy.retainActive)) return [];
+	if (!validateRunGroups(grouped, rootRunId, toolsByRun, index, policy.retainActive, releasedChildScope)) return [];
 	const syntheticChildren: Array<{
 		readonly parentRunId: string;
 		readonly owner: StageDraft;

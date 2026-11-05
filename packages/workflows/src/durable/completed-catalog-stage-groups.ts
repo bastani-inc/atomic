@@ -147,6 +147,8 @@ export function validateRunGroups(
 	toolsByRun: ReadonlyMap<string, readonly DurableToolCheckpoint[]>,
 	index: CheckpointCatalogIndex,
 	allowPendingChildren = false,
+	/** Whether a root child boundary scope's records are left out on purpose: its run is not loaded, not missing. */
+	releasedChildScope: (scope: string) => boolean = () => false,
 ): boolean {
 	const toolsFor = (runId: string) => toolsByRun.get(runId) ?? [];
 	const owners = new Map<string, StageDraft>();
@@ -156,6 +158,11 @@ export function validateRunGroups(
 			const childRunId = childRunIdFromDraft(draft);
 			if (childRunId === undefined) continue;
 			if (childRunId === parentRunId || owners.has(childRunId)) return false;
+			if (!grouped.has(childRunId) && parentRunId === rootRunId && releasedChildScope(draft.replayKey)) {
+				syntheticChildIds.add(childRunId);
+				owners.set(childRunId, draft);
+				continue;
+			}
 			if (!grouped.has(childRunId)) {
 				if (
 					allowPendingChildren &&

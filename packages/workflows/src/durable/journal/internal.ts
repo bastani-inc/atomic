@@ -1,6 +1,7 @@
 import type { SqliteExecutor, SqliteTransactionOptions } from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
+	type JournalEntry,
 	type Lease,
 	RUN_EVENT_TYPES,
 	type RunJournal,
@@ -96,4 +97,18 @@ export function observeSqlPoolTransactions(journal: RunJournal, observe: () => v
 			return storage.transaction(body);
 		},
 	});
+}
+
+/** A run's events whose key is at least `fromKey` and below `toKey`, read through the journal's key index. */
+export type JournalKeyRangeRead = (runId: string, fromKey: string, toKey: string) => AsyncIterable<JournalEntry>;
+
+const keyRangeReads = new WeakMap<RunJournal, JournalKeyRangeRead>();
+
+/** Lets a durable backend read the journal's checkpoints by key range (`SqlRunJournal.readKeyRange`). */
+export function registerJournalKeyRangeRead(journal: RunJournal, read: JournalKeyRangeRead): void {
+	keyRangeReads.set(journal, read);
+}
+
+export function journalKeyRangeRead(journal: RunJournal): JournalKeyRangeRead | undefined {
+	return keyRangeReads.get(journal);
 }

@@ -47,7 +47,10 @@ test(
 			await f.release();
 			await waitUntil(async () => {
 				await f.backend.hydrateWorkflow("root");
-				return f.backend.listCheckpoints("root").some((entry) => entry.kind === "tool" && entry.name === "finish");
+				// The root's backend keeps only the root's own checkpoints; the child's are read from the journal (#4318).
+				return (await f.backend.readCheckpoints("root")).some(
+					(entry) => entry.kind === "tool" && entry.name === "finish",
+				);
 			}, f.budget);
 			const [paused] = await queue.inspect("root");
 			assert.equal(paused!.id, before!.id);

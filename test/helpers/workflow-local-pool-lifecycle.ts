@@ -138,7 +138,10 @@ export async function fixture(
 		async ready() {
 			await waitUntil(async () => {
 				await backend.hydrateWorkflow(root);
-				return backend.listCheckpoints(root).some((entry) => entry.kind === "tool" && entry.name === "checkpoint");
+				// The root's backend keeps only the root's own checkpoints; the child's are read from the journal (#4318).
+				return (await backend.readCheckpoints(root)).some(
+					(entry) => entry.kind === "tool" && entry.name === "checkpoint",
+				);
 			}, budget);
 			return openSqlPoolQueue(journal);
 		},

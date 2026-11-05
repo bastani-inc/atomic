@@ -2,7 +2,7 @@ import { inspectRun, type RunDetail } from "../runs/background/run-inspect.js";
 import { isFullRunId, isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import type { DurableWorkflowBackend } from "./backend.js";
+import { type DurableWorkflowBackend, readDurableCheckpoints } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { bindStoreDurableBackend } from "./store-backend.js";
 
@@ -49,7 +49,12 @@ export async function inspectTargetedDurableWorkflow(
 	if (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== handle.workflowId) {
 		return malformed(resolvedWorkflowId, "the requested id belongs to a nested workflow rather than a durable root");
 	}
-	const reconstructed = durableWorkflowRunSnapshots(backend, handle);
+	// A pooled root this backend runs keeps only its own checkpoints in memory; inspection reads every one (#4318).
+	const reconstructed = durableWorkflowRunSnapshots(
+		backend,
+		handle,
+		await readDurableCheckpoints(backend, resolvedWorkflowId),
+	);
 	if (reconstructed.length === 0)
 		return malformed(resolvedWorkflowId, "durable checkpoint topology is malformed or incomplete");
 	const runs = structuredClone(reconstructed);

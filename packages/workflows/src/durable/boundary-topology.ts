@@ -80,6 +80,9 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 			throw invalid(input, "terminal boundary has no valid replayable child result");
 		}
 	}
+	const priorTerminalAt = stages
+		.filter((stage) => stage.replayKey === input.replayKey && stage.topology?.boundary?.event === "terminal")
+		.reduce((latest, stage) => Math.max(latest, stage.completedAt), 0);
 	let childRunId = start?.topology?.boundary?.child.runId ?? crypto.randomUUID();
 	const boundaryId = start?.topology?.stageId ?? crypto.randomUUID();
 	const startedAt = start?.startedAt ?? Date.now();
@@ -152,9 +155,6 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				"terminal",
 				status,
 			);
-			const priorTerminalAt = stages
-				.filter((stage) => stage.replayKey === input.replayKey && stage.topology?.boundary?.event === "terminal")
-				.reduce((latest, stage) => Math.max(latest, stage.completedAt), 0);
 			const now = Math.max(Date.now(), priorTerminalAt + 1);
 			await input.backend.commitCheckpoint({
 				kind: "stage",

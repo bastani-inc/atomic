@@ -362,6 +362,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		"getStageSession",
 		"listCheckpoints",
 		"nestedSnapshotVersion",
+		"checkpointScopeReleased",
 		"getWorkflow",
 		"getLoadableWorkflow",
 		"toMetadata",
