@@ -81,7 +81,7 @@ describe("Pi 0.82.1 remaining direct coding-agent parity", () => {
 			"cli/session-picker.ts": "getAgentDir()",
 			"main-session.ts": "getAgentDir()",
 			"modes/interactive/interactive-mode-base.ts": "runtimeHost.services.agentDir",
-			"modes/interactive-engine/engine-render-service.ts": "getAgentDir()",
+			"modes/interactive-engine/background-render-lane.ts": "getAgentDir()",
 			"modes/interactive-engine/engine-custom-ui.ts": "getAgentDir()",
 		};
 		for (const [relativePath, expected] of Object.entries(sources)) {

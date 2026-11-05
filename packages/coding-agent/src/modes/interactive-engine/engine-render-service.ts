@@ -1,12 +1,11 @@
-import type { Terminal } from "@earendil-works/pi-tui";
-import { type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
-import { getAgentDir } from "../../config.js";
+import type { Terminal, TUI } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
-import { runCallback } from "../../core/callback-activity.ts";
+import { runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { CustomMessage } from "../../core/messages.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
+import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
 import {
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
@@ -62,7 +61,8 @@ class RenderTerminal implements Terminal {
 
 /**
  * How many disposed row ids the engine remembers. A render request can reach the engine after its row's disposal:
- * renders are coalesced behind the host's ordered writes, and a render's callback runs a turn after its line is read.
+ * renders are coalesced behind the host's ordered writes, and a render waits on the background lane after its line
+ * is read.
  * Without the tombstone that late render would rebuild the record the disposal released, for the rest of the session.
  * Row ids are never reused, and a render this many disposals late does not happen in practice.
  */
@@ -73,6 +73,8 @@ export class EngineRenderService {
 	private readonly disposedIds = new Set<string>();
 	private session: AgentSession | undefined;
 	private readonly write: (line: string) => void;
+	/** Row renders and repaint checks wait here, behind keyboard input and custom UI frames. */
+	private readonly backgroundRenders = new BackgroundRenderLane();
 
 	constructor(write: (line: string) => void) {
 		this.write = write;
@@ -100,30 +102,33 @@ export class EngineRenderService {
 			command.type === "engine_tool_render"
 				? `tool:${command.toolName}`
 				: `message:${command.message.customType ?? "custom"}`;
-		void runCallback({ kind: "renderer", name }, async () => {
-			// The row may have been disposed before this render arrived, or while it waited for its turn: rendering it
-			// now would rebuild the record its disposal released.
-			if (this.disposedIds.has(command.componentId)) return undefined;
-			return command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command);
-		})
-			.then((lines) => {
-				if (lines === undefined) return;
-				this.send({
-					type: "engine_custom_frame",
-					componentId: command.componentId,
-					requestId: command.requestId,
-					lines,
-				});
-			})
-			.catch((error: Error) =>
-				this.send({
-					type: "engine_custom_frame",
-					componentId: command.componentId,
-					requestId: command.requestId,
-					lines: [`Remote renderer failed: ${error.message}`],
-				}),
-			);
+		this.backgroundRenders.schedule(`frame:${command.componentId}`, () => this.renderFrame(command, name));
 		return true;
+	}
+
+	/** Runs on the background lane, where a newer request for the same row replaces this one until it starts. */
+	private renderFrame(command: ToolRenderCommand | MessageRenderCommand, name: string): void {
+		// The row may have been disposed before this render arrived, or while it waited for its turn: rendering it
+		// now would rebuild the record its disposal released.
+		if (this.disposedIds.has(command.componentId)) return;
+		try {
+			const lines = runSynchronousCallback({ kind: "renderer", name }, () =>
+				command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command),
+			);
+			this.send({
+				type: "engine_custom_frame",
+				componentId: command.componentId,
+				requestId: command.requestId,
+				lines,
+			});
+		} catch (error) {
+			this.send({
+				type: "engine_custom_frame",
+				componentId: command.componentId,
+				requestId: command.requestId,
+				lines: [`Remote renderer failed: ${error instanceof Error ? error.message : String(error)}`],
+			});
+		}
 	}
 
 	dispose(): void {
@@ -140,6 +145,11 @@ export class EngineRenderService {
 		return new RenderTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
 	}
 
+	/** A row's headless screen; its repaint checks wait on the background lane. */
+	private createScreen(terminal: RenderTerminal, componentId: string): TUI {
+		return new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`);
+	}
+
 	private renderTool(command: ToolRenderCommand): string[] {
 		let record = this.records.get(command.componentId);
 		if (record?.kind !== "tool" || record.runner !== this.session?.extensionRunner) {
@@ -147,7 +157,7 @@ export class EngineRenderService {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
-			const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+			const tui = this.createScreen(terminal, command.componentId);
 			ensurePngTranscoder(() => {
 				tui.invalidate();
 				tui.requestRender();
@@ -193,7 +203,7 @@ export class EngineRenderService {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
-			const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+			const tui = this.createScreen(terminal, command.componentId);
 			ensurePngTranscoder(() => {
 				tui.invalidate();
 				tui.requestRender();

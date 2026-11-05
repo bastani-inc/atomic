@@ -29,12 +29,14 @@ export interface MultiSelectViewProps {
  *
  * `naturalHeight(width)` is state-INDEPENDENT (depends only on theme glyph widths,
  * question.options, and width) so the host can compute a stable globalContentHeight
- * without rendering. `naturalHeight(w) === render(w).length` for every props.
+ * without rendering. `naturalHeight(w) === render(w).length` for every props. It is
+ * measured once per width.
  *
  * `setProps(props)` is a pure field reassignment — no render, no invalidate side effects.
  */
 export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 	private props: MultiSelectViewProps;
+	private measured: { readonly width: number; readonly height: number } | undefined;
 
 	private declare readonly theme: Theme;
 	private declare readonly question: QuestionData;
@@ -51,7 +53,9 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 
 	handleInput(_data: string): void {}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.measured = undefined;
+	}
 
 	render(width: number): string[] {
 		const lines: string[] = [];
@@ -90,6 +94,11 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 	}
 
 	naturalHeight(width: number): number {
+		if (this.measured?.width !== width) this.measured = { width, height: this.measureHeight(width) };
+		return this.measured.height;
+	}
+
+	private measureHeight(width: number): number {
 		const contentWidth = Math.max(1, width - this.prefixVisibleWidth());
 		let total = 0;
 		for (const opt of this.question.options) {

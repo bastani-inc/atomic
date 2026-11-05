@@ -12,18 +12,22 @@ export const NO_PREVIEW_TEXT = "No preview available";
 export const NOTES_AFFORDANCE_OVERHEAD = 2;
 
 /**
- * Per-question cache for rendered markdown previews. Width-keyed: switching the
- * inner width invalidates every cached `Markdown`'s render output (pi-tui's
- * `Markdown.render(width)` re-wraps when width changes).
+ * Inner widths whose preview bodies stay cached. Two covers a resize back and forth; a few more cover a short drag
+ * without letting a long one grow the cache without bound. The oldest width is dropped first.
+ */
+export const MAX_CACHED_PREVIEW_WIDTHS = 4;
+
+/**
+ * Per-question cache for rendered markdown previews, keyed by (option, inner width). Preview text never changes
+ * for a question, so the option index stands for the content. Each body is wrapped by pi-tui's `Markdown` and
+ * stripped of fence markers once per width; measuring and painting at that width reuse the same lines.
  *
- * Replaces the inline `previewTexts`, `markdownCache`, `cachedWidth` triple from
- * the previous monolithic `preview-pane.ts`. One Markdown per option, lazy on
- * first request, never re-constructed — count semantics frozen by tests.
+ * One Markdown per option, lazy on first request, never re-constructed.
  */
 export class MarkdownContentCache {
 	private readonly previewTexts: Map<number, string>;
 	private readonly markdownCache: Map<number, Markdown>;
-	private cachedWidth: number | undefined;
+	private readonly bodiesByWidth = new Map<number, Map<number, string[]>>();
 	private readonly theme: Theme;
 	private readonly markdownTheme: MarkdownTheme;
 
@@ -46,31 +50,41 @@ export class MarkdownContentCache {
 		return this.previewTexts.has(optionIndex);
 	}
 
-	/**
-	 * Compute the body lines for a given option at a given inner width. Width changes
-	 * invalidate the per-Markdown render cache.
-	 */
+	/** Body lines for an option at an inner width, rendered once per (option, width). */
 	bodyFor(optionIndex: number, innerWidth: number): string[] {
-		if (this.cachedWidth !== innerWidth) {
-			for (const md of this.markdownCache.values()) md.invalidate();
-			this.cachedWidth = innerWidth;
-		}
 		const text = this.previewTexts.get(optionIndex);
 		if (!text) {
 			const placeholder = this.theme.fg("dim", NO_PREVIEW_TEXT);
 			const pad = Math.max(0, innerWidth - visibleWidth(placeholder));
 			return [placeholder + " ".repeat(pad)];
 		}
+		const bodies = this.bodiesAt(innerWidth);
+		const cached = bodies.get(optionIndex);
+		if (cached) return cached;
 		let md = this.markdownCache.get(optionIndex);
 		if (!md) {
 			md = new Markdown(text, 0, 0, this.markdownTheme);
 			this.markdownCache.set(optionIndex, md);
 		}
-		return stripFenceMarkers(md.render(innerWidth));
+		const body = stripFenceMarkers(md.render(innerWidth));
+		bodies.set(optionIndex, body);
+		return body;
 	}
 
 	invalidate(): void {
 		for (const md of this.markdownCache.values()) md.invalidate();
-		this.cachedWidth = undefined;
+		this.bodiesByWidth.clear();
+	}
+
+	private bodiesAt(innerWidth: number): Map<number, string[]> {
+		const existing = this.bodiesByWidth.get(innerWidth);
+		if (existing) return existing;
+		const bodies = new Map<number, string[]>();
+		this.bodiesByWidth.set(innerWidth, bodies);
+		if (this.bodiesByWidth.size > MAX_CACHED_PREVIEW_WIDTHS) {
+			const oldest = this.bodiesByWidth.keys().next().value;
+			if (oldest !== undefined) this.bodiesByWidth.delete(oldest);
+		}
+		return bodies;
 	}
 }

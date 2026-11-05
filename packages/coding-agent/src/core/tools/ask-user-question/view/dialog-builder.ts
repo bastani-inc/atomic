@@ -3,7 +3,6 @@ import { DynamicBorder } from "../../../../modes/interactive/components/index.ts
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionnaireState } from "../state/state.ts";
 import type { QuestionData } from "../tool/types.js";
-import { BodyResidualSpacer } from "./body-residual-spacer.ts";
 import type { ChatRowView } from "./components/chat-row-view.ts";
 import type { PreviewPaneProps } from "./components/preview/preview-pane.ts";
 import type { TabBar } from "./components/tab-bar.ts";
@@ -46,8 +45,15 @@ export interface DialogConfig {
 	submitPicker?: Component;
 	/** Worst-case body height across all tabs/options. Determines the stable overall dialog footprint. */
 	getBodyHeight: (width: number) => number;
-	/** Body height of the CURRENTLY active tab/option. The chrome subtracts this from `getBodyHeight` to absorb the residual OUTSIDE the bordered region. */
-	getCurrentBodyHeight: (width: number) => number;
+	/** Terminal columns. The preview layout reads them, so a cached frame holds only for the columns it was built at. */
+	getTerminalWidth: () => number;
+}
+
+/** The last frame built, with the size it was built for. */
+interface CachedFrame {
+	readonly width: number;
+	readonly terminalWidth: number;
+	readonly lines: string[];
 }
 
 /**
@@ -57,9 +63,17 @@ export interface DialogConfig {
  * strategy thunk during `render()`. `liveProps.activePreviewPane` is a
  * resolved pane reference threaded by the adapter per tick — the dialog
  * itself does not derive it.
+ *
+ * `render()` reuses the last frame until the dialog's own state or its size
+ * changes. Every state change reaches this view through `setProps` (the
+ * adapter applies all bindings on each one, this view's included), and
+ * `invalidate()` drops the frame on a theme or cache reset, so a repaint
+ * requested for any other reason (another component's update, a broadcast
+ * refresh) costs no render.
  */
 export class DialogView implements StatefulView<DialogProps> {
 	private liveProps: DialogProps;
+	private frame: CachedFrame | undefined;
 	private readonly config: DialogConfig;
 	private readonly questionStrategy: TabContentStrategy;
 	private readonly submitStrategy: TabContentStrategy | undefined;
@@ -76,7 +90,6 @@ export class DialogView implements StatefulView<DialogProps> {
 			notesInput: config.notesInput,
 			chatRow: config.chatRow,
 			isMulti: config.isMulti,
-			getCurrentBodyHeight: config.getCurrentBodyHeight,
 		});
 		this.submitStrategy = config.isMulti
 			? new SubmitTabStrategy({
@@ -90,46 +103,50 @@ export class DialogView implements StatefulView<DialogProps> {
 
 	setProps(props: DialogProps): void {
 		this.liveProps = props;
+		this.frame = undefined;
 	}
 
 	handleInput(_data: string): void {}
 
-	// Invalidation is driven by `QuestionnairePropsAdapter.invalidate()`, which
-	// owns the full set of renderables (binding registries + extras like
-	// `notesInput`). DialogView has no cached layout of its own.
-	invalidate(): void {}
-
-	render(width: number): string[] {
-		const onSubmit = this.config.isMulti && this.liveProps.state.currentTab === this.config.questions.length;
-		const strategy = onSubmit && this.submitStrategy ? this.submitStrategy : this.questionStrategy;
-		return this.buildContainerFromStrategy(strategy).render(width);
+	// The adapter's `invalidate()` resets every other renderable alongside this one.
+	invalidate(): void {
+		this.frame = undefined;
 	}
 
-	private buildContainerFromStrategy(strategy: TabContentStrategy): Container {
+	render(width: number): string[] {
+		const terminalWidth = this.config.getTerminalWidth();
+		const frame = this.frame;
+		if (frame?.width === width && frame.terminalWidth === terminalWidth) return frame.lines;
+		const onSubmit = this.config.isMulti && this.liveProps.state.currentTab === this.config.questions.length;
+		const strategy = onSubmit && this.submitStrategy ? this.submitStrategy : this.questionStrategy;
+		const lines = this.buildContainerFromStrategy(strategy, width).render(width);
+		this.frame = { width, terminalWidth, lines };
+		return lines;
+	}
+
+	private buildContainerFromStrategy(strategy: TabContentStrategy, width: number): Container {
 		const { theme, isMulti, tabBar } = this.config;
 		const state = this.liveProps.state;
 		const container = new Container();
 		const border = () => new DynamicBorder((s) => theme.fg("accent", s));
+		// Rendered once; its row count is the current height the residual below is measured against.
+		const body = strategy.bodyComponent(state).render(width);
 
 		container.addChild(border());
 		if (isMulti && tabBar) container.addChild(tabBar);
 		container.addChild(new Spacer(1));
 
 		for (const c of strategy.headingRows(state)) container.addChild(c);
-		container.addChild(strategy.bodyComponent(state));
+		container.addChild({ render: () => body, invalidate: () => {} });
 		container.addChild(new Spacer(1));
 		for (const c of strategy.midRows(state)) container.addChild(c);
 
 		container.addChild(border());
 		for (const c of strategy.footerRows(state)) container.addChild(c);
 
-		// Residual spacer equalizes total height across strategies; rendered AFTER the bottom border.
-		container.addChild(
-			new BodyResidualSpacer(
-				(w) => this.config.getBodyHeight(w) + this.maxFooterRowCount,
-				(w) => strategy.bodyHeight(w, state) + strategy.footerRowCount,
-			),
-		);
+		// Residual rows equalize total height across tabs and strategies; rendered AFTER the bottom border.
+		const maxHeight = this.config.getBodyHeight(width) + this.maxFooterRowCount;
+		container.addChild(new Spacer(Math.max(0, maxHeight - body.length - strategy.footerRowCount)));
 		return container;
 	}
 }

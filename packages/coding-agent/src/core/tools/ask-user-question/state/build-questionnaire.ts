@@ -20,7 +20,7 @@ import type { WrappingSelectItem, WrappingSelectTheme } from "../view/components
 import { DialogView } from "../view/dialog-builder.ts";
 import { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
 import type { StatefulView } from "../view/stateful-view.ts";
-import type { TabBodyHeights, TabComponents } from "../view/tab-components.ts";
+import type { TabComponents } from "../view/tab-components.ts";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import type { PerTabSelector } from "./selectors/contract.ts";
 import { selectActivePreviewPaneIndex } from "./selectors/derivations.ts";
@@ -42,7 +42,6 @@ export interface QuestionnaireBuildConfig {
 	itemsByTab: ReadonlyArray<readonly WrappingSelectItem[]>;
 	isMulti: boolean;
 	initialState: QuestionnaireState;
-	getCurrentTab: () => number;
 	chatAsOption?: boolean;
 }
 
@@ -54,23 +53,8 @@ export interface QuestionnaireBuilt {
 	invalidate: () => void;
 }
 
-interface HeightComputers {
-	global: (width: number) => number;
-	current: (width: number) => number;
-}
-
-function previewBodyHeights(pane: PreviewPane): (width: number) => TabBodyHeights {
-	return (width) => ({
-		current: pane.naturalHeight(width),
-		max: pane.maxNaturalHeight(width),
-	});
-}
-
-function multiSelectBodyHeights(view: MultiSelectView): (width: number) => TabBodyHeights {
-	return (width) => {
-		const h = view.naturalHeight(width);
-		return { current: h, max: h };
-	};
+function maxBodyHeightOf(preview: PreviewPane, multiSelect: MultiSelectView | undefined): (width: number) => number {
+	return multiSelect ? (width) => multiSelect.naturalHeight(width) : (width) => preview.maxNaturalHeight(width);
 }
 
 const isActiveTab: PerTabSelector<boolean> = (s, ctx) =>
@@ -78,8 +62,8 @@ const isActiveTab: PerTabSelector<boolean> = (s, ctx) =>
 
 /**
  * Pure factory: assembles every TUI component, the props adapter, and a
- * lifecycle handle. Session-state dependencies arrive via `getCurrentTab` and
- * the `inputBuffer` cell. Initial paint is delegated to
+ * lifecycle handle. Session-state dependencies arrive via the
+ * `inputBuffer` cell. Initial paint is delegated to
  * `adapter.apply(initialState)` (called by the session at construction-end);
  * no selector is invoked here.
  */
@@ -99,7 +83,6 @@ class QuestionnaireBuilder {
 	private readonly itemsByTab: ReadonlyArray<readonly WrappingSelectItem[]>;
 	private readonly isMulti: boolean;
 	private readonly initialState: QuestionnaireState;
-	private readonly getCurrentTab: () => number;
 
 	private readonly selectTheme: WrappingSelectTheme;
 	private readonly markdownTheme = getMarkdownTheme();
@@ -115,7 +98,6 @@ class QuestionnaireBuilder {
 		this.itemsByTab = config.itemsByTab;
 		this.isMulti = config.isMulti;
 		this.initialState = config.initialState;
-		this.getCurrentTab = config.getCurrentTab;
 
 		this.selectTheme = this.makeSelectTheme();
 		this.chatRow = new ChatRowView({
@@ -130,8 +112,8 @@ class QuestionnaireBuilder {
 		this.injectGlobalLeftWidth(tabs);
 		const submitPicker = this.buildSubmitPicker();
 		const tabBar = this.buildTabBar();
-		const heights = this.buildHeightComputers(tabs);
-		const dialog = this.buildDialog(tabs, submitPicker, tabBar, heights);
+		const getBodyHeight = this.buildBodyHeight(tabs);
+		const dialog = this.buildDialog(tabs, submitPicker, tabBar, getBodyHeight);
 		const globalBindings = this.buildGlobalBindings(dialog, submitPicker, tabBar);
 		const perTabBindings = this.buildPerTabBindings();
 		const adapter = this.buildAdapter(tabs, globalBindings, perTabBindings);
@@ -168,21 +150,13 @@ class QuestionnaireBuilder {
 			previewBlock,
 		});
 		const multiSelect = question.multiSelect ? new MultiSelectView(this.theme, question) : undefined;
-		const bodyHeights = this.buildBodyHeights(question, preview, multiSelect);
-		return { optionList, preview, multiSelect, bodyHeights };
-	}
-
-	private buildBodyHeights(
-		question: QuestionData,
-		preview: PreviewPane,
-		multiSelect: MultiSelectView | undefined,
-	): (width: number) => TabBodyHeights {
-		return question.multiSelect ? multiSelectBodyHeights(multiSelect!) : previewBodyHeights(preview);
+		return { optionList, preview, multiSelect, maxBodyHeight: maxBodyHeightOf(preview, multiSelect) };
 	}
 
 	/**
 	 * Compute cross-tab max adaptive left width and inject into each PreviewPane.
-	 * Mirrors buildHeightComputers pattern — iterates all tabs, takes max.
+	 * Mirrors buildBodyHeight pattern — iterates all tabs, takes max. The inputs
+	 * never change for a dialog, so each pane width is computed once.
 	 * Called after buildTabComponents, before buildDialog (so setGlobalLeftWidth
 	 * is set before any rendering occurs).
 	 */
@@ -190,8 +164,14 @@ class QuestionnaireBuilder {
 		const questions = this.questions;
 		const itemsByTab = this.itemsByTab;
 		const tabsDescriptor = questions.map((q) => ({ multiSelect: q.multiSelect }));
-		const globalLeftWidth = (paneWidth: number): number =>
-			crossTabLeftWidthWithDonation(tabsDescriptor, itemsByTab, questions, paneWidth);
+		const leftWidthByPaneWidth = new Map<number, number>();
+		const globalLeftWidth = (paneWidth: number): number => {
+			const cached = leftWidthByPaneWidth.get(paneWidth);
+			if (cached !== undefined) return cached;
+			const left = crossTabLeftWidthWithDonation(tabsDescriptor, itemsByTab, questions, paneWidth);
+			leftWidthByPaneWidth.set(paneWidth, left);
+			return left;
+		};
 		for (const tab of tabs) {
 			tab.preview.setGlobalLeftWidth(globalLeftWidth);
 		}
@@ -205,20 +185,15 @@ class QuestionnaireBuilder {
 		return this.isMulti ? new TabBar(this.theme) : undefined;
 	}
 
-	private buildHeightComputers(tabs: ReadonlyArray<TabComponents>): HeightComputers {
-		const global = (width: number): number => {
+	private buildBodyHeight(tabs: ReadonlyArray<TabComponents>): (width: number) => number {
+		return (width) => {
 			let max = 0;
 			for (const tab of tabs) {
-				const h = tab.bodyHeights(width).max;
+				const h = tab.maxBodyHeight(width);
 				if (h > max) max = h;
 			}
 			return Math.max(1, max);
 		};
-		const current = (width: number): number => {
-			const idx = Math.min(this.getCurrentTab(), tabs.length - 1);
-			return Math.max(0, tabs[idx]?.bodyHeights(width).current ?? 0);
-		};
-		return { global, current };
 	}
 
 	private pickInitialActivePreview(tabs: ReadonlyArray<TabComponents>): StatefulView<PreviewPaneProps> {
@@ -230,7 +205,7 @@ class QuestionnaireBuilder {
 		tabs: ReadonlyArray<TabComponents>,
 		submitPicker: SubmitPicker | undefined,
 		tabBar: TabBar | undefined,
-		heights: HeightComputers,
+		getBodyHeight: (width: number) => number,
 	): DialogView {
 		return new DialogView(
 			{
@@ -242,8 +217,8 @@ class QuestionnaireBuilder {
 				isMulti: this.isMulti,
 				tabsByIndex: tabs,
 				submitPicker,
-				getBodyHeight: heights.global,
-				getCurrentBodyHeight: heights.current,
+				getBodyHeight,
+				getTerminalWidth: this.getTerminalWidth,
 			},
 			{ state: this.initialState, activePreviewPane: this.pickInitialActivePreview(tabs) },
 		);
