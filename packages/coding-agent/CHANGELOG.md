@@ -45,6 +45,7 @@
 - The ls tool with `limit: 0` no longer lists nothing and reports `(empty directory)`; limits below 1 now mean 1 and fractional limits are rounded down (upstream [#11747](https://github.com/earendil-works/pi/pull/11747))
 - On Windows and WSL, `ctrl+v` pastes again: `app.clipboard.pasteImage` defaults to both `alt+v` and `ctrl+v` there, instead of only `alt+v` (upstream [#11780](https://github.com/earendil-works/pi/pull/11780))
 - Dart (`.dart`), Nix (`.nix`), Groovy (`.groovy`) and Gradle (`.gradle`) files are syntax-highlighted in read and write views (upstream [#11790](https://github.com/earendil-works/pi/pull/11790))
+- `atomic config` uses your `keybindings.json`, so remapped list navigation keys work in its selector (upstream [#11788](https://github.com/earendil-works/pi/pull/11788))
 
 ## [0.9.71] - 2026-11-03
 
