@@ -552,3 +552,65 @@ async function nativeShardOf(directory: string): Promise<string> {
 		await catalog.close();
 	}
 }
+
+test("a run a consolidation moves between finding and reading it is read where it moved (#4325)", async () => {
+	const expected = {
+		getRun: "completed",
+		snapshotTail: "StatusChanged",
+		read: "RunStarted,StatusChanged",
+	} as const;
+	for (const method of ["getRun", "snapshotTail", "read"] as const) {
+		const legacy = join(root, method, "old", "journal.sqlite");
+		const moving = join(root, method, "journal");
+		mkdirSync(join(legacy, ".."), { recursive: true });
+		const seed = await openSqlRunJournal(legacy);
+		const lease = await start(seed, "racing");
+		await seed.append(lease, { type: "RunStarted", payload: { snapshot: 1 } });
+		await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+		await seed.release(lease);
+		await seed.close();
+		await adoptJournals(moving, [legacy]);
+		let consolidated = false;
+		const consolidateOnce = async () => {
+			if (consolidated) return;
+			consolidated = true;
+			assert.equal((await consolidateJournalStore(moving)).moved, 1);
+		};
+		const journal = await ShardedRunJournal.open({
+			directory: moving,
+			openShard: async (path) => {
+				const shard = await openSqlRunJournal(path);
+				if (path !== legacy) return shard;
+				const getRun = shard.getRun.bind(shard);
+				const snapshotTail = shard.snapshotTail.bind(shard);
+				const read = shard.read.bind(shard);
+				shard.getRun = async (runId) => {
+					await consolidateOnce();
+					return getRun(runId);
+				};
+				shard.snapshotTail = async (runId) => {
+					await consolidateOnce();
+					return snapshotTail(runId);
+				};
+				shard.read = async function* (runId, fromSeq) {
+					await consolidateOnce();
+					yield* read(runId, fromSeq);
+				};
+				return shard;
+			},
+		});
+		closing.push(() => journal.close());
+		const observed =
+			method === "getRun"
+				? (await journal.getRun("racing"))?.status
+				: method === "snapshotTail"
+					? (await journal.snapshotTail("racing"))?.snapshot.event.type
+					: await (async () => {
+							const types: string[] = [];
+							for await (const entry of journal.read("racing")) types.push(entry.event.type);
+							return types.join(",");
+						})();
+		assert.equal(consolidated, true, `${method} raced a consolidation`);
+		assert.equal(observed, expected[method], method);
+	}
+});

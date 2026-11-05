@@ -811,3 +811,54 @@ test("adopting several files registers none of them when one has a run the store
 		assert.equal(await catalog.locate("fresh"), undefined);
 	});
 });
+
+test("consolidation leaves the runs of a journal missing its lease or event tables where they are (#4325)", async () => {
+	const partial = join(root, "partial.sqlite");
+	raw(partial, "CREATE TABLE wf_meta(schema_version INTEGER NOT NULL)");
+	raw(
+		partial,
+		"CREATE TABLE wf_runs(run_id TEXT PRIMARY KEY, name TEXT, cwd TEXT, created_at INTEGER, status TEXT, header_json TEXT)",
+	);
+	raw(partial, "INSERT INTO wf_meta VALUES (1)");
+	raw(partial, "INSERT INTO wf_runs VALUES ('partial', 'wf', '/p', 1, 'completed', '{}')");
+	await adoptJournals(store, [partial]);
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["partial", "skipped", "legacy-format"]],
+	);
+});
+
+test("a run the catalog dropped while it moved loses its destination copy and keeps its source (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "dropped" }]);
+	await adoptJournals(store, [path]);
+	await withCatalog(async (catalog) => {
+		Reflect.set(catalog, "moveRun", async (runId: string) => {
+			await catalog.remove(runId);
+			return false;
+		});
+		const report = await consolidateJournalStore(catalog);
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["dropped", "skipped", "changed"]],
+		);
+		const destination = new DatabaseSync((await catalog.homeShard("dropped")).path, { readOnly: true });
+		try {
+			assert.equal(destination.prepare("SELECT count(*) AS n FROM wf_runs").get()?.n, 0);
+		} finally {
+			destination.close();
+		}
+	});
+	const source = new DatabaseSync(path, { readOnly: true });
+	try {
+		assert.deepEqual(
+			[
+				source.prepare("SELECT count(*) AS n FROM wf_runs").get()?.n,
+				source.prepare("SELECT holder_id FROM wf_leases").get()?.holder_id,
+			],
+			[1, null],
+		);
+	} finally {
+		source.close();
+	}
+});
