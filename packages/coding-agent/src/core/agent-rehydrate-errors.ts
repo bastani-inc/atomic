@@ -188,9 +188,12 @@ function serializeCause(cause: ErrorOptions["cause"], depth: number): Serialized
 function rehydrateCause(cause: SerializedAgentErrorCause | undefined, depth: number): Error | undefined {
 	if (cause === undefined || depth >= MAX_CAUSE_DEPTH) return undefined;
 	const nested = rehydrateCause(cause.cause, depth + 1);
-	const error = new Error(cause.message, nested === undefined ? undefined : { cause: nested });
-	Object.defineProperty(error, "name", { value: cause.name, enumerable: false, configurable: true, writable: true });
-	if (cause.code !== undefined) Object.defineProperty(error, "code", { value: cause.code, enumerable: true });
+	const error: Error & { code?: string } = new Error(
+		cause.message,
+		nested === undefined ? undefined : { cause: nested },
+	);
+	error.name = cause.name;
+	if (cause.code !== undefined) error.code = cause.code;
 	return error;
 }
 
@@ -206,31 +209,24 @@ export function serializeAgentRehydrateError(error: AgentRehydrateError): Serial
 export function rehydrateAgentRehydrateError(serialized: SerializedAgentRehydrateError): AgentRehydrateError {
 	const cause = rehydrateCause(serialized.cause, 0);
 	const options = cause === undefined ? undefined : { cause };
-	const known = AGENT_REHYDRATE_ERROR_CODES.has(serialized.code);
-	if (known && serialized.name === AGENT_RELEASE_CONFIG_ERROR_NAME && serialized.code === "invalid-release-policy") {
+	if (serialized.name === AGENT_RELEASE_CONFIG_ERROR_NAME && serialized.code === "invalid-release-policy") {
 		const { source, field, value } = serialized.fields;
 		return new AgentReleaseConfigError({ source: source ?? "sdk", field: field ?? "", value: value ?? "" });
 	}
-	const error = new AgentRehydrateError(
-		known ? (serialized.code as AgentRehydrateErrorCode) : "wake-failed",
-		serialized.fields,
-		options,
-	);
-	if (known && serialized.name === AGENT_REHYDRATE_ERROR_NAME) return error;
-	for (const [key, value] of [
-		["name", serialized.name],
-		["code", serialized.code],
-		["message", serialized.message],
-		["hint", serialized.hint],
-		["retryable", serialized.retryable],
-	] as const)
-		Object.defineProperty(error, key, { value, enumerable: key !== "name" && key !== "message", configurable: true });
-	return error;
+	if (serialized.name === AGENT_REHYDRATE_ERROR_NAME && AGENT_REHYDRATE_ERROR_CODES.has(serialized.code))
+		return new AgentRehydrateError(serialized.code as AgentRehydrateErrorCode, serialized.fields, options);
+	const { name, code, message, hint, retryable } = serialized;
+	return Object.assign(new AgentRehydrateError("wake-failed", serialized.fields, options), {
+		name,
+		code,
+		message,
+		hint,
+		retryable,
+	});
 }
 
-function hasFamilyShape(error: object, name: string): boolean {
-	const candidate = error as { readonly name?: string; readonly code?: string };
-	return candidate.name === name && typeof candidate.code === "string";
+function hasFamilyName(error: object, name: string): boolean {
+	return (error as { readonly name?: string }).name === name;
 }
 
 /** True for an {@link AgentRehydrateError} of any code, including one from another realm or a structural copy. */
@@ -238,7 +234,7 @@ export function isAgentRehydrateError(error: Error | object | null | undefined):
 	if (error instanceof AgentRehydrateError) return true;
 	if (typeof error !== "object" || error === null) return false;
 	return (
-		(hasFamilyShape(error, AGENT_REHYDRATE_ERROR_NAME) &&
+		(hasFamilyName(error, AGENT_REHYDRATE_ERROR_NAME) &&
 			AGENT_REHYDRATE_ERROR_CODES.has((error as { readonly code: string }).code)) ||
 		isAgentReleaseConfigError(error)
 	);
@@ -249,7 +245,7 @@ export function isAgentReleaseConfigError(error: Error | object | null | undefin
 	if (error instanceof AgentReleaseConfigError) return true;
 	if (typeof error !== "object" || error === null) return false;
 	return (
-		hasFamilyShape(error, AGENT_RELEASE_CONFIG_ERROR_NAME) &&
+		hasFamilyName(error, AGENT_RELEASE_CONFIG_ERROR_NAME) &&
 		(error as { readonly code: string }).code === "invalid-release-policy"
 	);
 }

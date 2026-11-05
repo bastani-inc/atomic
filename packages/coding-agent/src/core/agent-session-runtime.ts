@@ -784,11 +784,8 @@ export class AgentSessionRuntime {
 			}),
 		);
 		const session = result.session;
-		this.retainSessionStore(session);
 		this.rehydrated.set(sessionId, session);
-		onSessionClose(session as unknown as AgentSessionInternalSurface, () => {
-			if (this.rehydrated.get(sessionId) === session) this.rehydrated.delete(sessionId);
-		});
+		onSessionClose(session as unknown as AgentSessionInternalSurface, () => this.rehydrated.delete(sessionId));
 		if (this.closed) {
 			await session.dispose();
 			this.assertOpen();

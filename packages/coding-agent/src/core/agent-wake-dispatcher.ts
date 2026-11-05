@@ -79,7 +79,7 @@ interface Pending {
 
 interface KeyState {
 	readonly queue: Pending[];
-	running: Pending[] | undefined;
+	running: Pending[];
 }
 
 interface Scheduled {
@@ -166,18 +166,16 @@ export class AgentWakeDispatcher {
 		const namespace = wakeKeyNamespace(wakeKey);
 		if (!this.handlers.has(namespace))
 			return Promise.reject(new AgentRehydrateError("no-wake-handler", { wakeKey, namespace }));
-		let state = this.keys.get(wakeKey);
-		const duplicate =
-			state?.queue.find((pending) => pending.wake.id === wake.id) ??
-			state?.running?.find((pending) => pending.wake.id === wake.id);
+		const state = this.keys.get(wakeKey);
+		const duplicate = state && [...state.queue, ...state.running].find((pending) => pending.wake.id === wake.id);
 		if (duplicate !== undefined) return duplicate.settled;
-		if (state === undefined) {
-			state = { queue: [], running: undefined };
-			this.keys.set(wakeKey, state);
-		}
 		const pending = createPending(wake);
-		state.queue.push(pending);
-		if (state.running === undefined) void this.drain(wakeKey, state);
+		if (state !== undefined) state.queue.push(pending);
+		else {
+			const started: KeyState = { queue: [pending], running: [] };
+			this.keys.set(wakeKey, started);
+			void this.drain(wakeKey, started);
+		}
 		return pending.settled;
 	}
 
@@ -206,7 +204,7 @@ export class AgentWakeDispatcher {
 		let running = 0;
 		for (const state of this.keys.values()) {
 			queued += state.queue.length;
-			running += state.running?.length ?? 0;
+			running += state.running.length;
 		}
 		return {
 			keys: this.keys.size,
@@ -243,7 +241,6 @@ export class AgentWakeDispatcher {
 	private async drain(wakeKey: string, state: KeyState): Promise<void> {
 		const namespace = wakeKeyNamespace(wakeKey);
 		while (state.queue.length > 0) {
-			// The key is running from here on, so wakes arriving while it waits for a slot join its next batch.
 			state.running = [];
 			const slot = this.acquire(namespace);
 			const free = typeof slot === "function" ? slot : await slot;
@@ -267,7 +264,6 @@ export class AgentWakeDispatcher {
 				free();
 			}
 		}
-		state.running = undefined;
 		this.keys.delete(wakeKey);
 	}
 

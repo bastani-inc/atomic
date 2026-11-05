@@ -16,9 +16,12 @@ import type { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import {
 	armedIdleSessionCount,
+	disarmIdleRelease,
 	enableReleaseWhenIdle,
+	onSessionClose,
 	parseReleaseWhenIdle,
 	type ReleasedAgentSession,
+	sessionClosing,
 } from "../src/core/agent-session-release.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -527,5 +530,174 @@ describe("AgentSessionRuntime.rehydrate (#4326)", () => {
 			["user", "assistant", "toolResult", "assistant"],
 		);
 		assert.equal(getMessageText(woken.messages.at(-1)), "ci passed, done");
+	});
+});
+
+describe("release and idle release details (#4326)", () => {
+	test("a file-backed session's release names its session file", async () => {
+		const dir = join(tmpdir(), `atomic-release-file-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(dir, { recursive: true });
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const sessionManager = await SessionManager.create(dir, join(dir, "sessions"));
+		const h = await createHarness({ sessionManager });
+		cleanups.push(() => h.cleanup());
+		const file = sessionManager.getSessionFile();
+		assert.ok(file);
+		assert.deepEqual(await h.session.release(), {
+			sessionId: sessionManager.getSessionId(),
+			cwd: sessionManager.getCwd(),
+			sessionFile: file,
+		});
+	});
+
+	test("a timed wake for a session no longer armed does nothing", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const h = await harness();
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 10 }, dispatcher);
+		await dispatcher.deliver("session-idle:not-armed", { id: "idle-release", kind: "timer" });
+		assert.equal(internal(h.session)._disposed, false);
+	});
+
+	test("a run starting cancels the idle wake, and only a settled run arms it again", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const h = await harness();
+		let finish!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		h.setResponses([
+			async () => {
+				await gate;
+				return fauxAssistantMessage("done");
+			},
+		]);
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		const run = h.session.prompt("work");
+		while (!h.session.isStreaming) await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(dispatcher.stats().scheduled, 0, "a running session has no idle wake");
+		await time.advance(500);
+		assert.equal(dispatcher.stats().scheduled, 0, "nothing re-armed it while it ran");
+		finish();
+		await run;
+		assert.equal(dispatcher.stats().scheduled, 1);
+		assert.equal(internal(h.session)._disposed, false);
+	});
+
+	test("a busy session's idle wake is re-armed under the same wake, so the next run still cancels it", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("one")]);
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		internal(h.session)._followUpMessages.push("queued");
+		await time.advance(100);
+		assert.equal(dispatcher.stats().scheduled, 1);
+		internal(h.session)._followUpMessages.length = 0;
+		await h.session.prompt("go");
+		assert.equal(dispatcher.stats().scheduled, 1, "the run replaced the re-armed wake instead of adding one");
+	});
+
+	test("arming twice and disarming leaves no subscription that could arm it again", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("one")]);
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		disarmIdleRelease(internal(h.session));
+		disarmIdleRelease(internal(h.session));
+		assert.equal(dispatcher.stats().scheduled, 0);
+		await h.session.prompt("go");
+		assert.equal(dispatcher.stats().scheduled, 0);
+		assert.equal(armedIdleSessionCount(), 0);
+	});
+
+	test("closing one live instance of a stored session leaves another instance's idle release armed", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const first = await createHarness({ sessionManager: SessionManager.inMemory(process.cwd(), { id: "shared" }) });
+		cleanups.push(() => first.cleanup());
+		const second = await createHarness({ sessionManager: SessionManager.inMemory(process.cwd(), { id: "shared" }) });
+		cleanups.push(() => second.cleanup());
+		enableReleaseWhenIdle(internal(first.session), { afterMs: 100 }, dispatcher);
+		enableReleaseWhenIdle(internal(second.session), { afterMs: 100 }, dispatcher);
+		await first.session.dispose();
+		assert.equal(armedIdleSessionCount(), 1);
+		assert.equal(dispatcher.stats().scheduled, 1);
+		await time.advance(100);
+		assert.equal(internal(second.session)._disposed, true);
+		assert.equal(armedIdleSessionCount(), 0);
+	});
+
+	test("every close listener runs once, however often closing is reported", async () => {
+		const h = await harness();
+		const calls: string[] = [];
+		onSessionClose(internal(h.session), () => calls.push("first"));
+		onSessionClose(internal(h.session), () => calls.push("second"));
+		sessionClosing(internal(h.session));
+		sessionClosing(internal(h.session));
+		assert.deepEqual(calls, ["first", "second"]);
+	});
+});
+
+describe("AgentSessionRuntime.rehydrate details (#4326)", () => {
+	test("a session released after a rehydration is rehydrated again as a new live session", async () => {
+		const host = await runtimeHost();
+		const other = await SessionManager.create(host.store.store, host.runtime.cwd);
+		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
+		const first = await host.runtime.rehydrate(other.getSessionId());
+		await first.release();
+		const second = await host.runtime.rehydrate(other.getSessionId());
+		assert.notEqual(second, first);
+		assert.equal(internal(second)._disposed, false);
+		assert.equal(host.factoryCalls.length, 3);
+	});
+
+	test("a session saved in another cwd is built without the runtime's services", async () => {
+		const host = await runtimeHost();
+		const elsewhere = join(host.runtime.cwd, "elsewhere");
+		mkdirSync(elsewhere, { recursive: true });
+		const other = await SessionManager.create(host.store.store, elsewhere);
+		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
+		const woken = await host.runtime.rehydrate(other.getSessionId());
+		assert.equal(woken.sessionManager.getCwd(), elsewhere);
+		assert.equal(host.factoryCalls.at(-1)?.services, undefined);
+		assert.equal(host.factoryCalls.at(-1)?.cwd, elsewhere);
+	});
+
+	test("a runtime disposed while it rehydrates closes the new session and refuses", async () => {
+		const host = await runtimeHost();
+		const other = await SessionManager.create(host.store.store, host.runtime.cwd);
+		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
+		const rehydrating = host.runtime.rehydrate(other.getSessionId());
+		const disposing = host.runtime.dispose();
+		await assert.rejects(rehydrating, (error: Error & { code?: string }) => error.code === "SessionClosed");
+		await disposing;
+		assert.equal(host.runtime.rehydratedSessionCount, 0);
+	});
+
+	test("a rehydrated session that fails to close is reported by the runtime's dispose", async () => {
+		const host = await runtimeHost();
+		const other = await SessionManager.create(host.store.store, host.runtime.cwd);
+		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
+		const woken = await host.runtime.rehydrate(other.getSessionId());
+		const failure = new Error("close failed");
+		const dispose = woken.dispose.bind(woken);
+		Object.defineProperty(woken, "dispose", {
+			configurable: true,
+			value: async () => {
+				throw failure;
+			},
+		});
+		await assert.rejects(host.runtime.dispose(), (error: AggregateError & { code?: string }) => {
+			assert.equal(error.code, "ShutdownFailed");
+			assert.ok(error.errors.includes(failure));
+			return true;
+		});
+		assert.equal(host.runtime.rehydratedSessionCount, 0, "the runtime forgets a session that failed to close");
+		await dispose();
+		Object.defineProperty(host.runtime, "dispose", { configurable: true, value: async () => {} });
 	});
 });

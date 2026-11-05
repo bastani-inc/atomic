@@ -31,7 +31,7 @@ export function parseReleaseWhenIdle(
 	if (typeof value !== "object" || value === null || Array.isArray(value))
 		throw new AgentReleaseConfigError({ source, field: "releaseWhenIdle", value: describe(value) });
 	const afterMs = (value as { readonly afterMs?: number | string }).afterMs;
-	if (typeof afterMs !== "number" || !Number.isFinite(afterMs) || afterMs < 0)
+	if (!(typeof afterMs === "number" && afterMs >= 0 && afterMs !== Number.POSITIVE_INFINITY))
 		throw new AgentReleaseConfigError({ source, field: "releaseWhenIdle.afterMs", value: describe(afterMs) });
 	return { afterMs };
 }
@@ -70,7 +70,6 @@ export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 		cwd: this.sessionManager.getCwd(),
 		...(sessionFile === undefined ? {} : { sessionFile }),
 	};
-	disarmIdleRelease(this);
 	this._emit({ type: "session_released", released });
 	const closing = this.dispose().then(() => released);
 	releases.set(this, closing);
@@ -79,6 +78,7 @@ export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 
 interface ArmedSession {
 	readonly session: AgentSession;
+	readonly wakeKey: string;
 	readonly policy: ReleaseWhenIdleOptions;
 	readonly dispatcher: AgentWakeDispatcher;
 	readonly unsubscribe: () => void;
@@ -86,7 +86,7 @@ interface ArmedSession {
 
 /** Live sessions waiting to be released when idle, by wake key. A released or disposed session has no entry. */
 const armedSessions = new Map<string, ArmedSession>();
-const armedKeys = new WeakMap<AgentSession, string>();
+const armedBySession = new WeakMap<AgentSession, ArmedSession>();
 const handledDispatchers = new WeakSet<AgentWakeDispatcher>();
 
 function idleWakeKey(session: AgentSession): string {
@@ -128,21 +128,21 @@ export function enableReleaseWhenIdle(
 		if (event.type === "agent_start") dispatcher.cancel(wakeKey, IDLE_RELEASE_WAKE_ID);
 		else if (event.type === "agent_settled") arm();
 	});
-	armedSessions.set(wakeKey, { session, policy, dispatcher, unsubscribe });
-	armedKeys.set(session, wakeKey);
+	const armed: ArmedSession = { session, wakeKey, policy, dispatcher, unsubscribe };
+	armedSessions.set(wakeKey, armed);
+	armedBySession.set(session, armed);
 	arm();
 }
 
 /** Stop releasing `session` when idle; called when it is released or closed. */
 export function disarmIdleRelease(session: AgentSession): void {
-	const wakeKey = armedKeys.get(session);
-	if (wakeKey === undefined) return;
-	armedKeys.delete(session);
-	const armed = armedSessions.get(wakeKey);
-	if (armed?.session !== session) return;
-	armedSessions.delete(wakeKey);
+	const armed = armedBySession.get(session);
+	if (armed === undefined) return;
+	armedBySession.delete(session);
 	armed.unsubscribe();
-	armed.dispatcher.cancel(wakeKey, IDLE_RELEASE_WAKE_ID);
+	if (armedSessions.get(armed.wakeKey) !== armed) return;
+	armedSessions.delete(armed.wakeKey);
+	armed.dispatcher.cancel(armed.wakeKey, IDLE_RELEASE_WAKE_ID);
 }
 
 const closeListeners = new WeakMap<AgentSession, Array<() => void>>();

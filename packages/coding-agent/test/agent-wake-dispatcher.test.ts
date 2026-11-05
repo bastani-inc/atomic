@@ -628,3 +628,250 @@ describe("AgentWakeDispatcher handler replacement (#4326)", () => {
 		assert.equal(dispatcher.stats().handlers, 0);
 	});
 });
+
+describe("AgentRehydrateError messages and serialization (#4326)", () => {
+	test("each code renders its subject, code and hint", () => {
+		const cases: Array<[AgentRehydrateError, string]> = [
+			[
+				new AgentReleaseConfigError({ source: "sdk", field: "releaseWhenIdle.afterMs", value: "-1" }),
+				"Invalid releaseWhenIdle.afterMs from sdk: -1 (invalid-release-policy). Pass releaseWhenIdle as { afterMs } with afterMs a finite number of milliseconds of at least 0, or leave it unset.",
+			],
+			[
+				new AgentReleaseConfigError({ source: "sdk", field: "maxConcurrent", value: "0" }),
+				"Invalid maxConcurrent from sdk: 0 (invalid-release-policy). Pass maxConcurrent as a whole number of at least 1, or leave it unset for no limit.",
+			],
+			[
+				new AgentRehydrateError("session-busy", { sessionId: "s-1", activity: "compaction" }),
+				"Session s-1 cannot be released while its compaction is active (session-busy). Wait until the session settles (its agent_settled event), then release it again.",
+			],
+			[
+				new AgentRehydrateError("session-not-found", { sessionId: "s-2", storage: "libsql", localOnly: false }),
+				"Session s-2 is not in this node's libsql storage (session-not-found). Check the session id: the libsql storage this node uses has no session with it.",
+			],
+			[
+				new AgentRehydrateError("no-wake-handler", { wakeKey: "bench:a", namespace: "bench" }),
+				'No wake handler for bench:a (no-wake-handler). Register a handler for the "bench" wake namespace with AgentWakeDispatcher.handle() before delivering wakes to its keys.',
+			],
+			[
+				new AgentRehydrateError("wake-handler-conflict", { namespace: "bench" }),
+				'A wake handler for namespace "bench" is already registered (wake-handler-conflict). Dispose the handler already registered for the "bench" wake namespace first; each namespace has one handler.',
+			],
+			[
+				new AgentRehydrateError("wake-failed", { wakeKey: "bench:b", wakes: 2 }),
+				"Waking bench:b failed (wake-failed). The agent was not rehydrated and its wakes were not handled; fix the cause, then deliver them again.",
+			],
+		];
+		for (const [error, message] of cases) assert.equal(error.message, message);
+	});
+
+	test("an error without a cause serializes without one, and rebuilds without one", () => {
+		const error = new AgentRehydrateError("session-busy", { sessionId: "s", activity: "prompt" });
+		const wire = error.toJSON();
+		assert.deepStrictEqual(wire, {
+			name: "AgentRehydrateError",
+			code: "session-busy",
+			message: error.message,
+			hint: error.hint,
+			retryable: true,
+			fields: { sessionId: "s", activity: "prompt" },
+		});
+		const rebuilt = rehydrateAgentRehydrateError(wire);
+		assert.equal("cause" in rebuilt, false);
+		assert.equal(rebuilt.retryable, true);
+	});
+
+	test("a serialized chain deeper than the bound rebuilds to eight links, keeping names and codes", () => {
+		type Link = { name: string; message: string; code?: string; cause?: Link };
+		let chain: Link | undefined;
+		for (let depth = 11; depth >= 0; depth--)
+			chain = {
+				name: `E${depth}`,
+				message: `m${depth}`,
+				...(depth % 2 === 0 ? { code: `c${depth}` } : {}),
+				...(chain ? { cause: chain } : {}),
+			};
+		const rebuilt = rehydrateAgentRehydrateError({
+			name: "AgentRehydrateError",
+			code: "wake-failed",
+			message: "m",
+			hint: "h",
+			retryable: false,
+			fields: { wakeKey: "k" },
+			...(chain ? { cause: chain } : {}),
+		});
+		const links: Array<Error & { code?: string }> = [];
+		for (let link = rebuilt.cause as (Error & { code?: string }) | undefined; link; link = link.cause as typeof link)
+			links.push(link);
+		assert.deepEqual(
+			links.map((link) => [link.name, link.message, link.code]),
+			[
+				["E0", "m0", "c0"],
+				["E1", "m1", undefined],
+				["E2", "m2", "c2"],
+				["E3", "m3", undefined],
+				["E4", "m4", "c4"],
+				["E5", "m5", undefined],
+				["E6", "m6", "c6"],
+				["E7", "m7", undefined],
+			],
+		);
+		assert.equal("cause" in (links.at(-1) as Error), false, "the last link carries no cause");
+		assert.equal("code" in (links[1] as Error), false, "a link without a code gets none");
+	});
+
+	test("a config error rebuilt without fields falls back to sdk and empty texts", () => {
+		const rebuilt = rehydrateAgentRehydrateError({
+			name: "AgentReleaseConfigError",
+			code: "invalid-release-policy",
+			message: "m",
+			hint: "h",
+			retryable: false,
+			fields: {},
+		}) as AgentReleaseConfigError;
+		assert.deepEqual([rebuilt.source, rebuilt.field, rebuilt.value], ["sdk", "", ""]);
+		assert.ok(!isAgentReleaseConfigError(undefined));
+		const configLookalike = rehydrateAgentRehydrateError({
+			name: "AgentReleaseConfigError",
+			code: "not-a-code",
+			message: "m",
+			hint: "h",
+			retryable: false,
+			fields: {},
+		});
+		assert.ok(!(configLookalike instanceof AgentReleaseConfigError));
+		assert.equal(configLookalike.code as string, "not-a-code");
+	});
+});
+
+describe("AgentWakeDispatcher scheduling and slots (#4326)", () => {
+	test("timed wakes fire in time order, and wakes due at the same time in the order they were scheduled", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const fired: string[] = [];
+		dispatcher.handle("t", async (key) => {
+			fired.push(key);
+		});
+		dispatcher.schedule("t:a", wake("x", "timer"), 10);
+		dispatcher.schedule("t:b", wake("x", "timer"), 20);
+		dispatcher.schedule("t:c", wake("x", "timer"), 20);
+		time.advance(10);
+		await flush();
+		assert.deepEqual(fired, ["t:a"]);
+		time.advance(10);
+		await flush();
+		assert.deepEqual(fired, ["t:a", "t:b", "t:c"]);
+	});
+
+	test("the timer is armed once for the earliest wake and not again for later ones", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		dispatcher.handle("t", async () => {});
+		dispatcher.schedule("t:a", wake("x", "timer"), 100);
+		dispatcher.schedule("t:b", wake("x", "timer"), 200);
+		dispatcher.schedule("t:c", wake("x", "timer"), 300);
+		assert.equal(time.armed, 1);
+		time.advance(99);
+		assert.equal(time.armed, 1, "the timer waits the full delay to the earliest wake");
+		assert.equal(dispatcher.stats().scheduled, 3);
+		time.advance(1);
+		await flush();
+		assert.equal(time.armed, 2, "firing arms one timer for the next wake");
+		assert.equal(dispatcher.stats().scheduled, 2);
+	});
+
+	test("a namespace's cap still holds after its first run finishes", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const gates: Array<() => void> = [];
+		let active = 0;
+		let maxActive = 0;
+		dispatcher.handle(
+			"bench",
+			async () => {
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				await new Promise<void>((resolve) => gates.push(resolve));
+				active -= 1;
+			},
+			{ maxConcurrent: 1 },
+		);
+		const first = dispatcher.deliver("bench:a", wake("1"));
+		await flush();
+		gates.shift()?.();
+		await first;
+		assert.equal(dispatcher.stats().namespaces, 1);
+		const later = [dispatcher.deliver("bench:b", wake("1")), dispatcher.deliver("bench:c", wake("1"))];
+		await flush();
+		assert.equal(active, 1);
+		while (gates.length > 0 || active > 0) {
+			gates.shift()?.();
+			await flush();
+		}
+		await Promise.all(later);
+		assert.equal(maxActive, 1);
+	});
+
+	test("a wake id delivered again after its batch finished, while the key waits for a slot, is handled again", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const calls: string[] = [];
+		const gates = new Map<string, () => void>();
+		dispatcher.handle(
+			"bench",
+			async (key, wakes) => {
+				calls.push(`${key}/${wakes.map((entry) => entry.id).join(",")}`);
+				await new Promise<void>((resolve) => gates.set(key, resolve));
+			},
+			{ maxConcurrent: 1 },
+		);
+		const firstA = dispatcher.deliver("bench:a", wake("w1"));
+		await flush();
+		const onlyB = dispatcher.deliver("bench:b", wake("x"));
+		const secondA = dispatcher.deliver("bench:a", wake("w2"));
+		gates.get("bench:a")?.();
+		await firstA;
+		await flush();
+		const againA = dispatcher.deliver("bench:a", wake("w1"));
+		gates.get("bench:b")?.();
+		await onlyB;
+		await flush();
+		gates.get("bench:a")?.();
+		await Promise.all([secondA, againA]);
+		assert.deepEqual(calls, ["bench:a/w1", "bench:b/x", "bench:a/w2,w1"]);
+	});
+
+	test("a handler removed while a key waits for a slot fails that key's wakes with its key and namespace", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		let releaseRun!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			releaseRun = resolve;
+		});
+		const remove = dispatcher.handle("bench", () => blocked, { maxConcurrent: 1 });
+		const running = dispatcher.deliver("bench:a", wake("1"));
+		const waiting = dispatcher.deliver("bench:b", wake("1"));
+		await flush();
+		remove();
+		releaseRun();
+		await running;
+		await assert.rejects(waiting, (error: AgentRehydrateError) => {
+			assert.equal(error.code, "no-wake-handler");
+			assert.deepEqual(error.fields, { wakeKey: "bench:b", namespace: "bench" });
+			return true;
+		});
+	});
+
+	test("any error a handler throws, a rehydrate error included, is reported as wake-failed caused by it", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const notFound = new AgentRehydrateError("session-not-found", {
+			sessionId: "s",
+			storage: "sqlite",
+			localOnly: true,
+		});
+		dispatcher.handle("child", async () => {
+			throw notFound;
+		});
+		await assert.rejects(dispatcher.deliver("child:a", wake("1")), (error: AgentRehydrateError) => {
+			assert.equal(error.code, "wake-failed");
+			assert.equal(error.cause, notFound);
+			return true;
+		});
+	});
+});
