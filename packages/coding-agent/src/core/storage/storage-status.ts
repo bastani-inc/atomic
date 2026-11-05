@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
@@ -31,7 +31,7 @@ import { type StorageSettingsSelection, selectStorage, selectsDefaultJournalStor
 
 /** What the journal store's catalog lists, read without changing it. */
 async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string): Promise<JournalStoreStatus> {
-	const shards = await catalog.all<SqliteRow & { path: string; kind: string }>(
+	const shards = await catalog.all<SqliteRow & { path: string; kind: "native" | "adopted" }>(
 		"SELECT path, kind FROM catalog_shards",
 	);
 	const runs = await catalog.get<SqliteRow & { count: number }>("SELECT count(*) AS count FROM catalog_runs");
@@ -44,7 +44,9 @@ async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string
 		shards: shards.length - adopted.length,
 		adopted: adopted.length,
 		runs: Number(runs!.count),
-		missing: adopted.filter((shard) => !existsSync(shard.path)).map((shard) => shard.path),
+		missing: shards
+			.map((shard) => ({ path: resolve(directory, shard.path), kind: shard.kind }))
+			.filter((shard) => !existsSync(shard.path)),
 		skipped: skipped.map((record) => ({ path: record.path, reason: record.reason })),
 	};
 }
@@ -89,8 +91,8 @@ export interface JournalStoreStatus {
 	/** Journal files adopted in place. */
 	readonly adopted: number;
 	readonly runs: number;
-	/** Adopted journal files that no longer exist; their runs cannot be opened. */
-	readonly missing: readonly string[];
+	/** Shard files, native or adopted, that no longer exist; their runs cannot be opened. */
+	readonly missing: readonly { readonly path: string; readonly kind: "native" | "adopted" }[];
 	/** Journals the store considered adopting and skipped, with the `JournalAdoptError` code. */
 	readonly skipped: readonly { readonly path: string; readonly reason: string }[];
 }

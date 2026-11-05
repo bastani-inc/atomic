@@ -44,6 +44,7 @@ import {
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "./runtime.js";
 import { createStatusWriter, type StatusWriter } from "./status-writer.js";
+import { createWorkflowBackgroundWarningReporter } from "./workflow-background-warning.js";
 import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
@@ -158,6 +159,7 @@ export function createWorkflowExtensionRuntimeState(
 		resolveJournal: () => pi.getWorkflowJournal?.(),
 		resolveJournalSettings: () => pi.getSettings?.(),
 		resolveStorageAgentDir: () => pi.getStorageAgentDir?.(),
+		reportWarning: createWorkflowBackgroundWarningReporter(pi),
 	};
 	// #3105: discovery follows the SDK session, never the process working directory.
 	let contextCwd: string | undefined;

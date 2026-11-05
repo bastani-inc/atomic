@@ -10,6 +10,7 @@ import {
 	type StorageDescriptor,
 	type StorageFailureCause,
 } from "@bastani/atomic/storage";
+import { journalKeyRangeRead } from "./internal.js";
 import {
 	type AppendOutcome,
 	JournalClosedError,
@@ -72,6 +73,15 @@ function unserializable<T>(value: T | { readonly unserializable: Error }): value
 function recordedPayload(payload: RunEvent["payload"]): RunEvent["payload"] {
 	const copy = detached(payload);
 	return unserializable(copy) ? payload : copy;
+}
+
+async function* filterKeyRange(
+	entries: AsyncIterable<JournalEntry>,
+	fromKey: string,
+	toKey: string,
+): AsyncIterable<JournalEntry> {
+	for await (const entry of entries)
+		if (entry.key !== undefined && entry.key >= fromKey && entry.key < toKey) yield entry;
 }
 
 function byRunId(left: { runId: string }, right: { runId: string }): number {
@@ -529,6 +539,36 @@ export class ShardedRunJournal implements RunJournal {
 			const from = current.record;
 			current = await this.operation(() => this.relocated(runId, from));
 			if (current !== undefined && follows + 1 > READ_FOLLOW_LIMIT) throw this.runMoved(runId, from, next - 1);
+		}
+	}
+
+	/**
+	 * A run's events whose key is at least `fromKey` and below `toKey`, read through its shard's key index, so a durable
+	 * backend narrows the checkpoints of a root without reading the whole root. A run that moved to another shard while
+	 * it was read is read again there, and an event already returned is not returned twice.
+	 */
+	async *readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<JournalEntry> {
+		this.assertOpen();
+		validateText("runId", runId);
+		validateText("key", fromKey);
+		validateText("key", toKey);
+		let current = await this.operation(() => this.locate(runId));
+		const returned = new Set<number>();
+		for (let follows = 0; current !== undefined; follows++) {
+			const shard = current.journal;
+			const read = journalKeyRangeRead(shard);
+			const entries: AsyncIterable<JournalEntry> =
+				read === undefined ? filterKeyRange(shard.read(runId), fromKey, toKey) : read(runId, fromKey, toKey);
+			for await (const entry of entries) {
+				this.assertOpen();
+				if (returned.has(entry.seq)) continue;
+				returned.add(entry.seq);
+				yield entry;
+			}
+			const from = current.record;
+			current = await this.operation(() => this.relocated(runId, from));
+			if (current !== undefined && follows + 1 > READ_FOLLOW_LIMIT)
+				throw this.runMoved(runId, from, Math.max(0, ...returned));
 		}
 	}
 

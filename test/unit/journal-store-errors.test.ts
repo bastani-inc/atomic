@@ -39,12 +39,12 @@ test("JournalCatalogError renders each code's message and hint from its fields (
 		[
 			new JournalCatalogError({ code: "corrupt", catalogPath, rule: "catalog_meta has 2 rows" }),
 			`Journal catalog is inconsistent: ${catalogPath} (catalog_meta has 2 rows) (corrupt).`,
-			`Move ${catalogPath} aside and adopt the shard files again with \`atomic storage adopt <path>\` to rebuild it.`,
+			`Move ${catalogPath} aside, then adopt every shard file in its directory again with \`atomic storage adopt /home/u/.atomic/workflows/journal/shard-*.sqlite\` to rebuild it.`,
 		],
 		[
 			new JournalCatalogError({ code: "corrupt", catalogPath }),
 			`Journal catalog is inconsistent: ${catalogPath} (unknown rule) (corrupt).`,
-			`Move ${catalogPath} aside and adopt the shard files again with \`atomic storage adopt <path>\` to rebuild it.`,
+			`Move ${catalogPath} aside, then adopt every shard file in its directory again with \`atomic storage adopt /home/u/.atomic/workflows/journal/shard-*.sqlite\` to rebuild it.`,
 		],
 		[
 			new JournalCatalogError({

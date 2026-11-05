@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { JournalAdoptError, JournalShardUnavailableError } from "@bastani/atomic/storage";
+import { JournalAdoptError, JournalCatalog, JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
 	formatStorageStatus,
@@ -220,7 +220,7 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 		shards: 0,
 		adopted: 2,
 		runs: 2,
-		missing: [lost],
+		missing: [{ path: lost, kind: "adopted" }],
 		skipped: [{ path: join(root, "workflows", "journal.sqlite"), reason: "not-a-journal" }],
 	});
 	const lines = formatStorageStatus(after);
@@ -306,7 +306,6 @@ test("status counts the store's own shards apart from adopted journals (#4325)",
 	const file = join(root, "old", "journal.sqlite");
 	await journalFile(file, [{ id: "12121212-1212-4121-8121-121212121212", status: "failed" }]);
 	await storage(["adopt", file]);
-	const { JournalCatalog } = await import("@bastani/atomic/storage");
 	const catalog = await JournalCatalog.open(store);
 	await catalog.place({ runId: "native", status: "running" });
 	await catalog.close();
@@ -355,4 +354,15 @@ test("adopt names the journals it adopted through references; consolidate counts
 		],
 		err: [],
 	});
+});
+
+test("atomic storage status lists a native shard whose file was deleted (#4325)", async () => {
+	const catalog = await JournalCatalog.open(store);
+	const lost = (await catalog.place({ runId: "99999999-9999-4999-8999-999999999999", status: "running" })).shard.path;
+	await catalog.close();
+	rmSync(lost);
+	const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
+	const journal = status.domains.find((entry) => entry.domain === "journal")!;
+	assert.deepEqual(journal.journalStore?.missing, [{ path: lost, kind: "native" }]);
+	assert.ok(formatStorageStatus(status).includes(`  missing:     ${lost} (native, no longer exists)`));
 });

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
@@ -11,6 +11,7 @@ import {
 	JournalStoreError,
 	type StorageFailureCause,
 } from "./errors.js";
+import { fileIdentity } from "./file-identity.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 
 /** The catalog's file in a journal store directory. */
@@ -409,9 +410,13 @@ export class JournalCatalog {
 		return pick(accepting.filter((shard) => load(shard) === least));
 	}
 
-	/** Registers a native shard with its file prepared first, so a native shard whose file is missing was lost. */
+	/**
+	 * Registers a native shard with its file created and prepared first, so a native shard whose file is missing was
+	 * lost. The file is always new: a name that already exists, such as an adopted journal living in the store's
+	 * directory, is skipped and never opened as a shard of its own.
+	 */
 	private async addNativeShard(tx: SqliteExecutor, id: number): Promise<JournalShardRecord> {
-		const file = nativeShardFile(id);
+		const file = await this.createNativeShardFile(id);
 		await this.prepareShard(join(this.directory, file));
 		await tx.run(
 			`INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (?, ?, 'native', ${STORE_NOW}, 1)`,
@@ -420,6 +425,18 @@ export class JournalCatalog {
 		);
 		const row = await tx.get<ShardRow>("SELECT * FROM catalog_shards WHERE id = ?", id);
 		return this.shardRecord(row!);
+	}
+
+	private async createNativeShardFile(from: number): Promise<string> {
+		for (let number = from; ; number++) {
+			const file = nativeShardFile(number);
+			try {
+				await (await open(join(this.directory, file), "wx")).close();
+				return file;
+			} catch (cause) {
+				if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+			}
+		}
 	}
 
 	/**
@@ -520,9 +537,10 @@ export class JournalCatalog {
 		absolute: string,
 		runs: readonly JournalCatalogRunHeader[],
 	): Promise<JournalShardRegistration> {
+		const identity = fileIdentity(absolute);
 		const registered = (await tx.all<ShardRow>("SELECT * FROM catalog_shards"))
 			.map((row) => this.shardRecord(row))
-			.find((shard) => shard.path === absolute);
+			.find((shard) => shard.path === absolute || (identity !== undefined && fileIdentity(shard.path) === identity));
 		if (registered !== undefined) return { shard: registered, status: "already-registered" };
 		for (const run of runs) {
 			const existing = await tx.get<RunRow & { shard_path: string }>(

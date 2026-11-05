@@ -21,8 +21,8 @@ import { runtimeRequestsOf } from "./module-graph-walker.js";
 const SETUP_FILE = "test/setup-workflow-durability.ts";
 // Only imports erased by the configured emit and dynamic imports are excluded. The count includes the storage
 // module's leaf `write-ahead-log.ts`, which imports nothing, and the journal store's catalog and adoption modules,
-// which the storage entry exports for SDK callers, with their leaf `cleanup.ts` (#4325).
-const MAX_REACHABLE_MODULES = 42;
+// which the storage entry exports for SDK callers, with their leaves `cleanup.ts` and `file-identity.ts` (#4325).
+const MAX_REACHABLE_MODULES = 43;
 
 function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {

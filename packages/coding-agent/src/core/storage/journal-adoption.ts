@@ -12,6 +12,7 @@ import {
 	JournalCatalogError,
 	JournalShardUnavailableError,
 } from "./errors.js";
+import { isSameFile } from "./file-identity.js";
 import {
 	isFinishedJournalStatus,
 	JournalCatalog,
@@ -45,6 +46,7 @@ const SQLITE_HEADER = "SQLite format 3\u0000";
 const TABLES = renderStorageIdentifiers("journal", { meta: "meta", runs: "runs", events: "events", leases: "leases" });
 const POOL_ROOTS = `${TABLES.runs}_pool_roots`;
 const LEGACY_RUNS = "runs";
+const LEGACY_DELETED = renderStorageIdentifiers("journal", { legacyDeleted: "legacy_deleted" }).legacyDeleted;
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 /** What a journal file holds, read without changing it. */
@@ -151,11 +153,29 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 						found: found ?? null,
 						supported: RUN_JOURNAL_SCHEMA_VERSION,
 					});
-				const rows = current
-					? await database.all<
-							SqliteRow & { run_id: string; name: string; cwd: string; status: string; header_json: string }
-						>(`SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs} ORDER BY run_id`)
+				type RunRows = (SqliteRow & {
+					run_id: string;
+					name: string;
+					cwd: string;
+					status: string;
+					header_json: string;
+				})[];
+				const rows: RunRows = current
+					? await database.all(`SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs} ORDER BY run_id`)
 					: [];
+				if (legacy) {
+					// Runs of the pre-0.9.38 tables that were not converted or deleted since: read, never converted.
+					const converted = [
+						names.has(TABLES.runs) ? `AND run_id NOT IN (SELECT run_id FROM ${TABLES.runs})` : "",
+						names.has(LEGACY_DELETED) ? `AND run_id NOT IN (SELECT run_id FROM ${LEGACY_DELETED})` : "",
+					].join(" ");
+					rows.push(
+						...(await database.all<RunRows[number]>(
+							`SELECT run_id, name, cwd, status, header_json FROM ${LEGACY_RUNS} WHERE 1 = 1 ${converted} ORDER BY run_id`,
+						)),
+					);
+					rows.sort((left, right) => (left.run_id < right.run_id ? -1 : left.run_id > right.run_id ? 1 : 0));
+				}
 				const references = new Set<string>();
 				for (const row of rows) {
 					const referenced = referencedJournal(row.header_json, file);
@@ -287,7 +307,10 @@ export async function adoptJournals(
 		const owners = new Map<string, string>();
 		for (const path of paths) {
 			const inspection = await inspectJournalFile(path);
-			if (inspections.some((earlier) => earlier.path === inspection.path)) continue;
+			if (
+				inspections.some((earlier) => earlier.path === inspection.path || isSameFile(earlier.path, inspection.path))
+			)
+				continue;
 			for (const run of inspection.runs) {
 				const other = owners.get(run.runId);
 				if (other !== undefined)
@@ -593,6 +616,34 @@ async function removeRun(database: SqliteDatabase, runId: string, holder: string
 	}, CONSOLIDATION_TRANSACTION);
 }
 
+/**
+ * The skip for a run whose destination shard is the very file it is in, under another shard entry: copying into it and
+ * deleting the source would delete the only copy. Undefined when the two shards are different files.
+ */
+function sameFileSkip(
+	catalog: JournalCatalog,
+	from: JournalShardRecord,
+	destination: JournalShardRecord,
+	runId: string,
+): JournalConsolidationRun | undefined {
+	if (!isSameFile(from.path, destination.path)) return undefined;
+	return {
+		runId,
+		from: from.id,
+		to: destination.id,
+		outcome: "skipped",
+		reason: "conflict",
+		error: new JournalCatalogError({
+			code: "corrupt",
+			catalogPath: catalog.path,
+			runId,
+			shardId: destination.id,
+			shardPath: destination.path,
+			rule: `shards ${from.id} and ${destination.id} are the same file ${from.path}`,
+		}),
+	};
+}
+
 function conflictRun(catalog: JournalCatalog, from: number, destination: JournalShardRecord, runId: string) {
 	return {
 		runId,
@@ -746,6 +797,11 @@ async function finishInterruptedMoves(
 		if (owner === undefined || owner === from.id) continue;
 		const destination = await catalog.shard(owner);
 		if (destination === undefined) continue;
+		const same = sameFileSkip(catalog, from, destination, lease.run_id);
+		if (same !== undefined) {
+			skipped.push(same);
+			continue;
+		}
 		let database: SqliteDatabase;
 		try {
 			database = await target(destination);
@@ -787,6 +843,11 @@ async function moveOne(
 	const fenced = await fence(source, runId, holder);
 	if (typeof fenced === "string") return { runId, from: shard.id, outcome: "skipped", reason: fenced };
 	const destination = await catalog.homeShard(runId);
+	const same = sameFileSkip(catalog, shard, destination, runId);
+	if (same !== undefined) {
+		await unfence(source, runId, holder);
+		return same;
+	}
 	let database: SqliteDatabase;
 	try {
 		database = await target(destination);

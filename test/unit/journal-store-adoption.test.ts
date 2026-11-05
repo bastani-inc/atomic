@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	linkSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -140,7 +152,10 @@ test("inspection refuses a short file, an unreadable one and a corrupt one as no
 test("inspection reads the schema version of a current or legacy journal and refuses others (#4325)", async () => {
 	const legacy = join(root, "legacy.sqlite");
 	raw(legacy, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
-	raw(legacy, "CREATE TABLE runs(run_id TEXT)");
+	raw(
+		legacy,
+		"CREATE TABLE runs(run_id TEXT PRIMARY KEY, name TEXT, cwd TEXT, created_at INTEGER, status TEXT, header_json TEXT)",
+	);
 	raw(legacy, "CREATE TABLE events(run_id TEXT)");
 	raw(legacy, "INSERT INTO meta VALUES (1)");
 	assert.deepEqual(
@@ -395,7 +410,10 @@ test("inspection needs a journal's meta and runs tables, or all three legacy tab
 	assert.deepEqual([noRuns.code, noRuns.reason], ["not-a-journal", "no-journal-tables"]);
 	const legacyHalf = join(root, "legacy-half.sqlite");
 	raw(legacyHalf, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
-	raw(legacyHalf, "CREATE TABLE runs(run_id TEXT)");
+	raw(
+		legacyHalf,
+		"CREATE TABLE runs(run_id TEXT PRIMARY KEY, name TEXT, cwd TEXT, created_at INTEGER, status TEXT, header_json TEXT)",
+	);
 	raw(legacyHalf, "INSERT INTO meta VALUES (1)");
 	const noEvents = await inspectJournalFile(legacyHalf).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(noEvents));
@@ -764,7 +782,10 @@ test("a run another consolidation moved to the same shard first keeps that copy,
 test("consolidation leaves the runs of a journal with only the pre-0.9.38 tables where they are, and moves the rest (#4325)", async () => {
 	const legacy = join(root, "legacy.sqlite");
 	raw(legacy, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
-	raw(legacy, "CREATE TABLE runs(run_id TEXT)");
+	raw(
+		legacy,
+		"CREATE TABLE runs(run_id TEXT PRIMARY KEY, name TEXT, cwd TEXT, created_at INTEGER, status TEXT, header_json TEXT)",
+	);
 	raw(legacy, "CREATE TABLE events(run_id TEXT)");
 	raw(legacy, "INSERT INTO meta VALUES (1)");
 	const current = await journal(join(root, "current", "journal.sqlite"), [{ runId: "current" }]);
@@ -1128,4 +1149,146 @@ test("a move whose source fence another consolidation holds leaves that consolid
 	const destination = (await withCatalog((catalog) => catalog.locate("r")))!.shard.path;
 	assert.deepEqual([scalar(destination, EVENTS), scalar(destination, HOLDER)], [events, null]);
 	assert.equal(scalar(path, EVENTS), events, "the other consolidation's fenced source copy is left for it to remove");
+});
+
+const FILE_EVENTS = "SELECT count(*) FROM wf_events";
+
+function sha256(path: string): string {
+	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+test("an adopted journal living at a shard file name is never opened as a new shard, and consolidating it loses nothing (#4325)", async () => {
+	mkdirSync(store, { recursive: true });
+	const lived = await journal(join(store, "shard-0002.sqlite"), [{ runId: "r" }]);
+	raw(
+		lived,
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('r', 2, 1, 'k2', 'SummaryRecorded', 'null', 0)",
+	);
+	const events = Number(scalar(lived, FILE_EVENTS));
+	await adoptJournals(store, [lived]);
+	const report = await consolidateJournalStore(store);
+	const catalog = await withCatalog(async (opened) => ({
+		shards: await opened.shards(),
+		located: (await opened.locate("r"))!.shard,
+	}));
+	assert.equal(new Set(catalog.shards.map((shard) => shard.path)).size, catalog.shards.length);
+	assert.notEqual(catalog.located.path, lived, "the run moved to a file of its own");
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.from !== run.to]),
+		[["r", "moved", true]],
+	);
+	assert.equal(scalar(catalog.located.path, FILE_EVENTS), events, "every event is in the new shard");
+	assert.equal(scalar(lived, "SELECT count(*) FROM wf_runs"), 0);
+});
+
+test("a new native shard skips a file name that exists and leaves that file untouched (#4325)", async () => {
+	mkdirSync(store, { recursive: true });
+	const existing = await journal(join(store, "shard-0001.sqlite"), [{ runId: "old" }]);
+	const before = sha256(existing);
+	const placed = await withCatalog((catalog) => catalog.place({ runId: "new", status: "running" }));
+	assert.notEqual(placed.shard.path, existing);
+	assert.equal(placed.shard.path, join(store, "shard-0002.sqlite"));
+	assert.equal(sha256(existing), before);
+});
+
+test("a path that names a registered shard's file by another route is already registered (#4325)", async () => {
+	const original = await journal(join(root, "a", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [original]);
+	const hardLink = join(root, "b", "journal.sqlite");
+	mkdirSync(join(root, "b"), { recursive: true });
+	linkSync(original, hardLink);
+	const links = [hardLink];
+	if (process.platform !== "win32") {
+		const symlink = join(root, "c.sqlite");
+		symlinkSync(original, symlink);
+		links.push(symlink);
+	}
+	await adoptJournals(store, links);
+	assert.deepEqual(
+		(await withCatalog((catalog) => catalog.shards())).map((shard) => shard.path),
+		[original],
+	);
+	const native = await withCatalog((catalog) => catalog.place({ runId: "n", status: "running" }));
+	await (await openSqlRunJournal(native.shard.path)).close();
+	const nativeLink = join(root, "native-link.sqlite");
+	linkSync(native.shard.path, nativeLink);
+	await adoptJournals(store, [nativeLink]);
+	assert.equal((await withCatalog((catalog) => catalog.shards())).length, 2);
+});
+
+test("consolidation refuses to move a run into the file it is in, under another shard entry (#4325)", async () => {
+	const adopted = await journal(join(root, "a", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [adopted]);
+	const alias = join(root, "alias.sqlite");
+	linkSync(adopted, alias);
+	raw(
+		join(store, "catalog.sqlite"),
+		"INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (2, ?, 'native', 0, 1)",
+		alias,
+	);
+	const events = Number(scalar(adopted, FILE_EVENTS));
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	const error = report.runs[0]?.error;
+	assert.ok(error instanceof JournalCatalogError);
+	assert.equal(error.code, "corrupt");
+	assert.ok(String(error.fields.rule).includes("are the same file"));
+	assert.equal(scalar(adopted, FILE_EVENTS), events, "the only copy is untouched");
+	assert.equal(scalar(adopted, "SELECT count(*) FROM wf_runs"), 1);
+	assert.equal(scalar(adopted, "SELECT holder_id FROM wf_leases WHERE run_id = 'r'"), null, "and not left fenced");
+});
+
+function legacyJournal(path: string, runIds: readonly string[]): string {
+	mkdirSync(join(path, ".."), { recursive: true });
+	raw(path, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
+	raw(
+		path,
+		"CREATE TABLE runs(run_id TEXT PRIMARY KEY, name TEXT, cwd TEXT, created_at INTEGER, status TEXT, header_json TEXT)",
+	);
+	raw(
+		path,
+		"CREATE TABLE events(run_id TEXT, seq INTEGER, epoch INTEGER, key TEXT, type TEXT, payload TEXT, at INTEGER)",
+	);
+	raw(path, "INSERT INTO meta VALUES (1)");
+	for (const runId of runIds) raw(path, "INSERT INTO runs VALUES (?, 'wf', '/p', 1, 'failed', '{}')", runId);
+	return path;
+}
+
+test("a journal of only the pre-0.9.38 tables has its runs indexed and conflict-checked at adoption (#4325)", async () => {
+	const first = legacyJournal(join(root, "a", "journal.sqlite"), ["old-1", "old-2"]);
+	const copy = legacyJournal(join(root, "b", "journal.sqlite"), ["old-2"]);
+	assert.deepEqual(
+		(await inspectJournalFile(first)).runs.map((run) => run.runId),
+		["old-1", "old-2"],
+	);
+	await adoptJournals(store, [first]);
+	assert.equal((await withCatalog((catalog) => catalog.locate("old-2")))?.shard.path, first);
+	const refused = await adoptJournals(store, [copy]).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(refused));
+	assert.deepEqual(
+		[refused.code, refused.fields.runId, refused.fields.existingPath],
+		["run-conflict", "old-2", first],
+	);
+});
+
+test("a journal with current and pre-0.9.38 tables indexes only the legacy runs not converted or deleted (#4325)", async () => {
+	const path = legacyJournal(join(root, "mixed", "journal.sqlite"), ["converted", "deleted", "pending"]);
+	const current = await journal(join(root, "scratch", "journal.sqlite"), [
+		{ runId: "converted" },
+		{ runId: "current" },
+	]);
+	const database = new DatabaseSync(path);
+	database.exec(`ATTACH DATABASE '${current}' AS source`);
+	for (const table of ["wf_meta", "wf_runs", "wf_events", "wf_leases"])
+		database.exec(`CREATE TABLE main.${table} AS SELECT * FROM source.${table}`);
+	database.exec("CREATE TABLE wf_legacy_deleted(run_id TEXT PRIMARY KEY)");
+	database.exec("INSERT INTO wf_legacy_deleted VALUES ('deleted')");
+	database.close();
+	assert.deepEqual(
+		(await inspectJournalFile(path)).runs.map((run) => run.runId),
+		["converted", "current", "pending"],
+	);
 });

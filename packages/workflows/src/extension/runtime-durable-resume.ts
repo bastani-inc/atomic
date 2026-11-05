@@ -76,6 +76,8 @@ export interface DurableResumeRuntimeDeps {
 	readonly baseRunOpts: (policy?: WorkflowExecutionPolicy) => RunOpts;
 	readonly beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 	readonly jobs?: JobTracker;
+	/** Reports a warning once; each shard of the journal store that cannot be opened is reported through it. */
+	readonly reportWarning?: (message: string) => void;
 	readonly getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
 }
 
@@ -186,6 +188,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				const backend = await ensureReady();
 				try {
 					const catalog = await backend.prepareWorkflowCatalog();
+					for (const unavailable of catalog.unavailableShards ?? [])
+						deps.reportWarning?.(`${unavailable.message} ${unavailable.hint}`);
 					const known = new Set(
 						catalog.inspectableIds ??
 							[...catalog.resumable, ...catalog.completed].map((entry) => entry.workflowId),

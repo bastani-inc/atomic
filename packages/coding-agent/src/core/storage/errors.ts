@@ -303,7 +303,10 @@ export type StorageErrorCode =
 	| StorageWriteLockTimeoutCode
 	| StorageUnsupportedOperationCode
 	| StorageWriterQueueDegradedCode
-	| StorageWriterQueueUnusableCode;
+	| StorageWriterQueueUnusableCode
+	| JournalCatalogErrorCode
+	| JournalShardUnavailableErrorCode
+	| JournalAdoptErrorCode;
 
 function hasNameAndCode(value: unknown, name: string, code: string): boolean {
 	if (typeof value !== "object" || value === null) return false;
@@ -355,7 +358,8 @@ export function isStorageError(value: unknown): value is StorageError {
 		isStorageWriteLockTimeoutError(value) ||
 		isStorageUnsupportedOperationError(value) ||
 		isStorageWriterQueueDegradedError(value) ||
-		isStorageWriterQueueUnusableError(value)
+		isStorageWriterQueueUnusableError(value) ||
+		isJournalStoreError(value)
 	);
 }
 
@@ -369,6 +373,9 @@ export function findStorageWriteLockTimeoutError(error: unknown): StorageWriteLo
 	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH; depth++) {
 		if (isStorageWriteLockTimeoutError(current)) return current;
 		current = causeOf(current);
+	}
+	return undefined;
+}
 
 /** A JSON-safe fact an error of the journal store carries: an id, a path, a count, a phase. */
 export type JournalStoreFieldValue = string | number | boolean | null;
@@ -418,7 +425,7 @@ function causeDetail(cause: StorageFailureCause | Error | undefined): string | n
 
 /** Only a write lock another connection holds is worth retrying; every other storage failure needs a person. */
 function busyCause(cause: StorageFailureCause | Error | undefined): boolean {
-	return isSqliteBusy(cause);
+	return isSqliteBusy(cause) || isRetryableStorageError(cause);
 }
 
 interface JournalStoreErrorParts {
@@ -505,7 +512,7 @@ function catalogText(init: JournalCatalogErrorInit, detail: string | null): { me
 		case "corrupt":
 			return {
 				message: `Journal catalog is inconsistent: ${subject} (${init.rule ?? "unknown rule"}) (corrupt).`,
-				hint: `Move ${subject} aside and adopt the shard files again with \`atomic storage adopt <path>\` to rebuild it.`,
+				hint: `Move ${subject} aside, then adopt every shard file in its directory again with \`atomic storage adopt ${subject.replace(/[\\/][^\\/]*$/, "")}/shard-*.sqlite\` to rebuild it.`,
 			};
 		case "write-failed":
 			return {
@@ -735,6 +742,7 @@ export function isRetryableStorageError(error: unknown): boolean {
 	let current = error;
 	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH; depth++) {
 		if (isStorageWriteLockTimeoutError(current) && current.retryable === true) return true;
+		if (isJournalStoreError(current) && current.retryable) return true;
 		current = causeOf(current);
 	}
 	return false;

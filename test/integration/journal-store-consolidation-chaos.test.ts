@@ -143,8 +143,10 @@ for (const step of ["fence", "copy", "repoint"] as const)
 		async () => {
 			await seed();
 			const killed = start(["consolidate", store, step]);
-			await killed.child.exited;
-			assert.equal(killed.child.signalCode, "SIGKILL", "the consolidator was killed by a signal");
+			assert.notEqual(await killed.child.exited, 0, "the consolidator did not finish");
+			assert.equal((await killed.stdout).trim(), "", "and printed no report");
+			// Windows ends a process that kills itself with an exit status, not a signal.
+			if (process.platform !== "win32") assert.equal(killed.child.signalCode, "SIGKILL");
 			await finished(start(["consolidate", store]));
 			await assertConsolidatedAndIntact();
 		},

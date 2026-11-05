@@ -239,7 +239,8 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			lines.push(
 				`  journals:    ${store.shards} shard${store.shards === 1 ? "" : "s"}, ${store.adopted} adopted journal${store.adopted === 1 ? "" : "s"}, ${store.runs} run${store.runs === 1 ? "" : "s"}`,
 			);
-			for (const path of store.missing) lines.push(`  missing:     ${path} (adopted, no longer exists)`);
+			for (const shard of store.missing)
+				lines.push(`  missing:     ${shard.path} (${shard.kind}, no longer exists)`);
 			for (const skipped of store.skipped) lines.push(`  skipped:     ${skipped.path} (${skipped.reason})`);
 		}
 	}

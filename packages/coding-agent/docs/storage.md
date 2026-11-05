@@ -471,7 +471,7 @@ Journal store errors are exported from `@bastani/atomic/storage` with their code
 |---|---|---|---|---|
 | `JournalCatalogError` | `catalog-unavailable` | The catalog cannot be opened or read | `catalogPath`, `detail` | Make the store directory readable and writable and free disk space |
 | | `schema-version` | A newer Atomic wrote the catalog | `found`, `supported` | Upgrade Atomic |
-| | `corrupt` | The catalog breaks a consistency rule | `rule` | Move `catalog.sqlite` aside and adopt the shard files again |
+| | `corrupt` | The catalog breaks a consistency rule | `rule` | Move `catalog.sqlite` aside, then adopt every `shard-*.sqlite` file in the store directory again |
 | | `write-failed` | A catalog write failed; retryable when another process held the lock | `phase`, `runId`, `detail` | Free disk space or wait for the lock; checkpoints already written stay on their shard |
 | | `run-conflict` | `consolidate` found a different copy of a run in its destination | `runId`, `shardPath` | Compare the copies; the run was not moved |
 | | `run-moved` | A consolidation moved a run while it was read and its new shard did not continue the history; retryable | `runId`, `shardId`, `shardPath`, `lastSeq` | Read the run again |

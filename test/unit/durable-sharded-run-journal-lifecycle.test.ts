@@ -849,3 +849,37 @@ test("creating a run that another writer added to an adopted file since it was a
 		"no native shard was created for it",
 	);
 });
+
+test("a key range of a run is read from its shard's key index, and from the moved shard after a move (#4325)", async () => {
+	const legacy = join(root, "ranged", "journal.sqlite");
+	mkdirSync(join(legacy, ".."), { recursive: true });
+	const seed = await openSqlRunJournal(legacy);
+	const lease = await start(seed, "ranged");
+	for (const key of ["a-1", "b-1", "b-2", "c-1"])
+		await seed.append(lease, { type: "RunStarted", payload: { key } }, { key });
+	await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	await seed.release(lease);
+	await seed.close();
+	await adoptJournals(store, [legacy]);
+	const journal = await open();
+	const keysOf = async (from: string, to: string, onFirst?: () => Promise<void>) => {
+		const keys: (string | undefined)[] = [];
+		for await (const entry of (journal as unknown as KeyRangeReader).readKeyRange("ranged", from, to)) {
+			keys.push(entry.key);
+			if (keys.length === 1) await onFirst?.();
+		}
+		return keys;
+	};
+	assert.deepEqual(await keysOf("b-", "b."), ["b-1", "b-2"]);
+	assert.deepEqual(await keysOf("z", "zz"), []);
+	assert.deepEqual(
+		await keysOf("a-", "d", async () => void (await consolidateJournalStore(store))),
+		["a-1", "b-1", "b-2", "c-1"],
+		"a move during the read neither drops nor repeats an event",
+	);
+	assert.deepEqual(await keysOf("b-", "b."), ["b-1", "b-2"], "after the move, from the new shard");
+});
+
+interface KeyRangeReader {
+	readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<{ key?: string }>;
+}
