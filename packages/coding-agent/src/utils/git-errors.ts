@@ -204,7 +204,7 @@ function capitalize(text: string): string {
 function unavailableHint(fields: GitUnavailableFields): string {
 	switch (fields.code) {
 		case "unsupported-platform":
-			return capitalize(installYourself(fields.installCommand)) + ".";
+			return `${capitalize(installYourself(fields.installCommand))}.`;
 		case "offline":
 			return `Unset ${fields.offlineVariable} so Atomic can download a portable git, or ${installYourself(fields.installCommand)}.`;
 		case "not-installed":
