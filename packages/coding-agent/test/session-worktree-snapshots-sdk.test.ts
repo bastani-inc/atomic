@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -9,7 +9,10 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { isWorkspaceConfigError } from "../src/index.ts";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
+import { formatWorktreeRestoreNotice, isWorkspaceConfigError, openSessionInWorktree } from "../src/index.ts";
 import { createHarness } from "./suite/harness.js";
 
 let sandbox: GitSandbox;
@@ -27,7 +30,8 @@ const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-acces
 async function fauxSession(options: {
 	settings?: Record<string, unknown>;
 	snapshots?: Record<string, unknown>;
-	cwd: string;
+	cwd?: string;
+	sessionManager?: SessionManager;
 }) {
 	const faux = registerFauxProvider();
 	cleanups.push(() => faux.unregister());
@@ -47,7 +51,9 @@ async function fauxSession(options: {
 		modelRuntime,
 		model,
 		settingsManager: SettingsManager.inMemory(options.settings),
-		sessionStore: { kind: "sqlite", path: sandbox.path("sessions.sqlite") },
+		...(options.sessionManager
+			? { sessionManager: options.sessionManager }
+			: { sessionStore: { kind: "sqlite" as const, path: sandbox.path("sessions.sqlite") } }),
 		builtins: NO_BUILTINS,
 		...(options.snapshots ? { snapshots: options.snapshots } : {}),
 	});
@@ -136,6 +142,35 @@ describe("snapshot options of createAgentSession", () => {
 		run.session.settingsManager.applyOverrides({ snapshots: { enabled: false } });
 		await writeTurn(run, join(clone, "b.txt"), "b\n");
 		assert.deepEqual(recordedRoots(run.session), [clone]);
+	});
+});
+
+describe("resuming through the SDK (#4245)", () => {
+	test("openSessionInWorktree restores a drifted checkout, and createAgentSession continues in it", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const first = await fauxSession({ cwd: clone, settings: { snapshots: { enabled: true } } });
+		await writeTurn(first, join(clone, "a.txt"), "recorded\n");
+		assert.deepEqual(recordedRoots(first.session), [clone]);
+		const sessionId = first.session.sessionManager.getSessionId();
+		writeFileSync(join(clone, "a.txt"), "drifted\n");
+		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		cleanups.push(async () => {
+			await store.close();
+			await database.close();
+		});
+		const stored = await SessionManager.open(store, sessionId);
+		const { sessionManager, notices } = await openSessionInWorktree(stored, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			storeDir: sandbox.path("host"),
+		});
+		const [mapping] = sessionManager.getWorktreeRootMappings();
+		assert.ok(mapping);
+		assert.deepEqual(notices, [{ type: "info", message: formatWorktreeRestoreNotice(mapping) }]);
+		const resumed = await fauxSession({ sessionManager });
+		assert.equal(resumed.session.sessionManager.getCwd(), mapping.to);
+		assert.equal(readFileSync(join(mapping.to, "a.txt"), "utf8"), "recorded\n");
+		assert.equal(readFileSync(join(clone, "a.txt"), "utf8"), "drifted\n");
 	});
 });
 
