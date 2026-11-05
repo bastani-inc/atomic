@@ -87,11 +87,10 @@ export function holdReleasedChildTargets(
 	childSessionId?: string,
 ): void {
 	const events = options.intercomEvents;
-	const intercomTarget = options.intercomSessionName;
-	if (events === undefined || intercomTarget === undefined) return;
+	if (events === undefined) return;
 	void holdChildTargets(
 		events,
-		{ intercomTarget, ...(childSessionId === undefined ? {} : { childSessionId }) },
+		{ intercomTarget: options.intercomSessionName, childSessionId },
 		options.intercomGroup,
 		{ dormant: true, wake: true },
 	).catch((error: Error) => {
@@ -103,13 +102,12 @@ export function holdReleasedChildTargets(
 /** The calls a reopened transcript ends on without results: the last assistant turn's unanswered tool calls. */
 export function pendingToolCalls(sessionManager: Pick<SessionManager, "buildSessionProjection">): Map<string, string> {
 	const messages = sessionManager.buildSessionProjection().messages;
-	let index = messages.length - 1;
-	while (index >= 0 && messages[index]?.role !== "assistant") index--;
+	const index = messages.findLastIndex((message) => message.role === "assistant");
 	const assistant = messages[index];
 	const pending = new Map<string, string>();
 	if (assistant?.role !== "assistant" || assistant.stopReason !== "toolUse") return pending;
 	const later = messages.slice(index + 1);
-	if (later.some((message) => message.role === "user" || message.role === "assistant")) return pending;
+	if (later.some((message) => message.role === "user")) return pending;
 	const answered = new Set(later.flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])));
 	for (const part of assistant.content)
 		if (part.type === "toolCall" && !answered.has(part.id)) pending.set(part.id, part.name);
@@ -154,9 +152,6 @@ export function planReleasedChildWake(
 	const unique = results.filter((result) => !seen.has(result.toolCallId) && seen.add(result.toolCallId));
 	const onTime = unique.filter((result) => pending.has(result.toolCallId));
 	const late = unique.filter((result) => !pending.has(result.toolCallId));
-	const answersAll = onTime.length === pending.size;
-	if (answersAll && late.length === 0 && !hasOtherInput)
-		return { resumeToolResults: onTime, lateMessages: [], skipPrompt: true };
 	const stillRunning: DetachedToolResult[] = [...pending]
 		.filter(([toolCallId]) => !onTime.some((result) => result.toolCallId === toolCallId))
 		.map(([toolCallId, toolName]) => ({
@@ -173,9 +168,13 @@ export function planReleasedChildWake(
 }
 
 /** Statuses after which a child takes nothing more. */
-const ENDED: ReadonlySet<string> = new Set(["killed", SUBAGENT_CHILD_STAGE_CLOSED_STATUS, SUBAGENT_CHILD_GONE_STATUS]);
+const ENDED: ReadonlySet<string | undefined> = new Set([
+	"killed",
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	SUBAGENT_CHILD_GONE_STATUS,
+]);
 /** Statuses run control set: results wait in the record for `resume`, and messages do not wake the child. */
-const STOPPED: ReadonlySet<string> = new Set(["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS]);
+const STOPPED: ReadonlySet<string | undefined> = new Set(["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS]);
 
 /** What the owner does with a batch of wakes for one child, by the child's latest record. */
 export type ReleasedChildWakeDecision =
@@ -192,12 +191,12 @@ export function decideReleasedChildWake(
 	record: Pick<SubagentChildRecord, "state" | "terminalStatus" | "heldToolResults">,
 	wakes: readonly AgentWake[],
 ): ReleasedChildWakeDecision {
-	const status = record.terminalStatus ?? "";
+	const status = record.terminalStatus;
 	const held = record.heldToolResults ?? [];
 	const arrived = wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
 	const fresh = arrived.filter((result) => !held.some((kept) => kept.toolCallId === result.toolCallId));
 	const toolResults = [...held, ...fresh];
-	if (record.state === "terminal" && ENDED.has(status)) return { kind: "ignore" };
+	if (ENDED.has(status)) return { kind: "ignore" };
 	if (record.state === "running" || STOPPED.has(status))
 		return fresh.length === 0 ? { kind: "ignore" } : { kind: "hold", heldToolResults: toolResults };
 	const prompt = wakes.some((wake) => wake.kind !== "tool-result");

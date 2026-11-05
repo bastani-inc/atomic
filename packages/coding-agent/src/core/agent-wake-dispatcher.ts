@@ -163,9 +163,6 @@ export class AgentWakeDispatcher {
 	 * for the key is the same delivery: it is not queued again and settles with the first.
 	 */
 	deliver(wakeKey: string, wake: AgentWake): Promise<void> {
-		const namespace = wakeKeyNamespace(wakeKey);
-		if (!this.handlers.has(namespace))
-			return Promise.reject(new AgentRehydrateError("no-wake-handler", { wakeKey, namespace }));
 		const state = this.keys.get(wakeKey);
 		const duplicate = state && [...state.queue, ...state.running].find((pending) => pending.wake.id === wake.id);
 		if (duplicate !== undefined) return duplicate.settled;
@@ -241,7 +238,6 @@ export class AgentWakeDispatcher {
 	private async drain(wakeKey: string, state: KeyState): Promise<void> {
 		const namespace = wakeKeyNamespace(wakeKey);
 		while (state.queue.length > 0) {
-			state.running = [];
 			const slot = this.acquire(namespace);
 			const free = typeof slot === "function" ? slot : await slot;
 			const batch = state.queue.splice(0);
@@ -261,6 +257,7 @@ export class AgentWakeDispatcher {
 						: new AgentRehydrateError("wake-failed", { wakeKey, wakes: batch.length }, { cause });
 				for (const pending of batch) pending.reject(failure);
 			} finally {
+				state.running = [];
 				free();
 			}
 		}

@@ -156,7 +156,9 @@ describe("AgentWakeDispatcher (#4326)", () => {
 
 	test("a key with no handler fails at once and leaves no entry", async () => {
 		const dispatcher = new AgentWakeDispatcher();
-		await assert.rejects(dispatcher.deliver("ghost:a", wake("1")), (error: Error) => {
+		const delivery = dispatcher.deliver("ghost:a", wake("1"));
+		assert.equal(dispatcher.stats().keys, 0, "refused before any work");
+		await assert.rejects(delivery, (error: Error) => {
 			assert.ok(isAgentRehydrateError(error));
 			assert.equal(error.code, "no-wake-handler");
 			assert.deepEqual(error.fields, { wakeKey: "ghost:a", namespace: "ghost" });
@@ -873,5 +875,64 @@ describe("AgentWakeDispatcher scheduling and slots (#4326)", () => {
 			assert.equal(error.cause, notFound);
 			return true;
 		});
+	});
+});
+
+describe("AgentWakeDispatcher cancellation and error rebuilding details (#4326)", () => {
+	test("cancelling the earliest wake re-arms the timer for the next, and cancelling the last clears it", () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		dispatcher.handle("t", async () => {});
+		dispatcher.schedule("t:a", wake("x", "timer"), 100);
+		dispatcher.schedule("t:b", wake("x", "timer"), 200);
+		assert.equal(dispatcher.cancel("t:a", "x"), true);
+		assert.equal(time.armed, 2, "re-armed for the next wake");
+		assert.equal(time.live, 1);
+		assert.equal(dispatcher.cancel("t:b", "x"), true);
+		assert.equal(time.live, 0);
+		assert.equal(dispatcher.stats().timers, 0);
+	});
+
+	test("a null cause is no cause", () => {
+		const error = new AgentRehydrateError("wake-failed", { wakeKey: "k", wakes: 1 }, { cause: null });
+		assert.equal("cause" in error.toJSON(), false);
+	});
+
+	test("a known code is rebuilt with this version's message and hint from its fields", () => {
+		const rebuilt = rehydrateAgentRehydrateError({
+			name: "AgentRehydrateError",
+			code: "session-busy",
+			message: "worded by another version",
+			hint: "hinted by another version",
+			retryable: true,
+			fields: { sessionId: "s", activity: "prompt" },
+		});
+		const local = new AgentRehydrateError("session-busy", { sessionId: "s", activity: "prompt" });
+		assert.deepEqual([rebuilt.message, rebuilt.hint], [local.message, local.hint]);
+	});
+
+	test("the family base carrying the config code stays the family base", () => {
+		const rebuilt = rehydrateAgentRehydrateError({
+			name: "AgentRehydrateError",
+			code: "invalid-release-policy",
+			message: "m",
+			hint: "h",
+			retryable: false,
+			fields: { source: "sdk", field: "releaseWhenIdle", value: "1" },
+		});
+		assert.equal(rebuilt instanceof AgentReleaseConfigError, false);
+		assert.equal(rebuilt.code, "invalid-release-policy");
+	});
+
+	test("an error of a name or code this version does not know is still recognized as one of the family", () => {
+		const rebuilt = rehydrateAgentRehydrateError({
+			name: "AgentFutureError",
+			code: "future-code" as AgentRehydrateError["code"],
+			message: "m",
+			hint: "h",
+			retryable: false,
+			fields: {},
+		});
+		assert.equal(isAgentRehydrateError(rebuilt), true);
 	});
 });

@@ -8,6 +8,7 @@ import {
 } from "@bastani/atomic";
 import { test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import {
 	bindReleasedChildWakes,
@@ -97,6 +98,19 @@ test("results for calls already answered become messages, once each, in arrival 
 	assert.match(lateToolResultMessage(result("x")), /finished:\nx done$/);
 	const empty: DetachedToolResult = { ...result("y"), result: { content: [], details: undefined } };
 	assert.match(lateToolResultMessage(empty), /\(no output\)$/);
+	const missing = { ...result("w"), result: { details: undefined } } as unknown as DetachedToolResult;
+	assert.match(lateToolResultMessage(missing), /\(no output\)$/);
+	const parts: DetachedToolResult = {
+		...result("v"),
+		result: {
+			content: [
+				{ type: "text", text: "  first" },
+				{ type: "text", text: "second  " },
+			],
+			details: undefined,
+		},
+	};
+	assert.match(lateToolResultMessage(parts), /finished:\nfirst\nsecond$/);
 	const image: DetachedToolResult = {
 		...result("z"),
 		result: { content: [{ type: "image", data: "", mimeType: "image/png" }], details: undefined },
@@ -190,6 +204,11 @@ test("a released child is woken with what it holds and what arrived, prompted on
 		decideReleasedChildWake(record("terminal", SUBAGENT_CHILD_RELEASED_STATUS, [result("a")]), [toolWake("a")]),
 		{ kind: "wake", toolResults: [result("a")], prompt: false },
 		"a result it already holds is not taken twice",
+	);
+	assert.deepEqual(
+		decideReleasedChildWake(record("terminal", SUBAGENT_CHILD_RELEASED_STATUS), [toolWake("c"), intercomWake]),
+		{ kind: "wake", toolResults: [result("c")], prompt: true },
+		"a message in the batch prompts the child, whatever else arrived with it",
 	);
 });
 
@@ -314,9 +333,12 @@ test("a released child's targets are reserved dormant with wake, and nothing is 
 	);
 
 	const silent = fakeEvents(true);
+	const failures = releasedChildHoldFailures.count;
 	holdReleasedChildTargets({ intercomEvents: silent });
 	holdReleasedChildTargets({ intercomSessionName: "child-2" });
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(silent.emitted.length, 0, "a child with no Intercom name or bus has nothing to keep addressable");
+	assert.equal(releasedChildHoldFailures.count, failures, "and nothing failed trying");
 });
 
 test("a failure to keep a released child addressable is counted, not swallowed (#4326)", async () => {
@@ -398,6 +420,10 @@ test("a broker notice for a released child becomes an intercom wake on its key (
 		SUBAGENT_CHILD_RECORD_TYPE,
 		childRecord(ownerSessionId, { terminalStatus: "paused" }),
 	);
+	await sessionManager.appendCustomEntry(
+		SUBAGENT_CHILD_RECORD_TYPE,
+		childRecord(ownerSessionId, { childId: "run:2", index: 2, intercomTarget: undefined }),
+	);
 	const events = fakeEvents(true);
 	const dispatcher = new AgentWakeDispatcher();
 	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, dispatcher);
@@ -436,4 +462,29 @@ test("a reload's next extension generation takes the owner's wakes over without 
 	stopNext();
 	assert.equal(dispatcher.stats().handlers, 0);
 	assert.equal(next.listeners.has(SUBAGENT_RELEASED_CHILD_WAKE_EVENT), false);
+});
+
+test("a broker notice whose wake fails is counted as an unobserved failure, not swallowed (#4326)", async () => {
+	const { sessionManager, ctx, ownerSessionId } = owner();
+	await sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, childRecord(ownerSessionId));
+	const events = fakeEvents(true);
+	const dispatcher = new AgentWakeDispatcher();
+	const restoreFailure = new Error("no agents to restore from");
+	const deps = {
+		discoverAgents: () => {
+			throw restoreFailure;
+		},
+	} as unknown as SubagentChildRestoreDeps;
+	const stop = bindReleasedChildWakes(deps, ctx, events, dispatcher);
+	events.listeners.get(SUBAGENT_RELEASED_CHILD_WAKE_EVENT)?.({ childName: "child-1" });
+	for (let turn = 0; turn < 10 && dispatcher.stats().unobservedFailures === 0; turn++)
+		await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(dispatcher.stats().unobservedFailures, 1);
+	assert.equal(dispatcher.lastFailure?.code, "wake-failed");
+	stop();
+});
+
+test("Intercom and Subagents name the released-child wake event alike (#4326)", () => {
+	assert.equal(INTERCOM_RELEASED_CHILD_WAKE_EVENT, SUBAGENT_RELEASED_CHILD_WAKE_EVENT);
+	assert.equal(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, "subagent:released-child-wake");
 });

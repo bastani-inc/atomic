@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
 import { afterEach, test, vi } from "vitest";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { type HeldSend, RestoringRecipients } from "../../packages/intercom/broker/restoring-recipients.js";
 import { isReserveRestoringChildRequest } from "../../packages/intercom/session-recovery.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
@@ -224,4 +225,21 @@ test("a reservation request is taken with or without a boolean wake, and refused
 	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [], wake: false }), true);
 	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [], wake: true }), true);
 	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [], wake: "yes" }), false);
+});
+
+test("a client passes on a broker's wake notice for its released child and rejects a malformed one (#4326)", () => {
+	const client = new IntercomClient();
+	const internals = client as unknown as { _sessionId: string; handleBrokerMessage(message: object): void };
+	internals._sessionId = "owner";
+	const notices: object[] = [];
+	client.on("restoring_recipient_wake", (notice: object) => notices.push(notice));
+	internals.handleBrokerMessage({ type: "restoring_recipient_wake", capability: "capability", childName: CHILD });
+	assert.deepEqual(notices, [{ capability: "capability", childName: CHILD }]);
+	for (const malformed of [
+		{ type: "restoring_recipient_wake", childName: CHILD },
+		{ type: "restoring_recipient_wake", capability: "capability" },
+		{ type: "restoring_recipient_wake", capability: 1, childName: CHILD },
+	])
+		assert.throws(() => internals.handleBrokerMessage(malformed), /Invalid restoring_recipient_wake message/);
+	assert.equal(notices.length, 1);
 });

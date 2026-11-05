@@ -959,7 +959,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     });
     // #4326: a send waits at the broker for a released child of this session; Subagents wakes it.
     nextClient.on("restoring_recipient_wake", (notice: { childName: string }) => {
-      if (client !== nextClient) return;
       const wake: ReleasedChildWakeNotice = { childName: notice.childName };
       pi.events.emit(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, wake);
     });

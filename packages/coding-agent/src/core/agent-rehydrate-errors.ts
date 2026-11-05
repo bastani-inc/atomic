@@ -242,7 +242,6 @@ export function isAgentRehydrateError(error: Error | object | null | undefined):
 
 /** True for an {@link AgentReleaseConfigError}, including a structural copy. */
 export function isAgentReleaseConfigError(error: Error | object | null | undefined): error is AgentReleaseConfigError {
-	if (error instanceof AgentReleaseConfigError) return true;
 	if (typeof error !== "object" || error === null) return false;
 	return (
 		hasFamilyName(error, AGENT_RELEASE_CONFIG_ERROR_NAME) &&

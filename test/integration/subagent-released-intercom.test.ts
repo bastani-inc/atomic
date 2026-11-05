@@ -374,3 +374,41 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+async function ownerClient(name: string): Promise<Client> {
+	const client = new IntercomClient(randomUUID());
+	await client.connect(
+		{
+			name,
+			model: "test-model",
+			cwd: repoRoot,
+			pid: process.pid,
+			status: "idle",
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+			group: "default",
+			groups: ["default"],
+		},
+		undefined,
+		randomUUID(),
+	);
+	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
+	return client;
+}
+
+test(
+	"the broker drops a client whose reservation carries a wake that is not a boolean, and takes a boolean one (#4326)",
+	async () => {
+		const malformed = await ownerClient("malformed-wake-owner");
+		const { capability } = await malformed.authorizeSupervisorChild("subagent-worker-bad1-1");
+		const raw = malformed as unknown as { restoringRecipientRequest(request: object): Promise<void> };
+		await assert.rejects(
+			raw.restoringRecipientRequest({ type: "reserve_restoring_recipient", capability, wake: "yes" }),
+			(error: Error) => error.name === "IntercomClientDisconnectedError",
+		);
+		const owner = await ownerClient("boolean-wake-owner");
+		const granted = await owner.authorizeSupervisorChild("subagent-worker-bad2-1");
+		await owner.reserveRestoringRecipient(granted.capability, { dormant: true, wake: true });
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);

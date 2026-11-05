@@ -23,6 +23,7 @@ import {
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
+import { subagentChildCardRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	isSubagentChildRecord,
@@ -2979,6 +2980,11 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 	const wakes = h.runs.filter((run) => run.task === lateToolResultMessage(result));
 	assert.equal(wakes.length, 1, "one wake, however often the same result is delivered");
 	assert.equal(wakes[0]?.options.resumeSession, true);
+	assert.equal(
+		wakes[0]?.options.resumeFollowUps,
+		undefined,
+		"a wake by a result alone is not prompted to read anything",
+	);
 	assert.deepEqual(wakes[0]?.options.resumeToolResults, []);
 	const woken = await h.waitForLatest(
 		"release4:0",
@@ -3002,6 +3008,11 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 	});
 	assert.equal(h.runs.length, runsWhilePaused, "a paused child is not woken");
 	assert.deepEqual(h.latest("release4b:0")?.heldToolResults, [late]);
+	assert.deepEqual(
+		subagentChildCardRecord("release4b:0", h.latest("release4b:0")?.taskId ?? "")?.heldToolResults,
+		[late],
+		"the child's card shows the result it holds",
+	);
 
 	const resumed = await h.call({ action: "resume", id: "release4b:0", message: "go on" });
 	await settled(h, resumedTaskId(resumed));
@@ -3099,4 +3110,56 @@ test("status names every call a released child waits on, and shows one stored wi
 	assert.match(lines[0] ?? "", /released · waiting on wait_for_ci \(ci-1\), deploy \(deploy-2\); it holds nothing/);
 	assert.match(lines[1] ?? "", /released · waiting; it holds nothing/);
 	assert.deepEqual(subagentChildrenAwaitingResume(h.ctx, "no-such-child:0"), []);
+});
+
+test("a wake holds its child's key until the woken run settles, even when an owner message yields the wait (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release8"));
+	await h.waitForLatest("release8:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set(SUBAGENT_RELEASED_WAKE_PROMPT, gate);
+	const dispatcher = new AgentWakeDispatcher();
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => unbind());
+	let handled = false;
+	const wake = dispatcher
+		.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "release8:0"), { id: "intercom:1", kind: "intercom" })
+		.then(() => {
+			handled = true;
+		});
+	await h.waitForLatest("release8:0", (record) => record.state === "running");
+	h.host.yieldTaskWaits("intercom-coordination");
+	await sleep(50);
+	assert.equal(handled, false, "the wake is handled only once the woken run settles");
+	assert.equal(dispatcher.stats().running, 1);
+	gate.resolve();
+	await wake;
+	assert.equal(h.latest("release8:0")?.terminalStatus, "ok");
+});
+
+test("a released child that can no longer be restored fails its wake with the reason (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release9"));
+	await h.waitForLatest("release9:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	h.agentDefined = false;
+	const dispatcher = new AgentWakeDispatcher();
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => unbind());
+	const runs = h.runs.length;
+	await assert.rejects(
+		dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "release9:0"), {
+			id: "intercom:1",
+			kind: "intercom",
+		}),
+		(error: Error & { code?: string; cause?: Error }) => {
+			assert.equal(error.code, "wake-failed");
+			assert.match(error.cause?.message ?? "", /worker/);
+			return true;
+		},
+	);
+	assert.equal(h.runs.length, runs, "nothing ran");
 });
