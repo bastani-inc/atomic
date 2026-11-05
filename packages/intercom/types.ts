@@ -133,6 +133,8 @@ export interface BrokerStatusReport {
 	reservations?: number;
 	/** Sends this broker holds for those reservations; absent from an older broker. */
 	heldSends?: number;
+	/** Released-asker reply routes refused at capacity since broker start; absent from an older broker. */
+	droppedReleasedReplyRoutes?: number;
 	/** The shared storage selection the broker read, as a digest of its JSON, and where it read it; absent without one. */
 	storage?: { digest: string; source: "env" | "settings" };
 	multiNode: BrokerMultiNodeStatus;

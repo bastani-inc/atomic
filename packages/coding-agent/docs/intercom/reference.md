@@ -127,6 +127,7 @@ A background subagent waiting on an `ask`, or on `contact_supervisor` with `need
 - **How long a question stays open:** the usual 10-minute reply wait, counted from when the question was asked.
 - **Where it works:** both the replier and the subagent's launching session must be connected to the same broker on the same machine. With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, the subagent stays live while it waits for the reply.
 - **After a restart:** when the launching session reopens, the same question remains open until its original deadline; a reply wakes the child. If the broker itself restarts, its question route is lost, and the child receives the timeout instead.
+- **Capacity:** the broker keeps at most 10,000 released-asker reply routes at once. If it reaches that limit, additional routes cannot receive replies and their calls time out. `broker_status` reports `droppedReleasedReplyRoutes`, the number refused at capacity since the broker started; the broker also logs the first overflow.
 
 A refused request changes nothing: when one child in a request is refused, no child in it is reserved or dropped. Requests to reserve, drop or acknowledge a released child are refused with these typed errors. Each carries `code`, `childName` when one child caused it, a `hint`, and `retryable: false`. Check `isIntercomReleasedChildError` or the class, never the message.
 

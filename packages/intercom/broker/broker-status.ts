@@ -18,7 +18,7 @@ function isOptionalCount(value: JsonWireValue | undefined): boolean {
 /** Whether a `broker_status` frame's `report` has the shape this version reads. */
 export function isBrokerStatusReport(value: JsonWireValue | undefined): value is WireObject & BrokerStatusReport {
 	if (!isObject(value) || typeof value.pid !== "number" || typeof value.sessions !== "number") return false;
-	if (!isOptionalCount(value.reservations) || !isOptionalCount(value.heldSends)) return false;
+	if (!isOptionalCount(value.reservations) || !isOptionalCount(value.heldSends) || !isOptionalCount(value.droppedReleasedReplyRoutes)) return false;
 	const { storage, multiNode } = value;
 	if (
 		storage !== undefined &&

@@ -391,7 +391,9 @@ class IntercomBroker {
   private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
-  private releasedAskerReplies = new ReleasedAskerReplies();
+  private releasedAskerReplies = new ReleasedAskerReplies(undefined, undefined, undefined, () => {
+    console.error("Intercom broker released-asker reply route capacity reached; dropped routes are counted in broker_status");
+  });
   private releasedReplyAcks = new Map<string, PendingReleasedReplyAck>();
   private restoringRecipients = new RestoringRecipients((held, reason, reasonCode) =>
     this.failHeldSend(held, reason, reasonCode),
@@ -2532,6 +2534,7 @@ class IntercomBroker {
       sessions: this.sessions.size,
       reservations: this.restoringRecipients.size,
       heldSends: this.restoringRecipients.heldSendCount,
+      droppedReleasedReplyRoutes: this.releasedAskerReplies.droppedRoutes,
       ...(setting === undefined
         ? {}
         : { storage: { digest: sharedStorageDigest(setting), source: sharedStorageSettingSource() } }),

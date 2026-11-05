@@ -48,11 +48,14 @@ export class ReleasedAskerReplies {
 	private readonly byQuestion = new Map<string, Set<Entry>>();
 	private readonly byChild = new Map<string, Set<Entry>>();
 	private readonly byOwner = new Map<string, Set<Entry>>();
+	/** Routes refused because the broker's capacity was full, since this broker started. */
+	droppedRoutes = 0;
 
 	constructor(
 		private readonly now: () => number = Date.now,
 		private readonly ttlMs: number = ASK_REPLY_TIMEOUT_MS,
 		private readonly maxRoutes: number = DEFAULT_MAX_ROUTES,
+		private readonly onFirstOverflow: () => void = () => {},
 	) {}
 
 	keep(
@@ -64,7 +67,11 @@ export class ReleasedAskerReplies {
 		const childKey = normalizeReservationTarget(asker.childName);
 		let kept = 0;
 		for (const question of questions) {
-			if (question.senderSessionId !== asker.sessionId || this.entries.size >= this.maxRoutes) continue;
+			if (question.senderSessionId !== asker.sessionId) continue;
+			if (this.entries.size >= this.maxRoutes) {
+				this.recordOverflow();
+				continue;
+			}
 			const entry: Entry = {
 				questionId: question.messageId,
 				askerSessionId: asker.sessionId,
@@ -124,7 +131,11 @@ export class ReleasedAskerReplies {
 	/** A definitely refused handoff may be tried again; it keeps its original deadline. */
 	restore(route: ReleasedAskerReplyRoute, ownerSessionId: string | undefined): void {
 		this.expire();
-		if (route.expiresAt <= this.now() || this.entries.size >= this.maxRoutes) return;
+		if (route.expiresAt <= this.now()) return;
+		if (this.entries.size >= this.maxRoutes) {
+			this.recordOverflow();
+			return;
+		}
 		const entry: Entry = { ...route, ownerSessionId, childKey: normalizeReservationTarget(route.childName) };
 		this.entries.add(entry);
 		addTo(this.byQuestion, entry.questionId, entry);
@@ -165,6 +176,11 @@ export class ReleasedAskerReplies {
 		this.byQuestion.clear();
 		this.byChild.clear();
 		this.byOwner.clear();
+	}
+
+	private recordOverflow(): void {
+		this.droppedRoutes += 1;
+		if (this.droppedRoutes === 1) this.onFirstOverflow();
 	}
 
 	private expire(): void {

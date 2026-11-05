@@ -133,6 +133,26 @@ describe("released asker reply routes (#4326)", () => {
 		routes.clear();
 		assert.deepEqual(routes.sizes(), EMPTY);
 	});
+
+	test("the broker counts routes refused at capacity, including a refused handoff retry (#4326)", () => {
+		let overflows = 0;
+		const routes = new ReleasedAskerReplies(
+			() => 1_000,
+			TTL_MS,
+			1,
+			() => overflows++,
+		);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
+		const retry = routes.take("q1", REPLIER, ASKER);
+		assert.ok(retry);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q2")], OWNER);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q3"), question("q4", REPLIER, OTHER)], OWNER);
+		routes.restore(retry, OWNER);
+		assert.equal(routes.droppedRoutes, 2);
+		assert.equal(overflows, 1, "the broker logs only the first overflow");
+		assert.equal(routes.take("q2", REPLIER, ASKER)?.questionId, "q2");
+		assert.equal(routes.take("q3", REPLIER, ASKER), undefined);
+	});
 });
 
 describe("pending question routes of a departing asker (#4326)", () => {

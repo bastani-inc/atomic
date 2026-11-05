@@ -18,6 +18,12 @@ describe("broker status report counts (#4326)", () => {
 		assert.equal(isBrokerStatusReport(report({ heldSends: 7 })), true);
 	});
 
+	test("released reply-route overflow counts survive status validation (#4326)", () => {
+		assert.equal(isBrokerStatusReport(report({ droppedReleasedReplyRoutes: 2 })), true);
+		for (const bad of [-1, 1.5, "2", null] as JsonWireValue[])
+			assert.equal(isBrokerStatusReport(report({ droppedReleasedReplyRoutes: bad })), false);
+	});
+
 	test("invalid reservation counts are rejected (#4326)", () => {
 		for (const bad of ["1", -1, 1.5, null, true, Number.MAX_SAFE_INTEGER + 2, [1]] as JsonWireValue[]) {
 			assert.equal(isBrokerStatusReport(report({ reservations: bad })), false, JSON.stringify(bad));

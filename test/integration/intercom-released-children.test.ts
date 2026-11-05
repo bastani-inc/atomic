@@ -128,6 +128,7 @@ test(
 		await owner.reserveReleasedChildren([{ childName, wake: true }]);
 		const status = await owner.brokerStatus();
 		assert.equal(status?.reservations, FRAME_OVERFLOW_CHILDREN + 1);
+		assert.equal(status?.droppedReleasedReplyRoutes, 0, "broker status reports reply routes dropped at capacity");
 
 		const sender = await connect("batch-sender");
 		const sends = [
