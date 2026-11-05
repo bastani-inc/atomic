@@ -134,7 +134,7 @@ for (const [name, behavior] of [
 		assert.ok(result.error instanceof AutoRoutingInferenceError);
 		assert.match(
 			result.error.message,
-			new RegExp(`^Structured output decision exceeded its ${DEFAULT_DECISION_DEADLINE_MS}ms deadline`),
+			new RegExp(`^Decision timed out: no answer within its ${DEFAULT_DECISION_DEADLINE_MS}ms deadline`),
 		);
 		assert.equal(result.error.currentModelRoute?.modelOverride, "decision-test/chat");
 		assert.ok(
@@ -153,6 +153,6 @@ test("the decision deadline follows the session's httpIdleTimeoutMs (#3806)", as
 	);
 	assert.ok(!result.ok, "routing unexpectedly produced a route");
 	assert.ok(result.error instanceof AutoRoutingInferenceError);
-	assert.match(result.error.message, /^Structured output decision exceeded its 120000ms deadline/);
+	assert.match(result.error.message, /^Decision timed out: no answer within its 120000ms deadline/);
 	assert.ok(elapsedMs >= 120_000 && elapsedMs <= 120_000 + DEADLINE_SLACK_MS, `routing took ${elapsedMs}ms`);
 });

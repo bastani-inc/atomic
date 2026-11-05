@@ -468,6 +468,22 @@ In this chat-answer flow, choosing the ready option completes the stage and rele
 
 The readiness prompt can be answered in the attached stage UI or with `workflow({ action: "answer", ... })`. Ordinary structured-option answers retain their existing readiness behavior. A schema-backed stage that has successfully finalized through `structured_output` is terminal and does not reopen this readiness gate.
 
+### Readiness after a steer
+
+When you steer a stage that asked you a question — you type an answer into **Chat about this**, send the stage a message, or type an answer to the readiness question — the [decision model](/settings#decisionmodel) decides readiness after the stage replies, instead of always asking. It reads the stage's prompt, your message and the stage's reply, each truncated, and answers two questions: whether to `advance` or `stay`, and whether the reply fully addresses your message and leaves nothing you still need to answer. State that contains a credential is never sent.
+
+| Decision | When | What happens |
+| --- | --- | --- |
+| Advance | P(advance) ≥ 0.85 and P(reply fully addresses your message) ≥ 0.8 | The stage completes without the readiness question, as if you had answered that you are ready. |
+| Stay | P(stay) ≥ 0.7 | The stage stays open without asking, and waits for your next message. |
+| Ask | Neither, or the decision model is unavailable, times out or fails | Atomic asks “Are you ready to move on to the next stage?” as before. |
+
+Advancing cannot be undone, so it has the higher bar. The thresholds are exported from `@bastani/atomic/workflows` as `READINESS_DECISION_THRESHOLDS`. The decision needs probabilities, which only a classifier gives, so with a chat model as the decision model, or none configured, Atomic always asks. The decision is bounded by [`httpIdleTimeoutMs`](/settings#http).
+
+Each decision is recorded on the stage: a `ready` line under the stage in `/workflow status <run-id>`, `readinessDecision` in `workflow({ action: "stages" })` and `stage` output, with the outcome, the model and the probabilities, and a **STAGE READINESS** notice in the stage's transcript and the `/workflow connect` view, for example `Decision model advanced the stage (p=0.93, addressed p=0.91)`. When the question was asked because the decision failed, the record names the typed error's class and code, such as `DecisionTimeoutError` and `timeout`. A pause during the decision keeps your message and decides again after resume.
+
+Turn it off with `workflows.autoAdvanceAfterSteer: false` in `settings.json`, or `/settings` → **Auto-advance after steer**. Stages that run on [local workers](/settings#local-worker-pools) always ask.
+
 ## Durable Workflows and Cross-Session Resume
 
 Atomic workflows persist runs in a SQLite journal. It opens on the first workflow action and commits registrations, checkpoints, and control transitions before reporting them as durable. By default it is the [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`, which keeps each root on its own shard file so concurrent runs and their local workers do not share a write lock; you never need separate journals for performance. Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic only to isolate runs in one file. Keep journal files on durable local storage. To share runs across machines, select a remote SQLite-compatible database through a [storage adapter](/storage#sharing-storage-across-hosts) rather than placing the file on a network filesystem. Storage failures stop the action rather than selecting another store.

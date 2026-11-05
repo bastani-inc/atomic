@@ -655,7 +655,7 @@ With both `schema` and `output`, ordinary text from the successful `structured_o
 readonly schemaTimeoutMs?: number;
 ```
 
-Sets the wall-clock limit, in milliseconds, for each `structured_output` decision of a schema-backed item. The limit covers the whole decision, every repair attempt, transport retry, and model fallback together, not each generation alone. It must be a positive integer; anything else fails when the stage is set up. Without it, the limit follows the [`httpIdleTimeoutMs`](/settings#http) setting, 10 minutes by default. A decision that overruns stops its in-flight generation and fails with `Structured output decision exceeded its <n>ms deadline; no decision was accepted.` followed by how each attempt ended and how long it took. The stage then handles that error like any other failed `structured_output` call: the model receives the text unchanged, the corrective follow-ups and `fallbackModels` apply as usual, and a stage that runs out of both fails with that error rather than a structured-output contract error. Raise the limit for slow, reasoning-heavy models or a large `state`; the calling model cannot change it. `schemaTimeoutMs` has no effect without `schema`.
+Sets the wall-clock limit, in milliseconds, for each `structured_output` decision of a schema-backed item. The limit covers the whole decision, every repair attempt, transport retry, and model fallback together, not each generation alone. It must be a positive integer; anything else fails when the stage is set up. Without it, the limit follows the [`httpIdleTimeoutMs`](/settings#http) setting, 10 minutes by default. A decision that overruns stops its in-flight generation and fails with `DecisionTimeoutError`: `Decision timed out: no answer within its <n>ms deadline …`, followed by how each attempt ended and how long it took. The stage then handles that error like any other failed `structured_output` call: the model receives the text unchanged, the corrective follow-ups and `fallbackModels` apply as usual, and a stage that runs out of both fails with that error rather than a structured-output contract error. Raise the limit for slow, reasoning-heavy models or a large `state`; the calling model cannot change it. `schemaTimeoutMs` has no effect without `schema`.
 
 ### `output` / `outputMode`
 
@@ -1327,6 +1327,12 @@ Admission limits count actual resources: a session from creation through disposa
 Worker recovery replays unfinished child work from committed checkpoints, so external effects before the latest checkpoint may run again. Use stable logical idempotency keys where duplicate effects matter.
 
 Programmatic callers import `run` and call `run(definition, inputs)` with an exported definition and validated inputs. Use `createRegistry()` when an integration needs to register, merge, or look up several definitions before selecting one to run. The extension also registers the `/workflow` commands and the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload.
+
+### Decisions
+
+`@bastani/atomic/workflows` re-exports `decide()` and the `DecisionError` family from `@bastani/atomic`, so a workflow can ask the user's configured decision model its own typed questions. See [decide](/sdk/structured-decisions#decide) and its error table.
+
+`READINESS_DECISION_THRESHOLDS` holds the thresholds Atomic applies to [readiness after a steer](/workflows/operations#readiness-after-a-steer): `{ advance: 0.85, addressed: 0.8, stay: 0.7 }`. `readinessVerdict(result, thresholds?)` applies them to a `decide()` result and returns `{ outcome: "advance" | "stay" | "ask", probabilities? }`; answers without probabilities always give `ask`. A stage records the latest decision as `StageReadinessDecision` in its snapshot's `readinessDecision`: `outcome` (`advanced`, `stayed` or `asked`), `at`, `model`, `probabilities`, and, when the decision failed, `error` with the typed error's `name` and `code`.
 
 ### `workflow(spec)`
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { insertForcedOptionsBeforeTerminator } from "./cli/args.ts";
+import { exitOnDecisionConfigError } from "./cli/settings-startup.ts";
 import { APP_NAME } from "./config.js";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { main } from "./main.ts";
@@ -17,4 +18,4 @@ configureHttpDispatcher();
 // forced flags are inserted before any `--` end-of-options terminator so they
 // are still parsed as options rather than literal message text; caller --mode
 // flags can only appear before the terminator, so last-wins is preserved.
-main(insertForcedOptionsBeforeTerminator(process.argv.slice(2), ["--mode", "rpc"]));
+main(insertForcedOptionsBeforeTerminator(process.argv.slice(2), ["--mode", "rpc"])).catch(exitOnDecisionConfigError);

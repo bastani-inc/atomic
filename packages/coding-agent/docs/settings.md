@@ -57,7 +57,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 |---------|------|---------|-------------|
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
-| `decisionModel` | string | `""` | Inference model for workflow-stage and subagent `model: "auto"` selection only. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change chat or `structured_output` tool inference. |
+| `decisionModel` | string | `""` | The model every decision uses: `model: "auto"` selection for workflow stages and subagents, `structured_output` calls that name no model, readiness after a steer, and `decide()`. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change the chat model. See [decisionModel](#decisionmodel). |
 | `modelRouting` | object | `{}` | Provider and model filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays), `allowedModels` and `excludedModels` (model ID or glob pattern arrays). Does not change `decisionModel`. See [modelRouting](#modelrouting). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
@@ -82,6 +82,17 @@ Normal automatic selection of an available authenticated model remains enabled i
 { "decisionModel": "" }
 ```
 
+`decisionModel` replaces the former `routerModel` setting, which has no alias. A `settings.json` that still contains `routerModel` stops Atomic at startup with `DecisionConfigError` (code `renamed-setting`), naming the file's scope; rename the key to `decisionModel`. An SDK settings object with `routerModel` fails the same way.
+
+The decision model is used by:
+
+- [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection) selection;
+- the `structured_output` tool when the call names no `model` (a classifier answers when the result schema is a finite Choice; otherwise the call's `fallbackModels` and then the current chat model answer);
+- [readiness after a steer](/workflows/operations#readiness-after-a-steer) in workflow stages, when `workflows.autoAdvanceAfterSteer` is on;
+- [`decide()`](/sdk/structured-decisions#decide), which extensions and workflows call to make their own decisions.
+
+A classifier answers with probabilities; a chat model's answer has none. Readiness after a steer needs probabilities, so it only decides on its own with a classifier `decisionModel`, such as `typesafe/jev-latest`.
+
 Use `/settings` → **Decision model** to change the effective selection. If the project already defines `decisionModel`, the picker edits that project override; otherwise it saves the global default in `~/.atomic/agent/settings.json`. The picker identifies which scope it will save. Choose **Automatic** to save `""` in that scope. `""` and `auto` both use the current chat model; saved classifier credentials do not change that choice. To pin a decision model, choose an exact ID from the current registry, such as `typesafe/jev-latest`, or a chat model by provider/model ID. A classifier is not a chat model and does not appear in `/model`. Run `/reload` or restart Atomic to apply the saved choice to an already-running isolated engine.
 
 An explicit ID other than `auto` is resolved through the current model registry: a registered classifier first, otherwise a chat model. Built-in gateway classifiers include `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free`; authenticate their provider before choosing them. An invalid explicit ID, image-generation model, non-string value, or surrounding whitespace fails the decision instead of silently changing providers. An explicit empty project value overrides a global selection and restores the current chat model.
@@ -92,7 +103,7 @@ A classifier `decisionModel` such as Jev only chooses between the shortlisted mo
 
 Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection, or turn on [debug mode](#debug-mode) to write them to the debug log.
 
-This setting selects inference for [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection). It does not directly select the child execution model or change the selected chat model, `structured_output` tool, or general structured-output inference. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The selected router provider receives the routing context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
+This setting selects the model that makes each decision listed above. It does not directly select a child's execution model, change the selected chat model, or change an SDK `generateStructuredOutput()` call, which uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The selected router provider receives the routing context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
 Remove secrets from routing tasks, inputs, and workflow descriptions/contracts before calling the tool. A routing-context credential error stops before inference or launch. Known configured credentials are screened even when they belong to a provider other than the router. Remove the credential from the supplied context or registered definition, reload a changed definition, then retry explicitly. The guard does not detect every possible secret.
 
@@ -587,6 +598,7 @@ Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. 
 | `prompts` | string[] | `[]` | Local prompt template paths or directories |
 | `themes` | string[] | `[]` | Local theme file paths or directories |
 | `workflows` | string[] or object | `[]` | Local workflow paths, or `{ "paths": [...] }`; see [Workflow storage](#workflow-storage) |
+| `workflows.autoAdvanceAfterSteer` | boolean | `true` | After you steer a stage that asked you a question, the decision model advances the stage or keeps it open instead of asking "Are you ready to move on to the next stage?". It asks when it is unsure or fails. `false` always asks. Shown in `/settings` as **Auto-advance after steer**. Requires the object form of `workflows`. See [Readiness after a steer](/workflows/operations#readiness-after-a-steer) |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.

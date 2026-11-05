@@ -587,3 +587,25 @@ test("image and UI toggles follow the compaction rows in both terminal kinds (#4
 		resetCapabilitiesCache();
 	}
 });
+
+test("/settings shows Auto-advance after steer with its scope and saves through its callback (#4358)", () => {
+	const onAutoAdvanceAfterSteerChange = vi.fn();
+	const callbacks = { onAutoAdvanceAfterSteerChange } as unknown as SettingsCallbacks;
+	const defaults = buildSettingsItems(settingsConfig({}), callbacks).find(
+		({ id }) => id === "auto-advance-after-steer",
+	);
+	expect(defaults?.label).toBe("Auto-advance after steer");
+	expect(defaults?.currentValue).toBe("true");
+	expect(defaults?.values).toEqual(["true", "false"]);
+	expect(defaults?.description).toContain("Saves to global settings");
+	const off = buildSettingsItems(
+		settingsConfig({ autoAdvanceAfterSteer: false, autoAdvanceAfterSteerScope: "project" }),
+		callbacks,
+	).find(({ id }) => id === "auto-advance-after-steer");
+	expect(off?.currentValue).toBe("false");
+	expect(off?.description).toContain("Saves to project settings");
+	const change = createSettingsChangeHandler(callbacks);
+	change("auto-advance-after-steer", "false");
+	change("auto-advance-after-steer", "true");
+	expect(onAutoAdvanceAfterSteerChange.mock.calls).toEqual([[false], [true]]);
+});

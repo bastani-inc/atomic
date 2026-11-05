@@ -46,8 +46,8 @@ export const READINESS_DECISION_QUESTIONS = Object.freeze({
 		instructions:
 			"Does the stage's reply fully address the user's message and leave nothing the user still needs to answer?",
 		criteria: Object.freeze({
-			true: "The reply fully handles the user's message and asks the user nothing.",
-			false: "The reply misses part of the user's message, or still needs an answer from the user.",
+			true: "Yes. The reply handles the whole message, and the user has nothing left to answer.",
+			false: "No. Part of the message is unhandled, or the reply asks the user something.",
 		}),
 	}),
 }) satisfies {

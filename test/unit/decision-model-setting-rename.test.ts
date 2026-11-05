@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test, vi } from "vitest";
-import { createStartupSettingsManager } from "../../packages/coding-agent/src/cli/settings-startup.js";
+import { afterEach, test } from "vitest";
+import { exitOnDecisionConfigError } from "../../packages/coding-agent/src/cli/settings-startup.js";
 import { DecisionConfigError, isDecisionConfigError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { SettingsScope, SettingsStorage } from "../../packages/coding-agent/src/core/settings-types.js";
@@ -100,20 +100,22 @@ test("CLI startup prints the message, which ends with the hint, once and exits 1
 	const { cwd, agentDir } = workspace({ routerModel: "typesafe/jev-latest" });
 	const printed: string[] = [];
 	const exits: number[] = [];
-	const exit = (code: number): never => {
-		exits.push(code);
-		throw new Error(`exit ${code}`);
+	const io = {
+		error: (text: string) => printed.push(text),
+		exit: (code: number): never => {
+			exits.push(code);
+			throw new Error(`exit ${code}`);
+		},
 	};
-	assert.throws(
-		() =>
-			createStartupSettingsManager(
-				cwd,
-				agentDir,
-				{ projectTrusted: false },
-				{ error: (text) => printed.push(text), exit },
-			),
-		/exit 1/,
-	);
+	const failure = (() => {
+		try {
+			SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+		} catch (error) {
+			return error;
+		}
+		return undefined;
+	})();
+	assert.throws(() => exitOnDecisionConfigError(failure, io), /exit 1/);
 	assert.deepEqual(exits, [1]);
 	assert.equal(printed.length, 1);
 	assert.match(printed[0]!, /Error: Renamed setting: "routerModel" in global settings\.json \(renamed-setting\)\./);
@@ -121,23 +123,18 @@ test("CLI startup prints the message, which ends with the hint, once and exits 1
 	assert.doesNotMatch(printed[0]!, /\n\s+at /);
 });
 
-test("CLI startup returns the settings when they load and rethrows unrelated failures", () => {
-	const { cwd, agentDir } = workspace({ decisionModel: "" });
+test("CLI startup rethrows any other failure untouched", () => {
 	const io = {
 		error: () => assert.fail("nothing to print"),
 		exit: (): never => assert.fail("no exit"),
 	};
-	assert.equal(createStartupSettingsManager(cwd, agentDir, { projectTrusted: false }, io).getDecisionModel(), "");
 	const unrelated = new TypeError("storage exploded");
-	const create = vi.spyOn(SettingsManager, "create").mockImplementation(() => {
-		throw unrelated;
-	});
-	try {
-		assert.throws(
-			() => createStartupSettingsManager(cwd, agentDir, { projectTrusted: true }, io),
-			(error: unknown) => error === unrelated,
-		);
-	} finally {
-		create.mockRestore();
-	}
+	assert.throws(
+		() => exitOnDecisionConfigError(unrelated, io),
+		(error: unknown) => error === unrelated,
+	);
+	assert.throws(
+		() => exitOnDecisionConfigError("text", io),
+		(error: unknown) => error === "text",
+	);
 });
