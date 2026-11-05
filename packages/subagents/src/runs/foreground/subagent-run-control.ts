@@ -20,6 +20,7 @@ import {
 	recordSubagentChildStatus,
 	requestSubagentChildStop,
 	SUBAGENT_CHILD_GONE_STATUS,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
@@ -145,6 +146,11 @@ function resolveRecord(
 	return undefined;
 }
 
+/** A child released while it waits on detached tool calls (#4326): not running, and woken by what it waits on. */
+function isReleased(record: SubagentChildRecord): boolean {
+	return record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS;
+}
+
 /** How a settled child already stands for pause and quit: a child its workflow stage's pause stopped counts as paused. */
 function stoppedAs(record: SubagentChildRecord): SubagentChildStopStatus | undefined {
 	if (record.state !== "terminal") return undefined;
@@ -247,7 +253,9 @@ async function stopChildren(
 	if (request.all) {
 		// Queued children are stopped first, so stopping a running sibling cannot free a slot that starts them.
 		targets = [...records.values()]
-			.filter((record) => isLive(record) || (action === "quit" && stoppedAs(record) === "paused"))
+			.filter(
+				(record) => isLive(record) || isReleased(record) || (action === "quit" && stoppedAs(record) === "paused"),
+			)
 			.sort((a, b) => Number(isQueued(b)) - Number(isQueued(a)));
 		if (targets.length === 0)
 			return controlResult(`No running subagent children to ${action}.`, { action, children: [] });
@@ -280,6 +288,15 @@ async function stopChildren(
 				action === "pause"
 					? `Paused ${label(record)} · awaiting resume. Its queued messages are held until resume; resume it with { action: "resume", id: "${record.childId}", message? }.`
 					: `Quit ${label(record)}: paused · awaiting resume, as a quit workflow run is. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
+			);
+			continue;
+		}
+		if (isReleased(record)) {
+			// Nothing of it runs: stopping it only stops what would wake it. Results that arrive are kept for resume.
+			await recordSubagentChildStatus(deps.pi, record, status);
+			children.push(childDetails(record, status));
+			lines.push(
+				`${action === "pause" ? "Paused" : "Quit"} released ${label(record)}: it is not woken any more, and results of the calls it waited on are kept for its resume. Resume it with { action: "resume", id: "${record.childId}", message? }.`,
 			);
 			continue;
 		}
@@ -381,6 +398,12 @@ async function resumeChild(
 		},
 	);
 }
+/** How `status` shows a released child: what it waits on, and what wakes it. */
+function releasedLine(record: SubagentChildRecord): string {
+	const calls = (record.waitingOn ?? []).map((call) => `${call.toolName} (${call.toolCallId})`).join(", ");
+	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}; it holds nothing and wakes on a result, a message or resume. Resume it now with { action: "resume", id: "${record.childId}", message? }.`;
+}
+
 /** How `status` shows a child pause or quit stopped: paused and awaiting resume, as a quit workflow run shows. */
 function awaitingResumeLine(record: SubagentChildRecord): string {
 	const how =
@@ -400,9 +423,13 @@ export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: strin
 	const records = ownedRecords(ctx);
 	if (id?.trim()) {
 		const resolved = resolveRecord(records, id);
-		return typeof resolved === "object" && stoppedAs(resolved) ? [awaitingResumeLine(resolved)] : [];
+		if (typeof resolved !== "object") return [];
+		if (isReleased(resolved)) return [releasedLine(resolved)];
+		return stoppedAs(resolved) ? [awaitingResumeLine(resolved)] : [];
 	}
-	return [...records.values()].filter((record) => stoppedAs(record)).map(awaitingResumeLine);
+	return [...records.values()].flatMap((record) =>
+		isReleased(record) ? [releasedLine(record)] : stoppedAs(record) ? [awaitingResumeLine(record)] : [],
+	);
 }
 
 /** `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. */

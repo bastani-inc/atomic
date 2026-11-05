@@ -1,4 +1,5 @@
 import {
+	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type SessionEntry,
@@ -72,6 +73,12 @@ export function pendingMessagesOfResult(result: {
 	return { messages: result.pendingMessages, taskExpands: result.pendingTaskExpands === true };
 }
 
+/** A detached tool call a released child waits on. */
+export interface SubagentChildWaitingCall {
+	readonly toolCallId: string;
+	readonly toolName: string;
+}
+
 export interface SubagentChildRecord {
 	readonly version: 1;
 	readonly childId: string;
@@ -131,6 +138,16 @@ export interface SubagentChildRecord {
 	readonly requestedModel?: string;
 	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
 	readonly modelConstraints?: ModelConstraints;
+	/**
+	 * The detached tool calls a released child is waiting on (#4326): its run ended with them still running, and their
+	 * results wake it. Empty once nothing is outstanding.
+	 */
+	readonly waitingOn?: readonly SubagentChildWaitingCall[];
+	/**
+	 * Results of its detached calls that arrived while the child could not take them (paused, quit, or live in another
+	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
+	 */
+	readonly heldToolResults?: readonly DetachedToolResult[];
 }
 
 /**
@@ -228,6 +245,8 @@ export function subagentChildLaunch(
 export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "childId" | "owner">;
 
 export interface SubagentChildRecordSink {
+	/** The session that owns the children this sink records; their wake keys are under it (#4326). */
+	readonly ownerSessionId?: string;
 	record(input: SubagentChildRecordInput): void;
 	/** Whether the owner is a workflow stage whose generation is closing for good, not merely interrupted. */
 	ownerEndedForGood?(): boolean;
@@ -271,6 +290,12 @@ export interface WorkflowStageChildrenEnd {
 
 /** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
 export const SUBAGENT_CHILD_GONE_STATUS = "gone";
+
+/**
+ * `terminalStatus` of a background child released while it waited on detached tool calls (#4326): it holds no session,
+ * task or connection, and a tool result, an Intercom send or ask, or `resume` rehydrates it from its session.
+ */
+export const SUBAGENT_CHILD_RELEASED_STATUS = "released";
 
 const ENDED_STATUSES: ReadonlySet<string> = new Set([
 	"killed",
@@ -446,6 +471,7 @@ export function createSubagentChildRecordSink(
 	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
 	let appended: Promise<void> = Promise.resolve();
 	return {
+		ownerSessionId: owner.sessionId,
 		record(input) {
 			const record: SubagentChildRecord = {
 				version: 1,
@@ -488,6 +514,20 @@ export async function recordSubagentChildStatus(
 	const next: SubagentChildRecord = { ...record, state: "terminal", terminalStatus };
 	observeSubagentChildRecord(next);
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
+}
+
+/** Append a new latest observation of a child that changes only the tool results it holds for its next wake. */
+export async function recordSubagentChildHeldToolResults(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	record: SubagentChildRecord,
+	heldToolResults: readonly DetachedToolResult[],
+): Promise<SubagentChildRecord> {
+	const next: SubagentChildRecord = { ...record, heldToolResults };
+	// After every record already handed to a sink, and failing loudly: a result that is not saved must not be dropped.
+	await subagentChildRecordsAppended(record.owner.sessionId);
+	observeSubagentChildRecord(next);
+	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
+	return next;
 }
 
 /**

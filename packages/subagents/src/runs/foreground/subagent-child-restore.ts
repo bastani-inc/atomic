@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentTaskHost,
+	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	isStaleExtensionContextError,
@@ -31,6 +32,7 @@ import {
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
+import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import {
@@ -41,6 +43,7 @@ import {
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
@@ -111,6 +114,10 @@ export interface SubagentChildResumeRequest {
 	readonly continuation?: string;
 	/** The caller's message; a child stopped before it ever started gets it after its original task. */
 	readonly message?: string;
+	/** Results of the child's detached calls that arrived for it (#4326), in arrival order. */
+	readonly toolResults?: readonly DetachedToolResult[];
+	/** Only `toolResults` woke the child: nothing is prompted unless a result came too late for its call. */
+	readonly promptless?: boolean;
 }
 
 export type SubagentChildRestoreOutcome =
@@ -408,7 +415,20 @@ async function relaunchChild(
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
 	if (!supervisorAuthorization) await hold?.release();
 	const intercomGroup = launchIntercomGroup(record, ctx);
-	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
+	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
+	const toolResults = [...(record.heldToolResults ?? []), ...(resume?.toolResults ?? [])];
+	const wakePlan =
+		!fresh &&
+		sessionManager &&
+		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
+			(record.waitingOn?.length ?? 0) > 0 ||
+			toolResults.length > 0)
+			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, resume?.promptless !== true)
+			: undefined;
+	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
+	const prompts = wakePlan
+		? wakePrompts(basePrompts, wakePlan.lateMessages, resume?.promptless === true)
+		: basePrompts;
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -428,6 +448,9 @@ async function relaunchChild(
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
 		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
+		// Present, even empty, whenever the wake took the results its record held: none is held after it.
+		...(wakePlan ? { resumeToolResults: wakePlan.resumeToolResults } : {}),
+		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
@@ -514,6 +537,16 @@ async function relaunchChild(
 		intercomGroup,
 	);
 	return fresh ? startedFresh(outcome) : outcome;
+}
+
+/**
+ * What a woken child is prompted with: results that came too late for their calls first, as messages, then what the
+ * resume or wake brought. A wake by tool results alone prompts only the late results.
+ */
+function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promptless: boolean): ResumePrompts {
+	if (lateMessages.length === 0) return base;
+	const [task = "", ...followUps] = promptless ? lateMessages : [...lateMessages, base.task, ...base.followUps];
+	return { task, followUps, taskLiteral: true };
 }
 
 /** A restored child that had no session started fresh on its launch rather than resuming one. */

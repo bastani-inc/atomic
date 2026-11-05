@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import type { AgentSession, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
+import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -15,11 +16,19 @@ import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/in
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
+import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
+import {
+	lateToolResultMessage,
+	SUBAGENT_RELEASE_AFTER_MS,
+	SUBAGENT_RELEASED_WAKE_PROMPT,
+	subagentWakeKey,
+} from "../../packages/subagents/src/runs/foreground/released-children.js";
 import {
 	createSubagentChildRecordSink,
 	isSubagentChildRecord,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RECORD_TYPE,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
@@ -40,6 +49,7 @@ import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/
 import {
 	resumeAwaitingSubagentChildren,
 	SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+	subagentChildrenAwaitingResume,
 } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import {
 	runAgentTask,
@@ -70,6 +80,8 @@ import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtim
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const ORIGINAL_TASK = "original task";
+/** The detached call a released child waits on in these tests. */
+const RELEASED_CALL = { toolCallId: "ci-1", toolName: "wait_for_ci" } as const;
 const RECORD_WAIT_MS = 5_000;
 
 const agent: AgentConfig = {
@@ -108,13 +120,17 @@ interface Harness {
 	/** Every child run: the prompt it received, its options, and the agent definition it ran. */
 	readonly runs: Array<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }>;
 	readonly authorizations: string[];
-	readonly holds: Array<{ reserve: string; aliases: readonly string[] } | { release: string; gone?: string }>;
+	readonly holds: Array<
+		{ reserve: string; aliases: readonly string[]; dormant?: true; wake?: true } | { release: string; gone?: string }
+	>;
 	/** How the next child run settles once its prompt runs; the original launch always waits until stopped. */
 	settleAs: "ok" | "error";
 	/** Whether the original launch completes normally when it is stopped, as a child finishing just before the stop does. */
 	completesWhenStopped: boolean;
 	/** Whether resumed runs also wait until stopped, instead of settling once their prompt runs. */
 	resumedRunsWait: boolean;
+	/** Whether the original launch ends released, waiting on a detached `wait_for_ci` call (#4326). */
+	releaseOriginal: boolean;
 	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
@@ -175,7 +191,12 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(true);
 			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReserveRestoringChildRequest;
-				holds.push({ reserve: request.capability, aliases: request.aliases });
+				holds.push({
+					reserve: request.capability,
+					aliases: request.aliases,
+					...(request.dormant === true ? { dormant: true as const } : {}),
+					...(request.wake === true ? { wake: true as const } : {}),
+				});
 				request.completion = Promise.resolve();
 			}
 			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
@@ -248,6 +269,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		settleAs: "ok",
 		completesWhenStopped: false,
 		resumedRunsWait: false,
+		releaseOriginal: false,
 		agentDefined: true,
 		agents: [agent],
 		finishOn: new Map(),
@@ -300,6 +322,13 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
 		const original = task === ORIGINAL_TASK;
+		if (original && state.releaseOriginal) {
+			const waiting = await runSync(parentCwd, agents, agentName, task, {
+				...options,
+				testSession: { output: "waiting" },
+			});
+			return { ...waiting, status: "interrupted", interrupted: true, released: { waitingOn: [RELEASED_CALL] } };
+		}
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
 		const result = await runSync(parentCwd, agents, agentName, task, {
@@ -2842,4 +2871,158 @@ test("a queued child stopped while it waits for its run's capacity is restored w
 	const [, restored] = await runsOf(h, "capqueued", 2, 2);
 	assert.equal(restored?.task, ORIGINAL_TASK);
 	assert.equal(restored?.options.resumeFollowUps, undefined, "its held task is its launch task, not sent again");
+});
+
+function waitResult(text: string) {
+	return {
+		toolCallId: RELEASED_CALL.toolCallId,
+		toolName: RELEASED_CALL.toolName,
+		result: { content: [{ type: "text" as const, text }], details: undefined },
+		isError: false,
+	};
+}
+
+test("a background child released while it waits is recorded released, settles as a resumable stop, and stays addressable (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	const taskId = await h.admit("release1", undefined, { intercomEvents: h.deps.pi.events });
+	await settled(h, taskId);
+	const released = await h.waitForLatest("release1:0", (record) => record.state === "terminal");
+
+	assert.equal(released.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
+	assert.deepEqual(released.waitingOn, [RELEASED_CALL]);
+	const observed = await h.host.waitForTask(taskId);
+	assert.ok(observed.ok && observed.value.kind === "settled");
+	assert.deepEqual(
+		observed.value.kind === "settled" && observed.value.result.kind === "cancelled"
+			? observed.value.result.cause
+			: undefined,
+		"pause",
+	);
+	assert.equal(h.runs[0]?.options.releaseWhenWaiting?.afterMs, SUBAGENT_RELEASE_AFTER_MS);
+	await h.waitForLatest("release1:0", () => h.holds.length > 0);
+	assert.deepEqual(h.holds, [
+		{ reserve: "fresh-capability-1", aliases: [released.childSessionId], dormant: true, wake: true },
+	]);
+
+	const status = subagentChildrenAwaitingResume(h.ctx, "release1:0");
+	assert.equal(status.length, 1);
+	assert.match(status[0] ?? "", /released · waiting on wait_for_ci \(ci-1\)/);
+});
+
+test("pause and quit of a released child only record the stop; resume continues it (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release2"));
+	await h.waitForLatest("release2:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	const runsBefore = h.runs.length;
+
+	const paused = await h.call({ action: "pause", id: "release2:0" });
+	assert.notEqual(paused.isError, true, text(paused));
+	assert.equal(paused.details.runControl?.children[0]?.state, "paused");
+	assert.match(text(paused), /Paused released worker/);
+	assert.equal(
+		(await h.waitForLatest("release2:0", (record) => record.terminalStatus === "paused")).terminalStatus,
+		"paused",
+	);
+
+	const quit = await h.call({ action: "quit", id: "release2:0" });
+	assert.notEqual(quit.isError, true, text(quit));
+	assert.equal(
+		(await h.waitForLatest("release2:0", (record) => record.terminalStatus === "quit")).terminalStatus,
+		"quit",
+	);
+	assert.equal(h.runs.length, runsBefore, "stopping a released child runs nothing");
+
+	const resumed = await h.call({ action: "resume", id: "release2:0", message: "carry on" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	await settled(h, resumedTaskId(resumed));
+	assert.equal(h.runs.at(-1)?.task, "carry on");
+	assert.equal(h.runs.at(-1)?.options.resumeSession, true);
+});
+
+test("pause and quit with all: true include released children (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release3"));
+	await h.waitForLatest("release3:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	const paused = await h.call({ action: "pause", all: true });
+	assert.notEqual(paused.isError, true, text(paused));
+	assert.deepEqual(
+		paused.details.runControl?.children.map((child) => [child.childId, child.state]),
+		[["release3:0", "paused"]],
+	);
+});
+
+test("a tool result wakes a released child through the dispatcher once, and a paused one keeps it for resume (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release4"));
+	await h.waitForLatest("release4:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	const dispatcher = new AgentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.releaseOriginal = false;
+	const key = subagentWakeKey(h.sessionManager.getSessionId(), "release4:0");
+	const result = waitResult("CI green");
+
+	const first = dispatcher.deliver(key, { id: "tool-result:ci-1", kind: "tool-result", toolResult: result });
+	const again = dispatcher.deliver(key, { id: "tool-result:ci-1", kind: "tool-result", toolResult: result });
+	await Promise.all([first, again]);
+
+	const wakes = h.runs.filter((run) => run.task === lateToolResultMessage(result));
+	assert.equal(wakes.length, 1, "one wake, however often the same result is delivered");
+	assert.equal(wakes[0]?.options.resumeSession, true);
+	assert.deepEqual(wakes[0]?.options.resumeToolResults, []);
+	const woken = await h.waitForLatest(
+		"release4:0",
+		(record) => record.state === "terminal" && record.terminalStatus === "ok",
+	);
+	assert.deepEqual(woken.heldToolResults, []);
+	assert.deepEqual(dispatcher.stats().keys, 0);
+
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release4b"));
+	await h.waitForLatest("release4b:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	await h.call({ action: "pause", id: "release4b:0" });
+	await h.waitForLatest("release4b:0", (record) => record.terminalStatus === "paused");
+	const runsWhilePaused = h.runs.length;
+	const late = waitResult("second run green");
+	await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "release4b:0"), {
+		id: "tool-result:late",
+		kind: "tool-result",
+		toolResult: late,
+	});
+	assert.equal(h.runs.length, runsWhilePaused, "a paused child is not woken");
+	assert.deepEqual(h.latest("release4b:0")?.heldToolResults, [late]);
+
+	const resumed = await h.call({ action: "resume", id: "release4b:0", message: "go on" });
+	await settled(h, resumedTaskId(resumed));
+	assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(late));
+	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, ["go on", SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
+	assert.deepEqual(
+		(await h.waitForLatest("release4b:0", (record) => record.state === "terminal" && record.terminalStatus === "ok"))
+			.heldToolResults,
+		[],
+	);
+});
+
+test("an Intercom wake restores a released child with the wake prompt; a live or ended child is not woken by it (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release5"));
+	await h.waitForLatest("release5:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	const dispatcher = new AgentWakeDispatcher();
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => unbind());
+	const key = subagentWakeKey(h.sessionManager.getSessionId(), "release5:0");
+
+	await dispatcher.deliver(key, { id: "intercom:1", kind: "intercom" });
+	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RELEASED_WAKE_PROMPT);
+	await h.waitForLatest("release5:0", (record) => record.terminalStatus === "ok");
+	const runs = h.runs.length;
+	await dispatcher.deliver(key, { id: "intercom:2", kind: "intercom" });
+	assert.equal(h.runs.length, runs, "a message for a child that is not released wakes nothing");
 });

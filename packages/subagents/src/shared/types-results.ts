@@ -192,6 +192,8 @@ export interface SingleResult {
 	detached?: boolean;
 	detachedReason?: string;
 	interrupted?: boolean;
+	/** The child was released while waiting on these detached tool calls; a result, message or resume wakes it (#4326). */
+	released?: { readonly waitingOn: readonly { readonly toolCallId: string; readonly toolName: string }[] };
 	/** Messages a child stopped by its parent had queued but not read, in order; its resume delivers them. */
 	pendingMessages?: readonly string[];
 	/** The first pending message is the child's original task it never read; its resume prompts it as a fresh launch would. */

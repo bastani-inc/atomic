@@ -34,6 +34,8 @@ export interface SubagentReserveRestoringChildRequest {
 	readonly aliases: readonly string[];
 	/** Only keeps the child addressable until the supervisor that restores it reserves it and takes the hold over. */
 	readonly dormant?: boolean;
+	/** The child is released (#4326): the first send held for it asks its owner to wake it. */
+	readonly wake?: boolean;
 	completion?: Promise<void>;
 }
 
@@ -97,9 +99,9 @@ function emitIntercomRequest(events: IntercomEventBus, eventName: string, reques
  */
 export async function holdChildTargets(
 	events: IntercomEventBus,
-	record: SubagentChildRecord,
+	record: Pick<SubagentChildRecord, "intercomTarget" | "childSessionId">,
 	group: string | undefined,
-	options: { readonly dormant?: boolean } = {},
+	options: { readonly dormant?: boolean; readonly wake?: boolean } = {},
 ): Promise<ChildTargetHold | undefined> {
 	if (!record.intercomTarget) return undefined;
 	const authorization = await requestSupervisorAuthorization(events, record.intercomTarget);
@@ -113,6 +115,7 @@ export async function holdChildTargets(
 			aliases: all ? [...known] : aliases,
 			...(group ? { group } : {}),
 			...(options.dormant === true ? { dormant: true } : {}),
+			...(options.wake === true ? { wake: true } : {}),
 		};
 		return emitIntercomRequest(events, SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, request);
 	};

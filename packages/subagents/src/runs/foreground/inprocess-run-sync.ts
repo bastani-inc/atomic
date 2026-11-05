@@ -139,6 +139,7 @@ function resultFromOutcome(
 		path: outcome.path,
 		envelope: outcome.status === "killed" ? output : outcome.envelope,
 		interrupted: status === "interrupted" ? true : undefined,
+		...(outcome.status === "interrupted" && outcome.released ? { released: outcome.released } : {}),
 		...(outcome.status === "interrupted" && outcome.pendingMessages
 			? {
 					pendingMessages: outcome.pendingMessages,
@@ -403,6 +404,9 @@ export async function runSingleInProcess(
 		...(options.resumeSession ? { resumeSession: true } : {}),
 		...(options.resumeFollowUps?.length ? { resumeFollowUps: options.resumeFollowUps } : {}),
 		...(options.resumeTaskLiteral ? { resumeTaskLiteral: true } : {}),
+		...(options.releaseWhenWaiting ? { releaseWhenWaiting: options.releaseWhenWaiting } : {}),
+		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
+		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),
 		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),
 		...(options.onChildLaunch ? { onChildLaunch: options.onChildLaunch } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),

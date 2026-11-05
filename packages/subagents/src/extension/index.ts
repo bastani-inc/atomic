@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
+import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
 import {
 	endWorkflowRunStageSubagentChildren,
@@ -475,9 +476,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 			bindSubagentChildCards(ctx);
 		};
+		let stopReleasedChildWakes: (() => void) | undefined;
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
 			resetSessionState(ctx);
+			stopReleasedChildWakes?.();
+			stopReleasedChildWakes = undefined;
 			// The children this session launched and a restart interrupted are addressable at once, not only after its
 			// recovery has restored them (#3760). Recovery takes these holds over; this never blocks session start. Only
 			// a session that was just opened has interrupted children: after a reload its running children are alive.
@@ -485,6 +489,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true) {
 				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
 				watchWorkflowStageSubagentChildren(pi, ctx);
+				// Released children wake through this session: their tool results, Intercom sends and asks (#4326).
+				stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(
@@ -552,6 +558,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		eventUnsubscribes.push(unsubscribeRunEnded);
 		pi.on("session_shutdown", (_event, ctx) => {
+			stopReleasedChildWakes?.();
+			stopReleasedChildWakes = undefined;
 			// Holds nothing took over end with the session; the broker also ends them when its connection closes.
 			try {
 				releaseEarlyChildHolds(subagentChildOwner(ctx).sessionId);

@@ -5,6 +5,7 @@
 ### Added
 
 - `sessionStartTimeoutMs` in the subagent `config.json` sets how long a child may take to start (default 5 minutes). An invalid value is reported when the config loads and the default applies ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+- A background subagent waiting on a long-running detachable tool call is released instead of holding a live session: after a minute its task stops as a resumable stop, its record says `released` and what it waits on, and it holds no session, task or connection. The call's result, an Intercom message or ask sent to it, or `subagent({ action: "resume" })` wakes it from its saved session; `pause` and `quit` keep it stopped and keep arriving results for its resume, and `status` lists it as released ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
 
 ### Changed
 

@@ -273,6 +273,15 @@ Resume also refuses a child that is still running (pause or quit it first) and a
 
 An SDK session without a task host runs its subagents directly and records them in its session the same way, so `pause`, `resume` (with or without `message`, queued messages included) and `quit` work there by id and with `all: true`, also after the session is reopened. A child resumed there runs in the background, and its result arrives as a completion notice. Closing the session stops such a child; reopening the session relaunches it automatically, and the messages it had queued and not read are delivered once, in order. For a terminal child, launch a fresh child with an explicit context handoff.
 
+#### Released subagents
+
+A background subagent that waits more than a minute on a tool call marked `detachable` (extension tools opt in with `detachable: true`) is **released**: the call keeps running, but the child gives up its session, task and Intercom connection and holds nothing else while it waits. Its parent gets a resumable-stop notice whose result reads `Released while waiting on <tool> (<call id>)`, and `subagent({ action: "status" })` lists it as `released · waiting on <tool> (<call id>)`.
+
+- When the call finishes, the child wakes from its saved session and continues the turn with the call's result.
+- An Intercom message or ask sent to a released child wakes it too. Senders wait while it wakes, and it receives every message once, in the order they were sent. Calls it is still waiting on are marked as still running, and their results arrive later as messages.
+- `pause` and `quit` on a released child only stop it from being woken; results that arrive meanwhile are kept and delivered when you `resume` it. `resume` wakes it at once, with your `message` if given.
+- Released children wake through the session that launched them, so that session must stay open.
+
 The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 
 ```text

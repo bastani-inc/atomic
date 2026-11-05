@@ -10,6 +10,8 @@ import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
+	type DetachedToolCall,
+	type DetachedToolResult,
 	findSessionStartError,
 	getAgentDir,
 	getBuiltinPackagePaths,
@@ -186,6 +188,37 @@ export interface ChildSpec {
 	readonly requestedThinking?: string;
 	/** Resolves a fallback entry (`provider/model[:thinking]`) to its model, to pick the level it runs at. */
 	readonly resolveCandidateModel?: CandidateModelResolver;
+	/**
+	 * Release the child when it waits (#4326): a call of a `detachable` tool still running after `afterMs` goes on
+	 * without the child's run, the run ends, the attempt ends as released, and `onReleased` is given the calls so their
+	 * results can wake the child later. Without it detachable calls run inline.
+	 */
+	readonly releaseWhenWaiting?: SubagentReleasePolicy;
+	/**
+	 * Results for the detached calls the reopened transcript ends on, recorded as those calls' results before any
+	 * follow-up or prompt; the turn that issued them continues.
+	 */
+	readonly resumeToolResults?: readonly DetachedToolResult[];
+	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
+	readonly skipTaskPrompt?: boolean;
+}
+
+/** How a released child's wait is handed back: see {@link ChildSpec.releaseWhenWaiting}. */
+export interface SubagentReleasePolicy {
+	readonly afterMs: number;
+	readonly onReleased: (calls: readonly DetachedToolCall[]) => void;
+}
+
+/** A detached call a released child waits on. */
+export interface SubagentWaitingCall {
+	readonly toolCallId: string;
+	readonly toolName: string;
+}
+
+/** The envelope a released child's attempt reports: what it waits on, and what wakes it. */
+export function releasedEnvelope(waitingOn: readonly SubagentWaitingCall[]): string {
+	const calls = waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ");
+	return `Released while waiting on ${calls}. It holds nothing while it waits; a tool result, an Intercom message or ask, or resume wakes it from its saved session.`;
 }
 
 /**
@@ -325,6 +358,8 @@ export type AttemptOutcome = (
 	| {
 			readonly status: "interrupted" | "killed";
 			readonly cause?: string;
+			/** The child was released while waiting on these detached calls, not stopped (#4326). */
+			readonly released?: { readonly waitingOn: readonly SubagentWaitingCall[] };
 			/** Steering then follow-up messages the child had queued but not read when its parent stopped it, in order. */
 			readonly pendingMessages?: readonly string[];
 			/** The first pending message is the child's original task it never read, prompted as a fresh launch prompts it. */
@@ -661,6 +696,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			cost: 0,
 		}),
 		startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+		// A scripted session runs no tools, so none of its calls ever detaches.
+		setToolDetachment: () => {},
+		takeDetachedToolCalls: () => [],
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
 	testOptions.onSession?.({
@@ -1500,6 +1538,8 @@ export class SubagentControlRuntime {
 			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
 			else startBudget.enter("dispatching-task");
 			session = created.session;
+			const release = admitted.spec.releaseWhenWaiting;
+			if (release !== undefined) session.setToolDetachment({ afterMs: release.afterMs });
 			if (!admitted.spec.testSession) {
 				const ownModel = candidate.model ?? admitted.policy.model;
 				// A named model the launch could not resolve itself, as with a host that supplies no resolver, runs only when
@@ -1648,6 +1688,8 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
+			if (!termination && admitted.spec.resumeToolResults?.length)
+				await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
 			for (const followUp of admitted.spec.resumeFollowUps ?? []) {
 				if (termination) break;
 				// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
@@ -1656,20 +1698,45 @@ export class SubagentControlRuntime {
 			}
 			if (!termination) {
 				unsent.splice(0, 1);
-				const prompting = session.prompt(
-					admitted.spec.task,
-					admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-				);
-				// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
-				// extension, ends dispatch too.
-				void prompting.then(markTaskDispatched, markTaskDispatched);
-				await beforeStartDeadline(taskDispatched);
-				startBudget.end();
-				await prompting;
+				if (admitted.spec.skipTaskPrompt) startBudget.end();
+				else {
+					const prompting = session.prompt(
+						admitted.spec.task,
+						admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
+					);
+					// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
+					// extension, ends dispatch too.
+					void prompting.then(markTaskDispatched, markTaskDispatched);
+					await beforeStartDeadline(taskDispatched);
+					startBudget.end();
+					await prompting;
+				}
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
+			// Only a session given a release policy detaches calls.
+			const detached = release === undefined ? [] : session.takeDetachedToolCalls();
+			// A stopped child is not waiting on anything: what it detached ends with it.
+			if (termination !== undefined) for (const call of detached) call.abort(termination);
+			else if (detached.length > 0 && release !== undefined) {
+				release.onReleased(detached);
+				const waitingOn = detached.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName }));
+				this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
+				this.native.finishChildAttempt(token, nativeStatus("interrupted"));
+				return {
+					status: "interrupted",
+					released: { waitingOn },
+					stats,
+					path: admitted.identity.path,
+					envelope: releasedEnvelope(waitingOn),
+					sessionFile,
+					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+					...skillReport,
+				};
+			}
 			const producedMessages = ownMessages();
 			const output = outputFor(producedMessages);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
