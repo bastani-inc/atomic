@@ -486,13 +486,21 @@ function settleBranch(session: AgentSession): { branch: SessionEntry[]; ready: R
 	return { branch, ready };
 }
 
+/** Whether nothing may be applied now: the session closed or failed to save, a foreground compaction owns the boundary, or background compaction is off. */
+function commitBlocked(session: AgentSession, foreground: boolean): boolean {
+	return (
+		session._disposed ||
+		session._persistenceFailure !== undefined ||
+		(!foreground && foregroundCompactionActive(session)) ||
+		!backgroundSettings(session).enabled
+	);
+}
+
 async function commitReady(
 	session: AgentSession,
 	{ foreground = false, awaitPersistence = false }: CommitReadyOptions,
 ): Promise<CommittedBackgroundCompaction | undefined> {
-	if (session._disposed || session._persistenceFailure !== undefined) return undefined;
-	if (!foreground && foregroundCompactionActive(session)) return undefined;
-	if (!backgroundSettings(session).enabled) return undefined;
+	if (commitBlocked(session, foreground)) return undefined;
 	const runtime = runtimeOf(session);
 	let { branch, ready } = settleBranch(session);
 	if (!ready) return undefined;
@@ -504,7 +512,7 @@ async function commitReady(
 		return undefined;
 	if (awaitPersistence) {
 		await session._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
-		if (session._disposed || session._persistenceFailure !== undefined) return undefined;
+		if (commitBlocked(session, foreground)) return undefined;
 		({ branch, ready } = settleBranch(session));
 		if (!ready) return undefined;
 	}

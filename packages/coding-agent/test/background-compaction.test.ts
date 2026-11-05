@@ -996,6 +996,27 @@ describe("background compaction scheduling edges (#4330)", () => {
 		assert.equal(harness.eventsOfType("compaction_end").at(-1)?.midTurn, true);
 	});
 
+	test("nothing is applied when background compaction is switched off or a foreground compaction starts while the commit waits", async () => {
+		const { harness } = await readyHarness();
+		const waitThen = (change: () => void) =>
+			new Promise<void>((resolve) => {
+				setTimeout(() => {
+					change();
+					resolve();
+				}, 5);
+			});
+		harness.session._agentEventQueue = waitThen(() => {
+			harness.session._autoCompactionAbortController = new AbortController();
+		});
+		assert.equal(await harness.session._runBackgroundCompactionBoundary(true, true), false);
+		harness.session._autoCompactionAbortController = undefined;
+		harness.session._agentEventQueue = waitThen(() => harness.session.setBackgroundCompactionEnabled(false));
+		assert.equal(await harness.session._runBackgroundCompactionBoundary(true, true), false);
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.equal(harness.eventsOfType("compaction_end").length, 0);
+		assert.equal(harness.session.compaction.state, "idle");
+	});
+
 	test("a result that a queued save invalidates while the commit waits is discarded instead of applied", async () => {
 		const { harness, planner } = await readyHarness();
 		const target = planner.calls[0].branchIds.find((id) => {
