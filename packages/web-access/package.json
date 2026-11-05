@@ -46,7 +46,7 @@
     "@mozilla/readability": "^0.6.0",
     "linkedom": "^0.18.15",
     "p-limit": "^7.3.2",
-    "turndown": "^7.2.0",
+    "turndown": "^7.2.5",
     "unpdf": "1.8.1"
   }
 }

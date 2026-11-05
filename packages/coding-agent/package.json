@@ -118,7 +118,7 @@
     "proper-lockfile": "4.1.2",
     "quickjs-wasi": "3.6.3",
     "semver": "7.8.5",
-    "turndown": "^7.2.0",
+    "turndown": "^7.2.5",
     "typebox": "1.3.27",
     "undici": "8.12.3",
     "unpdf": "1.8.1",
