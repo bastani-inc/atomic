@@ -968,6 +968,31 @@ describe("AgentWakeDispatcher handler takeover while a key runs (#4326)", () => 
 		assert.equal(dispatcher.stats().namespaces, 0);
 	});
 
+	test("a key started under the old handler still holds its slot after a takeover", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		let release!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		dispatcher.handle("child", () => blocked, { maxConcurrent: 1 });
+		const running = dispatcher.deliver("child:a", wake("1"));
+		await flush();
+		const started: string[] = [];
+		dispatcher.handle(
+			"child",
+			async (key) => {
+				started.push(key);
+			},
+			{ replace: true, maxConcurrent: 1 },
+		);
+		const next = dispatcher.deliver("child:b", wake("1"));
+		await flush();
+		assert.deepEqual(started, [], "b waits for the slot a still holds");
+		release();
+		await Promise.all([running, next]);
+		assert.deepEqual(started, ["child:b"]);
+	});
+
 	test("cancel drops only the wake with that id on that key", async () => {
 		const time = manualClock();
 		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });

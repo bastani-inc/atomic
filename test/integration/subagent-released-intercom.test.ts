@@ -419,3 +419,49 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+test(
+	"another owner's reservation of a child does not take over a hold that is not dormant (#4326)",
+	async () => {
+		const childName = "subagent-worker-keep1-1";
+		const first = await ownerClient("hold-keeper-owner");
+		const { capability } = await first.authorizeSupervisorChild(childName);
+		await first.reserveRestoringRecipient(capability, { wake: true });
+		const sender = await peer("hold-keeper-sender");
+		let settled = false;
+		void sender
+			.send(childName, { text: "for the first owner's child" })
+			.finally(() => {
+				settled = true;
+			})
+			.catch(() => undefined);
+		await sleep(SETTLE_MS);
+		const second = await ownerClient("hold-taker-owner");
+		const taken = await second.authorizeSupervisorChild(childName);
+		await second.reserveRestoringRecipient(taken.capability);
+		const received: string[] = [];
+		const child = new IntercomClient(randomUUID());
+		child.on("message", (_from: object, message: { content: { text: string } }) => {
+			received.push(message.content.text);
+		});
+		brokerFixture.onCleanup(() => child.disconnect().catch(() => undefined));
+		await child.connect(
+			{
+				name: childName,
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				status: "idle",
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: "default",
+				groups: ["default"],
+			},
+			{ capability: taken.capability, supervisorSessionId: taken.supervisorSessionId },
+		);
+		await sleep(SETTLE_MS);
+		assert.deepEqual(received, [], "the send held under the first owner's reservation stays with it");
+		assert.equal(settled, false);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
