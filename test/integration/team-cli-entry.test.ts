@@ -48,3 +48,45 @@ test(
 	},
 	CLI_TIMEOUT_MS * 2,
 );
+
+test(
+	"an invalid team profile or storage selection at startup prints one error line, no stack trace, and exits 1 (#4320)",
+	() => {
+		const start = (env: Record<string, string>) =>
+			spawnSyncCollect([bunExecutable(), cli, "-p", "hello"], {
+				cwd: root,
+				env: {
+					...process.env,
+					ATOMIC_CODING_AGENT_DIR: join(root, "agent"),
+					ATOMIC_PROFILE: "",
+					ATOMIC_STORAGE: "",
+					ATOMIC_TEAM_URL: "",
+					FORCE_COLOR: "0",
+					NO_COLOR: "1",
+					...env,
+				},
+				timeout: CLI_TIMEOUT_MS,
+			});
+		const unknownProfile = start({ ATOMIC_PROFILE: "staging" });
+		assert.equal(unknownProfile.exitCode, 1);
+		assert.equal(
+			unknownProfile.stderr.toString(),
+			"Error: Invalid storage configuration: ATOMIC_PROFILE (unknown-profile). Set ATOMIC_PROFILE to ci, or unset it.\n",
+		);
+		const invalid: Record<string, string>[] = [
+			{ ATOMIC_TEAM_URL: "libsql://team.example.turso.io" },
+			{ ATOMIC_STORAGE: "not json" },
+		];
+		for (const env of invalid) {
+			const failed = start(env);
+			const stderr = failed.stderr.toString();
+			assert.equal(failed.exitCode, 1, stderr);
+			assert.match(
+				stderr,
+				/^Error: Invalid storage configuration: ATOMIC_(PROFILE|STORAGE) \((incomplete-profile|invalid-json)\)/,
+			);
+			assert.equal(stderr.trimEnd().split("\n").length, 1, stderr);
+		}
+	},
+	CLI_TIMEOUT_MS * 3,
+);

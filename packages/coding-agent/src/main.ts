@@ -62,6 +62,7 @@ import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-li
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
+import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
@@ -558,12 +559,18 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 
 	// Process-level storage comes from the launching process, so it is validated before any session
-	// starts and is never subject to project trust.
-	setCliStorageSelection(parsed.storage, cwd);
-	selectProcessStorage("journal", agentDir, cwd);
-	if (engineEnv.child !== "1") {
-		const { assertTeamAdapterInstalled } = await import("./core/storage/team.js");
-		await assertTeamAdapterInstalled(agentDir);
+	// starts and is never subject to project trust. An invalid selection prints its message and exits 1.
+	try {
+		setCliStorageSelection(parsed.storage, cwd);
+		selectProcessStorage("journal", agentDir, cwd);
+		if (engineEnv.child !== "1") {
+			const { assertTeamAdapterInstalled } = await import("./core/storage/team.js");
+			await assertTeamAdapterInstalled(agentDir);
+		}
+	} catch (error) {
+		if (!(error instanceof StorageConfigError || isTeamProfileError(error))) throw error;
+		console.error(chalk.red(`Error: ${error.message}`));
+		process.exit(1);
 	}
 	// The Intercom broker loads the shared storage adapter in its own process and only logs a failure, so a session
 	// warns when this executable cannot load it. Load-only, concurrent with startup; the engine child leaves it to its host.

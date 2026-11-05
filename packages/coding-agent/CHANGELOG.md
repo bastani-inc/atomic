@@ -45,6 +45,7 @@
 ### Fixed
 
 - Settings files are written to a temporary file and renamed into place, keeping their mode and symbolic links, so another Atomic process never reads a half-written `settings.json`, and a killed or out-of-space write leaves the previous file intact ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
+- An invalid `--storage`, `ATOMIC_STORAGE` or `ATOMIC_PROFILE` selection, or a missing libSQL adapter for the CI profile, now stops startup with one `Error:` line and exit code 1 instead of a stack trace ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 
 ### Changed
 
