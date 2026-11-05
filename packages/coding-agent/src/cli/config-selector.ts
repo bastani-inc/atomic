@@ -2,7 +2,8 @@
  * TUI config selector for `pi config` command
  */
 
-import { ProcessTerminal, setCapabilityOverrides, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { ConfigSelectorComponent, type ScopedResolvedPaths } from "../modes/interactive/components/config-selector.ts";
 import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.js";
@@ -21,6 +22,7 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
 	setCapabilityOverrides(options.settingsManager.getTerminalCapabilityOverrides());
 	// Initialize theme before showing TUI
 	initTheme(options.settingsManager.getTheme(), true);
+	setKeybindings(KeybindingsManager.create(options.agentDir));
 
 	return new Promise((resolve) => {
 		const ui = new TuiMainScreen(new ProcessTerminal(), undefined, options.agentDir);

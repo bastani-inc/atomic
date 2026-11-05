@@ -717,12 +717,19 @@ describe("GitHub Copilot OAuth device flow", () => {
 		const store = new InMemoryCredentialStore();
 		const models = createModels({ credentials: store });
 		models.setProvider(githubCopilotProvider());
+		let showDeviceCode: () => void = () => {};
+		const deviceCodeShown = new Promise<void>((resolve) => {
+			showDeviceCode = resolve;
+		});
 		const loginPromise = models.login("github-copilot", "oauth", {
 			signal: neverAbortedSignal,
 			prompt: async () => "",
-			notify: () => {},
+			notify: (event) => {
+				if (event.type === "device_code") showDeviceCode();
+			},
 		});
 
+		await deviceCodeShown;
 		await vi.advanceTimersByTimeAsync(1000);
 		const credential = await loginPromise;
 		expect(credential).toMatchObject({ type: "oauth", access: testCopilotAccessToken });

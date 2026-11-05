@@ -145,6 +145,8 @@ class AgentSessionBase {
 	protected _priorityInterruptPending = false;
 	protected _activePromptCount = 0;
 	protected _isPreparingRun: false | "user" | "custom" = false;
+	/** Prompts between their start and `_isPreparingRun`, so tree navigation cannot rebuild their context. */
+	protected _promptPreflightCount = 0;
 	protected _agentRunAbortRequested = false;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed after the current turn's tool results. */

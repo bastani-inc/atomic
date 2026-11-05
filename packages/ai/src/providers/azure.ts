@@ -26,12 +26,17 @@ function withDeploymentName<T extends StreamOptions>(model: Model<Api>, options:
 function azureStreams(streams: ProviderStreams): ProviderStreams {
 	return {
 		stream: (model, context, options) =>
-			lazyStream(model, async () =>
-				streams.stream(resolveAzureModel(model, options), context, withDeploymentName(model, options)),
+			lazyStream(
+				model,
+				async () => streams.stream(resolveAzureModel(model, options), context, withDeploymentName(model, options)),
+				options?.signal,
 			),
 		streamSimple: (model, context, options) =>
-			lazyStream(model, async () =>
-				streams.streamSimple(resolveAzureModel(model, options), context, withDeploymentName(model, options)),
+			lazyStream(
+				model,
+				async () =>
+					streams.streamSimple(resolveAzureModel(model, options), context, withDeploymentName(model, options)),
+				options?.signal,
 			),
 	};
 }

@@ -216,8 +216,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				this.refreshStatusSuccess = true;
 			}
 		}
+		const selectedModel = this.filteredModels[this.selectedIndex]?.model;
 		this.loadModelsFromSnapshot();
-		this.filterModels(this.searchInput.getValue());
+		// The user may have moved while the refresh was in flight, and the refresh can shift rows.
+		this.filterModels(this.searchInput.getValue(), selectedModel);
 		this.tui.requestRender();
 	}
 
@@ -264,7 +266,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 	}
 
-	private filterModels(query: string): void {
+	private filterModels(query: string, preferredModel?: Model<Api>): void {
 		this.filteredModels = query
 			? fuzzyFilter(
 					this.activeModels,
@@ -273,10 +275,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 						`${getModelSelectorSearchText({ id, provider, name: model.name })} ${`${provider}/${id}` === this.defaultModelKey ? "default" : ""}`,
 				)
 			: this.activeModels;
-		// When filtering by a query, move the selector to the top row so the best
-		// match is highlighted. When the query is cleared, keep the current position
-		// clamped to the (restored) list length.
-		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+		// Keep the preferred model selected if it is still listed. Otherwise, when filtering
+		// by a query, move the selector to the top row so the best match is highlighted.
+		// When the query is cleared, keep the current position clamped to the (restored) list length.
+		const preferredIndex = preferredModel
+			? this.filteredModels.findIndex((item) => modelsAreEqual(preferredModel, item.model))
+			: -1;
+		if (preferredIndex >= 0) this.selectedIndex = preferredIndex;
+		else this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
 		this.updateList();
 	}
 

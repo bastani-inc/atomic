@@ -10,6 +10,7 @@ import type { FilterMode } from "./tree-selector-types.ts";
 /** Component that renders a session tree selector for navigation */
 export class TreeSelectorComponent extends Container implements Focusable {
 	private treeList: TreeList;
+	private searchLine: SearchLine;
 	private labelInput: LabelInput | null = null;
 	private labelInputContainer: Container;
 	private treeContainer: Container;
@@ -18,14 +19,14 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	public onLabelError?: (error: Error) => void;
 	public onLabelUpdate?: () => void;
 
-	// Focusable implementation - propagate to labelInput when active for IME cursor positioning
+	// Focusable implementation - propagate to the active input for IME cursor positioning
 	private _focused = false;
 	get focused(): boolean {
 		return this._focused;
 	}
 	set focused(value: boolean) {
 		this._focused = value;
-		// Propagate to labelInput when it's active
+		this.searchLine.focused = value && this.labelInput === null;
 		if (this.labelInput) {
 			this.labelInput.focused = value;
 		}
@@ -50,6 +51,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.treeList.onSelect = onSelect;
 		this.treeList.onCancel = onCancel;
 		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
+		this.searchLine = new SearchLine(this.treeList);
 
 		this.treeContainer = new Container();
 		this.treeContainer.addChild(this.treeList);
@@ -60,7 +62,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
 		this.addChild(new TreeHelp());
-		this.addChild(new SearchLine(this.treeList));
+		this.addChild(this.searchLine);
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(this.treeContainer);
@@ -80,8 +82,8 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		};
 		this.labelInput.onCancel = () => this.hideLabelInput();
 
-		// Propagate current focused state to the new labelInput
-		this.labelInput.focused = this._focused;
+		// Propagate current focused state
+		this.focused = this._focused;
 
 		this.treeContainer.clear();
 		this.labelInputContainer.clear();
@@ -103,6 +105,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 
 	private hideLabelInput(): void {
 		this.labelInput = null;
+		this.focused = this._focused;
 		this.labelInputContainer.clear();
 		this.treeContainer.clear();
 		this.treeContainer.addChild(this.treeList);

@@ -129,7 +129,7 @@ interface CopilotTurnCapture {
 
 function withoutRequestIdentity(headers: Record<string, string>): Record<string, string> {
 	const stableHeaders = { ...headers };
-	delete stableHeaders.session_id;
+	delete stableHeaders["session-id"];
 	delete stableHeaders["x-client-request-id"];
 	return stableHeaders;
 }

@@ -43,10 +43,15 @@ test("API-key login options follow builtin provider auth metadata", () => {
 	assert.ok(!optionIds.has("openai-codex"));
 	assert.ok(optionIds.has("baseten"));
 	assert.ok(optionIds.has("qwen-token-plan-individual"));
+	assert.ok(optionIds.has("qwen-token-plan-individual-cn"));
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES.radius, "Radius");
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES["github-copilot"], "GitHub Copilot");
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES.baseten, "Baseten");
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES["qwen-token-plan-individual"], "Qwen Token Plan (Individual)");
+	assert.equal(
+		BUILT_IN_PROVIDER_DISPLAY_NAMES["qwen-token-plan-individual-cn"],
+		"Qwen Token Plan (Individual, China)",
+	);
 });
 
 test("TypeSafe login uses the canonical provider ID without resolving the obsolete ID", () => {
@@ -132,6 +137,7 @@ test("every adopted chat provider has a preferred default and non-chat catalogs 
 	assert.equal(defaultModelPerProvider.morph, undefined);
 	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.3");
 	assert.equal(defaultModelPerProvider["qwen-token-plan-individual"], "qwen3.8-max");
+	assert.equal(defaultModelPerProvider["qwen-token-plan-individual-cn"], "qwen3.8-max");
 	assert.equal(defaultModelPerProvider.radius, "balanced");
 	assert.equal(defaultModelPerProvider.nvidia, "nvidia/nemotron-3.5-super-vl-120b-a12b");
 	assert.equal(defaultModelPerProvider["zai-coding-cn"], "glm-5.3");

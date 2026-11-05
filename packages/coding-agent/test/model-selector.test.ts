@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ModelsRefreshResult } from "@bastani/pi-ai";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -10,6 +11,17 @@ import { createHarness, type Harness } from "./suite/harness.ts";
 
 function createFakeTui(): TUI {
 	return { requestRender: () => {} } as unknown as TUI;
+}
+
+function selectedModelId(selector: ModelSelectorComponent): string | undefined {
+	const row = stripAnsi(selector.render(120).join("\n"))
+		.split("\n")
+		.find((line) => line.startsWith("→"));
+	return row
+		?.replace(/^→\s*(✓\s*)?/, "")
+		.split(" ")[0]
+		?.split("/")
+		.pop();
 }
 
 describe("model selector", () => {
@@ -256,5 +268,136 @@ describe("model selector", () => {
 		selector.handleInput("\r");
 		expect(saveDefault).toHaveBeenCalledWith(currentModel);
 		selector.dispose();
+	});
+
+	describe("when the catalog refresh lands (pi #11810)", () => {
+		// Opens the selector with the refresh in flight, so a test can browse first and then let it land.
+		async function openWithPendingRefresh(currentId: string | null = "alpha-1"): Promise<{
+			activeHarness: Harness;
+			selector: ModelSelectorComponent;
+			finishRefresh: () => Promise<void>;
+		}> {
+			const activeHarness = await createHarness({
+				models: [{ id: "alpha-1" }, { id: "alpha-2" }, { id: "alpha-3" }, { id: "beta-1" }],
+			});
+			harness = activeHarness;
+			const { promise, resolve } = Promise.withResolvers<ModelsRefreshResult>();
+			vi.spyOn(activeHarness.session.modelRuntime, "refresh").mockReturnValue(promise);
+			const selector = new ModelSelectorComponent(
+				createFakeTui(),
+				currentId === null ? undefined : activeHarness.getModel(currentId),
+				activeHarness.settingsManager,
+				activeHarness.session.modelRuntime,
+				[],
+				() => {},
+				() => {},
+			);
+			const finishRefresh = async () => {
+				resolve({ aborted: false, errors: new Map() });
+				await vi.waitFor(() => {
+					assert.ok(stripAnsi(selector.render(120).join("\n")).includes("Model catalogs refreshed."));
+				});
+			};
+			return { activeHarness, selector, finishRefresh };
+		}
+
+		it("keeps the selection on the browsed model", async () => {
+			const { selector, finishRefresh } = await openWithPendingRefresh();
+			selector.handleInput("\x1b[B");
+			selector.handleInput("\x1b[B");
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), "alpha-3");
+			selector.dispose();
+		});
+
+		it("keeps the selection while a search query is active", async () => {
+			const { selector, finishRefresh } = await openWithPendingRefresh();
+			for (const char of "alpha") selector.handleInput(char);
+			selector.handleInput("\x1b[B");
+			const browsed = selectedModelId(selector);
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), browsed);
+			assert.notEqual(browsed, "alpha-1");
+			selector.dispose();
+		});
+
+		it("follows the selected model when new rows shift its position", async () => {
+			const { activeHarness, selector, finishRefresh } = await openWithPendingRefresh();
+			selector.handleInput("\x1b[B");
+			const modelRuntime = activeHarness.session.modelRuntime;
+			const snapshot = modelRuntime.getAvailableSnapshot();
+			vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue([
+				{ ...snapshot[0]!, id: "added-model" },
+				...snapshot,
+			]);
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), "alpha-2");
+			selector.handleInput("\x1b[A");
+			selector.handleInput("\x1b[A");
+			assert.equal(selectedModelId(selector), "alpha-1");
+			selector.dispose();
+		});
+
+		it("falls back to the current model when the selected model disappears", async () => {
+			const { activeHarness, selector, finishRefresh } = await openWithPendingRefresh();
+			selector.handleInput("\x1b[B");
+			const modelRuntime = activeHarness.session.modelRuntime;
+			const remaining = modelRuntime.getAvailableSnapshot().filter((model) => model.id !== "alpha-2");
+			vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue(remaining);
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), "alpha-1");
+			selector.dispose();
+		});
+
+		it("selects the browsed model on the top row when the rows above it disappear", async () => {
+			const { activeHarness, selector, finishRefresh } = await openWithPendingRefresh();
+			selector.handleInput("\x1b[B");
+			const modelRuntime = activeHarness.session.modelRuntime;
+			const remaining = modelRuntime.getAvailableSnapshot().filter((model) => model.id !== "alpha-1");
+			vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue(remaining);
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), "alpha-2");
+			selector.dispose();
+		});
+
+		it("keeps the browsed row position when the selected model disappears and none is current", async () => {
+			const { activeHarness, selector, finishRefresh } = await openWithPendingRefresh(null);
+			selector.handleInput("\x1b[B");
+			selector.handleInput("\x1b[B");
+			const modelRuntime = activeHarness.session.modelRuntime;
+			const remaining = modelRuntime.getAvailableSnapshot().filter((model) => model.id !== "alpha-3");
+			vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue(remaining);
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), "beta-1");
+			selector.dispose();
+		});
+
+		it("lists models that arrive while the search matches nothing", async () => {
+			const { activeHarness, selector, finishRefresh } = await openWithPendingRefresh();
+			for (const char of "zzz") selector.handleInput(char);
+			const modelRuntime = activeHarness.session.modelRuntime;
+			const snapshot = modelRuntime.getAvailableSnapshot();
+			vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue([
+				...snapshot,
+				{ ...snapshot[0]!, id: "zzz-added" },
+			]);
+
+			await finishRefresh();
+
+			assert.equal(selectedModelId(selector), "zzz-added");
+			selector.dispose();
+		});
 	});
 });

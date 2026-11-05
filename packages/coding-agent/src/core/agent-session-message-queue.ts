@@ -9,7 +9,7 @@ import {
 	isProtectedStreamingCustomMessage,
 	restoreProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
-import { waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
+import { markQueuedMessageImages, waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
 import { abort, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
 import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
 import {
@@ -68,14 +68,9 @@ export async function _queueSteer(
 	if (images) {
 		content.push(...images);
 	}
-	this._queueAgentMessage(
-		{
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		},
-		"steer",
-	);
+	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+	if (images?.length) markQueuedMessageImages(message);
+	this._queueAgentMessage(message, "steer");
 }
 
 /**
@@ -97,14 +92,9 @@ export async function _queueFollowUp(
 	if (images) {
 		content.push(...images);
 	}
-	this._queueAgentMessage(
-		{
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		},
-		"followUp",
-	);
+	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+	if (images?.length) markQueuedMessageImages(message);
+	this._queueAgentMessage(message, "followUp");
 }
 
 /**

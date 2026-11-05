@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "../../core/extensions/types.ts";
 import { formatBytes, LlamaClient, type LlamaModelInfo, normalizeLlamaServerUrl } from "./client.js";
+import { isLlamaServerUnreachableError } from "./errors.ts";
 import { findHuggingFaceToken, HuggingFaceClient } from "./huggingface.js";
 import { createLlamaProvider, LLAMA_PROVIDER_ID } from "./provider.js";
 import { type LlamaUi, runWithProgress, showLlamaUi } from "./ui.js";
@@ -8,14 +9,16 @@ function modelIsLoaded(model: LlamaModelInfo): boolean {
 	return model.status.value === "loaded" || model.status.value === "sleeping";
 }
 
+function isRequestTimeout(error: unknown): boolean {
+	return error instanceof Error && error.name === "TimeoutError";
+}
+
 function isConnectionError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	const message = `${error.name} ${error.message}`.toLowerCase();
-	return message.includes("fetch failed") || message.includes("timeout") || message.includes("network");
+	return isLlamaServerUnreachableError(error) || isRequestTimeout(error);
 }
 
 function connectionErrorMessage(error: unknown): string {
-	if (isConnectionError(error)) return "Could not connect to the server.";
+	if (isRequestTimeout(error)) return "Could not connect to the server.";
 	return error instanceof Error ? error.message : String(error);
 }
 

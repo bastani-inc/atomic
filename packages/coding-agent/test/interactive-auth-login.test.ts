@@ -382,7 +382,7 @@ describe("post-login model refresh", () => {
 	});
 	for (const scenario of [
 		{ provider: "kimi-coding", name: "Kimi For Coding", authType: "api_key" as const, modelId: "kimi-for-coding" },
-		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-4-8" },
+		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-5-5" },
 		{ provider: "radius", name: "Radius", authType: "api_key" as const, modelId: "balanced" },
 		{ provider: "radius", name: "Radius", authType: "api_key" as const, modelId: "account-specific" },
 	]) {

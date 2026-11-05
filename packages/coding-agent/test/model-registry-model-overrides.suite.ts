@@ -117,6 +117,23 @@ describeModelRegistry((context) => {
 			expect(compat?.openRouterRouting).toEqual({ only: ["amazon-bedrock"] });
 		});
 
+		test("built-in models inherit prompt cache key support unless overridden", async () => {
+			writeRawModelsJson({
+				openai: {
+					baseUrl: "https://proxy.example.com/v1",
+					compat: { promptCacheKeyMode: "enabled" },
+					modelOverrides: {
+						"gpt-4o-mini": { compat: { promptCacheKeyMode: "disabled" } },
+					},
+				},
+			});
+
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			expect(registry.getError()).toBeUndefined();
+			expect(registry.find("openai", "gpt-4o")?.compat).toMatchObject({ promptCacheKeyMode: "enabled" });
+			expect(registry.find("openai", "gpt-4o-mini")?.compat).toMatchObject({ promptCacheKeyMode: "disabled" });
+		});
+
 		test("model override deep merges compat settings", async () => {
 			const [builtin] = await builtinOpenRouterModels();
 			writeRawModelsJson({

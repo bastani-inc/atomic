@@ -167,6 +167,13 @@ describe("getSupportedThinkingLevels", () => {
 		}
 	});
 
+	it.each(["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra"] as const)(
+		"uses the Azure Foundry 1.05M context window for %s",
+		(modelId) => {
+			expect(getModel("azure", modelId)?.contextWindow).toBe(1050000);
+		},
+	);
+
 	it("does not include xhigh or max for Claude Sonnet 4.5", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeDefined();

@@ -41,6 +41,7 @@ function runOpenRouterRetryFixture(
 		"deepseek-v4-pro",
 		"deepseek-v4-pro-0813",
 		"glm-5.2",
+		"glm-5.3",
 		"qwen3.6-flash",
 		"qwen3.7-max",
 		"qwen3.7-plus",
@@ -72,8 +73,13 @@ function runOpenRouterRetryFixture(
 			},
 		]),
 	);
+	const anthropicModels = Object.fromEntries(
+		["claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet.5"].map((id) => [id, { id, name: id, tool_call: true }]),
+	);
 	const catalog = {
 		"alibaba-token-plan": { models: sourceModels },
+		"alibaba-token-plan-cn": { models: sourceModels },
+		anthropic: { models: anthropicModels },
 		baseten: { models: basetenModels },
 	};
 	const preloadPath = join(fixtureRoot, "mock-model-catalogs.mjs");
@@ -192,6 +198,20 @@ describe("strict model generation", () => {
 		) as Record<string, { input?: string[] }>;
 		assert.deepEqual(basetenCatalog["zai-org/GLM-5.2"]?.input, ["text"]);
 		assert.deepEqual(basetenCatalog["zai-org/GLM-5.2-Fast"]?.input, ["text"]);
+		const chinaIndividualCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/qwen-token-plan-individual-cn.json"), "utf8"),
+		) as Record<string, { baseUrl?: string; compat?: { thinkingFormat?: string } }>;
+		assert.equal(chinaIndividualCatalog["deepseek-v4-pro"]?.compat?.thinkingFormat, "qwen");
+		assert.equal(
+			chinaIndividualCatalog["deepseek-v4-pro"]?.baseUrl,
+			"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+		);
+		const anthropicCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/anthropic.json"), "utf8"),
+		) as Record<string, { compat?: { supportsTemperature?: boolean } }>;
+		assert.equal(anthropicCatalog["claude-sonnet-5"]?.compat?.supportsTemperature, false);
+		assert.equal(anthropicCatalog["claude-sonnet.5"]?.compat?.supportsTemperature, false);
+		assert.equal(anthropicCatalog["claude-sonnet-4-6"]?.compat?.supportsTemperature, undefined);
 	});
 
 	it("lists the GPT Image 2.6 models first under openai-images with their prices and capabilities (#4332)", () => {
@@ -397,6 +417,7 @@ describe("strict model generation", () => {
 			"deepseek-v4-pro",
 			"deepseek-v4-pro-0813",
 			"glm-5.2",
+			"glm-5.3",
 			"qwen3.6-flash",
 			"qwen3.7-max",
 			"qwen3.7-plus",

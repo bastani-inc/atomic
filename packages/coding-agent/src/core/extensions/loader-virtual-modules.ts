@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
 import { getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
-import { pathsEqual, resolvePath } from "../../utils/paths.ts";
+import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
@@ -570,7 +570,9 @@ async function importExtensionModule(
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: getAliases() } : {}),
 	});
-	const specifier = extensionImportSpecifier(extensionPath, cacheToken);
+	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
+	// file; extensionPath stays the cache and graph key.
+	const specifier = extensionImportSpecifier(canonicalizePath(extensionPath), cacheToken);
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest.

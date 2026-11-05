@@ -87,18 +87,23 @@ describe("default model selection", () => {
 	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
 		expect(defaultModelPerProvider.zai).toBe("glm-5.3");
 		expect(defaultModelPerProvider["zai-coding-cn"]).toBe("glm-5.3");
-		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
+		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M3");
+		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M3");
 		expect(defaultModelPerProvider.cerebras).toBe("gpt-oss-120b");
 		expect(defaultModelPerProvider.xai).toBe("grok-4.7");
 		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
 	});
+	test("anthropic defaults track current model (pi b425754a)", () => {
+		assert.equal(defaultModelPerProvider.anthropic, "claude-opus-5-5");
+		assert.equal(defaultModelPerProvider["anthropic-api"], "claude-opus-5-5");
+	});
 	test("ai-gateway default tracks current model", () => {
-		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
+		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.3");
 	});
 	test("Baseten and Qwen Token Plan Individual defaults track current models", () => {
 		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.3");
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
+		expect(defaultModelPerProvider["qwen-token-plan-individual-cn"]).toBe("qwen3.8-max");
 	});
 	test("NVIDIA automatic selection prefers listed Nemotron 3.5 Super VL over the first catalog model (#10910)", () => {
 		const chatModels = getBuiltinModels("nvidia");

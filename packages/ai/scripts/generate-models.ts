@@ -416,8 +416,10 @@ const QWEN_TOKEN_PLAN_PROVIDER_IDS = new Set<string>([
 	"qwen-token-plan",
 	"qwen-token-plan-cn",
 	"qwen-token-plan-individual",
+	"qwen-token-plan-individual-cn",
 ]);
-// QwenCloud Token Plan Individual text-model allowlist, verified 2026-09-03.
+// QwenCloud Token Plan Individual text-model allowlist, verified 2026-11-01.
+// qwen-token-plan-individual-cn applies it to the China endpoint.
 // Retired models remain excluded above even if the public catalog lags.
 // https://docs.qwencloud.com/token-plan/personal/token-plan-personal-overview
 const QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS = new Set<string>([
@@ -425,6 +427,7 @@ const QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS = new Set<string>([
 	"deepseek-v4-pro",
 	"deepseek-v4-pro-0813",
 	"glm-5.2",
+	"glm-5.3",
 	"qwen3.6-flash",
 	"qwen3.7-max",
 	"qwen3.7-plus",
@@ -898,8 +901,8 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 		id.includes("opus-4.8") ||
 		id.includes("opus-5") ||
 		id.includes("opus.5") ||
-		id.includes("sonnet-5-5") ||
-		id.includes("sonnet-5.5") ||
+		id.includes("sonnet-5") ||
+		id.includes("sonnet.5") ||
 		id.includes("haiku-5-5") ||
 		id.includes("haiku-5.5") ||
 		id.includes("fable-5")
@@ -2883,9 +2886,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 		// Process Alibaba Cloud Model Studio Token Plan models. International and
 		// China use separate endpoints and API keys (sk-sp- prefix). The Individual
-		// provider reuses the international source and endpoint with a narrower catalog.
+		// providers reuse each region's source and endpoint with a narrower catalog.
 		// models.dev keys are "alibaba-token-plan[-cn]"; pi exposes them as
-		// "qwen-token-plan[-cn]" plus the Individual catalog view.
+		// "qwen-token-plan[-cn]" plus the "qwen-token-plan-individual[-cn]" catalog views.
 		const qwenTokenPlanCompat: OpenAICompletionsCompat = {
 			thinkingFormat: "qwen",
 			supportsDeveloperRole: false,
@@ -2910,6 +2913,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				provider: "qwen-token-plan-cn",
 				baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
 				modelIds: undefined,
+			},
+			{
+				source: "alibaba-token-plan-cn",
+				provider: "qwen-token-plan-individual-cn",
+				baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+				modelIds: QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS,
 			},
 		] as const;
 
@@ -3810,6 +3819,10 @@ async function generateModels() {
 		"gpt-5.6-luna": 1050000,
 		"gpt-5.6-sol": 1050000,
 		"gpt-5.6-terra": 1050000,
+		"gpt-6-luna": 1050000,
+		"gpt-6-sol": 1050000,
+		"gpt-6.1-sol": 1050000,
+		"gpt-6.1-terra": 1050000,
 	};
 	const azureOpenAiModels: Model<Api>[] = allModels
 		.filter(

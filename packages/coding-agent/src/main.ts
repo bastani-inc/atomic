@@ -1057,6 +1057,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			await interactiveMode.ensureDeferredStartupComplete();
 			printTimings();
 			interactiveMode.stop();
+			await runtime.dispose();
 			stopThemeWatcher();
 			if (process.stdout.writableLength > 0) {
 				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));

@@ -46,6 +46,25 @@ const PROVIDER_LOCK_STALE_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS + PROVIDER_LOCK_HEAR
 /** How long a commit waits for the shared auth file lock. */
 const AUTH_FILE_LOCK_WAIT_MS = 30_000;
 
+/** Attempts to resolve an existing auth file's real path; see resolveExistingAuthPath. */
+const REALPATH_ATTEMPTS = 20;
+
+/**
+ * Resolves symlinks of an auth file that exists, so every alias locks and replaces one real file (pi #11655).
+ * Bun's realpath can fail with ENOENT while another process renames the target into place, so ENOENT is retried
+ * while the path still exists.
+ */
+function resolveExistingAuthPath(path: string): string {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return realpathSync(path);
+		} catch (error) {
+			const code = error instanceof Error && "code" in error ? error.code : undefined;
+			if (code !== "ENOENT" || attempt === REALPATH_ATTEMPTS || !existsSync(path)) throw error;
+		}
+	}
+}
+
 /**
  * How long a session waits for a provider lock another session holds. A live holder keeps it while its token
  * exchange runs (up to OAUTH_REFRESH_LOCK_HOLD_MS) and then waits for the auth file lock to commit; a dead one
@@ -136,7 +155,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	): Promise<LockResult<Credential | undefined>> {
 		this.ensureParentDir();
 		this.ensureFileExists();
-		const providerPath = `${realpathSync(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
+		const providerPath = `${resolveExistingAuthPath(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
 		let compromised: Error | undefined;
 		const release = await this.acquireProviderLock(
 			providerPath,
@@ -231,7 +250,8 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		const delayMs = 20;
 		for (let attempt = 1; ; attempt++) {
 			try {
-				return lockfile.lockSync(path, { realpath: false });
+				// Lock the resolved file so symlinked aliases of auth.json share one lock (pi #11655).
+				return lockfile.lockSync(resolveExistingAuthPath(path), { realpath: false });
 			} catch (error) {
 				if (!this.getRetryableLockErrorCode(error) || attempt === maxAttempts) throw error;
 				const start = Date.now();
@@ -262,7 +282,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	 * never observe a half-written file. The temp file is best-effort cleaned up
 	 * if the rename fails.
 	 */
-	private writeAtomic(content: string, path = this.authPath): void {
+	private writeAtomic(content: string, requestedPath = this.authPath): void {
+		// Replace the resolved file, not a symlink to it, so every alias keeps sharing the file and its lock.
+		const path = existsSync(requestedPath) ? resolveExistingAuthPath(requestedPath) : requestedPath;
 		const dir = dirname(path);
 		const mode = existsSync(path) ? statSync(path).mode & 0o777 : AUTH_FILE_WRITE_OPTIONS.mode;
 		const tempPath = join(dir, `.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`);
@@ -290,8 +312,15 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		return this.readPaths.map((path) => describeFileVersion(path)).join("|");
 	}
 
+	/** Each existing auth file once, by its real path, so a symlinked alias is never locked twice (pi #11655). */
+	private existingResolvedReadPaths(): string[] {
+		return [
+			...new Set(this.readPaths.filter((path) => existsSync(path)).map((path) => resolveExistingAuthPath(path))),
+		].sort();
+	}
+
 	deleteProvider(provider: string): string | undefined {
-		const paths = [...new Set(this.readPaths.filter((path) => existsSync(path)))].sort();
+		const paths = this.existingResolvedReadPaths();
 		const releases: Array<() => void> = [];
 		try {
 			for (const path of paths) releases.push(this.acquireLockSyncWithRetry(path));
@@ -308,12 +337,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	async deleteProviderAsync(provider: string): Promise<string | undefined> {
-		const paths = [...new Set(this.readPaths.filter((path) => existsSync(path)))].sort();
+		const paths = this.existingResolvedReadPaths();
 		const releases: Array<() => Promise<void>> = [];
 		try {
 			for (const path of paths) {
 				releases.push(
-					await lockfile.lock(path, {
+					// Lock the resolved file so symlinked aliases share one lock (pi #11655).
+					await lockfile.lock(resolveExistingAuthPath(path), {
 						realpath: false,
 						// Keep layered-file deletion below the logout RPC's 30-second
 						// deadline even if every auth path is actively locked. A caller
@@ -384,7 +414,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			let epermRetries = 0;
 			for (;;) {
 				try {
-					release = await lockfile.lock(this.authPath, {
+					// Lock the resolved file so symlinked aliases share one lock (pi #11655).
+					release = await lockfile.lock(resolveExistingAuthPath(this.authPath), {
+						realpath: false,
 						retries: 0,
 						stale: 30_000,
 						onCompromised: (err) => {

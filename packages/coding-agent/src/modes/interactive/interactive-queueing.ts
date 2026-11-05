@@ -119,7 +119,7 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = async function (
 		}
 		return 0;
 	}
-	const currentText = options?.currentText ?? this.editor.getText();
+	const currentText = options?.currentText ?? this.editor.getExpandedText?.() ?? this.editor.getText();
 	const combinedText = combineQueuedMessagesForEditor(allQueued, currentText);
 	this.editor.setText(combinedText);
 	this.updatePendingMessagesDisplay();

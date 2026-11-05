@@ -14,6 +14,7 @@ import {
 	prepareProtectedStreamingCustomMessagesForDisposal,
 	retryConsumedProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import { normalizeQueuedMessageImages } from "./agent-session-prompt.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
 import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
@@ -127,15 +128,14 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 	// Agent-core has already consumed this message. Reflect admission before an
 	// Escape/abort can restore it from a stale queue while earlier hooks settle.
 	if (event.type === "message_start" && event.message.role === "user") {
+		// Image-only messages have empty text, and still leave the queue (pi #8612).
 		const text = this._getUserMessageText(event.message);
-		if (text) {
-			const queue = [this._steeringMessages, this._followUpMessages].find((messages) => messages.includes(text));
-			if (queue) {
-				queue.splice(queue.indexOf(text), 1);
-				forgetTypedQueuedText(this, queue === this._steeringMessages ? "steer" : "followUp", text);
-				this._admittedQueuedMessageAwaitingReply = text;
-				consumedQueuedMessageEvents.add(event);
-			}
+		const queue = [this._steeringMessages, this._followUpMessages].find((messages) => messages.includes(text));
+		if (queue) {
+			queue.splice(queue.indexOf(text), 1);
+			forgetTypedQueuedText(this, queue === this._steeringMessages ? "steer" : "followUp", text);
+			this._admittedQueuedMessageAwaitingReply = text;
+			consumedQueuedMessageEvents.add(event);
 		}
 	}
 	const awaitProtectedPersistence =
@@ -244,6 +244,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
 		if (consumedQueuedMessageEvents.delete(event)) this._emitQueueUpdate();
+		await normalizeQueuedMessageImages(this, event.message);
 	}
 
 	this._applyInterruptAbortMessage(event);

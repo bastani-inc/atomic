@@ -1,3 +1,6 @@
+import { findInCauseChain } from "../../core/error-contract.ts";
+import { LlamaServerRequestError, LlamaServerUnreachableError } from "./errors.ts";
+
 export type LlamaModelStatus = "unloaded" | "loading" | "loaded" | "downloading" | "sleeping";
 
 export interface LlamaModelInfo {
@@ -164,6 +167,32 @@ export function llamaInferenceUrl(serverUrl: string): string {
 	return `${normalizeLlamaServerUrl(serverUrl)}/v1`;
 }
 
+/** The network-level reason a fetch failed, from its cause chain. */
+function connectionErrorDetail(error: unknown): string {
+	const cause = error instanceof Error ? error.cause : undefined;
+	if (cause instanceof Error && cause.message) return cause.message;
+	if (cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string") return cause.code;
+	return error instanceof Error ? error.message : String(error);
+}
+
+function hasErrorCode(candidate: unknown): candidate is { code: string } {
+	return (
+		typeof candidate === "object" && candidate !== null && typeof (candidate as { code?: unknown }).code === "string"
+	);
+}
+
+/**
+ * A network-level fetch failure carries an error code somewhere in its chain on both Node and Bun. A failure without
+ * one, such as Node's fetch refusing a blocked port or a URL with credentials, was never sent.
+ */
+function isNetworkFailure(error: unknown): boolean {
+	return findInCauseChain(error, hasErrorCode) !== undefined;
+}
+
+function isAbortOrTimeout(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 export class LlamaClient {
 	readonly serverUrl: string;
 	private readonly apiKey: string | undefined;
@@ -173,13 +202,29 @@ export class LlamaClient {
 		this.apiKey = apiKey;
 	}
 
+	/**
+	 * Fetches from the server. A network-level failure becomes a retryable LlamaServerUnreachableError naming the
+	 * server; a request the runtime refused to send becomes a LlamaServerRequestError. Cancellation and the request
+	 * timeout are rethrown unchanged.
+	 */
+	private async fetchServer(path: string, init: RequestInit): Promise<Response> {
+		try {
+			return await fetch(`${this.serverUrl}${path}`, init);
+		} catch (error) {
+			if (init.signal?.aborted || isAbortOrTimeout(error)) throw error;
+			const detail = connectionErrorDetail(error);
+			if (isNetworkFailure(error)) throw new LlamaServerUnreachableError(this.serverUrl, detail, { cause: error });
+			throw new LlamaServerRequestError(this.serverUrl, detail, { cause: error });
+		}
+	}
+
 	private async request(path: string, init: RequestInit = {}): Promise<unknown> {
 		const headers = new Headers(init.headers);
 		if (init.body !== undefined) headers.set("Content-Type", "application/json");
 		if (this.apiKey) headers.set("Authorization", `Bearer ${this.apiKey}`);
 		const timeout = AbortSignal.timeout(15_000);
 		const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-		const response = await fetch(`${this.serverUrl}${path}`, { ...init, headers, signal });
+		const response = await this.fetchServer(path, { ...init, headers, signal });
 		let payload: unknown;
 		try {
 			payload = await response.json();
@@ -234,7 +279,7 @@ export class LlamaClient {
 	async watch(onEvent: (event: LlamaModelEvent) => void, signal?: AbortSignal): Promise<void> {
 		const headers = new Headers();
 		if (this.apiKey) headers.set("Authorization", `Bearer ${this.apiKey}`);
-		const response = await fetch(`${this.serverUrl}/models/sse`, { headers, signal });
+		const response = await this.fetchServer("/models/sse", { headers, signal });
 		if (!response.ok || !response.body) throw new Error(`llama.cpp SSE returned HTTP ${response.status}`);
 		const reader = response.body.getReader();
 		const decoder = new TextDecoder();
