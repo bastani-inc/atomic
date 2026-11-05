@@ -27,9 +27,9 @@ const COUNTING_OWNER_SESSION_ID = "counting-owner";
 const SHELL_REGISTRY_OWNER_SESSION_ID = "shell-registry-owner";
 const SHELL_COUNTING_OWNER_SESSION_ID = "shell-counting-owner";
 
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-	while (cleanups.length > 0) cleanups.pop()?.();
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+	while (cleanups.length > 0) await cleanups.pop()?.();
 	clearSubagentControls();
 });
 
@@ -53,7 +53,9 @@ test(
 			scope: { kind: "session", sessionId: OWNER_SESSION_ID },
 			authorizeLaunch() {},
 		});
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		await launchReleasedTask(0, env, host, owner, dispatcher);
 		const before = subagentRegistrySizes();
 		const routes = childCommandRouteCount(host);
@@ -84,7 +86,9 @@ test(
 			scope: { kind: "session", sessionId: COUNTING_OWNER_SESSION_ID },
 			authorizeLaunch() {},
 		});
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		await launchReleasedTask(0, env, host, owner, dispatcher);
 		await settle();
 		const afterFirst = liveAsyncResources();
@@ -108,7 +112,9 @@ test(
 			scope: { kind: "session", sessionId: SHELL_REGISTRY_OWNER_SESSION_ID },
 			authorizeLaunch() {},
 		});
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
 		await launchReleasedShellWait(0, env, host, owner, dispatcher, parentCommandTaskOwner);
 		const before = subagentRegistrySizes();
@@ -149,7 +155,9 @@ test(
 			scope: { kind: "session", sessionId: SHELL_COUNTING_OWNER_SESSION_ID },
 			authorizeLaunch() {},
 		});
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
 		await launchReleasedShellWait(0, env, host, owner, dispatcher, parentCommandTaskOwner);
 		await settle();

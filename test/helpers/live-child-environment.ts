@@ -77,7 +77,7 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 			if (previous[name] === undefined) delete process.env[name];
 			else process.env[name] = previous[name];
 		}
-		rmSync(root, { recursive: true, force: true });
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	});
 	const options = (runId: string, extra: Partial<RunSyncOptions> = {}): RunSyncOptions => ({
 		cwd: root,

@@ -31,9 +31,9 @@ import { agent } from "../helpers/released-task-launch.js";
 import { trackSessions } from "../helpers/track-sessions.js";
 
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-	while (cleanups.length) cleanups.pop()?.();
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+	while (cleanups.length > 0) await cleanups.pop()?.();
 	clearSubagentControls();
 });
 
@@ -59,7 +59,9 @@ test(
 			stop();
 		});
 		const host = new AgentTaskHost({ scope: { kind: "session", sessionId: ownerId }, authorizeLaunch() {} });
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		const waits = new Map<string, ReplyWaiterRegistry>();
 		cleanups.push(
 			registerSessionResourceCleanup((id) => {

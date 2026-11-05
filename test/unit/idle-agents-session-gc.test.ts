@@ -33,9 +33,9 @@ const CHILDREN = 12;
 const OWNER_SESSION_ID = "gc-owner";
 const SHELL_OWNER_SESSION_ID = "gc-shell-owner";
 
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-	while (cleanups.length > 0) cleanups.pop()?.();
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+	while (cleanups.length > 0) await cleanups.pop()?.();
 	clearSubagentControls();
 });
 
@@ -149,7 +149,9 @@ test(
 			scope: { kind: "session", sessionId: OWNER_SESSION_ID },
 			authorizeLaunch() {},
 		});
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		for (let index = 0; index < CHILDREN; index++) await launchReleasedTask(index, env, host, owner, dispatcher);
 		assert.equal(env.answers.length, CHILDREN, "every call is still a live operation");
 		await collectEverythingTracked(tracked);
@@ -176,7 +178,9 @@ test(
 			scope: { kind: "session", sessionId: SHELL_OWNER_SESSION_ID },
 			authorizeLaunch() {},
 		});
-		cleanups.push(() => void host.close("session-close"));
+		cleanups.push(async () => {
+			await host.close("session-close");
+		});
 		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
 		for (let index = 0; index < SHELL_CHILDREN; index++)
 			await launchReleasedShellWait(index, env, host, owner, dispatcher, parentCommandTaskOwner);
@@ -205,7 +209,9 @@ function bindChildRoute(
 test("a child whose route its parent forgot is collected, and one still bound is not: the route is what held it (#4326)", async () => {
 	const tracked = trackCollection();
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "route-owner" }, authorizeLaunch() {} });
-	cleanups.push(() => void host.close("session-close"));
+	cleanups.push(async () => {
+		await host.close("session-close");
+	});
 	const owner = createChildCommandTaskOwner(() => host);
 	for (let index = 0; index < CHILDREN; index++) bindChildRoute(owner, tracked, `bound-${index}`, false);
 	for (let index = 0; index < CHILDREN; index++) bindChildRoute(owner, tracked, `unbound-${index}`, true);
