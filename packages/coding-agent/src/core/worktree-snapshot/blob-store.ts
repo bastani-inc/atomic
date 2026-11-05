@@ -449,6 +449,37 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 	return [eventsSource, runsSource, entriesSource];
 }
 
+/** Creates the blob table and the tables of its reference index that are missing. */
+async function createSnapshotIndexTables(transaction: SqliteExecutor, t: SnapshotIndexTables): Promise<void> {
+	await transaction.exec(`
+		CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT;
+		CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash);
+		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
+		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
+		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT;
+		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
+		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
+		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID;
+		CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
+		CREATE TABLE IF NOT EXISTS ${t.collection} (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT;
+		INSERT OR IGNORE INTO ${t.collection} (id) VALUES (1);
+		CREATE TABLE IF NOT EXISTS ${t.sources} (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID;
+	`);
+}
+
+/** Installs `source`'s index triggers and records that rows above its current last row are indexed by them. */
+async function installSource(transaction: SqliteExecutor, t: SnapshotIndexTables, source: IndexSource): Promise<void> {
+	for (const sql of source.reset ?? []) await transaction.run(sql);
+	await transaction.exec(source.createTriggers);
+	await transaction.run(
+		`INSERT OR REPLACE INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(rowid), 0), 0 FROM ${source.table}`,
+		source.name,
+	);
+}
+
 /** Which referencing tables exist, whether each has all its triggers and a source row, and whether its backfill is done. */
 async function readSourceStates(
 	executor: SqliteExecutor,
@@ -506,43 +537,30 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Opens the table, creating it in its own transaction when it is missing. A store that already has the table opens
 	 * without taking the write lock.
 	 */
+	/**
+	 * Opens the blob table and its reference index, creating them in their own transaction when they are missing, and
+	 * indexes referencing tables created since. A store whose tables and index exist opens without the write lock.
+	 */
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const t = snapshotIndexTables(prefix);
 		const exists = await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", t.sources);
-		if (!exists) {
-			await database.transaction(async (transaction) => {
-				await transaction.exec(`
-					CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT;
-					CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash);
-					CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
-					CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
-					CREATE TABLE IF NOT EXISTS ${t.runState} (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID;
-					CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
-					CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT;
-					CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
-					CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
-					CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
-					CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID;
-					CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
-					CREATE TABLE IF NOT EXISTS ${t.collection} (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT;
-					INSERT OR IGNORE INTO ${t.collection} (id) VALUES (1);
-					CREATE TABLE IF NOT EXISTS ${t.sources} (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID;
-				`);
-			});
-		}
+		if (!exists) await database.transaction((transaction) => createSnapshotIndexTables(transaction, t));
 		const store = new SqlSnapshotBlobStore(database, t, indexSources(prefix, t));
 		await store.installIndex();
 		return store;
 	}
 
 	/**
-	 * Creates the table inside the caller's transaction, so a store that creates its own tables, such as a new run
-	 * journal, takes the write lock once for both.
+	 * Creates the blob table and its reference index inside the caller's transaction, and indexes the referencing tables
+	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all
+	 * of them.
 	 */
 	static async initialize(transaction: SqliteExecutor, prefix = ""): Promise<void> {
-		await transaction.exec(
-			`CREATE TABLE IF NOT EXISTS ${validateStoragePrefix(prefix)}snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
-		);
+		const t = snapshotIndexTables(prefix);
+		await createSnapshotIndexTables(transaction, t);
+		for (const { source, installed } of await readSourceStates(transaction, t, indexSources(prefix, t))) {
+			if (!installed) await installSource(transaction, t, source);
+		}
 	}
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
@@ -591,12 +609,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.tables, [source]);
 				if (current === undefined || current.installed) return;
-				for (const sql of source.reset ?? []) await transaction.run(sql);
-				await transaction.exec(source.createTriggers);
-				await transaction.run(
-					`INSERT OR REPLACE INTO ${this.tables.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(rowid), 0), 0 FROM ${source.table}`,
-					source.name,
-				);
+				await installSource(transaction, this.tables, source);
 			});
 		}
 		return missing.length === 0 ? states : readSourceStates(this.database, this.tables, this.sources);
