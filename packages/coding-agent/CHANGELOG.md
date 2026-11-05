@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- `getWriterQueueStats(database)` from `@bastani/atomic/storage` reports how a node-sqlite handle used the database's write lock over the last 10 seconds: `lockHeldRatio`, `waiters` (writers in any process waiting now), `p50WaitMs`, `p95WaitMs`, and `commitsPerSecond` ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
+- `openNodeSqliteDatabase(path, { groupCommitHoldMs })` sets how long one group commit runs queued transactions before other processes' writers get the lock (default `DEFAULT_GROUP_COMMIT_HOLD_MS`, 100 ms). An invalid value throws `StorageConfigError` before anything is opened ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
+- Storage errors from the writers' queue are typed: `StorageWriteLockTimeoutError` (code `write-lock-timeout`, still a `StorageUnavailableError`) with `timeoutMs`, `elapsedMs`, `phase`, and the holding process when known; `StorageUnsupportedOperationError`; and a one-time `StorageWriterQueueDegradedError` process warning when writers fall back to polling. `StorageConfigError` has `code` `invalid-config` and an optional `hint`. Guards (`isStorageWriteLockTimeoutError` and others), `isRetryableStorageError`, and `serializeStorageError`/`rehydrateStorageError` for passing storage errors between processes are exported ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
+
+### Fixed
+
+- Writers to one SQLite database in different processes no longer leave the write lock idle while others wait. Each waiting writer used to find out that the lock was free by polling, sleeping up to 100 ms between checks, so on a journal shared by pool coordinators, the parent, and workers the lock sat idle most of the time. The writer that releases the lock now wakes the next one in line at once, and transactions requested while a batch waits for the lock join that batch's commit instead of queuing for the lock again. Order stays first come, first served, and writers killed or stopped while holding or waiting for the lock still never block the others ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
+
 ## [0.9.71] - 2026-11-03
 
 Readable model discovery, faster commands, and broader Markdown customization come with the move to pi 1.5.0.

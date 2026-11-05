@@ -3,7 +3,10 @@ import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	StorageUnavailableError,
+	StorageWriteLockTimeoutError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -256,13 +259,12 @@ test.skipIf(process.platform === "win32")(
 					() => assert.fail("write succeeded under a held lock"),
 					(cause: unknown) => cause,
 				);
-			assert.ok(error instanceof StorageUnavailableError, String(error));
-			assert.match(
-				error.message,
-				new RegExp(
-					`gave up after \\d+ ms waiting for the write lock.*held all that time by process ${holder.pid}\\b`,
-				),
-			);
+			assert.ok(error instanceof StorageWriteLockTimeoutError, String(error));
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error.code, "write-lock-timeout");
+			assert.equal(error.holderPid, holder.pid);
+			assert.ok((error.holderHeldMs ?? -1) >= 0);
+			assert.equal(error.timeoutMs, LOCK_WAIT_MS);
 			await holder.release();
 		} finally {
 			await holder?.kill();

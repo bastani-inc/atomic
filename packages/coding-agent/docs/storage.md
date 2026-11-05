@@ -23,7 +23,13 @@ try {
 
 The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode.
 
-Transactions from separate `openNodeSqliteDatabase` connections to the same file queue asynchronously within one process; symlink paths refer to the same queue. Separate in-memory databases remain independent. SQLite locking and the busy timeout still govern contention from other processes. Wrap a caller-owned connection consistently: its transaction queue is shared by wrappers of that connection, not by other connections to its file.
+Transactions from separate `openNodeSqliteDatabase` connections to the same file queue asynchronously within one process; symlink paths refer to the same queue. Separate in-memory databases remain independent. Wrap a caller-owned connection consistently: its transaction queue is shared by wrappers of that connection, not by other connections to its file.
+
+Writers in different processes take a file's write lock in turn, first come, first served. A writer that finds the lock held waits in a queue directory next to the database (`<file>-writers`), and the writer that releases the lock wakes the next one at once. Transactions requested on one connection while it waits or commits share one lock acquisition and one commit. `groupCommitHoldMs` bounds how long one acquisition runs them before other processes get the lock: `openNodeSqliteDatabase(path, { groupCommitHoldMs: 50 })`. It defaults to 100 ms (`DEFAULT_GROUP_COMMIT_HOLD_MS`), must be a finite number of milliseconds of 0 or more, and `0` commits each transaction on its own; an invalid value throws `StorageConfigError` before anything is opened. A transaction gives up with `StorageWriteLockTimeoutError` only when the lock stays held for its whole lock wait while no other connection commits. The lock wait is `lockWaitMs` (default 30000 ms), or a transaction's own `{ lockWaitMs }` option.
+
+`getWriterQueueStats(database)` reports how a handle from `openNodeSqliteDatabase` or `wrapNodeSqliteDatabase` used the write lock over the last 10 seconds: `lockHeldRatio` (the share of that time it held the lock, 0 to 1), `waiters` (writers in any process waiting for the lock now), `p50WaitMs` and `p95WaitMs` (how long its acquisitions waited for the lock), and `commitsPerSecond`. Other handles throw `StorageUnsupportedOperationError`.
+
+Waiting writers watch their queue entries for the release notice. When a writer cannot watch (for example because the Linux limits `fs.inotify.max_user_instances` or `fs.inotify.max_user_watches` are used up) or cannot notify the next writer, it falls back to retrying every 20 ms, and the connection emits one `StorageWriterQueueDegradedError` as a process warning (`process.on("warning")`). Transactions keep working; raise the watch limits to restore prompt handoff.
 
 Use `wrapNodeSqliteDatabase(connection)` to adapt an existing `node:sqlite` `DatabaseSync`. Closing that facade drains its accepted work but leaves your connection open. Route concurrent work through the same facade rather than issuing raw connection commands while a facade transaction is active.
 
@@ -371,7 +377,7 @@ Use error classes and their fields, not message matching. Configuration and faca
 
 | Error | Fields and response |
 |---|---|
-| `StorageConfigError` | `source`, `field`, `reason` identify an invalid selected option. Correct that selection; Atomic does not try a lower-precedence store. |
+| `StorageConfigError` | `code` `"invalid-config"`; `source`, `field`, `reason` identify an invalid selected option, and `hint`, when present, says what to pass instead. Correct that selection; Atomic does not try a lower-precedence store. |
 | `StorageAdapterLoadError` | `module`, `cause`. Check installation and the module's default export. |
 | `StorageUnavailableError` | `adapter`, `location`, `cause`. Restore access to the selected store before retrying. |
 | `StoragePrefixError` | `prefix`, `reason`. Use a valid non-reserved prefix. |
@@ -381,6 +387,16 @@ Use error classes and their fields, not message matching. Configuration and faca
 | `StorageOutcomeUnknownError` | `domain`, `id`, `key`. A driver cannot confirm the write outcome; inspect the keyed record before retrying. |
 | `StoragePayloadTooLargeError` | `limitBytes`, `actualBytes`. Reduce the payload for that backend. |
 | `StorageInvalidTextError` | `parameterIndex`, `reason`. Remove NUL from scalar text bindings or encode the value as JSON/binary. |
+
+These storage errors carry a stable `code` and a `hint` with the remedy:
+
+| Class | Code | When | Fields | What to do |
+|---|---|---|---|---|
+| `StorageWriteLockTimeoutError` (a `StorageUnavailableError`) | `write-lock-timeout` | A node-sqlite transaction waited its whole lock wait while another connection held the write lock and nothing committed. Nothing of the transaction ran. | `adapter`, `location`, `timeoutMs` (the lock wait), `elapsedMs` (how long nothing committed), `phase` (`"queued"` behind older writers, or `"acquiring"`), `holderPid` and `holderHeldMs` when known, `retryable: true`, `cause` (the SQLite busy error, when it tried the lock) | Check the holding process, which may be stopped or starved of CPU, or pass a longer `lockWaitMs`. Retrying later is safe. |
+| `StorageUnsupportedOperationError` | `unsupported-operation` | `getWriterQueueStats` received a handle that `openNodeSqliteDatabase` or `wrapNodeSqliteDatabase` did not return. | `operation`, `adapter`, `location` | Pass a node-sqlite handle. |
+| `StorageWriterQueueDegradedError` | `writer-queue-degraded` | Emitted once per connection as a process warning, not thrown: waiting writers fell back to polling for the lock. | `reason` (`"watch-unavailable"` or `"wake-failed"`), `adapter`, `location`, `cause` | Raise the file-watch limits, or make the `<file>-writers` directory writable. |
+
+Each has a guard that also recognizes a copy from another module instance or process: `isStorageConfigError`, `isStorageWriteLockTimeoutError`, `isStorageUnsupportedOperationError`, and `isStorageWriterQueueDegradedError`. `findStorageWriteLockTimeoutError(error)` and `isRetryableStorageError(error)` look through up to eight levels of `cause`. To pass a storage error to another process, send `serializeStorageError(error)` as JSON and call `rehydrateStorageError` on the other side: the result is the same class with the same fields and cause chain. A storage error the receiving version does not know becomes a `StorageError` that keeps the original `name`, `code`, and fields.
 
 Session operations can raise `SessionNotFoundError` or `SessionExistsError` with `sessionId`; `SessionIdMismatchError` with `requested` and `found`; and `SessionConflictError` with `sessionId`, `expectedSeq`, and `actualSeq`. Keep one writer per session. After a conflict, reopen the session rather than writing from stale state.
 
