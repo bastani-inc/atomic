@@ -103,6 +103,7 @@ export {
 	type TranscriptToolResult,
 	type TranscriptToolResultFormat,
 } from "./core/transcript.js";
+export * from "./core/worktree-snapshot/index.ts";
 export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.js";
 export {
 	type CodemodeToolDetails,
