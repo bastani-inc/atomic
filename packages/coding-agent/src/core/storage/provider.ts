@@ -309,10 +309,9 @@ export async function resolveAdapterOptions(
 
 async function closeAfterSnapshotCollections(database: SqliteDatabase): Promise<void> {
 	const running = runningSnapshotCollectionsOn(database.descriptor);
-	if (running.length > 0) {
-		abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
-		await Promise.all(running);
-	}
+	if (running.length === 0) return database.close();
+	abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
+	await Promise.all(running);
 	try {
 		await database.close();
 	} catch (cause) {
