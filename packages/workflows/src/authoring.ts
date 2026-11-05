@@ -397,6 +397,7 @@ export {
 	WorkflowInfrastructureError,
 } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
+export * from "./durable/fork-errors.js";
 export {
 	READINESS_DECISION_THRESHOLDS,
 	type ReadinessDecisionThresholds,
@@ -407,6 +408,11 @@ export {
 	type StageReadinessDecision,
 } from "./runs/foreground/readiness-decision.js";
 export type { WorkflowDecisionRequest } from "./shared/authoring-contract-stage.js";
+export type {
+	DurableRepositoryBinding,
+	DurableWorkspaceBinding,
+	WorkflowForkedFrom,
+} from "./shared/fork-lineage.js";
 export type {
 	WorkflowAdmissionConfigErrorCode,
 	WorkflowAdmissionErrorCode,
@@ -420,12 +426,6 @@ export {
 	WorkflowAdmissionConfigError,
 	WorkflowAdmissionError,
 } from "./workers/admission-errors.js";
-export * from "./durable/fork-errors.js";
-export type {
-	DurableRepositoryBinding,
-	DurableWorkspaceBinding,
-	WorkflowForkedFrom,
-} from "./shared/fork-lineage.js";
 export type {
 	LocalWorkerOptionsErrorCode,
 	LocalWorkerOptionsErrorReason,

@@ -141,12 +141,12 @@ export type { RunJournalOption, RunJournalSettings } from "./durable/journal/res
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
+export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "./durable/types.js";
 export {
 	listWorkflowSnapshotBoundaries,
 	type WorkflowSnapshotBoundary,
 	workflowSnapshotFrontier,
 } from "./durable/worktree-snapshots.js";
-export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "./durable/types.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";
 export { createAgentSessionAdapter } from "./extension/wiring.js";
