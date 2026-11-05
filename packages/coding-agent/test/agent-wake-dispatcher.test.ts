@@ -366,6 +366,7 @@ describe("AgentRehydrateError (#4326)", () => {
 	test("every code has a hint, a message built from its fields, and only session-busy is retryable", () => {
 		const cases: Array<[AgentRehydrateError, string, boolean]> = [
 			[new AgentRehydrateError("session-busy", { sessionId: "s", activity: "streaming" }), "streaming", true],
+			[new AgentRehydrateError("not-reopenable", { sessionId: "s-7", storage: "memory" }), "s-7", false],
 			[new AgentRehydrateError("no-wake-handler", { wakeKey: "x:1", namespace: "x" }), "x:1", false],
 			[new AgentRehydrateError("wake-handler-conflict", { namespace: "x" }), '"x"', false],
 			[new AgentRehydrateError("wake-failed", { wakeKey: "x:1", wakes: 2 }), "x:1", false],
@@ -649,6 +650,10 @@ describe("AgentRehydrateError messages and serialization (#4326)", () => {
 			[
 				new AgentRehydrateError("session-not-found", { sessionId: "s-2", storage: "libsql", localOnly: false }),
 				"Session s-2 is not in this node's libsql storage (session-not-found). Check the session id: the libsql storage this node uses has no session with it.",
+			],
+			[
+				new AgentRehydrateError("not-reopenable", { sessionId: "s-4", storage: "memory" }),
+				"Session s-4 cannot be released: its memory store cannot be reopened (not-reopenable). Create the session over a store that outlives it: a SQLite or JSONL session store, or a MemorySessionStore the host keeps and passes as `sessionStore`. A session from `SessionManager.inMemory()` has nowhere to be reopened from.",
 			],
 			[
 				new AgentRehydrateError("no-wake-handler", { wakeKey: "bench:a", namespace: "bench" }),

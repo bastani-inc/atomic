@@ -23,6 +23,19 @@ import { validateSessionEntries, validateSessionHeader, validateSessionText } fr
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 
+const privateStores = new WeakSet<MemorySessionStore>();
+
+/** Mark a store as private to one session manager: nothing else holds it, so its history is gone once that manager is. */
+export function markPrivateMemorySessionStore(store: MemorySessionStore): MemorySessionStore {
+	privateStores.add(store);
+	return store;
+}
+
+/** Whether this store is one session manager's own in-memory store, as `SessionManager.inMemory()` creates. */
+export function isPrivateMemorySessionStore(store: SessionStore): boolean {
+	return store instanceof MemorySessionStore && privateStores.has(store);
+}
+
 /**
  * Sessions held in process memory. Each record is kept as UTF-8 JSON bytes, not a string: one character outside
  * Latin-1 makes the engine store a whole string at two bytes per character, which would double every idle agent's

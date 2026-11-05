@@ -1,6 +1,8 @@
 import { AgentRehydrateError, AgentReleaseConfigError, type AgentSessionActivity } from "./agent-rehydrate-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type AgentWakeDispatcher, agentWakeDispatcher } from "./agent-wake-dispatcher.ts";
+import { isPrivateMemorySessionStore } from "./storage/session/memory-session-store.ts";
+import type { SessionStore } from "./storage/session/types.ts";
 
 /** What is left of a released session: plain data that names its stored conversation, and nothing live. */
 export interface ReleasedAgentSession {
@@ -40,6 +42,15 @@ function describe(value: ReleaseWhenIdleOptions | number | string | boolean | nu
 	return typeof value === "string" ? JSON.stringify(value) : Array.isArray(value) ? "an array" : String(value);
 }
 
+/**
+ * The refusal for a session whose history could not be reopened once it is released, or undefined when it can: its
+ * store is one session manager's own in-memory store, so releasing it would lose the conversation.
+ */
+export function notReopenable(sessionId: string, store: SessionStore): AgentRehydrateError | undefined {
+	if (!isPrivateMemorySessionStore(store)) return undefined;
+	return new AgentRehydrateError("not-reopenable", { sessionId, storage: store.descriptor.adapter });
+}
+
 /** What keeps the session from being released now, if anything. */
 export function sessionActivity(session: AgentSession): AgentSessionActivity | undefined {
 	if (session.isStreaming) return "streaming";
@@ -55,13 +66,16 @@ const releases = new WeakMap<AgentSession, Promise<ReleasedAgentSession>>();
 /**
  * Let go of everything the session holds in memory (its agent loop, extension instances, tool registry, listeners,
  * timers, Intercom and MCP connections, provider caches) and keep only its stored history. Refused with a retryable
- * `session-busy` {@link AgentRehydrateError} while a run, compaction, shell command or queued message is pending.
+ * `session-busy` {@link AgentRehydrateError} while a run, compaction, shell command or queued message is pending, and
+ * with a `not-reopenable` one when its history is in a private in-memory store that nothing could reopen it from.
  * Releasing again returns the same result. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`.
  */
 export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 	const existing = releases.get(this);
 	if (existing !== undefined) return existing;
 	const sessionId = this.sessionManager.getSessionId();
+	const unreopenable = notReopenable(sessionId, this.sessionManager.getSessionStore());
+	if (unreopenable !== undefined) return Promise.reject(unreopenable);
 	const activity = sessionActivity(this);
 	if (activity !== undefined) return Promise.reject(new AgentRehydrateError("session-busy", { sessionId, activity }));
 	const sessionFile = this.sessionManager.getSessionFile();

@@ -259,6 +259,7 @@ export {
 	type AgentWakeDispatcherOptions,
 	type AgentWakeDispatcherStats,
 	type AgentWakeHandler,
+	type AgentWakeHandlerOptions,
 	type AgentWakeKind,
 	type AgentWakeTimer,
 	agentWakeDispatcher,

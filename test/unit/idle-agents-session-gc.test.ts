@@ -86,7 +86,10 @@ async function releaseSdkSession(
 	waitTool: ToolDefinition,
 	tracked: ReturnType<typeof trackCollection>,
 ): Promise<DetachedToolCall[]> {
-	const harness = await createHarness({ customTools: [waitTool] });
+	const harness = await createHarness({
+		customTools: [waitTool],
+		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
+	});
 	harness.setResponses([
 		fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: String(index) }, { id: `ci-${index}` })], {
 			stopReason: "toolUse",

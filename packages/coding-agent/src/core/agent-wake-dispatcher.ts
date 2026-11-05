@@ -2,7 +2,7 @@ import { AgentRehydrateError, AgentReleaseConfigError } from "./agent-rehydrate-
 import type { DetachedToolResult } from "./agent-session-detached-tools.ts";
 
 /** What woke an agent. Every kind arrives the same way, as a wake on the agent's key. */
-export type AgentWakeKind = "intercom" | "tool-result" | "child-result" | "answer" | "resume" | "timer";
+export type AgentWakeKind = "intercom" | "tool-result" | "timer";
 
 /** One message for a released (or idle) agent. `id` makes delivery exactly once while the wake is pending. */
 export interface AgentWake {
@@ -10,8 +10,6 @@ export interface AgentWake {
 	readonly kind: AgentWakeKind;
 	/** The result of a detached tool call, for `tool-result` wakes. */
 	readonly toolResult?: DetachedToolResult;
-	/** Text the wake carries, for example a resume message or an answer. Never logged or put in error fields. */
-	readonly text?: string;
 }
 
 /**

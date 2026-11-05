@@ -8,7 +8,12 @@ import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { markRuntimeStreamFunction } from "./agent-session-models.ts";
-import { enableReleaseWhenIdle, parseReleaseWhenIdle, type ReleaseWhenIdleOptions } from "./agent-session-release.ts";
+import {
+	enableReleaseWhenIdle,
+	notReopenable,
+	parseReleaseWhenIdle,
+	type ReleaseWhenIdleOptions,
+} from "./agent-session-release.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
@@ -174,6 +179,13 @@ function createScopedSession(
 		releaseWhenIdle = parseReleaseWhenIdle(options.releaseWhenIdle);
 	} catch (error) {
 		return Promise.reject(error);
+	}
+	if (releaseWhenIdle !== undefined && options.sessionManager !== undefined) {
+		const unreopenable = notReopenable(
+			options.sessionManager.getSessionId(),
+			options.sessionManager.getSessionStore(),
+		);
+		if (unreopenable !== undefined) return Promise.reject(unreopenable);
 	}
 	const inherited = sessionLifecycleCreation.getStore();
 	const context = inherited && !inherited.claimed ? inherited : { scope: {} };

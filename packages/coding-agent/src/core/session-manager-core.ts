@@ -71,7 +71,7 @@ import {
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
-import { MemorySessionStore } from "./storage/session/memory-session-store.js";
+import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 import { removeReleasedStageBlobs } from "./tools/tool-output-blobs.ts";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
@@ -989,7 +989,12 @@ export class SessionManager {
 	}
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
-		const manager = new SessionManager(new MemorySessionStore(createSessionCwdMatcher), cwd, "", options);
+		const manager = new SessionManager(
+			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcher)),
+			cwd,
+			"",
+			options,
+		);
 		if (entries?.length) {
 			manager.fileEntries = entries[0].type === "session" ? entries : [...manager.fileEntries, ...entries];
 			manager.sessionId = manager.getHeader()!.id;

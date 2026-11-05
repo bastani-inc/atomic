@@ -5,6 +5,7 @@
 export type AgentRehydrateErrorCode =
 	| "invalid-release-policy"
 	| "session-busy"
+	| "not-reopenable"
 	| "session-not-found"
 	| "no-wake-handler"
 	| "wake-handler-conflict"
@@ -75,6 +76,7 @@ const AGENT_RELEASE_CONFIG_ERROR_NAME = "AgentReleaseConfigError";
 const AGENT_REHYDRATE_ERROR_CODES: ReadonlySet<string> = new Set<AgentRehydrateErrorCode>([
 	"invalid-release-policy",
 	"session-busy",
+	"not-reopenable",
 	"session-not-found",
 	"no-wake-handler",
 	"wake-handler-conflict",
@@ -89,10 +91,14 @@ function hintFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorField
 				: "Pass releaseWhenIdle as { afterMs } with afterMs a finite number of milliseconds of at least 0, or leave it unset.";
 		case "session-busy":
 			return "Wait until the session settles (its agent_settled event), then release it again.";
+		case "not-reopenable":
+			return "Create the session over a store that outlives it: a SQLite or JSONL session store, or a MemorySessionStore the host keeps and passes as `sessionStore`. A session from `SessionManager.inMemory()` has nowhere to be reopened from.";
 		case "session-not-found":
-			return fields.localOnly === true
-				? `This node keeps sessions in local-only storage (${fields.storage}) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with \`${TEAM_JOIN_COMMAND}\`, or pass the id of a session saved on this node.`
-				: `Check the session id: the ${fields.storage} storage this node uses has no session with it.`;
+			return fields.storage === "memory"
+				? "This node keeps this session store in memory, and a session released from a private in-memory session manager is gone with it. Pass the MemorySessionStore the host keeps as `sessionStore`, or use a SQLite or JSONL session store."
+				: fields.localOnly === true
+					? `This node keeps sessions in local-only storage (${fields.storage}) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with \`${TEAM_JOIN_COMMAND}\`, or pass the id of a session saved on this node.`
+					: `Check the session id: the ${fields.storage} storage this node uses has no session with it.`;
 		case "no-wake-handler":
 			return `Register a handler for the "${fields.namespace}" wake namespace with AgentWakeDispatcher.handle() before delivering wakes to its keys.`;
 		case "wake-handler-conflict":
@@ -108,6 +114,8 @@ function subjectFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorFi
 			return `Invalid ${fields.field} from ${fields.source}: ${fields.value}`;
 		case "session-busy":
 			return `Session ${fields.sessionId} cannot be released while its ${fields.activity} is active`;
+		case "not-reopenable":
+			return `Session ${fields.sessionId} cannot be released: its ${fields.storage} store cannot be reopened`;
 		case "session-not-found":
 			return `Session ${fields.sessionId} is not in this node's ${fields.storage} storage`;
 		case "no-wake-handler":

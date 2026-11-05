@@ -8,6 +8,7 @@ import { afterEach, describe, test } from "vitest";
 import {
 	AgentRehydrateError,
 	type AgentReleaseConfigError,
+	isAgentRehydrateError,
 	isAgentReleaseConfigError,
 	isRetryableAgentRehydrateError,
 	TEAM_JOIN_COMMAND,
@@ -38,11 +39,11 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import type { ResourceAdmission } from "../src/core/sdk-types.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import type { SessionStore } from "../src/core/storage/session/types.ts";
+import type { SessionStore, StorageDescriptor } from "../src/core/storage/session/types.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 /** Delegates to a memory store and counts every operation, so tests prove a failure happened before any work. */
-function countingStore(inner: SessionStore = new MemorySessionStore()) {
+function countingStore(inner: SessionStore = new MemorySessionStore(), adapter?: StorageDescriptor["adapter"]) {
 	const counts = new Map<string, number>();
 	const count = (name: string) => counts.set(name, (counts.get(name) ?? 0) + 1);
 	const counted =
@@ -53,7 +54,7 @@ function countingStore(inner: SessionStore = new MemorySessionStore()) {
 		};
 	const store: SessionStore = {
 		get descriptor() {
-			return inner.descriptor;
+			return adapter === undefined ? inner.descriptor : { ...inner.descriptor, adapter };
 		},
 		create: counted("create", inner.create.bind(inner)),
 		append: counted("append", inner.append.bind(inner)),
@@ -79,7 +80,10 @@ afterEach(async () => {
 });
 
 async function harness(customTools: ToolDefinition[] = []): Promise<Harness> {
-	const created = await createHarness({ customTools });
+	const created = await createHarness({
+		customTools,
+		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
+	});
 	cleanups.push(() => created.cleanup());
 	return created;
 }
@@ -321,7 +325,11 @@ interface RuntimeHost {
 }
 
 async function runtimeHost(
-	options: { readonly releaseWhenIdle?: { afterMs: number }; readonly tools?: ToolDefinition[] } = {},
+	options: {
+		readonly releaseWhenIdle?: { afterMs: number };
+		readonly tools?: ToolDefinition[];
+		readonly adapter?: StorageDescriptor["adapter"];
+	} = {},
 ): Promise<RuntimeHost> {
 	const tempDir = join(tmpdir(), `atomic-release-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
@@ -350,7 +358,7 @@ async function runtimeHost(
 			},
 		],
 	});
-	const store = countingStore();
+	const store = countingStore(undefined, options.adapter);
 	const factoryCalls: CreateAgentSessionRuntimeOptions[] = [];
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
 		factoryCalls.push(runtimeOptions);
@@ -426,14 +434,14 @@ describe("AgentSessionRuntime.rehydrate (#4326)", () => {
 	});
 
 	test("a session not in this node's local-only storage fails at once, naming the team join command", async () => {
-		const host = await runtimeHost();
+		const host = await runtimeHost({ adapter: "node-sqlite" });
 		host.store.reset();
 		const calls = host.factoryCalls.length;
 
 		await assert.rejects(host.runtime.rehydrate("missing-session"), (error: AgentRehydrateError) => {
 			assert.ok(error instanceof AgentRehydrateError);
 			assert.equal(error.code, "session-not-found");
-			assert.deepEqual(error.fields, { sessionId: "missing-session", storage: "memory", localOnly: true });
+			assert.deepEqual(error.fields, { sessionId: "missing-session", storage: "node-sqlite", localOnly: true });
 			assert.ok(error.hint.includes(TEAM_JOIN_COMMAND));
 			assert.equal(error.retryable, false);
 			return true;
@@ -617,9 +625,13 @@ describe("release and idle release details (#4326)", () => {
 	test("closing one live instance of a stored session leaves another instance's idle release armed", async () => {
 		const time = manualClock();
 		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
-		const first = await createHarness({ sessionManager: SessionManager.inMemory(process.cwd(), { id: "shared" }) });
+		const first = await createHarness({
+			sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd(), { id: "shared" }),
+		});
 		cleanups.push(() => first.cleanup());
-		const second = await createHarness({ sessionManager: SessionManager.inMemory(process.cwd(), { id: "shared" }) });
+		const second = await createHarness({
+			sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd(), { id: "shared" }),
+		});
 		cleanups.push(() => second.cleanup());
 		enableReleaseWhenIdle(internal(first.session), { afterMs: 100 }, dispatcher);
 		enableReleaseWhenIdle(internal(second.session), { afterMs: 100 }, dispatcher);
@@ -699,5 +711,64 @@ describe("AgentSessionRuntime.rehydrate details (#4326)", () => {
 		assert.equal(host.runtime.rehydratedSessionCount, 0, "the runtime forgets a session that failed to close");
 		await dispose();
 		Object.defineProperty(host.runtime, "dispose", { configurable: true, value: async () => {} });
+	});
+});
+
+describe("a session whose history could not be reopened is not released (#4326)", () => {
+	test("release() refuses before anything happens, naming the store and how to fix it", async () => {
+		const h = await createHarness();
+		cleanups.push(() => h.cleanup());
+		const events: string[] = [];
+		h.session.subscribe((event) => events.push(event.type));
+		await assert.rejects(h.session.release(), (error: AgentRehydrateError) => {
+			assert.ok(isAgentRehydrateError(error));
+			assert.equal(error.code, "not-reopenable");
+			assert.deepEqual(error.fields, { sessionId: h.session.sessionId, storage: "memory" });
+			assert.equal(error.retryable, false);
+			assert.match(error.hint, /MemorySessionStore the host keeps/);
+			return true;
+		});
+		assert.equal(events.includes("session_released"), false);
+		assert.equal(internal(h.session)._disposed, false, "nothing was closed");
+		await h.session.prompt("still works").catch(() => {});
+	});
+
+	test("a store the host keeps is reopenable: its sessions release", async () => {
+		const host = await runtimeHost();
+		assert.equal((await host.runtime.session.release()).sessionId, host.runtime.session.sessionId);
+	});
+
+	test("createAgentSession({ releaseWhenIdle }) over a private in-memory manager fails before any admission", async () => {
+		let admissions = 0;
+		const resourceAdmission: ResourceAdmission = {
+			acquire: async () => {
+				admissions += 1;
+				return async () => {};
+			},
+		};
+		const sessionManager = SessionManager.inMemory();
+		await assert.rejects(
+			createAgentSession({ sessionManager, resourceAdmission, releaseWhenIdle: { afterMs: 10 } }),
+			(error: AgentRehydrateError) => {
+				assert.ok(isAgentRehydrateError(error));
+				assert.deepEqual(
+					[error.code, error.fields],
+					["not-reopenable", { sessionId: sessionManager.getSessionId(), storage: "memory" }],
+				);
+				return true;
+			},
+		);
+		assert.equal(admissions, 0);
+		assert.equal(armedIdleSessionCount(), 0);
+	});
+
+	test("a miss in memory storage points at the store, not at team join", () => {
+		const error = new AgentRehydrateError("session-not-found", {
+			sessionId: "s",
+			storage: "memory",
+			localOnly: true,
+		});
+		assert.match(error.hint, /MemorySessionStore/);
+		assert.ok(!error.hint.includes(TEAM_JOIN_COMMAND));
 	});
 });

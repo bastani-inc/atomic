@@ -1079,6 +1079,7 @@ wakeKeyNamespace
 type AgentWake
 type AgentWakeKind
 type AgentWakeHandler
+type AgentWakeHandlerOptions
 type AgentWakeClock
 type AgentWakeTimer
 type AgentWakeDispatcherOptions
