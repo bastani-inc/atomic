@@ -115,3 +115,27 @@ test("retention keeps each leaf's latest snapshot, so every branch of a session 
 		assert.equal(readFileSync(join(result.cwd, "notes.txt"), "utf8"), expected);
 	}
 });
+
+test("retention follows a restored checkout to its newest snapshot and lets the one it replaced go (#4245)", async () => {
+	const { clone } = await sandbox.remoteWithClone();
+	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	const manager = await SessionManager.create(store, clone);
+	const recorded = await record(manager, store, clone, "recorded\n");
+	writeFileSync(join(clone, "notes.txt"), "drifted\n");
+	const restore = await resumeSessionWorktree(manager, {
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		storeDir: sandbox.path("host"),
+	});
+	assert.equal(restore.status, "restored");
+	if (restore.status !== "restored") return;
+	const newer = await record(manager, store, restore.cwd, "newer\n", recorded);
+	assert.deepEqual(
+		(await listRetainedSessionSnapshots(store)).map((snapshot) => snapshot.id),
+		[newer.id],
+	);
+});
