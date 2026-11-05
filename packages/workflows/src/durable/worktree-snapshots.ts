@@ -116,7 +116,7 @@ export async function resolveWorkflowSnapshotFrontier(
 		readonly storeDir?: string;
 		readonly signal?: AbortSignal;
 		readonly onRestore?: (mapping: WorktreeRootMapping) => void;
-		readonly onWarning?: (warning: WorktreeRestoreWarning) => void;
+		readonly onWarning?: (warning: WorktreeRestoreWarning, mapping: WorktreeRootMapping) => void;
 	} = {},
 ): Promise<readonly WorktreeRootMapping[]> {
 	const mappings = options.mappings ?? [];
@@ -187,7 +187,10 @@ export async function resolveWorkflowSnapshotFrontier(
 		const cleanupFailures: unknown[] = [];
 		for (const mapping of restored.reverse()) {
 			try {
-				await removeRestoredWorktree(mapping.to, { storeDir: options.storeDir, onWarning: options.onWarning });
+				await removeRestoredWorktree(mapping.to, {
+					storeDir: options.storeDir,
+					onWarning: (warning) => options.onWarning?.(warning, mapping),
+				});
 			} catch (cleanupCause) {
 				cleanupFailures.push(cleanupCause);
 			}
@@ -202,7 +205,7 @@ export async function resolveWorkflowSnapshotFrontier(
 	}
 	for (const { mapping, warnings } of announcements) {
 		options.onRestore?.(mapping);
-		for (const warning of warnings) options.onWarning?.(warning);
+		for (const warning of warnings) options.onWarning?.(warning, mapping);
 	}
 	return restored;
 }

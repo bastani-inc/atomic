@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	captureWorktreeSnapshot,
@@ -131,6 +131,21 @@ test("enabled snapshots capture the workflow checkout and commit the checkpoint 
 		assert.equal(commits[1]!.options?.signal, controller.signal, "the caller's signal reaches the commit");
 	}
 });
+
+test.skipIf(process.platform === "win32")(
+	"a checkout reached through a symbolic link continues the chain of its previous snapshot (#4245)",
+	async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const link = sandbox.path("via-link");
+		symlinkSync(clone, link);
+		const { record } = await harness({ cwd: link });
+		const [first] = await record(checkpoint("first"));
+		assert.equal(first!.root, clone, "the snapshot root is the physical path");
+		sandbox.write(join(clone, "a.txt"), "changed\n");
+		const [second] = await record(checkpoint("second"));
+		assert.equal(second!.delta.base, first!.id);
+	},
+);
 
 test("a journal with no blob table commits unchanged, reports blob-store-unsupported and runs no Git (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
