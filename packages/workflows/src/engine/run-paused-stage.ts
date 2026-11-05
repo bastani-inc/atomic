@@ -58,6 +58,8 @@ export function deferStageUntilRunRelease(input: {
 		},
 		navigateTree: (...args) => invoke((stage) => stage.navigateTree(...args)),
 		compact: () => invoke((stage) => stage.compact()),
+		release: () => invoke((stage) => stage.release()),
+		rehydrate: () => invoke((stage) => stage.rehydrate()),
 		abortCompaction: () => current().abortCompaction(),
 		abort: () => invoke((stage) => stage.abort()),
 	};

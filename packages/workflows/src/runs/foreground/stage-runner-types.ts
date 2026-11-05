@@ -1,13 +1,18 @@
 import type {
 	AgentSession,
 	CreateAgentSessionOptions,
+	DetachedToolCall,
+	DetachedToolResult,
 	PromptOptions,
 	SessionRecoveryReason,
 	SessionRecoveryReport,
 	SessionStore,
 	SettingsManager,
 } from "@bastani/atomic";
+import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
 import type { WorkflowPendingStageRouteReadiness } from "../../shared/pending-stage-route-readiness.js";
+import type { StageReleasePolicy } from "../../shared/stage-wait.js";
+import type { StageReleaseError } from "../../shared/stage-wait-errors.js";
 import type {
 	CompleteStageOpts,
 	StageContext,
@@ -19,9 +24,13 @@ import type {
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
 } from "../../shared/types.js";
+import type { StageWakeDispatcher } from "./stage-wake-dispatcher.js";
 
 /** How queued text is read: literal unless `expandPromptTemplates` asks for command/template expansion. */
 export type StageQueuedTextOptions = Pick<StageSendUserMessageOptions, "expandPromptTemplates">;
+
+/** An image part queued with steering or follow-up text. */
+export type StageQueuedImage = Extract<Exclude<StageUserMessageContent, string>[number], { readonly type: "image" }>;
 
 type WorkflowPendingStageDelivery = NonNullable<
 	CreateAgentSessionOptions["orchestrationContext"]
@@ -81,12 +90,12 @@ export interface StageSessionRuntime {
 	resumeTasks?(): void;
 	steer(
 		text: string,
-		images?: undefined,
+		images?: readonly StageQueuedImage[],
 		options?: StageQueuedTextOptions,
 	): Promise<void> | Promise<"handled" | "queued">;
 	followUp(
 		text: string,
-		images?: undefined,
+		images?: readonly StageQueuedImage[],
 		options?: StageQueuedTextOptions,
 	): Promise<void> | Promise<"handled" | "queued">;
 	subscribe(listener: (event: StageSessionEvent) => void): () => void;
@@ -120,6 +129,46 @@ export interface StageSessionRuntime {
 	abort(): Promise<void>;
 	dispose(): void | Promise<void>;
 	getLastAssistantText?: () => string | undefined;
+	/** Detachable tool calls (see `AgentSession.setToolDetachment`); absent on runtimes that cannot detach. */
+	setToolDetachment?(policy: { readonly afterMs: number } | undefined): void;
+	takeDetachedToolCalls?(): DetachedToolCall[];
+	hasPendingDetachedTurn?(): boolean;
+	redispatchDetachedToolCalls?(): DetachedToolCall[];
+	resumeDetachedTurn?(results: readonly DetachedToolResult[]): Promise<void>;
+}
+
+/**
+ * The executor side of a stage that waits with its session released. The controller releases and reopens the
+ * session; these hooks keep the stage's status, durable record, admission slot and listeners in step.
+ */
+export interface StageWaitHooks {
+	/** When a waiting stage releases its session; `undefined` keeps it resident for its whole wait. */
+	readonly policy: StageReleasePolicy | undefined;
+	readonly dispatcher: StageWakeDispatcher;
+	readonly wakeKey: string;
+	/** The session is gone: record the stage as waiting, durably, and give back its admission and listeners. */
+	enter(wait: StageWaitSnapshot): Promise<void>;
+	/**
+	 * The detached calls the stage waits on delivered their results: record them with the wait, durably, before the
+	 * session reopens, so a resume continues the turn from them instead of running the calls again.
+	 */
+	recordResults(wait: StageWaitSnapshot, results: readonly DetachedToolResult[]): Promise<void>;
+	/**
+	 * The stage's record no longer needs the recorded results: the transcript the store holds has them, or a resumed
+	 * stage's transcript no longer waits on the calls they answer.
+	 */
+	resultsInTranscript(): void;
+	/**
+	 * The stage is reopening its session: take its admission and listeners back and mark it running. Called before
+	 * each attempt to reopen.
+	 */
+	leave(wait: StageWaitSnapshot): Promise<void>;
+	/** An attempt to reopen the session failed: give the admission and listeners back and show the stage waiting again. */
+	reopenFailed(wait: StageWaitSnapshot): Promise<void>;
+	/** The session reopened: record the end of the wait, durably, before the stage goes on. */
+	rehydrated(wait: StageWaitSnapshot): Promise<void>;
+	/** The stage keeps its session for every wait, for the reason given; reported once per run. */
+	resident(reason: StageReleaseError): void;
 }
 
 export type StageSessionCreateOptions = CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">;
@@ -197,6 +246,8 @@ export interface StageRunnerOpts {
 	routeAuthorityReady?: () => WorkflowPendingStageRouteReadiness | undefined;
 	/** Internal durable pre-start message bridge consumed by the intercom extension. */
 	pendingStageDelivery?: WorkflowPendingStageDelivery;
+	/** Internal: release the session while the stage only waits. Absent keeps every wait resident. */
+	waiting?: StageWaitHooks;
 }
 
 export interface InternalStageContext extends StageContext {
@@ -274,6 +325,30 @@ export interface InternalStageContext extends StageContext {
 	__isPaused(): boolean;
 	/** Internal: true once a schema-backed prompt captured its final structured output. */
 	__structuredOutputFinalized(): boolean;
+	/** Internal: true while the stage waits with its session released. */
+	__isReleased?(): boolean;
+	/**
+	 * Internal: true while the stage waits on a tool call with its session released. A message sent meanwhile is held
+	 * for the turn the results continue, as a message to a streaming stage joins its turn.
+	 */
+	__holdsInput?(): boolean;
+	/** Internal: release a stage the workflow holds idle; false when it is busy or may not release. */
+	__releaseIdle?(): Promise<boolean>;
+	/** Internal: release the stage while its readiness question waits on a human; false when it cannot. */
+	__releaseForPrompt?(): Promise<boolean>;
+	/** Internal: when the stage last became idle with its session resident; undefined while busy or released. */
+	__idleSince?(): number | undefined;
+	/** Internal: start a durably resumed stage released, reopening `sessionId` only when a live call needs it. */
+	__startReleased?(wait: StageWaitSnapshot, sessionId: string): void;
 }
+
+/** The stage runner's own context: a live stage can release its session while it waits and reopen it afterwards. */
+export type LiveInternalStageContext = InternalStageContext &
+	Required<
+		Pick<
+			InternalStageContext,
+			"__isReleased" | "__holdsInput" | "__releaseIdle" | "__releaseForPrompt" | "__idleSince" | "__startReleased"
+		>
+	>;
 
 export type AgentSessionConsumer = "prompt" | "complete";

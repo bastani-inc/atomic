@@ -182,6 +182,12 @@ export interface WorkflowCustomToolDefinition<TParams extends TSchema = TSchema,
 	readonly renderShell?: "default" | "self";
 	readonly prepareArguments?: (args: unknown) => Static<TParams>;
 	readonly executionMode?: "sequential" | "parallel";
+	/**
+	 * The call's work does not need the stage session once started, and running it again with the same call id and
+	 * arguments after a restart is safe. A call still running after the stage's `releaseWhenWaiting` threshold then
+	 * lets the stage release its session until the result arrives.
+	 */
+	readonly detachable?: boolean;
 	execute(
 		toolCallId: string,
 		params: Static<TParams>,
@@ -194,6 +200,62 @@ export interface WorkflowCustomToolDefinition<TParams extends TSchema = TSchema,
 export interface WorkflowScopedModel {
 	readonly model: WorkflowModelValue;
 }
+
+/**
+ * Whether a stage that is only waiting releases its session and admission slot. `true` releases after the default
+ * threshold ({@link DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS}), `false` keeps the stage resident for its whole wait, and
+ * `{ afterMs }` sets the threshold. Waits shorter than the threshold stay inline.
+ */
+export type ReleaseWhenWaiting = boolean | { readonly afterMs: number };
+
+/**
+ * What a waiting stage waits on, with its session released:
+ * - `tool`: a detached tool call; the stage is `waiting` and reopens when the result arrives.
+ * - `release`: an explicit `stage.release()`; the stage is `waiting` until `rehydrate()` or its next message reopens it.
+ * - `prompt`: a human answer to the stage's readiness question; the stage stays `awaiting_input` and reopens when
+ *   the answer arrives.
+ * - `idle`: the workflow held the stage without using it (for example while it awaited a child workflow or a
+ *   run-level prompt) for longer than its `releaseWhenWaiting` threshold; the stage is `waiting` until its next
+ *   prompt, message or `rehydrate()`.
+ */
+export type StageWaitKind = "tool" | "release" | "prompt" | "idle";
+
+/** A tool call a waiting stage waits on. */
+export interface StageWaitToolCall extends WorkflowSerializableObject {
+	readonly toolCallId: string;
+	readonly toolName: string;
+}
+
+/** Why a stage is `waiting`, stored with the stage so the wait survives a restart. */
+export interface StageWaitSnapshot extends WorkflowSerializableObject {
+	readonly kind: StageWaitKind;
+	/** When the stage released its session (epoch milliseconds). */
+	readonly since: number;
+	/** The calls the stage waits on, for `kind: "tool"`. */
+	readonly toolCalls?: readonly StageWaitToolCall[];
+	/**
+	 * How many of the stage's prompts and messages had finished when it released its session. A resumed run answers
+	 * that many replayed calls of the stage from its record without asking the model again.
+	 */
+	readonly promptsCompleted?: number;
+}
+
+/** Stage lifecycle events on the SDK event stream (`RunOpts.onStageLifecycleEvent`). */
+export type StageLifecycleEvent =
+	| {
+			readonly type: "stage_waiting";
+			readonly stageId: string;
+			readonly stageName: string;
+			readonly wait: StageWaitSnapshot;
+	  }
+	| {
+			readonly type: "stage_rehydrated";
+			readonly stageId: string;
+			readonly stageName: string;
+			readonly wait: StageWaitSnapshot;
+			/** How long the stage waited released, in milliseconds. */
+			readonly waitedMs: number;
+	  };
 
 export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined>
 	extends WorkflowModelFallbackFields {
@@ -245,6 +307,12 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	 * Only applied when the stage session actually has intercom access.
 	 */
 	readonly group?: string | true;
+	/**
+	 * Release the stage's session and admission slot while it only waits — on a long tool call, on a human answer to
+	 * its readiness question, or held idle by the workflow — and reopen it from the session store when it is needed
+	 * again. Defaults to the run's `releaseWhenWaiting`, then to `true`.
+	 */
+	readonly releaseWhenWaiting?: ReleaseWhenWaiting;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {
@@ -439,6 +507,13 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 	compact(): Promise<object>;
 	abortCompaction(): void;
 	abort(): Promise<void>;
+	/**
+	 * Give up the stage's session while the workflow holds the stage across a long wait between prompts. The stage is
+	 * `waiting` until `rehydrate()` or the next prompt reopens it from the session store.
+	 */
+	release(): Promise<void>;
+	/** Reopen a released stage's session from the session store. Does nothing when the stage is resident. */
+	rehydrate(): Promise<void>;
 }
 
 export interface WorkflowArtifact extends WorkflowSerializableObject {

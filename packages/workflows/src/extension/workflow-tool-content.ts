@@ -3,7 +3,7 @@ import { poolCoordinationLine } from "../shared/pool-coordination.js";
 import { formatStagePredictionStatus } from "../shared/possible-stage-prediction.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
-import { pooledStageStartingText, stageDisplayStatus } from "../shared/stage-display-status.js";
+import { pooledStageStartingText, stageDisplayStatus, stageStatusWithWait } from "../shared/stage-display-status.js";
 import { formatStageStartup } from "../shared/stage-startup.js";
 import { boundStickyDeliveryStates, omittedDeliveryStatesLine } from "../shared/sticky-delivery-state-bound.js";
 import { stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
@@ -43,6 +43,7 @@ function compactWorkflowToolMessage(
 
 const STATUS_MESSAGE_CHAR_LIMIT = 120;
 const STATUS_PENDING_STAGE_LIMIT = 10;
+const STATUS_WAITING_STAGE_LIMIT = 10;
 
 function truncateStatusText(text: string): string {
 	const flattened = text.replace(/\s+/g, " ").trim();
@@ -83,9 +84,19 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 			})
 			.join(", ")}`;
 	}
-	if (primary !== undefined) return [primary, budgetHint, toolHint].filter((part) => part !== undefined).join(" · ");
-	if (budgetHint !== undefined) return toolHint === undefined ? budgetHint : `${budgetHint} · ${toolHint}`;
-	if (toolHint !== undefined) return toolHint;
+	const waitingHint =
+		run.waitingStages.length > 0
+			? `waiting (${run.waitingCount}): ${[
+					...run.waitingStages
+						.slice(0, STATUS_WAITING_STAGE_LIMIT)
+						.map((stage) => stageStatusWithWait(stage.name, stage.wait)),
+					...(run.waitingStages.length > STATUS_WAITING_STAGE_LIMIT
+						? [`…, +${run.waitingStages.length - STATUS_WAITING_STAGE_LIMIT} more`]
+						: []),
+				].join(", ")}`
+			: undefined;
+	const hints = [primary, waitingHint, budgetHint, toolHint].filter((part) => part !== undefined);
+	if (hints.length > 0) return hints.join(" · ");
 	if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
 	if (run.exitReason !== undefined && run.exitReason.length > 0) {
 		return truncateStatusText(run.exitReason);
@@ -229,7 +240,7 @@ function renderStagesToolContent(result: Extract<WorkflowToolResult, { action: "
 		// A stage on a local worker whose session has not started reads as queued, not running.
 		const starting = pooledStageStartingText(stage);
 		lines.push(
-			`[${index + 1}] ${stage.name} (${stage.id}) ${stageDisplayStatus(stage)}${starting === undefined ? "" : ` (starting on its local worker: ${starting})`}`,
+			`[${index + 1}] ${stage.name} (${stage.id}) ${stageStatusWithWait(stageDisplayStatus(stage), stage.wait)}${starting === undefined ? "" : ` (starting on its local worker: ${starting})`}`,
 		);
 		if (stage.startup) lines.push(formatStageStartup(stage.startup));
 		if (stage.workerExecution) lines.push(`workerExecution: ${JSON.stringify(stage.workerExecution)}`);

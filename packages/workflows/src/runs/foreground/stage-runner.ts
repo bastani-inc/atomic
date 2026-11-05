@@ -12,6 +12,7 @@ export type {
 	AgentSessionAdapter,
 	CompleteAdapter,
 	InternalStageContext,
+	LiveInternalStageContext,
 	PromptAdapter,
 	StageAdapters,
 	StageModelFallbackMeta,

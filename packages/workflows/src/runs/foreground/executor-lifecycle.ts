@@ -12,6 +12,7 @@ import type {
 	WorkflowFailureKind,
 	WorkflowFailureRecoverability,
 } from "../../shared/store-types.js";
+import { type SerializedTypedError, typedFailureDetail } from "../../shared/typed-failure-detail.js";
 import type { WorkflowOutputValues, WorkflowPersistencePort } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { runFailureClassification } from "../../shared/workflow-failures-classifier.js";
@@ -81,6 +82,17 @@ function failureOf(metadata: Parameters<typeof recordedFailureClassification>[0]
 	return failure === undefined ? {} : { failure };
 }
 
+function failureDetailOf(source: { readonly failureDetail?: SerializedTypedError }): Pick<RunResult, "failureDetail"> {
+	return source.failureDetail === undefined ? {} : { failureDetail: source.failureDetail };
+}
+
+/** The typed error of the stage a run recorded as its failure, when that stage failed on one (#4309). */
+function failedStageDetail(snapshot: RunSnapshot): Pick<RunResult, "failureDetail"> {
+	if (snapshot.failedStageId === undefined) return {};
+	const stage = snapshot.stages.find((candidate) => candidate.id === snapshot.failedStageId);
+	return stage === undefined ? {} : failureDetailOf(stage);
+}
+
 export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
 	const failure = recordedFailureClassification(snapshot);
 	return {
@@ -92,11 +104,16 @@ export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
 		...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
 		...(failure !== undefined ? { failure } : {}),
+		...failedStageDetail(snapshot),
 		stages: [...snapshot.stages],
 		toolNodes: [...snapshot.toolNodes],
 	};
 }
 
+/**
+ * The store's terminal record of the run, else `fallback`. A failure that no stage holds keeps the typed error of
+ * `fallback` when the store recorded that same failure: the record has no field for it.
+ */
 export function reconcileTerminalRunResult(
 	runId: string,
 	runSnapshot: RunSnapshot,
@@ -106,15 +123,23 @@ export function reconcileTerminalRunResult(
 ): RunResult {
 	const stored = activeStore.run(runId);
 	const canonical = stored !== undefined && isTerminalRunStatus(stored.status) ? stored : undefined;
-	const result =
-		canonical !== undefined
-			? runResultFromSnapshot(canonical)
-			: {
-					runId,
-					...fallback,
-					stages: [...runSnapshot.stages],
-					toolNodes: [...runSnapshot.toolNodes],
-				};
+	let result: RunResult;
+	if (canonical === undefined)
+		result = {
+			runId,
+			...fallback,
+			stages: [...runSnapshot.stages],
+			toolNodes: [...runSnapshot.toolNodes],
+		};
+	else {
+		result = runResultFromSnapshot(canonical);
+		if (
+			canonical.failedStageId === undefined &&
+			canonical.status === fallback.status &&
+			canonical.error === fallback.error
+		)
+			result = { ...result, ...failureDetailOf(fallback) };
+	}
 	onRunEnd?.(runId, result.status, result.result, result.error, result.exitReason);
 	return result;
 }
@@ -133,6 +158,8 @@ export interface RunFailureMetadata {
 	readonly endedAt?: number;
 	readonly result?: WorkflowOutputValues;
 	readonly budgetState?: RunBudgetState;
+	/** The typed error of the selected failure, from its stage or its thrown error (#4309). */
+	readonly failureDetail?: SerializedTypedError;
 }
 
 /**
@@ -148,6 +175,9 @@ export function applyFailureToStage(stage: StageSnapshot, failure: WorkflowFailu
 	stage.failureDisposition = failure.disposition;
 	stage.retryAfterMs = failure.retryAfterMs;
 	stage.failureMessage = failure.message;
+	const failureDetail = typedFailureDetail(failure.cause);
+	if (failureDetail === undefined) delete stage.failureDetail;
+	else stage.failureDetail = failureDetail;
 }
 
 export function runFailureMetadata(failure: WorkflowFailure, stages: readonly StageSnapshot[]): RunFailureMetadata {
@@ -157,6 +187,7 @@ export function runFailureMetadata(failure: WorkflowFailure, stages: readonly St
 	const failureRecoverability = failedStage?.failureRecoverability ?? failure.recoverability;
 	const failureDisposition = failedStage?.failureDisposition ?? failure.disposition;
 	const retryAfterMs = failedStage?.retryAfterMs ?? failure.retryAfterMs;
+	const failureDetail = failedStage === undefined ? typedFailureDetail(failure.cause) : failedStage.failureDetail;
 
 	return {
 		errorMessage: failedStage?.error ?? failure.userMessage,
@@ -168,6 +199,7 @@ export function runFailureMetadata(failure: WorkflowFailure, stages: readonly St
 		...(failedStage !== undefined ? { failedStageId: failedStage.id } : {}),
 		resumable: failure.resumable,
 		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+		...(failureDetail !== undefined ? { failureDetail } : {}),
 	};
 }
 
@@ -198,6 +230,7 @@ function runFailureMetadataFromStage(fallbackFailure: WorkflowFailure, stage: St
 		failedStageId: stage.id,
 		resumable: stageDispositionResumable(failureDisposition, fallbackFailure.resumable),
 		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+		...failureDetailOf(stage),
 	};
 }
 
@@ -205,6 +238,7 @@ function runFailureMetadataFromFailure(
 	failure: WorkflowFailure,
 	failedStage: StageSnapshot | undefined,
 ): RunFailureMetadata {
+	const failureDetail = failedStage === undefined ? typedFailureDetail(failure.cause) : failedStage.failureDetail;
 	return {
 		errorMessage: failedStage?.error ?? failure.userMessage,
 		failureKind: failure.kind,
@@ -215,6 +249,7 @@ function runFailureMetadataFromFailure(
 		...(failedStage !== undefined ? { failedStageId: failedStage.id } : {}),
 		resumable: failure.resumable,
 		...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
+		...(failureDetail !== undefined ? { failureDetail } : {}),
 	};
 }
 
@@ -463,7 +498,7 @@ export async function finalizeKilledByFailure(
 		runId,
 		runSnapshot,
 		activeStore,
-		{ status: "killed", error: metadata.errorMessage, ...failureOf(metadata) },
+		{ status: "killed", error: metadata.errorMessage, ...failureOf(metadata), ...failureDetailOf(metadata) },
 		onRunEnd,
 	);
 }
@@ -515,6 +550,7 @@ export async function recordActiveBlockedFailure(
 		...(metadata.result !== undefined ? { result: metadata.result } : {}),
 		error: metadata.errorMessage,
 		...(failure !== undefined ? { failure } : {}),
+		...failureDetailOf(metadata),
 		stages: [...runSnapshot.stages],
 		toolNodes: [...runSnapshot.toolNodes],
 	};

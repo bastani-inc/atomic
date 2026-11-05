@@ -3,12 +3,15 @@ import {
 	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
 	convertToLlm,
+	type DetachedToolCall,
+	type DetachedToolResult,
 	isExtensionStartupFailure,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
 	type PromptOptions,
+	parkWorkflowStageForRelease,
 	parseModelConstraints,
 	reportDebug,
 	type SessionManager,
@@ -17,7 +20,16 @@ import {
 	setsProviders,
 } from "@bastani/atomic";
 import { raceAbort } from "../../shared/abort.js";
+import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
+import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type { StageStartupPhase, StageStartupSnapshot } from "../../shared/stage-startup.js";
+import {
+	STAGE_WAIT_RETRY_ATTEMPTS,
+	STAGE_WAIT_RETRY_BUDGET_MS,
+	stageReopenFailureCause,
+	stageWaitRetryDelayMs,
+} from "../../shared/stage-wait.js";
+import { StageRehydrationError, StageReleaseError } from "../../shared/stage-wait-errors.js";
 import type {
 	StageContext,
 	StageExecutionMeta,
@@ -72,6 +84,12 @@ import {
 } from "./stage-runner-messages.js";
 import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
 import { StageSessionPause, type StageSessionPauseResumeResult } from "./stage-runner-pause.js";
+import {
+	DetachedResultsNotSaved,
+	resultsAnsweringTranscript,
+	storedTranscript,
+	unansweredToolCallIds,
+} from "./stage-runner-reopen.js";
 import { StageSessionReplacement } from "./stage-runner-replacement.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import {
@@ -94,6 +112,7 @@ import {
 import type {
 	AgentSessionConsumer,
 	StageModelFallbackMeta,
+	StageQueuedImage,
 	StageRunnerOpts,
 	StageSessionCreateOptions,
 	StageSessionCreateResult,
@@ -295,6 +314,47 @@ class ThrownErrorRetryPaused extends Error {
 	}
 }
 
+/**
+ * Everything the controller needs only while its session is resident. A stage that releases its session drops this,
+ * and its next residency starts with a fresh one, so a waiting stage keeps none of it. The stage's own identity,
+ * listeners, captured answers and delivery-activity subscribers live on the controller instead: they outlive a wait.
+ */
+class StageResidency {
+	/** Consumer cancellation never releases the underlying creation owner. */
+	startupWait = new AbortController();
+	readonly messageAdmission = new StageMessageAdmission();
+	readonly replacement = new StageSessionReplacement();
+	readonly thrownErrorRetryStates = new Set<ThrownErrorRetryState>();
+	readonly creationPauseObservers = new Set<CreationPauseObserver>();
+	readonly listenerUnsubscribes = new Map<(event: StageSessionEvent) => void, () => void>();
+	readonly terminatingToolCallIds = new Set<string>();
+}
+
+const NO_TERMINATING_TOOL_CALLS: ReadonlySet<string> = new Set();
+
+/** Waits between turns: any use of the stage reopens its session. A tool wait instead holds input until it is woken. */
+function reopensOnUse(wait: StageWaitSnapshot | undefined): wait is StageWaitSnapshot {
+	return wait !== undefined && wait.kind !== "tool";
+}
+
+/** Input sent to a stage waiting on a tool call, queued into its reopened session before the turn continues. */
+interface HeldStageInput {
+	readonly content: StageUserMessageContent;
+	readonly kind: "steer" | "followUp";
+	/** Absent: the session's own default for queued text. */
+	readonly expandPromptTemplates: boolean | undefined;
+}
+
+function splitStageContent(content: StageUserMessageContent): { text: string; images: StageQueuedImage[] | undefined } {
+	if (typeof content === "string") return { text: content, images: undefined };
+	const text = content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+	const images = content.filter((part): part is StageQueuedImage => part.type === "image");
+	return { text, images: images.length === 0 ? undefined : images };
+}
+
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
@@ -302,8 +362,6 @@ export class StageSessionController {
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
 	private abortGeneration = 0;
 	private routeAuthorityWait: AbortController | undefined;
-	/** Consumer cancellation never releases the underlying creation owner. */
-	private startupWait = new AbortController();
 	private startup: StageStartupSnapshot | undefined;
 	private abortReason: Error | DOMException | string | undefined;
 	private abortReasonGeneration = 0;
@@ -324,7 +382,6 @@ export class StageSessionController {
 		cost: 0,
 		turns: 0,
 	};
-	private readonly terminatingToolCallIds = new Set<string>();
 	private latestStructuredOutputToolErrorValue: string | undefined;
 	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
@@ -340,8 +397,11 @@ export class StageSessionController {
 	private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private requestedThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
-	private readonly listenerUnsubscribes = new Map<(event: StageSessionEvent) => void, () => void>();
-	private readonly pauseControl = new StageSessionPause(() => this.session ?? this.replacement.retiringSession);
+	private readonly pauseControl = new StageSessionPause(
+		() => this.session ?? this.residencyState?.replacement.retiringSession,
+	);
+	/** What only the resident session needs; dropped when the session is released. Created on first need. */
+	private residencyState: StageResidency | undefined;
 	private readonly hasExplicitModelFallbackConfig: boolean;
 	private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
@@ -360,18 +420,44 @@ export class StageSessionController {
 	private readonly pendingFallbackWarnings: string[] = [];
 	private readonly modelCatalog: WorkflowModelCatalogPort | undefined;
 	private sessionSettingsManager: WorkflowSettingsManager | undefined;
-	private readonly thrownErrorRetryStates = new Set<ThrownErrorRetryState>();
-	private readonly creationPauseObservers = new Set<CreationPauseObserver>();
-	private readonly replacement = new StageSessionReplacement();
 	private pendingCreationResumeMessage: string | undefined;
-	private readonly messageAdmission = new StageMessageAdmission();
 	private readonly deliveryActivity = new StageDeliveryActivity();
 	private readonly artifactCapture = new StageArtifactCapture();
 	/** Set only when the caller supplied the session manager, so disposing the session never closes its store. */
 	private callerSessionManager: SessionManager | undefined;
+	/** Set while the session is released and the stage waits; cleared once the stage is woken. */
+	private releasedWait: StageWaitSnapshot | undefined;
+	/** Results of detached calls the next prompt segment records before it continues the turn. */
+	private pendingDetachedResults: readonly DetachedToolResult[] | undefined;
+	/** Input sent while the stage waits on a tool call, queued into the reopened session before it continues. */
+	private heldWhileReleased: HeldStageInput[] | undefined;
+	/** Set while the stage waits on detached calls with its session still live: inline, or resident for the wait. */
+	private waitingInline = false;
+	/** Cancels the detached calls of the current wait; set only while the stage waits on them. */
+	private abortDetachedCalls: ((reason: Error | DOMException | string) => void) | undefined;
+	/** Callers that need the session while it is released wait for the stage to wake. Created on first need. */
+	private releasedWaitEnded: PromiseWithResolvers<void> | undefined;
+	/** A durably resumed stage looks for detached calls its transcript ends on once, on its first prompt. */
+	private resumedDetachedCallsChecked = false;
+	/** The reopening of a released stage that callers needing its session join. */
+	private rehydration: Promise<void> | undefined;
+	/** A release between turns under way: callers join it first, so the stage never reopens halfway through it. */
+	private releasing: Promise<boolean> | undefined;
+	/** Cancels the wait between two attempts to reopen the session when the stage is aborted. */
+	private reopenBackoff: AbortController | undefined;
+	/** Prompts of the stage that have not settled; a stage with one cannot be released by its author. */
+	private promptsInFlight = 0;
+	/** When the stage's session last did anything: a prompt, a message or a session event. */
+	private lastActivityAt = Date.now();
 
-	beginOutputGeneration(): void {
-		this.artifactCapture.reset();
+	private get residency(): StageResidency {
+		this.residencyState ??= new StageResidency();
+		return this.residencyState;
+	}
+
+	/** `capturesAnswers`: the generation writes an output artifact from its answers. */
+	beginOutputGeneration(capturesAnswers = true): void {
+		this.artifactCapture.reset(capturesAnswers);
 	}
 
 	outputGenerationMessages(): StageSessionRuntime["messages"] {
@@ -498,16 +584,20 @@ export class StageSessionController {
 	}
 
 	lastAssistantText(fallback: string | undefined): string | undefined {
-		return lastAssistantTextFromSession(this.session, fallback, this.terminatingToolCallIds);
+		return lastAssistantTextFromSession(
+			this.session,
+			fallback,
+			this.residencyState?.terminatingToolCallIds ?? NO_TERMINATING_TOOL_CALLS,
+		);
 	}
 
 	subscribe(listener: (event: StageSessionEvent) => void): () => void {
 		this.pendingListeners.add(listener);
-		if (this.session) this.listenerUnsubscribes.set(listener, this.session.subscribe(listener));
+		if (this.session) this.residency.listenerUnsubscribes.set(listener, this.session.subscribe(listener));
 		return () => {
 			this.pendingListeners.delete(listener);
-			const unsubscribe = this.listenerUnsubscribes.get(listener);
-			this.listenerUnsubscribes.delete(listener);
+			const unsubscribe = this.residencyState?.listenerUnsubscribes.get(listener);
+			this.residencyState?.listenerUnsubscribes.delete(listener);
 			unsubscribe?.();
 		};
 	}
@@ -546,7 +636,7 @@ export class StageSessionController {
 						task: text,
 						stageName: this.opts.stageName,
 						constraints,
-						signal: this.startupWait.signal,
+						signal: this.residency.startupWait.signal,
 						selection: options?.routerSelection,
 						...(options?.taskNeeds ? { taskNeeds: options.taskNeeds } : {}),
 						...(setsProviders(parseModelConstraints(options?.modelConstraints))
@@ -554,7 +644,7 @@ export class StageSessionController {
 							: {}),
 					});
 				} catch (error) {
-					this.startupWait.signal.throwIfAborted();
+					this.residency.startupWait.signal.throwIfAborted();
 					this.opts.signal?.throwIfAborted();
 					// #3206: only a total routing-inference failure (Jev and the chat
 					// structured-output fallback both failed) degrades, and only to a
@@ -574,7 +664,7 @@ export class StageSessionController {
 					this.routingPromise = undefined;
 					this.modelRoute = undefined;
 				}
-				if (this.startupWait.signal.aborted || this.opts.signal?.aborted) throw error;
+				if (this.residency.startupWait.signal.aborted || this.opts.signal?.aborted) throw error;
 				this.settleStartup(true);
 				// #4031: classified as the routing failure it wraps, never by the stage name in this message.
 				throw classifyFailureFrom(
@@ -592,7 +682,7 @@ export class StageSessionController {
 
 	assertAutoExecutionCurrent(): void {
 		if (!this.modelRoute) return;
-		this.startupWait.signal.throwIfAborted();
+		this.residency.startupWait.signal.throwIfAborted();
 		this.opts.signal?.throwIfAborted();
 		this.modelRoute.assertCurrent();
 	}
@@ -607,7 +697,26 @@ export class StageSessionController {
 		return session;
 	}
 
-	async ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
+	ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
+		// A stage that is not releasing, released or rehydrating opens its session directly: an async wrapper returning
+		// openSession()'s promise would delay an idle delivery's turn start, and its Working lease, by two microtasks.
+		if (this.releasing === undefined && this.releasedWait === undefined && this.rehydration === undefined)
+			return this.openSession(consumer);
+		return this.ensureReopenedSession(consumer);
+	}
+
+	private async ensureReopenedSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
+		if (this.releasing !== undefined) await this.joinRelease();
+		if (reopensOnUse(this.releasedWait) || this.rehydration !== undefined) await this.rehydrate();
+		else if (this.releasedWait !== undefined) {
+			this.releasedWaitEnded ??= Promise.withResolvers<void>();
+			await this.releasedWaitEnded.promise;
+		}
+		return this.openSession(consumer);
+	}
+
+	/** The stage's session, created or reopened as needed. Reopening a released stage calls this directly. */
+	private async openSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
 		if (this.awaitingAutoPrompt && this.routingPromise === undefined)
 			throw new Error(
 				"Workflow stage auto requires prompt text before model-dependent session operations. Call prompt first or set a concrete model.",
@@ -647,7 +756,7 @@ export class StageSessionController {
 				},
 			);
 		}
-		const ready = waitForStageStartup(this.sessionPromise, this.startupWait.signal);
+		const ready = waitForStageStartup(this.sessionPromise, this.residency.startupWait.signal);
 		return this.modelRoute ? this.checkedSession(await ready) : ready;
 	}
 
@@ -660,6 +769,7 @@ export class StageSessionController {
 		// stage's running generation: closing it would refuse every later tool call of the stage. A stage
 		// with an explicit fallback chain creates its session through the candidate walk, which holds
 		// `activeCreation` rather than the shared `sessionPromise`.
+		if (this.releasedWait !== undefined) return this.ensureSession(consumer);
 		const joinsLiveGeneration =
 			!this.sessionShutdownPromise &&
 			(this.sessionPromise !== undefined ||
@@ -678,7 +788,37 @@ export class StageSessionController {
 		beforeDelivery?: () => void,
 		preparation?: StageUserMessagePreparation,
 	): Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
-		return this.messageAdmission.run(async (release) => {
+		// A message sent while the stage releases its session reaches it after the release, never halfway through it.
+		if (this.releasing !== undefined) await this.joinRelease();
+		if (this.holdsInput()) {
+			// Held whole, with its delivery and options, until the stage is woken; it is not durable meanwhile. A session
+			// still live takes it into its queue now, where the turn its results continue finds it.
+			preparation?.beforePreparation?.();
+			const kind = options?.deliverAs === "steer" ? "steer" : "followUp";
+			beforeDelivery?.();
+			const expandPromptTemplates = options?.expandPromptTemplates ?? false;
+			if (!this.holdWhileReleased(content, kind, { expandPromptTemplates }))
+				await this.queueIntoWaitingTurn(content, kind, expandPromptTemplates);
+			return kind;
+		}
+		this.lastActivityAt = Date.now();
+		try {
+			const action = await this.deliverUserMessage(content, options, beforeDelivery, preparation);
+			// A message that started a turn may have left it waiting on detached tool calls; carry that turn on too.
+			if (action === "prompt") await this.continueDetachedTurns(undefined, "prompt");
+			return action;
+		} finally {
+			this.lastActivityAt = Date.now();
+		}
+	}
+
+	private deliverUserMessage(
+		content: StageUserMessageContent,
+		options: StageSendUserMessageOptions | undefined,
+		beforeDelivery: (() => void) | undefined,
+		preparation: StageUserMessagePreparation | undefined,
+	): Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
+		return this.residency.messageAdmission.run(async (release) => {
 			const pausedDelivery = this.pauseControl.deferRunnerOwnedDelivery(() =>
 				this.sendUserMessage(content, options, beforeDelivery, preparation),
 			);
@@ -709,7 +849,7 @@ export class StageSessionController {
 						options,
 						beforeDelivery,
 						release,
-						this.messageAdmission,
+						this.residency.messageAdmission,
 						activity,
 					),
 				);
@@ -723,7 +863,7 @@ export class StageSessionController {
 					options,
 					beforeDelivery,
 					release,
-					this.messageAdmission,
+					this.residency.messageAdmission,
 					activity,
 				);
 			};
@@ -773,21 +913,682 @@ export class StageSessionController {
 		}
 	}
 
+	/**
+	 * Prompt the stage, and carry the turn across every wait on a detached tool call: the session is released while
+	 * the stage waits and reopened from the store when the results arrive, and the same turn continues without a new
+	 * user message.
+	 */
 	async promptWithFallback(
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
 		newSessionText?: string,
 	): Promise<void> {
-		if (this.effectiveStageOptions?.model === "auto") await this.preparePrompt(text);
+		this.promptsInFlight += 1;
+		this.lastActivityAt = Date.now();
+		try {
+			if (reopensOnUse(this.releasedWait)) await this.rehydrate();
+			if (!(await this.resumeDetachedCalls(sdkOptions, consumer)))
+				await this.promptSegment(text, sdkOptions, consumer, newSessionText);
+			await this.continueDetachedTurns(sdkOptions, consumer);
+		} finally {
+			this.promptsInFlight -= 1;
+			this.lastActivityAt = Date.now();
+		}
+	}
+
+	/**
+	 * Let the session detach long tool calls only when the stage may release while it waits; a session that cannot be
+	 * reopened keeps every wait resident, and the run reports that once.
+	 */
+	private applyToolDetachment(session: StageSessionRuntime): void {
+		const policy = this.opts.waiting?.policy;
+		if (policy === undefined || session.setToolDetachment === undefined) return;
+		if (this.canReleaseSession(session)) {
+			session.setToolDetachment(policy);
+			return;
+		}
+		this.opts.waiting?.resident(
+			new StageReleaseError("not-reopenable", {
+				runId: this.opts.runId,
+				stageId: this.opts.stageId,
+				stageName: this.opts.stageName,
+				sessionId: session.sessionId,
+			}),
+		);
+	}
+
+	/** Whether the stage gives up its session while it waits and can reopen it from the store afterwards. */
+	private canReleaseSession(session: StageSessionRuntime): boolean {
+		if (this.opts.waiting === undefined) return false;
+		if (this.callerSessionManager !== undefined) return true;
+		return asAgentSession(session)?.sessionManager.isPersisted() === true;
+	}
+
+	/**
+	 * A stage resumed after its process died may end on a turn that issued detachable calls and never got the model's
+	 * answer. When its previous process recorded the results of every call the turn waits on, the turn continues from
+	 * them; otherwise the calls without a result start again, with their ids and arguments, and the turn continues once
+	 * they finish, instead of the stage being prompted again. A turn whose results were all recorded continues at once.
+	 * Which calls still wait is read from the transcript the store holds, not from the context the model sees (#4309).
+	 */
+	private async resumeDetachedCalls(
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer,
+	): Promise<boolean> {
+		if (this.resumedDetachedCallsChecked || this.effectiveStageOptions?.resumeFromSessionId === undefined)
+			return false;
+		this.resumedDetachedCallsChecked = true;
+		const session = await this.ensureSession(consumer);
+		const replayKey = this.effectiveStageOptions.durableReplayKey;
+		const recorded =
+			replayKey === undefined ? undefined : this.opts.waiting?.dispatcher.takeResultsForResume(replayKey);
+		const pendingTurn = session.hasPendingDetachedTurn?.() === true;
+		const fromRecord =
+			recorded === undefined || !pendingTurn
+				? undefined
+				: resultsAnsweringTranscript(recorded, storedTranscript(session));
+		// A record that answers no turn the transcript waits on is spent: the calls start again and record their own.
+		if (recorded !== undefined && fromRecord === undefined) this.opts.waiting?.resultsInTranscript();
+		if (!pendingTurn) return false;
+		const calls = fromRecord === undefined ? (session.redispatchDetachedToolCalls?.() ?? []) : [];
+		const results =
+			fromRecord ??
+			(calls.length === 0 ? [] : await this.waitForDetachedCalls(calls, this.opts.waiting?.policy?.afterMs));
+		await this.continueWithResults(results, sdkOptions, consumer);
+		return true;
+	}
+
+	private async continueDetachedTurns(
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer,
+	): Promise<void> {
+		while (true) {
+			const calls = this.session?.takeDetachedToolCalls?.() ?? [];
+			if (calls.length === 0) return;
+			const releaseAfterMs = this.opts.waiting?.policy === undefined ? undefined : 0;
+			await this.continueWithResults(await this.waitForDetachedCalls(calls, releaseAfterMs), sdkOptions, consumer);
+		}
+	}
+
+	/**
+	 * Continue the turn from the results of its detached calls. Until the session has saved the results, the stage is
+	 * still bringing its session back: when the session store or the network fails the save, the stage gives the session
+	 * up, reopens it from the store and hands the results over again, at most {@link STAGE_WAIT_RETRY_ATTEMPTS} times in
+	 * all after the same backoff as a reopening. A store still failing then throws a `StageRehydrationError`
+	 * (`phase: "resume-turn"`) that blocks the run resumably, the results kept in the stage's record (#4309).
+	 */
+	private async continueWithResults(
+		results: readonly DetachedToolResult[],
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer,
+	): Promise<void> {
+		const startedAt = Date.now();
+		for (let attempt = 1; ; attempt++) {
+			this.pendingDetachedResults = results;
+			try {
+				await this.promptSegment(RESUME_CONTINUATION_PROMPT, sdkOptions, consumer);
+				return;
+			} catch (error) {
+				if (!(error instanceof DetachedResultsNotSaved)) throw error;
+				this.throwUnlessResultsSaveRetries(error.failure, attempt, startedAt);
+			} finally {
+				this.pendingDetachedResults = undefined;
+			}
+			await this.reopenToSaveResults(results, attempt);
+		}
+	}
+
+	/**
+	 * Hand the session the results its turn continues from; the stage's record drops them only once the transcript the
+	 * store holds has them. A save the store or the network failed throws {@link DetachedResultsNotSaved}, and a session
+	 * that returns without having saved them fails the turn with a `StageRehydrationError` (`results-not-saved`): a stage
+	 * never completes on a turn still waiting on a call.
+	 */
+	private async continueFromResults(
+		session: StageSessionRuntime,
+		resume: NonNullable<StageSessionRuntime["resumeDetachedTurn"]>,
+		results: readonly DetachedToolResult[],
+	): Promise<void> {
+		const awaited = unansweredToolCallIds(storedTranscript(session));
+		const unsaved = (): string[] => {
+			const unanswered = new Set(unansweredToolCallIds(storedTranscript(session)));
+			return awaited.filter((toolCallId) => unanswered.has(toolCallId));
+		};
+		try {
+			await resume.call(session, results);
+		} catch (error) {
+			if (stageReopenFailureCause(error) === "transient" && unsaved().length > 0)
+				throw new DetachedResultsNotSaved(error);
+			throw error;
+		}
+		// Only an `AgentSession` reads back what its store holds; another runtime's transcript is its own report.
+		const missing = asAgentSession(session) === undefined ? [] : unsaved();
+		if (missing.length > 0)
+			throw new StageRehydrationError(
+				{
+					runId: this.opts.runId,
+					stageId: this.opts.stageId,
+					stageName: this.opts.stageName,
+					sessionId: session.sessionId,
+					toolCallIds: missing,
+					phase: "resume-turn",
+				},
+				{ code: "results-not-saved" },
+			);
+		this.opts.waiting?.resultsInTranscript();
+	}
+
+	/**
+	 * Classify a failed save of the results a turn continues from, as a failed reopening is: the run's abort rethrows its
+	 * reason, a session the stage cannot reopen from a store keeps the failure's own classification, and a store still
+	 * failing after the last attempt throws a `StageRehydrationError` that blocks the run resumably.
+	 */
+	private throwUnlessResultsSaveRetries(failure: unknown, attempt: number, startedAt: number): void {
+		const { signal } = this.opts;
+		if (signal?.aborted) throw signal.reason;
+		const session = this.session;
+		if (this.disposed || session === undefined || !this.canReleaseSession(session)) throw failure;
+		if (attempt < STAGE_WAIT_RETRY_ATTEMPTS) return;
+		throw new StageRehydrationError(
+			{
+				runId: this.opts.runId,
+				stageId: this.opts.stageId,
+				stageName: this.opts.stageName,
+				sessionId: session.sessionId,
+				phase: "resume-turn",
+				attempts: attempt,
+				elapsedMs: Date.now() - startedAt,
+				timeoutMs: STAGE_WAIT_RETRY_BUDGET_MS,
+			},
+			{ cause: failure },
+		);
+	}
+
+	/**
+	 * Give the session up and reopen it from the store before the results are handed over again, so the next attempt
+	 * continues from what the store holds. Meanwhile the stage waits released on the calls whose results it holds, as for
+	 * any wait on a tool: its input is held, its pause holds the reopening, and its abort ends the wait.
+	 */
+	private async reopenToSaveResults(results: readonly DetachedToolResult[], attempt: number): Promise<void> {
+		const hooks = this.opts.waiting!;
+		const wait: StageWaitSnapshot = {
+			kind: "tool",
+			since: Date.now(),
+			toolCalls: results.map(({ toolCallId, toolName }) => ({ toolCallId, toolName })),
+		};
+		try {
+			await this.releaseSession(wait);
+			await hooks.enter(wait);
+			await this.waitBeforeReopening(attempt);
+		} catch (error) {
+			// As for a wait that ended without a wake: a later caller reopens the session as for any released stage.
+			this.releasedWait = undefined;
+			this.releasedWaitEnded?.reject(error);
+			this.releasedWaitEnded = undefined;
+			throw error;
+		}
+		await this.reopen(wait);
+	}
+
+	/**
+	 * Wait for detached calls. Calls still running after `releaseAfterMs` wait with the session released; without a
+	 * threshold the stage stays resident for the whole wait. While the session stays live, a message sent to the stage
+	 * joins the turn the results continue rather than starting one of its own.
+	 */
+	private async waitForDetachedCalls(
+		calls: readonly DetachedToolCall[],
+		releaseAfterMs: number | undefined,
+	): Promise<readonly DetachedToolResult[]> {
+		const session = this.session;
+		const hooks = this.opts.waiting;
+		if (
+			hooks === undefined ||
+			releaseAfterMs === undefined ||
+			session === undefined ||
+			!this.canReleaseSession(session)
+		) {
+			this.waitingInline = true;
+			try {
+				return await raceAbort(Promise.all(calls.map((call) => call.result)), this.opts.signal);
+			} catch (error) {
+				for (const call of calls) call.abort(this.workflowAbortReason());
+				throw error;
+			} finally {
+				this.waitingInline = false;
+			}
+		}
+		// The run's dispatcher collects the results: the stage keeps no promise chain of its own over the calls.
+		hooks.dispatcher.watchToolResults(hooks.wakeKey, calls);
+		const woken = hooks.dispatcher.park(hooks.wakeKey, "tool-results");
+		if (releaseAfterMs > 0) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			this.waitingInline = true;
+			try {
+				const settled = await Promise.race([
+					woken,
+					new Promise<undefined>((resolve) => {
+						timer = setTimeout(() => resolve(undefined), releaseAfterMs);
+					}),
+				]);
+				if (settled !== undefined) return settled.results;
+			} catch (error) {
+				for (const call of calls) call.abort(this.workflowAbortReason());
+				throw error;
+			} finally {
+				clearTimeout(timer);
+				// The release below marks the stage waiting before it gives anything up, so input is held throughout.
+				this.waitingInline = false;
+			}
+		}
+		const wait: StageWaitSnapshot = {
+			kind: "tool",
+			since: Date.now(),
+			toolCalls: calls.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName })),
+		};
+		return this.waitReleased(wait, calls, woken);
+	}
+
+	/** Release the session and wait for the run's wake dispatcher to deliver the results, then reopen the session. */
+	private async waitReleased(
+		wait: StageWaitSnapshot,
+		calls: readonly DetachedToolCall[],
+		woken: Promise<{ readonly results: readonly DetachedToolResult[] }>,
+	): Promise<readonly DetachedToolResult[]> {
+		const hooks = this.opts.waiting!;
+		const { dispatcher, wakeKey } = hooks;
+		dispatcher.register({ runId: this.opts.runId, stageId: this.opts.stageId, reason: wait.kind, wakeKey });
+		this.abortDetachedCalls = (reason) => {
+			for (const call of calls) call.abort(reason);
+		};
+		let delivered: readonly DetachedToolResult[];
+		try {
+			await this.releaseSession(wait);
+			await hooks.enter(wait);
+			delivered = (await woken).results;
+		} catch (error) {
+			this.abortDetachedCalls?.(
+				error instanceof Error || typeof error === "string" ? error : this.workflowAbortReason(),
+			);
+			// The wait ended without a wake: a later caller reopens the session as for any released stage.
+			this.releasedWait = undefined;
+			this.releasedWaitEnded?.reject(error);
+			this.releasedWaitEnded = undefined;
+			throw error;
+		} finally {
+			dispatcher.unregister(wakeKey);
+			this.abortDetachedCalls = undefined;
+		}
+		await this.reopen(wait, delivered);
+		return delivered;
+	}
+
+	/** Give up the live session; the stage keeps its listeners, queue and identity, and reopens the same session. */
+	private async releaseSession(wait: StageWaitSnapshot): Promise<void> {
+		const current = this.session;
+		if (current === undefined) return;
+		const cleared = (
+			current as StageSessionRuntime & { clearQueue?(): { steering: string[]; followUp: string[] } }
+		).clearQueue?.();
+		// Queued text was already prepared by the session; it is queued again literally.
+		for (const text of cleared?.steering ?? [])
+			this.holdInput({ content: text, kind: "steer", expandPromptTemplates: false });
+		for (const text of cleared?.followUp ?? [])
+			this.holdInput({ content: text, kind: "followUp", expandPromptTemplates: false });
+		this.releasedWait = wait;
+		this.reattachSessionId = current.sessionId;
+		this.session = undefined;
+		this.sessionPromise = undefined;
+		this.resumeCurrentSession = false;
+		this.sessionSettingsManager = undefined;
+		// The session manager holds the whole transcript; the reopened session gets a fresh one from the store.
+		this.callerSessionManager = undefined;
+		this.artifactCapture.releaseSession();
+		// Everything that belongs to this residency goes with the session; the next residency starts afresh.
+		const residency = this.residencyState;
+		this.residencyState = undefined;
+		if (residency !== undefined) {
+			residency.messageAdmission.dispose();
+			for (const unsubscribe of residency.listenerUnsubscribes.values()) unsubscribe();
+			void residency.replacement.dispose();
+		}
+		this.unsubscribeTerminateWatcher?.();
+		this.unsubscribeTerminateWatcher = undefined;
+		this.unbindAbortSignal?.();
+		this.unbindAbortSignal = undefined;
+		// The stage's task host stops reaching for the session it is about to lose; the next session rebinds it.
+		if (this.sharedOrchestrationContext !== undefined) parkWorkflowStageForRelease(this.sharedOrchestrationContext);
+		await disposeStageSession(current);
+	}
+
+	/** Reopen the released stage once, however many callers need its session: they all join the same reopening. */
+	private reopen(wait: StageWaitSnapshot, results?: readonly DetachedToolResult[]): Promise<void> {
+		const rehydration = this.reopenReleasedSession(wait, results).finally(() => {
+			if (this.rehydration === rehydration) this.rehydration = undefined;
+		});
+		this.rehydration = rehydration;
+		return rehydration;
+	}
+
+	/**
+	 * Take the stage's admission back and reopen its session from the store. The results a tool wait was woken with are
+	 * recorded first, so a stage that cannot reopen continues from them on resume. A store that is briefly unreachable
+	 * is tried again; a stage that still cannot reopen keeps waiting released, with its record, and throws.
+	 */
+	private async reopenReleasedSession(
+		wait: StageWaitSnapshot,
+		results: readonly DetachedToolResult[] | undefined,
+	): Promise<void> {
+		const hooks = this.opts.waiting!;
+		let session: StageSessionRuntime;
+		try {
+			if (results !== undefined) await hooks.recordResults(wait, results);
+			session = await this.reopenWithRetries(wait, hooks);
+		} catch (error) {
+			// Nothing wakes a tool wait again: callers waiting for its session learn why it never came.
+			if (wait.kind === "tool") {
+				this.releasedWait = undefined;
+				this.bindAbortSignal();
+				const ended = this.releasedWaitEnded;
+				this.releasedWaitEnded = undefined;
+				ended?.reject(error);
+			}
+			throw error;
+		}
+		if (reopensOnUse(wait)) hooks.dispatcher.unregister(hooks.wakeKey);
+		const ended = this.releasedWaitEnded;
+		this.releasedWaitEnded = undefined;
+		const held = this.heldWhileReleased ?? [];
+		this.heldWhileReleased = undefined;
+		for (const input of held) {
+			const { text, images } = splitStageContent(input.content);
+			const options =
+				input.expandPromptTemplates === undefined
+					? undefined
+					: { expandPromptTemplates: input.expandPromptTemplates };
+			if (input.kind === "steer") await session.steer(text, images, options);
+			else await session.followUp(text, images, options);
+		}
+		this.lastActivityAt = Date.now();
+		ended?.resolve();
+		await hooks.rehydrated(wait);
+	}
+
+	/**
+	 * Reopen the session, taking the stage's admission for each attempt and giving it back after a failed one. Only a
+	 * failure of the session store or the network is tried again, at most {@link STAGE_WAIT_RETRY_ATTEMPTS} times in
+	 * all, after a backoff that the stage's pause holds and its abort or the run's ends.
+	 */
+	private async reopenWithRetries(
+		wait: StageWaitSnapshot,
+		hooks: NonNullable<StageRunnerOpts["waiting"]>,
+	): Promise<StageSessionRuntime> {
+		const startedAt = Date.now();
+		for (let attempt = 1; ; attempt++) {
+			await this.takePauseResume();
+			await hooks.leave(wait);
+			this.releasedWait = undefined;
+			this.bindAbortSignal();
+			try {
+				return await this.openSession("prompt");
+			} catch (error) {
+				this.unbindAbortSignal?.();
+				this.unbindAbortSignal = undefined;
+				this.releasedWait = wait;
+				await hooks.reopenFailed(wait);
+				this.throwUnlessReopenRetries(error, attempt, startedAt);
+			}
+			await this.waitBeforeReopening(attempt);
+		}
+	}
+
+	/** A paused stage reopens only once resumed; the resume message reaches the reopened session as steering. */
+	private async takePauseResume(): Promise<void> {
+		const pause = this.pauseControl.currentResume();
+		if (pause === undefined) return;
+		const resumed = await pause;
+		await resumed.runnerOwnedDeliverySettlement;
+		if (resumed.message !== undefined)
+			this.holdInput({ content: resumed.message, kind: "steer", expandPromptTemplates: false });
+	}
+
+	/**
+	 * Classify a failed attempt to reopen by its cause: the run's abort rethrows its reason, a missing session and any
+	 * failure that is not the store's or the network's end the reopening at once, and a store still unreachable after
+	 * the last attempt throws a `StageRehydrationError` that blocks the run resumably.
+	 */
+	private throwUnlessReopenRetries(error: unknown, attempt: number, startedAt: number): void {
+		const { signal } = this.opts;
+		if (signal?.aborted) throw signal.reason;
+		if (this.disposed) throw error;
+		const cause = stageReopenFailureCause(error);
+		if (cause === "other") throw error;
+		const fields = {
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			stageName: this.opts.stageName,
+			...(this.reattachSessionId === undefined ? {} : { sessionId: this.reattachSessionId }),
+		};
+		if (cause === "session-not-found")
+			throw new StageRehydrationError(fields, { code: "session-not-found", cause: error });
+		if (attempt < STAGE_WAIT_RETRY_ATTEMPTS) return;
+		throw new StageRehydrationError(
+			{
+				...fields,
+				phase: "reopen",
+				attempts: attempt,
+				elapsedMs: Date.now() - startedAt,
+				timeoutMs: STAGE_WAIT_RETRY_BUDGET_MS,
+			},
+			{ cause: error },
+		);
+	}
+
+	private async waitBeforeReopening(attempt: number): Promise<void> {
+		const backoff = new AbortController();
+		this.reopenBackoff = backoff;
+		try {
+			const { signal } = this.opts;
+			await sleepOrAbort(
+				stageWaitRetryDelayMs(attempt),
+				signal === undefined ? backoff.signal : AbortSignal.any([backoff.signal, signal]),
+			);
+		} finally {
+			this.reopenBackoff = undefined;
+		}
+	}
+
+	private cancelReleasedWait(reason: Error | DOMException | string): void {
+		const hooks = this.opts.waiting;
+		if (hooks === undefined || this.releasedWait?.kind !== "tool") return;
+		hooks.dispatcher.cancel(hooks.wakeKey, reason);
+	}
+
+	/** True while the stage waits with its session released. */
+	isReleased(): boolean {
+		return this.releasedWait !== undefined;
+	}
+
+	/** The session id a released stage reopens. */
+	releasedSessionId(): string | undefined {
+		return this.releasedWait === undefined ? undefined : this.reattachSessionId;
+	}
+
+	/**
+	 * True while the stage waits on a tool call: released, or with its session still live, inline or resident. A message
+	 * sent meanwhile joins the turn the results continue, never a turn of its own (#4309).
+	 */
+	holdsInput(): boolean {
+		return this.releasedWait?.kind === "tool" || this.waitingInline;
+	}
+
+	/**
+	 * Hold text sent to a stage waiting on a tool call; it reaches the reopened session, with the same options, before
+	 * the turn continues. Returns false when the stage is not waiting on a tool call with its session released.
+	 */
+	holdWhileReleased(
+		content: StageUserMessageContent,
+		kind: "steer" | "followUp",
+		options?: { readonly expandPromptTemplates?: boolean },
+	): boolean {
+		if (this.releasedWait?.kind !== "tool") return false;
+		this.holdInput({ content, kind, expandPromptTemplates: options?.expandPromptTemplates });
+		return true;
+	}
+
+	private holdInput(input: HeldStageInput): void {
+		this.heldWhileReleased ??= [];
+		this.heldWhileReleased.push(input);
+	}
+
+	/** Queue a message into the live session of a stage waiting on its tool calls; the continued turn takes it. */
+	private async queueIntoWaitingTurn(
+		content: StageUserMessageContent,
+		kind: "steer" | "followUp",
+		expandPromptTemplates: boolean,
+	): Promise<void> {
+		const { text, images } = splitStageContent(content);
+		const session = await this.ensureSession();
+		if (kind === "steer") await session.steer(text, images, { expandPromptTemplates });
+		else await session.followUp(text, images, { expandPromptTemplates });
+	}
+
+	/** `stage.release()`: give up the session between prompts until `rehydrate()` or the next message. */
+	async release(): Promise<void> {
+		await this.releaseBetweenTurns("release");
+	}
+
+	/**
+	 * Release a stage the workflow holds without using; false when it is busy, keeps its session by policy, or cannot
+	 * be reopened. The next message or `rehydrate()` reopens it.
+	 */
+	releaseIdle(): Promise<boolean> {
+		return this.releaseBetweenTurns("idle");
+	}
+
+	/** Release the stage while its readiness question waits on a human; false when it cannot release now. */
+	releaseForPrompt(): Promise<boolean> {
+		return this.releaseBetweenTurns("prompt");
+	}
+
+	/**
+	 * When the stage last became idle with its session resident, or undefined while it is busy, released or has no
+	 * session. The run's idle scan releases it once this is older than its threshold.
+	 */
+	idleSince(): number | undefined {
+		if (this.releasedWait !== undefined || this.promptsInFlight > 0 || !this.isIdleForRelease()) return undefined;
+		return this.lastActivityAt;
+	}
+
+	/**
+	 * Release between turns. An explicit `release()` refuses a busy stage with a typed error; the automatic kinds only
+	 * release a stage that is quiet, may release by policy, and has nothing queued.
+	 */
+	private async releaseBetweenTurns(kind: "release" | "idle" | "prompt"): Promise<boolean> {
+		if (this.releasing !== undefined) await this.joinRelease();
+		if (this.releasedWait !== undefined || this.disposed) return false;
+		const session = this.session;
+		const hooks = this.opts.waiting;
+		if (session === undefined) return false;
+		const explicit = kind === "release";
+		const busy =
+			this.promptsInFlight > 0 ||
+			session.isStreaming ||
+			this.residencyState?.messageAdmission.isBusy() === true ||
+			this.activeCreation !== undefined;
+		const fields = {
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			stageName: this.opts.stageName,
+			sessionId: session.sessionId,
+		};
+		if (busy) {
+			if (explicit) throw new StageReleaseError("stage-busy", fields);
+			return false;
+		}
+		if (hooks === undefined || !this.canReleaseSession(session)) {
+			if (explicit) throw new StageReleaseError("not-reopenable", fields);
+			return false;
+		}
+		if (!explicit && (hooks.policy === undefined || !this.isIdleForRelease())) return false;
+		const releasing = this.commitRelease({ kind, since: Date.now() }, hooks);
+		this.releasing = releasing;
+		try {
+			return await releasing;
+		} finally {
+			if (this.releasing === releasing) this.releasing = undefined;
+		}
+	}
+
+	/**
+	 * One transition: give up the session, then mark the stage waiting with the dispatcher and the executor. Every
+	 * caller that would reopen the stage joins the transition first, so the stage is never marked waiting once reopened.
+	 */
+	private async commitRelease(
+		wait: StageWaitSnapshot,
+		hooks: NonNullable<StageRunnerOpts["waiting"]>,
+	): Promise<boolean> {
+		await this.releaseSession(wait);
+		if (this.releasedWait !== wait) return false;
+		hooks.dispatcher.register({
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			reason: wait.kind,
+			wakeKey: hooks.wakeKey,
+		});
+		await hooks.enter(wait);
+		return true;
+	}
+
+	/** Wait for a release under way to settle; its own caller learns how it ended. */
+	private async joinRelease(): Promise<void> {
+		await Promise.allSettled([this.releasing]);
+	}
+
+	/**
+	 * A durably resumed stage whose process stopped while it waited between turns starts released: it keeps no session
+	 * until a call that is not answered from the run's record needs one, which reopens `sessionId` from the store.
+	 */
+	resumeReleased(wait: StageWaitSnapshot, sessionId: string): void {
+		const hooks = this.opts.waiting;
+		if (hooks === undefined || !reopensOnUse(wait) || this.session !== undefined || this.disposed) return;
+		this.releasedWait = wait;
+		this.reattachSessionId = sessionId;
+		this.unbindAbortSignal?.();
+		this.unbindAbortSignal = undefined;
+		hooks.dispatcher.register({
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			reason: wait.kind,
+			wakeKey: hooks.wakeKey,
+		});
+	}
+
+	/** `stage.rehydrate()`: reopen a stage released between turns. Does nothing for a resident stage. */
+	async rehydrate(): Promise<void> {
+		if (this.releasing !== undefined) await this.joinRelease();
+		if (this.rehydration !== undefined) return this.rehydration;
+		const wait = this.releasedWait;
+		if (!reopensOnUse(wait) || this.disposed) return;
+		await this.reopen(wait);
+	}
+
+	private async promptSegment(
+		text: string,
+		sdkOptions: PromptOptions | undefined,
+		consumer: AgentSessionConsumer = "prompt",
+		newSessionText?: string,
+	): Promise<void> {
+		if (this.effectiveStageOptions?.model === "auto" && this.pendingDetachedResults === undefined)
+			await this.preparePrompt(text);
 		if (
 			this.session !== undefined &&
 			this.activeCreation === undefined &&
 			this.ownedCreationPromise === undefined &&
-			this.startupWait.signal.aborted
+			this.residency.startupWait.signal.aborted
 		) {
 			this.opts.signal?.throwIfAborted();
-			this.startupWait = new AbortController();
+			this.residency.startupWait = new AbortController();
 		}
 		if (!this.hasExplicitModelFallbackConfig) {
 			try {
@@ -818,10 +1619,10 @@ export class StageSessionController {
 		// An attached session is not usable until its creation/readiness owner
 		// settles. Join before every explicit-model reuse path, including resume.
 		const readinessOwner = this.ownedCreationPromise ?? this.activeCreation;
-		if (readinessOwner !== undefined) await waitForStageStartup(readinessOwner, this.startupWait.signal);
+		if (readinessOwner !== undefined) await waitForStageStartup(readinessOwner, this.residency.startupWait.signal);
 
 		if (this.session === undefined) this.beginStartup();
-		const startupSignal = this.startupWait.signal;
+		const startupSignal = this.residency.startupWait.signal;
 		const candidates = await waitForStageStartup(this.modelCandidates(), startupSignal);
 		if (candidates.length === 0) {
 			try {
@@ -979,9 +1780,10 @@ export class StageSessionController {
 		this.disposed = true;
 		const reason = stageError(this.opts.stageName, "session has been disposed");
 		this.markAbort(reason);
+		this.cancelReleasedWait(reason);
 		this.pauseControl.reject(reason);
-		for (const unsubscribe of this.listenerUnsubscribes.values()) unsubscribe();
-		this.listenerUnsubscribes.clear();
+		for (const unsubscribe of this.residencyState?.listenerUnsubscribes.values() ?? []) unsubscribe();
+		this.residencyState?.listenerUnsubscribes.clear();
 		this.pendingListeners.clear();
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = undefined;
@@ -989,10 +1791,10 @@ export class StageSessionController {
 		// for as long as the run goes on.
 		this.unbindAbortSignal?.();
 		this.unbindAbortSignal = undefined;
-		this.terminatingToolCallIds.clear();
-		this.messageAdmission.dispose();
+		this.residencyState?.terminatingToolCallIds.clear();
+		this.residencyState?.messageAdmission.dispose();
 		this.deliveryActivity.dispose();
-		await this.replacement.dispose();
+		await this.residencyState?.replacement.dispose();
 		// The creation owner also owns any attached-but-not-ready session. It
 		// disposes that session only after its final readiness callback settles.
 		if (this.activeCreation === undefined) await disposeStageSession(this.session);
@@ -1011,6 +1813,7 @@ export class StageSessionController {
 	async abort(): Promise<void> {
 		const reason = new DOMException("stage aborted", "AbortError");
 		this.markAbort(reason);
+		this.cancelReleasedWait(reason);
 		this.pauseControl.reject(reason);
 		try {
 			await this.session?.abort();
@@ -1025,7 +1828,7 @@ export class StageSessionController {
 			this.pauseThrownErrorRetries(resume);
 			// A creation in flight cannot see the pause request itself, because
 			// completing the resume clears it before creation settles.
-			for (const observer of this.creationPauseObservers) {
+			for (const observer of this.residencyState?.creationPauseObservers ?? []) {
 				if (observer.pauseResume !== undefined) continue;
 				observer.pauseResume = resume;
 				this.latchCreationResume(resume);
@@ -1066,7 +1869,7 @@ export class StageSessionController {
 	/** True when no message, turn, creation, retry, pause, or queue work still needs the live session. */
 	/** True while a message, the stage's own prompt included, holds or waits for the turn loop. */
 	isTurnLoopBusy(): boolean {
-		return this.messageAdmission.isBusy();
+		return this.residencyState?.messageAdmission.isBusy() === true;
 	}
 
 	isIdleForRelease(): boolean {
@@ -1074,10 +1877,12 @@ export class StageSessionController {
 		if (session === undefined || this.disposed || this.pendingDisposal || this.disposalPromise !== undefined)
 			return false;
 		if (this.activeCreation !== undefined || this.ownedCreationPromise !== undefined) return false;
-		if (this.sessionShutdownPromise !== undefined || this.replacement.retiringSession !== undefined) return false;
+		const residency = this.residencyState;
+		if (this.sessionShutdownPromise !== undefined || residency?.replacement.retiringSession !== undefined)
+			return false;
 		if (this.pauseControl.isPaused()) return false;
-		if (this.thrownErrorRetryStates.size > 0) return false;
-		if (this.messageAdmission.isBusy()) return false;
+		if ((residency?.thrownErrorRetryStates.size ?? 0) > 0) return false;
+		if (residency?.messageAdmission.isBusy() === true) return false;
 		return isStageSessionQuiescent(session);
 	}
 
@@ -1108,7 +1913,8 @@ export class StageSessionController {
 		this.abortReason = reason;
 		this.abortReasonGeneration = this.abortGeneration;
 		this.routeAuthorityWait?.abort(reason);
-		this.startupWait.abort(reason);
+		this.residencyState?.startupWait.abort(reason);
+		this.reopenBackoff?.abort(reason);
 		if (this.startup?.state === "active") {
 			this.startup = { ...this.startup, state: "cancelled" };
 			this.opts.onStartupChange?.(this.startup);
@@ -1117,7 +1923,7 @@ export class StageSessionController {
 	}
 
 	private pauseThrownErrorRetries(resume: RetryPauseResume): void {
-		for (const state of this.thrownErrorRetryStates) {
+		for (const state of this.residencyState?.thrownErrorRetryStates ?? []) {
 			if (state.pauseResume !== undefined) continue;
 			state.pauseResume = resume;
 			state.controller.abort(new ThrownErrorRetryPaused(resume));
@@ -1125,8 +1931,9 @@ export class StageSessionController {
 	}
 
 	private abortThrownErrorRetries(reason?: Error | DOMException | string): void {
-		for (const state of this.thrownErrorRetryStates) state.controller.abort(reason);
-		this.thrownErrorRetryStates.clear();
+		const states = this.residencyState?.thrownErrorRetryStates;
+		for (const state of states ?? []) state.controller.abort(reason);
+		states?.clear();
 	}
 
 	/** `retry.fallbackOnContentFilter`: whether a content-filter refusal spends the next candidate. */
@@ -1373,7 +2180,7 @@ export class StageSessionController {
 	}
 
 	private async sleepForThrownErrorRetry(delayMs: number, state: ThrownErrorRetryState): Promise<void> {
-		this.thrownErrorRetryStates.add(state);
+		this.residency.thrownErrorRetryStates.add(state);
 		const currentResume = this.pauseControl.currentResume();
 		if (currentResume !== undefined) {
 			state.pauseResume = currentResume;
@@ -1382,7 +2189,7 @@ export class StageSessionController {
 		try {
 			await sleepOrAbort(delayMs, state.controller.signal);
 		} finally {
-			this.thrownErrorRetryStates.delete(state);
+			this.residency.thrownErrorRetryStates.delete(state);
 		}
 	}
 
@@ -1405,7 +2212,7 @@ export class StageSessionController {
 		if (pauseBeforeContinue !== undefined) return settlePause(pauseBeforeContinue);
 
 		const state: ThrownErrorRetryState = { controller: new AbortController() };
-		this.thrownErrorRetryStates.add(state);
+		this.residency.thrownErrorRetryStates.add(state);
 		try {
 			await this.waitForProvider(this.currentModelValue());
 			await continuationSession._runAgentContinue();
@@ -1414,7 +2221,7 @@ export class StageSessionController {
 			if (resume === undefined) throw error;
 			return settlePause(resume);
 		} finally {
-			this.thrownErrorRetryStates.delete(state);
+			this.residency.thrownErrorRetryStates.delete(state);
 		}
 		const pauseAfterContinue = state.pauseResume ?? this.pauseControl.currentResume();
 		if (pauseAfterContinue !== undefined) return settlePause(pauseAfterContinue);
@@ -1501,6 +2308,8 @@ export class StageSessionController {
 					terminalScanStartIndex: terminalScanStartIndex ?? result.terminalScanStartIndex,
 				};
 			} catch (error) {
+				// The stage brings its session back for a save of its results that failed; no model was at fault.
+				if (error instanceof DetachedResultsNotSaved) throw error;
 				const errorSettingsManager = retrySettingsManagerFromError(error);
 				if (errorSettingsManager !== undefined) this.sessionSettingsManager = errorSettingsManager;
 				// An already-unresolved context overflow is terminal for this model:
@@ -1811,10 +2620,10 @@ export class StageSessionController {
 		const activePause = this.pauseControl.currentResume();
 		const observer: CreationPauseObserver = { pauseResume: activePause };
 		if (activePause !== undefined) this.latchCreationResume(activePause);
-		this.creationPauseObservers.add(observer);
+		this.residency.creationPauseObservers.add(observer);
 		const creation = this.createSession(candidate, consumer);
 		const settle = (): void => {
-			this.creationPauseObservers.delete(observer);
+			this.residency.creationPauseObservers.delete(observer);
 		};
 		creation.then(settle, settle);
 		return creation;
@@ -1857,7 +2666,7 @@ export class StageSessionController {
 					decision === undefined ||
 					this.disposed ||
 					this.opts.signal?.aborted === true ||
-					this.startupWait.signal.aborted ||
+					this.residency.startupWait.signal.aborted ||
 					this.capturedStructuredOutputForAttempt()
 				) {
 					throw error;
@@ -1900,7 +2709,7 @@ export class StageSessionController {
 		}
 		if (this.activeCreation !== undefined) return this.activeCreation;
 		if (this.session !== undefined) return Promise.resolve(this.session);
-		this.startupWait.signal.throwIfAborted();
+		this.residency.startupWait.signal.throwIfAborted();
 		const creation = this.createSessionAttempt(candidate, consumer, resumeOptions);
 		this.activeCreation = creation;
 		void creation
@@ -1934,7 +2743,7 @@ export class StageSessionController {
 		)
 			return;
 		this.opts.signal?.throwIfAborted();
-		if (this.startupWait.signal.aborted) this.startupWait = new AbortController();
+		if (this.residency.startupWait.signal.aborted) this.residency.startupWait = new AbortController();
 		this.reportStartupPhase("model-resolution", true);
 	}
 
@@ -1949,6 +2758,17 @@ export class StageSessionController {
 			ownershipPending: phase !== "first-dispatch" && phase !== "ready",
 		};
 		this.opts.onStartupChange?.(this.startup);
+	}
+
+	/**
+	 * Built outside `createSessionAttempt` on purpose: under JavaScriptCore a closure created inside an async function
+	 * keeps the locals that function saved at its last await, so a reporter made there would keep the attempt's session
+	 * reachable for as long as the stage holds its meta, including while the stage waits with that session released.
+	 */
+	private startupPhaseReporter(startGeneration: number): (phase: StageStartupPhase) => void {
+		return (phase) => {
+			if (this.abortGeneration === startGeneration) this.reportStartupPhase(phase);
+		};
 	}
 
 	private async createSessionAttempt(
@@ -2013,14 +2833,12 @@ export class StageSessionController {
 			this.callerSessionManager = createOptions.sessionManager;
 			created = await adapter.create(createOptions, {
 				...this.meta,
-				startupSignal: this.startupWait.signal,
+				startupSignal: this.residency.startupWait.signal,
 				isFallbackAttempt: candidate !== undefined && candidate !== (await this.modelCandidates())[0],
-				...(this.replacement.retiringSession !== undefined
-					? { replacesSession: this.replacement.retiringSession }
+				...(this.residency.replacement.retiringSession !== undefined
+					? { replacesSession: this.residency.replacement.retiringSession }
 					: {}),
-				onStartupPhase: (phase) => {
-					if (this.abortGeneration === startGeneration) this.reportStartupPhase(phase);
-				},
+				onStartupPhase: this.startupPhaseReporter(startGeneration),
 				stageOptions,
 				...(this.sharedOrchestrationContext !== undefined
 					? { orchestrationContext: this.sharedOrchestrationContext }
@@ -2088,15 +2906,16 @@ export class StageSessionController {
 			this.sharedOrchestrationContext = orchestrationContext;
 		}
 		if (this.generationSealed) result.session.sealWorkflowStageGeneration?.();
-		this.replacement.adopt(result.session);
+		this.residency.replacement.adopt(result.session);
 		this.session = result.session;
+		this.applyToolDetachment(result.session);
 		this.sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
 		if (this.sharedModelRuntime === undefined) {
 			const withRegistry = result.session as Partial<Pick<AgentSession, "modelRuntime">>;
 			if (withRegistry.modelRuntime !== undefined) this.sharedModelRuntime = withRegistry.modelRuntime;
 		}
 		for (const listener of this.pendingListeners) {
-			this.listenerUnsubscribes.set(listener, result.session.subscribe(listener));
+			this.residency.listenerUnsubscribes.set(listener, result.session.subscribe(listener));
 		}
 		// The session may already hold a queue — transferred from the session it
 		// just replaced, or restored with it — and it published that queue while
@@ -2124,6 +2943,7 @@ export class StageSessionController {
 					void Promise.resolve(onSessionEvent(event)).catch(() => {});
 				} catch {}
 			}
+			this.lastActivityAt = Date.now();
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
@@ -2138,7 +2958,7 @@ export class StageSessionController {
 			}
 			this.artifactCapture.onEvent(result.session, event);
 			const terminatingId = terminatingToolCallId(event);
-			if (terminatingId !== undefined) this.terminatingToolCallIds.add(terminatingId);
+			if (terminatingId !== undefined) this.residency.terminatingToolCallIds.add(terminatingId);
 			this.unresolvedContextOverflowMessage =
 				unresolvedContextOverflowMessage(event) ?? this.unresolvedContextOverflowMessage;
 			const structuredOutputToolError = structuredOutputToolErrorFromEvent(event);
@@ -2157,8 +2977,8 @@ export class StageSessionController {
 		const startGeneration = this.abortGeneration;
 		this.abortThrownErrorRetries(stageError(this.opts.stageName, "session was replaced"));
 		const current = this.session;
-		this.messageAdmission.reset();
-		this.replacement.retire(current);
+		this.residency.messageAdmission.reset();
+		this.residency.replacement.retire(current);
 		this.session = undefined;
 		this.activeCandidateIndex = nextCandidateIndex;
 		// A candidate walk still advancing owns the shared creation promise: clearing
@@ -2167,11 +2987,11 @@ export class StageSessionController {
 		if (this.sessionPromise !== this.ownedCreationPromise) this.sessionPromise = undefined;
 		this.sessionSettingsManager = undefined;
 		this.resumeCurrentSession = false;
-		for (const unsubscribe of this.listenerUnsubscribes.values()) unsubscribe();
-		this.listenerUnsubscribes.clear();
+		for (const unsubscribe of this.residency.listenerUnsubscribes.values()) unsubscribe();
+		this.residency.listenerUnsubscribes.clear();
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = undefined;
-		this.terminatingToolCallIds.clear();
+		this.residency.terminatingToolCallIds.clear();
 		// #3020: every creator must wait for ownership release, not only the prompt
 		// advancing fallback. Keep a failed barrier: shutdown failure is not proof
 		// of release, so later attachment must fail rather than register a new owner.
@@ -2202,6 +3022,8 @@ export class StageSessionController {
 				await resumed.runnerOwnedDeliverySettlement;
 				nextText = resumed.message;
 				nextOptions = resumeMessageOptions(sdkOptions);
+				// Detached results still continue their turn when the pause resumes without a message.
+				if (nextText === undefined && this.pendingDetachedResults !== undefined) nextText = initialText;
 				if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 				continue;
 			}
@@ -2213,7 +3035,14 @@ export class StageSessionController {
 				// A live resume loops here without returning through the outer retry guard.
 				this.checkedSession(activeSession);
 				await this.waitForProvider(this.currentModelValue());
-				await activeSession.prompt(nextText, nextOptions);
+				const detachedResults = this.pendingDetachedResults;
+				this.pendingDetachedResults = undefined;
+				if (detachedResults !== undefined && activeSession.resumeDetachedTurn !== undefined) {
+					// A resume message that replaced the continuation reaches the turn as steering, after the results.
+					if (nextText !== initialText)
+						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
+					await this.continueFromResults(activeSession, activeSession.resumeDetachedTurn, detachedResults);
+				} else await activeSession.prompt(nextText, nextOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
 					const resumed = await pendingPauseAfterPrompt;
@@ -2228,6 +3057,8 @@ export class StageSessionController {
 				this.throwIfEmptyCompletion(activeSession, promptStartIndex);
 				return { terminalScanStartIndex: promptStartIndex };
 			} catch (err) {
+				// The results come back with the reopened session; a pause holds that reopening.
+				if (err instanceof DetachedResultsNotSaved) throw err;
 				const pendingPauseAfterThrow =
 					err instanceof ThrownErrorRetryPaused ? err.resume : this.pauseControl.currentResume();
 				if (pendingPauseAfterThrow) {
@@ -2297,6 +3128,7 @@ export class StageSessionController {
 			}
 			throw new WorkflowPromptModelFailure(terminalFailure);
 		} catch (err) {
+			if (err instanceof DetachedResultsNotSaved) throw err;
 			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err, this.fallbackFailureOptions())) {
 				this.artifactCapture.settleAttempt(true);
 				const usage = this.takeAttemptUsage(resumedSession);
@@ -2368,7 +3200,7 @@ export class StageSessionController {
 		this.modelWarnings.push(...this.pendingFallbackWarnings);
 		this.pendingFallbackWarnings.length = 0;
 		this.notifyModelFallbackMetaChange();
-		await this.replacement.disposeRetired();
+		await this.residency.replacement.disposeRetired();
 	}
 
 	private async handleCandidateFailure(
@@ -2378,7 +3210,8 @@ export class StageSessionController {
 		index: number,
 		walk?: CandidateWalk,
 	): Promise<"handled" | "retry" | "throw"> {
-		if (err instanceof StageSessionBindingCleanupFailure) throw err;
+		// Neither spends a model attempt: a failed cleanup is sticky, and a failed save of a turn's results is tried again.
+		if (err instanceof StageSessionBindingCleanupFailure || err instanceof DetachedResultsNotSaved) throw err;
 		const message = errorMessage(err);
 		// A terminal pending-stage delivery failure is not a model failure: every
 		// candidate would be refused the same queued instructions. It records the one
@@ -2408,7 +3241,7 @@ export class StageSessionController {
 			nextIndex = undefined;
 			if (
 				!this.opts.signal?.aborted &&
-				!this.startupWait.signal.aborted &&
+				!this.residency.startupWait.signal.aborted &&
 				!terminalStageDelivery &&
 				mayAdvanceToNextCandidate(err, this.fallbackFailureOptions())
 			) {
@@ -2426,7 +3259,7 @@ export class StageSessionController {
 		}
 		if (
 			this.opts.signal?.aborted ||
-			this.startupWait.signal.aborted ||
+			this.residency.startupWait.signal.aborted ||
 			terminalStageDelivery ||
 			!mayAdvanceToNextCandidate(err, this.fallbackFailureOptions()) ||
 			nextIndex === undefined
@@ -2511,7 +3344,8 @@ export class StageSessionController {
 		if (this.structuredOutputCapture === undefined || this.structuredOutputCapture.called) return;
 		if (this.disposed || hasAssistantMessageSince(activeSession.messages, promptStartIndex)) return;
 		if (this.opts.signal?.aborted) throw this.workflowAbortReason();
-		if (this.startupWait.signal.aborted) throw this.abortReason ?? new DOMException("stage aborted", "AbortError");
+		if (this.residency.startupWait.signal.aborted)
+			throw this.abortReason ?? new DOMException("stage aborted", "AbortError");
 		throw new WorkflowPromptEmptyCompletionFailure();
 	}
 }

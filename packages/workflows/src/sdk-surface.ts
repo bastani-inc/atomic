@@ -174,6 +174,7 @@ export type {
 export { forkRun, listForkPoints } from "./runs/foreground/sdk-fork.js";
 export { run } from "./runs/foreground/sdk-run.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
+export { deliverStageWake } from "./runs/foreground/stage-wake-dispatcher.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";
 export type { WorkflowDecisionRequest } from "./shared/authoring-contract-stage.js";
@@ -196,6 +197,52 @@ export {
 	StageDecisionTimeoutError,
 	StageDecisionUnavailableError,
 } from "./shared/possible-stage-prediction-errors.js";
+export type {
+	ReleaseWhenWaiting,
+	StageLifecycleEvent,
+	StageWaitKind,
+	StageWaitSnapshot,
+	StageWaitToolCall,
+} from "./shared/authoring-contract-stage.js";
+export type { StageWaitToolResult } from "./shared/stage-wait.js";
+export { DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS, MAX_RELEASE_WHEN_WAITING_AFTER_MS } from "./shared/stage-wait.js";
+export type {
+	SerializedErrorCause,
+	SerializedStageWaitError,
+	StageRehydrationErrorCode,
+	StageWaitConfigSource,
+	StageWaitErrorCode,
+	StageWaitErrorFields,
+	StageWaitPhase,
+	StageWaitRecordPhase,
+	StageWakeErrorCode,
+	StageWakeRegistrationErrorCode,
+} from "./shared/stage-wait-errors.js";
+export {
+	deserializeStageWaitError,
+	findStageWaitError,
+	isStageRehydrationError,
+	isStageReleaseError,
+	isStageWaitConfigError,
+	isStageWaitError,
+	isStageWaitRecordError,
+	isStageWakeError,
+	StageRehydrationError,
+	StageReleaseError,
+	StageWaitConfigError,
+	StageWaitError,
+	StageWaitRecordError,
+	StageWakeError,
+} from "./shared/stage-wait-errors.js";
+export type {
+	BuiltinStageWakeKind,
+	StageWake,
+	StageWakeDelivery,
+	StageWakeHandler,
+	StageWakeHandlerContext,
+	StageWakeKinds,
+} from "./shared/stage-wake.js";
+export { registerStageWakeKind } from "./shared/stage-wake.js";
 export { createStore, store } from "./shared/store.js";
 export type {
 	CustomPromptIdentitySource,
@@ -217,6 +264,7 @@ export type {
 	WorkflowNotice,
 	WorkflowOverlayAdapter,
 } from "./shared/store-types.js";
+export type { SerializedTypedError } from "./shared/typed-failure-detail.js";
 export type * from "./shared/types.js";
 export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
 export type {

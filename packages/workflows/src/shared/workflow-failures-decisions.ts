@@ -295,6 +295,23 @@ export function infrastructureFaultDecision(code: WorkflowInfrastructureFault): 
 	};
 }
 
+/**
+ * A released stage whose session store stayed unreachable through every reopen attempt (`StageRehydrationError`,
+ * code `session-unavailable`). The stage blocks resumably, as for a provider outage, rather than failing the run: it
+ * recorded the results it was woken with, and a resume continues its turn from them once the store is back (#4309).
+ * The code is not `storage_unavailable`: that names a fault of a local worker pool, which replays the child it ran.
+ */
+export function stageSessionUnavailableDecision(): WorkflowFailureDecision {
+	return {
+		kind: "unknown",
+		code: "unknown",
+		retryable: true,
+		resumable: true,
+		recoverability: "recoverable",
+		disposition: "active_blocked",
+	};
+}
+
 export function unknownDecision(): WorkflowFailureDecision {
 	return {
 		kind: "unknown",
@@ -327,6 +344,7 @@ export function strongDecisionFromNormalizedCode(
 			disposition: "active_blocked",
 		};
 	}
+	if (normalized === "session_unavailable") return stageSessionUnavailableDecision();
 	if (WORKFLOW_INFRASTRUCTURE_FAULTS.has(normalized))
 		return infrastructureFaultDecision(normalized as WorkflowInfrastructureFault);
 	if (CANCELLED_CODES.has(normalized)) return cancelledDecision();

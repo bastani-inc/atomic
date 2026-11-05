@@ -135,6 +135,8 @@ export function createReplayStageContext(input: {
 		compact: async () => rejectReplayMutation("compact"),
 		abortCompaction: () => rejectReplayMutation("abort compaction"),
 		abort: async () => rejectReplayMutation("abort"),
+		release: async () => {},
+		rehydrate: async () => {},
 		__dispose: async () => {},
 		__getLastAssistantText: () => replayResult,
 		getLastAssistantText: () => replayResult,

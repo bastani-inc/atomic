@@ -658,7 +658,89 @@ Workflow stages use the same upstream-compatible `bash` tool as normal Atomic se
 readonly customTools?: readonly WorkflowCustomToolDefinition[];
 ```
 
-Adds stage-local tool definitions using the Atomic tool contract. Each definition supplies its schema and execute handler.
+Adds stage-local tool definitions using the Atomic tool contract. Each definition supplies its schema and execute handler. Set `detachable: true` on a tool whose work does not need the stage session once it has started and can safely run again with the same call id and arguments after a restart; a call of it that outlasts the stage's [`releaseWhenWaiting`](#releasewhenwaiting) threshold lets the stage release its session until the result arrives.
+
+### `releaseWhenWaiting`
+
+```typescript
+type ReleaseWhenWaiting = boolean | { readonly afterMs: number };
+readonly releaseWhenWaiting?: ReleaseWhenWaiting;
+```
+
+Lets a stage that only waits give up its session and its admission slot. Applies to `ctx.task`, `ctx.stage`, and the steps and shared options of `ctx.chain` and `ctx.parallel`. Defaults to the run's [`RunOpts.releaseWhenWaiting`](#runopts), then to `true`.
+
+- `true`: a wait still going after `DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS` (60000 ms) releases the stage. Shorter waits stay inline.
+- `{ afterMs }`: the same with your threshold, in milliseconds, from 0 to `MAX_RELEASE_WHEN_WAITING_AFTER_MS` (2147483647, about 24.8 days). A longer threshold is refused because timers cannot hold it; use `false` to keep a stage resident.
+- `false`: the stage keeps its session for its whole wait.
+
+The threshold applies to these waits; `wait.kind` on the stage's snapshot says which one it is:
+
+| `wait.kind` | The stage waits on | Status | What reopens the session |
+|---|---|---|---|
+| `tool` | A call of a `detachable` tool in its turn. Calls of other tools always run inline | `waiting` | The call's result; the same turn continues without a new user message |
+| `release` | `stage.release()` (see [StageContext](#stagecontext)), which releases at once | `waiting` | `stage.rehydrate()`, or the stage's next `sendUserMessage`, `steer`, or `followUp` |
+| `prompt` | A human answer to its readiness question (advance, or keep chatting) | stays `awaiting_input` | The answer, before the stage continues |
+| `idle` | Nothing: the workflow holds the finished stage without using it, for example while it awaits `ctx.workflow(...)` or a run-level `ctx.ui` prompt | `waiting` | The stage's next `sendUserMessage`, `steer`, or `followUp`, or `rehydrate()` |
+
+While it waits the stage has no live session, no admission slot, and no timer or listener of its own; its conversation stays in the session store, and one scan per run finds idle stages. A stage whose session cannot be reopened (an in-memory session that no store keeps) stays resident, and the run logs that once. An invalid value throws [`StageWaitConfigError`](#stage-wait-errors) where it is passed, before the stage or run starts. `ctx.chain` and `ctx.parallel` check every step's value, and their shared one, before the first step starts.
+
+Input sent to a stage waiting on a tool call (`sendUserMessage`, `steer`, `followUp`, and steering through the workflow tool or an attached chat) is held whole, with its images and delivery options, and reaches the reopened session before the turn continues; a stage that still keeps its session during the wait takes it into the same turn. `sendUserMessage` returns once the input is held; the stage's prompt carries on with the turn and completes the stage. It is held in memory only and is lost if the process stops before the stage wakes; Intercom messages to a waiting stage wait in the run's pending-stage queue and survive a restart. Input sent to a stage waiting between turns (`release`, `prompt`, `idle`) reopens it instead.
+
+When the results of a tool wait arrive, the stage saves them with its wait before it reopens its session. Reopening tries the session store up to three times, waiting about 0.5 and then 2 seconds between attempts; a paused stage waits for its resume before trying again, and aborting the stage or the run stops the attempts with the abort's reason. Only a failure of the session store or the network is tried again. The reopened session then saves the results into its transcript; when the store or the network fails that save, the stage gives the session up, reopens it and hands the results over again, with the same three attempts and waits. A stage whose store is still unreachable after the third attempt fails with [`StageRehydrationError`](#stage-wait-errors) (`session-unavailable`, `phase: "reopen"` or `"resume-turn"`), and the run is blocked, not failed: once the store is reachable, `/workflow resume` continues the stage's turn from the saved results without running the tool again. A stage never completes on a turn whose results its session did not save: a reopened session that returns from the turn without them fails the stage with `StageRehydrationError` (`results-not-saved`), the run fails resumably, and `/workflow resume` continues the turn from the results the stage saved with its wait. A session the store does not hold fails at once with `session-not-found`. Any other failure, such as a missing credential or an unknown model, is reported as itself and handled as it would be anywhere else. A stage that cannot save one of its wait records after three attempts carries on, and its snapshot reports why in `waitRecordFailure`.
+
+A message, `rehydrate()`, or a prompt that arrives while the stage is still releasing its session waits for the release to finish, then reopens the stage: the stage is never left `waiting` with a live session, and `stage_waiting` always comes before the matching `stage_rehydrated`.
+
+Resuming a run whose stage waited between turns (`release` or `idle`) sends no prompt again, neither the original nor a "continue" prompt: the stage's finished calls are answered from the run's record, and its next `sendUserMessage`, `steer` or `followUp` reopens the session and is sent as written. This needs the workflow to make the same stage calls in the same order, as durable replay already does. Before it takes the run, a resume checks that every stage the run left waiting can find its session in the session store, whether the run stopped with its process or failed or blocked and is resumed with `/workflow resume`. If any cannot, the resume changes nothing: `run()` throws `StageRehydrationError` with code `session-not-found` listing every missing session, and `/workflow resume` reports that error as its startup failure. Only the run's own stages are checked; a stage of a child workflow, also one run by a local worker pool, reports a missing session with `session-not-found` when it reopens.
+
+#### Waking stages with your own messages
+
+Everything that wakes a stage arrives as a typed message, a `StageWake`. Each stage has a mailbox from the moment it starts until it ends, and takes its messages one at a time, in arrival order. The kinds are the keys of the exported `StageWakeKinds` interface. Atomic sends one kind itself: `"tool-results"`, with the results of the detached calls the stage waits on.
+
+To send your own kind:
+
+1. Declare it by augmenting `@bastani/atomic/workflows`. Augment the public entry, not a module inside the package:
+
+   ```typescript
+   declare module "@bastani/atomic/workflows" {
+     interface StageWakeKinds {
+       "compaction-ready": { readonly summaryEntryId: string };
+     }
+   }
+   ```
+
+2. Register it in the process that runs the stages, with or without a handler. The returned function removes the registration:
+
+   ```typescript
+   import { deliverStageWake, registerStageWakeKind } from "@bastani/atomic/workflows";
+
+   const unregister = registerStageWakeKind("compaction-ready", async (wake, { runId, stageId, waiting, signal }) => {
+     await applySummary(runId, stageId, wake.summaryEntryId, signal);
+   });
+   ```
+
+3. Deliver messages by run and stage id:
+
+   ```typescript
+   const { status } = deliverStageWake(runId, stageId, { kind: "compaction-ready", summaryEntryId });
+   ```
+
+A stage handles each message in this order:
+
+- A message of the kind the stage waits for ends that wait.
+- A message of a kind registered with a handler runs the handler, whether the stage is running or waiting with its session released. The stage takes no other message until the handler settles. In the handler's context, `waiting` is the stage's wait kind while it waits (otherwise `undefined`), and `signal` aborts with the run. A handler that throws or rejects is logged once and does not fail the stage.
+- Any other message stays in the stage's mailbox, in order, until the stage next waits for its kind. A message still unread when the stage ends is logged once with its kind.
+
+`deliverStageWake` returns `{ status }`:
+
+| `status` | Meaning |
+|---|---|
+| `delivered` | It ended the stage's wait |
+| `handled` | Its kind's handler started for it |
+| `queued` | It is in the stage's mailbox, behind an earlier message or until the stage waits for its kind |
+| `stage-not-open` | The run runs in this process, but the stage has not started yet or has ended. Nothing was kept |
+| `run-not-live` | No run with this id runs in this process. Nothing was kept |
+
+A kind nobody registered throws [`StageWakeError`](#stage-wait-errors) (`unknown-wake-kind`) and keeps nothing. Registering a kind again puts the newer registration in effect until its function is called, and the kind stays registered while any registration of it remains. `registerStageWakeKind` checks its arguments before it registers anything and throws `StageWakeError`: `invalid-wake-kind` for a kind that is not a non-empty string, `invalid-wake-handler` for a handler that is not a function, and `builtin-kind-handler` for a handler given to `"tool-results"`, which takes none. Registration and delivery reach only runs that execute in the calling process: for a child workflow that runs on a [local worker](#runopts), `deliverStageWake` returns `run-not-live`.
 
 ### `mcp`
 
@@ -1076,6 +1158,25 @@ stage.abort(): Promise<void>;
 
 Aborts the stage session's current operation. The returned promise settles after the runtime processes the abort request.
 
+### `stage.release()` / `stage.rehydrate()`
+
+```typescript
+stage.release(): Promise<void>;
+stage.rehydrate(): Promise<void>;
+```
+
+`release()` gives up the stage's session between prompts, for a workflow that holds a stage across a long wait of its own (a child workflow, an external job). The stage is `waiting` with `wait.kind: "release"` until `rehydrate()`, or the next `sendUserMessage`, `steer`, or `followUp`, reopens the same session from the session store. A `ctx.stage` runs one `prompt()`, so `release()` does not make a second `prompt()` possible: it is refused, as it is without a release. A `ctx.task` reopens through its own continuation. Both calls do nothing when there is nothing to do: `release()` on a stage with no session or one already released, `rehydrate()` on a resident stage.
+
+`release()` throws `StageReleaseError` with code `stage-busy` while one of the stage's prompts runs, and `not-reopenable` when no store can reopen its session; the stage is unchanged. A stage that cannot reopen its session fails with `StageRehydrationError`.
+
+```ts
+const implement = ctx.stage("implement");
+await implement.prompt("Implement the change and open a pull request.");
+await implement.release();
+const review = await ctx.workflow(reviewWorkflow, { inputs: { pr } });
+await implement.sendUserMessage(`Address this review: ${review.result?.summary}`);
+```
+
 ## Result Types
 
 Workflow primitives return serializable result contracts that carry text, structured values, artifacts, model attempts, child boundaries, and run snapshots. The root authoring declaration directly exports `WorkflowTaskResult`, `WorkflowChildResult`, `WorkflowArtifact`, `WorkflowDetails`, `RunResult`, and `StageSnapshot`; supporting conditional or union-branch aliases shown below describe the source contract but are not all separately exported by the lean standalone declaration.
@@ -1244,10 +1345,12 @@ interface RunFailureClassification extends WorkflowSerializableObject {
   readonly disposition?: "active_blocked" | "terminal_killed" | "terminal_failed";
   readonly retryAfterMs?: number;
 }
+type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked" | "waiting";
 interface StageSnapshot extends WorkflowSerializableObject {
   readonly id: string;
   readonly name: string;
   readonly status: StageStatus;
+  readonly wait?: StageWaitSnapshot;
   readonly parentIds: readonly string[];
   readonly executionOrder?: number;
   readonly model?: string;
@@ -1260,7 +1363,7 @@ interface StageSnapshot extends WorkflowSerializableObject {
 }
 ```
 
-Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
+Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots. A stage is `waiting` while it waits with its session released; `wait` says on what (see [`releaseWhenWaiting`](#releasewhenwaiting)). A stage's snapshot also carries `waitRecordFailure`, a serialized `StageWaitRecordError` that `deserializeStageWaitError` rebuilds, when a record of its wait could not be saved after three attempts; the stage carried on, and a resume after a restart may start it from an earlier record (see [Stage wait errors](#stage-wait-errors)).
 
 `failure` describes how a run that failed, or blocked on a failure, was classified. It is absent for runs that did not fail, and for results recorded before this field existed.
 - `kind` and `code` say what failed.
@@ -1792,6 +1895,8 @@ interface RunOpts {
   readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
   readonly onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
+  readonly onStageLifecycleEvent?: (runId: string, event: StageLifecycleEvent) => void;
+  readonly releaseWhenWaiting?: ReleaseWhenWaiting;
   readonly onRunEnd?: (
     runId: string,
     status: RunStatus,
@@ -1826,7 +1931,7 @@ Snapshot errors are also exported from `@bastani/atomic/workflows`. Each has a s
 
 `LocalWorkerOptions` is `{ count: number, definitions: { path: string, exportName: string }[], startupTimeoutMs?: number, leaseMs?: number, heartbeatMs?: number, maxLoadPerCpu?: number, maxWorkerRssBytes?: number }`, where `count` and `startupTimeoutMs` are positive integers, `leaseMs` is an integer of at least `2000`, and `heartbeatMs` is an integer from `100` to half of `leaseMs`. `WorkflowAdmissionOptions` contains optional root `limits`, user-wide `userLimits`, `userDatabase`, and host thresholds. `limits` and `userLimits` accept `session` and `process` counts.
 
-`ctx.workflow(child)` throws `WorkflowInfrastructureError` when the local worker pool cannot run a child because of a fault in the pool or the runtime around it. A failure of the child's own logic is never reported this way. The pool first replays an unfinished child from its last checkpoint on a replacement worker (up to three attempts), and throws only when it cannot absorb the fault. The error has `retryable: true` and a `code` naming the fault: `worker_lost`, `worker_cleanup_unconfirmed`, `worker_retry_limit`, `worker_startup_failed`, `stale_work_lease`, `intercom_unavailable`, or `storage_unavailable`. `isRetryableWorkflowError(error)` returns `true` when the error, or any error in its `cause` chain, is a `WorkflowInfrastructureError`:
+`ctx.workflow(child)` throws `WorkflowInfrastructureError` when the local worker pool cannot run a child because of a fault in the pool or the runtime around it. A failure of the child's own logic is never reported this way. The pool first replays an unfinished child from its last checkpoint on a replacement worker (up to three attempts), and throws only when it cannot absorb the fault. The error has `retryable: true` and a `code` naming the fault: `worker_lost`, `worker_cleanup_unconfirmed`, `worker_retry_limit`, `worker_startup_failed`, `stale_work_lease`, `intercom_unavailable`, or `storage_unavailable`. `isRetryableWorkflowError(error)` returns `true` when the error, or any error in its `cause` chain (at most eight levels), is a `WorkflowInfrastructureError` or a [stage wait error](#stage-wait-errors) with `retryable: true`, such as `StageRehydrationError` with code `session-unavailable`:
 
 ```ts
 import { isRetryableWorkflowError } from "@bastani/atomic/workflows";
@@ -1850,6 +1955,48 @@ Cleanup that is confirmed late does not fail the stage; it records a `cleanup` s
 | `ProcessCleanupUnconfirmedError` (a `WorkflowInfrastructureError`) | `process_cleanup_unconfirmed` | A stage's task cleanup was still unconfirmed when the stage closed. | `hint`, `phase`, `resources` (`taskId`, `resource`, `code`, `message`), `retryable: true`, `cause: TaskCleanupError` | Follow `hint`: check the named process groups, then resume the run or retry the work. |
 | `TaskCleanupError` | `task_cleanup_unconfirmed` | Closing a session or workflow stage, or pausing a stage, found a task whose process cleanup failed. | `phase` (`session-close`, `stage-close`, `app-shutdown`, or `stage-pause`), `failures` (`taskId` and `resources`, each with `resource`, `code`, `message`), `hint`, `retryable: true`, `cause` | Follow `hint`: confirm the listed processes have exited, then retry or resume. |
 | `TaskCleanupAdmissionTimeoutError` (a `TaskCleanupError`) | `task_cleanup_unconfirmed` | A command's admission spent five continuous seconds waiting while tasks owned by the same session or stage held permits from the same admission provider for unconfirmed cleanup. The new command never started; the earlier permits remain held. | `phase: "command-admission"`, `timeoutMs`, `elapsedMs` (continuous wait with matching unconfirmed permits held), `failures`, `hint`, `retryable: true`, `cause` | Confirm the listed resources have been released, then retry the command. Catch it with `isTaskCleanupAdmissionTimeoutError`; `isTaskCleanupError` and `isRetryableTaskError` also recognize it. `rehydrateTaskCleanupError` preserves its subtype and timing fields. |
+
+`releaseWhenWaiting` is the default for every stage of the run; see [`releaseWhenWaiting`](#releasewhenwaiting). `run()` validates it before it starts anything.
+
+`onStageLifecycleEvent` receives a stage's waits:
+
+```typescript
+type StageLifecycleEvent =
+  | { type: "stage_waiting"; stageId: string; stageName: string; wait: StageWaitSnapshot }
+  | { type: "stage_rehydrated"; stageId: string; stageName: string; wait: StageWaitSnapshot; waitedMs: number };
+
+interface StageWaitSnapshot {
+  readonly kind: "tool" | "release" | "prompt" | "idle";
+  /** When the stage released its session, in epoch milliseconds. */
+  readonly since: number;
+  /** The calls a `tool` wait waits on. */
+  readonly toolCalls?: readonly { readonly toolCallId: string; readonly toolName: string }[];
+  /** How many of the stage's prompt(), complete() and sendUserMessage() calls had finished when it released. */
+  readonly promptsCompleted?: number;
+}
+```
+
+`stage_waiting` fires once the stage released its session and its wait is saved; `stage_rehydrated` fires once the same session reopened. The stage's `StageSnapshot` carries the same `wait` while its session is released: with status `waiting`, or `awaiting_input` for a `prompt` wait. Exceptions and rejections from the listener are logged and do not affect the stage.
+
+#### Stage wait errors
+
+The errors around waiting stages share the family base `StageWaitError`. Each has a stable `code`, a `hint` with the remediation, a `retryable` flag, and JSON-safe `fields`; it never carries prompt text or credentials. `toJSON()` and `deserializeStageWaitError()` carry one across a process boundary as the same class. Guards check the class first and then the `name` and `code`, so they match copies from another realm: `isStageWaitError`, `isStageWaitConfigError`, `isStageReleaseError`, `isStageRehydrationError`, `isStageWaitRecordError`, `isStageWakeError`. `findStageWaitError(error)` returns the first one in a `cause` chain, at most eight levels deep. `isRetryableWorkflowError(error)` is `true` for the ones with `retryable: true`.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `StageWaitConfigError` | `invalid-release-when-waiting` | `releaseWhenWaiting` is not `true`, `false`, or `{ afterMs }` with a number from 0 to `MAX_RELEASE_WHEN_WAITING_AFTER_MS` (2147483647); thrown by `run()`, by the stage call that got it, or by `ctx.chain`/`ctx.parallel` for any of their steps, before anything starts | `source: "sdk"`, `field`, `value`, `stageName` for a stage option | Fix the value; use `false` to keep a stage resident |
+| `StageReleaseError` | `stage-busy` | `stage.release()` while one of the stage's prompts runs | `runId`, `stageId`, `stageName`, `sessionId` | Release after the prompt settles |
+| `StageReleaseError` | `not-reopenable` | `stage.release()` on a session no store can reopen | `runId`, `stageId`, `stageName`, `sessionId` | Give the stage a persistent session store: the default store, `sessionDir`, or a caller-owned `sessionStore` |
+| `StageRehydrationError` | `session-unavailable` | A woken stage could not reopen its session (`phase: "reopen"`), or its reopened session could not save the results the stage was woken with (`phase: "resume-turn"`), because the session store or the network failed on each of three attempts; `cause` is the last failure. `retryable: true`. The run blocks resumably instead of failing, with the results saved in the stage's wait record (see [`releaseWhenWaiting`](#releasewhenwaiting)) | `runId`, `stageId`, `stageName`, `sessionId`, `phase`, `attempts`, `elapsedMs`, `timeoutMs` (the most the attempts wait between them in total) | Make the session store reachable, then resume the workflow |
+| `StageRehydrationError` | `session-not-found` | The session store answered but does not hold the session of a waiting stage, for example because the run resumed with different session storage. `retryable: false` | `runId`, `sessionIds` (every missing session), `storage` (the session storage the run was started with, named without secrets), and `stageId`/`stageName` when one stage is meant | Resume the run with the session storage it was started with selected (`--storage`, `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_STORAGE`, the `sessions.storage` setting, or the SDK `sessionStore` option). `atomic storage status` shows which storage this process selects |
+| `StageRehydrationError` | `results-not-saved` | A woken stage's reopened session returned from the turn its results continue without saving the results of some of its calls, so the stage fails rather than completing on a turn still waiting on a call. `retryable: false`. The run fails resumably; the results the stage saved with its wait stay saved until a turn that uses them is saved | `runId`, `stageId`, `stageName`, `sessionId`, `toolCallIds` (the calls whose results were not saved), `phase: "resume-turn"` | Resume the run with `/workflow resume <runId>`: the stage continues its turn from the saved results |
+| `StageWaitRecordError` | `wait-record-unavailable` | A durable record of a waiting stage (the start of its wait, the results it was woken with, or the end of its wait) could not be written after three attempts. Never thrown: the stage carries on, its snapshot carries the error as `waitRecordFailure`, and the run logs it once per stage. `retryable: false` | `runId`, `stageId`, `stageName`, `sessionId`, `phase` (`wait-start`, `wait-results` or `wait-end`), `attempts`, `elapsedMs`, `timeoutMs` | Make the run's journal storage reachable. Until the stage's next record is saved, a resume after a restart starts it from its previous record, which can run a finished tool call again |
+| `StageWakeError` | `unknown-wake-kind` | `deliverStageWake` with a message kind no module registered in this process; nothing was kept | `runId`, `stageId`, `kind` | Call `registerStageWakeKind(kind)` in the process that runs the stage before delivering, see [Waking stages with your own messages](#waking-stages-with-your-own-messages) |
+| `StageWakeError` | `builtin-kind-handler` | `registerStageWakeKind` was given a handler for a built-in kind (`"tool-results"`); nothing was registered | `source: "sdk"`, `field: "handler"`, `kind` | Register the kind without a handler: the runtime delivers it only to a stage that waits for it |
+| `StageWakeError` | `invalid-wake-kind` | `registerStageWakeKind` was given a kind that is not a non-empty string; nothing was registered | `source: "sdk"`, `field: "kind"`, `value` | Pass the kind's name, declared in `StageWakeKinds` |
+| `StageWakeError` | `invalid-wake-handler` | `registerStageWakeKind` was given a handler that is not a function; nothing was registered | `source: "sdk"`, `field: "handler"`, `kind`, `value` | Pass a function, or no handler to queue messages of the kind for the stage's next wait of it |
+
+When a `StageWaitError` or a `ToolDetachmentError` from `@bastani/atomic` fails a child workflow, in this process or on a pooled worker, the parent's error has the same class in its `cause` chain with its `code` and `fields`, so `findStageWaitError(error)` and `findToolDetachmentError(error)` find it. The failed child's `RunResult` and stage snapshot carry it as `failureDetail`, a JSON-safe `SerializedTypedError`; `error` keeps the text.
 
 `onStageSessionEvent` streams every agent-session event from each stage (for example `message_update`, `tool_execution_start`, and `tool_execution_end`), tagged with the stage's `runId` and `stageId`. `AgentSessionEvent` is exported by `@bastani/atomic`. The stream continues when a fallback model replaces a stage's session. Stages in nested `ctx.workflow(...)` runs report the child run's `runId`. Exceptions thrown by the listener, and rejections from an async listener, are ignored and do not affect the stage.
 

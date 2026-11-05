@@ -31,6 +31,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		return { beforePreparation: runtime.throwIfStageMutationBlocked };
 	};
 	const ensureMessagingSession = async (): Promise<void> => {
+		// A released stage reopens its own session when it is woken; messages to it are held until then.
+		if (runtime.innerCtx.__isReleased() === true) return;
 		const sessionId = messagePreparation().sessionId;
 		if (sessionId === undefined) return;
 		await runtime.innerCtx.__ensureSessionFromId(sessionId);
@@ -254,7 +256,12 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				readinessPauseVersion = (runtime.state.readinessPauseVersion ?? 0) + 1;
 				runtime.state.readinessPauseVersion = readinessPauseVersion;
 			}
-			if (statusBeforePause === "pending" || statusBeforePause === "running" || runtime.innerCtx.isStreaming) {
+			if (
+				statusBeforePause === "pending" ||
+				statusBeforePause === "running" ||
+				statusBeforePause === "waiting" ||
+				runtime.innerCtx.isStreaming
+			) {
 				try {
 					await runtime.innerCtx.__requestPause();
 				} catch (error) {

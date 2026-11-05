@@ -263,7 +263,10 @@ export function registerPendingStageIntercomBridge(
 						stageId: stage.id,
 						stageName: stage.name,
 						target: stageRouteTarget(lookups.runs, rootRunId, run.id, stage.id, lookups.segments),
-						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
+						lifecycle:
+							stage.status === "waiting" || (stage.sessionId === undefined && stage.sessionFile === undefined)
+								? "pending"
+								: "running",
 						// Keep agent identity for alias reactivation even after discovery eligibility ends.
 						routeEligible: stage.pendingStageDeliveryAvailable === true && isAddressableStageStatus(stage.status),
 						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
@@ -557,14 +560,15 @@ export function registerPendingStageIntercomBridge(
 			target: payload.target,
 		};
 		const stage = destination.stage;
-		const live = stage.sessionId !== undefined || stage.sessionFile !== undefined;
+		// A waiting stage released its session: a send to it queues until the stage reopens that session.
+		const live = stage.status !== "waiting" && (stage.sessionId !== undefined || stage.sessionFile !== undefined);
 		// A terminal stage (completed/skipped/failed — e.g. reviewer-a after iteration 1)
 		// cannot take a live forward: its alias is stale, so today's forward would fail
 		// with "Session not found" (round-1 review). D3 keeps exactly-once queueing only
 		// for materialized pending stages; a target that resolves to a terminal stage
 		// falls through to the sticky branch so the next matching occurrence receives it.
 		const stageTerminal = stage.status === "completed" || stage.status === "skipped" || stage.status === "failed";
-		if (payload.live === true || (live && !stageTerminal)) {
+		if ((payload.live === true && stage.status !== "waiting") || (live && !stageTerminal)) {
 			payload.handled = true;
 			payload.completion = validateLiveDelivery(activeStore, resolvedEvent).then((result) =>
 				result.outcome === "forward"
@@ -1142,6 +1146,7 @@ function knownUninitializedStage(
 	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
 	if (candidates.length !== 1) return undefined;
 	const stage = candidates[0]!;
+	if (stage.status === "waiting") return stage;
 	return isAddressableStageStatus(stage.status) && stage.sessionId === undefined && stage.sessionFile === undefined
 		? stage
 		: undefined;

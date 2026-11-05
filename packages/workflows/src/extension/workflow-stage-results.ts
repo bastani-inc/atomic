@@ -1,3 +1,4 @@
+import type { StageWaitSnapshot } from "../shared/authoring-contract-stage.js";
 import type { StageSnapshot, StageStatus, ToolEvent } from "../shared/store-types.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
@@ -6,6 +7,8 @@ export type WorkflowStageSummary = {
 	id: string;
 	name: string;
 	status: StageStatus;
+	/** What the stage waits on while its session is released. */
+	wait?: StageWaitSnapshot;
 	sessionId?: string;
 	sessionFile?: string;
 	transcriptPath?: string;
@@ -51,6 +54,7 @@ export function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
 		id: stage.id,
 		name: stage.name,
 		status: stage.status,
+		...(stage.wait === undefined ? {} : { wait: structuredClone(stage.wait) }),
 		...(stage.startup === undefined ? {} : { startup: { ...stage.startup } }),
 		...(stage.workerExecution === undefined ? {} : { workerExecution: { ...stage.workerExecution } }),
 		sessionId: stage.sessionId,

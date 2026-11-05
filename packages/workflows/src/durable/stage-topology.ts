@@ -55,5 +55,7 @@ export function durableStageCheckpointMetadata(
 		...(stage.structured !== undefined ? { structured: stage.structured } : {}),
 		...(stage.artifacts !== undefined ? { artifacts: [...stage.artifacts] } : {}),
 		...(stage.warnings !== undefined ? { warnings: [...stage.warnings] } : {}),
+		...(stage.wait !== undefined ? { wait: stage.wait } : {}),
+		...(stage.waitResults !== undefined ? { waitResults: stage.waitResults } : {}),
 	};
 }

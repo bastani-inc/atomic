@@ -419,6 +419,14 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 
 	/** Abort current operation. */
 	abort(): Promise<void>;
+
+	/**
+	 * Give up the stage's session while the workflow holds the stage across a long wait between prompts. The stage is
+	 * `waiting` until `rehydrate()` or the next message reopens it from the session store.
+	 */
+	release(): Promise<void>;
+	/** Reopen a released stage's session from the session store. Does nothing when the stage is resident. */
+	rehydrate(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

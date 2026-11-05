@@ -198,6 +198,11 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	readonly failure?: RunFailureClassification;
 	/** The workspace error behind a failure, serialized so it crosses worker processes and rehydrates typed. */
 	readonly workspaceError?: import("@bastani/atomic").SerializedWorkspaceError;
+	/**
+	 * JSON form of the typed error the run failed on, when it is of the `StageWaitError` or `ToolDetachmentError`
+	 * family. A parent workflow attaches it, rebuilt, as the cause of the child's failure (#4309).
+	 */
+	readonly failureDetail?: import("../../shared/typed-failure-detail.js").SerializedTypedError;
 	readonly stages: StageSnapshot[];
 	readonly toolNodes: ToolNodeSnapshot[];
 }

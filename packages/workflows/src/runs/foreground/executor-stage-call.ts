@@ -195,7 +195,7 @@ export function createTrackedStageCaller(input: {
 			if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = true;
 			try {
 				result = (await runtime.raceStageSessionHeartbeat(
-					raceAbort(runtime.innerCtx.__continuePrompt(RESUME_CONTINUATION_PROMPT), runtime.signal),
+					runtime.abortListeners.race(runtime.innerCtx.__continuePrompt(RESUME_CONTINUATION_PROMPT)),
 				)) as T;
 			} finally {
 				if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = false;
@@ -210,7 +210,7 @@ export function createTrackedStageCaller(input: {
 		let usage: WorkflowModelUsage | undefined;
 		try {
 			const response = await runtime.raceStageSessionHeartbeat(
-				raceAbort(runtime.innerCtx.prompt(BUDGET_WRAP_UP_PROMPT), runtime.signal),
+				runtime.abortListeners.race(runtime.innerCtx.prompt(BUDGET_WRAP_UP_PROMPT)),
 			);
 			summary = typeof response === "string" ? response : runtime.innerCtx.__getLastAssistantText();
 			usage = runtime.innerCtx.__modelFallbackMeta().modelAttempts?.at(-1)?.usage;
@@ -221,7 +221,10 @@ export function createTrackedStageCaller(input: {
 		throw runtime.budget.finishWrapUp(runtime.name, summary, usage, summary !== undefined);
 	};
 
-	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
+	const runTrackedCall = async <T>(
+		call: () => Promise<T>,
+		eagerSessionOrOptions?: boolean | TrackedStageCallOptions,
+	): Promise<T> => {
 		const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
 		runtime.exit.throwIfWorkflowExitSelected();
 		if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(runtime.name);
@@ -229,11 +232,13 @@ export function createTrackedStageCaller(input: {
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
 		await input.limiter.acquire();
+		runtime.state.limiterSlot = "held";
 		try {
 			await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 			runtime.exit.throwIfWorkflowExitSelected();
 			if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 		} catch (err) {
+			runtime.state.limiterSlot = "none";
 			input.limiter.release();
 			throw err;
 		}
@@ -303,12 +308,12 @@ export function createTrackedStageCaller(input: {
 				void runtime.innerCtx.abort().catch(() => {});
 			};
 			if (runtime.signal.aborted) abortSession();
-			else runtime.signal.addEventListener("abort", abortSession, { once: true });
+			const removeAbortSession = runtime.abortListeners.add(abortSession);
 			let result: T;
 			try {
 				runtime.state.askUserQuestionObservedThisTurn = false;
 				runtime.state.chatAnswerObservedThisTurn = false;
-				result = await runtime.raceStageSessionHeartbeat(raceAbort(call(), runtime.signal));
+				result = await runtime.raceStageSessionHeartbeat(runtime.abortListeners.race(call()));
 				if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 				const initialDrain = await drainResumeContinuations(result);
 				result = initialDrain.result;
@@ -347,7 +352,7 @@ export function createTrackedStageCaller(input: {
 								decision =
 									decided === "superseded"
 										? { action: "stay" }
-										: (decided ?? (await confirmReadiness(readinessSignal)));
+										: (decided ?? (await runtime.awaitPromptAnswer(confirmReadiness(readinessSignal))));
 								// An answer can win its promise race while pause still wins admission.
 								if (decision.action === "advance" || decision.message !== undefined) {
 									await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
@@ -379,7 +384,7 @@ export function createTrackedStageCaller(input: {
 								if (decision.message !== READINESS_GATE_CHAT_MESSAGE)
 									runtime.state.latestUserMessage = decision.message;
 								result = (await runtime.raceStageSessionHeartbeat(
-									raceAbort(runtime.innerCtx.__continuePrompt(decision.message), runtime.signal),
+									runtime.abortListeners.race(runtime.innerCtx.__continuePrompt(decision.message)),
 								)) as T;
 								if (runtime.budget.enabled && typeof result === "string") stageResultBeforeBudget = result;
 							} else {
@@ -418,7 +423,7 @@ export function createTrackedStageCaller(input: {
 					}
 				}
 			} finally {
-				runtime.signal.removeEventListener("abort", abortSession);
+				removeAbortSession();
 			}
 			// A generation closed under the running stage refused every tool call after it: the stage
 			// cannot have done its work, so it fails rather than completing (#3996).
@@ -584,10 +589,24 @@ export function createTrackedStageCaller(input: {
 			}
 			runtime.state.sessionCheckpointed = finalizationError === undefined;
 			if (runtime.state.contextUnreachable) void runtime.stageRegistry.releaseIdle(runtime.runId, runtime.stageId);
-			input.limiter.release();
+			if (runtime.state.limiterSlot === "held") input.limiter.release();
+			runtime.state.limiterSlot = "none";
 			if (finalizationError !== undefined) throwFinalizationError(finalizationError.error);
 			delete runtime.state.readinessController;
 			if (terminalStateIsSuccess && readinessGateEnabled) runtime.signal.throwIfAborted();
+		}
+	};
+
+	return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
+		runtime.state.callsInFlight += 1;
+		try {
+			const result = await runTrackedCall(call, eagerSessionOrOptions);
+			// Counted once the call finished for the author: a durable resume answers this many calls from its record.
+			runtime.state.promptsCompleted += 1;
+			return result;
+		} finally {
+			runtime.state.callsInFlight -= 1;
+			if (runtime.state.callsInFlight === 0) runtime.watchIdle();
 		}
 	};
 }

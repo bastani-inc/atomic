@@ -435,6 +435,8 @@ function stageGlyph(status: StageStatus): string {
 			return "✗";
 		case "awaiting_input":
 			return "？";
+		case "waiting":
+			return "◷";
 		case "skipped":
 			return "⊘";
 		default:
