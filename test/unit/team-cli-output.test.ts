@@ -189,12 +189,12 @@ describe("atomic team output (#4320)", () => {
 			const url = databaseUrl.replaceAll(root, "<root>");
 			const lines = result.out.split("\n");
 			assert.deepEqual(lines.slice(0, 13), [
-				"Stopping the Intercom broker (pid 101)",
 				`Connected to ${url}.`,
 				"Stored the token in <root>/agent/storage-token.<id> (mode 600).",
 				"Set `storage` to the team database and `sessions.storage` to the local store in <root>/agent/settings.json; other settings are unchanged.",
 				"It replaces the previous selection: SQLite old.sqlite.",
 				"It replaces the previous `sessions.storage`: JSONL directory <root>/sessions.",
+				"Stopping the Intercom broker (pid 101)",
 				"Restarted the Intercom broker: pid 101 → 202.",
 				"",
 				"Profile: team (sessions on this machine; workflow runs and Intercom on the team database)",
@@ -213,10 +213,11 @@ describe("atomic team output (#4320)", () => {
 				}),
 			);
 			assert.equal(again.code, 0);
-			assert.deepEqual(again.out.split("\n").slice(1, 6), [
+			assert.deepEqual(again.out.split("\n").slice(0, 6), [
 				`Connected to ${url}.`,
 				"Kept the token in <root>/agent/storage-token.<id>; it already holds this token.",
 				"Set `storage` to the team database and `sessions.storage` to the local store in <root>/agent/settings.json; other settings are unchanged.",
+				"Stopping the Intercom broker (pid 101)",
 				"Stopped the Intercom broker (pid 101); the next session that uses Intercom starts one with these settings.",
 				"",
 			]);
@@ -269,11 +270,11 @@ describe("atomic team output (#4320)", () => {
 			const left = await team(["leave"], control({ status: "not-running" }));
 			assert.equal(left.code, 0, left.err);
 			assert.deepEqual(left.out.split("\n"), [
-				"Stopping the Intercom broker (pid 101)",
 				"Removed `storage` and `sessions.storage` from <root>/agent/settings.json; other settings are unchanged.",
+				"Stopping the Intercom broker (pid 101)",
 				"Kept the token file <root>/agent/storage-token.<id>: another setting still references it.",
 				"No Intercom broker was running; the next session that uses Intercom starts one with these settings.",
-				"Profile: custom (matches no preset; see the selections below)",
+				"Profile: custom (sessions: SQLite <root>/workflows/journal.sqlite; workflow runs: adapter @bastani/atomic-storage-libsql; Intercom: off)",
 			]);
 
 			writeSettings({

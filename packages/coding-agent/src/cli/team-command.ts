@@ -17,8 +17,10 @@ import { collectStorageStatus, describeStorageError, type StorageStatus } from "
 import {
 	joinTeamWith,
 	leaveTeamWith,
+	type SharedDatabaseJoin,
 	selectTeamProfile,
 	type TeamBrokerRestart,
+	type TeamLeaveResult,
 	type TeamProfile,
 	type TeamProfileName,
 } from "../core/storage/team.js";
@@ -242,50 +244,64 @@ export async function runTeamCommand(args: readonly string[], options: TeamComma
 		const context = options.loadControl === undefined ? {} : { loadControl: options.loadControl };
 		if (command.kind === "status") return (await report(options, command.json, log)).failed ? 1 : 0;
 		if (command.kind === "join") {
+			const reportJoined = (joined: SharedDatabaseJoin): void => {
+				log(`Connected to ${command.url}.`);
+				if (joined.tokenPath !== undefined) {
+					log(
+						joined.token === "reused"
+							? `Kept the token in ${joined.tokenPath}; it already holds this token.`
+							: `Stored the token in ${joined.tokenPath} (mode 600).`,
+					);
+				}
+				log(
+					`Set \`storage\` to the team database and \`sessions.storage\` to the local store in ${joined.settingsPath}; other settings are unchanged.`,
+				);
+				if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
+				if (joined.replacedSessionsStorage !== undefined)
+					log(`It replaces the previous \`sessions.storage\`: ${joined.replacedSessionsStorage}.`);
+			};
 			const joined = await joinTeamWith(
 				{ ...command, agentDir: options.agentDir, cwd: options.cwd, onProgress: log },
 				"cli",
-				context,
+				{ ...context, onJoined: reportJoined },
 			);
-			log(`Connected to ${command.url}.`);
-			if (joined.tokenPath !== undefined) {
-				log(
-					joined.token === "reused"
-						? `Kept the token in ${joined.tokenPath}; it already holds this token.`
-						: `Stored the token in ${joined.tokenPath} (mode 600).`,
-				);
-			}
-			log(
-				`Set \`storage\` to the team database and \`sessions.storage\` to the local store in ${joined.settingsPath}; other settings are unchanged.`,
-			);
-			if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
-			if (joined.replacedSessionsStorage !== undefined)
-				log(`It replaces the previous \`sessions.storage\`: ${joined.replacedSessionsStorage}.`);
 			const restarted = describeRestart(joined.broker, log, error);
 			log("");
 			const status = await report(options, false, log);
 			return restarted && !status.failed ? 0 : 1;
 		}
-		const left = await leaveTeamWith({ agentDir: options.agentDir, cwd: options.cwd, onProgress: log }, context);
-		if (left.removed.length === 0) {
-			log(`Nothing to remove: ${left.settingsPath} holds no settings that \`${APP_NAME} team join\` wrote.`);
-		} else {
-			log(
-				`Removed ${left.removed.map((key) => `\`${key}\``).join(" and ")} from ${left.settingsPath}; other settings are unchanged.`,
-			);
-		}
-		for (const { key, reason } of left.kept) {
-			log(
-				reason === "changed"
-					? `Left \`${key}\` in place: it holds something other than what team join writes.`
-					: `Left \`${key}\` in place: \`storage\` is still set, and without it new sessions would move to that store.`,
-			);
-		}
+		let reportedLeft = false;
+		const reportLeft = (left: Pick<TeamLeaveResult, "settingsPath" | "removed" | "kept">): void => {
+			reportedLeft = true;
+			if (left.removed.length === 0) {
+				log(`Nothing to remove: ${left.settingsPath} holds no settings that \`${APP_NAME} team join\` wrote.`);
+			} else {
+				log(
+					`Removed ${left.removed.map((key) => `\`${key}\``).join(" and ")} from ${left.settingsPath}; other settings are unchanged.`,
+				);
+			}
+			for (const { key, reason } of left.kept) {
+				log(
+					reason === "changed"
+						? `Left \`${key}\` in place: it holds something other than what team join writes.`
+						: `Left \`${key}\` in place: \`storage\` is still set, and without it new sessions would move to that store.`,
+				);
+			}
+		};
+		const left = await leaveTeamWith(
+			{ agentDir: options.agentDir, cwd: options.cwd, onProgress: log },
+			{ ...context, onLeft: reportLeft },
+		);
+		if (!reportedLeft) reportLeft(left);
 		for (const path of left.deletedTokenFiles) log(`Deleted the token file ${path}.`);
 		for (const path of left.keptTokenFiles) log(`Kept the token file ${path}: another setting still references it.`);
 		const restarted = left.broker === undefined || describeRestart(left.broker, log, error);
 		const profile = selectTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
-		log(`Profile: ${profile.profile} (${PROFILE_DESCRIPTIONS[profile.profile]})`);
+		const described =
+			profile.profile === "custom"
+				? `sessions: ${profile.sessions}; workflow runs: ${profile.journal}; Intercom: ${profile.intercom}`
+				: PROFILE_DESCRIPTIONS[profile.profile];
+		log(`Profile: ${profile.profile} (${described})`);
 		return restarted ? 0 : 1;
 	} catch (caught) {
 		error(

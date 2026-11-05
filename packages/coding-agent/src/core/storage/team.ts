@@ -138,6 +138,10 @@ export interface TeamProfile {
 export interface TeamOperationContext {
 	readonly loadControl?: () => Promise<IntercomBrokerControl>;
 	readonly connectionTimeoutMs?: number;
+	/** Called once a join wrote its settings, before the broker restarts, so the CLI reports the join first. */
+	readonly onJoined?: (joined: SharedDatabaseJoin) => void;
+	/** Called once a leave wrote its settings, before the broker restarts, so the CLI reports the change first. */
+	readonly onLeft?: (left: Pick<TeamLeaveResult, "settingsPath" | "removed" | "kept">) => void;
 }
 
 function settingsPathOf(agentDir: string): string {
@@ -489,6 +493,7 @@ export async function joinTeamWith(
 		source,
 		context.connectionTimeoutMs ?? TEAM_CONNECTION_TIMEOUT_MS,
 	);
+	context.onJoined?.(joined);
 	const broker = await restartBroker(dirname(joined.settingsPath), context, options.onProgress);
 	return { ...joined, sessionsStorage: LOCAL_SESSIONS_STORAGE, broker };
 }
@@ -571,6 +576,7 @@ export async function leaveTeamWith(
 	await manager.flush();
 	const writeFailure = manager.drainErrors()[0];
 	if (writeFailure !== undefined) throw settingsWriteError(settingsPath, writeFailure.error, "Nothing was changed.");
+	context.onLeft?.({ settingsPath, removed, kept });
 	const broker = removed.includes("storage") ? await restartBroker(agentDir, context, options.onProgress) : undefined;
 	const deletedTokenFiles: string[] = [];
 	const keptTokenFiles: string[] = [];
