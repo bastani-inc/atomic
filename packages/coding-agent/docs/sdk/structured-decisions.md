@@ -5,7 +5,7 @@ description: Make a schema-validated structured decision without starting an age
 
 # Structured decisions
 
-Atomic has one decision service. [`decide()`](#decide) asks the user's configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with probabilities. `model: "auto"` selection for workflow stages and subagents, the `structured_output` tool, and [readiness after a steer](/workflows/operations#readiness-after-a-steer) all decide through it. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models the caller names, through the same engine. None of them starts a child agent, executes the caller's other tools, authorizes an action, or changes the selected chat model.
+Atomic has one decision service. [`decide()`](#decide) asks the user's configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with probabilities. `model: "auto"` selection for workflow stages and subagents and [readiness after a steer](/workflows/operations#readiness-after-a-steer) decide through it. The `structured_output` tool starts on the same decision model, resolved the same way, and its failures there are `DecisionError`s. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models the caller names, through the same engine. None of them starts a child agent, executes the caller's other tools, authorizes an action, or changes the selected chat model.
 
 ## decide
 
@@ -67,7 +67,7 @@ Every failure rejects with a `DecisionError`; branch on the class or `code`, nev
 ## Where the decision model decides
 
 - **`model: "auto"`** for workflow stages and subagents asks two questions through `decide()`; see [Select the router](#select-the-router).
-- **The `structured_output` tool** without its own `model` starts on `decisionModel`: a classifier answers when the result schema is a finite Choice, and otherwise the call's `fallbackModels` and then the current chat model answer.
+- **The `structured_output` tool** without its own `model` starts on `decisionModel`, resolved as `decide()` resolves it: a classifier answers when the result schema is a finite Choice, and otherwise the call's `fallbackModels` and then the current chat model answer. An unregistered or invalid `decisionModel` rejects with `DecisionModelUnavailableError` or `DecisionConfigError`, and a call that no candidate answers rejects with `DecisionOutputError` or `DecisionProviderError`.
 - **Readiness after a steer** asks an advance/stay Choice and a yes/no companion; see [Readiness after a steer](/workflows/operations#readiness-after-a-steer).
 - **`generateStructuredOutput()`** uses only the models it names and the current chat model; pass `settings` to start it on `decisionModel` as the tool does.
 
@@ -80,7 +80,7 @@ Pass an optional exact `provider/model` string, not a model object and not `auto
 - Omit `model` to use the configured `decisionModel` as the primary when you pass `settings` (the `structured_output` tool always does), or the current stage or chat model otherwise.
 - After the primary and every explicit fallback, Atomic tries the current chat model if it has not already been tried.
 
-Image-generation models, model patterns, reasoning suffixes, surrounding whitespace, and IDs the registry does not list cannot be used. Atomic skips such an ID, records it with its error in `modelAttempts`, and still tries the remaining candidates, including the current chat model, so a mistyped `model` or fallback does not fail the call. The call fails with the first ID's error only when no candidate resolves. A classifier is never an execution `auto` candidate. A catalog entry does not prove that the provider can classify, that credentials work, or that quota remains. `decisionModel` only changes this selection when `model` is omitted and `settings` is passed.
+Image-generation models, model patterns, reasoning suffixes, surrounding whitespace, and IDs the registry does not list cannot be used. Atomic skips such an ID, records it with its error in `modelAttempts`, and still tries the remaining candidates, including the current chat model, so a mistyped `model` or fallback does not fail the call. The call fails with the first ID's error only when no candidate resolves. A classifier is never an execution `auto` candidate. A catalog entry does not prove that the provider can classify, that credentials work, or that quota remains. `decisionModel` only changes this selection when `model` is omitted and `settings` is passed, and it is not skipped: an unregistered or invalid `decisionModel` fails the call with a [`DecisionError`](#errors).
 
 A classifier can answer a finite Choice. Literal unions, enums, booleans, and flat objects whose required fields all use those types are Choice-compatible. Free-form text, unconstrained numbers, arrays, optional fields, and nested objects are not. Atomic compiles compatible schemas into generic choice questions and skips an incompatible classifier, recording the skip. A request whose entire chain is incompatible fails without inventing a decoder.
 
@@ -155,6 +155,6 @@ When the deadline passes, Atomic stops the in-flight generation, which also ends
 
 Pass an `AbortSignal` to cancel sooner, for example `signal: AbortSignal.timeout(milliseconds)`. Cancellation rejects the whole call immediately, even if a provider ignores its signal. Output has no fixed token cap: a chat decision may use the selected model's full output limit. Pass a positive integer `maxTokens` only when you want a smaller bound.
 
-No result is returned for missing state, invalid configuration, unrepaired malformed output or an unrecovered provider failure. Keep action admission after the awaited result and check cancellation again at that boundary. Neither API runs recursive agents or provider probes.
+No result is returned for missing state, invalid configuration, unrepaired malformed output or an unrecovered provider failure. A call that started on `decisionModel` rejects with a [`DecisionError`](#errors) naming that model. Keep action admission after the awaited result and check cancellation again at that boundary. Neither API runs recursive agents or provider probes.
 
 Provider errors report a static reason without raw response bodies or credentials. A failed classifier request, including a refusal or an unrecognized or missing Choice answer, advances to the next configured model or current chat model. Chat provider errors also advance, including explicit refusals. Ordinary text without a valid result gets up to three repairs before advancing; Atomic does not inspect the wording to guess whether it is a refusal. Cancellation stops the chain.

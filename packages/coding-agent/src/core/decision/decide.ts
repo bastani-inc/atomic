@@ -1,23 +1,10 @@
 import { type ClassifierAnswer, containsKnownEnvCredential } from "@bastani/pi-ai";
 import { type TSchema, Type } from "typebox";
-import {
-	ClassifierDecisionError,
-	type DecisionRunResult,
-	OutputRepairExhaustedError,
-	runDecision,
-} from "../structured-output/index.js";
-import { carriedProviderFailure } from "../structured-output/provider-failure.js";
+import { type DecisionRunResult, decisionFailure, runDecision } from "../structured-output/index.js";
 import { resolveDecisionModel } from "../structured-output/resolver.js";
 import type { DecisionModelSelectionOptions, StructuredDecisionQuestion } from "../structured-output/types.js";
 import type { JsonValue } from "../tools/structured-output.ts";
-import {
-	DecisionModelUnavailableError,
-	DecisionOutputError,
-	DecisionProviderError,
-	DecisionRequestError,
-	type DecisionRequestErrorReason,
-	isDecisionError,
-} from "./errors.js";
+import { DecisionModelUnavailableError, DecisionRequestError, type DecisionRequestErrorReason } from "./errors.js";
 import type {
 	DecisionAnswers,
 	DecisionQuestion,
@@ -201,36 +188,6 @@ function typedAnswers<Q extends DecisionQuestions>(
 			];
 		}),
 	) as DecisionAnswers<Q>;
-}
-
-/** The engine's own message, which names no provider text, state or answer; a classifier's status and error type. */
-function engineDetail(error: Error): string {
-	return error instanceof ClassifierDecisionError && error.detail
-		? `${error.message} (${error.detail})`
-		: error.message;
-}
-
-/** Translate an engine failure into the {@link DecisionError} family; a cancellation keeps its own reason. */
-function decisionFailure(error: unknown, signal: AbortSignal | undefined, model: string): unknown {
-	if (signal?.aborted) return signal.reason;
-	if (isDecisionError(error)) return error;
-	const failure = error instanceof Error ? error : new Error(String(error));
-	const provider = carriedProviderFailure(failure);
-	if (
-		failure instanceof OutputRepairExhaustedError ||
-		(failure instanceof ClassifierDecisionError && failure.kind !== "request")
-	)
-		return new DecisionOutputError({ model, detail: engineDetail(failure) }, { cause: failure });
-	return new DecisionProviderError(
-		{
-			model,
-			detail: engineDetail(failure),
-			providerStatus: provider?.status,
-			providerCode: provider?.code,
-			retryAfterMs: provider?.retryAfterMs,
-		},
-		{ cause: failure },
-	);
 }
 
 /**

@@ -12,6 +12,7 @@ import {
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
+import { DecisionOutputError, DecisionProviderError, isDecisionError } from "../decision/errors.js";
 import { reportModelRoutingDebug } from "../model-routing-debug.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
@@ -278,6 +279,36 @@ export class ClassifierDecisionError extends Error {
 	}
 }
 
+/** The engine's own message, which names no provider text, state or answer; a classifier's status and error type. */
+function engineDetail(error: Error): string {
+	return error instanceof ClassifierDecisionError && error.detail
+		? `${error.message} (${error.detail})`
+		: error.message;
+}
+
+/** Translate an engine failure into the {@link DecisionError} family; a cancellation keeps its own reason. */
+export function decisionFailure(error: unknown, signal: AbortSignal | undefined, model: string): unknown {
+	if (signal?.aborted) return signal.reason;
+	if (isDecisionError(error)) return error;
+	const failure = error instanceof Error ? error : new Error(String(error));
+	const provider = carriedProviderFailure(failure);
+	if (
+		failure instanceof OutputRepairExhaustedError ||
+		(failure instanceof ClassifierDecisionError && failure.kind !== "request")
+	)
+		return new DecisionOutputError({ model, detail: engineDetail(failure) }, { cause: failure });
+	return new DecisionProviderError(
+		{
+			model,
+			detail: engineDetail(failure),
+			providerStatus: provider?.status,
+			providerCode: provider?.code,
+			retryAfterMs: provider?.retryAfterMs,
+		},
+		{ cause: failure },
+	);
+}
+
 const CLASSIFIER_ABORTED = "Structured output classifier request was aborted; no fallback was attempted.";
 
 function classifierQuestion(question: StructuredDecisionQuestion, instructions: string): ClassifierQuestion {
@@ -399,24 +430,44 @@ async function generateWithinDeadline<T extends TSchema>(
 		schema: jsonSnapshot(request.schema),
 		instructions: request.instructions,
 	};
-	const configured = request.model === undefined ? request.settings?.getDecisionModel() : undefined;
-	const decisionModel = configured && configured !== "auto" ? configured : undefined;
+	const settings = request.model === undefined ? request.settings : undefined;
+	const decisionModel = settings
+		? resolveDecisionModel({ settings, modelRegistry: request.modelRegistry, currentModel: current })
+		: undefined;
 	const ids = [
-		request.model ?? decisionModel ?? (current ? `${current.provider}/${current.id}` : ""),
+		request.model ?? decisionModel?.fullId ?? (current ? `${current.provider}/${current.id}` : ""),
 		...(request.fallbackModels ?? []),
 		...(current ? [`${current.provider}/${current.id}`] : []),
 	];
 	if (!ids[0]) throw new Error("Structured output requires model or currentModel.");
-	const resolutions = [...new Set(ids)].map((id) => resolveCandidateOutcome(id, request));
+	const resolutions = [...new Set(ids)].map(
+		(id): CandidateResolution =>
+			decisionModel && id === decisionModel.fullId
+				? { candidate: decisionModel }
+				: resolveCandidateOutcome(id, request),
+	);
 	const resolutionFailures = resolutions.filter((resolution) => "failure" in resolution);
 	if (resolutionFailures.length === resolutions.length) throw resolutionFailures[0].failure;
+	if (!decisionModel) return inferAcrossCandidates(snapshot, resolutions);
+	try {
+		return await inferAcrossCandidates(snapshot, resolutions);
+	} catch (error) {
+		if (request.signal.aborted) throw error;
+		throw decisionFailure(error, undefined, decisionModel.fullId);
+	}
+}
+
+async function inferAcrossCandidates<T extends TSchema>(
+	snapshot: StructuredOutputRequest<T> & { readonly signal: AbortSignal; readonly trace: DecisionTrace },
+	resolutions: readonly CandidateResolution[],
+): Promise<StructuredOutputResult<Static<T>>> {
 	const choices = compileChoiceSchema(snapshot.schema);
 	const modelAttempts: ModelAttempt[] = [];
 	let lastDiagnostic: Error | undefined;
 	/** The last candidate's rate limit or exhausted quota, kept on the error when every candidate failed. */
 	let lastProviderFailure: ProviderFailureSignal | undefined;
 	for (const resolution of resolutions) {
-		assertNotCancelled(request.signal);
+		assertNotCancelled(snapshot.signal);
 		if ("failure" in resolution) {
 			modelAttempts.push({ model: resolution.id, error: resolution.failure.message });
 			continue;
@@ -450,7 +501,7 @@ async function generateWithinDeadline<T extends TSchema>(
 			);
 			return withAttempts(publicResult(result), modelAttempts, candidate.fullId);
 		} catch (error) {
-			assertNotCancelled(request.signal);
+			assertNotCancelled(snapshot.signal);
 			if (error instanceof ClassifierDecisionError) {
 				lastProviderFailure = carriedProviderFailure(error) ?? lastProviderFailure;
 				modelAttempts.push({ model: candidate.fullId, error: error.message });

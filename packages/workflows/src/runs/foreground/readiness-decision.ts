@@ -3,6 +3,7 @@ import {
 	type DecisionChoiceQuestion,
 	type DecisionResult,
 	findDecisionError,
+	isDecisionModelUnavailableError,
 } from "@bastani/atomic";
 
 /**
@@ -118,6 +119,15 @@ export function readinessDecisionRecord(
 		model,
 		...(verdict.probabilities === undefined ? {} : { probabilities: Object.freeze({ ...verdict.probabilities }) }),
 	});
+}
+
+/**
+ * True when the decision model is a chat model, whose answers carry no probabilities. Readiness cannot be decided
+ * then, which is expected rather than a failure: the user is asked as before and nothing is recorded.
+ */
+export function decisionModelGivesNoProbabilities(error: unknown): boolean {
+	const typed = findDecisionError(error);
+	return isDecisionModelUnavailableError(typed) && typed.reason === "no-probabilities";
 }
 
 /** The fallback record of a failed decision: the question is asked and the typed error is kept. */

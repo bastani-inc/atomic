@@ -22,6 +22,7 @@ import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import { structuredTaskOutputText, truncateTaskOutput } from "./executor-task-prompts.js";
 import {
+	decisionModelGivesNoProbabilities,
 	describeReadinessDecision,
 	READINESS_DECISION_INSTRUCTIONS,
 	READINESS_DECISION_QUESTIONS,
@@ -124,6 +125,10 @@ export function createTrackedStageCaller(input: {
 			decision = readinessDecisionRecord(readinessVerdict(result), result.model);
 		} catch (error) {
 			if (signal.aborted) throw error;
+			if (decisionModelGivesNoProbabilities(error)) {
+				runtime.state.latestUserMessage = undefined;
+				return undefined;
+			}
 			decision = readinessFailureRecord(error);
 		}
 		runtime.state.latestUserMessage = undefined;

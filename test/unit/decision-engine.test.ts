@@ -4,6 +4,10 @@ import { afterEach, test, vi } from "vitest";
 import { decide } from "../../packages/coding-agent/src/core/decision/decide.js";
 import {
 	DecisionProviderError,
+	isDecisionConfigError,
+	isDecisionError,
+	isDecisionModelUnavailableError,
+	isDecisionOutputError,
 	isDecisionProviderError,
 	isDecisionTimeoutError,
 } from "../../packages/coding-agent/src/core/decision/errors.js";
@@ -482,3 +486,112 @@ for (const [label, answer] of [
 		assert.equal(decode.mock.calls.length, 0);
 	});
 }
+
+function structuredOutputOnDecisionModel(
+	decisionModel: string,
+	registry: Partial<Parameters<typeof generateStructuredOutput>[0]["modelRegistry"]> = {},
+	overrides: Partial<Parameters<typeof generateStructuredOutput>[0]> = {},
+) {
+	return generateStructuredOutput({
+		...structuredOutputRequest(),
+		settings: SettingsManager.inMemory({ decisionModel }),
+		modelRegistry: {
+			getAll: () => [decisionChatModel],
+			streamSimple: vi.fn(() => messageStream(decisionMessage({ route: "review" }))),
+			getClassifierModel: () => undefined,
+			...registry,
+		},
+		...overrides,
+	});
+}
+
+const CLASSIFIED_REVIEW = {
+	api: decisionClassifier.api,
+	provider: decisionClassifier.provider,
+	model: decisionClassifier.id,
+	answers: { route: { type: "choice" as const, choice: '"review"', probabilities: { '"review"': 1 }, confidence: 1 } },
+	stopReason: "stop" as const,
+	timestamp: 1,
+};
+
+test("structured output resolves a decision model registered as both chat and classifier as decide() does, classifier first (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
+	const classify = vi.fn(async () => CLASSIFIED_REVIEW);
+	const result = await structuredOutputOnDecisionModel("decision-test/classifier", {
+		getAll: () => [decisionChatModel, { ...decisionChatModel, id: "classifier", name: "Chat twin" }],
+		streamSimple: dispatch,
+		getClassifierModel: () => decisionClassifier,
+		classify,
+	});
+	assert.equal(result.model, "decision-test/classifier");
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(dispatch.mock.calls.length, 0);
+});
+
+test("structured output refuses an unregistered or malformed decision model with a typed error before any request (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
+	await assert.rejects(
+		structuredOutputOnDecisionModel("decision-test/missing", { streamSimple: dispatch }),
+		(error: unknown) =>
+			isDecisionModelUnavailableError(error) &&
+			error.reason === "not-in-catalog" &&
+			error.model === "decision-test/missing",
+	);
+	await assert.rejects(
+		structuredOutputOnDecisionModel(" decision-test/chat", { streamSimple: dispatch }),
+		(error: unknown) => isDecisionConfigError(error) && error.code === "invalid-setting",
+	);
+	assert.equal(dispatch.mock.calls.length, 0);
+});
+
+test("structured output on the decision model reports a provider failure as a DecisionProviderError (#4358)", async () => {
+	await assert.rejects(
+		structuredOutputOnDecisionModel(
+			"decision-test/classifier",
+			{
+				getClassifierModel: () => decisionClassifier,
+				classify: async () => ({
+					...CLASSIFIED_REVIEW,
+					answers: {},
+					stopReason: "error" as const,
+					errorMessage: "System One API error (503)",
+				}),
+			},
+			{ currentModel: undefined },
+		),
+		(error: unknown) =>
+			isDecisionProviderError(error) &&
+			error.model === "decision-test/classifier" &&
+			error.detail === "Structured output failed across 1 model candidate(s).",
+	);
+});
+
+test("structured output on the decision model reports exhausted repairs as a DecisionOutputError (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "maybe" })));
+	await assert.rejects(
+		structuredOutputOnDecisionModel("decision-test/chat", { streamSimple: dispatch }),
+		(error: unknown) =>
+			isDecisionOutputError(error) &&
+			error.model === "decision-test/chat" &&
+			/output repair exhausted after 4 attempts/.test(error.detail ?? ""),
+	);
+	assert.equal(dispatch.mock.calls.length, 4);
+});
+
+test("a cancelled structured output on the decision model keeps its cancellation, not a decision error (#4358)", async () => {
+	const controller = new AbortController();
+	await assert.rejects(
+		structuredOutputOnDecisionModel(
+			"decision-test/classifier",
+			{
+				getClassifierModel: () => decisionClassifier,
+				classify: async () => {
+					controller.abort(new Error("caller stopped"));
+					throw new Error("request torn down");
+				},
+			},
+			{ signal: controller.signal },
+		),
+		(error: unknown) => !isDecisionError(error) && error instanceof Error && /cancelled/.test(error.message),
+	);
+});

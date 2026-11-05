@@ -277,7 +277,7 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		[
 			"an unavailable decision model",
 			async () => {
-				throw new DecisionModelUnavailableError({ reason: "no-probabilities", model: "decision-test/chat" });
+				throw new DecisionModelUnavailableError({ reason: "not-in-catalog", model: "decision-test/missing" });
 			},
 			{ name: "DecisionModelUnavailableError", code: "model-unavailable" },
 			false,
@@ -312,6 +312,28 @@ describe("executor — readiness after a steer decided by the decision model (#4
 			assert.equal((await result).status, "completed");
 		});
 	}
+
+	test("a chat decision model, which gives no probabilities, asks as before and records nothing", async () => {
+		store.clear();
+		const { result, decide } = launch({
+			decide: async () => {
+				throw new DecisionModelUnavailableError({ reason: "no-probabilities", model: "decision-test/chat" });
+			},
+		});
+		const gate = await waitForReadiness();
+		assert.equal(gate.request.questions[0]?.question, "Are you ready to move on to the next stage?");
+		assert.equal(decide.mock.calls.length, 1);
+		assert.equal(themeStage().readinessDecision, undefined);
+		assert.deepEqual(
+			(themeStage().notices ?? []).filter((notice) => notice.kind === "decision"),
+			[],
+		);
+		assert.equal(
+			stageUiBroker.answerStagePrompt(gate.runId, gate.stage.id, { optionLabels: [READINESS_GATE_ADVANCE_LABEL] }),
+			true,
+		);
+		assert.equal((await result).status, "completed");
+	});
 
 	test("a pause during the decision keeps the user's message and decides again after resume", async () => {
 		store.clear();
