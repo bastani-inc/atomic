@@ -13,10 +13,10 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { AssistantMessage, TextContent } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Key } from "@earendil-works/pi-tui";
-import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
+import { allStepsComplete, extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 
 // Tools
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
@@ -27,11 +27,16 @@ function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
 	return m.role === "assistant" && Array.isArray(m.content);
 }
 
-// Extract text content from an assistant message
+// Extract text content from an assistant message.
+// Includes thinking blocks: with reasoning-max models the [DONE:n] tags and
+// plan drafts usually land in thinking, not the visible text.
 function getTextContent(message: AssistantMessage): string {
 	return message.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map((block) => block.text)
+		.map((block) => {
+			if (block.type === "text") return block.text;
+			if (block.type === "thinking") return block.thinking;
+			return "";
+		})
 		.join("\n");
 }
 
@@ -60,12 +65,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		// Widget showing todo list
 		if (executionMode && todoItems.length > 0) {
 			const lines = todoItems.map((item) => {
+				const text = item.text.length > 60 ? `${item.text.slice(0, 57)}...` : item.text;
 				if (item.completed) {
-					return (
-						ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text))
-					);
+					return ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(text));
 				}
-				return `${ctx.ui.theme.fg("muted", "☐ ")}${item.text}`;
+				return `${ctx.ui.theme.fg("muted", "☐ ")}${text}`;
 			});
 			ctx.ui.setWidget("plan-todos", lines);
 		} else {
@@ -209,20 +213,26 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		if (!executionMode || todoItems.length === 0) return;
 		if (!isAssistantMessage(event.message)) return;
 
-		const text = getTextContent(event.message);
 		const nextTodos = todoItems.map((item) => ({ ...item }));
-		const changed = markCompletedSteps(text, nextTodos);
+		markCompletedSteps(getTextContent(event.message), nextTodos);
 		await persistState(nextTodos);
 		todoItems = nextTodos;
-		if (changed > 0) updateStatus(ctx);
+		// Always refresh after the save: cheap, keeps the widget consistent even when nothing matched.
+		updateStatus(ctx);
 	});
 
 	// Handle plan completion and plan mode UI
 	pi.on("agent_end", async (event, ctx) => {
 		// Check if execution is complete
 		if (executionMode && todoItems.length > 0) {
-			if (todoItems.every((t) => t.completed)) {
-				const completedList = todoItems.map((t) => `~~${t.text}~~`).join("\n");
+			// Fallback: the model wrapped up without [DONE:n] tags ("All steps complete").
+			const finalAssistant = [...event.messages].reverse().find(isAssistantMessage);
+			const finished =
+				finalAssistant !== undefined && allStepsComplete(getTextContent(finalAssistant))
+					? todoItems.map((t) => ({ ...t, completed: true }))
+					: todoItems;
+			if (finished.every((t) => t.completed)) {
+				const completedList = finished.map((t) => `~~${t.text}~~`).join("\n");
 				// Commit the cleared state before publishing completion, so a failure can be retried.
 				await persistState([], false);
 				executionMode = false;
@@ -231,7 +241,9 @@ After completing a step, include a [DONE:n] tag in your response.`,
 				updateStatus(ctx);
 				await pi.sendMessage(
 					{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
-					{ triggerTurn: false },
+					// nextTurn: delivered with the next user prompt instead of triggering an
+					// extra (expensive, reasoning-max) LLM turn to acknowledge the card.
+					{ deliverAs: "nextTurn" },
 				);
 			}
 			return;

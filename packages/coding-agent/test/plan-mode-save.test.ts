@@ -64,3 +64,188 @@ for (const action of ["progress", "completion"] as const) {
 		else assert.equal(status.mock.calls.length, 1);
 	});
 }
+
+test("plan-mode completes every step when the final message says the plan is done (pi #7950)", async () => {
+	const append = vi.fn().mockResolvedValue(undefined);
+	const send = vi.fn();
+	const loaded = await createTestExtensionsResult([
+		(pi) => planMode({ ...pi, appendEntry: append, sendMessage: send, setActiveTools() {} }),
+	]);
+	const extension = loaded.extensions[0];
+	const ctx = {
+		sessionManager: {
+			getEntries: () => [
+				{
+					type: "custom",
+					customType: "plan-mode",
+					data: {
+						enabled: false,
+						executing: true,
+						todos: [
+							{ step: 1, text: "Ship", completed: true },
+							{ step: 2, text: "Announce", completed: false },
+						],
+					},
+				},
+			],
+		},
+		ui: {
+			setStatus() {},
+			setWidget() {},
+			theme: { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text },
+		},
+	} as ExtensionContext;
+	await extension.handlers.get("session_start")![0]({ type: "session_start", reason: "startup" }, ctx);
+
+	await extension.handlers.get("agent_end")![0](
+		{ type: "agent_end", messages: [assistantMsg("All steps complete.")] },
+		ctx,
+	);
+
+	assert.equal(send.mock.calls.length, 1);
+	const [message, options] = send.mock.calls[0]!;
+	assert.equal(message.customType, "plan-complete");
+	assert.match(message.content, /~~Ship~~\n~~Announce~~/);
+	assert.deepEqual(options, { deliverAs: "nextTurn" });
+});
+
+interface TodoState {
+	step: number;
+	text: string;
+	completed: boolean;
+}
+
+async function startExecution(todos: TodoState[]) {
+	const append = vi.fn().mockResolvedValue(undefined);
+	const send = vi.fn();
+	const widget = vi.fn();
+	const loaded = await createTestExtensionsResult([
+		(pi) => planMode({ ...pi, appendEntry: append, sendMessage: send, setActiveTools() {} }),
+	]);
+	const extension = loaded.extensions[0];
+	const ctx = {
+		sessionManager: {
+			getEntries: () => [
+				{ type: "custom", customType: "plan-mode", data: { enabled: false, executing: true, todos } },
+			],
+		},
+		ui: {
+			setStatus() {},
+			setWidget: widget,
+			theme: {
+				fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+				strikethrough: (text: string) => `~${text}~`,
+			},
+		},
+	} as ExtensionContext;
+	await extension.handlers.get("session_start")![0]({ type: "session_start", reason: "startup" }, ctx);
+	return { extension, ctx, append, send, widget };
+}
+
+function messageWithContent(content: Array<Record<string, unknown>>) {
+	return { ...assistantMsg(""), content };
+}
+
+function lastWidgetLines(widget: ReturnType<typeof vi.fn>): string[] {
+	const calls = widget.mock.calls.filter(([key]) => key === "plan-todos");
+	return calls[calls.length - 1]![1] as string[];
+}
+
+test("plan-mode widget truncates only steps longer than 60 characters and styles completed steps", async () => {
+	const sixty = "a".repeat(60);
+	const sixtyOne = "b".repeat(61);
+	const { widget } = await startExecution([
+		{ step: 1, text: "Short", completed: false },
+		{ step: 2, text: sixty, completed: false },
+		{ step: 3, text: sixtyOne, completed: false },
+		{ step: 4, text: "Done one", completed: true },
+		{ step: 5, text: sixtyOne, completed: true },
+	]);
+
+	assert.deepEqual(lastWidgetLines(widget), [
+		"<muted>☐ </muted>Short",
+		`<muted>☐ </muted>${sixty}`,
+		`<muted>☐ </muted>${"b".repeat(57)}...`,
+		"<success>☑ </success><muted>~Done one~</muted>",
+		`<success>☑ </success><muted>~${"b".repeat(57)}...~</muted>`,
+	]);
+});
+
+test("plan-mode turn_end marks steps from thinking and prose across tool-call blocks", async () => {
+	const { extension, ctx, append } = await startExecution([
+		{ step: 1, text: "Ship", completed: false },
+		{ step: 2, text: "Announce", completed: false },
+		{ step: 3, text: "Celebrate", completed: false },
+	]);
+	const message = messageWithContent([
+		{ type: "thinking", thinking: "[DONE:1]" },
+		{ type: "text", text: "Step 2" },
+		{ type: "toolCall", id: "call-1", name: "read", arguments: {} },
+		{ type: "text", text: "done" },
+	]);
+
+	await extension.handlers.get("turn_end")![0]({ type: "turn_end", turnIndex: 0, message, toolResults: [] }, ctx);
+
+	assert.equal(append.mock.calls.length, 1);
+	const [customType, data] = append.mock.calls[0]!;
+	assert.equal(customType, "plan-mode");
+	assert.deepEqual(
+		(data as { todos: TodoState[] }).todos.map((t) => t.completed),
+		[true, true, false],
+	);
+});
+
+test("plan-mode turn_end marks steps from visible text markers", async () => {
+	const { extension, ctx, append, widget } = await startExecution([
+		{ step: 1, text: "Ship", completed: false },
+		{ step: 2, text: "Announce", completed: false },
+	]);
+
+	await extension.handlers.get("turn_end")![0](
+		{ type: "turn_end", turnIndex: 0, message: assistantMsg("[DONE:2]"), toolResults: [] },
+		ctx,
+	);
+
+	const [, data] = append.mock.calls[0]!;
+	assert.deepEqual(
+		(data as { todos: TodoState[] }).todos.map((t) => t.completed),
+		[false, true],
+	);
+	assert.deepEqual(lastWidgetLines(widget), [
+		"<muted>☐ </muted>Ship",
+		"<success>☑ </success><muted>~Announce~</muted>",
+	]);
+});
+
+test("plan-mode agent_end only completes the plan from the last assistant message", async () => {
+	const { extension, ctx, send, append } = await startExecution([{ step: 1, text: "Ship", completed: false }]);
+	const agentEnd = extension.handlers.get("agent_end")![0];
+
+	await agentEnd(
+		{ type: "agent_end", messages: [assistantMsg("All steps complete."), assistantMsg("Anything else?")] },
+		ctx,
+	);
+	assert.equal(send.mock.calls.length, 0);
+	assert.equal(append.mock.calls.length, 0);
+
+	await agentEnd(
+		{ type: "agent_end", messages: [assistantMsg("Working on it."), assistantMsg("All steps complete.")] },
+		ctx,
+	);
+	assert.equal(send.mock.calls.length, 1);
+	assert.match(send.mock.calls[0]![0].content, /~~Ship~~/);
+});
+
+test("plan-mode agent_end keeps executing when steps remain and the model does not claim completion", async () => {
+	const { extension, ctx, send, append } = await startExecution([
+		{ step: 1, text: "Ship", completed: true },
+		{ step: 2, text: "Announce", completed: false },
+	]);
+	const agentEnd = extension.handlers.get("agent_end")![0];
+
+	await agentEnd({ type: "agent_end", messages: [] }, ctx);
+	await agentEnd({ type: "agent_end", messages: [assistantMsg("Still working on step 2.")] }, ctx);
+
+	assert.equal(send.mock.calls.length, 0);
+	assert.equal(append.mock.calls.length, 0);
+});
