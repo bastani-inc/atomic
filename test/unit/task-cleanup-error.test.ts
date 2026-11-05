@@ -472,6 +472,7 @@ test("other infrastructure faults, and a process cleanup fault without a valid c
 		{ ...process.fields!, resources: [{ ...process.fields!.resources[0]!, message: undefined as never }] },
 		{ ...process.fields!, resources: [{ ...process.fields!.resources[0]!, taskId: 7 as never }] },
 		{ ...process.fields!, resources: [null as never] },
+		{ ...process.fields!, resources: [process.fields!.resources[0]!, null as never] },
 	]) {
 		const broken = rehydrateWorkflowInfrastructureError({ ...process, cause: brokenCause, fields });
 		assert.equal(broken.constructor, WorkflowInfrastructureError, JSON.stringify(fields));
