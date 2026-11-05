@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
@@ -13,6 +14,10 @@ import {
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
+
+const LFS_POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -27,14 +32,22 @@ async function capture(dir: string, blobs: MemorySnapshotBlobStore): Promise<Wor
 	return result.snapshot;
 }
 
-/** A `git-lfs` on PATH that logs the remote it is asked to pull from and fails for every remote in `failing`. */
+const realLfs = (process.env.PATH ?? "")
+	.split(delimiter)
+	.map((directory) => join(directory, "git-lfs"))
+	.find((candidate) => existsSync(candidate));
+
+/**
+ * A `git-lfs` on PATH that logs the remote it is asked to pull from, fails for every remote in `failing`, and hands
+ * every other pull, and every other command, to the real Git LFS.
+ */
 function fakeLfs(failing: readonly string[]): { log: string } {
 	const bin = mkdtempSync(join(sandbox.root, "bin-"));
 	const log = join(sandbox.root, "lfs.log");
 	const script = join(bin, "git-lfs");
 	writeFileSync(
 		script,
-		`#!/bin/sh\nfor last; do :; done\nprintf '%s|%s|%s\\n' "$*" "$GIT_TERMINAL_PROMPT" "$GIT_SSH_COMMAND" >> '${log}'\ncase ",$FAKE_LFS_FAIL," in *",$last,"*) exit 1 ;; esac\nexit 0\n`,
+		`#!/bin/sh\n[ "$1" = pull ] || exec '${realLfs}' "$@"\nfor last; do :; done\nprintf '%s|%s|%s\\n' "$*" "$GIT_TERMINAL_PROMPT" "$GIT_SSH_COMMAND" >> '${log}'\ncase ",$FAKE_LFS_FAIL," in *",$last,"*) exit 1 ;; esac\nexec '${realLfs}' "$@"\n`,
 	);
 	chmodSync(script, 0o755);
 	setWorktreeSnapshotGit(async () => ({
@@ -55,14 +68,17 @@ const pulls = (log: string): string[] =>
 				.map((line) => line.split("|")[0]!)
 		: [];
 
-/** Two remotes that both hold the repository, and a snapshot that names them in this order. */
+/** Two remotes that both hold the repository and the LFS object of `data.bin`, and a snapshot that names them in this order. */
 async function lfsSnapshotWithTwoRemotes() {
+	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
 	const { clone, remote } = await sandbox.remoteWithClone("repo", {
 		".gitattributes": "*.bin filter=lfs -text\n",
-		"data.bin": "pointer-ish\n",
+		"data.bin": "LFS-CONTENT-123\n",
 	});
+	await sandbox.git(clone, "lfs", "push", "--all", "origin");
 	const mirror = sandbox.path("mirror.git");
 	await sandbox.git(sandbox.root, "clone", "-q", "--bare", remote, mirror);
+	cpSync(join(remote, "lfs"), join(mirror, "lfs"), { recursive: true });
 	sandbox.write(join(clone, "notes.txt"), "notes\n");
 	const blobs = new MemorySnapshotBlobStore();
 	const snapshot = { ...(await capture(clone, blobs)), remotes: [remote, mirror] };
@@ -137,7 +153,7 @@ describe.skipIf(process.platform === "win32")("which remotes an LFS restore pull
 		mkdirSync(repository);
 		await sandbox.git(repository, "init", "-q");
 		sandbox.write(join(repository, ".gitattributes"), "*.bin filter=lfs -text\n");
-		sandbox.write(join(repository, "data.bin"), "x\n");
+		sandbox.write(join(repository, "data.bin"), `${LFS_POINTER_PREFIX}\noid sha256:${sha256("x\n")}\nsize 2\n`);
 		await sandbox.commitAll(repository, "initial");
 		sandbox.write(join(repository, "notes.txt"), "notes\n");
 		const blobs = new MemorySnapshotBlobStore();
@@ -179,6 +195,49 @@ describe.skipIf(process.platform === "win32")("restoring real Git LFS content (#
 			warnings.map((warning) => warning.code),
 			["filters"],
 		);
+		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
+	});
+});
+
+/** A repository whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's object pushed. */
+async function lfsEditedSnapshot(extra: Record<string, string> = {}) {
+	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
+	const { clone } = await sandbox.remoteWithClone("repo", {
+		".gitattributes": "*.bin filter=lfs -text\n",
+		"data.bin": "ORIGINAL-CONTENT\n",
+	});
+	await sandbox.git(clone, "lfs", "push", "--all", "origin");
+	sandbox.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
+	for (const [file, content] of Object.entries(extra)) sandbox.write(join(clone, file), content);
+	await sandbox.git(clone, "add", "-A");
+	await sandbox.git(clone, "lfs", "push", "--object-id", "origin", sha256("EDITED-CONTENT\n"));
+	await sandbox.git(clone, "reset", "-q");
+	const blobs = new MemorySnapshotBlobStore();
+	return { blobs, snapshot: await capture(clone, blobs) };
+}
+
+describe.skipIf(process.platform === "win32")("restoring LFS files that changed since HEAD (#4245)", () => {
+	test("an edited LFS file whose new object is on the remote is restored with its content and no LFS warning", async () => {
+		const { blobs, snapshot } = await lfsEditedSnapshot();
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
+		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
+	});
+
+	test("a new LFS file whose object was never pushed stays a pointer, and only it is reported", async () => {
+		const { blobs, snapshot } = await lfsEditedSnapshot({ "fresh.bin": "NEVER-PUSHED\n" });
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
+		assert.ok(readFileSync(join(restored.path, "fresh.bin"), "utf8").startsWith(LFS_POINTER_PREFIX));
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["lfs-objects-unavailable", "filters"],
+		);
+		assert.deepEqual(warnings[0], { code: "lfs-objects-unavailable", paths: ["fresh.bin"] });
 		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
 	});
 });

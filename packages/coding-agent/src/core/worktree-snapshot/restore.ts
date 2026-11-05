@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../../config.js";
-import { locateCheckout, readRepositoryConfig, withScratchDirectory, writeWorkingTree } from "./capture.ts";
+import {
+	locateCheckout,
+	readRepositoryConfig,
+	withScratchDirectory,
+	writeSnapshotCommit,
+	writeWorkingTree,
+} from "./capture.ts";
 import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
 import {
 	isWorkspaceGitError,
@@ -562,22 +568,66 @@ function lfsRemote(remote: string): string {
 	return isAbsolute(remote) ? pathToFileURL(remote).href : remote;
 }
 
+const LFS_POINTER_PREFIX = Buffer.from("version https://git-lfs.github.com/spec/v1");
+const LFS_POINTER_MAX_BYTES = 1024;
+
+async function isLfsPointer(file: string): Promise<boolean> {
+	try {
+		const handle = await open(file, "r");
+		try {
+			const buffer = Buffer.alloc(LFS_POINTER_MAX_BYTES);
+			const { bytesRead } = await handle.read(buffer, 0, LFS_POINTER_MAX_BYTES, 0);
+			return (
+				bytesRead < LFS_POINTER_MAX_BYTES &&
+				buffer.subarray(0, LFS_POINTER_PREFIX.length).equals(LFS_POINTER_PREFIX)
+			);
+		} finally {
+			await handle.close();
+		}
+	} catch (error) {
+		throw unreadablePathError(file, error);
+	}
+}
+
+async function remainingPointers(root: string, paths: readonly string[]): Promise<string[]> {
+	const pointers: string[] = [];
+	for (const path of paths) if (await isLfsPointer(join(root, path))) pointers.push(path);
+	return pointers;
+}
+
 /**
- * Downloads the Git LFS objects of the staged worktree from the first recorded remote that has them. The staging
- * worktree belongs to a per-repository store that is created without remotes, so each recorded remote is named
- * explicitly, after `--` so that a value can never be read as an option, and the download can never wait for a person.
- * Resolves false when no remote supplied the objects, or none is recorded.
+ * Downloads the Git LFS objects of the snapshot's tree into the staged worktree from each recorded remote in turn,
+ * while any LFS file still holds a pointer, and returns the files that still do. `git lfs pull` fetches only the
+ * objects of HEAD's tree and its exit status does not say which files arrived, so the staged HEAD and index name the
+ * snapshot's commit during the pulls, and the files themselves are inspected after each one. The staging worktree
+ * belongs to a per-repository store that is created without remotes, so each recorded remote is named explicitly,
+ * after `--` so that a value can never be read as an option, and the download can never wait for a person.
  */
-async function pullLfsObjects(worktree: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
+async function pullLfsObjects(
+	worktree: GitRunOptions,
+	head: string,
+	tree: string,
+	remotes: readonly string[],
+): Promise<string[]> {
+	const neutral: GitRunOptions = { ...worktree, neutral: true, env: { GIT_LFS_SKIP_SMUDGE: "1" } };
+	const snapshotCommit = await writeSnapshotCommit(worktree, head, tree);
+	await runGit(["update-ref", "--no-deref", "HEAD", snapshotCommit], worktree);
+	await runGit(["read-tree", snapshotCommit], neutral);
+	let pointers = await remainingPointers(worktree.cwd, await lfsPaths(worktree));
 	for (const remote of remotes) {
+		if (pointers.length === 0) break;
 		try {
 			await runGit(["lfs", "pull", "--", lfsRemote(remote)], { ...worktree, nonInteractive: true });
-			return true;
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
+			worktree.signal?.throwIfAborted();
 		}
+		pointers = await remainingPointers(worktree.cwd, pointers);
 	}
-	return false;
+	await runGit(["update-ref", "--no-deref", "HEAD", head], worktree);
+	await runGit(["read-tree", head], neutral);
+	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+	return pointers;
 }
 
 async function materialize(
@@ -696,9 +746,8 @@ export async function restoreWorktree(
 			assertActive();
 			if (snapshot?.filters?.drivers.includes("lfs")) {
 				const worktree: GitRunOptions = { cwd: staging, signal };
-				if (!(await pullLfsObjects(worktree, snapshot.remotes))) {
-					warn({ code: "lfs-objects-unavailable", paths: await lfsPaths(worktree) });
-				}
+				const pointers = await pullLfsObjects(worktree, target.head, target.tree, snapshot.remotes);
+				if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
 			}
 			const checkout = await locateCheckout(staging, signal);
 			if (checkout instanceof Error) throw checkout;

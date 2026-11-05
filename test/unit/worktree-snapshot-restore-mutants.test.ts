@@ -49,7 +49,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -334,9 +334,9 @@ describe("failures that are not Git's own propagate unchanged", () => {
 	test("Git vanishing while LFS objects are pulled is reported as unavailable, and the worktree is removed", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", {
 			".gitattributes": "*.bin filter=lfs -text\n",
-			"data.bin": "base\n",
+			"data.bin": lfsPointer("base\n"),
 		});
-		sandbox.write(join(clone, "data.bin"), "edited\n");
+		sandbox.write(join(clone, "data.bin"), lfsPointer("edited\n"));
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = await capture(clone, blobs);
 		assert.deepEqual(snapshot.filters?.drivers, ["lfs"]);

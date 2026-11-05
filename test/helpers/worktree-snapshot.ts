@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -9,6 +10,12 @@ import {
 	runGit,
 	setWorktreeSnapshotGit,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
+
+/** The Git LFS pointer of `content`: what an LFS file holds until its object is fetched. */
+export function lfsPointer(content: string): string {
+	const oid = createHash("sha256").update(content).digest("hex");
+	return `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${Buffer.byteLength(content)}\n`;
+}
 
 /** Asserts `error` is the typed `unreadable-path` snapshot error for `path`, caused by the filesystem error `errno`. */
 export function assertUnreadablePath(error: unknown, path: string, errno: string): void {

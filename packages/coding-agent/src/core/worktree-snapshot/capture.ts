@@ -58,6 +58,14 @@ const SNAPSHOT_IDENTITY = {
 	GIT_COMMITTER_DATE: "@0 +0000",
 };
 
+/** Writes the commit of `tree` on `head` that records a snapshot. A fixed identity and time give one state one id. */
+export function writeSnapshotCommit(git: GitRunOptions, head: string, tree: string): Promise<string> {
+	return gitText(["commit-tree", "--no-gpg-sign", "-p", head, "-m", "Atomic worktree snapshot", tree], {
+		...git,
+		env: { ...git.env, ...SNAPSHOT_IDENTITY },
+	});
+}
+
 export function bindingOf(snapshot: WorktreeSnapshot): WorkspaceBinding {
 	return { remotes: [...snapshot.remotes], head: snapshot.head, tree: snapshot.tree, envHash: snapshot.envHash };
 }
@@ -428,10 +436,7 @@ async function captureCheckout(
 			signal,
 			allowExitCodes: [1],
 		});
-		const snapshotCommit = await gitText(
-			["commit-tree", "--no-gpg-sign", "-p", head, "-m", "Atomic worktree snapshot", state.tree],
-			{ cwd: root, signal, env: SNAPSHOT_IDENTITY },
-		);
+		const snapshotCommit = await writeSnapshotCommit({ cwd: root, signal }, head, state.tree);
 		const incremental =
 			previous !== undefined &&
 			previous.head === head &&

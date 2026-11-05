@@ -19,7 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -388,12 +388,12 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 	async function lfsSnapshot() {
 		const { clone } = await sandbox.remoteWithClone("repo", {
 			".gitattributes": "*.bin filter=lfs -text\n",
-			"data.bin": "base\n",
+			"data.bin": lfsPointer("base\n"),
 			"docs/readme.md": "docs\n",
-			"docs/big.bin": "big base\n",
+			"docs/big.bin": lfsPointer("big base\n"),
 			"notes.txt": "notes\n",
 		});
-		sandbox.write(join(clone, "data.bin"), "edited\n");
+		sandbox.write(join(clone, "data.bin"), lfsPointer("edited\n"));
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = await capture(clone, blobs);
 		assert.deepEqual(snapshot.filters?.drivers, ["lfs"]);
@@ -414,17 +414,6 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 			{ code: "filters", filters: { autocrlf: null, eol: null, drivers: ["lfs"] } },
 		]);
 		assert.deepEqual(restored.warnings, warnings);
-		assert.match(readFileSync(log, "utf8").trim(), /^pull -- file:\/\/\S+\|[^\n]+$/);
-	});
-
-	test("objects that are fetched produce no LFS warning", async () => {
-		const { blobs, snapshot } = await lfsSnapshot();
-		const { log } = fakeLfs(0);
-		const restored = await restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") });
-		assert.deepEqual(
-			restored.warnings.map((warning) => warning.code),
-			["filters"],
-		);
 		assert.match(readFileSync(log, "utf8").trim(), /^pull -- file:\/\/\S+\|[^\n]+$/);
 	});
 
