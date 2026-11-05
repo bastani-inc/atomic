@@ -1215,7 +1215,7 @@ describe("interrupted worktree additions (#3109)", () => {
 			);
 			assert.deepEqual(
 				[
-					countOf(commands, "worktree", "remove", "--force", "--force", path),
+					countOf(commands, "worktree", "remove", "--force", "--force"),
 					countOf(commands, "worktree", "prune"),
 					countOf(commands, "worktree", "add"),
 					countOf(commands, "worktree", "unlock"),
@@ -1234,7 +1234,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		interruptedWorktree(repo, binding.worktree, "feat/resume", WORKTREE_ADDING_REASON, { newBranch: false });
 		const { result, commands } = await countGitCommands(() => restoreWorkspace(binding));
 		assert.equal(result, binding.worktree);
-		assert.equal(countOf(commands, "worktree", "remove", "--force", "--force", binding.worktree), 1);
+		assert.equal(countOf(commands, "worktree", "remove", "--force", "--force"), 1);
 		assertCompleteWorktree(binding.worktree);
 	});
 
