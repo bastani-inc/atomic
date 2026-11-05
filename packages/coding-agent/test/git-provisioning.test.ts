@@ -112,7 +112,7 @@ function hostTag(): string {
 /** Node timers may fire up to a millisecond before `Date.now()` shows the full delay. */
 const TIMER_EARLY_FIRE_TOLERANCE_MS = 2;
 const ORIGINAL_PATH = process.env.PATH ?? "";
-const HELPER_TOOLS = ["tar", "gzip", "sleep", "rm", "dirname", "touch"] as const;
+const HELPER_TOOLS = ["tar", "gzip", "sleep", "rm", "dirname", "touch", "mkfifo"] as const;
 
 function helperToolsDir(): string {
 	const dir = join(tempDir, "helper-tools");
@@ -1539,6 +1539,28 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		assert.equal(error.fields.phase, "verify");
 		assert.match(error.fields.detail ?? "", /^tar exited with status \d+/);
 		assert.equal(existsSync(installDir), false);
+	});
+
+	it("bounds the archive listing of a verified tree with a typed timeout in the verify phase", async () => {
+		const marker = join(tempDir, "version-verified");
+		vi.stubEnv("GIT_TEST_MARKER", marker);
+		const archive = '"$(dirname "$0")/../../fake-git.tar.gz"';
+		const fake = releaseFor(
+			archiveOf(
+				gitScript(`rm -f ${archive}; mkfifo ${archive}; echo "git version 2.56.0"; touch "$GIT_TEST_MARKER"`),
+			),
+		);
+		serveArchive(fake.bytes);
+		const error = await failure(provision({ release: fake.release, verifyTimeoutMs: 1_000 }));
+		assert.ok(error instanceof GitProvisionTimeoutError);
+		assert.equal(existsSync(marker), true);
+		assert.deepEqual(
+			{ phase: error.fields.phase, timeoutMs: error.fields.timeoutMs },
+			{ phase: "verify", timeoutMs: 1_000 },
+		);
+		assert.ok(error.cause instanceof Error);
+		assert.equal(existsSync(installDir), false);
+		assert.deepEqual(leftovers(), []);
 	});
 
 	it("cancels a running verification with the caller's reason", async () => {
