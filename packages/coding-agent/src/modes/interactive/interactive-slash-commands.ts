@@ -1,11 +1,14 @@
 import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
 import {
 	compareWorktreeSnapshot,
+	currentWorktreeSnapshots,
 	describeSnapshotExport,
 	describeWorktreeSnapshot,
+	worktreeRestoreNotices,
 } from "../../core/session-worktree-snapshots.ts";
 import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { getEngineSessionStats } from "../interactive-engine/engine-session-stats.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -34,6 +37,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { isExpandable } from "./interactive-mode-helpers.ts";
+import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleReloadCommand = async function (this: InteractiveModeBase): Promise<void> {
 	if (this.session.isStreaming) {
@@ -178,12 +182,14 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 		return;
 	}
 
+	const importStartedAt = new Date().toISOString();
 	const finishSuccessfulImport = () => {
 		this.renderCurrentSessionState();
 		if (this.firstRunNoticeVisible) {
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus(`Session imported from: ${inputPath}`);
+		showSessionNotices(this, worktreeRestoreNotices(this.sessionManager, importStartedAt));
 	};
 
 	try {
@@ -211,6 +217,10 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 		}
 		if (error instanceof SessionImportFileNotFoundError) {
 			this.showError(`Failed to import session: ${error.message}`);
+			return;
+		}
+		if (isWorkspaceError(error) || isGitUnavailableError(error)) {
+			this.showError(error.message);
 			return;
 		}
 		await this.handleFatalRuntimeError("Failed to import session", error);
@@ -381,7 +391,7 @@ InteractiveModeBase.prototype.handleToolsCommand = async function (this: Interac
 };
 
 InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (this: InteractiveModeBase): Promise<void> {
-	const latest = this.sessionManager.getLatestWorktreeSnapshots();
+	const latest = currentWorktreeSnapshots(this.sessionManager);
 	if (latest.size === 0) {
 		this.showStatus("No worktree snapshots recorded in this session");
 		return;

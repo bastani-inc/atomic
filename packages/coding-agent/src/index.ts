@@ -625,6 +625,7 @@ export {
 	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
+	type WorktreeRestoreHostWarning,
 	type WorktreeSnapshotEntry,
 } from "./core/session-manager.ts";
 export {

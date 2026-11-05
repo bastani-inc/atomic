@@ -602,8 +602,17 @@ describe("restore notices", () => {
 	};
 	const record = (overrides: Partial<WorktreeSnapshot>) =>
 		({ id: mapping.snapshotId, omitted: [], filters: null, ...overrides }) as WorktreeSnapshot;
+	const restoreEntry: SessionEntry = {
+		type: "worktree_snapshot",
+		id: "restore",
+		parentId: null,
+		timestamp: mapping.restoredAt,
+		root: mapping.to,
+		snapshotId: mapping.snapshotId,
+		restore: mapping,
+	};
 	const manager = (snapshot?: WorktreeSnapshot) => ({
-		getWorktreeRootMappings: () => [mapping],
+		getBranch: () => [restoreEntry],
 		getWorktreeSnapshotRecords: () => new Map(snapshot ? [[snapshot.id, snapshot]] : []),
 	});
 
@@ -631,10 +640,7 @@ describe("restore notices", () => {
 		]);
 		assert.deepEqual(worktreeRestoreNotices(manager(snapshot), "2026-02-03T04:05:06.001Z"), []);
 		assert.deepEqual(
-			worktreeRestoreNotices(
-				{ getWorktreeRootMappings: () => [], getWorktreeSnapshotRecords: () => new Map() },
-				"0",
-			),
+			worktreeRestoreNotices({ getBranch: () => [], getWorktreeSnapshotRecords: () => new Map() }, "0"),
 			[],
 		);
 		assert.deepEqual(worktreeRestoreNotices(manager(), "2000-01-01T00:00:00.000Z"), [

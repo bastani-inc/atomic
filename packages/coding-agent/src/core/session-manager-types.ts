@@ -11,7 +11,13 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";
-import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
+import type { WorktreeRestoreWarning, WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
+
+/** A restore warning that depends on the host and the moment of the restore rather than on the snapshot. */
+export type WorktreeRestoreHostWarning = Extract<
+	WorktreeRestoreWarning,
+	{ readonly code: "lfs-objects-unavailable" | "stale-restore-retained" }
+>;
 
 export const CURRENT_SESSION_VERSION = SESSION_FORMAT_VERSION;
 
@@ -251,6 +257,8 @@ export interface WorktreeSnapshotEntry extends SessionEntryBase {
 	snapshotId: string;
 	snapshot?: WorktreeSnapshot;
 	restore?: WorktreeRootMapping;
+	/** What the restore in `restore` reported that its snapshot record cannot reproduce: LFS objects it could not fetch, and leftovers of interrupted restores on this host. */
+	restoreWarnings?: WorktreeRestoreHostWarning[];
 	/**
 	 * Base64 patch and bundle content by SHA-256, carried by exported session files so a moved file is complete.
 	 * Import verifies each hash and moves the content into the store's blob table.

@@ -1,4 +1,4 @@
-import type { SessionEntry, SessionMessageEntry } from "../../session-manager-types.ts";
+import type { SessionEntry, SessionMessageEntry, WorktreeRestoreHostWarning } from "../../session-manager-types.ts";
 import { SessionFormatVersionError } from "./errors.js";
 import { SESSION_FORMAT_VERSION } from "./types.js";
 
@@ -87,12 +87,28 @@ function validPayload(entry: SessionEntry): boolean {
 						typeof entry.restore.from === "string" &&
 						entry.restore.to === entry.root &&
 						entry.restore.snapshotId === entry.snapshotId)) &&
+				(entry.restoreWarnings === undefined ||
+					(entry.restore !== undefined &&
+						Array.isArray(entry.restoreWarnings) &&
+						entry.restoreWarnings.every(validRestoreHostWarning))) &&
 				(entry.blobs === undefined ||
 					(entry.blobs !== null &&
 						typeof entry.blobs === "object" &&
 						!Array.isArray(entry.blobs) &&
 						Object.values(entry.blobs).every((value) => typeof value === "string")))
 			);
+		default:
+			return false;
+	}
+}
+
+function validRestoreHostWarning(warning: WorktreeRestoreHostWarning): boolean {
+	if (warning === null || typeof warning !== "object") return false;
+	switch (warning.code) {
+		case "lfs-objects-unavailable":
+			return Array.isArray(warning.paths) && warning.paths.every((path) => typeof path === "string");
+		case "stale-restore-retained":
+			return typeof warning.path === "string";
 		default:
 			return false;
 	}

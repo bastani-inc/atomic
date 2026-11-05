@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { SessionManager } from "./session-manager.ts";
-import type { SessionEntry } from "./session-manager-types.ts";
+import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import type { SessionStore } from "./storage/session/types.js";
 import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
 import {
@@ -201,6 +201,35 @@ function originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): s
 	return current;
 }
 
+/** The id of the latest snapshot of each checkout on the active branch, keyed by the root it was first recorded under. */
+function latestSnapshotIdsByCheckout(
+	sessionManager: Pick<SessionManager, "getBranch">,
+	mappings: readonly WorktreeRootMapping[],
+): Map<string, string> {
+	const latestIds = new Map<string, string>();
+	for (const entry of sessionManager.getBranch()) {
+		if (entry.type === "worktree_snapshot") latestIds.set(originalRoot(entry.root, mappings), entry.snapshotId);
+	}
+	return latestIds;
+}
+
+/**
+ * The latest snapshot of each checkout on the active branch, keyed by where that checkout is now: a checkout restored
+ * elsewhere appears once, under its newest location. A snapshot whose record is missing is left out.
+ */
+export function currentWorktreeSnapshots(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+): Map<string, WorktreeSnapshot> {
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	const current = new Map<string, WorktreeSnapshot>();
+	for (const [original, snapshotId] of latestSnapshotIdsByCheckout(sessionManager, mappings)) {
+		const snapshot = records.get(snapshotId);
+		if (snapshot) current.set(mapRestoredPath(original, mappings), snapshot);
+	}
+	return current;
+}
+
 export type SessionWorktreeResume =
 	| { readonly status: "none" }
 	| { readonly status: "verified"; readonly snapshot: WorktreeSnapshot; readonly cwd: string }
@@ -231,10 +260,7 @@ export async function resumeSessionWorktree(
 	if (!options.settings.enabled) return { status: "none" };
 	const existing = sessionManager.getWorktreeRootMappings();
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	const latestIds = new Map<string, string>();
-	for (const entry of sessionManager.getBranch()) {
-		if (entry.type === "worktree_snapshot") latestIds.set(originalRoot(entry.root, existing), entry.snapshotId);
-	}
+	const latestIds = latestSnapshotIdsByCheckout(sessionManager, existing);
 	const latest = new Map<string, WorktreeSnapshot>();
 	for (const [root, snapshotId] of latestIds) {
 		const snapshot = records.get(snapshotId);
@@ -245,6 +271,8 @@ export async function resumeSessionWorktree(
 	const cwd = mapRestoredPath(sessionManager.getCwd(), existing);
 	const mappings: WorktreeRootMapping[] = [];
 	const warnings: WorktreeRestoreWarning[] = [];
+	const hostWarnings = new Map<WorktreeRootMapping, WorktreeRestoreHostWarning[]>();
+	const reportedLeftovers = new Set<string>();
 	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
 	try {
 		for (const [original, snapshot] of latest) {
@@ -297,18 +325,34 @@ export async function resumeSessionWorktree(
 					error,
 				);
 			}
-			mappings.push({
+			const mapping: WorktreeRootMapping = {
 				from: root,
 				to: restored.path,
 				snapshotId: snapshot.id,
 				tree: snapshot.tree,
 				restoredAt: new Date().toISOString(),
-			});
+			};
+			mappings.push(mapping);
 			warnings.push(...restored.warnings);
+			hostWarnings.set(
+				mapping,
+				restored.warnings.filter((warning): warning is WorktreeRestoreHostWarning => {
+					if (warning.code === "lfs-objects-unavailable") return true;
+					if (warning.code !== "stale-restore-retained" || reportedLeftovers.has(warning.path)) return false;
+					reportedLeftovers.add(warning.path);
+					return true;
+				}),
+			);
 		}
 		for (const mapping of mappings) {
 			options.signal?.throwIfAborted();
-			await sessionManager.appendWorktreeSnapshot(mapping.to, mapping.snapshotId, undefined, mapping);
+			await sessionManager.appendWorktreeSnapshot(
+				mapping.to,
+				mapping.snapshotId,
+				undefined,
+				mapping,
+				hostWarnings.get(mapping),
+			);
 		}
 	} catch (error) {
 		const cleanupFailures: unknown[] = [];
@@ -361,25 +405,25 @@ export function formatWorktreeRestoreWarning(warning: WorktreeRestoreWarning): s
 	}
 }
 
-/** One informational line and recorded snapshot warnings per worktree restored since `since`. */
+/**
+ * One informational line per worktree restored since `since`, each followed by its snapshot's warnings and what the
+ * restore itself reported.
+ */
 export function worktreeRestoreNotices(
-	sessionManager: Pick<SessionManager, "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
 	since: string,
 ): { readonly type: "info" | "warning"; readonly message: string }[] {
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	return sessionManager
-		.getWorktreeRootMappings()
-		.filter((mapping) => mapping.restoredAt >= since)
-		.flatMap((mapping) => {
-			const snapshot = records.get(mapping.snapshotId);
-			return [
-				{ type: "info" as const, message: formatWorktreeRestoreNotice(mapping) },
-				...(snapshot ? snapshotRestoreWarnings(snapshot) : []).map((warning) => ({
-					type: "warning" as const,
-					message: formatWorktreeRestoreWarning(warning),
-				})),
-			];
-		});
+	return sessionManager.getBranch().flatMap((entry) => {
+		if (entry.type !== "worktree_snapshot" || !entry.restore || entry.restore.restoredAt < since) return [];
+		const snapshot = records.get(entry.snapshotId);
+		return [
+			{ type: "info" as const, message: formatWorktreeRestoreNotice(entry.restore) },
+			...[...(snapshot ? snapshotRestoreWarnings(snapshot) : []), ...(entry.restoreWarnings ?? [])].map(
+				(warning) => ({ type: "warning" as const, message: formatWorktreeRestoreWarning(warning) }),
+			),
+		];
+	});
 }
 
 /**
@@ -605,15 +649,7 @@ export async function openSessionInWorktree(
 	const opened = moved
 		? await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, options.sessionDirectory)
 		: sessionManager;
-	const notices = worktreeRestoreNotices(opened, startedAt);
-	if (resume.status === "restored") {
-		for (const warning of resume.warnings) {
-			if (warning.code === "stale-restore-retained" || warning.code === "lfs-objects-unavailable") {
-				notices.push({ type: "warning", message: formatWorktreeRestoreWarning(warning) });
-			}
-		}
-	}
-	return { sessionManager: opened, notices };
+	return { sessionManager: opened, notices: worktreeRestoreNotices(opened, startedAt) };
 }
 
 /**
