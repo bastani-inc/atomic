@@ -21,7 +21,7 @@ import {
 	subagentWakeNamespace,
 } from "../../packages/subagents/src/runs/foreground/released-children.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
-import { collectGarbage, trackCollection } from "../helpers/collect-garbage.js";
+import { collectEverythingTracked, collectGarbage, trackCollection } from "../helpers/collect-garbage.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent, launchReleasedTask } from "../helpers/released-task-launch.js";
 import { trackLastEntry, trackSessions } from "../helpers/track-sessions.js";
@@ -70,7 +70,7 @@ test(
 			forwardDetachedResults(dispatcher, subagentWakeKey(OWNER_SESSION_ID, `gc-${index}:0`), result.released.calls);
 		}
 		assert.equal(env.answers.length, CHILDREN, "every call is still a live operation");
-		await collectGarbage();
+		await collectEverythingTracked(tracked);
 		const stillReachable = tracked.created - tracked.collected();
 		for (const answer of env.answers) answer({ content: [{ type: "text", text: "green" }], details: undefined });
 		for (let turn = 0; turn < 20 && woken.length < CHILDREN; turn++)
@@ -123,7 +123,7 @@ test(
 		for (let index = 0; index < CHILDREN; index++)
 			heldCalls.push(...(await releaseSdkSession(index, waitTool, tracked)));
 		assert.equal(answers.length, CHILDREN, "every call is still a live operation");
-		await collectGarbage();
+		await collectEverythingTracked(tracked);
 		const stillReachable = tracked.created - tracked.collected();
 		for (const answer of answers) answer({ content: [{ type: "text", text: "green" }], details: undefined });
 		const results = await Promise.all(heldCalls.map((call) => call.result));
@@ -149,7 +149,7 @@ test(
 		cleanups.push(() => void host.close("session-close"));
 		for (let index = 0; index < CHILDREN; index++) await launchReleasedTask(index, env, host, owner, dispatcher);
 		assert.equal(env.answers.length, CHILDREN, "every call is still a live operation");
-		await collectGarbage();
+		await collectEverythingTracked(tracked);
 		assert.deepEqual(
 			{ created: tracked.created, stillReachable: tracked.created - tracked.collected() },
 			{ created: 4 * CHILDREN, stillReachable: 0 },

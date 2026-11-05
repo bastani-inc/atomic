@@ -11,6 +11,18 @@ export async function collectGarbage(rounds = 10): Promise<void> {
 	}
 }
 
+export const MAX_COLLECTION_ROUNDS = 500;
+
+export async function collectEverythingTracked(
+	tracked: CollectionCount,
+	maxRounds = MAX_COLLECTION_ROUNDS,
+): Promise<void> {
+	for (let round = 0; round < maxRounds && tracked.collected() < tracked.created; round++) {
+		collect();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
 export interface CollectionCount {
 	readonly created: number;
 	collected(): number;
