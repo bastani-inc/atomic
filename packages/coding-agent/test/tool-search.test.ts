@@ -336,3 +336,103 @@ test("tool search matches non-ASCII queries against non-ASCII descriptions (pi#1
 		[],
 	);
 });
+
+const searchTextOf = (parameters: Record<string, unknown>) =>
+	createToolSearchDocument({
+		name: "mcp__ledger__inspect",
+		description: "Inspect records",
+		parameters: Type.Unsafe(parameters),
+	}).text;
+
+test("tool search reads names and descriptions behind local schema references (earendil-works/pi#11803)", () => {
+	const text = searchTextOf({
+		type: "object",
+		properties: { options: { $ref: "#/$defs/options" } },
+		$defs: {
+			options: { type: "object", properties: { mode: { type: "string", description: "reconciliation" } } },
+		},
+	});
+	assert.equal(text, "Inspect records options mode reconciliation");
+});
+
+test("tool search follows escaped pointer segments in schema references (earendil-works/pi#11803)", () => {
+	const text = searchTextOf({
+		type: "object",
+		properties: { range: { $ref: "#/$defs/date~1range" } },
+		$defs: { "date/range": { description: "fiscal period" } },
+	});
+	assert.equal(text, "Inspect records range fiscal period");
+});
+
+test("tool search reads recursive and shared schema definitions once (earendil-works/pi#11803)", () => {
+	const text = searchTextOf({
+		type: "object",
+		properties: { root: { $ref: "#/$defs/node" }, other: { $ref: "#/$defs/node" }, self: { $ref: "#" } },
+		$defs: {
+			node: {
+				description: "tree node",
+				properties: { children: { type: "array", items: { $ref: "#/$defs/node" } } },
+			},
+		},
+	});
+	assert.equal(text, "Inspect records root tree node children other self");
+});
+
+test("tool search leaves out unreferenced definitions and remote, missing or malformed references (earendil-works/pi#11803)", () => {
+	const text = searchTextOf({
+		type: "object",
+		properties: {
+			remote: { $ref: "https://example.com/schema.json#/$defs/x" },
+			missing: { $ref: "#/$defs/missing" },
+			malformed: { $ref: "#/$defs/%E0%A4%A" },
+		},
+		$defs: { unused: { description: "reconciliation" } },
+	});
+	assert.equal(text, "Inspect records remote missing malformed");
+});
+
+test("tool_search loads a tool by a parameter description behind a local reference, not by unreferenced definitions (earendil-works/pi#11803)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createToolSearchExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "ledger_inspect",
+					label: "Inspect",
+					description: "Inspect records",
+					exposure: "deferred",
+					parameters: Type.Unsafe({
+						type: "object",
+						properties: { options: { $ref: "#/$defs/options" } },
+						$defs: {
+							options: {
+								type: "object",
+								properties: { mode: { type: "string", description: "reconciliation" } },
+							},
+							unused: { description: "forecast" },
+						},
+					}),
+					execute: async () => ({ content: [{ type: "text", text: "inspected" }], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["tool_search"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("tool_search", { query: "forecast" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("tool_search", { query: "reconciliation" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("inspect the ledger");
+		assert.deepEqual(
+			harness.session.messages
+				.filter((message) => message.role === "toolResult")
+				.map((message) => getMessageText(message)),
+			["No matching tools found.", "Loaded tools for your next call:\n- ledger_inspect: Inspect records"],
+		);
+		assert(harness.session.getActiveToolNames().includes("ledger_inspect"));
+	} finally {
+		await harness.cleanup();
+	}
+});

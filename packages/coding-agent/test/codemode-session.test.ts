@@ -1283,6 +1283,81 @@ test("codemode tells scripts the fields of an MCP tool's structured content", as
 	}
 });
 
+test("codemode summarizes output fields behind local schema references (earendil-works/pi#11803)", async () => {
+	const outputTool = (name: string, outputSchema: Record<string, unknown>) => ({
+		name,
+		label: name,
+		description: `${name} tool`,
+		parameters: Type.Object({}),
+		outputSchema: Type.Unsafe(outputSchema),
+		execute: async () => ({ content: [], details: {} }),
+	});
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool(
+					outputTool("report", {
+						$ref: "#/$defs/Report",
+						$defs: {
+							Report: {
+								type: "object",
+								properties: { kind: { $ref: "#/$defs/Kind" }, summary: { $ref: "#/$defs/Summary" } },
+								required: ["kind", "summary"],
+							},
+							Kind: { const: "ledger" },
+							Summary: { type: "object", properties: { total: { type: "number" } }, required: ["total"] },
+						},
+					}),
+				);
+				pi.registerTool(
+					outputTool("result", {
+						anyOf: [{ $ref: "#/$defs/Ok" }, { $ref: "#/$defs/Failed" }],
+						$defs: {
+							Ok: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+							Failed: { type: "object", properties: { error: { type: "string" } }, required: ["error"] },
+						},
+					}),
+				);
+				pi.registerTool({
+					name: "mcp__ledger__search",
+					label: "Search",
+					description: "Search ledger",
+					parameters: Type.Object({}),
+					outputSchema: createMcpResultSchema({
+						$ref: "#/$defs/Results",
+						$defs: {
+							Results: { type: "object", properties: { results: { type: "array" } }, required: ["results"] },
+						},
+					}),
+					execute: async () => ({ content: [], structuredContent: { content: [] }, details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["report", "result", "mcp__ledger__search", "codemode"],
+	});
+	try {
+		const description = (name: string) =>
+			harness.session.agent.state.tools.find((tool) => tool.name === name)?.description;
+
+		assert.equal(
+			description("report"),
+			'report tool\n\nCodemode: `tools.report(args)` resolves to `{ kind: "ledger", summary: { total } }`.',
+		);
+		assert.equal(
+			description("result"),
+			"result tool\n\nCodemode: `tools.result(args)` resolves to `{ value } | { error }`.",
+		);
+		// An MCP tool's own `$defs` move below `structuredContent` with the references that name them.
+		assert.equal(
+			description("mcp__ledger__search"),
+			"Search ledger\n\nCodemode: `tools.mcp__ledger__search(args)` resolves to `{ content, structuredContent?: { results }, isError? }`.",
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode declarations show input constraints the type cannot express (#10707)", () => {
 	const description = createCodemodeDescription([
 		{
