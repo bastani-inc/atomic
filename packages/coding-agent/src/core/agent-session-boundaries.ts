@@ -10,6 +10,7 @@
 
 import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import { persistenceStopError } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { COMPACTION_AUTO_QUERY } from "./compaction/compaction-parameters.js";
@@ -117,7 +118,8 @@ export function _installAgentBoundaryHooks(this: AgentSession): void {
 	const previousFinishTurn = this.agent.finishTurn;
 	this.agent.finishTurn = async (turn, signal) => {
 		this._boundaryDispatchedMessages.add(turn.message);
-		const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults, true);
+		const toolResults = turn.toolResults.filter((result) => !isDetachedToolCall(this, result.toolCallId));
+		const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, toolResults, true);
 		if (this._worktreeSnapshots.callsFileWritingTool(turn.message)) {
 			await this._agentEventQueue.catch(() => {});
 			if (this._persistenceFailure === undefined) await this._worktreeSnapshots.recordTurn(turn.message);

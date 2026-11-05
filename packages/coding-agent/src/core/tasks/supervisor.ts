@@ -89,9 +89,14 @@ export type TrustedTaskHost = {
 };
 type HeldPermit = { readonly admission: ResourceAdmission; readonly release: ResourcePermit };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
+/**
+ * A command start remembered for its operation: the launch while it runs, then its settled result and task. The owner
+ * keeps a successful start until its task is evicted, so it keeps the value and not the launch's promise: on Node 22 a
+ * promise keeps the async context it was created in, here the launching session's.
+ */
 type CommandStart = {
-	intent: C.CommandIntent;
-	result: Promise<C.Result<TaskLease, C.StartFailure>>;
+	readonly intent: C.CommandIntent;
+	result: Promise<C.Result<TaskLease, C.StartFailure>> | C.Result<TaskLease, C.StartFailure>;
 	task?: TaskLease;
 };
 type OwnerState = {
@@ -946,14 +951,16 @@ export class TaskSupervisor {
 		}
 		const snapshot = structuredClone(intent);
 		const result = this.#launchCommandTask(state, snapshot, operation, signal);
-		const cached: CommandStart = { intent: snapshot, result };
-		state.commandStarts.set(operation, cached);
+		const start: CommandStart = { intent: snapshot, result };
+		state.commandStarts.set(operation, start);
 		const forget = () => {
-			if (state.commandStarts.get(operation)?.result === result) state.commandStarts.delete(operation);
+			if (state.commandStarts.get(operation) === start) state.commandStarts.delete(operation);
 		};
 		result.then((started) => {
-			if (started.ok) cached.task = started.value;
-			else forget();
+			if (started.ok) {
+				start.result = started;
+				start.task = started.value;
+			} else forget();
 		}, forget);
 		return result;
 	}

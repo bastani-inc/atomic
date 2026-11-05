@@ -14,6 +14,7 @@ import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/sessio
 import type { SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
 import type { SessionStore } from "./core/storage/session/types.js";
+import { removeReleasedStageBlobs } from "./core/tools/tool-output-blobs.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
@@ -23,6 +24,13 @@ type ResolvedSession =
 	| { type: "local" | "global"; id: string; cwd: string }
 	| { type: "error"; message: string }
 	| { type: "not_found"; arg: string };
+
+/** The `--resume` picker's delete: the id is checked before the store or the agent directory is touched (#4326). */
+export async function deleteSessionFromPicker(store: SessionStore, agentDir: string, id: string): Promise<void> {
+	assertValidSessionId(id);
+	await store.delete(id);
+	await removeReleasedStageBlobs(agentDir, id);
+}
 
 async function findLocalSessionByExactId(sessionId: string, cwd: string, store: SessionStore) {
 	const header = await store.readHeader(sessionId);
@@ -322,7 +330,9 @@ async function createSessionManagerWithStore(
 				(onProgress) => SessionManager.list(cwd, store, onProgress),
 				(onProgress) => SessionManager.listAll(store, onProgress),
 				settingsManager,
-				store.descriptor.adapter === "jsonl" ? undefined : (id) => store.delete(id),
+				store.descriptor.adapter === "jsonl"
+					? undefined
+					: (id) => deleteSessionFromPicker(store, getAgentDir(), id),
 			);
 			if (selected === null) {
 				console.log(chalk.dim("No session selected"));

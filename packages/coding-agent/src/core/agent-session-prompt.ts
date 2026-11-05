@@ -38,6 +38,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { getSkillCatalog } from "./skill-catalog.ts";
+import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
 const openRuns = new WeakMap<AgentSession, number>();
@@ -829,6 +830,42 @@ export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	await this._continueQueuedAgentMessages();
 }
 
+function sessionClosedForDetachedTurn(session: AgentSession): ToolDetachmentError {
+	return new ToolDetachmentError("session-closed", { sessionId: session.sessionManager.getSessionId() });
+}
+
+/**
+ * Run one continuation of the transcript as its own run: `beforeContinue` records what the turn continues from (the
+ * results of detached tool calls), then the loop continues without a new user message, with the same queue drains
+ * and settlement as a prompt. The caller has already refused a closed session, so nothing is recorded on one.
+ */
+export async function _runAgentContinuation(this: AgentSession, beforeContinue: () => Promise<void>): Promise<void> {
+	const lifetime = sessionLifetime(this);
+	return trackSessionWork(this, async () => {
+		this._workflowStageAwaitingFirstPrompt = false;
+		this._agentRunAbortRequested = false;
+		this._persistenceFailure = undefined;
+		this._stopAfterTurnBlockedContinuation = false;
+		this._activePromptCount += 1;
+		openRun(this);
+		try {
+			await beforeContinue();
+			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
+				throw sessionClosedForDetachedTurn(this);
+			await this.agent.continue();
+			await this.waitForRetry();
+			if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
+			await this._continueQueuedAgentMessages();
+			if (this._agentRunAbortRequested) return;
+			await this._awaitPendingPostCompactionContinuation();
+			await runBeforeSettleContinuations(this);
+		} finally {
+			this._runSystemPromptOptions = undefined;
+			await settleAgentRun(this);
+		}
+	});
+}
+
 /** Restore priority input the moment the native loop can poll it again. */
 function preparePriorityContinuation(session: AgentSession): Promise<void> | undefined {
 	const boundary = session._subagentMessageAdmission ?? session._workflowStageAdmission;
@@ -1257,6 +1294,7 @@ export const agentSessionPromptMethods = {
 	prompt,
 	_runAgentPrompt,
 	_runAgentContinue,
+	_runAgentContinuation,
 	_continueQueuedAgentMessages,
 	_tryExecuteExtensionCommand,
 	_expandSkillCommand,

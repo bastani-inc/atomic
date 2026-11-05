@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
@@ -15,7 +16,7 @@ import {
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
-import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
+import { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { taskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
@@ -146,6 +147,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
 		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
+		() => !waitsOnDetachedResults(this),
 	);
 	this._taskCompletionOutbox = outbox;
 	const heartbeat: TaskHeartbeatDelivery = {
@@ -203,7 +205,22 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	const connected = store.connect();
 	if (!connected.ok) throw new Error(connected.error.message);
 	bindOwnerTaskStore(this, store);
+	// Tasks that settled while the stage was released reach this session's transcript as a restart's would.
+	const parked = stageAdmission?.takeParkedTaskSettlements() ?? [];
+	for (const settlement of parked) outbox.record(settlement.ownerId, settlement.receipt, settlement.kind, true);
+	if (parked.length > 0) void outbox.flushRestored();
 	return this._agentTaskHost;
+}
+
+/**
+ * Deliver the completion notices that waited while the transcript waited on a detached call's result, now that the
+ * turn has resumed. Restored ones, from a release or an earlier process, reach the transcript without a turn.
+ */
+export function deliverHeldTaskCompletions(session: AgentSession): void {
+	const outbox = session._taskCompletionOutbox;
+	if (outbox === undefined || outbox.pending.length === 0 || waitsOnDetachedResults(session)) return;
+	void outbox.flushRestored();
+	void outbox.flush();
 }
 
 /**
@@ -225,8 +242,12 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 }
 
 export async function closeSessionTasks(this: AgentSession): Promise<void> {
-	// Replacement stage sessions share generation lifetime; disposal is not stage closure.
-	if (stageTaskAdmission(this)) return;
+	// Replacement stage sessions share generation lifetime; disposal is not stage closure. The session's own view of
+	// the stage's tasks ends with it: the stage opens a new one for each session.
+	if (stageTaskAdmission(this)) {
+		getOwnerTaskStore(this)?.dispose();
+		return;
+	}
 	this._taskAdmission?.seal();
 	const host = this._agentTaskHost;
 	const closed = await host?.close("session-close");

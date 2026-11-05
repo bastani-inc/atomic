@@ -22,6 +22,7 @@ import type {
 	CommittedBackgroundCompaction,
 	ForegroundBackgroundCompaction,
 } from "./agent-session-background-compaction.ts";
+import type { DetachedToolCall, DetachedToolResult, ToolDetachmentPolicy } from "./agent-session-detached-tools.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { RecordedToolLoadout } from "./agent-session-state.ts";
 import type {
@@ -261,6 +262,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		customStarter?: CustomMessage,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
+	_runAgentContinuation(beforeContinue: () => Promise<void>): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
 	_expandSkillCommand(text: string): string;
@@ -373,6 +375,16 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
 	startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
+	/** Let calls of `detachable` tools that run longer than `policy.afterMs` go on without the run; `undefined` runs them inline. */
+	setToolDetachment(policy: ToolDetachmentPolicy | undefined): void;
+	/** The calls the session's runs detached and the host has not taken yet; taking them clears the list. */
+	takeDetachedToolCalls(): DetachedToolCall[];
+	/** Whether the transcript ends on a turn that issued a detachable call and has no answer from the model yet. */
+	hasPendingDetachedTurn(): boolean;
+	/** Start again the detachable calls the transcript ends on without a result, with their original ids and arguments. */
+	redispatchDetachedToolCalls(): DetachedToolCall[];
+	/** Record detached calls' results as their calls' results and continue the turn that issued them. */
+	resumeDetachedTurn(results: readonly DetachedToolResult[]): Promise<void>;
 	_waitForExtensionStart(): Promise<void>;
 	extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void>;
 	buildExtensionResourcePaths(entries: ExtensionResourcePathEntry[]): ExtensionResourcePathResult[];
@@ -529,6 +541,11 @@ export interface AgentSessionPublicSurface
 		| "setBackgroundCompactionThresholdPercent"
 		| "bindExtensions"
 		| "startPendingRecovery"
+		| "setToolDetachment"
+		| "takeDetachedToolCalls"
+		| "hasPendingDetachedTurn"
+		| "redispatchDetachedToolCalls"
+		| "resumeDetachedTurn"
 		| "refreshCurrentModelFromRegistry"
 		| "reload"
 		| "completeStartupResources"

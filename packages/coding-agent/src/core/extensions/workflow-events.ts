@@ -4,6 +4,7 @@ export type WorkflowActivityReason =
 	| "automatic_continuation"
 	| "retrying"
 	| "stopping"
+	| "waiting"
 	| "awaiting_input"
 	| "manual_intervention"
 	| "paused"
@@ -26,6 +27,7 @@ export type WorkflowStageStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
+	| "waiting"
 	| "completed"
 	| "failed"
 	| "skipped";

@@ -20,6 +20,7 @@ import { agentSessionBashMethods } from "./agent-session-bash.ts";
 import { agentSessionBoundaryMethods } from "./agent-session-boundaries.ts";
 import { agentSessionCompactionMethods } from "./agent-session-compaction.ts";
 import { agentSessionCustomMessageCommitMethods } from "./agent-session-custom-message-commit.ts";
+import { agentSessionDetachedToolMethods } from "./agent-session-detached-tools.ts";
 import { agentSessionEventsMethods } from "./agent-session-events.ts";
 import { agentSessionExportMethods } from "./agent-session-export.ts";
 import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-bindings.ts";
@@ -374,8 +375,12 @@ class AgentSessionBase {
 			this._contextProjectionTransform = config.contextProjectionTransform;
 			const stageContext =
 				config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
+			// A stage keeps its boundary for every session it opens; a session reopened after a release gives it back
+			// the admission keys its transcript records.
+			const stageBoundary = stageContext?.messageAdmission?.boundary;
+			stageBoundary?.restoreCompleted(this.sessionManager.getBranch());
 			this._workflowStageAdmission =
-				stageContext?.messageAdmission?.boundary ??
+				stageBoundary ??
 				(stageContext ? WorkflowStageAdmissionBoundary.restore(this.sessionManager.getBranch()) : undefined);
 			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting
 			// input that arrives in that gap is startup context for the prompt's turn, not a turn of its own.
@@ -392,19 +397,9 @@ class AgentSessionBase {
 				);
 			}
 			if (this._workflowStageAdmission && stageContext && stageContext.messageAdmission === undefined) {
-				(
-					stageContext as {
-						messageAdmission?: {
-							boundary: WorkflowStageAdmissionBoundary;
-							extensionState: Map<string, object>;
-							isOpen(): boolean;
-						};
-					}
-				).messageAdmission = {
-					boundary: this._workflowStageAdmission,
-					extensionState: new Map(),
-					isOpen: () => this._workflowStageAdmission?.isOpen() === true,
-				};
+				(stageContext as { messageAdmission?: StageMessageAdmission }).messageAdmission = stageMessageAdmission(
+					this._workflowStageAdmission,
+				);
 			}
 			// Claim this session's storage before any tool can spill into it, so the
 			// sweeper below never reaps a directory this process is still writing to.
@@ -467,6 +462,20 @@ class AgentSessionBase {
 	}
 }
 
+interface StageMessageAdmission {
+	boundary: WorkflowStageAdmissionBoundary;
+	extensionState: Map<string, object>;
+	isOpen(): boolean;
+}
+
+/**
+ * A workflow stage keeps this admission for every session it opens, so it is built outside the session's constructor:
+ * a closure made there would keep the first session reachable for as long as the stage lives.
+ */
+function stageMessageAdmission(boundary: WorkflowStageAdmissionBoundary): StageMessageAdmission {
+	return { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() };
+}
+
 export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {}
 
 export const AgentSession = AgentSessionBase as unknown as {
@@ -492,6 +501,7 @@ Object.assign(
 	agentSessionBackgroundCompactionMethods,
 	agentSessionExtensionBindingsMethods,
 	agentSessionRecoveryMethods,
+	agentSessionDetachedToolMethods,
 	agentSessionToolRegistryMethods,
 	agentSessionRetryMethods,
 	agentSessionBashMethods,

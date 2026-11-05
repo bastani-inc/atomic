@@ -1,7 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import type { OrchestrationContext } from "./extensions/context-types.ts";
 import { AgentTaskHost, type AgentTaskHostBinding } from "./tasks/agent-adapter.js";
-import type { OwnerScope } from "./tasks/contracts.js";
+import type { OwnerId, OwnerScope, SettlementReceipt, TaskRecord } from "./tasks/contracts.js";
+import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 export type WorkflowStageAdmissionDecision = "admitted" | "late" | "duplicate";
 
@@ -21,9 +23,57 @@ export interface PersistedWorkflowStageAdmission {
 	readonly type: string;
 	readonly stageAdmissionKey?: string;
 }
+
+/** A task of the stage that settled while the stage had no session; handed to the next session that binds. */
+export interface ParkedTaskSettlement {
+	readonly ownerId: OwnerId;
+	readonly receipt: SettlementReceipt;
+	readonly kind?: TaskRecord["kind"];
+}
+
+/**
+ * The close reason of every stage generation. One shared value: an error made at close time would keep, in its stack,
+ * the session that closed the generation reachable for as long as the stage lives.
+ */
+const STAGE_GENERATION_CLOSED = new DOMException("Workflow stage generation closed", "AbortError");
+
+/**
+ * Runs a callback in the async context of this module's load, outside every session. The stage's task owner outlives
+ * the session that first binds it, so its watches and timers must not start in that session's async context.
+ */
+const outsideAnySession = AsyncLocalStorage.snapshot();
+
+function admissionKeys(entries: Iterable<PersistedWorkflowStageAdmission>): string[] {
+	return Array.from(entries).flatMap((entry) =>
+		entry.type === "custom_message" && typeof entry.stageAdmissionKey === "string" ? [entry.stageAdmissionKey] : [],
+	);
+}
+
+/** The kind of the stage's task a settlement reports, read from the owner's snapshot while the stage is parked. */
+function settledTaskKind(host: AgentTaskHost, receipt: SettlementReceipt): TaskRecord["kind"] | undefined {
+	const watched = host.watchOwnerTasks();
+	if (!watched.ok) return undefined;
+	const kind = watched.value.snapshot.tasks.find((task) => task.ref.taskId === receipt.taskId)?.kind;
+	watched.value.dispose();
+	return kind;
+}
+
+/**
+ * Let go of everything a workflow stage's admission boundary holds of the session the stage is about to dispose, so a
+ * released stage keeps none of it reachable: its task host refuses launches, delivers no heartbeat, reports no cleanup
+ * quarantine (the owner still tracks it, and the stage's close still fails if it is never confirmed), and queues the
+ * completions of tasks that settle meanwhile for the stage's next session, and its admission keys are forgotten
+ * until that session restores them from its transcript. Does nothing for a context that is not a workflow stage's.
+ */
+export function parkWorkflowStageForRelease(orchestrationContext: OrchestrationContext): void {
+	if (orchestrationContext.kind !== "workflow-stage") return;
+	orchestrationContext.messageAdmission?.boundary.park();
+}
+
 export class WorkflowStageAdmissionBoundary {
 	private open = true;
 	private readonly completed: Set<string>;
+	private readonly parkedSettlements: ParkedTaskSettlement[] = [];
 	private readonly inFlight = new Map<string, Promise<void>>();
 	private readonly pending = new Set<Promise<void>>();
 	private readonly invocationContext = new AsyncLocalStorage<string>();
@@ -48,12 +98,43 @@ export class WorkflowStageAdmissionBoundary {
 	bindAgentTaskHost(binding: Omit<AgentTaskHostBinding, "scope">): AgentTaskHost {
 		if (!this.open) throw new Error("Workflow stage generation is closed");
 		if (!this.taskScope) throw new Error("Workflow stage task identity is not bound");
-		this.taskHost ??= new AgentTaskHost({ ...binding, scope: this.taskScope });
-		this.taskHost.updateBinding(binding);
+		const scope = this.taskScope;
+		this.taskHost ??= outsideAnySession(() => new AgentTaskHost({ ...binding, scope }));
+		this.taskHost.updateBinding({ authorizeCommandLaunch: undefined, ...binding });
 		return this.taskHost;
 	}
 	hasAgentTaskHost(): boolean {
 		return this.taskHost !== undefined;
+	}
+
+	/** Task completions that arrived while the stage was parked, handed once to the session that binds next. */
+	takeParkedTaskSettlements(): ParkedTaskSettlement[] {
+		return this.parkedSettlements.splice(0);
+	}
+
+	/** See {@link parkWorkflowStageForRelease}. */
+	park(): void {
+		this.completed.clear();
+		const host = this.taskHost;
+		const scope = this.taskScope;
+		if (!host || !scope) return;
+		const refuseParkedLaunch = (): void => {
+			throw new ToolDetachmentError("stage-parked", { sessionId: scope.sessionId });
+		};
+		host.updateBinding({
+			heartbeat: undefined,
+			onTaskCleanupQuarantined: undefined,
+			authorizeLaunch: refuseParkedLaunch,
+			authorizeCommandLaunch: refuseParkedLaunch,
+			onTaskSettled: (ref, receipt) => {
+				this.parkedSettlements.push({ ownerId: ref.ownerId, receipt, kind: settledTaskKind(host, receipt) });
+			},
+		});
+	}
+
+	/** Take back the admission keys a reopened session's transcript records. */
+	restoreCompleted(entries: Iterable<PersistedWorkflowStageAdmission>): void {
+		for (const key of admissionKeys(entries)) this.completed.add(key);
 	}
 
 	/** Aborts synchronously when close begins so stage-owned work can terminate before late delivery. */
@@ -71,14 +152,7 @@ export class WorkflowStageAdmissionBoundary {
 		entries: Iterable<PersistedWorkflowStageAdmission>,
 		drainAdmittedWork?: () => Promise<void>,
 	): WorkflowStageAdmissionBoundary {
-		return new WorkflowStageAdmissionBoundary(
-			drainAdmittedWork,
-			Array.from(entries).flatMap((entry) =>
-				entry.type === "custom_message" && typeof entry.stageAdmissionKey === "string"
-					? [entry.stageAdmissionKey]
-					: [],
-			),
-		);
+		return new WorkflowStageAdmissionBoundary(drainAdmittedWork, admissionKeys(entries));
 	}
 
 	/** One FIFO position for an external operation, including its retry waits. */
@@ -216,7 +290,7 @@ export class WorkflowStageAdmissionBoundary {
 
 	close(): Promise<void> {
 		this.seal();
-		if (!this.closeController.signal.aborted) this.closeController.abort();
+		if (!this.closeController.signal.aborted) this.closeController.abort(STAGE_GENERATION_CLOSED);
 		this.closePromise ??= this.finishClose();
 		return this.closePromise;
 	}

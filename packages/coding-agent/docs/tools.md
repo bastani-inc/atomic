@@ -266,7 +266,7 @@ A cancelled or unanswered question is not approval. If no usable question tool i
 
 When output does not fit in a tool result, Atomic saves it to a file and returns its path: `Full output: <path>` for `bash`, or `Full output saved to: <path>` for any tool result that crosses the persistence threshold. Atomic limits these files' location, size, and lifetime.
 
-**Where.** Disk-persisted sessions keep tool results in `<sessionDir>/tool-results/`. Bash overflow logs, streamed spill files, and tool results for in-memory sessions use one owner- and session-scoped temp tree:
+**Where.** Sessions kept in a session directory save tool results in `<sessionDir>/tool-results/`. Each saved result is named by the SHA-256 of its content, identical outputs share one file, and the result shows `Content: sha256:<hex>` after the path. A result that arrives for a workflow stage released while it waited, in a session kept in SQLite or libSQL, is saved in `<agentDir>/blobs/tool-output/<session-id>/` instead. Cleanup never removes that directory, and deleting the session does. Bash overflow logs, streamed spill files, and every other tool result of a session that is not kept in a session directory use one owner- and session-scoped temp tree:
 
 ```text
 <tmpdir>/atomic-<uid>/<session-id>/

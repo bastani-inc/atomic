@@ -1,4 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
 import { hostInputError } from "./extensions/host-input.js";
@@ -90,6 +91,7 @@ export function _refreshToolRegistry(
 	);
 
 	const toolRegistry = new Map<string, AgentTool>();
+	forgetDetachableTools(this);
 	for (const tool of [...wrappedBuiltInTools, ...(wrappedExtensionTools as AgentTool[])]) {
 		const abortError =
 			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool)
@@ -99,7 +101,19 @@ export function _refreshToolRegistry(
 							: new Error("Operation aborted")
 				: undefined;
 		const guarded = rejectMalformedToolArguments(tool, () => this.agent.state.messages);
-		toolRegistry.set(tool.name, scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError));
+		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
+		const definition = definitionRegistry.get(tool.name)?.definition;
+		toolRegistry.set(
+			tool.name,
+			definition?.detachable === true
+				? detachableTool(
+						this,
+						scheduled,
+						(id, params, signal, onUpdate, context) => definition.execute(id, params, signal, onUpdate, context),
+						(id, signal) => runner.createToolContext(id, signal),
+					)
+				: scheduled,
+		);
 	}
 	this._toolRegistry = toolRegistry;
 

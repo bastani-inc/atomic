@@ -216,3 +216,40 @@ test(
 	},
 	REAL_RPC_DELETE_SESSION_TIMEOUT_MS,
 );
+
+test(
+	"delete_session refuses an id that names a path and leaves the agent directory alone (#4326)",
+	async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-delete-session-traversal-"));
+		const sessionDir = join(dir, "sessions");
+		const stored = await SessionManager.create(dir, sessionDir);
+		await stored.appendMessage(message("must survive"));
+		const storedFile = stored.getSessionFile()!;
+		const agentDir = join(dir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const credentials = join(agentDir, "auth.json");
+		writeFileSync(credentials, "{}");
+		try {
+			const responses = await sendRawCommands(
+				dir,
+				["--session-dir", sessionDir],
+				[
+					{ id: "up", type: "delete_session", sessionId: "../.." },
+					{ id: "absolute", type: "delete_session", sessionId: agentDir },
+					{ id: "after", type: "get_state" },
+				],
+			);
+
+			for (const response of responses.slice(0, 2)) {
+				assert.equal(response.type, "response");
+				assert.equal(response.success, false);
+			}
+			assert.equal(responses[2].id, "after");
+			assert.equal(existsSync(credentials), true);
+			assert.equal(existsSync(storedFile), true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+	REAL_RPC_DELETE_SESSION_TIMEOUT_MS,
+);

@@ -525,6 +525,24 @@ You may reuse the same adapter object when explicitly rebinding a child, even af
 
 The inherited `isFallbackModelAllowed` predicate also applies when a workflow replaces its stage session to try a fallback. A rejected candidate is not executed. This predicate restricts fallback choices, not an explicitly selected primary model.
 
+### Waiting workflow stages
+
+A workflow stage that only waits on a long tool call does not keep its session in memory. Give the tool `detachable: true` (see [Detachable tool calls](/sdk/reference#detachable-tool-calls)); once a call of it outlasts the stage's `releaseWhenWaiting` threshold, the stage closes its session, frees its admission slot, and reopens the same session from the session store when the result arrives:
+
+```typescript
+import { run } from "@bastani/atomic/workflows";
+
+const result = await run(reviewLoop, inputs, {
+  releaseWhenWaiting: { afterMs: 30_000 },
+  onStageLifecycleEvent: (runId, event) => {
+    if (event.type === "stage_waiting") console.log(`${event.stageName} waits on`, event.wait.toolCalls);
+    else console.log(`${event.stageName} resumed after ${event.waitedMs} ms`);
+  },
+});
+```
+
+The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. See the [workflow API reference](/workflows/api-reference#releasewhenwaiting) for the details and error codes.
+
 ### AgentSession
 
 The session manages agent lifecycle, message history, model state, compaction, and event streaming.

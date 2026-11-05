@@ -20,8 +20,25 @@ export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner"> & {
 	heartbeat?: TaskHeartbeatDelivery;
 };
 
+/**
+ * The runner factory of one launch, handed to its dispatch once. The task runs in this launch's async context, and on
+ * Node 22 every promise it creates keeps that context's store, including promises that outlive the task, such as a
+ * module it imports first or its owner's session write chain. So the store keeps the factory, and the launch input
+ * it closes over, only until the dispatch takes it.
+ */
+interface RunnerHandoff {
+	factory: AgentTaskRunnerFactory | undefined;
+}
+
 // S1 converges repeated live-scope bindings on one owner, so dispatch context is shared too.
-const runners = new AsyncLocalStorage<AgentTaskRunnerFactory>();
+const runners = new AsyncLocalStorage<RunnerHandoff>();
+
+/**
+ * Runs a callback in the async context of this module's load, outside every session. An owner can outlive the
+ * session that first bound it (a workflow stage's), so what it keeps for its lifetime must not start in that
+ * session's async context, which would keep the session reachable.
+ */
+const outsideAnySession = AsyncLocalStorage.snapshot();
 
 /** Internal trusted-host seam. Bind actual host identity, never model-supplied scope. */
 export class AgentTaskHost {
@@ -44,8 +61,11 @@ export class AgentTaskHost {
 
 	constructor(binding: AgentTaskHostBinding) {
 		this.binding = binding;
+		// The native host keeps this binding as long as the owner lives; the heartbeat belongs to whichever session
+		// binds the owner, so it reaches the monitor only through `updateBinding`.
+		const { heartbeat: _heartbeat, ...hostBinding } = binding;
 		const host = this.supervisor.bindHostSession({
-			...binding,
+			...hostBinding,
 			authorizeLaunch: (intent) => {
 				this.authorizeTaskLaunch();
 				this.binding.authorizeLaunch(intent);
@@ -59,8 +79,10 @@ export class AgentTaskHost {
 			defaultHeartbeatMs: () =>
 				this.binding.heartbeat ? defaultTaskHeartbeatMs(this.binding.heartbeat) : undefined,
 			createRunner: (context, intent) => {
-				const runner = runners.getStore();
-				if (!runner) throw new Error("Agent runner factory missing from launch context");
+				const handoff = runners.getStore();
+				const runner = handoff?.factory;
+				if (!handoff || !runner) throw new Error("Agent runner factory missing from launch context");
+				handoff.factory = undefined;
 				return runner(context, intent);
 			},
 		});
@@ -77,7 +99,7 @@ export class AgentTaskHost {
 
 	/** One monitor per owner, started with its first launch, whichever session binds it then. */
 	private watchHeartbeats(): void {
-		if (this.launched && this.binding.heartbeat) this.heartbeats.start();
+		if (this.launched && this.binding.heartbeat) outsideAnySession(() => this.heartbeats.start());
 	}
 
 	async startAgentTask(
@@ -86,7 +108,7 @@ export class AgentTaskHost {
 		runner: AgentTaskRunnerFactory,
 		schedule?: (dispatch: () => Promise<void>) => void,
 	): Promise<C.Result<{ taskId: C.TaskId; lease: TaskLease }, C.StartFailure>> {
-		const started = await runners.run(runner, () =>
+		const started = await runners.run({ factory: runner }, () =>
 			this.supervisor.startAgentTask(this.owner, intent, operation, schedule),
 		);
 		if (started.ok)

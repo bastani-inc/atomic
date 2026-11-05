@@ -706,6 +706,28 @@ test("a repeated command operation returns the same task without a second permit
 	assert.equal(admission.held.process, 1);
 });
 
+test("a command operation whose start failed can be started again (#4309)", async () => {
+	const admission = new FakeAdmission({ process: 1 });
+	const root = tempRoot();
+	const session = await open(root, { resourceAdmission: admission });
+	const { supervisor, owner } = session.getAgentTaskHost().ownerBinding;
+	const operation = crypto.randomUUID() as OperationId;
+	const cancelled = new AbortController();
+	cancelled.abort(new Error("start cancelled"));
+
+	const failed = await supervisor
+		.startCommandTask(owner, holdIntent(root, "retried"), operation, cancelled.signal)
+		.then(
+			(started) => started.ok,
+			() => false,
+		);
+	const retried = await supervisor.startCommandTask(owner, holdIntent(root, "retried"), operation);
+
+	assert.equal(failed, false);
+	assert.ok(retried.ok, "the failed start is forgotten, so the same operation starts a task");
+	assert.deepEqual(admission.acquired, ["session", "process"]);
+});
+
 test("a repeated command operation with a different payload conflicts without taking a permit (#3869)", async () => {
 	const admission = new FakeAdmission({ process: 1 });
 	const root = tempRoot();

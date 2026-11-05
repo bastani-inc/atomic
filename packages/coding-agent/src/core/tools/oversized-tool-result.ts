@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { chmod, lstat, mkdir, open } from "node:fs/promises";
@@ -46,6 +47,11 @@ export interface RedirectOversizedToolResultInput<TDetails = unknown> {
 	isError: boolean;
 	sessionId: string;
 	sessionDir?: string;
+	/**
+	 * Directory the sweeper never reaches, for a released stage's result in a session kept in a store rather than a
+	 * session directory: `getReleasedStageBlobDir`. Ignored when `sessionDir` is set.
+	 */
+	blobDir?: string;
 	/** Optional per-tool character cap; clamped by {@link DEFAULT_MAX_RESULT_SIZE_CHARS}. */
 	maxResultSizeChars?: number;
 }
@@ -129,11 +135,13 @@ export function generatePreview(content: string, maxBytes: number): { preview: s
 function buildPersistedOutputMessage(input: {
 	originalSizeBytes: number;
 	filepath: string;
+	sha256: string;
 	preview: string;
 	hasMore: boolean;
 }): string {
 	let message = `${PERSISTED_OUTPUT_TAG}\n`;
-	message += `Output too large (${formatFileSize(input.originalSizeBytes)}). Full output saved to: ${input.filepath}\n\n`;
+	message += `Output too large (${formatFileSize(input.originalSizeBytes)}). Full output saved to: ${input.filepath}\n`;
+	message += `Content: sha256:${input.sha256}\n\n`;
 	message += `Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`;
 	message += input.preview;
 	message += input.hasMore ? "\n...\n" : "\n";
@@ -141,48 +149,34 @@ function buildPersistedOutputMessage(input: {
 	return message;
 }
 
-/** Strip leading/trailing underscores with a linear scan (no backtracking regex). */
-function trimUnderscores(value: string): string {
-	let start = 0;
-	let end = value.length;
-	while (start < end && value[start] === "_") {
-		start++;
-	}
-	while (end > start && value[end - 1] === "_") {
-		end--;
-	}
-	return value.slice(start, end);
-}
-
-function sanitizePathComponent(value: string, fallback: string): string {
-	// Collapse disallowed characters to "_", then strip leading/trailing "_". The trim uses
-	// a manual linear scan instead of a /^_+|_+$/ regex to avoid a polynomial-time ReDoS on
-	// tool-call ids containing long runs of underscores (CodeQL js/polynomial-redos).
-	const sanitized = trimUnderscores(value.replace(/[^a-zA-Z0-9._-]+/g, "_")).slice(0, 64);
-	return sanitized.length > 0 ? sanitized : fallback;
-}
-
 /**
- * Session-scoped directory for persisted tool results.
+ * Directory for persisted tool results, which are named by the SHA-256 of their content.
  *
- * A disk-backed session owns `<sessionDir>/tool-results`. It is created here and
- * then chmodded, because `mode` on mkdir is only a request the process umask
- * narrows — a umask of 0o777 otherwise leaves a directory at 000 that nothing,
- * this process included, can write into.
+ * A disk-backed session owns `<sessionDir>/tool-results`; a session kept in a store
+ * (SQLite, libSQL or memory) uses the agent directory's `blobs/tool-output`
+ * (`TOOL_RESULT_BLOBS_SUBDIR`), which no sweeper touches, so a result outlives
+ * a session released while it waits. Either is created here and then chmodded,
+ * because `mode` on mkdir is only a request the process umask narrows — a umask of
+ * 0o777 otherwise leaves a directory at 000 that nothing, this process included,
+ * can write into.
  *
- * An in-memory session falls back to the owner- and session-scoped temp tree, so
- * the sweeper can reap it once the session is gone — and that path goes through
+ * Without either, the result falls back to the owner- and session-scoped temp tree,
+ * so the sweeper can reap it once the session is gone — and that path goes through
  * {@link ensureTempDir}, which validates every component below the system temp
  * directory instead of letting `mkdir -p` follow a planted link.
  */
-async function ensureToolResultsDir(input: { sessionDir?: string; sessionId: string }): Promise<string> {
-	if (input.sessionDir?.trim()) {
-		const dir = join(input.sessionDir, TOOL_RESULTS_SUBDIR);
-		await mkdir(dir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+async function ensureToolResultsDir(input: {
+	sessionDir?: string;
+	blobDir?: string;
+	sessionId: string;
+}): Promise<string> {
+	const durable = input.sessionDir?.trim() ? join(input.sessionDir, TOOL_RESULTS_SUBDIR) : input.blobDir;
+	if (durable) {
+		await mkdir(durable, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
 		if (process.platform !== "win32") {
-			await chmod(dir, SESSION_TEMP_DIR_MODE);
+			await chmod(durable, SESSION_TEMP_DIR_MODE);
 		}
-		return dir;
+		return durable;
 	}
 	return ensureTempDir(join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR));
 }
@@ -279,46 +273,47 @@ async function adoptExistingResultFile(filepath: string): Promise<boolean> {
 	}
 }
 /**
- * Persist the full tool output to a session-scoped file and return its path.
+ * Persist the full tool output to a file named by the SHA-256 of what is stored, and return its path and digest.
  *
- * The tool_use_id is unique per invocation and the content is deterministic for a
- * given id, so we write with the `wx` flag and treat `EEXIST` as success — this
- * makes repeated calls (e.g. replay/compaction) idempotent without rewriting.
- * Returns `undefined` on any other write failure so the caller can fall back to
- * returning the original result unchanged.
+ * Identical outputs share one file: the write uses the `wx` flag and treats `EEXIST`
+ * as success — this also makes repeated calls (e.g. replay/compaction) idempotent
+ * without rewriting. Returns `undefined` on any other write failure so the caller
+ * can fall back to returning the original result unchanged.
  */
 async function persistToolOutput(input: {
 	text: string;
 	sessionDir?: string;
+	blobDir?: string;
 	sessionId: string;
-	toolCallId: string;
-}): Promise<string | undefined> {
+}): Promise<{ readonly filepath: string; readonly sha256: string } | undefined> {
 	let dir: string;
 	try {
-		dir = await ensureToolResultsDir({ sessionDir: input.sessionDir, sessionId: input.sessionId });
+		dir = await ensureToolResultsDir(input);
 	} catch {
 		// Refused (see TempDirRefusedError) or unwritable: leave the result unchanged
 		// rather than pointing the model at a directory we do not own.
 		return undefined;
 	}
-	const filepath = join(dir, `${sanitizePathComponent(input.toolCallId, "tool-result")}.txt`);
+	const stored = capPersistedText(input.text);
+	const sha256 = createHash("sha256").update(stored, "utf8").digest("hex");
+	const filepath = join(dir, `${sha256}.txt`);
 	try {
 		const handle = await open(filepath, "wx", SESSION_TEMP_FILE_MODE);
 		try {
-			await handle.writeFile(capPersistedText(input.text), "utf8");
+			await handle.writeFile(stored, "utf8");
 			await enforceOwnerOnlyMode(handle, filepath);
 		} finally {
 			await handle.close();
 		}
 	} catch (error) {
 		if (getErrnoCode(error) === "EEXIST") {
-			// Already persisted on a prior turn — reuse the existing file, but only
-			// after confirming it is still ours and still owner-only.
-			return (await adoptExistingResultFile(filepath)) ? filepath : undefined;
+			// Already persisted — reuse the existing file, but only after confirming
+			// it is still ours and still owner-only.
+			return (await adoptExistingResultFile(filepath)) ? { filepath, sha256 } : undefined;
 		}
 		return undefined;
 	}
-	return filepath;
+	return { filepath, sha256 };
 }
 
 /**
@@ -349,21 +344,22 @@ export async function redirectOversizedToolResult<TDetails = unknown>(
 		return undefined;
 	}
 
-	const filepath = await persistToolOutput({
+	const persisted = await persistToolOutput({
 		text,
 		sessionDir: input.sessionDir,
+		blobDir: input.blobDir,
 		sessionId: input.sessionId,
-		toolCallId: input.toolCallId,
 	});
 	// Graceful degradation: if persistence failed, leave the original result unchanged.
-	if (filepath === undefined) {
+	if (persisted === undefined) {
 		return undefined;
 	}
 
 	const { preview, hasMore } = generatePreview(text, PREVIEW_SIZE_BYTES);
 	const message = buildPersistedOutputMessage({
 		originalSizeBytes: Buffer.byteLength(text, "utf8"),
-		filepath,
+		filepath: persisted.filepath,
+		sha256: persisted.sha256,
 		preview,
 		hasMore,
 	});

@@ -228,6 +228,11 @@ export {
 	type SessionRecoveryReport,
 	type SessionStats,
 } from "./core/agent-session.js";
+export type {
+	DetachedToolCall,
+	DetachedToolResult,
+	ToolDetachmentPolicy,
+} from "./core/agent-session-detached-tools.ts";
 // Auth and model runtime
 export { AuthStorage, readStoredCredential } from "./core/auth-storage.ts";
 export {
@@ -706,6 +711,17 @@ export {
 } from "./core/structured-output/index.js";
 export type { NormalizedBuildSystemPromptOptions } from "./core/system-prompt.ts";
 export {
+	deserializeToolDetachmentError,
+	findToolDetachmentError,
+	isToolDetachmentError,
+	MAX_TOOL_DETACHMENT_AFTER_MS,
+	type SerializedToolDetachmentError,
+	type SerializedToolDetachmentErrorCause,
+	ToolDetachmentError,
+	type ToolDetachmentErrorCode,
+	type ToolDetachmentErrorFields,
+} from "./core/tool-detachment-errors.ts";
+export {
 	formatToolStatus,
 	type ToolSelectionSource,
 	type ToolSelectionStatus,
@@ -810,6 +826,7 @@ export {
 	withFileMutationQueue,
 	writeToolSystemPromptContribution,
 } from "./core/tools/index.js";
+export { getReleasedStageBlobDir } from "./core/tools/tool-output-blobs.ts";
 export {
 	isShellTimeoutError,
 	isShellToolError,
@@ -897,6 +914,7 @@ export {
 	workspaceChangeSet,
 	workspaceSessionCwd,
 } from "./core/workspace/index.ts";
+export { parkWorkflowStageForRelease } from "./core/workflow-stage-admission.ts";
 export {
 	findLlamaServerError,
 	isLlamaServerError,

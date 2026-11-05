@@ -429,6 +429,54 @@ Factory-created `createBashTool()` instances receive the same execution-time `AT
 
 Normal sessions also expose `kill({ id: taskId })` for their owned bash and PowerShell background tasks. Include `kill` when using a `tools` allowlist if the agent should be able to stop those tasks. The exported `createKillTool` and `createKillToolDefinition` factories accept `KillToolOptions.taskOwner`, a trusted execution-time callback returning the same owner binding used by shell launch. Without a binding they reject execution. The result details preserve the supervisor's `CancelReceipt`, including its decision, execution outcome, and cleanup state. See [Background tasks](/background-tasks#stop-a-shell-task-from-a-tool-call).
 
+#### Detachable tool calls
+
+A tool whose work does not need the session once it has started (a CI run, a deployment, an external job) can declare `detachable: true`. Running it again with the same call id and arguments after a restart must be safe, because a host may start a call again when the process that ran it died.
+
+```typescript
+const waitForCi = defineTool({
+  name: "wait_for_ci",
+  label: "Wait for CI",
+  description: "Waits for the CI run of the change",
+  parameters: Type.Object({ run: Type.String() }),
+  detachable: true,
+  execute: (_toolCallId, params, signal) => ci.waitFor(params.run, signal),
+});
+```
+
+Without a detachment policy a detachable call runs inline like any other. A host that can keep the conversation in a session store sets one with `session.setToolDetachment({ afterMs })`, where `afterMs` is from 0 to `MAX_TOOL_DETACHMENT_AFTER_MS` (2,147,483,647, the longest timer delay):
+
+- A call that finishes within `afterMs` runs inline.
+- A call still running after `afterMs` detaches: the turn's other results are saved, the call has no result yet, and `prompt()` resolves. The call's work goes on outside the session, so the host can dispose of the session meanwhile.
+- `session.takeDetachedToolCalls()` returns each detached call once. Every `DetachedToolCall` has `toolCallId`, `toolName`, a `result` promise that never rejects (a thrown error becomes an `isError` result), and `abort(reason)`.
+- `session.resumeDetachedTurn(results)` on a session reopened from the store records each result as its call's result and continues the same turn, without a new user message. A result for a call that already has one is ignored. With no new result, a transcript that ends on a detachable call's turn whose every call already has its result continues that turn: the process that recorded the results stopped before the model answered.
+- `session.hasPendingDetachedTurn()` tells whether a reopened transcript ends on such a turn, with or without its results. When it does, continue the turn with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again.
+- `session.redispatchDetachedToolCalls()` starts again the detachable calls that a reopened transcript ends on without a result, with their original ids and arguments.
+
+A result handed to `resumeDetachedTurn()` enters the transcript exactly as an inline call's result would: extension `tool_result` handlers see it and can rewrite it, images are resized for the provider, and output over the persistence threshold is saved to a file (see [Persisted tool output](/tools#persisted-tool-output)).
+
+A detached call runs outside its session's async context and tool wrappers, so it holds no reference to the session while it waits. While the call runs inline, its `onUpdate` and `ctx` reach the session as usual. Once it detaches:
+
+- progress it reports with `onUpdate` is dropped;
+- `ctx` answers only `cwd`, and any other use throws `ToolDetachmentError` with code `context-detached`. Read what the work needs from `ctx` before it awaits anything long, or pass it in the tool's arguments.
+
+A call started again by `redispatchDetachedToolCalls()` is detached from the start. A detached call reports no host diagnostics.
+
+While a transcript waits on a detached call's result, a background task's completion notice is saved but not added to the conversation, so nothing comes between the call and its result. It is delivered once `resumeDetachedTurn()` has continued the turn.
+
+`ToolDetachmentError` reports a refused detachment operation; nothing changed when it is thrown. Check it with `isToolDetachmentError(error)`, or find it in a cause chain with `findToolDetachmentError(error)`, and branch on `code`:
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `ToolDetachmentError` | `invalid-policy` | `setToolDetachment()` got an `afterMs` that is not a finite number from 0 to `MAX_TOOL_DETACHMENT_AFTER_MS` | `sessionId`, `field`, `value` | Pass an `afterMs` in that range, or `undefined`. To keep calls inline, set no policy |
+| `ToolDetachmentError` | `unknown-tool-call` | `resumeDetachedTurn()` got a new result for a call the transcript does not end on | `sessionId`, `toolCallId` | Hand back only results of the calls this session's transcript waits on |
+| `ToolDetachmentError` | `session-busy` | `resumeDetachedTurn()` was called while the session was still running (`retryable: true`) | `sessionId` | Wait for the run to settle, then call it again |
+| `ToolDetachmentError` | `session-closed` | `resumeDetachedTurn()` was called on a session that is disposed or closing. Nothing is recorded | `sessionId` | Reopen the session from its store and hand the results to the new session |
+| `ToolDetachmentError` | `context-detached` | A detached call's work used its `ctx` for anything but `cwd` | `sessionId`, `toolCallId` | Read what the work needs from `ctx` before the call detaches, or pass it in the tool's arguments |
+| `ToolDetachmentError` | `stage-parked` | A workflow stage released while it waits on tool results was asked to start a task, an agent task or a shell command (`retryable: true`) | `sessionId` (the stage's session) | Wait for the stage to reopen its session, then start the task again |
+
+Every error has `hint` with the remediation and `fields` with the JSON-safe facts above. Only `session-busy` and `stage-parked` are `retryable`. To pass one across a process boundary, send `JSON.stringify(error)` (its `toJSON()` keeps `name`, `code`, `message`, `hint`, `retryable`, `fields` and a bounded `cause` chain) and rebuild it with `deserializeToolDetachmentError(serialized)`, which returns a `ToolDetachmentError` that the guards recognize. A name or code this version does not know keeps its `name`, `code`, `hint` and message.
+
 #### Structured output final results
 
 `structured_output` is not registered in normal agent sessions by default. Register the factory when a caller needs a schema-validated decision inferred by a selected model:

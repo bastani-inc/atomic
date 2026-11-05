@@ -284,6 +284,7 @@ async function constructAgentSession(
 		if (store !== options.sessionStore) acquisition.store = store;
 		sessionManager = await SessionManager.create(store, cwd);
 	}
+	sessionManager.bindAgentDir(agentDir);
 
 	if (workspace !== undefined && persistInitialState) await recordSessionWorkspace(sessionManager, workspace);
 
