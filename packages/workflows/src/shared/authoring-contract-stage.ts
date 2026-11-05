@@ -490,11 +490,21 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 	setThinkingLevel(level: WorkflowThinkingLevel): void | Promise<void>;
 	cycleModel(): Promise<object | undefined>;
 	cycleThinkingLevel(): WorkflowThinkingLevel | undefined | Promise<WorkflowThinkingLevel | undefined>;
+	/** Throws `StageReleasedError` (`stage-released`) while the stage's session is released. */
 	readonly agent: object;
+	/** While the stage's session is released: the model it had when it was released. */
 	readonly model: WorkflowModelValue | undefined;
+	/** While the stage's session is released: the level it had when it was released, or the one set since. */
 	readonly thinkingLevel: WorkflowThinkingLevel | undefined;
+	/** Throws `StageReleasedError` (`stage-released`) while the stage's session is released; see `readMessages()`. */
 	readonly messages: readonly object[];
+	/** False while the stage's session is released. */
 	readonly isStreaming: boolean;
+	/**
+	 * The stage's messages, as `messages` returns them. While the session is released they are read from the session
+	 * store, and the session stays released.
+	 */
+	readMessages(): Promise<readonly object[]>;
 	navigateTree(
 		targetId: string,
 		options?: {

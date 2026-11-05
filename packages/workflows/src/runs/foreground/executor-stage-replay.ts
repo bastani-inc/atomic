@@ -128,6 +128,8 @@ export function createReplayStageContext(input: {
 		get messages() {
 			return [] as never;
 		},
+		readMessages: async () => [] as never,
+		__residentMessages: () => [] as never,
 		get isStreaming() {
 			return false;
 		},

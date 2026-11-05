@@ -1,4 +1,4 @@
-import type { WorkflowSerializableObject } from "./authoring-contract-stage.js";
+import type { StageWaitKind, WorkflowSerializableObject } from "./authoring-contract-stage.js";
 
 /** Why a stage waits with its session released. Codes are public API: never rename or reuse one. */
 export type StageWaitErrorCode =
@@ -7,7 +7,14 @@ export type StageWaitErrorCode =
 	| "not-reopenable"
 	| StageRehydrationErrorCode
 	| "wait-record-unavailable"
-	| StageWakeErrorCode;
+	| StageWakeErrorCode
+	| StageReleasedErrorCode;
+
+/** The code a {@link StageReleasedError} carries. */
+export type StageReleasedErrorCode = "stage-released";
+
+/** The `StageContext` members that need the stage's live session, which a released stage does not hold. */
+export type StageReleasedProperty = "agent" | "messages" | "model" | "thinkingLevel";
 
 /** The codes a {@link StageRehydrationError} carries. */
 export type StageRehydrationErrorCode = "session-unavailable" | "session-not-found" | "results-not-saved";
@@ -37,6 +44,7 @@ const FAMILY_NAMES = [
 	"StageRehydrationError",
 	"StageWaitRecordError",
 	"StageWakeError",
+	"StageReleasedError",
 ] as const;
 type StageWaitErrorName = (typeof FAMILY_NAMES)[number];
 
@@ -52,6 +60,7 @@ const CODES: ReadonlySet<string> = new Set<StageWaitErrorCode>([
 	"builtin-kind-handler",
 	"invalid-wake-kind",
 	"invalid-wake-handler",
+	"stage-released",
 ]);
 
 const REHYDRATION_CODES: ReadonlySet<string> = new Set<StageRehydrationErrorCode>([
@@ -94,6 +103,10 @@ export interface StageWaitErrorFields extends WorkflowSerializableObject {
 	readonly elapsedMs?: number;
 	/** The most the attempts wait between them in total, in milliseconds: the retry's backoff budget. */
 	readonly timeoutMs?: number;
+	/** The member of the stage that was read while its session was released (`stage-released`). */
+	readonly property?: StageReleasedProperty;
+	/** What the released stage waits on, when the stage knows it (`stage-released`). */
+	readonly waitKind?: StageWaitKind;
 }
 
 /** The serialized form of a {@link StageWaitError}, for crossing a worker or IPC boundary. */
@@ -116,7 +129,13 @@ export interface SerializedErrorCause extends WorkflowSerializableObject {
 }
 
 const HINTS: Readonly<
-	Record<Exclude<StageWaitErrorCode, "session-not-found" | "results-not-saved" | "builtin-kind-handler">, string>
+	Record<
+		Exclude<
+			StageWaitErrorCode,
+			"session-not-found" | "results-not-saved" | "builtin-kind-handler" | "stage-released"
+		>,
+		string
+	>
 > = {
 	"invalid-release-when-waiting":
 		"Set releaseWhenWaiting to true, false, or { afterMs } with a number of milliseconds from 0 to 2147483647 (MAX_RELEASE_WHEN_WAITING_AFTER_MS, about 24.8 days); use false to keep the stage resident.",
@@ -155,9 +174,34 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 		return `Register "${fields.kind ?? "tool-results"}" without a handler: the runtime delivers it only to a stage that waits for it.`;
 	if (code === "results-not-saved")
 		return `Resume the run with /workflow resume ${fields.runId ?? "<runId>"}: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.`;
+	if (code === "stage-released") return releasedHint(fields.property);
 	if (code !== "session-not-found") return HINTS[code];
 	const storage = fields.storage === undefined ? "" : ` (${fields.storage})`;
 	return `Resume the run with the session storage it was started with${storage} selected through ${STORAGE_SELECTORS}. Run "atomic storage status" to see which session storage this process selects.`;
+}
+
+const KEEP_RESIDENT =
+	"Set releaseWhenWaiting: false only on a stage the workflow must read synchronously while it holds it.";
+
+function releasedHint(property: StageReleasedProperty | undefined): string {
+	if (property === "messages")
+		return `Call await stage.readMessages(), which reads the transcript from the session store and leaves the session released, or call await stage.rehydrate() before reading stage.messages. ${KEEP_RESIDENT}`;
+	return `Call await stage.rehydrate() before reading stage.${property ?? "agent"}, or await stage.readMessages() to read only the transcript without reopening the session. ${KEEP_RESIDENT}`;
+}
+
+function releasedWhile(kind: StageWaitKind | undefined): string {
+	switch (kind) {
+		case "tool":
+			return " while the stage waits on a tool call";
+		case "release":
+			return " by stage.release()";
+		case "prompt":
+			return " while the stage waits for an answer";
+		case "idle":
+			return " while the workflow holds the stage idle";
+		default:
+			return "";
+	}
 }
 
 function afterAttempts(fields: StageWaitErrorFields): string {
@@ -204,6 +248,8 @@ function subject(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 			return `Invalid stage wake kind passed to registerStageWakeKind: ${fields.value}`;
 		case "invalid-wake-handler":
 			return `Invalid handler passed to registerStageWakeKind for the wake kind "${fields.kind ?? "unknown"}": ${fields.value}`;
+		case "stage-released":
+			return `Cannot read stage.${fields.property ?? "agent"} of ${stage}: ${fields.sessionId === undefined ? "its session" : `its session ${fields.sessionId}`} is released${releasedWhile(fields.waitKind)}`;
 	}
 }
 
@@ -317,6 +363,19 @@ export class StageWakeError extends StageWaitError {
 	}
 }
 
+/**
+ * `stage.agent` or `stage.messages` was read while the stage's session was released, being released or being reopened,
+ * so no session was there to read (`stage-released`). Not retryable: reading again finds no session until
+ * `stage.rehydrate()` reopens it; `stage.readMessages()` reads the transcript from the session store meanwhile.
+ */
+export class StageReleasedError extends StageWaitError {
+	override readonly name = "StageReleasedError";
+	declare readonly code: StageReleasedErrorCode;
+	constructor(fields: StageWaitErrorFields & { readonly property: StageReleasedProperty }) {
+		super("stage-released", fields);
+	}
+}
+
 function serializeCause(cause: unknown, depth: number): SerializedErrorCause {
 	if (!(cause instanceof Error) || depth >= MAX_CAUSE_DEPTH)
 		return { name: "Error", message: cause instanceof Error ? cause.message : String(cause) };
@@ -375,6 +434,10 @@ export function isStageWakeError(error: unknown): error is StageWakeError {
 	return error instanceof StageWakeError || hasStageWaitShape(error, ["StageWakeError"]);
 }
 
+export function isStageReleasedError(error: unknown): error is StageReleasedError {
+	return error instanceof StageReleasedError || hasStageWaitShape(error, ["StageReleasedError"]);
+}
+
 /** The first {@link StageWaitError} in `error`'s cause chain, at most eight levels deep. */
 export function findStageWaitError(error: unknown): StageWaitError | undefined {
 	let current = error;
@@ -427,6 +490,11 @@ export function deserializeStageWaitError(serialized: SerializedStageWaitError):
 							},
 							{ code: code as StageWakeRegistrationErrorCode },
 						);
+			break;
+		case "StageReleasedError":
+			error = new StageReleasedError(
+				serialized.fields as StageWaitErrorFields & { readonly property: StageReleasedProperty },
+			);
 			break;
 		default:
 			error = new StageWaitError(code, serialized.fields, { ...options, retryable: serialized.retryable });

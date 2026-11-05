@@ -140,6 +140,20 @@ export async function stripWorkflowOnlyOptions(
 	} as CreateAgentSessionOptions;
 }
 
+/**
+ * The messages of the stage session `sessionId`, read from the store the stage would reopen it from, as the session
+ * starts with them. Opens no session (#4309).
+ */
+export async function readStoredStageMessages(
+	options: StageOptions,
+	defaultSessionDir: string | undefined,
+	sessionId: string,
+): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	const store = await stageSessionStore(options, defaultSessionDir);
+	const manager = await SessionManager.open(store, sessionId, options.cwd);
+	return manager.buildSessionContext().messages;
+}
+
 export function missingAdapter(consumer: AgentSessionConsumer): never {
 	if (consumer === "complete") {
 		throw new Error(

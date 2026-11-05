@@ -675,6 +675,9 @@ function createCachedStageContext(
 		model: undefined,
 		thinkingLevel: undefined,
 		messages: [],
+		async readMessages() {
+			return [];
+		},
 		isStreaming: false,
 		navigateTree: unsupported,
 		compact: unsupported,

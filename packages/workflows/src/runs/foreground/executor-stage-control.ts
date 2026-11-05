@@ -139,7 +139,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			return runtime.state.liveHandleReleased;
 		},
 		get messages() {
-			return runtime.innerCtx.messages;
+			// The chat and transcript surfaces read this at any time: a released stage shows none here, never throws.
+			return runtime.innerCtx.__residentMessages();
 		},
 		get agentSession() {
 			return runtime.innerCtx.__agentSession();

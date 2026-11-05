@@ -326,18 +326,36 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		},
 
 		get agent() {
+			controller.throwIfReleased("agent");
 			return controller.requireSession("agent").agent;
 		},
 
 		get model() {
-			return controller.currentSession?.model;
+			const released = controller.releasedModelSettings();
+			if (released === undefined) return controller.currentSession?.model;
+			// A stage a resumed run starts released never saw its session's values: it says so instead of undefined.
+			if (released.model === undefined) controller.throwIfReleased("model");
+			return released.model;
 		},
 
 		get thinkingLevel() {
-			return controller.requireSession("thinkingLevel").thinkingLevel;
+			const released = controller.releasedModelSettings();
+			if (released === undefined) return controller.requireSession("thinkingLevel").thinkingLevel;
+			if (released.thinkingLevel === undefined) controller.throwIfReleased("thinkingLevel");
+			return released.thinkingLevel as InternalStageContext["thinkingLevel"];
 		},
 
 		get messages() {
+			controller.throwIfReleased("messages");
+			return controller.currentSession?.messages ?? adapterMessages;
+		},
+
+		async readMessages() {
+			if (controller.sessionReleased()) return controller.readReleasedMessages();
+			return controller.currentSession?.messages ?? adapterMessages;
+		},
+
+		__residentMessages() {
 			return controller.currentSession?.messages ?? adapterMessages;
 		},
 

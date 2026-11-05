@@ -294,6 +294,11 @@ export interface InternalStageContext extends StageContext {
 	__sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined };
 	/** Internal: live coding-agent session when the adapter returned one. */
 	__agentSession(): AgentSession | undefined;
+	/**
+	 * Internal: the resident session's messages, or the adapter's; none while the session is released. Never throws,
+	 * unlike `messages`, so the stage's chat and inspection surfaces can read it at any time (#4309).
+	 */
+	__residentMessages(): AgentSession["messages"];
 	/** Internal: SDK queued steering/follow-up message count, when available. */
 	__pendingMessageCount(): number;
 	/** Internal: store of a caller-supplied session manager, which outlives the live session. */

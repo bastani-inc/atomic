@@ -53,6 +53,7 @@ export function deferStageUntilRunRelease(input: {
 		get messages() {
 			return current().messages;
 		},
+		readMessages: () => invoke((stage) => stage.readMessages()),
 		get isStreaming() {
 			return current().isStreaming;
 		},

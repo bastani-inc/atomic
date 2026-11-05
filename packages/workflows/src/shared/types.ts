@@ -400,12 +400,21 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 	cycleModel(): Promise<ModelCycleResult | undefined>;
 	cycleThinkingLevel(): ReturnType<AgentSession["cycleThinkingLevel"]>;
 
-	/** State access. */
+	/**
+	 * State access. While the stage's session is released (`releaseWhenWaiting`, `release()`), `agent` and `messages`
+	 * throw `StageReleasedError` (`stage-released`), `model` and `thinkingLevel` are the ones the session had when it was
+	 * released (a thinking level set since included), and `isStreaming` is false.
+	 */
 	readonly agent: AgentSession["agent"];
 	readonly model: AgentSession["model"];
 	readonly thinkingLevel: AgentSession["thinkingLevel"];
 	readonly messages: AgentSession["messages"];
 	readonly isStreaming: AgentSession["isStreaming"];
+	/**
+	 * The stage's messages, as `messages` returns them. While the session is released they are read from the session
+	 * store, and the session stays released.
+	 */
+	readMessages(): Promise<AgentSession["messages"]>;
 
 	/** In-place tree navigation within the current session file. */
 	navigateTree(

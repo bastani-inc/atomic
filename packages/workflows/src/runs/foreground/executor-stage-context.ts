@@ -146,6 +146,7 @@ export function createStageContext(input: {
 		get messages() {
 			return innerCtx.messages;
 		},
+		readMessages: () => innerCtx.readMessages(),
 		get isStreaming() {
 			return innerCtx.isStreaming;
 		},

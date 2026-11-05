@@ -86,8 +86,13 @@ export interface RigConfig {
 	readonly stageOptions?: StageOptions;
 	/** The calls a session's `prompt()` leaves detached; default none. */
 	readonly detachOnPrompt?: (sessionNumber: number, text: string, ci: Ci) => DetachedToolCall[];
-	/** Fields of the fake session, by session number. */
-	readonly customize?: (sessionNumber: number, log: string[], ci: Ci) => FakeSessionFields;
+	/** Fields of the fake session, by session number; `manager` is the session manager the stage created it with. */
+	readonly customize?: (
+		sessionNumber: number,
+		log: string[],
+		ci: Ci,
+		manager: SessionManager | undefined,
+	) => FakeSessionFields;
 	/** Fails the creation of the session with this number. */
 	readonly failCreation?: (sessionNumber: number) => Error | undefined;
 	readonly store?: MemorySessionStore;
@@ -228,7 +233,7 @@ export function makeRig(config: RigConfig = {}): Rig {
 					async resumeDetachedTurn(results: readonly DetachedToolResult[]) {
 						log.push(`resume#${number}:${results.map((result) => result.toolCallId).join(",")}`);
 					},
-					...config.customize?.(number, log, ci),
+					...config.customize?.(number, log, ci, manager),
 				});
 				return session;
 			},
@@ -302,7 +307,7 @@ export async function makeResumedRig(
 			resumeFromSessionId,
 			...(config.durableReplayKey === undefined ? {} : { durableReplayKey: config.durableReplayKey }),
 		},
-		customize: (number, log, ci) => ({
+		customize: (number, log, ci, manager) => ({
 			...(config.pendingTurn === undefined
 				? {}
 				: {
@@ -316,7 +321,7 @@ export async function makeResumedRig(
 				log.push(`redispatch#${number}`);
 				return number === 1 ? (config.redispatch?.(ci) ?? []) : [];
 			},
-			...config.customize?.(number, log, ci),
+			...config.customize?.(number, log, ci, manager),
 		}),
 	});
 	return { ...rig, queries };

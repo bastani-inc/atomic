@@ -29,7 +29,12 @@ import {
 	stageReopenFailureCause,
 	stageWaitRetryDelayMs,
 } from "../../shared/stage-wait.js";
-import { StageRehydrationError, StageReleaseError } from "../../shared/stage-wait-errors.js";
+import {
+	StageRehydrationError,
+	StageReleasedError,
+	type StageReleasedProperty,
+	StageReleaseError,
+} from "../../shared/stage-wait-errors.js";
 import type {
 	StageContext,
 	StageExecutionMeta,
@@ -82,7 +87,12 @@ import {
 	WorkflowPromptEmptyCompletionFailure,
 	WorkflowPromptModelFailure,
 } from "./stage-runner-messages.js";
-import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
+import {
+	missingAdapter,
+	readStoredStageMessages,
+	stripWorkflowOnlyOptions,
+	unavailableSync,
+} from "./stage-runner-options.js";
 import { StageSessionPause, type StageSessionPauseResumeResult } from "./stage-runner-pause.js";
 import {
 	DetachedResultsNotSaved,
@@ -443,6 +453,8 @@ export class StageSessionController {
 	private rehydration: Promise<void> | undefined;
 	/** A release between turns under way: callers join it first, so the stage never reopens halfway through it. */
 	private releasing: Promise<boolean> | undefined;
+	/** The model and thinking level of the session the stage last released: all it keeps of that session (#4309). */
+	private releasedSettings: Pick<StageSessionRuntime, "model" | "thinkingLevel"> | undefined;
 	/** Cancels the wait between two attempts to reopen the session when the stage is aborted. */
 	private reopenBackoff: AbortController | undefined;
 	/** Prompts of the stage that have not settled; a stage with one cannot be released by its author. */
@@ -1237,6 +1249,7 @@ export class StageSessionController {
 			this.holdInput({ content: text, kind: "followUp", expandPromptTemplates: false });
 		this.releasedWait = wait;
 		this.reattachSessionId = current.sessionId;
+		this.releasedSettings = { model: current.model, thinkingLevel: current.thinkingLevel };
 		this.session = undefined;
 		this.sessionPromise = undefined;
 		this.resumeCurrentSession = false;
@@ -1409,9 +1422,52 @@ export class StageSessionController {
 		return this.releasedWait !== undefined;
 	}
 
+	/**
+	 * True while the stage has no session because it released it: it waits released (marked before the session is
+	 * given up), or is reopening it. False while the session is resident, and for a stage that never opened one (#4309).
+	 */
+	sessionReleased(): boolean {
+		return this.session === undefined && (this.releasedWait !== undefined || this.rehydration !== undefined);
+	}
+
 	/** The session id a released stage reopens. */
 	releasedSessionId(): string | undefined {
-		return this.releasedWait === undefined ? undefined : this.reattachSessionId;
+		return this.sessionReleased() ? this.reattachSessionId : undefined;
+	}
+
+	/** Throw {@link StageReleasedError} for a read of `property`, which needs the session, while it is released. */
+	throwIfReleased(property: StageReleasedProperty): void {
+		if (!this.sessionReleased()) return;
+		throw new StageReleasedError({
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			stageName: this.opts.stageName,
+			...(this.reattachSessionId === undefined ? {} : { sessionId: this.reattachSessionId }),
+			property,
+			...(this.releasedWait === undefined ? {} : { waitKind: this.releasedWait.kind }),
+		});
+	}
+
+	/**
+	 * While the session is released: the model and thinking level it had when it was released, a thinking level set
+	 * since taking precedence. Undefined while the session is resident or was never opened.
+	 */
+	releasedModelSettings(): Partial<Pick<StageSessionRuntime, "model" | "thinkingLevel">> | undefined {
+		if (!this.sessionReleased()) return undefined;
+		return {
+			model: this.releasedSettings?.model,
+			thinkingLevel: this.requestedThinkingLevel ?? this.releasedSettings?.thinkingLevel,
+		};
+	}
+
+	/** The released session's messages, read from the session store; the session stays released (#4309). */
+	readReleasedMessages(): Promise<StageSessionRuntime["messages"]> {
+		const options = this.effectiveStageOptions;
+		return readStoredStageMessages(
+			{ ...options, cwd: options?.cwd ?? this.opts.defaultCwd },
+			this.opts.defaultSessionDir,
+			this.reattachSessionId!,
+		);
 	}
 
 	/**

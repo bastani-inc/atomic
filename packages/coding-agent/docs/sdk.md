@@ -541,7 +541,7 @@ const result = await run(reviewLoop, inputs, {
 });
 ```
 
-The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. See the [workflow API reference](/workflows/api-reference#releasewhenwaiting) for the details and error codes.
+The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. While a stage's session is released, including a stage the workflow held idle past its threshold, `stage.messages` and `stage.agent` throw `StageReleasedError` (`stage-released`): read the transcript with `await stage.readMessages()`, which leaves the session released, or call `await stage.rehydrate()` first. See the [workflow API reference](/workflows/api-reference#releasewhenwaiting) for the details and error codes.
 
 ### AgentSession
 
