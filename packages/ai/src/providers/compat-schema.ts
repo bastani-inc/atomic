@@ -185,6 +185,10 @@ function optionalSessionAffinityFormat(options?: TSchemaOptions) {
 	return Type.Optional(sessionAffinityFormat(options));
 }
 
+function optionalPromptCacheKeyMode(options?: TSchemaOptions) {
+	return Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("enabled"), Type.Literal("disabled")], options));
+}
+
 export const OpenAICompletionsCompatSchema = Type.Object(
 	{
 		supportsStore: Type.Optional(
@@ -347,6 +351,10 @@ export const OpenAICompletionsCompatSchema = Type.Object(
 			description:
 				"Session-affinity header format. openai sends session_id, x-client-request-id, and x-session-affinity; openai-nosession sends x-client-request-id and x-session-affinity; openrouter sends x-session-id. Does not affect prompt_cache_key. Default: auto-detected.",
 		}),
+		promptCacheKeyMode: optionalPromptCacheKeyMode({
+			description:
+				"Controls the prompt_cache_key request field. auto sends it to api.openai.com, or with long cache retention when supportsLongCacheRetention is true; enabled sends it whenever caching is active, for compatible proxies; disabled never sends it. Default: auto.",
+		}),
 		supportsLongCacheRetention: optionalCompatBoolean({
 			description:
 				'Whether the provider supports long prompt cache retention (prompt_cache_retention: "24h" or Anthropic-style cache_control.ttl: "1h", depending on format). Default: auto-detected from provider and URL.',
@@ -379,6 +387,10 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 		sessionAffinityFormat: optionalSessionAffinityFormat({
 			description:
 				"Session-affinity header format. openai sends session-id and x-client-request-id; openai-nosession sends x-client-request-id; openrouter sends x-session-id. Does not affect prompt_cache_key. Default: auto-detected.",
+		}),
+		promptCacheKeyMode: optionalPromptCacheKeyMode({
+			description:
+				"Controls the prompt_cache_key request field. auto and enabled send it whenever caching is active; disabled never sends it, for compatible proxies that reject it. Default: auto.",
 		}),
 		supportsLongCacheRetention: optionalCompatBoolean({
 			description:
@@ -597,6 +609,10 @@ const ProviderCompatPropertyOverrides = {
 	}),
 	sessionAffinityFormat: optionalSessionAffinityFormat({
 		description: "Session-affinity header format. Defaults are API-specific or auto-detected.",
+	}),
+	promptCacheKeyMode: optionalPromptCacheKeyMode({
+		description:
+			"Controls the prompt_cache_key request field for openai-completions and openai-responses: auto keeps each API's default, enabled sends it whenever caching is active, disabled never sends it. Default: auto.",
 	}),
 	supportsMidConvoEffort: optionalCompatBoolean({
 		description:

@@ -436,6 +436,29 @@ describeModelRegistry((context) => {
 			expect(compat?.supportsLongCacheRetention).toBe(false);
 		});
 
+		test("custom models inherit and override prompt cache key mode independently of long retention", async () => {
+			writeRawModelsJson({
+				demo: {
+					baseUrl: "https://proxy.example.com/v1",
+					apiKey: "DEMO_KEY",
+					api: "openai-completions",
+					compat: { promptCacheKeyMode: "enabled", supportsLongCacheRetention: false },
+					models: [{ id: "inherited" }, { id: "disabled", compat: { promptCacheKeyMode: "disabled" } }],
+				},
+			});
+
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			expect(registry.getError()).toBeUndefined();
+			expect(registry.find("demo", "inherited")?.compat).toMatchObject({
+				promptCacheKeyMode: "enabled",
+				supportsLongCacheRetention: false,
+			});
+			expect(registry.find("demo", "disabled")?.compat).toMatchObject({
+				promptCacheKeyMode: "disabled",
+				supportsLongCacheRetention: false,
+			});
+		});
+
 		test("compat schema accepts Pi 0.80.7 Responses session affinity settings", async () => {
 			writeRawModelsJson({
 				demo: {

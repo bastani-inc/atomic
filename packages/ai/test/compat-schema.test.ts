@@ -72,6 +72,35 @@ describe("compatibility schemas", () => {
 		expect(Object.fromEntries(undeclared)).toEqual({});
 	});
 
+	it("accepts exactly the prompt cache key modes auto, enabled and disabled", () => {
+		for (const schema of [OpenAICompletionsCompatSchema, OpenAIResponsesCompatSchema, ProviderCompatSchema]) {
+			const validator = Compile(schema);
+			for (const promptCacheKeyMode of ["auto", "enabled", "disabled"]) {
+				expect(validator.Check({ promptCacheKeyMode }), promptCacheKeyMode).toBe(true);
+			}
+			expect(validator.Check({ promptCacheKeyMode: "always" })).toBe(false);
+		}
+	});
+
+	it("documents the prompt cache key mode, non-null assistant content and session-id header", () => {
+		const description = (schema: { properties: object }, field: string) =>
+			(schema.properties as Record<string, { description?: string }>)[field]?.description ?? "";
+
+		expect(description(OpenAICompletionsCompatSchema, "promptCacheKeyMode")).toContain(
+			"enabled sends it whenever caching is active, for compatible proxies; disabled never sends it",
+		);
+		expect(description(OpenAIResponsesCompatSchema, "promptCacheKeyMode")).toContain(
+			"disabled never sends it, for compatible proxies that reject it",
+		);
+		expect(description(ProviderCompatSchema, "promptCacheKeyMode")).toContain("auto keeps each API's default");
+		expect(description(OpenAICompletionsCompatSchema, "requiresNonNullAssistantContent")).toContain(
+			'must send "" instead of null content',
+		);
+		expect(description(OpenAIResponsesCompatSchema, "sessionAffinityFormat")).toContain(
+			"openai sends session-id and x-client-request-id",
+		);
+	});
+
 	it("keeps each API schema's properties inside the provider superset", () => {
 		const apiSchemas = [
 			OpenAICompletionsCompatSchema,
