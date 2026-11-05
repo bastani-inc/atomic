@@ -84,7 +84,13 @@ export function childCommandRouteCount(host: AgentTaskHost): number {
 export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): ChildCommandTaskOwner {
 	return {
 		unbind(childId) {
-			routesByHost.get(resolveHost())?.unbind(childId);
+			let host: AgentTaskHost;
+			try {
+				host = resolveHost();
+			} catch {
+				return;
+			}
+			routesByHost.get(host)?.unbind(childId);
 		},
 		bind(childId, route, waits) {
 			const host = resolveHost();

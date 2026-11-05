@@ -32,6 +32,13 @@ describe("a child's completion route in its parent's command owner (#4326)", () 
 		assert.equal(childCommandRouteCount(host), 0);
 	});
 
+	test("a child closing after its parent's session closed has no route to drop and does not fail", () => {
+		const owner = createChildCommandTaskOwner(() => {
+			throw new Error("the parent's session is closed");
+		});
+		assert.doesNotThrow(() => owner.unbind("child-a"));
+	});
+
 	test("is dropped when the child's session closes, so a released child holds nothing in its parent", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
