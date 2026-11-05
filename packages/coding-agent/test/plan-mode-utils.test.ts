@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
 	allStepsComplete,
@@ -7,7 +8,7 @@ import {
 	isSafeCommand,
 	markCompletedSteps,
 	type TodoItem,
-} from "../examples/extensions/plan-mode/utils.ts";
+} from "../examples/extensions/plan-mode/utils.js";
 
 describe("isSafeCommand", () => {
 	describe("safe commands", () => {
@@ -123,7 +124,7 @@ describe("cleanStepText", () => {
 	it("keeps full text (truncation moved to the widget display)", () => {
 		const longText = "This is a very long step description that exceeds the maximum allowed length for display";
 		const result = cleanStepText(longText);
-		expect(result).toBe(longText);
+		assert.equal(result, longText);
 	});
 
 	it("normalizes whitespace", () => {
@@ -189,53 +190,68 @@ Plan:
 2. Run the build process`;
 
 		const items = extractTodoItems(message);
-		expect(items).toHaveLength(2);
-		expect(items[0].text).toBe("Npm install");
+		assert.equal(items.length, 2);
+		assert.equal(items[0].text, "Npm install");
 	});
 
 	it("extracts only the last Plan: section (thinking draft + text plan)", () => {
 		const message = `Some reasoning...\nPlan:\n1. Draft one\n2. Draft two\nNow the answer.\nPlan:\n1. Print 1\n2. Print 2\n3. Print 3`;
 
 		const items = extractTodoItems(message);
-		expect(items).toHaveLength(3);
-		expect(items.map((i) => i.text)).toEqual(["Print 1", "Print 2", "Print 3"]);
+		assert.equal(items.length, 3);
+		assert.deepEqual(
+			items.map((i) => i.text),
+			["Print 1", "Print 2", "Print 3"],
+		);
 	});
 
 	it("extracts markdown step titles fully", () => {
 		const message = `Plan:\n1. **Explore** the repo structure\n2. \`index.ts\` — fix getTextContent`;
 
 		const items = extractTodoItems(message);
-		expect(items).toHaveLength(2);
-		expect(items[0].text).toBe("Explore the repo structure");
-		expect(items[1].text).toBe("Index.ts — fix getTextContent");
+		assert.equal(items.length, 2);
+		assert.equal(items[0].text, "Explore the repo structure");
+		assert.equal(items[1].text, "Index.ts — fix getTextContent");
 	});
 
 	it("accepts a Plan: header followed by trailing whitespace", () => {
 		const items = extractTodoItems("Plan:   \n1. Inspect the repository layout");
-		expect(items.map((i) => i.text)).toEqual(["Inspect the repository layout"]);
+		assert.deepEqual(
+			items.map((i) => i.text),
+			["Inspect the repository layout"],
+		);
 	});
 
 	it("ignores numbered text that does not start its line", () => {
 		const message = `Plan:\n1. Inspect the repository layout\nUpgrade to v2. then run the checks`;
-		expect(extractTodoItems(message).map((i) => i.text)).toEqual(["Inspect the repository layout"]);
+		assert.deepEqual(
+			extractTodoItems(message).map((i) => i.text),
+			["Inspect the repository layout"],
+		);
 	});
 
 	it("accepts indented and multi-digit step numbers", () => {
 		const message = `Plan:\n   1. Inspect the repository layout\n10) Inspect the build pipeline`;
-		expect(extractTodoItems(message).map((i) => i.text)).toEqual([
-			"Inspect the repository layout",
-			"Inspect the build pipeline",
-		]);
+		assert.deepEqual(
+			extractTodoItems(message).map((i) => i.text),
+			["Inspect the repository layout", "Inspect the build pipeline"],
+		);
 	});
 
 	it("accepts a step whose text starts after blank lines", () => {
 		const items = extractTodoItems("Plan:\n1.\n\nInspect the repository layout");
-		expect(items.map((i) => i.text)).toEqual(["Inspect the repository layout"]);
+		assert.deepEqual(
+			items.map((i) => i.text),
+			["Inspect the repository layout"],
+		);
 	});
 
 	it("skips steps of five characters or fewer and keeps six", () => {
 		const message = `Plan:\n1. Do it\n2. Do it!\n3. Inspect it`;
-		expect(extractTodoItems(message).map((i) => i.text)).toEqual(["Do it!", "Inspect it"]);
+		assert.deepEqual(
+			extractTodoItems(message).map((i) => i.text),
+			["Do it!", "Inspect it"],
+		);
 	});
 
 	it("skips steps that start with a slash or dash but keeps ones that merely end with them", () => {
@@ -246,10 +262,10 @@ Plan:
 			"3. Inspect the src/ folder/",
 			"4. Inspect the build output -",
 		].join("\n");
-		expect(extractTodoItems(message).map((i) => i.text)).toEqual([
-			"Inspect the src/ folder/",
-			"Inspect the build output -",
-		]);
+		assert.deepEqual(
+			extractTodoItems(message).map((i) => i.text),
+			["Inspect the src/ folder/", "Inspect the build output -"],
+		);
 	});
 });
 
@@ -271,41 +287,41 @@ describe("extractDoneSteps", () => {
 
 	it("extracts DONE marker variants", () => {
 		const message = "[DONE:1] [DONE: 2] [DONE3] [Done:4] Done: 5";
-		expect(extractDoneSteps(message)).toEqual([1, 2, 3, 4, 5]);
+		assert.deepEqual(extractDoneSteps(message), [1, 2, 3, 4, 5]);
 	});
 
 	it("extracts prose completion phrasings", () => {
 		const message = "Step 6 done, Step 7 is complete, Step 8 finished";
-		expect(extractDoneSteps(message)).toEqual([6, 7, 8]);
+		assert.deepEqual(extractDoneSteps(message), [6, 7, 8]);
 	});
 
 	it("does not match negated or unfinished phrasings", () => {
 		const message = "Step 9 is not done, Step 10 incomplete";
-		expect(extractDoneSteps(message)).toEqual([]);
+		assert.deepEqual(extractDoneSteps(message), []);
 	});
 
 	it("extracts multi-digit step numbers from every marker style", () => {
-		expect(extractDoneSteps("[DONE:12]")).toEqual([12]);
-		expect(extractDoneSteps("[DONE 15]")).toEqual([15]);
-		expect(extractDoneSteps("Done: 13")).toEqual([13]);
-		expect(extractDoneSteps("Step 14 done")).toEqual([14]);
+		assert.deepEqual(extractDoneSteps("[DONE:12]"), [12]);
+		assert.deepEqual(extractDoneSteps("[DONE 15]"), [15]);
+		assert.deepEqual(extractDoneSteps("Done: 13"), [13]);
+		assert.deepEqual(extractDoneSteps("Step 14 done"), [14]);
 	});
 
 	it("accepts whitespace variations inside markers", () => {
-		expect(extractDoneSteps("Done:5")).toEqual([5]);
-		expect(extractDoneSteps("Done : 6")).toEqual([6]);
-		expect(extractDoneSteps("Step7 done")).toEqual([7]);
-		expect(extractDoneSteps("Step 8  done")).toEqual([8]);
-		expect(extractDoneSteps("Step 9 is  complete")).toEqual([9]);
+		assert.deepEqual(extractDoneSteps("Done:5"), [5]);
+		assert.deepEqual(extractDoneSteps("Done : 6"), [6]);
+		assert.deepEqual(extractDoneSteps("Step7 done"), [7]);
+		assert.deepEqual(extractDoneSteps("Step 8  done"), [8]);
+		assert.deepEqual(extractDoneSteps("Step 9 is  complete"), [9]);
 	});
 
 	it("does not match markers with extra letters before the separator", () => {
-		expect(extractDoneSteps("[DONEfoo:5]")).toEqual([]);
-		expect(extractDoneSteps("Donexyz: 6")).toEqual([]);
+		assert.deepEqual(extractDoneSteps("[DONEfoo:5]"), []);
+		assert.deepEqual(extractDoneSteps("Donexyz: 6"), []);
 	});
 
 	it("collapses duplicate markers", () => {
-		expect(extractDoneSteps("[DONE:1] [DONE: 1]")).toEqual([1]);
+		assert.deepEqual(extractDoneSteps("[DONE:1] [DONE: 1]"), [1]);
 	});
 
 	it("ignores malformed markers", () => {
@@ -342,33 +358,54 @@ describe("markCompletedSteps", () => {
 
 		const count = markCompletedSteps("[DONE:99]", items);
 
-		expect(count).toBe(0); // Counts only newly marked items
-		expect(items[0].completed).toBe(false);
+		assert.equal(count, 0); // Counts only newly marked items
+		assert.equal(items[0].completed, false);
 	});
 
 	it("marks all remaining steps for whole-plan completion phrasings", () => {
-		expect(allStepsComplete("All steps complete, wrapping up")).toBe(true);
-		expect(allStepsComplete("Every step is finished")).toBe(true);
-		expect(allStepsComplete("The plan is done")).toBe(true);
-		expect(allStepsComplete("Step 1 complete, moving on")).toBe(false);
+		assert.equal(allStepsComplete("All steps complete, wrapping up"), true);
+		assert.equal(allStepsComplete("Every step is finished"), true);
+		assert.equal(allStepsComplete("The plan is done"), true);
+		assert.equal(allStepsComplete("Step 1 complete, moving on"), false);
+	});
+
+	it("accepts affirmative completion but not negated, conditional, question, or partial words", () => {
+		assert.equal(allStepsComplete("All steps are complete"), true);
+		assert.equal(allStepsComplete("  ALL STEPS ARE COMPLETED!  "), true);
+		for (const message of [
+			"Not all steps complete",
+			"If all steps complete, deploy",
+			"Are all steps complete?",
+			"All steps complete?",
+			"All steps complete if tests pass",
+			"The plan is done?",
+			"The plan is done. Tests still fail.",
+			"All steps completedness",
+			"The plan is done if tests pass",
+			"The plan is done, but tests still fail",
+		]) {
+			assert.equal(allStepsComplete(message), false, message);
+		}
 	});
 
 	it("accepts the plan phrasing without a leading article or linking verb", () => {
-		expect(allStepsComplete("Plan is done")).toBe(true);
-		expect(allStepsComplete("The plan complete")).toBe(true);
-		expect(allStepsComplete("plan completed")).toBe(true);
+		assert.equal(allStepsComplete("Plan is done"), true);
+		assert.equal(allStepsComplete("The plan complete"), true);
+		assert.equal(allStepsComplete("plan completed"), true);
 	});
 
 	it("accepts extra whitespace in whole-plan completion phrasings", () => {
-		expect(allStepsComplete("all  steps complete")).toBe(true);
-		expect(allStepsComplete("all steps  complete")).toBe(true);
-		expect(allStepsComplete("all steps is  done")).toBe(true);
-		expect(allStepsComplete("the plan  done")).toBe(true);
-		expect(allStepsComplete("the plan is  done")).toBe(true);
+		assert.equal(allStepsComplete("all  steps complete"), true);
+		assert.equal(allStepsComplete("all steps  complete"), true);
+		assert.equal(allStepsComplete("all steps is  done"), true);
+		assert.equal(allStepsComplete("the plan  done"), true);
+		assert.equal(allStepsComplete("the plan is  done"), true);
+		assert.equal(allStepsComplete("the  plan is done"), true);
+		assert.equal(allStepsComplete("all steps complete,wrapping up"), true);
 	});
 
 	it("does not treat words that merely end in the as an article before plan", () => {
-		expect(allStepsComplete("theoplan is done")).toBe(false);
+		assert.equal(allStepsComplete("theoplan is done"), false);
 	});
 
 	it("doesn't double-complete already completed items", () => {

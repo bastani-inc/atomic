@@ -264,6 +264,102 @@ describe("grep ripgrep JSON stream handling", () => {
 		assert.equal(output, ["b.txt-2- before two", "b.txt:3: two"].join("\n"));
 	});
 
+	it("keeps skipped adjacent matches as leading context (#4361)", async () => {
+		const { output } = await runRipgrep([matchEvent("a.txt", 1, "needle A"), matchEvent("a.txt", 2, "needle B")], {
+			literal: true,
+			offset: 1,
+			contextBefore: 1,
+		});
+
+		assert.equal(output, "a.txt-1- needle A\na.txt:2: needle B");
+	});
+
+	it("keeps the requested leading window across skipped matches (#4361)", async () => {
+		const { output } = await runRipgrep(
+			[
+				contextEvent("a.txt", 1, "outside"),
+				contextEvent("a.txt", 2, "before"),
+				matchEvent("a.txt", 3, "needle A"),
+				matchEvent("a.txt", 4, "needle B"),
+				matchEvent("a.txt", 5, "needle C"),
+			],
+			{ literal: true, offset: 2, contextBefore: 3 },
+		);
+
+		assert.equal(output, "a.txt-2- before\na.txt-3- needle A\na.txt-4- needle B\na.txt:5: needle C");
+	});
+
+	it("does not show skipped matches without leading context (#4361)", async () => {
+		const { output } = await runRipgrep([matchEvent("a.txt", 1, "needle A"), matchEvent("a.txt", 2, "needle B")], {
+			literal: true,
+			offset: 1,
+		});
+
+		assert.equal(output, "a.txt:2: needle B");
+	});
+
+	it("does not carry skipped matches across a gap in the leading window (#4361)", async () => {
+		const { output } = await runRipgrep(
+			[matchEvent("a.txt", 1, "needle A"), contextEvent("a.txt", 4, "before"), matchEvent("a.txt", 5, "needle B")],
+			{ literal: true, offset: 1, contextBefore: 1 },
+		);
+
+		assert.equal(output, "a.txt-4- before\na.txt:5: needle B");
+	});
+
+	for (const nextFile of ["a.txt", "b.txt"]) {
+		it(`drops stale skipped context when the next match is in ${nextFile} without context events (#4361)`, async () => {
+			const nextLine = nextFile === "a.txt" ? 5 : 2;
+			const { output } = await runRipgrep(
+				[matchEvent("a.txt", 1, "needle A"), matchEvent(nextFile, nextLine, "needle B")],
+				{ literal: true, offset: 1, contextBefore: 1 },
+			);
+
+			assert.equal(output, `${nextFile}:${nextLine}: needle B`);
+		});
+	}
+
+	for (const sameFile of [true, false]) {
+		it(`bounds leading-context work across skipped matches (same file: ${sameFile}) (#4361)`, async () => {
+			const contextBefore = 3;
+			const skippedMatches = 100;
+			let largestContextFilter = 0;
+			const originalFilter = Array.prototype.filter;
+			const filter = vi.spyOn(Array.prototype, "filter").mockImplementation(function (
+				this: Array<{ lineText?: string }>,
+				predicate,
+				thisArg,
+			) {
+				if (this[0]?.lineText?.startsWith("retained needle")) {
+					largestContextFilter = Math.max(largestContextFilter, this.length);
+				}
+				return originalFilter.call(this, predicate, thisArg);
+			});
+			try {
+				const fileAt = (index: number) => (sameFile ? "a.txt" : `file${index}.txt`);
+				const lineAt = (index: number) => (sameFile ? index + 1 : skippedMatches);
+				const events = Array.from({ length: skippedMatches }, (_, index) =>
+					matchEvent(fileAt(index), lineAt(index), `retained needle ${index}`),
+				);
+				const lastFile = fileAt(skippedMatches - 1);
+				events.push(matchEvent(lastFile, skippedMatches + 1, "selected needle"));
+				const { output } = await runRipgrep(events, { literal: true, offset: skippedMatches, contextBefore });
+				const contextIndices = sameFile ? [97, 98, 99] : [99];
+				const expected = contextIndices.map(
+					(index) => `${fileAt(index)}-${lineAt(index)}- retained needle ${index}`,
+				);
+				expected.push(`${lastFile}:101: selected needle`);
+				assert.equal(output, expected.join("\n"));
+				assert.ok(
+					largestContextFilter <= contextBefore + 1,
+					`context filter visited ${largestContextFilter} lines`,
+				);
+			} finally {
+				filter.mockRestore();
+			}
+		});
+	}
+
 	it("keeps counting lines past the byte cap without handing them to truncation", async () => {
 		const body = "x".repeat(400);
 		const events = Array.from({ length: 1000 }, (_, index) => matchEvent("f.txt", index + 1, body));

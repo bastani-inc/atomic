@@ -142,6 +142,30 @@ async function startExecution(todos: TodoState[]) {
 	return { extension, ctx, append, send, widget };
 }
 
+test("plan-mode keeps unfinished steps after a negated summary and clears them after confirmation (#4361)", async () => {
+	const { extension, ctx, append, send } = await startExecution([{ step: 1, text: "Ship", completed: false }]);
+	const finish = extension.handlers.get("agent_end")![0];
+	await finish({ type: "agent_end", messages: [assistantMsg("Not all steps complete")] }, ctx);
+	assert.equal(append.mock.calls.length, 0);
+	assert.equal(send.mock.calls.length, 0);
+	const instructions = (await extension.handlers.get("before_agent_start")![0](
+		{
+			type: "before_agent_start",
+			messageType: "user",
+			prompt: "continue",
+			systemPrompt: "",
+			systemPromptOptions: normalizeBuildSystemPromptOptions({}),
+		},
+		ctx,
+	)) as { message?: { content: string } };
+	assert.ok(instructions.message);
+	assert.match(instructions.message.content, /1\. Ship/);
+	await finish({ type: "agent_end", messages: [assistantMsg("All steps are complete")] }, ctx);
+	assert.equal(send.mock.calls.length, 1);
+	assert.equal(send.mock.calls[0][0].customType, "plan-complete");
+	assert.equal(append.mock.calls.length, 1);
+});
+
 function messageWithContent(content: Array<Record<string, unknown>>) {
 	return { ...assistantMsg(""), content };
 }

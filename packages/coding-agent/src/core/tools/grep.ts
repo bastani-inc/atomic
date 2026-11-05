@@ -415,11 +415,14 @@ export function createGrepToolDefinition(
 							outputLineCount++;
 						};
 
-						// Content mode streams match and context lines in rg's order. Context lines that are not in the
-						// trailing window of the last shown match wait for the next match, which shows only those in its
-						// leading window: a match skipped by `offset` drops its context.
 						let lastShown: { filePath: string; lineNumber: number } | undefined;
 						let pendingContext: Array<{ filePath: string; lineNumber: number; lineText: string }> = [];
+						const bufferContext = (filePath: string, lineNumber: number, lineText: string) => {
+							pendingContext.push({ filePath, lineNumber, lineText });
+							pendingContext = pendingContext.filter(
+								(entry) => entry.filePath === filePath && entry.lineNumber > lineNumber - contextBeforeValue,
+							);
+						};
 						// Set at the last allowed match. rg still sends that match's trailing context, which is kept,
 						// and the limit notice waits for proof of one more match.
 						let limitHit = false;
@@ -445,15 +448,18 @@ export function createGrepToolDefinition(
 							}
 							if (!isMatch) {
 								if (inTrailingWindow) pushLine(filePath, lineNumber, lineText, false);
-								else pendingContext.push({ filePath, lineNumber, lineText });
+								else bufferContext(filePath, lineNumber, lineText);
 								return;
 							}
 							seenMatches++;
+							if (offset !== undefined && seenMatches <= offset) {
+								bufferContext(filePath, lineNumber, lineText);
+								return;
+							}
 							const leading = pendingContext.filter(
 								(entry) => entry.filePath === filePath && entry.lineNumber >= lineNumber - contextBeforeValue,
 							);
 							pendingContext = [];
-							if (offset !== undefined && seenMatches <= offset) return;
 							for (const entry of leading) pushLine(entry.filePath, entry.lineNumber, entry.lineText, false);
 							pushLine(filePath, lineNumber, lineText, true);
 							lastShown = { filePath, lineNumber };
