@@ -7,10 +7,12 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	readlinkSync,
 	renameSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "fs";
 import { writeFile } from "fs/promises";
 import { arch, hostname, platform } from "os";
@@ -487,6 +489,7 @@ export const GIT_RELEASE: GitRelease = {
 const GIT_GLIBC_MINIMUM = "2.34";
 const GIT_PROBE_TIMEOUT_MS = 10_000;
 const GIT_STAGING_PREFIX = ".git-staging-";
+const GIT_REPLACED_PREFIX = ".git-replaced-";
 
 interface GitProvisionSettings {
 	readonly release: GitRelease;
@@ -788,6 +791,50 @@ function probeSystemGit(): SystemGitProbe {
 	return probe;
 }
 
+const GIT_RELEASE_MARKER = ".atomic-git-release.json";
+
+/** What an installed distribution records about the pinned release it came from. */
+export interface GitReleaseMarker {
+	readonly tag: string;
+	readonly asset: string;
+	readonly sha256: string;
+}
+
+function markerOf(target: GitDistributionTarget): GitReleaseMarker {
+	return { tag: gitProvisionSettings.release.tag, asset: target.asset, sha256: target.sha256 };
+}
+
+/**
+ * The marker a current install of this machine's build carries, or undefined where no build exists. A pin bump
+ * changes it even when the git version is the same, because dugite-native republishes builds under new tags.
+ */
+export function getGitReleaseMarker(): GitReleaseMarker | undefined {
+	const target = currentGitTarget();
+	return target.supported ? markerOf(target.target) : undefined;
+}
+
+function readReleaseMarker(layout: GitDistributionLayout): GitReleaseMarker | undefined {
+	try {
+		return JSON.parse(readFileSync(join(layout.root, GIT_RELEASE_MARKER), "utf-8")) as GitReleaseMarker;
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT" || error instanceof SyntaxError) return undefined;
+		throw error;
+	}
+}
+
+/** Whether the installed distribution is the pinned release for this machine; true where nothing is pinned. */
+function isCurrentRelease(layout: GitDistributionLayout): boolean {
+	const expected = getGitReleaseMarker();
+	if (expected === undefined) return true;
+	const recorded = readReleaseMarker(layout);
+	return recorded?.tag === expected.tag && recorded.asset === expected.asset && recorded.sha256 === expected.sha256;
+}
+
+/** The version of a working install of the pinned release; an install of another release does not count. */
+function probeCurrentGit(layout: GitDistributionLayout): string | undefined {
+	return isCurrentRelease(layout) ? probeProvisionedGit(layout) : undefined;
+}
+
 function probeProvisionedGit(layout: GitDistributionLayout): string | undefined {
 	if (!existsSync(layout.executable)) {
 		provisionedGitVersions.delete(layout.executable);
@@ -900,13 +947,37 @@ async function selectGit(options: ResolveGitOptions): Promise<GitSelection> {
 	validateResolveGitOptions(options);
 	options.signal?.throwIfAborted();
 	const location = locateGit();
-	if (location.found) return location.selection;
+	if (location.found)
+		return location.selection.layout === undefined
+			? location.selection
+			: refreshStaleInstall(location.selection, options);
 	const blocked = blockedProvisionFields(location);
 	if (blocked !== undefined) throw new GitUnavailableError(blocked);
 	const layout = currentGitLayout();
 	const target = (location.target as Extract<GitTargetResolution, { supported: true }>).target;
 	const version = await joinGitProvision(target, layout, location.system, options);
 	return { path: layout.executable, source: "provisioned", version, layout };
+}
+
+/**
+ * Replace a provisioned install of an older pinned release when a download is possible. An install that cannot be
+ * replaced, offline or after a failed download, keeps working and the failure is reported once.
+ */
+async function refreshStaleInstall(selection: GitSelection, options: ResolveGitOptions): Promise<GitSelection> {
+	const layout = selection.layout!;
+	const target = currentGitTarget();
+	if (isCurrentRelease(layout) || !target.supported || isOfflineModeEnabled()) return selection;
+	try {
+		const version = await joinGitProvision(target.target, layout, probeSystemGit(), options);
+		return { path: layout.executable, source: "provisioned", version, layout };
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		options.onStatus?.({
+			type: "warning",
+			message: `Could not update the portable git to ${gitProvisionSettings.release.version}; using git ${selection.version}. ${error.message}`,
+		});
+		return selection;
+	}
 }
 
 /**
@@ -1112,7 +1183,7 @@ async function acquireGitInstallLock(
 		} catch (error) {
 			if (errnoCode(error) !== "ELOCKED") throw installFailed("stage", target, layout, error, "install lock");
 		}
-		const version = probeProvisionedGit(layout);
+		const version = probeCurrentGit(layout);
 		if (version !== undefined) return { kind: "installed", version };
 		const now = performance.now();
 		const mtimeMs = statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs;
@@ -1162,10 +1233,22 @@ function stagingOwnerTag(): string {
 	return createHash("sha256").update(`${hostname()}\0${pidNamespace}`).digest("hex").slice(0, 8);
 }
 
+/** Remove the install a newer release replaced; a failure leaves it for the next sweep and is reported once. */
+function removeReplacedInstall(replaced: string, emit: (status: ToolStatus) => void): void {
+	try {
+		rmSync(replaced, { recursive: true, force: true });
+	} catch (error) {
+		emit({
+			type: "warning",
+			message: `Could not remove the replaced git install ${replaced}: ${firstLine(String(error))}`,
+		});
+	}
+}
+
 function removeAbandonedStagingDirectories(binDir: string): void {
 	const host = stagingOwnerTag();
 	for (const entry of readdirSync(binDir)) {
-		const owner = /^\.git-staging-([0-9a-f]{8})-(\d+)-/.exec(entry);
+		const owner = /^\.git-(?:staging|replaced)-([0-9a-f]{8})-(\d+)-/.exec(entry);
 		if (owner !== null && owner[1] === host && !isProcessAlive(Number(owner[2])))
 			rmSync(join(binDir, entry), { recursive: true, force: true });
 	}
@@ -1340,27 +1423,46 @@ async function verifyGitDistribution(
 	return version;
 }
 
-/** Publish the staged distribution with one rename. A healthy install published first by another process wins. */
+type Promotion = { readonly winner: string } | { readonly replaced?: string };
+
+/**
+ * Publish the staged distribution with one rename. A current install published first by another process wins; an
+ * older or broken install is renamed aside, never deleted first, so the published path is never half-removed.
+ */
 function promoteGitDistribution(
 	stagedRoot: string,
 	target: GitDistributionTarget,
 	layout: GitDistributionLayout,
-): string | undefined {
+): Promotion {
 	try {
 		renameSync(stagedRoot, layout.root);
-		return undefined;
+		return {};
 	} catch (error) {
 		if (!existsSync(layout.root)) throw installFailed("promote", target, layout, error);
 	}
-	const existing = probeProvisionedGit(layout);
-	if (existing !== undefined) return existing;
+	const existing = probeCurrentGit(layout);
+	if (existing !== undefined) return { winner: existing };
+	const replaced = join(
+		dirname(layout.root),
+		`${GIT_REPLACED_PREFIX}${stagingOwnerTag()}-${process.pid}-${Date.now()}`,
+	);
 	try {
-		rmSync(layout.root, { recursive: true, force: true });
-		renameSync(stagedRoot, layout.root);
-		return undefined;
+		renameSync(layout.root, replaced);
 	} catch (error) {
 		throw installFailed("promote", target, layout, error);
 	}
+	try {
+		renameSync(stagedRoot, layout.root);
+	} catch (error) {
+		const failure = installFailed("promote", target, layout, error);
+		try {
+			renameSync(replaced, layout.root);
+		} catch (restoreError) {
+			attachGitCleanupFailure(failure, restoreError);
+		}
+		throw failure;
+	}
+	return { replaced };
 }
 
 function describeSystemGitForStatus(system: SystemGitProbe): string {
@@ -1387,7 +1489,7 @@ async function installGitDistribution(
 	if (lock.kind === "installed") return lock.version;
 	let primary: unknown;
 	try {
-		const existing = probeProvisionedGit(layout);
+		const existing = probeCurrentGit(layout);
 		if (existing !== undefined) return existing;
 		return await installUnderLock(target, layout, system, signal, emit);
 	} catch (error) {
@@ -1452,10 +1554,16 @@ async function installUnderLock(
 		const stagedLayout = gitLayout(stagedRoot, platform(), arch());
 		const version = await verifyGitDistribution(stagedLayout, target, layout, signal);
 		await verifyStagedEntries(archivePath, stagedRoot, target, layout, signal);
+		try {
+			writeFileSync(join(stagedRoot, GIT_RELEASE_MARKER), JSON.stringify(markerOf(target)));
+		} catch (error) {
+			throw installFailed("stage", target, layout, error);
+		}
 		signal.throwIfAborted();
-		const winner = promoteGitDistribution(stagedRoot, target, layout);
-		if (winner !== undefined) return winner;
+		const promotion = promoteGitDistribution(stagedRoot, target, layout);
+		if ("winner" in promotion) return promotion.winner;
 		provisionedGitVersions.set(layout.executable, version);
+		if (promotion.replaced !== undefined) removeReplacedInstall(promotion.replaced, emit);
 		emit({ type: "info", message: `git ${version} installed to ${layout.root}` });
 		return version;
 	} catch (error) {

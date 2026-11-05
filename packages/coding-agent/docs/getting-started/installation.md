@@ -123,6 +123,7 @@ Atomic needs git 2.30.0 or newer for workflow worktrees, git packages, and the f
 - **Where:** `~/.atomic/agent/bin/git/` (under the directory `ATOMIC_CODING_AGENT_DIR` points to, when set).
 - **When:** at interactive startup, before a workflow run starts, and the first time a git package is installed or updated. Run `/tools` to see which git Atomic uses, its version, and why none is available.
 - **Verified:** Atomic pins one release and checks every download against a SHA-256 stored in its source. A download that does not match is discarded and nothing is installed.
+- **Updates:** when a new Atomic version pins a different git release, the next start that can reach github.com replaces the installed copy. Offline, or after a failed download, the older copy keeps working and Atomic says so once.
 - **Platforms:** macOS x64 and arm64, Linux x64, arm64, and armv7 with glibc 2.34 or newer, and Windows x64, arm64, and x86.
 - **Agent shells:** when no `git` is on your `PATH` at all, the `bash` tool puts the portable git first on `PATH`, so agents run the same git Atomic uses. An older system git stays on `PATH` for your shells; Atomic uses the portable copy only for its own git commands.
 - **Offline:** with `ATOMIC_OFFLINE=1` Atomic never downloads git. A portable git that is already installed keeps working.

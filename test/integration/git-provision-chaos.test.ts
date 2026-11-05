@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	rmSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
@@ -88,7 +89,7 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 		removeTempDirectory(root);
 	});
 
-	function startInstaller(holdMs = 0): Installer {
+	function startInstaller(holdMs = 0, tag = "v0.0.0-chaos"): Installer {
 		const child = spawnProcess([bunExecutable(), CHILD], {
 			env: {
 				...process.env,
@@ -99,6 +100,7 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 				CHAOS_SHA256: sha256,
 				CHAOS_LOG: log,
 				CHAOS_HOLD_MS: String(holdMs),
+				CHAOS_TAG: tag,
 			},
 			stdout: "pipe",
 			stderr: "inherit",
@@ -244,6 +246,39 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 			for (const result of results) assert.equal(result?.ok, true, JSON.stringify(result));
 			assertHealthyInstall();
 			assert.equal(fetchesBy().length, 1);
+		},
+		CHAOS_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"SIGKILL at any point while a newer release replaces an install leaves a complete tree, and the next run finishes the update",
+		async () => {
+			const first = await startInstaller(0, "v1").result;
+			assert.equal(first?.ok, true, JSON.stringify(first));
+			const markerPath = join(installDir, ".atomic-git-release.json");
+			const killDelaysMs = [0, 40, 80, 120, 200, 320];
+			for (const delayMs of killDelaysMs) {
+				const victim = startInstaller(60, "v2");
+				await sleep(delayMs);
+				victim.process.kill("SIGKILL");
+				await victim.process.exited;
+				if (existsSync(installDir)) {
+					const tag = JSON.parse(readFileSync(markerPath, "utf-8")).tag;
+					assert.ok(tag === "v1" || tag === "v2", `unexpected release ${tag} after a kill at ${delayMs} ms`);
+					assertHealthyInstall();
+				}
+				const recovered = await startInstaller(0, "v2").result;
+				assert.equal(recovered?.ok, true, JSON.stringify(recovered));
+				assert.equal(JSON.parse(readFileSync(markerPath, "utf-8")).tag, "v2");
+				assertHealthyInstall();
+				assert.deepEqual(
+					leftoverStagingPids().filter((pid) => pid !== victim.process.pid),
+					[],
+				);
+				rmSync(installDir, { recursive: true, force: true });
+				const reset = await startInstaller(0, "v1").result;
+				assert.equal(reset?.ok, true, JSON.stringify(reset));
+			}
 		},
 		CHAOS_TEST_TIMEOUT_MS,
 	);

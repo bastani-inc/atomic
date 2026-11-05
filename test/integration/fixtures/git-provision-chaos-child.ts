@@ -13,7 +13,7 @@ const holdMs = Number(process.env.CHAOS_HOLD_MS ?? "0");
 const asset = { name: "fake-git.tar.gz", sha256: process.env.CHAOS_SHA256 ?? "" };
 const release: GitRelease = {
 	repo: "example/fake-git",
-	tag: "v0.0.0-chaos",
+	tag: process.env.CHAOS_TAG ?? "v0.0.0-chaos",
 	version: "2.56.0",
 	assets: {
 		"darwin-x64": asset,
