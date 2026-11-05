@@ -22,6 +22,7 @@ import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { RpcClientApi } from "../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.ts";
+import { createRpcErrorResponse } from "../src/modes/rpc/rpc-responses.ts";
 import type { RpcCommandBody, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness } from "./suite/harness.ts";
 
@@ -209,6 +210,18 @@ describe("set_debug RPC (#4360)", () => {
 				error.field === "enabled" &&
 				error.received === "string",
 		);
+	});
+
+	it("an error that is not a debug error keeps the plain error response", () => {
+		for (const cause of [new Error("boom"), "boom", undefined]) {
+			assert.deepEqual(createRpcErrorResponse("id", "set_debug", "boom", cause), {
+				id: "id",
+				type: "response",
+				command: "set_debug",
+				success: false,
+				error: "boom",
+			});
+		}
 	});
 
 	it("the interactive host sends each change to its engine until it is disposed", async () => {
