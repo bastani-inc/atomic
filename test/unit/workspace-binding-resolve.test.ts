@@ -97,12 +97,18 @@ describe("workspace resolution (#3109)", () => {
 	test("records the snapshot tree of a dirty worktree and its credential-free remotes (#3109)", async () => {
 		const repo = createRepository(dirs.root, "dirty");
 		git(repo, "remote", "add", "origin", "https://user:secret-token@example.com/acme/dirty.git");
+		git(repo, "remote", "add", "ssh", "ssh://git:hunter2@example.com/acme/dirty.git");
+		git(repo, "remote", "add", "scp", "git@example.com:acme/dirty.git");
 		writeFileSync(join(repo, "untracked.txt"), "work in progress\n");
 		writeFileSync(join(repo, "package-lock.json"), "{}\n");
 		const binding = await resolveWorkspace(workspace({ repo }));
 		assert.notEqual(binding.tree, git(repo, "rev-parse", "HEAD^{tree}"));
 		assert.equal(git(repo, "cat-file", "-p", `${binding.tree}:untracked.txt`), "work in progress");
-		assert.deepEqual(binding.remotes, ["https://example.com/acme/dirty.git"]);
+		assert.deepEqual(binding.remotes, [
+			"git@example.com:acme/dirty.git",
+			"https://example.com/acme/dirty.git",
+			"ssh://git@example.com/acme/dirty.git",
+		]);
 		assert.equal(git(repo, "status", "--porcelain").includes("untracked.txt"), true);
 		const clean = await resolveWorkspace(workspace({ repo: createRepository(dirs.root, "clean") }));
 		assert.notEqual(binding.envHash, clean.envHash);
