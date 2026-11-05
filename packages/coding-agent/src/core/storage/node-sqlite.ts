@@ -36,6 +36,7 @@ import {
 	StorageWriteLockTimeoutError,
 	StorageWriterQueueDegradedError,
 	type StorageWriterQueueDegradedReason,
+	StorageWriterQueueUnusableError,
 	StoreClosedError,
 } from "./errors.js";
 import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
@@ -85,9 +86,10 @@ function isVanishedTicket(error: unknown): boolean {
  * queues behind them instead of overtaking. Uncontended writers only list an absent or empty directory.
  *
  * Handing the lock on does not wait for anyone to poll (#4316): each queued writer watches its own ticket, and the
- * writer that lets go of the lock touches the oldest live ticket, so its writer attempts the lock at once. A writer
- * also rechecks on a timer, for the releases nobody announces: a holder killed with the lock, a ticket ahead whose
- * owner died, a raw SQLite client, an older Atomic.
+ * writer that lets go of the lock touches the oldest live ticket's access time, so its writer attempts the lock at
+ * once. Only a ticket's owner moves its modification time, which is what keeps it live, so the wake never keeps a
+ * dead or stopped waiter's ticket alive. A writer also rechecks on a timer, for the releases nobody announces: a
+ * holder killed with the lock, a ticket ahead whose owner died, a raw SQLite client, an older Atomic.
  */
 class SqliteWriteQueue {
 	private readonly directory: string;
@@ -105,14 +107,15 @@ class SqliteWriteQueue {
 	}
 
 	/**
-	 * Hands the turn on once this connection has let go of the write lock: touches the oldest live ticket, whose writer
-	 * watches it and attempts the lock at once. A ticket that left meanwhile passes the turn to the next one.
+	 * Hands the turn on once this connection has let go of the write lock: sets the oldest live ticket's access time,
+	 * which its writer watches, so that writer attempts the lock at once. The ticket's modification time is written
+	 * back unchanged: it marks the ticket live and only its owner moves it. A ticket that left meanwhile passes the
+	 * turn to the next one.
 	 */
 	wakeNext(): void {
-		for (const name of this.liveTickets()) {
-			const now = new Date();
+		for (const ticket of this.liveTicketEntries()) {
 			try {
-				utimesSync(join(this.directory, name), now, now);
+				utimesSync(join(this.directory, ticket.name), new Date(), ticket.mtimeMs / 1000);
 				return;
 			} catch (error) {
 				if (!isVanishedTicket(error)) throw error;
@@ -120,12 +123,17 @@ class SqliteWriteQueue {
 		}
 	}
 
+	/** Live tickets, oldest first; see `liveTicketEntries`. */
+	liveTickets(except?: string): string[] {
+		return this.liveTicketEntries(except).map((ticket) => ticket.name);
+	}
+
 	/**
 	 * Live tickets, oldest first; stale ones long abandoned are removed on the way. A queue directory or a ticket that
 	 * vanishes while it is read counts as absent; any other failure to read the queue is thrown, so no caller takes a
 	 * queue it cannot read for an empty one.
 	 */
-	liveTickets(except?: string): string[] {
+	private liveTicketEntries(except?: string): { readonly name: string; readonly mtimeMs: number }[] {
 		let names: string[];
 		// Uncontended writers find no directory; checking costs a third of a failed listing, twice per transaction.
 		if (!existsSync(this.directory)) return [];
@@ -136,17 +144,18 @@ class SqliteWriteQueue {
 			return [];
 		}
 		const now = Date.now();
-		const live: string[] = [];
-		for (const name of names) {
+		const live: { readonly name: string; readonly mtimeMs: number }[] = [];
+		for (const name of names.sort()) {
 			if (name === except) continue;
-			let age: number;
+			let mtimeMs: number;
 			try {
-				age = now - statSync(join(this.directory, name)).mtimeMs;
+				mtimeMs = statSync(join(this.directory, name)).mtimeMs;
 			} catch (error) {
 				if (!isVanishedTicket(error)) throw error;
 				continue;
 			}
-			if (Math.abs(age) < TICKET_STALE_MS) live.push(name);
+			const age = now - mtimeMs;
+			if (Math.abs(age) < TICKET_STALE_MS) live.push({ name, mtimeMs });
 			else if (Math.abs(age) > TICKET_REMOVE_AFTER_MS) {
 				try {
 					unlinkSync(join(this.directory, name));
@@ -156,7 +165,7 @@ class SqliteWriteQueue {
 				}
 			}
 		}
-		return live.sort();
+		return live;
 	}
 }
 
@@ -794,16 +803,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		process.emitWarning(new StorageWriterQueueDegradedError(this.descriptor, reason, cause as StorageFailureCause));
 	}
 
-	/** Runs a writers'-queue file operation; a failure (an unwritable queue directory, say) is a storage failure. */
+	/** Runs a writers'-queue file operation; a failure (an unwritable queue directory, say) is a typed storage failure. */
 	private queueOp<T>(operation: () => T): T {
 		try {
 			return operation();
 		} catch (cause) {
-			throw unavailable(
-				this.descriptor,
-				cause,
-				`the writers' queue next to the database is unusable: ${cause instanceof Error ? cause.message : String(cause)}`,
-			);
+			throw new StorageWriterQueueUnusableError(this.descriptor, cause as StorageFailureCause);
 		}
 	}
 

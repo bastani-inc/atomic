@@ -31,26 +31,26 @@ Scenarios:
 
 ## Results
 
-A crabbox runner (Azure D64ads_v6: AMD EPYC 9V74, 64 vCPU), Linux 7.0, Node v24.22.0 writers, Bun 1.4.4 orchestrator, database in a temporary directory on the runner's OS disk (an uncontended commit, sync included, takes about 0.55 ms), 3 repeats, 2026-11-05.
+A crabbox runner (Azure D64ads_v7: AMD EPYC 9V45, 64 vCPU), Linux 7.0, Node v24.22.0 writers, Bun 1.4.4 orchestrator, database in a temporary directory on the runner's OS disk (an uncontended commit, sync included, takes about 0.5 ms), 3 repeats, 2026-11-05.
 
 | scenario | variant | lock utilization | commits/s | transactions/s | transactions/commit | wait p50 ms | wait p95 ms | wait p99 ms | wait max ms | per group: tx/s, wait p50/p95 ms |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| uncontended | baseline | 94.6% | 1818 | 1818 | 1.0 | 0.0 | 0.0 | 0.1 | 0 | 1818, 0.0/0.0 |
-| uncontended | current@100 | 96.3% | 1857 | 1857 | 1.0 | 0.0 | 0.0 | 0.0 | 0 | 1857, 0.0/0.0 |
-| serial-30 | baseline | 1.8% | 26 | 26 | 1.0 | 1142.9 | 1319.4 | 1336.2 | 1353 | 26, 1142.9/1319.4 |
-| serial-30 | current@100 | 61.7% | 1025 | 1025 | 1.0 | 28.3 | 29.9 | 33.6 | 78 | 1025, 28.3/29.9 |
-| bursty-8x16 | baseline | 20.9% | 25 | 402 | 16.0 | 316.6 | 444.6 | 474.6 | 494 | 402, 316.6/444.6 |
-| bursty-8x16 | current@100 | 96.2% | 116 | 1854 | 16.0 | 64.6 | 68.2 | 68.6 | 74 | 1854, 64.6/68.2 |
-| pool-like | baseline | 6.2% | 24 | 107 | 4.4 | 1167.2 | 1281.2 | 1288.0 | 1328 | 80, 1168.7/1280.9; 6, 1176.5/1284.3; 21, 1141.6/1277.1 |
-| pool-like | current@100 | 91.9% | 216 | 1637 | 7.6 | 62.3 | 70.7 | 74.9 | 92 | 1364, 61.8/70.5; 113, 65.6/71.2; 159, 63.1/71.2 |
-| heavy-batches | baseline | 33.2% | 20 | 172 | 8.4 | 1220.7 | 1387.2 | 1414.5 | 1428 | 157, 1231.3/1391.2; 16, 570.6/785.8 |
-| heavy-batches | current@100 | 98.5% | 41 | 506 | 12.4 | 286.8 | 548.5 | 552.8 | 556 | 475, 290.2/548.7; 31, 263.8/283.8 |
+| uncontended | baseline | 97.1% | 1905 | 1905 | 1.0 | 0.0 | 0.0 | 0.0 | 0 | 1905, 0.0/0.0 |
+| uncontended | current@100 | 97.4% | 1908 | 1908 | 1.0 | 0.0 | 0.0 | 0.0 | 5 | 1908, 0.0/0.0 |
+| serial-30 | baseline | 1.6% | 24 | 24 | 1.0 | 1213.6 | 1397.8 | 1457.1 | 1490 | 24, 1213.6/1397.8 |
+| serial-30 | current@100 | 67.6% | 1177 | 1177 | 1.0 | 24.6 | 26.3 | 29.0 | 41 | 1177, 24.6/26.3 |
+| bursty-8x16 | baseline | 20.8% | 26 | 408 | 16.0 | 320.4 | 409.7 | 441.2 | 454 | 408, 320.4/409.7 |
+| bursty-8x16 | current@100 | 97.8% | 119 | 1910 | 16.0 | 62.6 | 66.2 | 66.8 | 72 | 1910, 62.6/66.2 |
+| pool-like | baseline | 6.5% | 26 | 114 | 4.3 | 1063.6 | 1326.4 | 1335.4 | 1356 | 84, 1063.4/1326.4; 7, 1093.2/1354.2; 22, 1053.8/1284.9 |
+| pool-like | current@100 | 94.5% | 222 | 1710 | 7.7 | 59.1 | 67.3 | 74.7 | 94 | 1428, 58.6/67.1; 119, 62.3/68.1; 162, 59.6/67.8 |
+| heavy-batches | baseline | 32.0% | 21 | 168 | 8.1 | 1193.8 | 1392.5 | 1420.6 | 1440 | 152, 1203.2/1395.8; 16, 588.2/743.3 |
+| heavy-batches | current@100 | 98.9% | 42 | 513 | 12.4 | 284.8 | 544.0 | 548.5 | 552 | 481, 287.9/544.2; 32, 261.2/283.0 |
 
-No variant failed a transaction. In `serial-30` the lock changes hands about 1000 times a second; the remaining idle time, about 0.4 ms per turn, is the handoff itself: the notice reaching the next process, which wakes, checks the queue, and begins. The baseline's queued writers found the free lock by polling 50–100 ms apart.
+No variant failed a transaction. In `serial-30` the lock changes hands about 1200 times a second; the remaining idle time, about 0.3 ms per turn, is the handoff itself: the notice reaching the next process, which wakes, checks the queue, and begins. The baseline's queued writers found the free lock by polling 50–100 ms apart.
 
 ### Group-commit budget
 
-The budget only matters when one acquisition has more queued work than the budget allows. A sweep of 25, 50, 100, 200, and 400 ms over all five scenarios, run with this change on the same runner, measured all budgets alike in the first four, where no batch reached 25 ms. `heavy-batches` makes it bind, measured on the runner's disk and again with every `fsync`/`fdatasync` delayed by 5 ms (an `LD_PRELOAD` shim, below) to stand in for slower storage:
+The budget only matters when one acquisition has more queued work than the budget allows. A sweep of 25, 50, 100, 200, and 400 ms over all five scenarios, run with this change on an earlier runner of the same size (Azure D64ads_v6, AMD EPYC 9V74), measured all budgets alike in the first four, where no batch reached 25 ms. `heavy-batches` makes it bind, measured on the runner's disk and again with every `fsync`/`fdatasync` delayed by 5 ms (an `LD_PRELOAD` shim, below) to stand in for slower storage:
 
 | budget | disk: tx/s | disk: coordinators tx/s, wait p50/p95 ms | disk: workers tx/s, wait p50/p95 ms | 5 ms sync: tx/s | 5 ms sync: coordinators | 5 ms sync: workers |
 |---:|---:|---|---|---:|---|---|
@@ -91,3 +91,19 @@ int fdatasync(int fd) {
 	return real(fd);
 }
 ```
+
+## Dead-head probe
+
+`dead-head.ts` checks that the queue recovers from a writer that dies while it waits. A holder keeps the write lock, waiter A queues behind it and waiter B behind A; A is killed, and the holder commits `--gaps` ms later. A's ticket stays live until 2 s after A last refreshed it, and only its owner refreshes it, so B should hold the lock about `2000 - gap` ms after the commit (less however long before its death A last refreshed), plus up to one 250 ms recheck.
+
+```sh
+bun run scripts/perf/writer-queue/dead-head.ts --gaps 100,1000,1500 --repeats 5
+```
+
+On the runner above, 5 samples per gap, baseline and this change interleaved (time from the holder's commit to the writer behind the dead one holding the lock):
+
+| killed before the commit | expected | baseline (median, range) | this change (median, range) |
+|---:|---:|---:|---:|
+| 100 ms | about 1900 ms | 1926 ms (1895-1963) | 1902 ms (1886-1903) |
+| 1000 ms | about 1000 ms | 1035 ms (1006-1055) | 1001 ms (996-1001) |
+| 1500 ms | about 500 ms | 522 ms (511-569) | 498 ms (488-502) |

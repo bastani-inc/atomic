@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, vi } from "vitest";
 import {
 	isStorageWriterQueueDegradedError,
+	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -225,6 +226,7 @@ test("a releasing writer whose oldest waiter left as it looked hands the turn to
 	const { database, warnings, writers } = await fixture();
 	let gone = "";
 	let next = "";
+	let mtimeMs = 0;
 	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (gone !== "" && String(path).endsWith(gone))
 			throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
@@ -241,9 +243,12 @@ test("a releasing writer whose oldest waiter left as it looked hands the turn to
 			const old = new Date(now - 1_000);
 			actual.utimesSync(join(writers, name), old, old);
 		}
+		mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
 	});
 	await turn();
-	assert.ok(Date.now() - fs.statSync(join(writers, next)).mtimeMs < 500, "the next ticket was touched");
+	const touched = actual.statSync(join(writers, next));
+	assert.ok(Date.now() - touched.atimeMs < 500, "the next ticket was touched");
+	assert.equal(touched.mtimeMs, mtimeMs, "and left with the liveness its owner gave it");
 	assert.deepEqual(degradations(warnings), []);
 });
 
@@ -264,9 +269,10 @@ test("a waiting writer that cannot refresh its own ticket fails the transaction 
 	}) as typeof fs.utimesSync);
 	await vi.advanceTimersByTimeAsync(500);
 	const error = await failure;
-	assert.ok(error instanceof Error && error.name === "StorageUnavailableError", String(error));
-	assert.match((error as Error).message, /writers' queue next to the database is unusable/);
-	assert.equal(((error as Error).cause as NodeJS.ErrnoException).code, "EACCES");
+	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+	assert.equal(error.code, "writer-queue-unusable");
+	assert.equal(error.errno, "EACCES");
+	assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 });
 
 test("a release that cannot list the queue still commits and reports one wake-failed fallback (#4316)", async () => {
@@ -317,18 +323,21 @@ test("a waiting writer that cannot list the queue fails as an unusable writers' 
 		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
 		.then(
 			() => assert.fail("wrote under a held lock"),
-			(error: unknown) => error as Error & { adapter?: string; location?: string },
+			(error: unknown) => error,
 		);
 	await untilWaiting();
 	failListing(writers, "EACCES");
 	await vi.advanceTimersByTimeAsync(250);
 	const error = await failed;
-	assert.equal(error.name, "StorageUnavailableError");
-	assert.deepEqual([error.adapter, error.location], ["node-sqlite", path]);
+	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+	assert.deepEqual(
+		[error.code, error.errno, error.adapter, error.location],
+		["writer-queue-unusable", "EACCES", "node-sqlite", path],
+	);
 	assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 });
 
-test("getWriterQueueStats on a queue it cannot read throws a typed StorageUnavailableError instead of counting nobody (#4316)", async () => {
+test("getWriterQueueStats on a queue it cannot read throws a typed writer-queue-unusable error instead of counting nobody (#4316)", async () => {
 	const { database, path, writers } = await fixture();
 	liveTicket(writers, 999_999_972);
 	for (const fail of [() => failListing(writers, "EACCES"), () => failTicketStat(writers, "EACCES")]) {
@@ -337,12 +346,12 @@ test("getWriterQueueStats on a queue it cannot read throws a typed StorageUnavai
 			try {
 				getWriterQueueStats(database);
 			} catch (cause) {
-				return cause as Error & { location?: string };
+				return cause;
 			}
 			return assert.fail("reported stats for a queue it cannot read");
 		})();
-		assert.equal(error.name, "StorageUnavailableError");
-		assert.equal(error.location, path);
+		assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+		assert.deepEqual([error.code, error.errno, error.location], ["writer-queue-unusable", "EACCES", path]);
 		assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 		readdirSync.mockImplementation(actual.readdirSync);
 		statSync.mockImplementation(actual.statSync);
@@ -382,8 +391,7 @@ test("on Windows a ticket deleted while another process holds it open (EPERM) co
 	});
 	assert.throws(
 		() => getWriterQueueStats(database),
-		(error: Error) =>
-			error.name === "StorageUnavailableError" && (error.cause as NodeJS.ErrnoException).code === "EPERM",
+		(error: Error) => isStorageWriterQueueUnusableError(error) && error.errno === "EPERM",
 	);
 	statSync.mockImplementation(actual.statSync);
 	for (const name of fs.readdirSync(writers)) fs.unlinkSync(join(writers, name));
@@ -393,6 +401,7 @@ test("on Windows a release passes over a ticket deleted while another process ho
 	const { database, warnings, writers } = await fixture();
 	let going = "";
 	let next = "";
+	let mtimeMs = 0;
 	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (going !== "" && basename(String(path)) === going) throw failure("EPERM");
 		actual.utimesSync(path, atime, mtime);
@@ -404,9 +413,44 @@ test("on Windows a release passes over a ticket deleted while another process ho
 			next = liveTicket(writers, 999_999_978, 1);
 			const old = new Date(Date.now() - 1_000);
 			actual.utimesSync(join(writers, next), old, old);
+			mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
 		});
 	});
-	assert.ok(Date.now() - actual.statSync(join(writers, next)).mtimeMs < 500, "the ticket after it was touched");
+	const touched = actual.statSync(join(writers, next));
+	assert.ok(Date.now() - touched.atimeMs < 500, "the ticket after it was touched");
+	assert.equal(touched.mtimeMs, mtimeMs);
 	await turn();
 	assert.deepEqual(degradations(warnings), []);
+});
+
+test("a release wakes the oldest live ticket whatever order the directory lists them in (#4316)", async () => {
+	const { database, writers } = await fixture();
+	const listing = (path: fs.PathLike): string[] => {
+		const names = actual.readdirSync(path);
+		return String(path) === writers ? names.reverse() : names;
+	};
+	readdirSync.mockImplementation(listing as typeof fs.readdirSync);
+	const events = new Map<string, number>();
+	const watchers: fs.FSWatcher[] = [];
+	let oldest = "";
+	let later = "";
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('listed backwards')");
+		oldest = liveTicket(writers, 999_999_979);
+		later = liveTicket(writers, 999_999_980, 1);
+		for (const name of [oldest, later]) {
+			events.set(name, 0);
+			watchers.push(actual.watch(join(writers, name), () => events.set(name, events.get(name)! + 1)));
+		}
+	});
+	cleanups.push(() => {
+		for (const watcher of watchers) watcher.close();
+	});
+	while (events.get(oldest) === 0 && events.get(later) === 0) await turn();
+	for (let index = 0; index < 20; index++) await turn();
+	assert.deepEqual(
+		[events.get(oldest)! > 0, events.get(later)],
+		[true, 0],
+		"the oldest was woken, not the one listed first",
+	);
 });

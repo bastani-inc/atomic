@@ -9,6 +9,7 @@ import {
 	type SerializedStorageError,
 	StorageUnavailableError,
 	StorageWriteLockTimeoutError,
+	StorageWriterQueueUnusableError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
@@ -388,11 +389,12 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 					() => assert.fail("write succeeded under a held lock"),
 					(cause: unknown) => cause,
 				);
-			assert.ok(error instanceof StorageUnavailableError, String(error));
-			assert.match(error.message, /^Storage unavailable: node-sqlite at .*journal\.sqlite: .*writers' queue/);
-			assert.ok(
-				error.cause instanceof Error && /EACCES|EPERM/.test((error.cause as NodeJS.ErrnoException).code ?? ""),
-			);
+			assert.ok(error instanceof StorageWriterQueueUnusableError, String(error));
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error.code, "writer-queue-unusable");
+			assert.equal(error.location, path);
+			assert.ok(/^(EACCES|EPERM)$/.test(error.errno ?? ""), error.errno);
+			assert.equal((error.cause as NodeJS.ErrnoException).code, error.errno);
 		} finally {
 			chmodSync(queue, 0o700);
 			holder?.kill("SIGKILL");

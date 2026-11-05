@@ -7,14 +7,25 @@ import {
 	isStorageUnsupportedOperationError,
 	isStorageWriteLockTimeoutError,
 	isStorageWriterQueueDegradedError,
+	isStorageWriterQueueUnusableError,
 	rehydrateStorageError,
 	type SerializedStorageError,
+	StorageAdapterLoadError,
 	StorageConfigError,
 	StorageError,
+	StorageInvalidTextError,
+	StorageOutcomeUnknownError,
+	StoragePayloadTooLargeError,
+	StoragePrefixError,
+	StorageRollbackError,
+	StorageSchemaVersionError,
+	StorageTransactionClosedError,
 	StorageUnavailableError,
 	StorageUnsupportedOperationError,
 	StorageWriteLockTimeoutError,
 	StorageWriterQueueDegradedError,
+	StorageWriterQueueUnusableError,
+	StoreClosedError,
 	serializeStorageError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
@@ -145,14 +156,46 @@ test("each storage error survives a JSON round trip as the same class with its f
 			Object.assign(new Error("EACCES"), { code: "EACCES" }),
 		),
 		new StorageWriterQueueDegradedError(descriptor, "watch-unavailable"),
+		new StorageWriterQueueUnusableError(
+			descriptor,
+			Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }),
+		),
+		new StorageWriterQueueUnusableError(descriptor, "not an error"),
+		new StorageUnavailableError(descriptor, busy(), "database is locked (SQLite code 5)"),
+		new StorageUnavailableError(descriptor, undefined),
+		new StoreClosedError(descriptor),
+		new StorageTransactionClosedError(),
+		new StorageRollbackError(
+			new Error("conflict"),
+			Object.assign(new Error("no transaction is active"), { errcode: 1 }),
+		),
+		new StorageInvalidTextError(3),
+		new StorageSchemaVersionError("sessions", 9, 2),
+		new StorageSchemaVersionError("journal", "v9", 3),
+		new StorageSchemaVersionError("journal", null, 3),
+		new StoragePrefixError("bad prefix", "pattern"),
+		new StoragePrefixError("wf_", "reserved"),
+		new StorageAdapterLoadError("@libsql/client", new Error("Cannot find module '@libsql/client'")),
+		new StorageOutcomeUnknownError("journal", "run-1", "append:7"),
+		new StoragePayloadTooLargeError(1024, 4096),
 	];
 	for (const error of errors) {
 		const rehydrated = rehydrateStorageError(viaJson(serializeStorageError(error)));
 		assert.equal(rehydrated.constructor, error.constructor, error.name);
 		assert.equal(rehydrated.name, error.name);
 		assert.equal(rehydrated.message, error.message);
-		assert.deepEqual({ ...rehydrated }, { ...error }, `${error.name} fields`);
-		assert.equal((rehydrated.cause as Error | undefined)?.message, (error.cause as Error | undefined)?.message);
+		const facts = (failure: Error) =>
+			Object.fromEntries(
+				Object.entries(failure).map(([key, value]) => [key, value instanceof Error ? value.message : value]),
+			);
+		assert.deepEqual(facts(rehydrated), facts(error), `${error.name} fields`);
+		const causeText = (failure: Error) =>
+			failure.cause instanceof Error
+				? failure.cause.message
+				: failure.cause === undefined
+					? undefined
+					: String(failure.cause);
+		assert.equal(causeText(rehydrated), causeText(error), `${error.name} cause`);
 	}
 	const [timeout] = errors;
 	const serialized = serializeStorageError(timeout!);
@@ -235,8 +278,16 @@ test("rehydration keeps every result in the storage family and fills facts a sen
 		fields: {},
 		cause: { name: "StorageUnavailableError", message: "Storage unavailable: x", fields: { adapter: "a" } },
 	});
-	assert.ok(nested.cause instanceof StorageError, "a storage-named cause stays in the family");
-	assert.equal((nested.cause as StorageError).name, "StorageUnavailableError");
+	assert.ok(nested.cause instanceof StorageUnavailableError, "a known storage cause comes back as its class");
+	assert.deepEqual([nested.cause.adapter, nested.cause.location], ["a", "unknown"]);
+	const unknownCause = rehydrateStorageError({
+		name: "StorageFutureError",
+		message: "outer",
+		fields: {},
+		cause: { name: "StorageOtherFutureError", message: "inner", fields: {} },
+	});
+	assert.ok(unknownCause.cause instanceof StorageError, "an unknown storage-named cause stays in the family");
+	assert.equal((unknownCause.cause as StorageError).name, "StorageOtherFutureError");
 	const bare = rehydrateStorageError({
 		name: "StorageWriteLockTimeoutError",
 		code: "write-lock-timeout",
@@ -277,4 +328,100 @@ test("rehydration bounds a cause chain deeper than the serializer would send, an
 	const plain = rehydrateStorageError({ name: "StoragePlainError", message: "plain", fields: {} });
 	assert.equal(Object.hasOwn(plain, "code"), false);
 	assert.equal(Object.hasOwn(plain, "hint"), false);
+});
+
+test("a writers' queue it cannot use renders what failed, the errno, its code, and the remedy (#4316)", () => {
+	const cause = Object.assign(new Error("EACCES: permission denied, scandir '/data/journal.sqlite-writers'"), {
+		code: "EACCES",
+	});
+	const error = new StorageWriterQueueUnusableError(descriptor, cause);
+	assert.ok(error instanceof StorageUnavailableError);
+	assert.ok(isStorageWriterQueueUnusableError(error));
+	assert.ok(
+		isStorageWriterQueueUnusableError({ name: "StorageWriterQueueUnusableError", code: "writer-queue-unusable" }),
+	);
+	assert.equal(isStorageWriterQueueUnusableError(new StorageUnavailableError(descriptor, cause)), false);
+	assert.deepEqual(
+		[error.name, error.code, error.errno, error.adapter, error.location, error.cause],
+		[
+			"StorageWriterQueueUnusableError",
+			"writer-queue-unusable",
+			"EACCES",
+			"node-sqlite",
+			"/data/journal.sqlite",
+			cause,
+		],
+	);
+	assert.equal(
+		error.message,
+		"Storage unavailable: node-sqlite at /data/journal.sqlite: the writers' queue next to the database is unusable: EACCES: permission denied, scandir '/data/journal.sqlite-writers' (writer-queue-unusable). Make the writers' queue directory next to the database (<file>-writers) readable and writable for every process that writes the database",
+	);
+	assert.ok(error.message.endsWith(error.hint));
+	assert.equal(Object.hasOwn(new StorageWriterQueueUnusableError(descriptor, new Error("no code")), "errno"), false);
+	assert.equal(isRetryableStorageError(error), false);
+});
+
+test("a failed rollback and an attached cleanup failure travel with the error they belong to", () => {
+	const rollbackCause = Object.assign(new Error("cannot rollback - no transaction is active"), { errcode: 1 });
+	const rollback = rehydrateStorageError(
+		viaJson(serializeStorageError(new StorageRollbackError(busy(), rollbackCause))),
+	);
+	assert.ok(rollback instanceof StorageRollbackError);
+	assert.ok(isSqliteBusy(rollback.cause), "the original failure");
+	assert.ok(rollback.rollbackCause instanceof Error);
+	assert.equal(rollback.rollbackCause.message, rollbackCause.message);
+	assert.equal((rollback.rollbackCause as { errcode?: number }).errcode, 1);
+	const opening = new StorageUnavailableError(descriptor, busy(), "database is locked (SQLite code 5)");
+	Object.defineProperty(opening, "cleanupCause", {
+		value: Object.assign(new Error("close failed"), { code: "EIO" }),
+		configurable: true,
+	});
+	const rehydrated = rehydrateStorageError(viaJson(serializeStorageError(opening)));
+	assert.ok(rehydrated instanceof StorageUnavailableError);
+	assert.equal(rehydrated.message, opening.message);
+	assert.ok(rehydrated.cleanupCause instanceof Error);
+	assert.equal(rehydrated.cleanupCause.message, "close failed");
+	assert.equal((rehydrated.cleanupCause as { code?: string }).code, "EIO");
+	assert.equal(Object.keys(rehydrated).includes("cleanupCause"), false, "attached as the provider attaches it");
+	assert.equal(Object.hasOwn(rehydrateStorageError(viaJson(serializeStorageError(rollback))), "cleanupCause"), false);
+});
+
+test("a schema version found as a bigint or binary value comes back as null; scalar values come back as sent", () => {
+	for (const [found, back] of [
+		[5n, null],
+		[new Uint8Array([1]), null],
+		[7, 7],
+		["v7", "v7"],
+	] as const) {
+		const error = rehydrateStorageError(
+			viaJson(serializeStorageError(new StorageSchemaVersionError("journal", found, 3))),
+		);
+		assert.ok(error instanceof StorageSchemaVersionError);
+		assert.equal(error.found, back);
+	}
+});
+
+test("each storage class rebuilt without the facts its sender left out gets empty or zero defaults", () => {
+	const bare = (name: string) => rehydrateStorageError({ name, message: "", fields: {} });
+	const schema = bare("StorageSchemaVersionError");
+	assert.ok(schema instanceof StorageSchemaVersionError);
+	assert.deepEqual([schema.domain, schema.found, schema.supported], ["", null, 0]);
+	const prefix = bare("StoragePrefixError");
+	assert.ok(prefix instanceof StoragePrefixError);
+	assert.deepEqual([prefix.prefix, prefix.reason], ["", "pattern"]);
+	const load = bare("StorageAdapterLoadError");
+	assert.ok(load instanceof StorageAdapterLoadError);
+	assert.equal(load.module, "");
+	const outcome = bare("StorageOutcomeUnknownError");
+	assert.ok(outcome instanceof StorageOutcomeUnknownError);
+	assert.deepEqual([outcome.domain, outcome.id, outcome.key], ["", "", ""]);
+	const invalid = bare("StorageInvalidTextError");
+	assert.ok(invalid instanceof StorageInvalidTextError);
+	assert.equal(invalid.parameterIndex, 0);
+	const payload = bare("StoragePayloadTooLargeError");
+	assert.ok(payload instanceof StoragePayloadTooLargeError);
+	assert.deepEqual([payload.limitBytes, payload.actualBytes], [0, 0]);
+	const unusable = bare("StorageWriterQueueUnusableError");
+	assert.ok(unusable instanceof StorageWriterQueueUnusableError);
+	assert.deepEqual([unusable.adapter, unusable.location, unusable.errno], ["unknown", "unknown", undefined]);
 });

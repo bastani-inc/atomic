@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { afterEach, test } from "vitest";
 import {
 	rehydrateStorageError,
 	type SerializedStorageError,
-	StorageError,
+	StorageRollbackError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import type { WriterQueueStats } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
@@ -236,6 +236,7 @@ test(
 		const behind = await startWriter(path, { label: "behind" });
 		behind.go();
 		await untilQueued(writers, behind.pid);
+		const killedAt = Date.now();
 		killed.child.kill("SIGKILL");
 		await killed.child.exited;
 		await holder.commit();
@@ -246,6 +247,10 @@ test(
 			["behind"],
 		);
 		assert.ok(existsSync(join(writers, abandoned)), "the abandoned ticket was passed over, not needed gone");
+		assert.ok(
+			statSync(join(writers, abandoned)).mtimeMs <= killedAt,
+			"no other writer kept the dead writer's ticket live after it died",
+		);
 		assertIntact(path);
 	},
 	CHAOS_TEST_TIMEOUT_MS,
@@ -379,12 +384,12 @@ test(
 		const failed = await full.report();
 		assert.equal(failed.committed, 0);
 		const [error] = failed.errors.map((serialized) => rehydrateStorageError(serialized));
-		assert.ok(error instanceof StorageError, String(error));
 		// SQLite rolls a transaction back itself on SQLITE_FULL, so the explicit rollback after it fails too.
-		assert.equal(error.name, "StorageRollbackError");
+		assert.ok(error instanceof StorageRollbackError, String(error));
 		const codes: unknown[] = [];
-		for (let cause: unknown = error; cause instanceof Error; cause = cause.cause)
-			codes.push((cause as { errcode?: number }).errcode);
+		for (const start of [error.cause, error.rollbackCause])
+			for (let cause: unknown = start; cause instanceof Error; cause = cause.cause)
+				codes.push((cause as { errcode?: number }).errcode);
 		assert.ok(
 			codes.includes(13),
 			`SQLITE_FULL (database or disk is full) in the cause chain: ${JSON.stringify(codes)}`,

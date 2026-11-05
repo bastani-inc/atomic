@@ -253,12 +253,40 @@ export class StorageWriterQueueDegradedError extends StorageError {
 	}
 }
 
+export type StorageWriterQueueUnusableCode = "writer-queue-unusable";
+
+const WRITER_QUEUE_UNUSABLE_HINT =
+	"Make the writers' queue directory next to the database (<file>-writers) readable and writable for every process that writes the database";
+
+/**
+ * A node-sqlite transaction could not use the writers' queue next to the database: it could not read the queue
+ * directory, or add, refresh, or read a ticket in it. Nothing of the transaction ran. It is a
+ * `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix.
+ */
+export class StorageWriterQueueUnusableError extends StorageUnavailableError {
+	override readonly name = "StorageWriterQueueUnusableError" as const;
+	readonly code: StorageWriterQueueUnusableCode = "writer-queue-unusable";
+	readonly hint: string = WRITER_QUEUE_UNUSABLE_HINT;
+	/** The filesystem's error code, such as `EACCES`, when the cause has one. */
+	declare readonly errno?: string;
+	constructor(descriptor: StorageDescriptor, cause: StorageFailureCause) {
+		const { code } = (cause ?? {}) as { readonly code?: unknown };
+		super(
+			descriptor,
+			cause,
+			`the writers' queue next to the database is unusable: ${cause instanceof Error ? cause.message : String(cause)} (writer-queue-unusable). ${WRITER_QUEUE_UNUSABLE_HINT}`,
+		);
+		if (typeof code === "string") this.errno = code;
+	}
+}
+
 /** Every code a storage error that carries one can have. */
 export type StorageErrorCode =
 	| StorageConfigErrorCode
 	| StorageWriteLockTimeoutCode
 	| StorageUnsupportedOperationCode
-	| StorageWriterQueueDegradedCode;
+	| StorageWriterQueueDegradedCode
+	| StorageWriterQueueUnusableCode;
 
 function hasNameAndCode(value: unknown, name: string, code: string): boolean {
 	if (typeof value !== "object" || value === null) return false;
@@ -289,6 +317,13 @@ export function isStorageWriterQueueDegradedError(value: unknown): value is Stor
 	return (
 		value instanceof StorageWriterQueueDegradedError ||
 		hasNameAndCode(value, "StorageWriterQueueDegradedError", "writer-queue-degraded")
+	);
+}
+
+export function isStorageWriterQueueUnusableError(value: unknown): value is StorageWriterQueueUnusableError {
+	return (
+		value instanceof StorageWriterQueueUnusableError ||
+		hasNameAndCode(value, "StorageWriterQueueUnusableError", "writer-queue-unusable")
 	);
 }
 
@@ -324,6 +359,10 @@ export interface SerializedStorageError {
 	readonly hint?: string;
 	readonly fields: Readonly<Record<string, string | number | boolean>>;
 	readonly cause?: SerializedStorageError;
+	/** A `StorageRollbackError`'s failed rollback. */
+	readonly rollbackCause?: SerializedStorageError;
+	/** A cleanup failure attached to the error it followed. */
+	readonly cleanupCause?: SerializedStorageError;
 }
 
 /** Own properties carried outside `fields`: `message`, `stack`, and `cause` are not enumerable. */
@@ -344,24 +383,31 @@ function scalarFields(source: object, keys: readonly string[]): Record<string, s
 
 function serializeFailure(failure: unknown, depth: number): SerializedStorageError {
 	if (!(failure instanceof Error)) return { name: "Error", message: String(failure), fields: {} };
-	const { code, hint } = failure as { readonly code?: unknown; readonly hint?: unknown };
+	const { code, hint, rollbackCause, cleanupCause } = failure as {
+		readonly code?: unknown;
+		readonly hint?: unknown;
+		readonly rollbackCause?: unknown;
+		readonly cleanupCause?: unknown;
+	};
 	const keys = Object.keys(failure).filter((key) => !STRUCTURAL_KEYS.has(key));
-	const cause = failure.cause;
+	const nested = (key: "cause" | "rollbackCause" | "cleanupCause", value: unknown) =>
+		value !== undefined && depth + 1 < MAX_STORAGE_CAUSE_DEPTH ? { [key]: serializeFailure(value, depth + 1) } : {};
 	return {
 		name: failure.name,
 		...(typeof code === "string" || typeof code === "number" ? { code: String(code) } : {}),
 		message: failure.message,
 		...(typeof hint === "string" ? { hint } : {}),
 		fields: scalarFields(failure, keys),
-		...(cause !== undefined && depth + 1 < MAX_STORAGE_CAUSE_DEPTH
-			? { cause: serializeFailure(cause, depth + 1) }
-			: {}),
+		...nested("cause", failure.cause),
+		...nested("rollbackCause", rollbackCause),
+		...nested("cleanupCause", cleanupCause),
 	};
 }
 
 /**
- * The storage error as `{ name, code, message, hint, fields, cause }`, with its cause chain serialized to a bounded
- * depth. Fields hold only the error's own scalar facts (identifiers, paths, timings, limits), never credentials.
+ * The storage error as `{ name, code, message, hint, fields, cause }`, with its cause chain, a rollback's
+ * `rollbackCause`, and an attached `cleanupCause` serialized to a bounded depth. Fields hold only the error's own
+ * scalar facts (identifiers, paths, timings, limits), never credentials.
  */
 export function serializeStorageError(error: StorageError): SerializedStorageError {
 	return serializeFailure(error, 0);
@@ -383,11 +429,18 @@ function descriptorOf(serialized: SerializedStorageError): StorageDescriptor {
 	};
 }
 
-function rehydrateFailure(serialized: SerializedStorageError, depth: number): Error {
-	const cause =
-		serialized.cause === undefined || depth + 1 >= MAX_STORAGE_CAUSE_DEPTH
-			? undefined
-			: rehydrateFailure(serialized.cause, depth + 1);
+function nestedFailure(serialized: SerializedStorageError | undefined, depth: number): Error | undefined {
+	return serialized === undefined || depth + 1 >= MAX_STORAGE_CAUSE_DEPTH
+		? undefined
+		: rehydrateFailure(serialized, depth + 1);
+}
+
+/** The storage class `serializeStorageError` named, rebuilt from its fields; undefined for a name it does not know. */
+function knownStorageError(
+	serialized: SerializedStorageError,
+	cause: Error | undefined,
+	depth: number,
+): Error | undefined {
 	switch (serialized.name) {
 		case "StorageConfigError": {
 			const source = field<string>(serialized, "source", "string");
@@ -418,27 +471,74 @@ function rehydrateFailure(serialized: SerializedStorageError, depth: number): Er
 				field<string>(serialized, "reason", "string") === "wake-failed" ? "wake-failed" : "watch-unavailable",
 				cause,
 			);
-		default: {
-			const error =
-				depth === 0 || serialized.name.startsWith("Storage")
-					? new StorageError(serialized.message, { cause })
-					: new Error(serialized.message, { cause });
-			Object.assign(error, serialized.fields);
-			Object.defineProperty(error, "name", { value: serialized.name });
-			if (serialized.code !== undefined)
-				Object.defineProperty(error, "code", { value: serialized.code, enumerable: true });
-			if (serialized.hint !== undefined)
-				Object.defineProperty(error, "hint", { value: serialized.hint, enumerable: true });
-			return error;
-		}
+		case "StorageWriterQueueUnusableError":
+			return new StorageWriterQueueUnusableError(descriptorOf(serialized), cause);
+		case "StorageUnavailableError":
+			return new StorageUnavailableError(descriptorOf(serialized), cause);
+		case "StoreClosedError":
+			return new StoreClosedError(descriptorOf(serialized));
+		case "StorageTransactionClosedError":
+			return new StorageTransactionClosedError();
+		case "StorageRollbackError":
+			return new StorageRollbackError(cause, nestedFailure(serialized.rollbackCause, depth));
+		case "StorageInvalidTextError":
+			return new StorageInvalidTextError(field<number>(serialized, "parameterIndex", "number") ?? 0);
+		case "StorageSchemaVersionError":
+			return new StorageSchemaVersionError(
+				field<string>(serialized, "domain", "string") ?? "",
+				field<string>(serialized, "found", "string") ?? field<number>(serialized, "found", "number") ?? null,
+				field<number>(serialized, "supported", "number") ?? 0,
+			);
+		case "StoragePrefixError":
+			return new StoragePrefixError(
+				field<string>(serialized, "prefix", "string") ?? "",
+				field<string>(serialized, "reason", "string") === "reserved" ? "reserved" : "pattern",
+			);
+		case "StorageAdapterLoadError":
+			return new StorageAdapterLoadError(field<string>(serialized, "module", "string") ?? "", cause);
+		case "StorageOutcomeUnknownError":
+			return new StorageOutcomeUnknownError(
+				field<string>(serialized, "domain", "string") ?? "",
+				field<string>(serialized, "id", "string") ?? "",
+				field<string>(serialized, "key", "string") ?? "",
+			);
+		case "StoragePayloadTooLargeError":
+			return new StoragePayloadTooLargeError(
+				field<number>(serialized, "limitBytes", "number") ?? 0,
+				field<number>(serialized, "actualBytes", "number") ?? 0,
+			);
 	}
+	return undefined;
+}
+
+function rehydrateFailure(serialized: SerializedStorageError, depth: number): Error {
+	const cause = nestedFailure(serialized.cause, depth);
+	let error = knownStorageError(serialized, cause, depth);
+	if (error === undefined) {
+		error =
+			depth === 0 || serialized.name.startsWith("Storage")
+				? new StorageError(serialized.message, { cause })
+				: new Error(serialized.message, { cause });
+		Object.assign(error, serialized.fields);
+		Object.defineProperty(error, "name", { value: serialized.name });
+		if (serialized.code !== undefined)
+			Object.defineProperty(error, "code", { value: serialized.code, enumerable: true });
+		if (serialized.hint !== undefined)
+			Object.defineProperty(error, "hint", { value: serialized.hint, enumerable: true });
+	}
+	// The sender's message, which may hold detail no field carries (a `StorageUnavailableError`'s driver reason).
+	error.message = serialized.message;
+	const cleanupCause = nestedFailure(serialized.cleanupCause, depth);
+	if (cleanupCause !== undefined) Object.defineProperty(error, "cleanupCause", { value: cleanupCause });
+	return error;
 }
 
 /**
- * The error `serializeStorageError` produced, as the same class with the same fields, so guards and `instanceof`
- * still match on the other side of a process boundary. A storage error this version does not know becomes a
- * `StorageError` with the original `name`, `code`, and fields; a cause that is not a storage error becomes an `Error`
- * with its name and scalar fields (a driver's `errcode`, say).
+ * The error `serializeStorageError` produced, as the same class with the same message, fields, and causes, so guards
+ * and `instanceof` still match on the other side of a process boundary. A storage error this version does not know
+ * becomes a `StorageError` with the original `name`, `code`, and fields; a cause that is not a storage error becomes
+ * an `Error` with its name and scalar fields (a driver's `errcode`, say). Only scalar facts travel: a
+ * `StorageSchemaVersionError` whose `found` was a bigint or binary value comes back with `found: null`.
  */
 export function rehydrateStorageError(serialized: SerializedStorageError): StorageError {
 	return rehydrateFailure(serialized, 0) as StorageError;

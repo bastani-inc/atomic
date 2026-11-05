@@ -490,28 +490,101 @@ test("tickets dated far from now are not live, and long-abandoned ones are remov
 	assert.equal(existsSync(join(writers, past)), false);
 });
 
-test("a writer that lets go of the lock touches the oldest live ticket, after a commit and after a rollback", async () => {
+/**
+ * Counts the change events on each ticket. A release that wakes a ticket sets its times and so raises one; reading a
+ * ticket never does, though on some filesystems (tmpfs, say) a stat still moves its access time.
+ */
+function watchTickets(writers: string, names: readonly string[]) {
+	const events = new Map(names.map((name) => [name, 0]));
+	const watchers = names.map((name) =>
+		fs.watch(join(writers, name), () => events.set(name, (events.get(name) ?? 0) + 1)),
+	);
+	return {
+		events,
+		woken: () => [...events.values()].some((count) => count > 0),
+		close: () => {
+			for (const watcher of watchers) watcher.close();
+		},
+	};
+}
+
+test("a writer that lets go of the lock wakes the oldest live ticket through its access time, after a commit and after a rollback (#4316)", async () => {
 	const { database, writers } = await fixture();
 	for (const outcome of ["commit", "rollback"] as const) {
+		const mtimes = new Map<string, number>();
 		let stale = "";
 		let oldest = "";
 		let next = "";
+		let last = "";
+		let watched: ReturnType<typeof watchTickets> | undefined;
 		const transaction = database.transaction(async (tx) => {
 			await tx.run("INSERT INTO items VALUES (?)", outcome);
 			const now = Date.now();
-			stale = ticket(writers, now - 10, 999_999_981, -5_000);
-			oldest = ticket(writers, now, 999_999_982, -1_000);
+			// The oldest is created neither first nor last, so a listing in creation order or its reverse would miss it.
 			next = ticket(writers, now + 10, 999_999_983, -1_000);
+			oldest = ticket(writers, now, 999_999_982, -1_000);
+			last = ticket(writers, now + 20, 999_999_984, -1_000);
+			stale = ticket(writers, now - 10, 999_999_981, -5_000);
+			for (const name of [stale, oldest, next, last]) mtimes.set(name, statSync(join(writers, name)).mtimeMs);
+			watched = watchTickets(writers, [stale, oldest, next, last]);
 			if (outcome === "rollback") throw new Error("rolled back");
 		});
 		await transaction.catch((error: Error) => assert.equal(error.message, "rolled back"));
-		const age = (name: string) => Date.now() - statSync(join(writers, name)).mtimeMs;
-		assert.ok(age(oldest) < 500, `${outcome}: the oldest live ticket was touched`);
-		assert.ok(age(next) >= 900, `${outcome}: the ticket behind it was not`);
-		assert.ok(age(stale) >= 4_900, `${outcome}: a stale ticket is passed over`);
-		for (const name of [stale, oldest, next]) touch(join(writers, name), -60_000);
+		while (!watched!.woken()) await turn();
+		for (let index = 0; index < 20; index++) await turn();
+		watched!.close();
+		assert.deepEqual(
+			[stale, oldest, next, last].map((name) => watched!.events.get(name)! > 0),
+			[false, true, false, false],
+			`${outcome}: only the oldest live ticket was woken`,
+		);
+		assert.ok(Date.now() - statSync(join(writers, oldest)).atimeMs < 500, `${outcome}: through its access time`);
+		for (const name of [stale, oldest, next, last])
+			assert.equal(
+				statSync(join(writers, name)).mtimeMs,
+				mtimes.get(name),
+				`${outcome}: only an owner moves a ticket's liveness`,
+			);
+		for (const name of [stale, oldest, next, last]) touch(join(writers, name), -60_000);
 	}
 	assert.deepEqual(await values(database), ["commit"]);
+});
+
+test("a release does not keep a dead waiter's ticket alive: it goes stale 2 s after its owner last refreshed it (#4316)", async () => {
+	const { database, writers } = await fixture();
+	const now = Math.floor(Date.now() / 1000) * 1000 + 1000;
+	vi.useFakeTimers({ toFake: ["Date"], now });
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('released past a dead waiter')");
+		// The ticket of a waiter that died 1.5 s ago, first in line.
+		ticket(writers, now - 1_600, 999_999_988, -1_500);
+	});
+	assert.equal(getWriterQueueStats(database).waiters, 1);
+	vi.setSystemTime(now + 600);
+	assert.equal(
+		getWriterQueueStats(database).waiters,
+		0,
+		"stale 2 s after its owner's last refresh, whatever the release did",
+	);
+});
+
+test("a waiting writer's watch fires when another writer's release wakes it, without moving its ticket's liveness (#4316)", async () => {
+	const { database, writers } = await fixture();
+	let head = "";
+	let watcher: fs.FSWatcher | undefined;
+	let events = 0;
+	let mtimeMs = 0;
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('woke a watcher')");
+		head = ticket(writers, Date.now(), 999_999_989, -1_000);
+		mtimeMs = statSync(join(writers, head)).mtimeMs;
+		watcher = fs.watch(join(writers, head), () => {
+			events += 1;
+		});
+	});
+	cleanups.push(() => watcher?.close());
+	while (events === 0) await turn();
+	assert.equal(statSync(join(writers, head)).mtimeMs, mtimeMs);
 });
 
 test("a writer behind a live ticket that never moves gives up as queued and names the holder from its record", async () => {
@@ -758,7 +831,7 @@ test("a group commit frees the holder record, counts one commit, and hands the t
 	assert.equal(getWriterQueueStats(database).commitsPerSecond, 1);
 	const [record] = readdirSync(`${path}-holders`).filter((entry) => entry.startsWith(`${process.pid}-`));
 	assert.equal(fs.readFileSync(join(`${path}-holders`, record!), "utf8").slice(0, 4), "free");
-	assert.ok(Date.now() - statSync(join(writers, waiting)).mtimeMs < 500, "the next writer's ticket was touched");
+	assert.ok(Date.now() - statSync(join(writers, waiting)).atimeMs < 500, "the next writer's ticket was woken");
 });
 
 test("transactions requested together join one batch up to the batch size limit", async () => {
