@@ -1220,7 +1220,7 @@ describe("shared stores follow the remote (#3109)", () => {
 
 	test("a branch deleted on the remote starts again from base, not from the store's stale copy (#3109)", async () => {
 		const remote = createRemote(dirs.root, "deleted-remote-branch");
-		const origin = remote.url.replace(/^file:\/\//, "");
+		const origin = join(dirs.root, "deleted-remote-branch.git");
 		const gone = pushFromElsewhere(remote, dirs.root, "feat/gone", "gone.txt");
 		const first = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/gone" }));
 		assert.equal(first.head, gone);
