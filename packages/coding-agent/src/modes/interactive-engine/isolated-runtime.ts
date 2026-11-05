@@ -135,6 +135,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly sessionStats: EngineSessionStats;
 	private autoCompactionEnabled = true;
 	private backgroundCompaction: BackgroundCompactionState = IDLE_BACKGROUND_COMPACTION_STATE;
+	private backgroundCompactionRevision = 0;
 	private backgroundCompactionEnabled = true;
 	private backgroundCompactionThresholdPercent = DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT;
 	private readonly compactionReadyListeners = new WeakMap<AgentSession, Set<CompactionReadyListener>>();
@@ -269,6 +270,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
 			this.sessionStats.reset();
+			const compactionRevision = this.backgroundCompactionRevision;
 			const state = await this.client.getState();
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
@@ -306,7 +308,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
 			this.backgroundCompactionEnabled = state.backgroundCompactionEnabled;
 			this.backgroundCompactionThresholdPercent = state.backgroundCompactionThresholdPercent;
-			this.mirrorBackgroundCompaction(rehydrateBackgroundCompactionState(state.compaction));
+			if (compactionRevision === this.backgroundCompactionRevision) {
+				this.mirrorBackgroundCompaction(rehydrateBackgroundCompactionState(state.compaction));
+			}
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;
@@ -1045,6 +1049,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	private mirrorBackgroundCompaction(state: BackgroundCompactionState): void {
 		if (this.disposed) return;
+		this.backgroundCompactionRevision += 1;
 		this.backgroundCompaction = state;
 		this.settleBackgroundCompactionWaiters();
 		if (state.state !== "ready") return;

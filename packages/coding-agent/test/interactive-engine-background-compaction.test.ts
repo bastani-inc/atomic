@@ -273,6 +273,7 @@ async function createProbe() {
 	);
 	return {
 		runtime,
+		client,
 		second,
 		target,
 		state,
@@ -395,6 +396,52 @@ test("a ready result the host learns of by resynchronizing is reported once (#43
 		probe.cleanup();
 	}
 });
+
+test.each(
+	(["ready", "idle", "running"] as const).flatMap((newerState) =>
+		(["getState", "requestInternal"] as const).map((delayedResponse) => ({ newerState, delayedResponse })),
+	),
+)(
+	"engine initialization preserves a newer $newerState compaction event while $delayedResponse waits (#4330)",
+	async ({ newerState, delayedResponse }) => {
+		const probe = await createProbe();
+		try {
+			const host = probe.runtime.session;
+			probe.state.sessionId = host.sessionId;
+			probe.state.compaction = { state: "running", upToEntryId: "m1", startedAt: "2026-11-05T00:00:00.000Z" };
+			let releaseResponse!: () => void;
+			const responseGate = new Promise<void>((resolve) => {
+				releaseResponse = resolve;
+			});
+			const requestState = vi.spyOn(probe.client, "getState").mockImplementationOnce(async () => {
+				if (delayedResponse === "getState") await responseGate;
+				return probe.state;
+			});
+			const requestCatalog = vi.spyOn(probe.client, "requestInternal").mockImplementationOnce(async () => {
+				if (delayedResponse === "requestInternal") await responseGate;
+				return { models: [], scopedModels: [] } as never;
+			});
+			const announced: string[] = [];
+			host.onCompactionReady((state) => announced.push(state.upToEntryId ?? ""));
+			const initializing = probe.runtime.initializeFromEngine();
+			await vi.waitFor(() =>
+				assert.equal((delayedResponse === "getState" ? requestState : requestCatalog).mock.calls.length, 1),
+			);
+			probe.emit(backgroundCompactionEvent(newerState, "m2"));
+			releaseResponse();
+			await initializing;
+
+			assert.equal(host.compaction.state, newerState);
+			assert.equal(host.compaction.upToEntryId, newerState === "idle" ? undefined : "m2");
+			assert.deepEqual(announced, newerState === "ready" ? ["m2"] : []);
+			if (newerState !== "running") {
+				assert.equal((await host.awaitBackgroundCompaction()).state, newerState);
+			}
+		} finally {
+			probe.cleanup();
+		}
+	},
+);
 
 test("the host rejects an invalid background compaction setting before changing or sending it (#4330)", async () => {
 	pair = await createEngineHostPair({});
