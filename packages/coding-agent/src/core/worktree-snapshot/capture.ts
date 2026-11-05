@@ -125,7 +125,9 @@ export interface WorkingTreeState {
 
 /**
  * Writes the policy-filtered working tree through a private index seeded from `seedTree` (HEAD by default), leaving
- * the user's index, refs and files untouched. Denied and ignored tracked paths keep their seeded content.
+ * the user's index, refs and files untouched. A path the policy, settings or caps leave out keeps HEAD's content, or
+ * stays absent when HEAD lacks it, whatever the seed held, so a verification seeded from a recorded tree sees a
+ * recorded file that later grew past a cap or became ignored as changed.
  */
 export async function writeWorkingTree(
 	checkout: Checkout,
@@ -160,13 +162,16 @@ export async function writeWorkingTree(
 	}
 	const config = options.attributesFile === undefined ? [] : ["-c", `core.attributesFile=${options.attributesFile}`];
 	await runGit([...config, "read-tree", "--reset", options.seedTree ?? checkout.head], git);
+	if (options.seedTree !== undefined) {
+		await runGit([...config, "update-index", "-q", "--refresh"], { ...git, allowExitCodes: [1] });
+	}
 	const changed = nulFields(
 		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
 	);
 	const untracked = nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
 		(path) => !path.endsWith("/"),
 	);
-	const omitted: WorktreeSnapshotOmission[] = [];
+	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
 	const admitted: string[] = [];
 	let total = 0;
 	const candidates = [
@@ -194,6 +199,13 @@ export async function writeWorkingTree(
 		}
 		total += bytes;
 		admitted.push(path);
+	}
+	if (options.seedTree !== undefined && omitted.length > 0) {
+		await runGit(["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", checkout.head], {
+			...git,
+			env: { ...git.env, GIT_LITERAL_PATHSPECS: "1" },
+			input: `${omitted.map((omission) => omission.path).join("\0")}\0`,
+		});
 	}
 	if (admitted.length > 0) {
 		await runGit([...config, "update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
@@ -339,7 +351,18 @@ async function objectExists(root: string, object: string, signal?: AbortSignal):
 	return exitCode === 0;
 }
 
-function snapshotId(fields: Omit<WorktreeSnapshot, "id" | "capturedAt" | "version" | "omitted" | "filters">): string {
+/**
+ * The working-tree omissions of a snapshot as sorted `reason path` keys. Sizes are left out, so a file that keeps
+ * growing past a cap is the same omission; history omissions depend only on HEAD and are compared through it.
+ */
+function pathOmissionKeys(omitted: readonly WorktreeSnapshotOmission[]): string[] {
+	return omitted.flatMap((omission) => ("path" in omission ? [`${omission.reason}\0${omission.path}`] : [])).sort();
+}
+
+function snapshotId(
+	fields: Omit<WorktreeSnapshot, "id" | "capturedAt" | "version" | "omitted" | "filters">,
+	omissions: readonly string[],
+): string {
 	return sha256Hex(
 		JSON.stringify([
 			fields.root,
@@ -350,6 +373,7 @@ function snapshotId(fields: Omit<WorktreeSnapshot, "id" | "capturedAt" | "versio
 			fields.envHash,
 			fields.chain,
 			fields.bundle?.blob ?? null,
+			omissions,
 		]),
 	).slice(0, 32);
 }
@@ -357,8 +381,8 @@ function snapshotId(fields: Omit<WorktreeSnapshot, "id" | "capturedAt" | "versio
 /**
  * Records the state of the Git checkout containing `dir`. Resolves `unavailable` (with the typed reason) when Git is
  * missing, `dir` is outside a work tree, the repository has no commits, or a path the snapshot reads cannot be read,
- * and `unchanged` with `previous` when HEAD and the recomputed tree both equal it. Never changes the user's index,
- * refs or files.
+ * and `unchanged` with `previous` when HEAD, the recomputed tree and the files it leaves out all equal it. Never
+ * changes the user's index, refs or files.
  */
 export async function captureWorktreeSnapshot(
 	dir: string,
@@ -388,7 +412,13 @@ async function captureCheckout(
 	return withScratchDirectory(async (scratch) => {
 		const policy = await loadSnapshotPathPolicy(root);
 		const state = await writeWorkingTree(checkout, settings, policy, scratch, { signal });
-		if (previous && previous.head === head && previous.tree === state.tree) {
+		const omissions = pathOmissionKeys(state.omitted);
+		if (
+			previous &&
+			previous.head === head &&
+			previous.tree === state.tree &&
+			JSON.stringify(pathOmissionKeys(previous.omitted)) === JSON.stringify(omissions)
+		) {
 			return { status: "unchanged", snapshot: previous, binding: bindingOf(previous) };
 		}
 		const config = await readRepositoryConfig(root, signal);
@@ -453,7 +483,7 @@ async function captureCheckout(
 		};
 		const snapshot: WorktreeSnapshot = {
 			version: 1,
-			id: snapshotId(fields),
+			id: snapshotId(fields, omissions),
 			...fields,
 			omitted: [...state.omitted, ...history.omitted],
 			filters: await readFilters(root, config, signal),

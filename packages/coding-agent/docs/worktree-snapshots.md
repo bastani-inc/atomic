@@ -30,7 +30,7 @@ Patches and bundles are stored once, by content hash, in the same storage as the
 - **Sessions:** at the end of each turn that called `bash`, `edit`, `write`, `powershell`, or an extension tool that declares `writesFiles: true`. The session's directory and the directories of the files `edit` and `write` targeted are captured.
 - **Workflows:** after each completed stage and each completed `ctx.tool` call, for the stage's working directory and every worktree the run binds. Pooled workers snapshot their own worktree.
 
-A capture that finds `HEAD` and the recomputed tree unchanged records a reference to the previous snapshot instead of a new one.
+A capture that finds `HEAD`, the recomputed tree, and the set of left-out files all unchanged records a reference to the previous snapshot instead of a new one. A newly left-out file, such as a new `.env.local`, records a new snapshot that lists it in `omitted`, so a restore warns about it.
 
 When Git is not installed, or a directory is not inside a Git repository, nothing is recorded for it and behavior is exactly as without snapshots. In-memory sessions record nothing. A persisted store that cannot hold blobs (JSONL session directories, storage adapters without a database) records nothing and reports `blob-store-unsupported` once.
 
@@ -70,7 +70,7 @@ When a session resumes, Atomic checks its checkout against the last snapshot it 
 
 Restored worktrees share one object store per repository on each host (`~/.atomic/agent/worktree-snapshots/repositories/`), so many restores of one base cost about one base plus their deltas. The session records the old-to-new root mapping (`SessionManager.getWorktreeRootMappings()`), and later resumes keep using the new root.
 
-A checkout matches its snapshot when `HEAD` is the recorded commit and every file of the recorded tree has the recorded content. Files the snapshot recorded are compared even when this host's excludes or size settings would leave them out; those settings only decide whether a file the snapshot never had counts as a change. A checkout whose repository does not hold the recorded tree is treated as drifted and restored.
+A checkout matches its snapshot when `HEAD` is the recorded commit and every file of the recorded tree has the recorded content. Unchanged recorded files are compared even when this host's excludes or size settings would leave them out; those settings only decide whether a file the snapshot never had counts as a change. A recorded file whose content changed and that is now left out, for example because it grew past `snapshots.maxFileBytes` or is listed in `.atomic/snapshot-ignore`, counts as drift. A checkout whose repository does not hold the recorded tree is treated as drifted and restored.
 
 A restore builds the worktree under a staging directory, verifies it there, and only then moves it to its final path, so a final path never holds an unverified worktree. If the process is killed mid-restore, the staging worktree stays behind with a crash record under `~/.atomic/agent/worktree-snapshots/restores/`. The next restore or `removeRestoredWorktree` on that host removes it once the crash record's lock is stale, 30 seconds after the process stopped. A leftover that cannot be removed is reported once as the `stale-restore-retained` warning naming its path.
 
