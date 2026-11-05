@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { inspect } from "node:util";
 import { describe, it } from "vitest";
 import { generateImages } from "../src/api/openai-images.ts";
 import { OPENAI_IMAGES_LIMITS } from "../src/api/openai-images-options.ts";
 import {
 	type ImageGenerationConfigReason,
+	ImageGenerationServerError,
 	ImageGenerationUserError,
 	imageGenerationErrorFromData,
 	isImageGenerationApiError,
@@ -780,7 +782,7 @@ describe("GPT Image 2.6 error mapping (#4332)", () => {
 		);
 		assert.equal(
 			error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : undefined,
-			`APIError: ${error.detail}`,
+			"APIError: [foreign error message omitted]",
 		);
 		assert.match(result.errorMessage ?? "", /provider said no/);
 	});
@@ -1037,7 +1039,7 @@ describe("GPT Image 2.6 error mapping (#4332)", () => {
 		assert.equal(error.status, undefined);
 		assert.equal(error.retryable, true);
 		assert.equal(error.detail, "no HTTP response");
-		assert.deepEqual(result.error?.cause, { name: "APIConnectionError", message: "no HTTP response" });
+		assert.deepEqual(result.error?.cause, { name: "APIConnectionError", message: "[foreign error message omitted]" });
 	});
 
 	it("maps a client timeout to ImageGenerationTimeoutError (#4332)", async () => {
@@ -1057,7 +1059,7 @@ describe("GPT Image 2.6 error mapping (#4332)", () => {
 		assert.equal(error.retryable, true);
 		assert.deepEqual(result.error?.cause, {
 			name: "APIConnectionTimeoutError",
-			message: "no HTTP response, the request timed out",
+			message: "[foreign error message omitted]",
 		});
 	});
 
@@ -1101,6 +1103,29 @@ describe("GPT Image 2.6 error mapping (#4332)", () => {
 
 		assert.equal(result.stopReason, "error");
 		assert.equal(result.error, undefined);
+	});
+
+	it("does not expose foreign cause messages from a typed hook failure (#4332)", async () => {
+		const sentinel = "PRIVATE_HOOK_PROMPT_SENTINEL";
+		const typed = new ImageGenerationServerError({ detail: "HTTP 503", cause: new Error(sentinel) });
+		const result = await run(
+			flare,
+			textContext,
+			{
+				onPayload: () => {
+					throw typed;
+				},
+			},
+			mockFetch().fetch,
+		);
+
+		assert.equal(result.stopReason, "error");
+		assert(result.error);
+		assert(isImageGenerationServerError(errorOf(result)));
+		assert.equal(JSON.stringify(result).includes(sentinel), false);
+		assert.equal(inspect(typed, { depth: null }).includes(sentinel), false);
+		assert.equal(JSON.stringify(typed.toData()).includes(sentinel), false);
+		assert.equal(String(typed.cause).includes(sentinel), false);
 	});
 
 	it("carries the typed error across a JSON round trip (#4332)", async () => {

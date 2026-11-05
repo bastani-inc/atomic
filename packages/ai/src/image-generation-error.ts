@@ -11,10 +11,12 @@
 
 export type ImageGenerationErrorFieldValue = string | number | boolean | readonly string[] | undefined;
 
-/** A cause from outside the family, reduced to its name and a bounded message. */
+/** A foreign cause with its name, a safe errno code, and a redacted message. */
 export interface ImageGenerationForeignCauseData {
 	name: string;
 	message: string;
+	code?: string;
+	cause?: ImageGenerationErrorData | ImageGenerationForeignCauseData;
 }
 
 /** JSON-safe form of an {@link ImageGenerationError}, for results, IPC and worker boundaries. */
@@ -26,8 +28,8 @@ export interface ImageGenerationErrorData {
 	retryable: boolean;
 	fields: Record<string, ImageGenerationErrorFieldValue>;
 	/**
-	 * The next link of the `cause` chain. A family error keeps its full data and its own cause; any
-	 * other error keeps only its name and message. At most eight links, this error included, are kept.
+	 * The next link of the `cause` chain. Family errors keep their data; foreign errors keep their
+	 * name and known errno code, with their message redacted. At most eight links are kept.
 	 */
 	cause?: ImageGenerationErrorData | ImageGenerationForeignCauseData;
 }
@@ -42,7 +44,70 @@ interface ImageGenerationErrorInit {
 }
 
 const MAX_CAUSE_DEPTH = 8;
-const MAX_CAUSE_MESSAGE_CHARS = 500;
+const FOREIGN_MESSAGE = "[foreign error message omitted]";
+const SAFE_ERRNO_CODES = new Set([
+	"EACCES",
+	"EADDRINUSE",
+	"EADDRNOTAVAIL",
+	"EAFNOSUPPORT",
+	"EAGAIN",
+	"EALREADY",
+	"EBADF",
+	"EBUSY",
+	"ECANCELED",
+	"ECONNABORTED",
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"EDESTADDRREQ",
+	"EEXIST",
+	"EFAULT",
+	"EHOSTUNREACH",
+	"EINTR",
+	"EINVAL",
+	"EIO",
+	"EISDIR",
+	"EMFILE",
+	"EMSGSIZE",
+	"ENETDOWN",
+	"ENETRESET",
+	"ENETUNREACH",
+	"ENFILE",
+	"ENOENT",
+	"ENOMEM",
+	"ENOSPC",
+	"ENOTCONN",
+	"ENOTDIR",
+	"ENOTFOUND",
+	"ENOTSOCK",
+	"ENOTSUP",
+	"EPIPE",
+	"EPERM",
+	"EPROTO",
+	"EPROTONOSUPPORT",
+	"ETIMEDOUT",
+	"EAI_AGAIN",
+	"EAI_FAIL",
+	"EAI_NONAME",
+]);
+
+function safeForeignName(name: unknown): string {
+	return typeof name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(name) ? name : "Error";
+}
+
+function safeErrno(code: unknown): string | undefined {
+	return typeof code === "string" && SAFE_ERRNO_CODES.has(code) ? code : undefined;
+}
+
+function sanitizeCause(cause: unknown, depth: number): Error | undefined {
+	if (depth > MAX_CAUSE_DEPTH || !(cause instanceof Error)) return undefined;
+	if (cause instanceof ImageGenerationError) return cause;
+	const nested = sanitizeCause(cause.cause, depth + 1);
+	const safe = new Error(FOREIGN_MESSAGE, nested ? { cause: nested } : undefined);
+	safe.name = safeForeignName(cause.name);
+	const code = safeErrno((cause as Error & { code?: unknown }).code);
+	if (code) Object.assign(safe, { code });
+	return safe;
+}
 
 /** Base of every typed image-generation failure. */
 export class ImageGenerationError extends Error {
@@ -53,7 +118,7 @@ export class ImageGenerationError extends Error {
 	readonly hint?: string;
 
 	constructor(init: ImageGenerationErrorInit) {
-		super(init.message, { cause: init.cause });
+		super(init.message, { cause: sanitizeCause(init.cause, 2) });
 		this.name = init.name;
 		this.code = init.code;
 		this.retryable = init.retryable ?? false;
@@ -69,14 +134,24 @@ export class ImageGenerationError extends Error {
 		return this.dataWithCauses(1);
 	}
 
+	private static causeData(
+		cause: unknown,
+		depth: number,
+	): ImageGenerationErrorData | ImageGenerationForeignCauseData | undefined {
+		if (depth > MAX_CAUSE_DEPTH || !(cause instanceof Error)) return undefined;
+		if (cause instanceof ImageGenerationError) return cause.dataWithCauses(depth);
+		const code = safeErrno((cause as Error & { code?: unknown }).code);
+		const nested = ImageGenerationError.causeData(cause.cause, depth + 1);
+		return {
+			name: safeForeignName(cause.name),
+			message: FOREIGN_MESSAGE,
+			...(code ? { code } : {}),
+			...(nested ? { cause: nested } : {}),
+		};
+	}
+
 	private dataWithCauses(depth: number): ImageGenerationErrorData {
-		const cause = depth < MAX_CAUSE_DEPTH ? this.cause : undefined;
-		const causeData =
-			cause instanceof ImageGenerationError
-				? cause.dataWithCauses(depth + 1)
-				: cause instanceof Error
-					? { name: cause.name, message: cause.message.slice(0, MAX_CAUSE_MESSAGE_CHARS) }
-					: undefined;
+		const causeData = ImageGenerationError.causeData(this.cause, depth + 1);
 		return {
 			name: this.name,
 			code: this.code,
@@ -508,8 +583,11 @@ function isErrorData(value: ImageGenerationErrorData["cause"]): value is ImageGe
 function causeFromData(cause: ImageGenerationErrorData["cause"], depth: number): Error | undefined {
 	if (cause === undefined || depth > MAX_CAUSE_DEPTH) return undefined;
 	if (isErrorData(cause)) return errorFromData(cause, depth);
-	const error = new Error(cause.message);
-	error.name = cause.name;
+	const nested = causeFromData(cause.cause, depth + 1);
+	const error = new Error(FOREIGN_MESSAGE, nested ? { cause: nested } : undefined);
+	error.name = safeForeignName(cause.name);
+	const code = safeErrno(cause.code);
+	if (code) Object.assign(error, { code });
 	return error;
 }
 

@@ -31,6 +31,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 			"deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast",
 			"deepseek-ai/DeepSeek-V4.1-Flash-Fast",
 			"moonshotai/Kimi-K3",
+			"moonshotai/Kimi-K3.1-Pro",
 			"nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
 			"openai/gpt-oss-120b",
 			"zai-org/GLM-5.2",

@@ -204,7 +204,7 @@ describe("image generation errors (#4332)", () => {
 			moderationStage: "output",
 			categories: ["violence"],
 		});
-		assert.deepEqual(data.cause, { name: "Error", message: "socket hung up" });
+		assert.deepEqual(data.cause, { name: "Error", message: "[foreign error message omitted]" });
 		assert.equal(JSON.stringify(data).includes("stack"), false);
 	});
 
@@ -251,7 +251,7 @@ describe("image generation errors (#4332)", () => {
 			assert(revived.cause instanceof Error, JSON.stringify(partial));
 			assert.equal(revived.cause instanceof ImageGenerationError, false, JSON.stringify(partial));
 			assert.equal(revived.cause.name, "ImageGenerationQuotaError");
-			assert.equal(revived.cause.message, "inner");
+			assert.equal(revived.cause.message, "[foreign error message omitted]");
 		}
 	});
 
@@ -316,12 +316,132 @@ describe("image generation errors (#4332)", () => {
 		assert.equal(revived.cause.cause.cause instanceof ImageGenerationError, false);
 		assert(revived.cause.cause.cause instanceof Error);
 		assert.equal(revived.cause.cause.cause.name, "RangeError");
-		assert.equal(revived.cause.cause.cause.message, "socket closed");
+		assert.equal(revived.cause.cause.cause.message, "[foreign error message omitted]");
 		assert.equal(chainLength(revived), 4);
 		assert.deepEqual(revived.toData(), outer.toData());
 		assert.equal(findImageGenerationError(revived, isImageGenerationServerError), revived.cause.cause);
 		assert.equal(isRetryableImageGenerationError(revived), false);
 		assert.equal(isRetryableImageGenerationError(revived.cause), true);
+	});
+
+	it("round trips foreign wrappers without exposing their messages (#4332)", () => {
+		const sentinel = "PRIVATE_PROMPT_SENTINEL";
+		const socket = Object.assign(new Error(sentinel), { code: "ECONNRESET" });
+		const wrapper = new TypeError(sentinel, { cause: socket });
+		const error = new ImageGenerationServerError({ detail: "HTTP 503", status: 503, cause: wrapper });
+
+		const data = error.toData();
+		const revived = imageGenerationErrorFromData(JSON.parse(JSON.stringify(data)));
+
+		assert.deepEqual(data.cause, {
+			name: "TypeError",
+			message: "[foreign error message omitted]",
+			cause: { name: "Error", code: "ECONNRESET", message: "[foreign error message omitted]" },
+		});
+		assert(revived.cause instanceof Error);
+		assert(revived.cause.cause instanceof Error);
+		assert.equal((revived.cause.cause as NodeJS.ErrnoException).code, "ECONNRESET");
+		assert.equal(JSON.stringify(revived.toData()), JSON.stringify(data));
+		assert.equal(JSON.stringify(data).includes(sentinel), false);
+		assert.equal(String(error.cause).includes(sentinel), false);
+	});
+
+	it("retains typed causes through foreign wrappers while rejecting arbitrary foreign codes (#4332)", () => {
+		const inner = new ImageGenerationTimeoutError({ timeoutMs: 50, elapsedMs: 60 });
+		const wrapper = Object.assign(new Error("private", { cause: inner }), { code: "PRIVATE_PROMPT" });
+		const outer = new ImageGenerationServerError({ detail: "HTTP 503", cause: wrapper });
+		const data = outer.toData();
+		const revived = imageGenerationErrorFromData(JSON.parse(JSON.stringify(data)));
+
+		assert(outer.cause instanceof Error);
+		assert.equal(outer.cause.cause, inner);
+		assert.equal(data.cause?.code, undefined);
+		assert(revived.cause instanceof Error);
+		assert(revived.cause.cause instanceof ImageGenerationTimeoutError);
+		assert.equal(revived.cause.cause.timeoutMs, 50);
+		assert.equal(revived.cause.cause.elapsedMs, 60);
+		assert.equal(JSON.stringify(data).includes("PRIVATE_PROMPT"), false);
+	});
+
+	it("bounds foreign cycles and rehydrated foreign chains to eight links (#4332)", () => {
+		const loop: Error & { cause?: unknown } = new Error("private");
+		loop.cause = loop;
+		const outer = new ImageGenerationServerError({ detail: "HTTP 503", cause: loop });
+		const data = outer.toData();
+		assert.equal(chainLength(outer), 8);
+		assert.equal(chainLength(data), 8);
+		assert.equal(chainLength(imageGenerationErrorFromData(data)), 8);
+
+		let tail = data.cause;
+		assert(tail);
+		while (tail.cause) tail = tail.cause;
+		tail.cause = { name: "Error", message: "private", cause: { name: "Error", message: "private" } };
+		assert.equal(chainLength(imageGenerationErrorFromData(data)), 8);
+
+		let foreign = new Error("private");
+		for (let link = 1; link < 12; link++) foreign = new Error("private", { cause: foreign });
+		outer.cause = foreign;
+		assert.equal(chainLength(outer.toData()), 8);
+
+		const cyclic = { name: "Error", message: "private", cause: data.cause };
+		cyclic.cause = cyclic;
+		data.cause = cyclic;
+		assert.equal(chainLength(imageGenerationErrorFromData(data)), 8);
+	});
+
+	it("round trips known foreign system codes and omits unrecognized codes (#4332)", () => {
+		const codes = (
+			"EACCES EADDRINUSE EADDRNOTAVAIL EAFNOSUPPORT EAGAIN EALREADY EBADF EBUSY ECANCELED " +
+			"ECONNABORTED ECONNREFUSED ECONNRESET EDESTADDRREQ EEXIST EFAULT EHOSTUNREACH EINTR " +
+			"EINVAL EIO EISDIR EMFILE EMSGSIZE ENETDOWN ENETRESET ENETUNREACH ENFILE ENOENT ENOMEM " +
+			"ENOSPC ENOTCONN ENOTDIR ENOTFOUND ENOTSOCK ENOTSUP EPIPE EPERM EPROTO EPROTONOSUPPORT " +
+			"ETIMEDOUT EAI_AGAIN EAI_FAIL EAI_NONAME"
+		).split(" ");
+		for (const code of codes) {
+			const error = new ImageGenerationServerError({
+				detail: "HTTP 503",
+				cause: Object.assign(new Error(), { code }),
+			});
+			const data = error.toData();
+			const revived = imageGenerationErrorFromData(JSON.parse(JSON.stringify(data)));
+			assert.equal(data.cause?.code, code);
+			assert(revived.cause instanceof Error);
+			assert.equal((revived.cause as NodeJS.ErrnoException).code, code);
+		}
+		for (const code of ["E_PRIVATE", 42, null, ""]) {
+			const error = new ImageGenerationServerError({
+				detail: "HTTP 503",
+				cause: Object.assign(new Error(), { code }),
+			});
+			assert.equal(error.toData().cause?.code, undefined);
+			assert(error.cause instanceof Error);
+			assert.equal(Object.hasOwn(error.cause, "code"), false);
+		}
+	});
+
+	it("sanitizes foreign names and ignores non-error causes (#4332)", () => {
+		for (const [name, expected] of [
+			["TypeError", "TypeError"],
+			["A".repeat(80), "A".repeat(80)],
+			["", "Error"],
+			["bad name", "Error"],
+			["A".repeat(81), "Error"],
+		]) {
+			const foreign = new Error("private");
+			foreign.name = name;
+			const outer = new ImageGenerationServerError({ detail: "HTTP 503", cause: foreign });
+			assert.equal(outer.toData().cause?.name, expected);
+			assert.equal((imageGenerationErrorFromData(outer.toData()).cause as Error).name, expected);
+		}
+		const malformed = new ImageGenerationServerError({
+			detail: "HTTP 503",
+			cause: Object.assign(new Error("private"), { name: true }),
+		});
+		assert.equal(malformed.toData().cause?.name, "Error");
+		assert.equal(
+			new ImageGenerationServerError({ detail: "HTTP 503", cause: { message: "private" } }).toData().cause,
+			undefined,
+		);
 	});
 
 	it("keeps at most eight links of a cause chain when serializing and rehydrating (#4332)", () => {
@@ -373,7 +493,7 @@ describe("image generation errors (#4332)", () => {
 
 		assert(revived.cause instanceof Error);
 		assert.equal(revived.cause.name, "RangeError");
-		assert.equal(revived.cause.message, "slow");
+		assert.equal(revived.cause.message, "[foreign error message omitted]");
 	});
 
 	it("ignores unusable moderation fields when rehydrating (#4332)", () => {
@@ -488,7 +608,7 @@ describe("image generation errors (#4332)", () => {
 		);
 	});
 
-	it("serializes a plain family error with no fields and a bounded cause (#4332)", () => {
+	it("serializes a plain family error with no fields and a redacted cause (#4332)", () => {
 		const long = "x".repeat(600);
 		const base = new ImageGenerationError({
 			name: "ImageGenerationFutureError",
@@ -501,7 +621,7 @@ describe("image generation errors (#4332)", () => {
 
 		assert.deepEqual(data.fields, {});
 		assert.equal(data.hint, undefined);
-		assert.equal(data.cause?.message.length, 500);
+		assert.equal(data.cause?.message, "[foreign error message omitted]");
 		assert.equal(new ImageGenerationError({ name: "N", code: "c", message: "m" }).toData().cause, undefined);
 		assert.equal("hint" in new ImageGenerationError({ name: "N", code: "c", message: "m" }).toData(), false);
 	});
