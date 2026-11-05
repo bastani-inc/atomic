@@ -1,6 +1,7 @@
 import { getCurrentSystemMessage, getCurrentTools, type SystemMessage } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { getGitStatus } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
@@ -80,6 +81,7 @@ export function getToolStatus(this: AgentSession): ToolStatusReport {
 		},
 		isExcluded: this._excludedTools,
 		isAllowed: this._allowedTools,
+		git: getGitStatus(),
 	});
 }
 

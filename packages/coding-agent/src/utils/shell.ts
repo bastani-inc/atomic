@@ -4,6 +4,7 @@ import { Worker } from "node:worker_threads";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
+import { getGitShellEnvironment } from "./tools-manager.ts";
 
 export interface ShellConfig {
 	shell: string;
@@ -207,11 +208,15 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 	const currentPath = process.env[pathKey] ?? "";
 	const pathEntries = currentPath.split(delimiter).filter(Boolean);
-	const hasBinDir = pathEntries.includes(binDir);
-	const updatedPath = hasBinDir ? currentPath : [binDir, currentPath].filter(Boolean).join(delimiter);
+	const git = getGitShellEnvironment(process.env);
+	const additions = [...(git === undefined ? [] : [git.pathEntry]), binDir].filter(
+		(entry) => !pathEntries.includes(entry),
+	);
+	const updatedPath = [...additions, currentPath].filter(Boolean).join(delimiter);
 
 	return {
 		...process.env,
+		...git?.env,
 		[pathKey]: updatedPath,
 	};
 }

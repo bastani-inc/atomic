@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import type { GitToolStatus } from "../utils/tools-manager.ts";
 import type { ToolDefinition, ToolExposure } from "./extensions/tool-types.ts";
 import { BUILTIN_PATH_PREFIX, type SourceInfo } from "./source-info.ts";
 
@@ -49,6 +50,8 @@ export interface ToolStatusReport {
 	missing: UnavailableToolStatus[];
 	/** Selected names removed by an exclusion before they could register. */
 	excluded: UnavailableToolStatus[];
+	/** The git Atomic runs: its source and version, or why none is available. */
+	git?: GitToolStatus;
 }
 
 export interface ToolStatusInput {
@@ -61,6 +64,7 @@ export interface ToolStatusInput {
 	isExcluded?: (name: string) => boolean;
 	/** Present only when the session runs from an explicit tool allowlist. */
 	isAllowed?: (name: string) => boolean;
+	git?: GitToolStatus;
 }
 
 export function describeToolSelection(source: ToolSelectionSource, modifiers: readonly string[]): string {
@@ -188,6 +192,7 @@ export function buildToolStatusReport(input: ToolStatusInput): ToolStatusReport 
 		excluded: unregistered
 			.filter((name) => input.isExcluded?.(name))
 			.map((name) => ({ name, reason: EXCLUDED_REASON })),
+		...(input.git === undefined ? {} : { git: input.git }),
 	};
 }
 
@@ -198,6 +203,13 @@ export interface ToolStatusFormatStyle {
 }
 
 const plainStyle: ToolStatusFormatStyle = { heading: (text) => text, dim: (text) => text, warning: (text) => text };
+
+function formatGitStatus(git: GitToolStatus, style: ToolStatusFormatStyle): string[] {
+	if (git.source !== "unavailable") return [`  ${git.source} ${git.version}  ${style.dim(git.path)}`];
+	const { message, hint, code } = git.error;
+	const summary = message.endsWith(hint) ? message.slice(0, message.length - hint.length).trimEnd() : message;
+	return [`  ${style.warning("unavailable")}  ${style.dim(code)}`, `    ${summary}`, `    ${style.dim(hint)}`];
+}
 
 /** Render a report as plain multi-line text; pass a style to add terminal colors. */
 export function formatToolStatus(report: ToolStatusReport, style: ToolStatusFormatStyle = plainStyle): string {
@@ -223,5 +235,6 @@ export function formatToolStatus(report: ToolStatusReport, style: ToolStatusForm
 		lines.push("", style.warning(`Missing (${report.missing.length})`));
 		for (const tool of report.missing) lines.push(`  ${style.warning(tool.name)}`, `    ${style.dim(tool.reason)}`);
 	}
+	if (report.git !== undefined) lines.push("", style.heading("Git"), ...formatGitStatus(report.git, style));
 	return lines.join("\n");
 }

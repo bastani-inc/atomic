@@ -38,6 +38,7 @@ vi.mock("child_process", () => ({
 		},
 	),
 	spawnSync: vi.fn((_command: string, args: readonly string[]) => {
+		if (args[0] === "--version") return { status: 0, stdout: "git version 2.45.0\n", stderr: "" };
 		if (args[1] === "symbolic-ref") {
 			return { status: resolvedBranch ? 0 : 1, stdout: resolvedBranch ? `${resolvedBranch}\n` : "", stderr: "" };
 		}
@@ -176,7 +177,7 @@ describe("FooterDataProvider reftable branch detection", () => {
 		try {
 			expect(provider.getGitBranch()).toBe("main");
 			expect(mocked(spawnSync)).toHaveBeenCalledWith(
-				"git",
+				expect.stringMatching(/[\\/]git(\.exe)?$/),
 				["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"],
 				expect.objectContaining({
 					cwd: expect.stringMatching(/repo$/),

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -146,7 +146,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args, options) => {
-				executedCommands.push(`${command} ${args.join(" ")}`);
+				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
 				if (command === "npm") {
 					return;
 				}
@@ -224,7 +224,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args, options) => {
-				executedCommands.push(`${command} ${args.join(" ")}`);
+				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
 				const result = spawnSync(command, args, {
 					cwd: options?.cwd,
 					encoding: "utf-8",
@@ -386,7 +386,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args, options) => {
-				executedCommands.push(`${command} ${args.join(" ")}`);
+				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
 				const result = spawnSync(command, args, {
 					cwd: options?.cwd,
 					encoding: "utf-8",
@@ -425,8 +425,8 @@ describe("DefaultPackageManager git update", () => {
 				runCommandCapture: (command: string, args: string[], options?: { cwd?: string }) => Promise<string>;
 			};
 			managerWithInternals.runCommand = async (command, args) => {
-				executedCommands.push(`${command} ${args.join(" ")}`);
-				if (command === "git" && args[0] === "reset") {
+				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
+				if (basename(command) === "git" && args[0] === "reset") {
 					writeFileSync(extensionFile, "// fresh");
 				}
 			};
@@ -472,7 +472,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args) => {
-				executedCommands.push(`${command} ${args.join(" ")}`);
+				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
 			};
 
 			await packageManager.resolveExtensionSources([pinnedSource], { temporary: true });

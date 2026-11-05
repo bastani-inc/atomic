@@ -116,6 +116,33 @@ Optional; raises GitHub API limits on shared networks. Curl and GNU Wget keep th
 
 How you install Atomic decides which runtime hosts it: a package-manager install runs under Node, while the standalone binaries are Bun-compiled and run under Bun. Authored workflows execute inside whichever host is active, so a workflow that reaches for a `Bun.*` global runs only under the standalone binary and fails with `Bun is not defined` under an npm install. Installing Bun separately does not change that — the npm install still runs on Node. Write workflow code against APIs both hosts provide, such as `node:child_process` and `node:fs`; see [Custom Workflow Authoring](/workflows/authoring) for the rule and worked examples.
 
+### Git
+
+Atomic needs git 2.30.0 or newer for workflow worktrees, git packages, and the footer branch. It uses the first `git` on your `PATH` when that git runs and reports 2.30.0 or newer. Otherwise it downloads a portable git, the build GitHub Desktop ships from [desktop/dugite-native](https://github.com/desktop/dugite-native), the same way it provides `fd` and `rg`:
+
+- **Where:** `~/.atomic/agent/bin/git/` (under the directory `ATOMIC_CODING_AGENT_DIR` points to, when set).
+- **When:** at interactive startup, before a workflow run starts, and the first time a git package is installed or updated. Run `/tools` to see which git Atomic uses, its version, and why none is available.
+- **Verified:** Atomic pins one release and checks every download against a SHA-256 stored in its source. A download that does not match is discarded and nothing is installed.
+- **Platforms:** macOS x64 and arm64, Linux x64, arm64, and armv7 with glibc 2.34 or newer, and Windows x64, arm64, and x86.
+- **Agent shells:** when no `git` is on your `PATH` at all, the `bash` tool puts the portable git first on `PATH`, so agents run the same git Atomic uses. An older system git stays on `PATH` for your shells; Atomic uses the portable copy only for its own git commands.
+- **Offline:** with `ATOMIC_OFFLINE=1` Atomic never downloads git. A portable git that is already installed keeps working.
+
+On other systems install git yourself:
+
+| System | Command |
+|---|---|
+| Alpine and other musl distributions | `apk add git` |
+| Termux (Android) | `pkg install git` |
+| FreeBSD | `pkg install git` |
+| OpenBSD | `pkg_add git` |
+| Linux with glibc older than 2.34, or another CPU | your distribution's package manager, for example `apt install git` or `dnf install git` |
+
+Certificates and HTTPS differ by platform:
+
+- **Linux:** the portable git verifies servers with its bundled CA file. Set `GIT_SSL_CAINFO` to use your own bundle; while Atomic sets it, it takes precedence over `http.sslCAInfo` in your git config. HTTPS clones and fetches use the system libcurl, so install it if your image lacks it, for example `apt install libcurl4`. Local operations such as commits and worktrees do not need it.
+- **macOS:** the portable git uses the system's certificate trust.
+- **Windows:** the portable git uses the Windows certificate store, like Git for Windows.
+
 ### Alpine and musl Linux archives
 
 The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Keep the complete archive, including payload-local `libgcc` and `libstdc++`; stock Alpine needs no runtime package install.

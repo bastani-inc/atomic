@@ -162,13 +162,13 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 	this.ui.requestRender();
 };
 
-/** Bring fd and rg to readiness, reporting progress into the transcript. */
+/** Bring fd, rg, and git to readiness, reporting progress into the transcript. */
 InteractiveModeBase.prototype.ensureManagedToolsReady = function (this: InteractiveModeBase): Promise<void> {
 	const statusGeneration = ++this.managedToolStatusGeneration;
 	const reportStatus = (status: ToolStatus): void => {
 		if (this.managedToolStatusGeneration === statusGeneration) this.showManagedToolStatus(status);
 	};
-	return Promise.all([ensureTool("fd", reportStatus), ensureTool("rg", reportStatus)])
+	return Promise.all([ensureTool("fd", reportStatus), ensureTool("rg", reportStatus), ensureTool("git", reportStatus)])
 		.then(([fdPath]) => {
 			this.fdPath = fdPath;
 			this.setupAutocompleteProvider();

@@ -6,7 +6,8 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { ToolStatus } from "../src/utils/tools-manager.js";
 
 const toolMocks = vi.hoisted(() => ({
-	ensureTool: vi.fn<(tool: "fd" | "rg", onStatus?: (status: ToolStatus) => void) => Promise<string | undefined>>(),
+	ensureTool:
+		vi.fn<(tool: "fd" | "rg" | "git", onStatus?: (status: ToolStatus) => void) => Promise<string | undefined>>(),
 }));
 
 vi.mock("../src/utils/tools-manager.js", () => ({ ensureTool: toolMocks.ensureTool }));
@@ -95,7 +96,7 @@ test("keeps current readiness callbacks across a same-session transcript rebuild
 	});
 
 	const readiness = prototype.ensureManagedToolsReady.call(mode);
-	assert.equal(callbacks.length, 2);
+	assert.equal(callbacks.length, 3);
 	const beforeRebuild = callbacks[0];
 	const afterRebuild = callbacks[1];
 	assert.ok(beforeRebuild);
@@ -126,8 +127,8 @@ test("ignores readiness callbacks from a prior transcript after a session rebuil
 	});
 
 	const oldReadiness = prototype.ensureManagedToolsReady.call(mode);
-	assert.equal(oldCallbacks.length, 2);
-	assert.equal(resolveOldTools.length, 2);
+	assert.equal(oldCallbacks.length, 3);
+	assert.equal(resolveOldTools.length, 3);
 	const oldStatus = oldCallbacks[0];
 	const oldWarning = oldCallbacks[1];
 	assert.ok(oldStatus);
@@ -179,7 +180,7 @@ test("managed-tool warnings land in the transcript, never on the console", async
 test("info statuses render dim without the Warning prefix and share one spacer", async () => {
 	const mode = createMode();
 	toolMocks.ensureTool.mockImplementation(async (tool, onStatus) => {
-		if (tool === "rg") return "/tools/rg";
+		if (tool !== "fd") return `/tools/${tool}`;
 		onStatus?.({ type: "info", message: "fd not found. Downloading..." });
 		onStatus?.({ type: "info", message: "fd installed to /tools/fd" });
 		return "/tools/fd";
@@ -193,6 +194,27 @@ test("info statuses render dim without the Warning prefix and share one spacer",
 	// One spacer for the whole block: the first status opens it and the second
 	// reuses it rather than stacking blank rows between updates.
 	expect(mode.chatContainer.children).toHaveLength(3);
+	expect(mode.fdPath).toBe("/tools/fd");
+});
+
+test("brings git to readiness with fd and rg and reports its typed reason (#4322)", async () => {
+	const mode = createMode();
+	const reason =
+		"Git is unavailable: automatic provisioning does not support linux/x64 with musl (unsupported-platform). Install git 2.30.0 or newer with `apk add git`.";
+	toolMocks.ensureTool.mockImplementation(async (tool, onStatus) => {
+		if (tool !== "git") return `/tools/${tool}`;
+		onStatus?.({ type: "warning", message: reason });
+		return undefined;
+	});
+
+	await prototype.ensureManagedToolsReady.call(mode);
+
+	expect(toolMocks.ensureTool.mock.calls.map(([tool]) => tool)).toEqual(["fd", "rg", "git"]);
+	const transcript = transcriptText(mode)
+		.replace(/\u001b\[[0-9;]*m/gu, "")
+		.replace(/\s+/gu, " ");
+	expect(transcript).toContain("Warning: Git is unavailable:");
+	expect(transcript).toContain("(unsupported-platform). Install git 2.30.0 or newer with `apk add git`.");
 	expect(mode.fdPath).toBe("/tools/fd");
 });
 

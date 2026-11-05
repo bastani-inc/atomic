@@ -1640,7 +1640,7 @@ function setupGitWorktree(options: {
 };
 ```
 
-Synchronously creates or validates a reusable worktree and remaps the cwd. It applies the same validation, symlink-preserving path handling, and cwd-preservation behavior as workflow stages. `worktreeRoot` is the checkout in use, which is the allocated `<gitWorktreeDir>/<bucket>/<repository-name>` checkout when `gitWorktreeDir` is a non-empty non-Git directory. Outside a workflow run each such call allocates a new checkout. `repositoryRoot` is the invoking checkout when the worktree belongs to the same repository, and the worktree root otherwise.
+Synchronously creates or validates a reusable worktree and remaps the cwd. It runs the git that `resolveGit()` from `@bastani/atomic` selects and never downloads one: on a machine without git 2.30.0 or newer, `await resolveGit()` first, or it throws `GitUnavailableError`. Workflow runs do this for you before their first stage, and a run whose inputs select a worktree fails before it starts when git cannot be provided. It applies the same validation, symlink-preserving path handling, and cwd-preservation behavior as workflow stages. `worktreeRoot` is the checkout in use, which is the allocated `<gitWorktreeDir>/<bucket>/<repository-name>` checkout when `gitWorktreeDir` is a non-empty non-Git directory. Outside a workflow run each such call allocates a new checkout. `repositoryRoot` is the invoking checkout when the worktree belongs to the same repository, and the worktree root otherwise.
 
 ### `normalizeWorkflowName(name)` / `workflowNamesEqual(a, b)`
 

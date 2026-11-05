@@ -299,3 +299,75 @@ test("/tools in the isolated host shows the engine's tool status, not the host s
 	assert.match(output, /Active \(1\)/);
 	assert.match(output, /Missing \(1\)\s+codemode\s+selected by the defaultTools setting/);
 });
+
+test("tool status lists git with its source and version (#4322)", () => {
+	const selection = { source: "no-tools" as const, description: "--no-tools", names: [], modifiers: [] };
+	const report = buildToolStatusReport({
+		tools: [],
+		activeToolNames: [],
+		selection,
+		git: { source: "provisioned", version: "2.56.0", path: "/home/u/.atomic/agent/bin/git/bin/git" },
+	});
+	assert.deepEqual(report.git, {
+		source: "provisioned",
+		version: "2.56.0",
+		path: "/home/u/.atomic/agent/bin/git/bin/git",
+	});
+	assert.ok(formatToolStatus(report).endsWith("\n\nGit\n  provisioned 2.56.0  /home/u/.atomic/agent/bin/git/bin/git"));
+	assert.equal("git" in buildToolStatusReport({ tools: [], activeToolNames: [], selection }), false);
+	assert.doesNotMatch(formatToolStatus(buildToolStatusReport({ tools: [], activeToolNames: [], selection })), /Git/);
+});
+
+test("/tools renders an unavailable git's reason once, then its hint, after crossing the engine boundary (#4322)", async () => {
+	const { GitUnavailableError } = await import("../src/utils/git-errors.js");
+	const reason = new GitUnavailableError({
+		code: "unsupported-platform",
+		reason: "musl",
+		platform: "linux",
+		arch: "x64",
+		libc: "musl",
+		installCommand: "apk add git",
+	});
+	const engineReport: ToolStatusReport = JSON.parse(
+		JSON.stringify({
+			selection: { source: "no-tools", description: "--no-tools", names: [], modifiers: [] },
+			tools: [],
+			missing: [],
+			excluded: [],
+			git: { source: "unavailable", error: reason.toJSON() },
+		}),
+	);
+	const runtimeHost: IsolatedInteractiveRuntime = Object.create(IsolatedInteractiveRuntime.prototype);
+	runtimeHost.getToolStatus = async () => engineReport;
+	const chatContainer = new Container();
+
+	await InteractiveModeBase.prototype.handleToolsCommand.call({
+		runtimeHost,
+		session: {},
+		chatContainer,
+		ui: { requestRender() {} },
+		showError: (message: string) => assert.fail(message),
+	} as never);
+
+	const output = stripAnsi(chatContainer.render(200).join("\n"));
+	assert.match(
+		output,
+		/Git\s+unavailable {2}unsupported-platform\s+Git is unavailable: automatic provisioning does not support linux\/x64 with musl \(unsupported-platform\)\.\s+Install git 2\.30\.0 or newer with `apk add git`\./,
+	);
+	assert.equal(output.split("apk add git").length - 1, 1);
+	assert.ok(
+		formatToolStatus(engineReport)
+			.split("\n")
+			.includes(
+				"    Git is unavailable: automatic provisioning does not support linux/x64 with musl (unsupported-platform).",
+			),
+	);
+});
+
+test("a session's tool status includes the git Atomic runs (#4322)", async () => {
+	await withSession({}, async (session) => {
+		const git = session.getToolStatus().git;
+		assert.ok(git !== undefined);
+		assert.ok(git.source === "unavailable" ? git.error.name === "GitUnavailableError" : git.version.length > 0);
+	});
+});

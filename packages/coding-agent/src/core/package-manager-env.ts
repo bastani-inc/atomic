@@ -33,7 +33,7 @@ function isGitCommand(command: string): boolean {
 	return commandName === "git" || commandName === "git.exe";
 }
 
-export function getCommandEnv(command: string, overrides?: Record<string, string>): NodeJS.ProcessEnv {
+export function getCommandEnv(command: string, overrides?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const baseEnv = getEnv();
 	if (isGitCommand(command)) return createGitEnvironment(overrides, baseEnv);
 	return overrides ? { ...baseEnv, ...overrides } : baseEnv;
