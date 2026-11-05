@@ -10,12 +10,13 @@ import { joinSharedDatabase } from "../../packages/coding-agent/src/core/storage
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
-const full = vi.hoisted(() => ({ on: false, rmFails: false }));
+const full = vi.hoisted(() => ({ on: false, rmFails: false, tokenWrites: [] as unknown[] }));
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
 	return {
 		...fs,
 		writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+			if (/storage-token\.[\da-f-]+\.\d+\.tmp$/.test(String(args[0]))) full.tokenWrites.push(args[2]);
 			if (full.on && /storage-token\.[\da-f-]+\.\d+\.tmp$/.test(String(args[0]))) {
 				throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
 			}
@@ -47,6 +48,7 @@ beforeEach(() => {
 afterEach(async () => {
 	full.on = false;
 	full.rmFails = false;
+	full.tokenWrites = [];
 	vi.restoreAllMocks();
 	await removeLibsqlDirectory(databaseDirectory);
 	removeTempDirectory(root);
@@ -80,6 +82,7 @@ test(
 		assert.equal((error.cause as NodeJS.ErrnoException).code, "ENOSPC");
 		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
 		assert.deepEqual(readdirSync(agentDir), ["settings.json"]);
+		assert.deepEqual(full.tokenWrites, [{ mode: 0o600 }], "the token file is private from the moment it exists");
 	},
 	LIBSQL_SCENARIO_TIMEOUT_MS,
 );
