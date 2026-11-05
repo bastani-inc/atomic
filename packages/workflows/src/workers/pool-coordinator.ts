@@ -93,6 +93,7 @@ import type {
 	WatchResult,
 } from "./stage-watch-types.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
+import { AttemptLeaseExtensions, WORKER_REQUEST_LANES, WorkerRequestLanes } from "./worker-request-lanes.js";
 
 /** How long a control change waits for its next worker acknowledgement before it stops waiting (see `control`). */
 const CONTROL_ACKNOWLEDGEMENT_STALL_MS = 5_000;
@@ -1371,7 +1372,11 @@ export class PoolCoordinator {
 		const slot: WorkerSlot = { worker, child, deliveries: new Map(), runs: new Set(), stageCommands: new Map() };
 		this.slots.add(slot);
 		let ready = false;
-		let serial: Promise<void> = Promise.resolve();
+		// The worker's requests run alongside each other, except where their lanes order them (#4315).
+		const lanes = new WorkerRequestLanes();
+		const extensions = new AttemptLeaseExtensions(slot, (attempt) =>
+			this.queue!.extend(this.lease!, attempt, options.leaseMs),
+		);
 		const logPath = join(this.logDirectory!, `${worker}.log`);
 		this.logs.set(child, logPath);
 		let logFailure: string | undefined;
@@ -1450,7 +1455,7 @@ export class PoolCoordinator {
 				// Set when the reap leaves process groups running: the worker's health event, never its child's failure.
 				let unconfirmed: Error | undefined;
 				const cleanup = disconnected
-					.then(() => serial)
+					.then(() => lanes.settled())
 					.then(async () => {
 						try {
 							const admission = this.admission;
@@ -1559,8 +1564,6 @@ export class PoolCoordinator {
 					else pending?.resolve();
 					return;
 				}
-				// A route's registration wait can outlast a reconnect; it settles outside the worker's serial chain so
-				// the worker's heartbeats and control acknowledgements are answered meanwhile.
 				let routeReady: Promise<string> | undefined;
 				const answer = async () => {
 					if (message.kind === "ready") {
@@ -1579,14 +1582,9 @@ export class PoolCoordinator {
 					const queue = this.queue!;
 					const lease = this.lease!;
 					// While the root renews late, the worker's request waits for the renewal rather than ending its attempt.
-					// The worker's own renewals queue behind that request, so the wait can outlast the attempt's work lease:
-					// it is renewed before the request runs again, which fences the request only if another attempt replaced it.
-					const renewAttempt = async () => {
-						const attempt = slot.work;
-						if (attempt === undefined) return;
-						const renewed = await queue.extend(lease, attempt, options.leaseMs);
-						if (slot.work === attempt) slot.work = renewed;
-					};
+					// The worker's own renewals wait for it too, so the wait can outlast the attempt's work lease: it is
+					// renewed before the request runs again, which fences the request only if another attempt replaced it.
+					const renewAttempt = () => extensions.extendHeld();
 					// A request from this worker shows it is alive, so a work lease that only lapsed while the request waited
 					// (this process starved of CPU, the journal's write lock held by other writers) does not fence it: the
 					// lease is extended and the request runs again. `extend` checks the attempt's identity, so an attempt that
@@ -1674,16 +1672,15 @@ export class PoolCoordinator {
 					if (message.kind === "heartbeat") {
 						const record = this.usageLedger!.recording(lease, held, message.reports);
 						const beat = await leased(() => queue.heartbeat(lease, held, options.leaseMs, record));
-						slot.work = beat.work;
+						extensions.adopt(beat.work);
 						this.noteUsage(beat.recorded);
 						return beat.control;
 					}
 					// Any other request of a worker whose heartbeat is overdue renews its attempt on the way.
 					const work =
 						held.expiresAt - Date.now() <= options.leaseMs / 2
-							? await leased(() => queue.extend(lease, held, options.leaseMs))
+							? await leased(() => extensions.extend(held))
 							: held;
-					slot.work = work;
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
 						return this.publish(work, message.runs);
@@ -1753,7 +1750,9 @@ export class PoolCoordinator {
 					slot.work = undefined;
 					await this.sendResult(work.id);
 				};
-				const handled = this.counters.within(message.kind, () => serial.then(answer));
+				const handled = this.counters.within(message.kind, () =>
+					lanes.run(WORKER_REQUEST_LANES[message.kind], answer),
+				);
 				const response = handled.then((value) => routeReady ?? value);
 				// A delivery waits on the worker's own acknowledgements, so it does not count as the pool's wait.
 				if (message.kind !== "delivery" && message.kind !== "delivery-ready") {
@@ -1766,7 +1765,7 @@ export class PoolCoordinator {
 						if (this.incarnations.get(worker) === child)
 							this.lastHeard.set(worker, { at: performance.now(), stalled: this.stalledMs });
 					};
-					serial = handled.then(answered, answered);
+					void handled.then(answered, answered);
 				}
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
