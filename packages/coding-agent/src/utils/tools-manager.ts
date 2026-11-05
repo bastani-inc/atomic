@@ -1140,7 +1140,7 @@ export function getGitShellEnvironment(
 interface SharedGitProvision {
 	readonly promise: Promise<string>;
 	readonly controller: AbortController;
-	readonly listeners: Set<(status: ToolStatus) => void>;
+	readonly listeners: Map<(status: ToolStatus) => void, number>;
 	waiters: number;
 }
 
@@ -1148,9 +1148,9 @@ let sharedGitProvision: SharedGitProvision | undefined;
 
 function startGitProvision(target: GitDistributionTarget, layout: GitDistributionLayout, system: SystemGitProbe) {
 	const controller = new AbortController();
-	const listeners = new Set<(status: ToolStatus) => void>();
+	const listeners = new Map<(status: ToolStatus) => void, number>();
 	const emit = (status: ToolStatus): void => {
-		for (const listener of listeners) listener(status);
+		for (const listener of listeners.keys()) listener(status);
 	};
 	const shared: SharedGitProvision = {
 		controller,
@@ -1189,12 +1189,19 @@ function joinGitProvision(
 		sharedGitProvision = startGitProvision(target, layout, system);
 	const shared = sharedGitProvision;
 	const { signal, onStatus } = options;
-	if (onStatus !== undefined) shared.listeners.add(onStatus);
+	if (onStatus !== undefined) shared.listeners.set(onStatus, (shared.listeners.get(onStatus) ?? 0) + 1);
 	shared.waiters += 1;
 	return new Promise<string>((resolvePromise, rejectPromise) => {
+		let joined = true;
 		const leave = (): void => {
+			if (!joined) return;
+			joined = false;
 			shared.waiters -= 1;
-			if (onStatus !== undefined) shared.listeners.delete(onStatus);
+			if (onStatus !== undefined) {
+				const remaining = shared.listeners.get(onStatus)! - 1;
+				if (remaining === 0) shared.listeners.delete(onStatus);
+				else shared.listeners.set(onStatus, remaining);
+			}
 			signal?.removeEventListener("abort", onAbort);
 		};
 		function onAbort(this: AbortSignal): void {

@@ -655,6 +655,12 @@ describe("git resolution (#4322)", () => {
 		tools.resolveGitSync();
 		tools.resolveGitSync();
 		tools.getGitStatus();
+		const alternate = makeSystemGit("2.44.0");
+		usePath(join(alternate, ".."));
+		assert.equal(tools.resolveGitSync().path, alternate);
+		usePath(join(systemGit, ".."));
+		assert.equal(tools.resolveGitSync().path, systemGit);
+		assert.equal(mocks.spawnSyncCommands.filter((command) => command === alternate).length, 1);
 		assert.equal(mocks.spawnSyncCommands.filter((command) => command === systemGit).length, 1);
 	});
 	it.each([
@@ -2642,5 +2648,72 @@ describe("git install command on this machine (#4322)", () => {
 			await provision({ release: first.release });
 			assert.equal(locks, 0);
 		});
+	});
+});
+
+describe("shared git status subscriptions (#4322)", () => {
+	it.each([false, true])("keeps shared status callbacks registered, cancellation=%s", async (cancelOne) => {
+		const fake = releaseFor(Buffer.from("invalid archive"), "0".repeat(64));
+		const fetchMock = serveArchive(fake.bytes);
+		const onStatus = vi.fn<(status: import("../src/utils/tools-manager.js").ToolStatus) => void>();
+		const controller = new AbortController();
+		const reason = new Error("one status subscriber left");
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			const first = tools.resolveGit({ signal: controller.signal, onStatus }).catch((error: Error) => error);
+			const second = tools.resolveGit({ onStatus }).catch((error: Error) => error);
+			if (cancelOne) controller.abort(reason);
+			onStatus.mockClear();
+			const firstResult = await first;
+			const secondResult = await second;
+			assert.ok(secondResult instanceof GitUnavailableError);
+			assert.equal(secondResult.code, "checksum-mismatch");
+			assert.equal(secondResult.platform, process.platform);
+			assert.equal(firstResult, cancelOne ? reason : secondResult);
+		});
+		assert.deepEqual(
+			onStatus.mock.calls.map(([status]) => status.type),
+			["info"],
+		);
+		assert.equal(fetchMock.mock.calls.length, 1);
+		assert.equal(existsSync(installDir), false);
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+	});
+
+	it("stops a shared callback when its last subscriber cancels while another caller continues", async () => {
+		const fake = releaseFor(Buffer.from("invalid archive"), "0".repeat(64));
+		const fetchMock = serveArchive(fake.bytes);
+		const sharedStatus = vi.fn<(status: import("../src/utils/tools-manager.js").ToolStatus) => void>();
+		const survivingStatus = vi.fn<(status: import("../src/utils/tools-manager.js").ToolStatus) => void>();
+		const firstController = new AbortController();
+		const secondController = new AbortController();
+		const firstReason = new Error("first subscriber left");
+		const secondReason = new Error("last shared subscriber left");
+		await tools.withGitProvisionSettingsForTest({ release: fake.release }, async () => {
+			const first = tools
+				.resolveGit({ signal: firstController.signal, onStatus: sharedStatus })
+				.catch((error: Error) => error);
+			const second = tools
+				.resolveGit({ signal: secondController.signal, onStatus: sharedStatus })
+				.catch((error: Error) => error);
+			const surviving = tools.resolveGit({ onStatus: survivingStatus }).catch((error: Error) => error);
+			firstController.abort(firstReason);
+			secondController.abort(secondReason);
+			sharedStatus.mockClear();
+			survivingStatus.mockClear();
+			assert.equal(await first, firstReason);
+			assert.equal(await second, secondReason);
+			const error = await surviving;
+			assert.ok(error instanceof GitUnavailableError);
+			assert.equal(error.code, "checksum-mismatch");
+			assert.equal(error.platform, process.platform);
+		});
+		assert.equal(sharedStatus.mock.calls.length, 0);
+		assert.deepEqual(
+			survivingStatus.mock.calls.map(([status]) => status.type),
+			["info"],
+		);
+		assert.equal(fetchMock.mock.calls.length, 1);
+		assert.equal(getEventListeners(firstController.signal, "abort").length, 0);
+		assert.equal(getEventListeners(secondController.signal, "abort").length, 0);
 	});
 });
