@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, Container, type Focusable, TuiMainScreen } from "@earendil-works/pi-tui";
+import { type Component, Container, type Focusable, type OverlayHandle, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
 import type { HostCustomUiStateListener } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -196,6 +196,7 @@ type OverlayHost = {
 	deferredInlineCustomUiFocusDepth: number;
 	pendingInlineCustomUiFocus: undefined;
 	hostCustomUiStateListeners: Set<HostCustomUiStateListener>;
+	extensionOverlays: Set<() => void>;
 	showExtensionCustom: InteractiveMode["showExtensionCustom"];
 };
 
@@ -219,6 +220,7 @@ describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 			deferredInlineCustomUiFocusDepth: 0,
 			pendingInlineCustomUiFocus: undefined,
 			hostCustomUiStateListeners: new Set<HostCustomUiStateListener>(),
+			extensionOverlays: new Set<() => void>(),
 			showExtensionCustom: InteractiveMode.prototype.showExtensionCustom,
 		};
 		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
@@ -270,6 +272,84 @@ describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 			await flush();
 			assert.equal(ui.hasOverlay(), false);
 			assert.equal(editor.focused, true);
+		} finally {
+			ui.stop();
+		}
+	});
+
+	// Regression for earendil-works/pi#11853: reset hid only the topmost overlay, so lower extension overlays stayed
+	// on screen and kept input.
+	test("resetExtensionUI removes every extension overlay but keeps Atomic's own overlays", async () => {
+		const terminal = new RecordingTerminal();
+		const ui = new TuiMainScreen(terminal);
+		const editorContainer = new Container();
+		const editor = new RecordingFocusable("EDITOR");
+		const internal = new RecordingFocusable("INTERNAL");
+		const lower = Object.assign(new RecordingFocusable("LOWER"), { dispose: vi.fn() });
+		const hidden = Object.assign(new RecordingFocusable("HIDDEN"), { dispose: vi.fn() });
+		const upper = Object.assign(new RecordingFocusable("UPPER"), { dispose: vi.fn() });
+		const host: OverlayHost & { extensionDialogs: []; resetExtensionUI(): void } = {
+			editor: Object.assign(editor, { getText: () => "", setText: () => {} }),
+			editorContainer,
+			keybindings: new KeybindingsManager(),
+			ui,
+			blockingInlineCustomUiDepth: 0,
+			deferredInlineCustomUiFocusDepth: 0,
+			pendingInlineCustomUiFocus: undefined,
+			hostCustomUiStateListeners: new Set<HostCustomUiStateListener>(),
+			extensionOverlays: new Set<() => void>(),
+			extensionDialogs: [],
+			showExtensionCustom: InteractiveMode.prototype.showExtensionCustom,
+			resetExtensionUI: (InteractiveMode.prototype as unknown as { resetExtensionUI(): void }).resetExtensionUI,
+		};
+		// The rest of resetExtensionUI is not under test here.
+		Object.assign(host, {
+			clearExtensionTerminalInputListeners: vi.fn(),
+			setExtensionFooter: vi.fn(),
+			setExtensionHeader: vi.fn(),
+			clearExtensionWidgets: vi.fn(),
+			footerDataProvider: { clearExtensionStatuses: vi.fn() },
+			footer: { invalidate: vi.fn() },
+			setCustomEditorComponent: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			defaultEditor: {},
+			updateTerminalTitle: vi.fn(),
+			setWorkingIndicator: vi.fn(),
+			setHiddenThinkingLabel: vi.fn(),
+		});
+		Object.setPrototypeOf(host, InteractiveMode.prototype);
+		const showOverlay = (component: RecordingFocusable, onHandle?: (handle: OverlayHandle) => void) =>
+			host.showExtensionCustom<string>(() => component, { overlay: true, onHandle });
+		const flush = async () => {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			ui.renderNow();
+		};
+
+		editorContainer.addChild(editor);
+		ui.addChild(editorContainer);
+		ui.setFocus(editor);
+		ui.start();
+		try {
+			// An overlay of Atomic's own, opened below the extension overlays.
+			ui.showOverlay(internal);
+			void showOverlay(lower);
+			void showOverlay(hidden, (handle) => handle.setHidden(true));
+			void showOverlay(upper);
+			await flush();
+			assert.equal(upper.focused, true);
+
+			host.resetExtensionUI();
+			await flush();
+
+			assert.equal(isOverlayMounted(ui, internal), true);
+			for (const component of [lower, hidden, upper]) {
+				assert.equal(isOverlayMounted(ui, component), false);
+				assert.equal(component.dispose.mock.calls.length, 1);
+			}
+			terminal.input("x");
+			await flush();
+			assert.deepEqual(internal.inputs, ["x"]);
+			assert.deepEqual(lower.inputs, []);
 		} finally {
 			ui.stop();
 		}

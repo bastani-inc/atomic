@@ -261,10 +261,9 @@ InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveMode
 		this.extensionDialogs = [];
 		this.showTopExtensionDialog();
 	}
-	this.ui.hideOverlay();
-	// Reload and session switches drop overlays without calling done(), so clear their blocked status here.
-	for (const source of this.blockingOverlaySources) this.programStatus.setBlocked(source, undefined);
-	this.blockingOverlaySources.clear();
+	// Reload and session switches replace every extension without calling done(): remove their overlays,
+	// newest first, the same way done() does, but leave the promises pending as for inline dialogs.
+	for (const removeOverlay of [...this.extensionOverlays].reverse()) removeOverlay();
 	this.clearExtensionTerminalInputListeners();
 	this.setExtensionFooter(undefined);
 	this.setExtensionHeader(undefined);

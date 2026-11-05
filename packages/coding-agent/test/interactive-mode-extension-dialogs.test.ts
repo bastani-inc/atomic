@@ -15,11 +15,10 @@ type DialogContext = {
 		requestRender: () => void;
 		hasOverlay: () => boolean;
 		showOverlay: (component: Component) => OverlayHandleFake;
-		hideOverlay: () => void;
 	};
 	overlays: Component[];
 	nextBlockingOverlayId: number;
-	blockingOverlaySources: Set<string>;
+	extensionOverlays: Set<() => void>;
 	programStatus: { setBlocked: ReturnType<typeof vi.fn> };
 	disposeActiveSelector: () => void;
 	toggleToolOutputExpansion: () => void;
@@ -78,13 +77,10 @@ function createContext(): DialogContext & DialogMethods {
 					isFocused: () => context.overlays.at(-1) === component,
 				};
 			},
-			hideOverlay: () => {
-				context.overlays.pop();
-			},
 		},
 		overlays: [],
 		nextBlockingOverlayId: 0,
-		blockingOverlaySources: new Set(),
+		extensionOverlays: new Set(),
 		programStatus: { setBlocked: vi.fn() },
 		disposeActiveSelector: vi.fn(),
 		toggleToolOutputExpansion: vi.fn(),
@@ -321,7 +317,7 @@ describe("InteractiveMode extension dialogs", () => {
 		await assert.rejects(question, (error) => error === reason);
 		assert.deepEqual(context.overlays, []);
 		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-overlay:0", undefined]);
-		assert.equal(context.blockingOverlaySources.size, 0);
+		assert.equal(context.extensionOverlays.size, 0);
 	});
 
 	it("clears overlay blocked status when the extension UI is reset (earendil-works/pi#11816)", async () => {
@@ -353,7 +349,8 @@ describe("InteractiveMode extension dialogs", () => {
 		// /reload and session switches drop overlays without calling done().
 		context.resetExtensionUI();
 		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-overlay:0", undefined]);
-		assert.equal(context.blockingOverlaySources.size, 0);
+		assert.equal(context.extensionOverlays.size, 0);
+		assert.deepEqual(context.overlays, []);
 	});
 
 	it("keeps an open dialog visible when the editor component is replaced (earendil-works/pi#11431)", async () => {

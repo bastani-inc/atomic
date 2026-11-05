@@ -185,6 +185,7 @@ function seedCustomUiHostState(context: ProductionFullscreenContext["context"]):
 		deferredInlineCustomUiFocusDepth: 0,
 		pendingInlineCustomUiFocus: undefined,
 		hostCustomUiStateListeners: new Set<HostCustomUiStateListener>(),
+		extensionOverlays: new Set<() => void>(),
 	});
 }
 

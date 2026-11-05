@@ -470,8 +470,11 @@ export class InteractiveModeBase {
 	extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
 	/** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
 	nextBlockingOverlayId = 0;
-	/** Program status sources of blocking overlays that are still open. */
-	readonly blockingOverlaySources = new Set<string>();
+	/**
+	 * Removal functions of open extension overlays (custom with overlay: true), in opening order. Reset removes
+	 * only these, not Atomic's own overlays.
+	 */
+	readonly extensionOverlays = new Set<() => void>();
 
 	tuiInputSubscriptions = new Set<InteractiveTuiInputSubscription>();
 
