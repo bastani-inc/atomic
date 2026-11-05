@@ -372,7 +372,7 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 		}),
 		sessionAffinityFormat: optionalSessionAffinityFormat({
 			description:
-				"Session-affinity header format. openai sends session_id and x-client-request-id; openai-nosession sends x-client-request-id; openrouter sends x-session-id. Does not affect prompt_cache_key. Default: auto-detected.",
+				"Session-affinity header format. openai sends session-id and x-client-request-id; openai-nosession sends x-client-request-id; openrouter sends x-session-id. Does not affect prompt_cache_key. Default: auto-detected.",
 		}),
 		supportsLongCacheRetention: optionalCompatBoolean({
 			description:

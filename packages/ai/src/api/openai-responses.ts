@@ -428,7 +428,7 @@ function createClient(
 			headers["x-session-id"] = sessionId;
 		} else {
 			if (compat.sessionAffinityFormat === "openai") {
-				headers.session_id = sessionId;
+				headers["session-id"] = sessionId;
 			}
 			headers["x-client-request-id"] = sessionId;
 		}
