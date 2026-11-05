@@ -295,6 +295,12 @@ describe("workspace error family (#3109)", () => {
 			serializeWorkspaceError(new WorkspaceBindingError({ code: "drift", fields: {} })).cleanupCause,
 			undefined,
 		);
+		const looping = new WorkspaceBindingError({ code: "git-failed", fields: {} });
+		attachCleanupCause(looping, looping);
+		let depth = 0;
+		for (let link = serializeWorkspaceError(looping).cleanupCause; link !== undefined; link = link.cleanupCause)
+			depth++;
+		assert.ok(depth > 0 && depth < 10, "a cleanup failure that points back at its failure is cut off");
 	});
 
 	test("an interrupted worktree, an outdated git and a held repository lock round-trip with their fields (#3109)", () => {

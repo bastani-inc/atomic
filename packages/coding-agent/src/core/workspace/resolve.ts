@@ -385,7 +385,12 @@ async function readState(file: string): Promise<string | undefined | "directory"
 		const code = (error as { readonly code?: unknown }).code;
 		if (code === "ENOENT") return undefined;
 		if (code === "EISDIR") return "directory";
-		throw error;
+		if (typeof code !== "string") throw error;
+		throw new WorkspaceBindingError({
+			code: "filesystem-failed",
+			fields: { operation: "read", path: file, errno: code },
+			cause: error,
+		});
 	}
 }
 
@@ -394,7 +399,6 @@ async function worktreeState(repository: OpenRepository, path: string): Promise<
 	if (!existsSync(path)) return { kind: "missing" };
 	const link = await readState(join(path, ".git"));
 	if (link === undefined) return { kind: "unsettled" };
-	if (link === "directory") return { kind: "complete" };
 	const gitdir = /^gitdir: (.+)$/m.exec(link)?.[1];
 	if (gitdir === undefined) return { kind: "complete" };
 	const adminDir = resolve(path, gitdir.trim());
