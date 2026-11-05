@@ -119,6 +119,11 @@ export interface CreateAgentSessionOptions {
 	resourceAdmission?: ResourceAdmission | null;
 	resourceAdmissionSignal?: AbortSignal;
 	resourceAdmissionDelegated?: boolean;
+	/**
+	 * Internal: called with `true` when this session starts waiting for its resource-admission permit and `false` when
+	 * the wait ends, so an in-process subagent's start budget can tell that wait from the rest of its setup.
+	 */
+	onResourceAdmissionWait?: (waiting: boolean) => void;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
 	/** Filter inherited session messages before they enter the new AgentSession. */

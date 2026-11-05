@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `sessionStartTimeoutMs` in the subagent `config.json` sets how long a child may take to start (default 5 minutes). An invalid value is reported when the config loads and the default applies ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+
+### Changed
+
+- A child that does not start within its start budget fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch` or `event-loop`), instead of a message that always blamed session creation and a resource-admission wait. The child's result carries it as `startError`, and the budget now also covers dispatching the child's task ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+
+### Fixed
+
+- SDK subagent launches return their start timeout even when an extension's `input` or `before_agent_start` handler never settles. Session cleanup continues separately instead of holding the timeout result ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+
 ## [0.9.71] - 2026-11-03
 
 ### Changed

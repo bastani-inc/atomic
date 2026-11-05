@@ -169,6 +169,27 @@ type SelectorHost = {
 	ui: { requestRender(): void };
 	showSelector(factory: (done: () => void) => { component: SessionSelectorComponent }): void;
 };
+function renderGate() {
+	const checks = new Set<() => void>();
+	return {
+		requestRender() {
+			for (const check of [...checks]) check();
+		},
+		until(condition: () => boolean): Promise<void> {
+			return new Promise((resolve) => {
+				const check = () => {
+					if (!condition()) return;
+					checks.delete(check);
+					resolve();
+				};
+				checks.add(check);
+				check();
+			});
+		},
+	};
+}
+const renamePanelClosed = (selector: SessionSelectorComponent) =>
+	!selector.render(120).join("\n").includes("Rename Session");
 test("renaming the active session in the selector appends exactly once and keeps its writer current", async () => {
 	const { cwd, directory } = fixture();
 	const manager = await SessionManager.create(cwd, directory);
@@ -178,12 +199,13 @@ test("renaming the active session in the selector appends exactly once and keeps
 	const keybindings = new KeybindingsManager();
 	setKeybindings(keybindings);
 	initTheme("dark");
+	const rendered = renderGate();
 	let selector!: SessionSelectorComponent;
 	const host: SelectorHost = {
 		sessionManager: mirror,
 		session: harness.session,
 		keybindings,
-		ui: { requestRender() {} },
+		ui: rendered,
 		showSelector(factory) {
 			selector = factory(() => {}).component;
 		},
@@ -191,11 +213,12 @@ test("renaming the active session in the selector appends exactly once and keeps
 	const show = Reflect.get(InteractiveMode.prototype, "showSessionSelector") as (this: SelectorHost) => void;
 	show.call(host);
 	try {
-		await vi.waitFor(() => assert.equal(selector.getSessionList().getSelectedSessionId(), manager.getSessionId()));
+		await rendered.until(() => selector.getSessionList().getSelectedSessionId() === manager.getSessionId());
 		selector.handleInput("\x1b[114;5u");
 		selector.handleInput("new name");
 		selector.handleInput("\r");
-		await vi.waitFor(() => assert.equal(manager.getSessionName(), "new name"));
+		await rendered.until(() => renamePanelClosed(selector));
+		assert.equal(manager.getSessionName(), "new name");
 		await manager.appendMessage({ role: "user", content: "after rename", timestamp: Date.now() });
 		const reopened = await manager.openSessionById(manager.getSessionId());
 		assert.equal(reopened.getEntries().filter((entry) => entry.type === "session_info").length, 1);
@@ -229,12 +252,13 @@ test.each(["shared-id", "active-id"])(
 		const keybindings = new KeybindingsManager();
 		setKeybindings(keybindings);
 		initTheme("dark");
+		const rendered = renderGate();
 		let selector!: SessionSelectorComponent;
 		const host: SelectorHost = {
 			sessionManager: active,
 			session: harness.session,
 			keybindings,
-			ui: { requestRender() {} },
+			ui: rendered,
 			showSelector(factory) {
 				selector = factory(() => {}).component;
 			},
@@ -242,18 +266,17 @@ test.each(["shared-id", "active-id"])(
 		const show = Reflect.get(InteractiveMode.prototype, "showSessionSelector") as (this: SelectorHost) => void;
 		show.call(host);
 		try {
-			await vi.waitFor(() => assert.equal(selector.getSessionList().getSelectedSessionId(), activeId));
+			await rendered.until(() => selector.getSessionList().getSelectedSessionId() === activeId);
 			if (activeId !== "shared-id")
 				await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: "shared-id" });
 			selector.handleInput("\t");
-			await vi.waitFor(() => assert.match(selector.render(120).join("\n"), /foreign target/));
+			await rendered.until(() => /foreign target/.test(selector.render(120).join("\n")));
 			selector.handleInput("foreign target");
 			selector.handleInput("\x1b[114;5u");
 			selector.handleInput("renamed ");
 			selector.handleInput("\r");
-			await vi.waitFor(async () =>
-				assert.equal((await foreign.openSessionById("shared-id")).getSessionName(), "renamed foreign target"),
-			);
+			await rendered.until(() => renamePanelClosed(selector));
+			assert.equal((await foreign.openSessionById("shared-id")).getSessionName(), "renamed foreign target");
 			assert.equal((await active.openSessionById("shared-id")).getSessionName(), undefined);
 			assert.equal(active.getSessionName(), undefined);
 			await active.appendSessionInfo("active writer still current");

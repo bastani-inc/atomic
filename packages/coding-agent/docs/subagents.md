@@ -380,6 +380,38 @@ Single-agent calls accept `progress: boolean` in foreground mode. `progress: tru
 subagent({ agent: "worker", task: "Implement the approved fix.", progress: true })
 ```
 
+### Subagent start timeouts
+
+A child must start within its start budget: open its session, load its resources, create its agent session (including any wait for a resource-admission permit), and dispatch its task. The budget is 5 minutes. Waiting for a running slot under `parallel.runningCapacity` does not count, and a resumed child's budget ends once its session is up. Set `sessionStartTimeoutMs` in the same `config.json` to change it:
+
+```json
+{ "sessionStartTimeoutMs": 600000 }
+```
+
+The value is a whole number of milliseconds from 1 to 2147483647. Any other value is reported when the config loads, and children keep the 5-minute budget.
+
+A child that runs out of budget fails with a `SessionStartTimeoutError` instead of staying running. Its message, also shown by `subagent({ action: "status" })`, names the step the child was still in, and its `phase` says what blocked it:
+
+| `phase` | What blocked the start | What to do |
+| --- | --- | --- |
+| `admission` | The child was still waiting for a session permit from its resource admission, such as its workflow's session limit or memory floor. | Free capacity in that admission, then retry. |
+| `setup` | The child was still opening its session, loading its resources, or creating its agent session, including its extensions' startup. | Check the session store and extension startup, or raise `sessionStartTimeoutMs`, then retry. |
+| `dispatch` | The child's session was up but its task had not been dispatched, for example an extension's `input` or `before_agent_start` handler was still running. | Check those handlers, then retry. |
+| `event-loop` | The process's main thread was too busy to make progress: during the whole budget its event loop turned fewer than 100 times, at 200 ms or more per turn. | Reduce the work running in the same process, such as busy pooled workflow roots, then retry. |
+
+SDK hosts and other callers of the subagent runner receive the error serialized as `startError` on the child's result. Rehydrate it to branch on it; see [Session start errors](/sdk/reference#session-start-errors) for its fields:
+
+```typescript
+import { isSessionStartTimeoutError, rehydrateSessionStartError } from "@bastani/atomic";
+
+if (result.startError) {
+  const error = rehydrateSessionStartError(result.startError);
+  if (isSessionStartTimeoutError(error) && error.phase === "admission") {
+    // Free admission capacity, then launch the child again.
+  }
+}
+```
+
 ## Delegation and child boundaries
 
 Delegation is exactly one level deep and cannot be configured. Children complete their assigned tasks directly; they cannot launch other children or `pause`, `resume`, or `quit` them. Children can still run background shells. Those shells appear in the parent's `/tasks`: the main chat's, or the current workflow stage's. See [Shells started by subagents](/background-tasks#shells-started-by-subagents). They may inspect definitions and status with `list`, `get`, `status`, and `wait`; management-restricted children also cannot `create`, `update`, or `delete` definitions.

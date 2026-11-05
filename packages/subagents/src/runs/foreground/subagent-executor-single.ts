@@ -218,6 +218,7 @@ export async function runSinglePath(
 		);
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
+			sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
 			getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,

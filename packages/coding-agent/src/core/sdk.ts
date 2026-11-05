@@ -40,7 +40,7 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
-import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
+import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	ownedSessionManagerStores,
@@ -172,11 +172,7 @@ function createScopedSession(
 						? undefined
 						: (options.resourceAdmission ?? currentResourceAdmission());
 				try {
-					acquisition.release = await admission?.acquire(
-						"session",
-						options.resourceAdmissionSignal,
-						options.resourceAdmissionDelegated ? { delegated: true } : undefined,
-					);
+					acquisition.release = await acquireSessionPermit(admission, options);
 					return await constructAgentSession(
 						{
 							...options,
@@ -204,6 +200,24 @@ function createScopedSession(
 		sessionLifecycleScopes.set(result.session, context.scope);
 		return result;
 	});
+}
+
+/** The session's permit, telling `onResourceAdmissionWait` while the session waits for it. */
+async function acquireSessionPermit(
+	admission: ResourceAdmission | undefined,
+	options: CreateAgentSessionOptions,
+): Promise<Awaited<ReturnType<ResourceAdmission["acquire"]>> | undefined> {
+	if (!admission) return undefined;
+	options.onResourceAdmissionWait?.(true);
+	try {
+		return await admission.acquire(
+			"session",
+			options.resourceAdmissionSignal,
+			options.resourceAdmissionDelegated ? { delegated: true } : undefined,
+		);
+	} finally {
+		options.onResourceAdmissionWait?.(false);
+	}
 }
 
 async function constructAgentSession(
@@ -682,10 +696,10 @@ async function constructAgentSession(
 				await sessionManager.appendThinkingLevelChange(thinkingLevel);
 			}
 		} else {
-			if (model) {
-				await sessionManager.appendModelChange(model.provider, model.id);
-			}
-			await sessionManager.appendThinkingLevelChange(thinkingLevel);
+			await sessionManager.appendStartState(
+				model ? { provider: model.provider, modelId: model.id } : undefined,
+				thinkingLevel,
+			);
 		}
 	}
 

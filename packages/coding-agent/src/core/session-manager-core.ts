@@ -330,12 +330,40 @@ export class SessionManager {
 		}
 	}
 
-	private async _appendEntry(entry: SessionEntry): Promise<void> {
-		const result = await this.store.append(this.sessionId, [entry], { expectSeq: this.lastSeq });
+	private _appendEntry(entry: SessionEntry): Promise<void> {
+		return this._appendEntries([entry]);
+	}
+
+	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
+		const result = await this.store.append(this.sessionId, entries, { expectSeq: this.lastSeq });
 		this.lastSeq = result.lastSeq;
-		this.fileEntries.push(entry);
-		this.byId.set(entry.id, entry);
-		this.leafId = entry.id;
+		for (const entry of entries) {
+			this.fileEntries.push(entry);
+			this.byId.set(entry.id, entry);
+			this.leafId = entry.id;
+		}
+	}
+
+	/**
+	 * @internal Record the model and thinking level a new session starts on with one store write, as a model change
+	 * followed by a thinking level change.
+	 */
+	appendStartState(
+		model: { readonly provider: string; readonly modelId: string } | undefined,
+		thinkingLevel: string,
+	): Promise<void> {
+		return this.runMutation(async () => {
+			const modelEntry =
+				model === undefined
+					? undefined
+					: createModelChangeEntry(model.provider, model.modelId, this.byId, this.leafId);
+			const thinkingEntry = createThinkingLevelChangeEntry(
+				thinkingLevel,
+				{ has: (id) => id === modelEntry?.id || this.byId.has(id) },
+				modelEntry?.id ?? this.leafId,
+			);
+			await this._appendEntries(modelEntry === undefined ? [thinkingEntry] : [modelEntry, thinkingEntry]);
+		});
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id. */

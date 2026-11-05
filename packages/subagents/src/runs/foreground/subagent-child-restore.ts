@@ -411,6 +411,7 @@ async function relaunchChild(
 	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
+		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
 		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 		cwd: record.cwd,

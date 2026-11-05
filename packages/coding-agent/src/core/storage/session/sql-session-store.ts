@@ -402,7 +402,7 @@ export class SqlSessionStore implements SessionStore {
 
 	private assertListing(query: SessionListQuery): void {
 		this.assertOpen();
-		if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+		query.signal?.throwIfAborted();
 	}
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {

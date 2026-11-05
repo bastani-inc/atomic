@@ -69,6 +69,7 @@ interface ForegroundParallelRunInput {
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
 	concurrencyLimit: number;
 	runningCapacity?: number;
+	sessionStartTimeoutMs?: number;
 	schedule?: (dispatch: () => Promise<void>) => void;
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
@@ -187,6 +188,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				: undefined;
 		const runOptions: RunSyncOptions = {
 			runningCapacity: input.runningCapacity,
+			sessionStartTimeoutMs: input.sessionStartTimeoutMs,
 			getChildSessionOptions: input.ctx.getChildSessionOptionsResolver?.() ?? input.ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: input.resourceLoaderInheritanceSnapshot,
 			cwd: taskCwd,
