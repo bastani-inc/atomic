@@ -9,9 +9,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import { readSharedStorageSetting } from "./broker/shared-storage-setting.js";
 
 export const PROJECT_GROUP_PREFIX = "project:";
-/** Shown once when a session joins `default` explicitly while multi-node routing is on. */
+/** The warning for joining `default` explicitly while multi-node routing is on, without a label: the UI adds its own. */
 export const DEFAULT_GROUP_WARNING =
-  'Warning: multi-node routing is on, so every teammate\'s sessions on the shared database can address the "default" group.';
+  'Multi-node routing is on, so every teammate\'s sessions on the shared database can address the "default" group.';
 
 const projects = new Map<string, string>();
 /** `git remote get-url` exits with 2 when the remote does not exist. */

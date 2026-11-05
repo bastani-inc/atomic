@@ -389,7 +389,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           try {
             const groups = await connectedClient.joinGroup(targetGroup);
             await deps.setJoinedGroups(groups);
-            const warning = targetGroup === DEFAULT_GROUP && deps.multiNodeRouting?.() === true ? `\n${DEFAULT_GROUP_WARNING}` : "";
+            const warning = targetGroup === DEFAULT_GROUP && deps.multiNodeRouting?.() === true ? `\nWarning: ${DEFAULT_GROUP_WARNING}` : "";
             return {
               content: [{ type: "text", text: `Joined intercom group "${targetGroup}". Memberships: ${groups.join(", ")}.${warning}` }],
               isError: false,

@@ -20,8 +20,8 @@ let harness: TwoBrokerHarness;
 let repositories: string;
 
 beforeAll(async () => {
-	harness = await TwoBrokerHarness.start();
 	repositories = mkdtempSync(join(tmpdir(), "team-repos-"));
+	harness = await TwoBrokerHarness.start();
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
 afterAll(async () => {
 	await harness?.cleanup();

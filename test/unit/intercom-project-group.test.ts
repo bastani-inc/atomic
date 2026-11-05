@@ -291,7 +291,7 @@ describe("a session's home group (#4320)", () => {
 		assert.equal(joined.isError, false, joined.content[0]?.text);
 		assert.equal(
 			joined.content[0]?.text,
-			`Joined intercom group "default". Memberships: project:acme/alpha, default.\n${DEFAULT_GROUP_WARNING}`,
+			`Joined intercom group "default". Memberships: project:acme/alpha, default.\nWarning: ${DEFAULT_GROUP_WARNING}`,
 		);
 		const other = await shared.run({ action: "join", group: "reviewers" }, ctx);
 		assert.doesNotMatch(other.content[0]?.text ?? "", /Warning/);
@@ -343,10 +343,10 @@ describe("a session's home group (#4320)", () => {
 	});
 });
 
-test("the default-group warning says who can address it (#4320)", () => {
+test('the default-group warning says who can address it and leaves the "Warning:" label to the UI (#4320)', () => {
 	assert.equal(
 		DEFAULT_GROUP_WARNING,
-		'Warning: multi-node routing is on, so every teammate\'s sessions on the shared database can address the "default" group.',
+		'Multi-node routing is on, so every teammate\'s sessions on the shared database can address the "default" group.',
 	);
 });
 
@@ -387,7 +387,7 @@ describe("joining a group directly (#4320)", () => {
 		assert.deepEqual((await tool(() => false)("default")).content, [plain("default")]);
 		assert.deepEqual((await tool(() => true)("reviewers")).content, [plain("reviewers")]);
 		assert.deepEqual((await tool(() => true)("default")).content, [
-			{ type: "text", text: `${plain("default").text}\n${DEFAULT_GROUP_WARNING}` },
+			{ type: "text", text: `${plain("default").text}\nWarning: ${DEFAULT_GROUP_WARNING}` },
 		]);
 	});
 });
