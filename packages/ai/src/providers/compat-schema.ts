@@ -239,6 +239,12 @@ export const OpenAICompletionsCompatSchema = Type.Object(
 					"Whether a user message after tool results requires an assistant message in between. Default: auto-detected from URL.",
 			}),
 		),
+		requiresNonNullAssistantContent: Type.Optional(
+			Type.Boolean({
+				description:
+					'Whether replayed assistant messages with no text (e.g. tool-call-only messages) must send "" instead of null content. Default: false.',
+			}),
+		),
 		requiresThinkingAsText: Type.Optional(
 			Type.Boolean({
 				description:
