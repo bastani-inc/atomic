@@ -12,6 +12,7 @@ import {
 import { ArtifactManager, resetArtifactManagerCache } from "../src/core/tools/artifacts.js";
 import { createFindToolDefinition } from "../src/core/tools/find.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import {
 	composeInternalRouters,
@@ -20,7 +21,6 @@ import {
 	isInternalUrl,
 } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
-import { createWriteToolDefinition } from "../src/core/tools/write.js";
 
 function assertIncludes(text: string, part: string): void {
 	assert.ok(text.includes(part), `expected ${JSON.stringify(part)} in:\n${text}`);
@@ -62,7 +62,7 @@ describe("internal URL schemes (#4252)", () => {
 			cwd,
 		} as never);
 	const write = (path: string, content: string) =>
-		createWriteToolDefinition(cwd).execute("write", { path, content }, undefined, undefined, {
+		createToolDefinition("write", cwd).execute("write", { path, content }, undefined, undefined, {
 			...ctx,
 			cwd,
 		} as never);

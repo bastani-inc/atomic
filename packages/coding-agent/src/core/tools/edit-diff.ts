@@ -5,11 +5,8 @@
 import * as Diff from "diff";
 import { constants } from "fs";
 import { access, readFile } from "fs/promises";
-import {
-	applyReplacements,
-	applyReplacementsPreservingUnchangedLines,
-	type TextReplacement,
-} from "./edit-diff-preserve.ts";
+import { splitBom } from "../../utils/text.ts";
+import { EditInputError, EditMatchError } from "./file-tool-errors.ts";
 import { resolveToCwd } from "./path-utils.ts";
 
 export function detectLineEnding(content: string): "\r\n" | "\n" {
@@ -58,6 +55,124 @@ export function normalizeForFuzzyMatch(text: string): string {
 	);
 }
 
+function splitLinesWithEndings(content: string): string[] {
+	return content.match(/[^\n]*\n|[^\n]+/g) ?? [];
+}
+
+interface LineSpan {
+	start: number;
+	end: number;
+}
+
+interface MatchedEdit {
+	editIndex: number;
+	matchIndex: number;
+	matchLength: number;
+	newText: string;
+}
+
+type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
+
+function getLineSpans(content: string): LineSpan[] {
+	let offset = 0;
+	return splitLinesWithEndings(content).map((line) => {
+		const span = { start: offset, end: offset + line.length };
+		offset = span.end;
+		return span;
+	});
+}
+
+function getReplacementLineRange(lines: LineSpan[], replacement: TextReplacement) {
+	const replacementStart = replacement.matchIndex;
+	const replacementEnd = replacement.matchIndex + replacement.matchLength;
+
+	let startLine = -1;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (replacementStart >= line.start && replacementStart < line.end) {
+			startLine = i;
+			break;
+		}
+	}
+	if (startLine === -1) {
+		throw new Error("Replacement range is outside the base content.");
+	}
+
+	let endLine = startLine;
+	while (endLine < lines.length && lines[endLine].end < replacementEnd) {
+		endLine++;
+	}
+	if (endLine >= lines.length) {
+		throw new Error("Replacement range is outside the base content.");
+	}
+
+	return { startLine, endLine: endLine + 1 };
+}
+
+function applyReplacements(content: string, replacements: TextReplacement[], offset = 0): string {
+	let result = content;
+	for (let i = replacements.length - 1; i >= 0; i--) {
+		const replacement = replacements[i];
+		const matchIndex = replacement.matchIndex - offset;
+		result =
+			result.substring(0, matchIndex) + replacement.newText + result.substring(matchIndex + replacement.matchLength);
+	}
+	return result;
+}
+
+/**
+ * Apply replacements matched against `baseContent` to `originalContent` while
+ * preserving unchanged line blocks from the original.
+ *
+ * This is useful when `baseContent` is a normalized view of the original. Each
+ * replacement is widened to the lines it actually touches, those touched lines
+ * are rewritten from the normalized base, and all other lines are copied back
+ * from `originalContent`. The actual replacement ranges drive preservation so
+ * duplicate normalized lines cannot be aligned to the wrong occurrence.
+ */
+export function applyReplacementsPreservingUnchangedLines(
+	originalContent: string,
+	baseContent: string,
+	replacements: TextReplacement[],
+): string {
+	const originalLines = splitLinesWithEndings(originalContent);
+	const baseLines = getLineSpans(baseContent);
+	if (originalLines.length !== baseLines.length) {
+		throw new Error("Cannot preserve unchanged lines because the base content has a different line count.");
+	}
+
+	const groups: Array<{ startLine: number; endLine: number; replacements: TextReplacement[] }> = [];
+	const sortedReplacements = [...replacements].sort((a, b) => a.matchIndex - b.matchIndex);
+	for (const replacement of sortedReplacements) {
+		const range = getReplacementLineRange(baseLines, replacement);
+		const current = groups[groups.length - 1];
+		if (current && range.startLine < current.endLine) {
+			current.endLine = Math.max(current.endLine, range.endLine);
+			current.replacements.push(replacement);
+			continue;
+		}
+		groups.push({ ...range, replacements: [replacement] });
+	}
+
+	let originalLineIndex = 0;
+	let result = "";
+	for (const group of groups) {
+		result += originalLines.slice(originalLineIndex, group.startLine).join("");
+
+		const groupStartOffset = baseLines[group.startLine].start;
+		const groupEndOffset = baseLines[group.endLine - 1].end;
+		result += applyReplacements(
+			baseContent.slice(groupStartOffset, groupEndOffset),
+			group.replacements,
+			groupStartOffset,
+		);
+		originalLineIndex = group.endLine;
+	}
+	result += originalLines.slice(originalLineIndex).join("");
+
+	return result;
+}
+
 export interface FuzzyMatchResult {
 	/** Whether a match was found */
 	found: boolean;
@@ -77,10 +192,6 @@ export interface FuzzyMatchResult {
 export interface Edit {
 	oldText: string;
 	newText: string;
-}
-
-interface MatchedEdit extends TextReplacement {
-	editIndex: number;
 }
 
 export interface AppliedEditsResult {
@@ -134,53 +245,64 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 	};
 }
 
-/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
-export function stripBom(content: string): { bom: string; text: string } {
-	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
-}
-
 function countOccurrences(content: string, oldText: string): number {
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
 	return fuzzyContent.split(fuzzyOldText).length - 1;
 }
 
-function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
+function getNotFoundError(path: string, editIndex: number, totalEdits: number): EditMatchError {
+	const fields = { path, editIndex, totalEdits };
 	if (totalEdits === 1) {
-		return new Error(
+		return new EditMatchError(
+			"text-not-found",
 			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
+			fields,
 		);
 	}
-	return new Error(
+	return new EditMatchError(
+		"text-not-found",
 		`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,
+		fields,
 	);
 }
 
-function getDuplicateError(path: string, editIndex: number, totalEdits: number, occurrences: number): Error {
+function getDuplicateError(path: string, editIndex: number, totalEdits: number, occurrences: number): EditMatchError {
+	const fields = { path, editIndex, totalEdits, occurrences };
 	if (totalEdits === 1) {
-		return new Error(
+		return new EditMatchError(
+			"text-not-unique",
 			`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
+			fields,
 		);
 	}
-	return new Error(
+	return new EditMatchError(
+		"text-not-unique",
 		`Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`,
+		fields,
 	);
 }
 
-function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): Error {
+function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): EditInputError {
+	const fields = { path, editIndex, totalEdits };
 	if (totalEdits === 1) {
-		return new Error(`oldText must not be empty in ${path}.`);
+		return new EditInputError("old-text-empty", `oldText must not be empty in ${path}.`, fields);
 	}
-	return new Error(`edits[${editIndex}].oldText must not be empty in ${path}.`);
+	return new EditInputError("old-text-empty", `edits[${editIndex}].oldText must not be empty in ${path}.`, fields);
 }
 
-function getNoChangeError(path: string, totalEdits: number): Error {
+function getNoChangeError(path: string, totalEdits: number): EditMatchError {
 	if (totalEdits === 1) {
-		return new Error(
+		return new EditMatchError(
+			"no-change",
 			`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
+			{ path, totalEdits },
 		);
 	}
-	return new Error(`No changes made to ${path}. The replacements produced identical content.`);
+	return new EditMatchError("no-change", `No changes made to ${path}. The replacements produced identical content.`, {
+		path,
+		totalEdits,
+	});
 }
 
 /**
@@ -238,8 +360,15 @@ export function applyEditsToNormalizedContent(
 		const previous = matchedEdits[i - 1];
 		const current = matchedEdits[i];
 		if (previous.matchIndex + previous.matchLength > current.matchIndex) {
-			throw new Error(
+			throw new EditMatchError(
+				"edits-overlap",
 				`edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
+				{
+					path,
+					editIndex: current.editIndex,
+					totalEdits: normalizedEdits.length,
+					overlapsEditIndex: previous.editIndex,
+				},
 			);
 		}
 	}
@@ -426,7 +555,7 @@ export async function computeEditsDiff(
 		const rawContent = await readFile(absolutePath, "utf-8");
 
 		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
-		const { text: content } = stripBom(rawContent);
+		const { text: content } = splitBom(rawContent);
 		const normalizedContent = normalizeToLF(content);
 		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
 

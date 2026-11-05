@@ -9,7 +9,6 @@ import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { isRegisteredToolAllowed, activatesOnRegistration as toolActivatesOnRegistration } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
-import { buildMutationRequester } from "./tools/file-mutation-coordinator.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.js";
 import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.ts";
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
@@ -156,12 +155,6 @@ export function _buildRuntime(
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
 	const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 	const shellPath = this.settingsManager.getShellPath();
-	const isAllowedBuiltinTool = (name: string): boolean => {
-		if (this._allowedTools && !this._allowedTools(name)) return false;
-		if (this._excludedTools?.(name)) return false;
-		return true;
-	};
-	const activeBuiltinTools = (options.activeToolNames ?? [...getDefaultToolNames()]).filter(isAllowedBuiltinTool);
 	// Resolve ownership per call, just like command execution. Each wait receives
 	// a stable binding so observation cleanup can finish after session disposal.
 	// Subagent children resolve their parent's owner, so their shells appear in its `/tasks`.
@@ -174,16 +167,6 @@ export function _buildRuntime(
 				]),
 			)
 		: createAllToolDefinitions(this._cwd, {
-				// Resolved per execution for the same reason as `sessionTempDir` below: a
-				// requester captured at construction would keep a stale session id across
-				// fork/branch/resume, which is exactly the relaunch this makes legible.
-				resolveMutationRequester: (toolCallId) =>
-					buildMutationRequester({
-						sessionId: this.sessionManager.getSessionId(),
-						...(this._orchestrationContext ? { orchestration: this._orchestrationContext } : {}),
-						...(this._subagentPolicy?.intercom ? { intercom: this._subagentPolicy.intercom } : {}),
-						toolCallId,
-					}),
 				read: { autoResizeImages },
 				bash: {
 					commandPrefix: shellCommandPrefix,
@@ -195,20 +178,9 @@ export function _buildRuntime(
 						exec: (command, cwd, options) =>
 							createLocalBashOperations({ shellPath, taskOwner: getTaskOwner() }).exec(command, cwd, options),
 					},
-					interceptorEnabled: () => this.settingsManager.getBashInterceptorEnabled(),
-					availableTools: activeBuiltinTools,
 					// Resolved per execution so bash spill files follow the live
 					// transcript session across fork/branch/resume.
 					sessionTempDir: () => resolveSessionTempDirPath(this.sessionManager.getSessionId()),
-					interceptor: async (context) => {
-						const result = await this._extensionRunner.emitUserBash({
-							type: "user_bash",
-							command: context.command,
-							excludeFromContext: false,
-							cwd: context.cwd,
-						});
-						return result;
-					},
 				},
 				powershell: {
 					get taskOwner() {

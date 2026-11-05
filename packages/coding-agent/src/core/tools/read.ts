@@ -20,17 +20,10 @@ import {
 	type DirectoryTreeResult,
 } from "./directory-tree.ts";
 import { isReadableUrlPath } from "./fetch-url.ts";
-import {
-	createHashlineSnapshotStore,
-	formatHashlineContent,
-	type HashlineSnapshotStore,
-	recordHashlineSnapshot,
-} from "./hashline.ts";
 import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import {
-	formatHashlineSelectedLines,
 	isReadResourceSelector,
 	type ReadLineSelector,
 	selectExactReadRanges,
@@ -123,7 +116,6 @@ export interface ReadToolOptions {
 	/** Fallback resize profile when the execution context has no model metadata. */
 	resizeOptions?: ModelImageResizeOptions;
 	operations?: ReadOperations;
-	hashlineStore?: HashlineSnapshotStore;
 }
 type ReadRenderArgs = { path?: string };
 function formatReadLineRange(_args: ReadRenderArgs | undefined, _theme: Theme): string {
@@ -324,7 +316,6 @@ export function createReadToolDefinition(
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const fallbackResizeOptions = options?.resizeOptions;
 	const ops = options?.operations ?? defaultReadOperations;
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
 		name: "read",
 		label: "read",
@@ -728,27 +719,22 @@ export function createReadToolDefinition(
 									isNotebookPath(absolutePath) && !rawOutput
 										? readEditableNotebookText(absolutePath, effectivePath)
 										: buffer.toString("utf-8");
-								// Numbered output uses the same LF-normalized text as its formatters. Keep raw reads
-								// on the source bytes so :raw preserves CRLF and terminal-newline bytes exactly.
-								const numberedTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
-								const sourceLines = numberedTextContent.split("\n");
+								// Formatted output reads LF-normalized lines. Keep raw reads on the source bytes so
+								// :raw preserves CRLF and terminal-newline bytes exactly.
+								const lineTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
+								const sourceLines = lineTextContent.split("\n");
 								// A terminal newline separates real lines; omit only its synthetic split item.
 								let allLines =
-									rawOutput || !numberedTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
-								let conflictLineNumbers: number[] | undefined;
+									rawOutput || !lineTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
 								if (conflictsOnly) {
 									registerConflictBlocks(executionCwd, parseConflictBlocks(absolutePath, textContent));
 									const conflictLines: string[] = [];
-									conflictLineNumbers = [];
 									let inConflict = false;
-									allLines.forEach((line, index) => {
+									for (const line of allLines) {
 										if (line.startsWith("<<<<<<<")) inConflict = true;
-										if (inConflict) {
-											conflictLines.push(line);
-											conflictLineNumbers!.push(index + 1);
-										}
+										if (inConflict) conflictLines.push(line);
 										if (line.startsWith(">>>>>>>")) inConflict = false;
-									});
+									}
 									if (conflictLines.length > 0) allLines = conflictLines;
 									else {
 										signal?.removeEventListener("abort", onAbort);
@@ -850,38 +836,7 @@ export function createReadToolDefinition(
 										const nextOffset = startLine + userLimitedLines + 1;
 										outputText = `${truncation.content}\n\n[${remaining} more lines in file. Continue with path selector :${nextOffset}.]`;
 									}
-									if (truncation.firstLineExceedsLimit) content = [{ type: "text", text: outputText }];
-									else {
-										const snapshot = recordHashlineSnapshot(
-											absolutePath,
-											executionCwd,
-											textContent,
-											hashlineStore,
-										);
-										const visibleContent = truncation.truncated ? truncation.content : selectedContent;
-										const header = `[${snapshot.displayPath}#${snapshot.tag}]`;
-										const selectedConflictLineNumbers =
-											conflictLineNumbers && rangeSelection?.lineNumbers
-												? rangeSelection.lineNumbers
-														.map((line) => conflictLineNumbers![line - 1])
-														.filter((line): line is number => typeof line === "number")
-												: conflictLineNumbers
-													? conflictLineNumbers.slice(startLine, startLine + selectedLines.length)
-													: undefined;
-										let hashlineOutput = rawOutput
-											? visibleContent
-											: selectedConflictLineNumbers && visibleContent === selectedContent
-												? formatHashlineSelectedLines(header, selectedLines, selectedConflictLineNumbers)
-												: rangeSelection && visibleContent === selectedContent
-													? formatHashlineSelectedLines(header, selectedLines, rangeSelection.lineNumbers)
-													: formatHashlineContent(snapshot, visibleContent, startLineDisplay);
-										if (
-											outputText.startsWith(truncation.content) &&
-											outputText.length > truncation.content.length
-										)
-											hashlineOutput += outputText.slice(truncation.content.length);
-										content = [{ type: "text", text: hashlineOutput }];
-									}
+									content = [{ type: "text", text: outputText }];
 								}
 							}
 							if (aborted) return;

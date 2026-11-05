@@ -30,18 +30,12 @@ export function buildSearchDetails(
 	let currentPath = "",
 		matchCount = 0;
 	for (const line of text.split("\n")) {
-		const header = line.match(/^\[([^\]#]+)#[0-9A-F]{4}\]$/);
-		if (header) {
-			currentPath = header[1] ?? "";
-			files.add(currentPath);
-			continue;
-		}
 		const pathMatch = line.match(/^(.+?)(?::\d+: |-\d+- )/);
 		if (pathMatch) {
 			currentPath = pathMatch[1] ?? currentPath;
 			files.add(currentPath);
 		}
-		const isMatch = /^\*\d+:/.test(line) || /^.+?:\d+: /.test(line);
+		const isMatch = /^.+?:\d+: /.test(line);
 		if (isMatch && currentPath) {
 			matchCount++;
 			fileMatches[currentPath] = (fileMatches[currentPath] ?? 0) + 1;

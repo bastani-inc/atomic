@@ -13,15 +13,7 @@ function isMissingPathError(error: unknown): boolean {
 	);
 }
 
-/**
- * Canonical key for a mutation target: absolute, and symlink-resolved when the path
- * exists so an alias and its target share one queue. A not-yet-created file falls back to
- * the resolved path, which is what lets `write` create files.
- *
- * Exported so callers that need to name the same target (diagnostics, coordination) cannot
- * drift into a second normalizer.
- */
-export async function canonicalMutationKey(filePath: string): Promise<string> {
+async function getMutationQueueKey(filePath: string): Promise<string> {
 	const resolvedPath = resolve(filePath);
 	try {
 		return await realpath(resolvedPath);
@@ -36,14 +28,10 @@ export async function canonicalMutationKey(filePath: string): Promise<string> {
 /**
  * Serialize file mutation operations targeting the same file.
  * Operations for different files still run in parallel.
- *
- * The holder is handed the canonical key this call registered under. Registration already
- * paid for the `realpath`, so a holder that has to name its own target in a diagnostic takes
- * the answer from here instead of resolving the path a second time under the lock.
  */
-export async function withFileMutationQueue<T>(filePath: string, fn: (canonicalKey: string) => Promise<T>): Promise<T> {
+export async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
 	const registration = registrationQueue.then(async () => {
-		const key = await canonicalMutationKey(filePath);
+		const key = await getMutationQueueKey(filePath);
 		const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
 
 		let releaseNext!: () => void;
@@ -63,7 +51,7 @@ export async function withFileMutationQueue<T>(filePath: string, fn: (canonicalK
 	const { key, currentQueue, chainedQueue, releaseNext } = await registration;
 	await currentQueue;
 	try {
-		return await fn(key);
+		return await fn();
 	} finally {
 		releaseNext();
 		if (fileMutationQueues.get(key) === chainedQueue) {

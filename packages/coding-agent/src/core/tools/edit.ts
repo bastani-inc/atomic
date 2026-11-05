@@ -1,203 +1,90 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
-import { renderDiff } from "../../modes/interactive/components/diff.ts";
-import type { Theme } from "../../modes/interactive/theme/theme.js";
+import { splitBom } from "../../utils/text.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
-import { nativeBlockResolver } from "./block-resolver.ts";
-import { EditBatchCoordinator, parallelEditBatchWarning } from "./edit-batch.ts";
-import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
 import {
-	assertLiveMatchesPrepared,
-	computeLiveState,
-	FileMutationConflict,
-	filesystemErrorCode,
-	isMissingTargetError,
-	type MutationRequester,
-	type MutationRequesterResolver,
-} from "./file-mutation-coordinator.ts";
-import { canonicalMutationKey, withFileMutationQueue } from "./file-mutation-queue.ts";
-import {
-	createHashlineSnapshotStore,
-	formatCompactHashlineEditResult,
-	type HashlineSnapshotStore,
-	recordHashlineSnapshot,
-} from "./hashline.ts";
-import {
-	Filesystem,
-	MismatchError,
-	missingSnapshotTagMessage,
-	Patch,
-	Patcher,
-	type PatchSectionResult,
-	type PreparedSection,
-	type WriteResult,
-} from "./hashline-engine/index.ts";
-import { NonMintingSnapshotStore } from "./non-minting-snapshot-store.ts";
-import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
-import { resolveReadPath } from "./path-utils.ts";
-import { renderToolPath } from "./render-utils.ts";
-import { invalidateNativeSearchCache } from "./search-native.ts";
+	applyEditsToNormalizedContent,
+	detectLineEnding,
+	type Edit,
+	generateDiffString,
+	generateUnifiedPatch,
+	normalizeToLF,
+	restoreLineEndings,
+} from "./edit-diff.ts";
+import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { EditInputError, EditTargetError, FileToolAbortedError } from "./file-tool-errors.ts";
+import { resolveToCwd } from "./path-utils.ts";
+import { type EditRenderState, editRenderers } from "./renderers/edit.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+
+const replaceEditSchema = Type.Object(
+	{
+		oldText: Type.String({
+			description:
+				"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
+		}),
+		newText: Type.String({ description: "Replacement text for this targeted edit." }),
+	},
+	{},
+);
 
 const editSchema = Type.Object(
 	{
-		input: Type.String({
+		path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
+		edits: Type.Array(replaceEditSchema, {
 			description:
-				"One or more hashline file sections. Must start with [PATH#TAG]; tag comes from the latest read, search, write, or successful edit output.",
+				"One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
 		}),
 	},
-	{ additionalProperties: false },
+	{},
 );
-// Hashline prompt origin: can1357/oh-my-pi packages/hashline/src/prompt.md @ 15b5c1397fc (MIT).
-// This file carries Atomic-maintained local modifications; see ./hashline-engine/PROVENANCE.md and ./hashline-engine/LICENSE.upstream.
-export const editToolSystemPromptContribution = Object.freeze({
-	snippet: "Apply source edits with hashline patch input",
-	guidelines: Object.freeze([
-		"hashline edit format: a header ending in ':' is followed by '+TEXT' body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
-		"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert head:' / 'insert tail:' insert at file start/end. Block ops ('replace block N:', 'delete block N', 'insert after block N:') resolve the exact syntactic node BEGINNING on N through the native Rust tree-sitter `blockRangeAt` primitive in `@bastani/atomic-natives`; the brace/indent heuristic is the fallback only when the native binding is unavailable. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
-		"Body rows appear only under a ':' header and start on the NEXT line. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
-		"Block anchors: 'replace block N' resolves the outermost node BEGINNING on N. Where a language folds a decorator/annotation into its construct (Python folds `@dec` and `def` into one node; TypeScript/Java annotations also fold), anchoring at the first decorator sweeps both. Rust `#[attr]` and doc- or line-comments resolve alone; replacing there with a construct body duplicates the construct, so use explicit 'replace N..M:' to take both. Confirm the result echo: 'replace block N → resolved lines A-B (K lines)'. 'insert after block N:' takes the opener, never the closer; insert-after echoes '; body lands after line B'. Resolution fails for an unsupported language, blank/closer line, no node beginning on N, or an unparsable block; use 'replace N..M:' or 'insert after M:' instead.",
-		"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Parallel edit calls that share a [path#TAG] are applied as one snapshot batch. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
-		"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
-		[
-			"Worked examples. Original (the exact shape `read` returns):",
-			"```text",
-			"[greet.py#A1B2]",
-			"1:@cache",
-			"2:def greet(name):",
-			'3:    msg = "Hello, " + name',
-			"4:    print(msg)",
-			'5:greet("world")',
-			"```",
-			"Replace one original line with one line:",
-			"```text",
-			"[greet.py#A1B2]",
-			"replace 3..3:",
-			'+    msg = f"Hi, {name}"',
-			"```",
-			"Replace the decorated Python block (Python folds `@cache` and `def` into one node; anchoring at line 2 would keep/orphan line 1). For a Rust attribute or doc- or line-comment, use explicit `replace N..M:` to take both it and the construct:",
-			"```text",
-			"[greet.py#A1B2]",
-			"replace block 1:",
-			"+@cache",
-			"+def greet(name):",
-			'+    print(f"Hello, {name}")',
-			"```",
-			"Delete one line (no colon/body):",
-			"```text",
-			"[greet.py#A1B2]",
-			"delete 4",
-			"```",
-			"Delete a range (no colon/body):",
-			"```text",
-			"[greet.py#A1B2]",
-			"delete 3..4",
-			"```",
-			"Delete a whole block (no colon/body):",
-			"```text",
-			"[greet.py#A1B2]",
-			"delete block 2",
-			"```",
-			"Insert before a line:",
-			"```text",
-			"[greet.py#A1B2]",
-			"insert before 5:",
-			"+log()",
-			"```",
-			"Insert after a line:",
-			"```text",
-			"[greet.py#A1B2]",
-			"insert after 3:",
-			"+    print(msg)",
-			"```",
-			"Insert after the block whose opener is line 2:",
-			"```text",
-			"[greet.py#A1B2]",
-			"insert after block 2:",
-			"+audit()",
-			"```",
-			"Insert at both file ends:",
-			"```text",
-			"[greet.py#A1B2]",
-			"insert head:",
-			"+# generated",
-			"insert tail:",
-			'+greet("everyone")',
-			"```",
-			"Multi-file input:",
-			"```text",
-			"[src/a.ts#0A3B]",
-			"replace 1..1:",
-			"+export const enabled = true;",
-			"[src/b.ts#1F7C]",
-			"delete 20",
-			"```",
-		].join("\n"),
-		[
-			"Anti-patterns:",
-			"```text",
-			"# WRONG — `-` rows are rejected; bare context rows are auto-prefixed and inserted as literal content: `-` rows are not valid; the range already names the lines being changed. For a literal `-` line, write `+-…`.",
-			"replace 3..3:",
-			'    msg = "Hello"',
-			"-   print(msg)",
-			"+   return msg",
-			"# RIGHT",
-			"replace 3..3:",
-			"+   return msg",
-			"",
-			"# WRONG — body glued to its header: payload line has no preceding hunk header; body starts on the NEXT line.",
-			"replace block 238:+export const value = 1;",
-			"# RIGHT",
-			"replace block 238:",
-			"+export const value = 1;",
-			"",
-			"# WRONG — `delete N..M` has no colon and no body.",
-			"delete 2..3:",
-			"+replacement",
-			"# RIGHT: delete 2..3",
-			"",
-			"# WRONG — empty `insert` / `replace`: `insert` needs at least one `+TEXT` body row. A bodyless concrete `replace` silently deletes the range.",
-			"insert after 2:",
-			"replace 4..4:",
-			"# RIGHT — give `replace` a body; if deletion is intended, write `delete 4`.",
-			"",
-			"# WRONG — widened replace for a pure insertion can drop retyped keepers.",
-			"replace 2..4:",
-			"+kept()",
-			"+added()",
-			"# RIGHT: insert after 2:",
-			"+added()",
-			"",
-			"# WRONG — block anchor is a closer/last visible line.",
-			"insert after block 3:",
-			"+after()",
-			"# RIGHT: insert after 3:",
-			"+after()",
-			"```",
-		].join("\n"),
-		[
-			"If you remember nothing else:",
-			"1. RE-GROUND AFTER EVERY EDIT. Every apply mints a fresh #TAG and renumbers; use the edit response or a fresh read. Stale tag or surprise? STOP and re-read.",
-			"2. RANGES ARE TIGHT. Cover only lines that change; a stale wide range shreds everything it spans. Whole construct → replace block N.",
-			"3. THE BODY IS THE FINAL CONTENT. Only +TEXT rows; never -old/context lines. The range does the deleting.",
-		].join("\n"),
-	] as const),
-} as const);
+
+export const editToolSystemPromptContribution = {
+	snippet: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+	guidelines: [
+		"Use edit for targeted changes. Batch changes to one file in a single call.",
+		"Each edits[].oldText must exactly and uniquely match the original file. Keep matches short and non-overlapping; merge nearby changes without including large unchanged regions.",
+	],
+} as const;
 
 export type EditToolInput = Static<typeof editSchema>;
+type LegacyEditToolInput = EditToolInput & {
+	oldText?: unknown;
+	newText?: unknown;
+};
+
+type SingleEditInput = { oldText: string; newText: string };
+
+function isSingleEditInput(value: unknown): value is SingleEditInput {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return false;
+	}
+
+	const edit = value as Record<string, unknown>;
+	return typeof edit.oldText === "string" && typeof edit.newText === "string";
+}
 
 export interface EditToolDetails {
+	/** Display-oriented diff of the changes made */
 	diff: string;
+	/** Standard unified patch of the changes made */
 	patch: string;
+	/** Line number of the first change in the new file (for editor navigation) */
 	firstChangedLine?: number;
 }
 
+/**
+ * Pluggable operations for the edit tool.
+ * Override these to delegate file editing to remote systems (for example SSH).
+ */
 export interface EditOperations {
+	/** Read file contents as a Buffer */
 	readFile: (absolutePath: string) => Promise<Buffer>;
+	/** Write content to a file */
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
+	/** Check if file is readable and writable (throw if not) */
 	access: (absolutePath: string) => Promise<void>;
 }
 
@@ -208,394 +95,133 @@ const defaultEditOperations: EditOperations = {
 };
 
 export interface EditToolOptions {
+	/** Custom operations for file editing. Default: local filesystem */
 	operations?: EditOperations;
-	hashlineStore?: HashlineSnapshotStore;
-	/** Resolves who is being rejected when a mutation conflicts. Diagnostic only. */
-	resolveMutationRequester?: MutationRequesterResolver;
 }
 
-type EditToolResultLike = {
-	content: Array<{ type: "text"; text: string }>;
-	details: EditToolDetails | undefined;
-};
-
-class EditFilesystem extends Filesystem {
-	private readonly cwd: string;
-	private readonly operations: EditOperations;
-	constructor(cwd: string, operations: EditOperations) {
-		super();
-		this.cwd = cwd;
-		this.operations = operations;
+function prepareEditArguments(input: unknown): EditToolInput {
+	if (!input || typeof input !== "object") {
+		return input as EditToolInput;
 	}
 
-	canonicalPath(path: string): string {
-		return resolveReadPath(path, this.cwd);
-	}
+	const args = input as Record<string, unknown>;
 
-	async preflightWrite(path: string): Promise<void> {
-		const absolutePath = this.canonicalPath(path);
+	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array.
+	// Others send a single edit object instead of a one-element edits array.
+	if (typeof args.edits === "string") {
 		try {
-			await this.operations.access(absolutePath);
-		} catch (error: unknown) {
-			const message = error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
-			throw new Error(`Could not edit file: ${path}. ${message}.`);
-		}
-	}
-
-	async readText(path: string): Promise<string> {
-		const absolutePath = this.canonicalPath(path);
-		return isNotebookPath(absolutePath)
-			? readEditableNotebookText(absolutePath, path)
-			: (await this.operations.readFile(absolutePath)).toString("utf-8");
-	}
-
-	async writeText(path: string, content: string): Promise<WriteResult> {
-		const absolutePath = this.canonicalPath(path);
-		const persisted = isNotebookPath(absolutePath)
-			? serializeEditedNotebookText(absolutePath, path, normalizeToLF(stripBom(content).text))
-			: content;
-		await this.operations.writeFile(absolutePath, persisted);
-		return { text: persisted };
-	}
-}
-
-function isFourDigitHexTag(value: string): boolean {
-	return (
-		value.length === 4 &&
-		[...value].every(
-			(char) => (char >= "0" && char <= "9") || (char >= "a" && char <= "f") || (char >= "A" && char <= "F"),
-		)
-	);
-}
-
-function extractFirstHeaderPath(input: string | undefined): string | undefined {
-	if (!input) return undefined;
-	for (const line of input.split("\n")) {
-		const trimmed = line.trimStart();
-		if (!trimmed.startsWith("[")) continue;
-		const hashIndex = trimmed.indexOf("#", 1);
-		const closeIndex = hashIndex >= 0 ? trimmed.indexOf("]", hashIndex + 1) : -1;
-		if (hashIndex <= 1 || closeIndex !== hashIndex + 5) continue;
-		const tag = trimmed.slice(hashIndex + 1, closeIndex);
-		if (isFourDigitHexTag(tag)) return trimmed.slice(1, hashIndex);
-	}
-	return undefined;
-}
-
-function formatEditCall(args: unknown, theme: Theme, cwd: string): string {
-	const input = args && typeof args === "object" && "input" in args ? (args as { input?: unknown }).input : undefined;
-	const pathDisplay = renderToolPath(
-		extractFirstHeaderPath(typeof input === "string" ? input : undefined) ?? null,
-		theme,
-		cwd,
-	);
-	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
-}
-
-function formatEditResult(result: EditToolResultLike, theme: Theme, isError: boolean): string | undefined {
-	if (isError) {
-		const errorText = result.content
-			.filter((c) => c.type === "text")
-			.map((c) => c.text || "")
-			.join("\n");
-		return errorText ? theme.fg("error", errorText) : undefined;
-	}
-	return result.details?.diff ? renderDiff(result.details.diff) : undefined;
-}
-
-async function withFileMutationQueues<T>(
-	filePaths: readonly string[],
-	fn: (canonicalKeys: ReadonlyMap<string, string>) => Promise<T>,
-): Promise<T> {
-	const sorted = [...new Set(filePaths)].sort();
-	const canonicalKeys = new Map<string, string>();
-	const run = (index: number): Promise<T> => {
-		const filePath = sorted[index];
-		return filePath
-			? withFileMutationQueue(filePath, (canonicalKey) => {
-					canonicalKeys.set(filePath, canonicalKey);
-					return run(index + 1);
-				})
-			: fn(canonicalKeys);
-	};
-	return run(0);
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-	if (signal?.aborted) throw new Error("Operation aborted");
-}
-
-function formatNoopMessage(path: string, count: number): string {
-	return `Edits to ${path} parsed and applied cleanly, but produced no change: your body row(s) are byte-identical to the file at the targeted lines. The bug is somewhere else — re-read the file before issuing another edit. Do NOT widen the payload or add lines; verify the anchor first.${count > 1 ? `\nNo-op count for this identical payload: ${count}.` : ""}`;
-}
-
-function blockMessages(item: PreparedSection | PatchSectionResult): string[] {
-	const warnings =
-		"parseWarnings" in item ? [...item.parseWarnings, ...(item.applyResult.warnings ?? [])] : item.warnings;
-	const resolutions =
-		("applyResult" in item ? item.applyResult.blockResolutions : item.blockResolutions)?.map((resolution) => {
-			const verb = resolution.op === "insert_after" ? "insert after block" : `${resolution.op} block`;
-			const lands = resolution.op === "insert_after" ? `; body lands after line ${resolution.end}` : "";
-			return `${verb} ${resolution.anchorLine} → resolved lines ${resolution.start}-${resolution.end} (${resolution.end - resolution.start + 1} lines)${lands}`;
-		}) ?? [];
-	return [...warnings, ...resolutions];
-}
-
-function assertUniquePreparedPaths(prepared: readonly PreparedSection[]): void {
-	const seen = new Map<string, string>();
-	for (const entry of prepared) {
-		const previous = seen.get(entry.canonicalPath);
-		if (previous)
-			throw new Error(
-				`Multiple hashline sections resolve to the same file (${previous} and ${entry.section.path}). Merge their ops under one header before applying.`,
-			);
-		seen.set(entry.canonicalPath, entry.section.path);
-	}
-}
-
-interface EditCwdScope {
-	readonly fs: EditFilesystem;
-	readonly batcher: EditBatchCoordinator<EditToolResultLike>;
-	applySiblingEdits(
-		siblings: readonly { input: string }[],
-		canonicalKeys: ReadonlyMap<string, string>,
-		applySignal?: AbortSignal,
-		requester?: MutationRequester,
-	): Promise<EditToolResultLike>;
-}
-
-function createEditCwdScope(cwd: string, ops: EditOperations, hashlineStore: HashlineSnapshotStore): EditCwdScope {
-	const fs = new EditFilesystem(cwd, ops);
-	// Reads delegate to the session store; records are computed and dropped, so a rejection
-	// cannot mint the tag that would validate an identical retry. `recordHashlineSnapshot`
-	// below stays the single writer of provenance.
-	const patcher = new Patcher({
-		fs,
-		snapshots: new NonMintingSnapshotStore(hashlineStore.snapshots),
-		blockResolver: nativeBlockResolver,
-	});
-	const noopCounts = new Map<string, number>();
-	const batcher = new EditBatchCoordinator<EditToolResultLike>();
-	/**
-	 * `requester` is the identity of the call that reached the lock first. #2496 merges
-	 * compatible siblings into one planned mutation, and a conflict rejects that mutation as a
-	 * unit, so naming the batch's holder is accurate. Identity is diagnostic regardless: it
-	 * never decides whether a sibling is admitted.
-	 */
-	async function applySiblingEdits(
-		siblings: readonly { input: string }[],
-		canonicalKeys: ReadonlyMap<string, string>,
-		applySignal?: AbortSignal,
-		requester?: MutationRequester,
-	): Promise<EditToolResultLike> {
-		const merged =
-			siblings.length === 1
-				? Patch.parse(siblings[0]!.input, { cwd })
-				: Patch.parse(siblings.map((sibling) => sibling.input).join("\n"), { cwd });
-		const prepared: PreparedSection[] = [];
-		for (const section of merged.sections) {
-			throwIfAborted(applySignal);
-			try {
-				prepared.push(await patcher.prepare(section));
-			} catch (error) {
-				// `hashRecognized` is the engine's own answer to "have I ever recorded this tag
-				// for this path", so the foreign case is read off a typed field rather than
-				// matched out of a message in vendored code. Everything else the engine raises
-				// is left alone: recovery successes and the head/tail drift warning never reach
-				// here, and a stale-but-known tag keeps the engine's own wording.
-				if (!(error instanceof MismatchError) || error.hashRecognized) throw error;
-				throw new FileMutationConflict({
-					reason: "foreign_snapshot",
-					path: section.path,
-					canonicalKey: await canonicalMutationKey(fs.canonicalPath(section.path)),
-					presentedTag: error.expectedFileHash,
-					liveState: computeLiveState(error.fileLines.join("\n")),
-					...(requester ? { requester } : {}),
-				});
+			const parsed = JSON.parse(args.edits);
+			if (Array.isArray(parsed)) {
+				args.edits = parsed;
+			} else if (isSingleEditInput(parsed)) {
+				args.edits = [parsed];
 			}
-		}
-		assertUniquePreparedPaths(prepared);
-		const noops = prepared.filter((item) => item.isNoop);
-		if (noops.length > 0) {
-			if (noops.length !== prepared.length)
-				throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
-			const key = prepared.map((item) => `${item.canonicalPath}\0${item.applyResult.text}`).join("\0\0");
-			const count = (noopCounts.get(key) ?? 0) + 1;
-			noopCounts.set(key, count);
-			if (count >= 3) throw new Error(`STOP. ${formatNoopMessage(prepared[0]!.section.path, count)}`);
-			return {
-				content: [{ type: "text", text: formatNoopMessage(prepared[0]!.section.path, count) }],
-				details: { diff: "", patch: "" },
-			};
-		}
-		for (const item of prepared) {
-			throwIfAborted(applySignal);
-			let live: string;
-			try {
-				live = normalizeToLF(stripBom(await fs.readText(item.section.path)).text);
-			} catch (error) {
-				// `prepare` already read this file, so a read failing now means the target changed
-				// state under the patch: deleted, replaced by a directory, locked, or rewritten as
-				// something this reader cannot parse. Those are all race outcomes rather than tool
-				// errors, and letting them escape as raw filesystem errors would hide that from
-				// every consumer that tells conflicts apart from ordinary tool failures.
-				const missing = isMissingTargetError(error);
-				const causeCode = filesystemErrorCode(error);
-				throw new FileMutationConflict({
-					reason: missing ? "target_missing" : "target_unreadable",
-					path: item.section.path,
-					// Queue registration resolved this before preparation. A new lookup may fail
-					// for the same reason as the read and mask the typed conflict.
-					canonicalKey: canonicalKeys.get(item.canonicalPath)!,
-					// Only the missing case can describe the target. Once a read fails for any
-					// other cause, its size and tag are unknowable and claiming either is invention.
-					...(missing ? { liveState: computeLiveState(undefined) } : {}),
-					...(causeCode ? { causeCode } : {}),
-					...(requester ? { requester } : {}),
-				});
-			}
-			// Compared before calling the guard so the happy path skips the extra `realpath`
-			// that naming the target canonically costs. The guard still owns the rejection.
-			if (live !== item.normalized) {
-				assertLiveMatchesPrepared({
-					canonicalKey: await canonicalMutationKey(item.canonicalPath),
-					path: item.section.path,
-					prepared: item.normalized,
-					live,
-					...(requester ? { requester } : {}),
-					...(item.section.fileHash ? { presentedTag: item.section.fileHash } : {}),
-				});
-			}
-		}
-		const outputs: string[] = [];
-		let combinedDiff = "",
-			combinedPatch = "";
-		let firstChangedLine: number | undefined;
-		const batchNote = siblings.length > 1 ? [parallelEditBatchWarning(siblings.length)] : [];
-		for (let index = 0; index < prepared.length; index++) {
-			const item = prepared[index]!;
-			throwIfAborted(applySignal);
-			let result: PatchSectionResult;
-			try {
-				result = await patcher.commit(item);
-			} catch (error) {
-				const written = prepared.slice(0, index).map((entry) => entry.section.path);
-				const notWritten = prepared.slice(index + 1).map((entry) => entry.section.path);
-				const message = error instanceof Error ? error.message : String(error);
-				throw new Error(
-					`Failed to write ${item.section.path}: ${message}` +
-						(written.length > 0 ? ` Sections already written: ${written.join(", ")}.` : "") +
-						(notWritten.length > 0 ? ` Sections not written: ${notWritten.join(", ")}.` : ""),
-					{ cause: error },
-				);
-			}
-			invalidateNativeSearchCache(result.canonicalPath);
-			// Recorded before the abort check, not after. `commit` has already written, and since
-			// the patcher was made non-minting this call is the only writer of provenance, so
-			// aborting first would leave the session's own bytes on disk with nothing recorded
-			// for them. The next overwrite would then read as another agent's file.
-			const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
-			throwIfAborted(applySignal);
-			const diffResult = generateDiffString(result.before, result.after);
-			combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
-			combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
-			firstChangedLine ??= diffResult.firstChangedLine;
-			outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, [...batchNote, ...blockMessages(result)]));
-		}
-		return {
-			content: [{ type: "text", text: outputs.join("\n\n") }],
-			details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine },
-		};
+		} catch {}
+	} else if (isSingleEditInput(args.edits)) {
+		args.edits = [args.edits];
 	}
-	return { fs, batcher, applySiblingEdits };
+
+	const legacy = args as LegacyEditToolInput;
+	if (typeof legacy.oldText !== "string" || typeof legacy.newText !== "string") {
+		return args as EditToolInput;
+	}
+
+	const edits = Array.isArray(legacy.edits) ? [...legacy.edits] : [];
+	edits.push({ oldText: legacy.oldText, newText: legacy.newText });
+	const { oldText: _oldText, newText: _newText, ...rest } = legacy;
+	return { ...rest, edits } as EditToolInput;
+}
+
+function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] } {
+	if (!Array.isArray(input.edits) || input.edits.length === 0) {
+		throw new EditInputError(
+			"edits-empty",
+			"Edit tool input is invalid. edits must contain at least one replacement.",
+			{ path: input.path, totalEdits: 0 },
+		);
+	}
+	return { path: input.path, edits: input.edits };
 }
 
 export function createEditToolDefinition(
 	cwd: string,
 	options?: EditToolOptions,
-): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
+): ToolDefinition<typeof editSchema, EditToolDetails | undefined, EditRenderState> {
 	const ops = options?.operations ?? defaultEditOperations;
-	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
-	// Atomic adaptation of upstream #8627 ("use ctx.cwd for cwd-sensitive tools"). Upstream's edit
-	// tool is a stateless text replacer, so it could resolve `ctx?.cwd || cwd` inline. Atomic's
-	// hashline patcher instead carries per-tool state — the `EditFilesystem`, the `Patcher`, the
-	// repeated-no-op counters, and the parallel-edit batcher — that is all keyed to one cwd.
-	// Mutating a shared cwd field would corrupt concurrent tool calls, so each distinct execution
-	// cwd gets its own scope. Callers that pass no ctx keep the factory cwd's scope unchanged.
-	const scopes = new Map<string, EditCwdScope>();
-	const scopeFor = (executionCwd: string): EditCwdScope => {
-		const existing = scopes.get(executionCwd);
-		if (existing) return existing;
-		const scope = createEditCwdScope(executionCwd, ops, hashlineStore);
-		scopes.set(executionCwd, scope);
-		return scope;
-	};
 	return {
 		name: "edit",
-		concurrency: "exclusive",
 		label: "edit",
+		// Atomic: same-message ordering. A later call in one assistant message waits for this edit.
+		concurrency: "exclusive",
 		description:
-			"Edit existing files with the hashline patch language: each section starts with [PATH#TAG] (TAG is the 4-hex snapshot tag from your latest read/search), then hunk headers (replace N..M:, replace block N:, delete N..M, delete block N, insert before|after N:, insert after block N:, insert head:, insert tail:) followed by +TEXT body rows. Numbers refer to the original file. Use the write tool to create new files.",
+			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
 		promptSnippet: editToolSystemPromptContribution.snippet,
 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		parameters: editSchema,
-		async execute(toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
-			if (typeof input.input !== "string" || input.input.trim() === "")
-				throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
-			const executionCwd = ctx?.cwd || cwd;
-			const { fs, batcher, applySiblingEdits } = scopeFor(executionCwd);
-			const patch = Patch.parse(input.input, { cwd: executionCwd });
-			const paths = new Map<string, string>();
-			for (const section of patch.sections) {
-				if (section.fileHash === undefined) throw new Error(missingSnapshotTagMessage(section.path));
-				paths.set(section.path, section.fileHash);
-			}
-			const entry = batcher.announce(input.input, paths, signal);
-			try {
-				return await withFileMutationQueues(
-					[...paths.keys()].map((sectionPath) => fs.canonicalPath(sectionPath)),
-					async (canonicalKeys) => {
-						if (entry.settled) return await entry.promise;
-						throwIfAborted(signal);
-						const siblings = batcher.takeCompatible(entry);
-						try {
-							const result = await applySiblingEdits(
-								siblings,
-								canonicalKeys,
-								signal,
-								options?.resolveMutationRequester?.(toolCallId),
-							);
-							for (const sibling of siblings) sibling.resolve(result);
-							return result;
-						} catch (error) {
-							for (const sibling of siblings) sibling.reject(error);
-							throw error;
-						}
-					},
-				);
-			} catch (error) {
-				if (entry.settled) return await entry.promise;
-				entry.reject(error);
-				throw error;
-			} finally {
-				batcher.drop(entry);
-			}
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
+		renderShell: "self",
+		prepareArguments: prepareEditArguments,
+		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
+			const { path, edits } = validateEditInput(input);
+			const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+
+			return withFileMutationQueue(absolutePath, async () => {
+				// Do not reject from an abort event listener here: that would release the
+				// mutation queue while an in-flight filesystem operation may still finish.
+				// Checking signal.aborted after each await observes the same aborts while
+				// keeping the queue locked until the current operation has settled.
+				const throwIfAborted = (): void => {
+					if (signal?.aborted) throw new FileToolAbortedError(signal.reason);
+				};
+
+				throwIfAborted();
+
+				// Check if file exists.
+				try {
+					await ops.access(absolutePath);
+				} catch (error: unknown) {
+					throwIfAborted();
+					const errnoCode = error instanceof Error && "code" in error ? String(error.code) : undefined;
+					const errorMessage = errnoCode !== undefined ? `Error code: ${errnoCode}` : String(error);
+					throw new EditTargetError(
+						"target-inaccessible",
+						`Could not edit file: ${path}. ${errorMessage}.`,
+						{ path, ...(errnoCode !== undefined ? { errnoCode } : {}) },
+						{ cause: error },
+					);
+				}
+				throwIfAborted();
+
+				// Read the file.
+				const buffer = await ops.readFile(absolutePath);
+				const rawContent = buffer.toString("utf-8");
+				throwIfAborted();
+
+				// Strip BOM before matching. The model will not include an invisible BOM in oldText.
+				const { bom, text: content } = splitBom(rawContent);
+				const originalEnding = detectLineEnding(content);
+				const normalizedContent = normalizeToLF(content);
+				const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+				throwIfAborted();
+
+				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+				await ops.writeFile(absolutePath, finalContent);
+				throwIfAborted();
+
+				const diffResult = generateDiffString(baseContent, newContent);
+				const patch = generateUnifiedPatch(path, baseContent, newContent);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+						},
+					],
+					details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
+				};
+			});
 		},
-		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatEditCall(args, theme, context.cwd));
-			return text;
-		},
-		renderResult(result, _options, theme, context) {
-			const output = formatEditResult(result as EditToolResultLike, theme, context.isError);
-			const component = (context.lastComponent as Container | undefined) ?? new Container();
-			component.clear();
-			if (!output) return component;
-			component.addChild(new Spacer(1));
-			component.addChild(new Text(output, 0, 0));
-			return component;
-		},
+		...editRenderers,
 	};
 }
 

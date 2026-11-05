@@ -343,12 +343,3 @@ export function selectReadRanges(
 		userLimitedLines: selectedLines.length,
 	};
 }
-
-export function formatHashlineSelectedLines(
-	header: string,
-	lines: string[],
-	lineNumbers?: number[],
-	startLine = 1,
-): string {
-	return [header, ...lines.map((line, index) => `${lineNumbers?.[index] ?? startLine + index}:${line}`)].join("\n");
-}

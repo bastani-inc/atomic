@@ -435,7 +435,6 @@ When `images.autoResize` is enabled, Atomic normalizes images before sending the
 |---------|------|---------|-------------|
 | `shellPath` | string | - | Custom Bash path (e.g., for Cygwin on Windows); does not select the PowerShell used by native Windows `!`/`!!` or the interactive subshell |
 | `shellCommandPrefix` | string | - | Prefix for shell commands, including `!`/`!!`; use PowerShell syntax for native Windows interactive commands and Bash syntax elsewhere (e.g., `"shopt -s expand_aliases"`) |
-| `bashInterceptor.enabled` | boolean | `false` | When true, block shell commands that have dedicated tools and offer remaining `bash` tool calls to `user_bash` extension handlers before local execution. Also available in `/settings` as **Bash Interceptor**. |
 | `search.contextBefore` | number | `1` | Number of context lines before each `search` match. |
 | `search.contextAfter` | number | `3` | Number of context lines after each `search` match. |
 | `npmCommand` | string[] | - | Command argv used for npm package lookup/install operations (e.g., `["mise", "exec", "node@20", "--", "npm"]`) |
@@ -446,8 +445,6 @@ When `images.autoResize` is enabled, Atomic normalizes images before sending the
   "npmCommand": ["mise", "exec", "node@20", "--", "npm"]
 }
 ```
-
-`bashInterceptor.enabled` is intentionally `false` unless configured. Enable it from `/settings` or set it to `true` in JSON when you want Atomic to steer shell anti-patterns to `read`/`search`/`find`/`edit`/`write` and let extensions intercept model `bash` tool calls through the same `user_bash` event used by interactive `!` commands.
 
 `npmCommand` is used for all npm package-manager operations, including installs, uninstalls, and dependency installs inside git packages. Use argv-style entries exactly as the process should be launched. When `npmCommand` is configured, git package dependency installs use plain `install` to avoid npm-specific flags in wrappers or alternate package managers.
 

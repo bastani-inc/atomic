@@ -48,9 +48,6 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "cache-warming":
 				callbacks.onCacheWarmingChange(newValue as CacheWarmingMode);
 				break;
-			case "bash-interceptor":
-				callbacks.onBashInterceptorEnabledChange(newValue === "true");
-				break;
 			case "hide-thinking":
 				callbacks.onHideThinkingBlockChange(newValue === "true");
 				break;

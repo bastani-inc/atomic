@@ -31,7 +31,6 @@ function settingsConfig(overrides: Partial<SettingsConfig> = {}): SettingsConfig
 		transport: "auto",
 		httpIdleTimeoutMs: 300_000,
 		cacheWarming: "streaming",
-		bashInterceptorEnabled: false,
 		thinkingLevel: "off",
 		availableThinkingLevels: ["off"],
 		currentTheme: "dark",

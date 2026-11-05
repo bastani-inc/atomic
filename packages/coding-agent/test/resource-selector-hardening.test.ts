@@ -2,8 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { sqlite } from "./helpers/sqlite.ts";
 
 const tempDirs: string[] = [];
@@ -129,7 +129,7 @@ describe("resource selector hardening", () => {
 		eocd.writeUInt32LE(1000, 16);
 		await writeFile(archivePath, eocd);
 		await expect(
-			createWriteToolDefinition(dir).execute(
+			createToolDefinition("write", dir).execute(
 				"bad-zip-write",
 				{ path: "bad.zip:new.txt", content: "new" },
 				undefined,
@@ -143,7 +143,7 @@ describe("resource selector hardening", () => {
 		const dir = await tempDir();
 		await writeFile(join(dir, "descriptor.zip"), zipWithDataDescriptor());
 		await expect(
-			createWriteToolDefinition(dir).execute(
+			createToolDefinition("write", dir).execute(
 				"descriptor-zip-write",
 				{ path: "descriptor.zip:new.txt", content: "new" },
 				undefined,

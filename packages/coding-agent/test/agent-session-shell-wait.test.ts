@@ -71,7 +71,7 @@ for (const name of ["bash", "powershell"] as const) {
 	// PR #2972: a yielded wait must advance beyond the first retained 8 KiB page.
 	test(`registered ${name} progresses retained output across yielded waits`, async () => {
 		const harness = await createHarness({
-			settings: { bashInterceptor: { enabled: false } },
+			settings: {},
 			initialActiveToolNames: ["bash", "powershell"],
 		});
 		const { session } = harness;
@@ -127,7 +127,7 @@ for (const name of ["bash", "powershell"] as const) {
 	});
 	test(`registered ${name} waits on its session's existing command across yields and settlement`, async () => {
 		const harness = await createHarness({
-			settings: { bashInterceptor: { enabled: false } },
+			settings: {},
 			initialActiveToolNames: ["bash", "powershell"],
 		});
 		const { session } = harness;
@@ -162,7 +162,7 @@ for (const name of ["bash", "powershell"] as const) {
 	// #3105: reload cancels session-owned commands rather than reviving their closed native owner.
 	test(`registered ${name} receives a fresh owner after reload cancels its old command`, async () => {
 		const harness = await createHarness({
-			settings: { bashInterceptor: { enabled: false } },
+			settings: {},
 			initialActiveToolNames: ["bash", "powershell"],
 		});
 		const { session } = harness;
@@ -190,7 +190,7 @@ for (const name of ["bash", "powershell"] as const) {
 	});
 	test(`registered ${name} abort and steering release observation without stopping execution`, async () => {
 		const harness = await createHarness({
-			settings: { bashInterceptor: { enabled: false } },
+			settings: {},
 			initialActiveToolNames: ["bash", "powershell"],
 		});
 		const { session } = harness;
@@ -222,7 +222,7 @@ for (const name of ["bash", "powershell"] as const) {
 	});
 	test(`registered ${name} releases an aborted observation during session disposal`, async () => {
 		const harness = await createHarness({
-			settings: { bashInterceptor: { enabled: false } },
+			settings: {},
 			initialActiveToolNames: ["bash", "powershell"],
 		});
 		const { session } = harness;
@@ -255,7 +255,7 @@ async function sdkSession(
 		cwd: root,
 		agentDir: root,
 		sessionManager: SessionManager.inMemory(root),
-		settingsManager: SettingsManager.inMemory({ bashInterceptor: { enabled: false } }),
+		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
 		tools: ["bash", "powershell"],
 		...options,

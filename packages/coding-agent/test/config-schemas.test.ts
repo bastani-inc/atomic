@@ -376,7 +376,6 @@ describe("settings.json schema", () => {
 					modelOverrides: { "anthropic/claude-sonnet-4-5": { reserveTokens: 32768, preserve_recent: 4 } },
 				},
 				sessionSummary: { enabled: false },
-				bashInterceptor: { enabled: true },
 				search: { contextBefore: 2, contextAfter: 4 },
 				herdr: { enabled: false },
 				markdown: { codeBlockIndent: "  ", mermaid: "final", latex: false },
@@ -574,7 +573,6 @@ describe("settings.json schema", () => {
 		assert.equal(settings.getShowCacheMissNotices(), defaults.showCacheMissNotices);
 		assert.equal(settings.getQuietStartup(), defaults.quietStartup);
 		assert.equal(settings.getDefaultProjectTrust(), defaults.defaultProjectTrust);
-		assert.equal(settings.getBashInterceptorEnabled(), defaults.bashInterceptor.enabled);
 		assert.equal(settings.getSearchContextBefore(), defaults.search.contextBefore);
 		assert.equal(settings.getSearchContextAfter(), defaults.search.contextAfter);
 		assert.equal(settings.getCollapseChangelog(), defaults.collapseChangelog);

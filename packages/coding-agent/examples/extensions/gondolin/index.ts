@@ -89,99 +89,20 @@ function createGondolinReadOps(vm: VM, localCwd: string): ReadOperations {
 	};
 }
 
-function createGondolinWriteOps(vm: VM, localCwd: string, workspace: RealFSProvider): WriteOperations {
-	const workspaceRelativePath = (target: string) => {
-		for (const mount of [GUEST_WORKSPACE, `${GUEST_FUSE_MOUNT}${GUEST_WORKSPACE}`]) {
-			if (target === mount || target.startsWith(`${mount}/`)) return target.slice(mount.length) || "/";
-		}
-		return undefined;
-	};
+function createGondolinWriteOps(vm: VM, localCwd: string): WriteOperations {
 	return {
-		writeFile: async (filePath, content, options) => {
-			const target = toGuestPath(localCwd, filePath);
-			if (!options?.exclusive) {
-				await vm.fs.writeFile(target, content, { encoding: "utf8" });
-				return;
-			}
-			// Both fs.writeFile and the 0.12.0 FUSE bridge discard exclusive flags.
-			// Open through the exact provider mounted at /workspace, not unrelated host IO.
-			let relativePath = workspaceRelativePath(target);
-			if (relativePath === undefined) {
-				// A guest symlink can route an otherwise native-looking parent onto FUSE.
-				const parent = await vm.exec(["/bin/sh", "-c", 'cd "$1" && pwd -P', "sh", path.posix.dirname(target)]);
-				if (parent.exitCode !== 0) throw new Error(parent.stderr);
-				relativePath = workspaceRelativePath(
-					path.posix.join(parent.stdout.replace(/\n$/, ""), path.posix.basename(target)),
-				);
-			}
-			if (relativePath !== undefined) {
-				const mountedPath = relativePath;
-				const handle = await workspace.open(mountedPath, "wx").catch(async (error: NodeJS.ErrnoException) => {
-					// The provider resolves links before open: a dangling collision becomes ENOENT.
-					// Check occupancy in that same mounted namespace, without following the link.
-					if (
-						error.code === "ENOENT" &&
-						(await workspace.lstat(mountedPath).catch(() => undefined))?.isSymbolicLink()
-					) {
-						throw Object.assign(new Error(`EEXIST: file already exists, open '${target}'`), { code: "EEXIST" });
-					}
-					throw error;
-				});
-				try {
-					await handle.writeFile(content, { encoding: "utf8" });
-				} finally {
-					await handle.close();
-				}
-				return;
-			}
-			// Native guest paths do not cross FUSE. Noclobber is enforced by the guest OS.
-			const result = await vm.exec(
-				[
-					"/bin/sh",
-					"-c",
-					'(set -C; cat > "$1") || { if [ -e "$1" ] || [ -L "$1" ]; then exit 17; else exit 1; fi; }',
-					"sh",
-					target,
-				],
-				{ stdin: content },
-			);
-			if (result.exitCode !== 0) {
-				const error = new Error(`Failed to create guest file '${target}': ${result.stderr}`);
-				if (result.exitCode === 17) throw Object.assign(error, { code: "EEXIST" });
-				throw error;
-			}
+		writeFile: async (filePath, content) => {
+			await vm.fs.writeFile(toGuestPath(localCwd, filePath), content, { encoding: "utf8" });
 		},
 		mkdir: async (dirPath) => {
 			await vm.fs.mkdir(toGuestPath(localCwd, dirPath), { recursive: true });
 		},
-		// Reads inside the guest, so the checks `write` runs before overwriting see the same
-		// filesystem the write lands on rather than the host's. Absence is `undefined`; a path
-		// that exists but cannot be read keeps throwing, since it is not a free path.
-		readFile: async (filePath) => {
-			const target = toGuestPath(localCwd, filePath);
-			try {
-				return await vm.fs.readFile(target, { encoding: "utf8" });
-			} catch (error) {
-				// Gondolin 0.12.0 wraps filesystem errors without preserving errno. Probe
-				// the guest namespace rather than parsing localized error messages.
-				const probe = await vm.exec([
-					"/bin/sh",
-					"-c",
-					'(cd "$2") && { if [ -e "$1" ] || [ -L "$1" ]; then exit 0; else exit 44; fi; }',
-					"sh",
-					target,
-					path.posix.dirname(target),
-				]);
-				if (probe.exitCode === 44) return undefined;
-				throw error;
-			}
-		},
 	};
 }
 
-function createGondolinEditOps(vm: VM, localCwd: string, workspace: RealFSProvider): EditOperations {
+function createGondolinEditOps(vm: VM, localCwd: string): EditOperations {
 	const readOps = createGondolinReadOps(vm, localCwd);
-	const writeOps = createGondolinWriteOps(vm, localCwd, workspace);
+	const writeOps = createGondolinWriteOps(vm, localCwd);
 	return {
 		readFile: readOps.readFile,
 		writeFile: writeOps.writeFile,
@@ -328,8 +249,8 @@ export default function (pi: ExtensionAPI) {
 	function getFileTools(activeVm: VM) {
 		fileTools ??= createCodingTools(GUEST_WORKSPACE, {
 			read: { operations: createGondolinReadOps(activeVm, localCwd) },
-			write: { operations: createGondolinWriteOps(activeVm, localCwd, workspace) },
-			edit: { operations: createGondolinEditOps(activeVm, localCwd, workspace) },
+			write: { operations: createGondolinWriteOps(activeVm, localCwd) },
+			edit: { operations: createGondolinEditOps(activeVm, localCwd) },
 		});
 		return fileTools;
 	}

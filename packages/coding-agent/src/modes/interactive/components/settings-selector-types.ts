@@ -28,7 +28,6 @@ export interface SettingsConfig {
 	transport: Transport;
 	httpIdleTimeoutMs: number;
 	cacheWarming: CacheWarmingMode;
-	bashInterceptorEnabled: boolean;
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
 	availableDefaultModels?: Model<Api>[];
@@ -78,7 +77,6 @@ export interface SettingsCallbacks {
 	onTransportChange: (transport: Transport) => void;
 	onHttpIdleTimeoutChange: (timeoutMs: number) => void;
 	onCacheWarmingChange: (mode: CacheWarmingMode) => void;
-	onBashInterceptorEnabledChange: (enabled: boolean) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
 	onRouterModelChange?: (model: string) => void;
 	onCompactionModelChange?: (model: string) => void;

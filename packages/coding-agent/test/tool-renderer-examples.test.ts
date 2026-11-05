@@ -80,8 +80,12 @@ describe("tool renderer examples", () => {
 		const minimalMode = await getSessionState(join(examplesDir, "minimal-mode.ts"), ["edit"]);
 		const definition = minimalMode.editToolDefinition;
 		assert(definition);
-		const { renderShell: _renderShell, ...defaultShellDefinition } = definition;
-		assert.deepEqual(renderEditTool(definition, tempDir), renderEditTool(defaultShellDefinition, tempDir));
+		// The built-in edit renders its own shell; minimal mode's replacement renderers need the default one,
+		// which draws the tool background around the row.
+		assert.equal(definition.renderShell, "default");
+		assert.ok(renderEditTool(definition, tempDir).some((line) => line.includes("\x1b[48;")));
+		const { renderShell: _renderShell, ...inheritedShellDefinition } = definition;
+		assert.ok(!renderEditTool(inheritedShellDefinition, tempDir).some((line) => line.includes("\x1b[48;")));
 	});
 });
 
@@ -89,7 +93,7 @@ function renderEditTool(definition: ToolDefinition, cwd: string): string[] {
 	const component = new ToolExecutionComponent(
 		"edit",
 		"edit-shell-test",
-		{ input: "[notes.txt#A1B2]\nreplace 1..1:\n+after" },
+		{ path: "notes.txt", oldText: "before", newText: "after" },
 		{},
 		definition,
 		{ requestRender() {} } as TUI,

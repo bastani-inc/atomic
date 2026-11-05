@@ -2,8 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 
 const tempDirs: string[] = [];
@@ -18,8 +17,8 @@ afterEach(async () => {
 const text = (r: { content: Array<{ type: string; text?: string }> }): string =>
 	r.content.map((i) => i.text ?? "").join("\n");
 
-describe("notebook hashline read+edit parity", () => {
-	it("read projects notebook to editable hashline text", async () => {
+describe("notebook read+edit parity", () => {
+	it("read projects notebook to editable cell text", async () => {
 		const dir = await tempDir();
 		await writeFile(
 			join(dir, "nb.ipynb"),
@@ -33,9 +32,7 @@ describe("notebook hashline read+edit parity", () => {
 		const out = text(
 			await createReadToolDefinition(dir).execute("r", { path: "nb.ipynb" }, undefined, undefined, {} as never),
 		);
-		expect(out).toMatch(/^\[nb\.ipynb#[0-9A-F]{4}\]/);
-		expect(out).toContain("# %% [code] cell:0");
-		expect(out).toContain("print('old')");
+		expect(out).toBe("# %% [code] cell:0\nprint('old')");
 	});
 
 	it("read :raw returns raw notebook JSON", async () => {
@@ -53,9 +50,8 @@ describe("notebook hashline read+edit parity", () => {
 		expect(out).toContain('"nbformat"');
 	});
 
-	it("edit on hashline snapshot writes notebook json back", async () => {
-		const dir = await tempDir(),
-			store = createHashlineSnapshotStore();
+	it("built-in edit replaces projected cell text and writes notebook json back", async () => {
+		const dir = await tempDir();
 		const file = join(dir, "nb.ipynb");
 		await writeFile(
 			file,
@@ -75,27 +71,19 @@ describe("notebook hashline read+edit parity", () => {
 			}),
 		);
 		const readOut = text(
-			await createReadToolDefinition(dir, { hashlineStore: store }).execute(
-				"r",
-				{ path: "nb.ipynb" },
-				undefined,
-				undefined,
-				{} as never,
-			),
+			await createReadToolDefinition(dir).execute("r", { path: "nb.ipynb" }, undefined, undefined, {} as never),
 		);
-		const tag = readOut.match(/#([0-9A-F]{4})/)?.[1];
-		expect(tag).toBeTruthy();
-		const edit = createEditToolDefinition(dir, { hashlineStore: store });
+		expect(readOut).toContain("print('old')");
 		const editOut = text(
-			await edit.execute(
+			await createToolDefinition("edit", dir).execute(
 				"e",
-				{ input: `[nb.ipynb#${tag}]\nreplace 2..2:\n+print('NEW')` },
+				{ path: "nb.ipynb", edits: [{ oldText: "print('old')", newText: "print('NEW')" }] },
 				undefined,
 				undefined,
 				{} as never,
 			),
 		);
-		expect(editOut).toMatch(/^\[nb\.ipynb#[0-9A-F]{4}\]/);
+		expect(editOut).toBe("Successfully replaced 1 block(s) in nb.ipynb.");
 		const saved = JSON.parse(await readFile(file, "utf8"));
 		expect(saved.cells[0].source).toEqual(["print('NEW')\n"]);
 		expect(saved.cells[0].metadata).toEqual({ tags: ["keep"] });

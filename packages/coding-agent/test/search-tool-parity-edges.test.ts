@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -122,14 +122,14 @@ describe("find/search edge parity", () => {
 	});
 
 	it("splits delimiter-joined ranged archive searches", async () => {
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-range-a",
 			{ path: "rangearch.zip:a.txt", content: "needle a\n" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		await createWriteToolDefinition(testDir).execute(
+		await createToolDefinition("write", testDir).execute(
 			"zip-range-b",
 			{ path: "rangearch.zip:b.txt", content: "needle b\n" },
 			undefined,
@@ -196,7 +196,7 @@ describe("find/search edge parity", () => {
 				paths: ["src", "src/*.txt"],
 			}),
 		);
-		expect((output.match(/\*1:needle/g) ?? []).length).toBe(1);
+		expect((output.match(/a\.txt:1: needle/g) ?? []).length).toBe(1);
 	});
 	it("rejects invalid ranged search selectors", async () => {
 		writeFileSync(join(testDir, "a.txt"), "needle\n");
@@ -212,7 +212,7 @@ describe("find/search edge parity", () => {
 				paths: "ctx.txt",
 			}),
 		);
-		expect(output).toContain("*2:needle");
+		expect(output).toBe("ctx.txt:2: needle");
 		expect(output).not.toContain("before");
 		expect(output).not.toContain("after");
 	});
@@ -225,9 +225,9 @@ describe("find/search edge parity", () => {
 				paths: "long.txt",
 			}),
 		);
-		const matchLine = output.split("\n").find((line) => line.startsWith("*1:"));
+		const matchLine = output.split("\n").find((line) => line.startsWith("long.txt:1: "));
 		expect(matchLine).toBeDefined();
-		const payload = matchLine!.slice(3);
+		const payload = matchLine!.slice("long.txt:1: ".length);
 		expect(payload.endsWith("...") || payload.endsWith("... [truncated]") || payload.endsWith("… [truncated]")).toBe(
 			true,
 		);

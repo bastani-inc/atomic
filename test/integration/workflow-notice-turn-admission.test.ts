@@ -113,7 +113,6 @@ function fixtureSettings(): SettingsManager {
 	return SettingsManager.inMemory({
 		retry: { enabled: false },
 		sessionSummary: { enabled: false },
-		bashInterceptor: { enabled: false },
 	});
 }
 

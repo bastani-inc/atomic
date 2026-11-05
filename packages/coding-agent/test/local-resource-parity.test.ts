@@ -5,10 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
-import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 const tempDirs: string[] = [];
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
@@ -24,13 +23,12 @@ afterEach(async () => {
 });
 
 describe("local resource parity", () => {
-	it("uses source file labels and hashline snapshots for local:// read/search/write", async () => {
-		const dir = await tempDir(),
-			store = createHashlineSnapshotStore();
+	it("resolves local:// to its source file for read, search and write", async () => {
+		const dir = await tempDir();
 		await writeFile(join(dir, "a.txt"), "needle\n", "utf8");
 		expect(
 			text(
-				await createReadToolDefinition(dir, { hashlineStore: store }).execute(
+				await createReadToolDefinition(dir).execute(
 					"read-local",
 					{ path: "local://a.txt" },
 					undefined,
@@ -38,25 +36,24 @@ describe("local resource parity", () => {
 					{} as never,
 				),
 			),
-		).toContain("[a.txt#");
-		const search = await createSearchToolDefinition(dir, { hashlineStore: store }).execute(
+		).toBe("needle");
+		const search = await createSearchToolDefinition(dir).execute(
 			"search-local",
 			{ pattern: "needle", paths: "local://a.txt" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		expect(text(search)).toContain("[a.txt#");
+		expect(text(search)).toContain("a.txt:1: needle");
 		expect(search.details?.files).toContain("a.txt");
-		const write = await createWriteToolDefinition(dir, { hashlineStore: store }).execute(
+		const write = await createToolDefinition("write", dir).execute(
 			"write-local",
 			{ path: "local://a.txt", content: "updated\n" },
 			undefined,
 			undefined,
 			{} as never,
 		);
-		expect(text(write)).toContain("[a.txt#");
-		expect(write.details?.resolvedPath).toBe(join(dir, "a.txt"));
+		expect(text(write)).toBe(`Successfully wrote to ${join(dir, "a.txt")}`);
 		expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("updated\n");
 	});
 
@@ -72,7 +69,7 @@ describe("local resource parity", () => {
 			),
 		).rejects.toThrow("escapes the workspace");
 		await expect(
-			createWriteToolDefinition(dir).execute(
+			createToolDefinition("write", dir).execute(
 				"write-local-traversal",
 				{ path: "local://../secret.txt", content: "nope" },
 				undefined,
@@ -123,19 +120,6 @@ describe("local resource parity", () => {
 				{} as never,
 			),
 		).rejects.toThrow("escapes the workspace");
-	});
-
-	it("reports write executable and resource metadata", async () => {
-		const dir = await tempDir();
-		const script = await createWriteToolDefinition(dir).execute(
-			"write-script",
-			{ path: "run.sh", content: "#!/bin/sh\necho ok\n" },
-			undefined,
-			undefined,
-			{} as never,
-		);
-		expect(script.details?.madeExecutable).toBe(true);
-		expect(script.details?.resolvedPath).toBe(join(dir, "run.sh"));
 	});
 
 	it("emits find progress and rich details", async () => {

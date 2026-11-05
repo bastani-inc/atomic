@@ -62,7 +62,6 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				transport: this.settingsManager.getTransport(),
 				httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
 				cacheWarming: this.settingsManager.getCacheWarmingMode(),
-				bashInterceptorEnabled: this.settingsManager.getBashInterceptorEnabled(),
 				thinkingLevel: this.session.thinkingLevel,
 				availableThinkingLevels: this.session.getAvailableThinkingLevels(),
 				availableDefaultModels: [...this.session.modelRuntime.getAvailableSnapshot()],
@@ -146,9 +145,6 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 				onCacheWarmingChange: (mode) => {
 					this.session.setCacheWarmingMode(mode);
-				},
-				onBashInterceptorEnabledChange: (enabled) => {
-					this.settingsManager.setBashInterceptorEnabled(enabled);
 				},
 				onThinkingLevelChange: async (level) => {
 					await this.session.setThinkingLevel(level, { persist: true });

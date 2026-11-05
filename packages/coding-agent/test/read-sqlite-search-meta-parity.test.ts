@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
+import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { sqlite } from "./helpers/sqlite.ts";
 
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
@@ -177,7 +177,7 @@ describe("sqlite and metadata parity", () => {
 			),
 		).rejects.toThrow(/Invalid SQLite where/);
 		await expect(
-			createWriteToolDefinition(dir).execute(
+			createToolDefinition("write", dir).execute(
 				"unknown-column",
 				{ path: "data.sqlite:users:1", content: "{missing:'nope'}" },
 				undefined,

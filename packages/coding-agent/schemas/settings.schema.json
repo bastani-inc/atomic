@@ -373,16 +373,6 @@
       "type": "string",
       "description": "Prefix prepended to every bash command, for example to enable shell aliases."
     },
-    "bashInterceptor": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "When true, block shell commands that have dedicated tools and offer remaining bash tool calls to user_bash extension handlers before local execution.",
-          "default": false
-        }
-      }
-    },
     "search": {
       "type": "object",
       "properties": {

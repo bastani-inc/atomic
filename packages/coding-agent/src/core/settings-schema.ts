@@ -202,16 +202,6 @@ const SearchSettingsSchema = Type.Object({
 	),
 });
 
-const BashInterceptorSettingsSchema = Type.Object({
-	enabled: Type.Optional(
-		Type.Boolean({
-			description:
-				"When true, block shell commands that have dedicated tools and offer remaining bash tool calls to user_bash extension handlers before local execution.",
-			default: SETTINGS_DEFAULTS.bashInterceptor.enabled,
-		}),
-	),
-});
-
 const HerdrSettingsSchema = Type.Object({
 	enabled: Type.Optional(
 		Type.Boolean({
@@ -590,7 +580,6 @@ export const SettingsSchema = Type.Object(
 		shellCommandPrefix: Type.Optional(
 			Type.String({ description: "Prefix prepended to every bash command, for example to enable shell aliases." }),
 		),
-		bashInterceptor: Type.Optional(BashInterceptorSettingsSchema),
 		search: Type.Optional(SearchSettingsSchema),
 		npmCommand: Type.Optional(
 			Type.Array(Type.String(), {
@@ -783,7 +772,6 @@ export interface RetrySettings extends Omit<Static<typeof RetrySettingsSchema>, 
 export interface TerminalSettings extends Static<typeof TerminalSettingsSchema> {}
 export interface ImageSettings extends Static<typeof ImageSettingsSchema> {}
 export interface SearchSettings extends Static<typeof SearchSettingsSchema> {}
-export interface BashInterceptorSettings extends Static<typeof BashInterceptorSettingsSchema> {}
 export interface ModelRoutingSettings extends Static<typeof ModelRoutingSettingsSchema> {}
 export interface ThinkingBudgetsSettings extends Static<typeof ThinkingBudgetsSettingsSchema> {}
 export type MermaidRenderingMode = NonNullable<Static<typeof MarkdownSettingsSchema>["mermaid"]>;
