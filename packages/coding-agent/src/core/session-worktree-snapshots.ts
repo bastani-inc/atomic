@@ -497,3 +497,24 @@ export function describeWorktreeSnapshot(root: string, snapshot: WorktreeSnapsho
 			: []),
 	];
 }
+
+/**
+ * Opens `sessionManager`'s session where it should continue: in place when its checkout matches the last snapshot,
+ * in the restored worktree otherwise. Returns the notices to show for a restore it performed.
+ */
+export async function openSessionInWorktree(
+	sessionManager: SessionManager,
+	options: ResumeSessionWorktreeOptions & { readonly sessionDirectory?: string },
+): Promise<{
+	readonly sessionManager: SessionManager;
+	readonly notices: { readonly type: "info" | "warning"; readonly message: string }[];
+}> {
+	const startedAt = new Date().toISOString();
+	const resume = await resumeSessionWorktree(sessionManager, options);
+	const moved =
+		(resume.status === "restored" || resume.status === "verified") && resume.cwd !== sessionManager.getCwd();
+	const opened = moved
+		? await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, options.sessionDirectory)
+		: sessionManager;
+	return { sessionManager: opened, notices: worktreeRestoreNotices(opened, startedAt) };
+}

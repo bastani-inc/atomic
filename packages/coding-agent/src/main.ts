@@ -60,7 +60,7 @@ import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from 
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
-import { resumeSessionWorktree, worktreeRestoreNotices } from "./core/session-worktree-snapshots.ts";
+import { openSessionInWorktree } from "./core/session-worktree-snapshots.ts";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import {
@@ -574,21 +574,17 @@ export async function main(argv: string[], options?: MainOptions) {
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// storage selection before loading the selected session's resources.
 	let sessionManager = await createSessionManager(parsed, cwd, undefined, startupSettingsManager, sessionStorage);
-	const worktreeRestoreStartedAt = new Date().toISOString();
+	let worktreeRestoreDiagnostics: { readonly type: "info" | "warning"; readonly message: string }[];
 	try {
-		const resume = await resumeSessionWorktree(sessionManager, {
+		({ sessionManager, notices: worktreeRestoreDiagnostics } = await openSessionInWorktree(sessionManager, {
 			settings: startupSettingsManager.getWorktreeSnapshotSettings(),
-		});
-		if ((resume.status === "restored" || resume.status === "verified") && resume.cwd !== sessionManager.getCwd()) {
-			sessionManager = await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd);
-		}
+		}));
 	} catch (error) {
 		if (!isWorkspaceError(error) && !isGitUnavailableError(error)) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${error.message}`));
 		process.exit(1);
 	}
-	const worktreeRestoreDiagnostics = worktreeRestoreNotices(sessionManager, worktreeRestoreStartedAt);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		startupEarlyInputCapture?.consume();

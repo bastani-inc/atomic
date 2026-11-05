@@ -105,10 +105,13 @@ export type AgentSessionEvent =
 			taskId: TaskId;
 			resources: readonly ResourceFailure[];
 	  }
-	/** Once per distinct reason a turn's worktree snapshot could not be recorded; the turn itself is unaffected. */
+	/**
+	 * Once per distinct reason a turn's worktree snapshot could not be recorded; the turn itself is unaffected. `reason`
+	 * is the typed error in JSON form, so it crosses RPC; `rehydrateWorkspaceError(reason)` restores its class.
+	 */
 	| {
 			type: "worktree_snapshot_unavailable";
-			reason: import("./session-worktree-snapshots.ts").WorktreeSnapshotUnavailable;
+			reason: import("./worktree-snapshot/errors.ts").SerializedWorkspaceError;
 	  };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;

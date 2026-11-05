@@ -72,6 +72,7 @@ import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId 
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
+import { serializeWorkspaceError } from "./worktree-snapshot/errors.ts";
 
 export type { SessionCompactOptions } from "./agent-session-methods.ts";
 export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
@@ -302,7 +303,7 @@ class AgentSessionBase {
 			onUnavailable: (reason) =>
 				(this as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
 					type: "worktree_snapshot_unavailable",
-					reason,
+					reason: serializeWorkspaceError(reason),
 				}),
 		});
 		this._cacheWarmer = config.cacheWarmer;

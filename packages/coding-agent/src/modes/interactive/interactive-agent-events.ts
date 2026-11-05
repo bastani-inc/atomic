@@ -557,7 +557,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "worktree_snapshot_unavailable": {
-			if (!WORKSPACE_ABSENCE_CODES.has(event.reason.code)) this.showWarning(event.reason.message);
+			if (!WORKSPACE_ABSENCE_CODES.has(event.reason.code ?? "")) this.showWarning(event.reason.message);
 			break;
 		}
 		case "model_fallback_end": {

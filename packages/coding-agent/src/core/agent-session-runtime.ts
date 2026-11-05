@@ -30,7 +30,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
-import { resumeSessionWorktree } from "./session-worktree-snapshots.ts";
+import { openSessionInWorktree } from "./session-worktree-snapshots.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -563,13 +563,8 @@ export class AgentSessionRuntime {
 	 * is missing, restores it into a fresh worktree under Atomic home. Returns the session opened where it continues.
 	 */
 	private async resumeWorktree(sessionManager: SessionManager, sessionDirectory?: string): Promise<SessionManager> {
-		const resume = await resumeSessionWorktree(sessionManager, {
-			settings: this.services.settingsManager.getWorktreeSnapshotSettings(),
-		});
-		if ((resume.status !== "restored" && resume.status !== "verified") || resume.cwd === sessionManager.getCwd()) {
-			return sessionManager;
-		}
-		return sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, sessionDirectory);
+		const settings = this.services.settingsManager.getWorktreeSnapshotSettings();
+		return (await openSessionInWorktree(sessionManager, { settings, sessionDirectory })).sessionManager;
 	}
 
 	async switchSession(
