@@ -420,3 +420,28 @@ test("stage lists show a skipped reason before the readiness decision, and stage
 	assert.deepEqual(snapshotTranscriptEntries(stage(), false), []);
 	assert.equal(snapshotTranscriptEntryCount(stage()), 0);
 });
+
+test("outer whitespace of a user message is trimmed, and other notices keep their own summary", () => {
+	assert.equal(userMessageText([{ type: "text", text: "  Hi  " }]), "Hi");
+	assert.equal(
+		noticeSummary({ id: "c", ts: 1, kind: "compaction", to: "compacted", meta: "12k → 3k" }),
+		"~ compaction → compacted",
+	);
+	const listing = { action: "stages" as const, runId: "r1", filter: "all", stages: [summarizeStage(stage())] };
+	assert.match(renderResult(listing).replace(/\x1b\[[0-9;]*m/g, ""), /\(s1\): completed\s+│/);
+});
+
+test("the host decision port refuses a live host without a model registry", async () => {
+	const catalog = workflowModelCatalogFromContext(
+		{
+			model: decisionChatModel,
+			getDecisionModel: () => "",
+			modelRegistry: { getAvailable: () => [decisionChatModel] },
+		},
+		() => ({ model: decisionChatModel, getDecisionModel: () => "" }),
+	);
+	await assert.rejects(
+		catalog!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
+		/require host decision model and model registry support/,
+	);
+});

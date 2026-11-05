@@ -465,11 +465,12 @@ test("valid unusual state is accepted: shared references, null prototypes, neste
 			],
 		},
 		{ header: "Bearer abc" },
+		{ note: "sk-short" },
 	]) {
 		const result = await decide({ ...decision, state: state as unknown as DecisionRequest["state"] });
 		assert.equal(result.answers.next_action.choice, "stay");
 	}
-	assert.equal(chat.mock.calls.length, 4);
+	assert.equal(chat.mock.calls.length, 5);
 });
 
 test("the chat model receives one described schema property per question", async () => {
@@ -650,7 +651,10 @@ test("an unknown decisionModel and a missing chat model are unavailable, and an 
 	await assert.rejects(
 		decide({ ...decision, settings: { getDecisionModel: () => " padded" } }),
 		(error: unknown) =>
-			isDecisionConfigError(error) && error.code === "invalid-setting" && error.source === "settings",
+			isDecisionConfigError(error) &&
+			error.code === "invalid-setting" &&
+			error.source === "settings" &&
+			error.field === "decisionModel",
 	);
 });
 

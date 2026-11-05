@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { Container } from "@earendil-works/pi-tui";
 import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
+import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
@@ -661,5 +662,27 @@ test("the decision model accessors refuse malformed values with a typed config e
 			source: "sdk",
 			field: "decisionModel",
 		}),
+	);
+});
+
+test("an unset decision model opens on Automatic and the submenu names the global scope", () => {
+	const config = settingsConfig({ decisionModel: undefined, availableDefaultModels: [] });
+	const item = buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
+	const shown = render(item!.submenu!(item!.currentValue, vi.fn()) as Container);
+	expect(shown).toContain("→ ✓ Automatic");
+	expect(shown).not.toContain("not currently available");
+	expect(shown).toContain("Saves to global settings. Choose a provider permitted to receive decision context.");
+});
+
+test("an extension reads the session's decision model, and a host without one says so", () => {
+	const source = (getDecisionModel?: () => string) =>
+		({
+			assertActive: () => {},
+			getSessionSignal: () => new AbortController().signal,
+			...(getDecisionModel ? { getDecisionModel } : {}),
+		}) as unknown as ExtensionContextSource;
+	expect(createExtensionContext(source(() => "typesafe/jev-latest")).getDecisionModel()).toBe("typesafe/jev-latest");
+	expect(() => createExtensionContext(source()).getDecisionModel()).toThrow(
+		"Decision model settings are unavailable in this extension host.",
 	);
 });

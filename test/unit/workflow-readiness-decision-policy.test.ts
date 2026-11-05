@@ -161,3 +161,15 @@ test("a decision missing one option's probability asks, and the instructions des
 		"A workflow stage asked the user a question. The user then sent `user_message`, and the stage answered with `stage_reply`. `stage_objective` is what the stage was asked to do. Decide whether the stage can complete now or should stay open for the user.",
 	);
 });
+
+test("a decision missing the advance probability asks rather than staying", () => {
+	assert.deepEqual(
+		readinessVerdict({
+			answers: {
+				next_action: { type: "choice", choice: "stay", probabilities: { stay: 0.95 } },
+				reply_addresses_message: { type: "bool", value: false, probability: 0.1 },
+			},
+		}),
+		{ outcome: "ask" },
+	);
+});
