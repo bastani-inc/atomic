@@ -734,3 +734,145 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+async function waitForOffBrokerWithStorage(): Promise<void> {
+	await vi.waitFor(
+		async () => {
+			const broker = await queryIntercomBroker(agentDir);
+			assert.equal(broker.state, "running");
+			if (broker.state === "running") {
+				assert.equal(broker.report.multiNode.status, "off");
+				assert.notEqual(broker.report.storage, undefined);
+			}
+		},
+		{ timeout: BROKER_WAIT_MS, interval: 50 },
+	);
+}
+
+test(
+	"a session that selects shared storage without the CI profile may use a reused broker that holds a selection but does not route across machines (#4320)",
+	async () => {
+		startBrokerWithStorage(JSON.stringify({ adapter: "@example/adapter-that-is-not-installed" }));
+		await waitForOffBrokerWithStorage();
+		vi.stubEnv("ATOMIC_STORAGE", sharedStorage());
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "explicit-shared");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+
+		const status = await alpha.status(alphaContext);
+		assert.equal(status.isError, false, status.content[0]?.text);
+		assert.deepEqual(status.details?.groups, ["default"]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a session with an explicit group keeps it when its single-machine broker is restarted routing across machines (#4320)",
+	async () => {
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "reviewers");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "explicit-rejoin");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+		assert.deepEqual((await alpha.status(alphaContext)).details?.groups, ["reviewers"]);
+		await brokerRouting("off");
+
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ storage: sharedSelection() }));
+		await restartIntercomBroker(agentDir);
+		await brokerRouting("on");
+
+		await vi.waitFor(
+			async () => {
+				const status = await alpha.status(alphaContext);
+				assert.equal(status.isError, false, status.content[0]?.text);
+				assert.deepEqual(status.details?.groups, ["reviewers"]);
+			},
+			{ timeout: BROKER_WAIT_MS, interval: 200 },
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an explicit default warns once for the session, not again when it reconnects to a restarted broker that routes the same way (#4320)",
+	async () => {
+		const first = startBrokerWithStorage(sharedStorage());
+		await brokerRouting("on");
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "default");
+		const notices: string[] = [];
+		const alphaContext = sessionContext(
+			repository("alpha", "git@github.com:acme/alpha.git"),
+			"warn-once-reconnect",
+			notices,
+		);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+		assert.equal((await alpha.status(alphaContext)).isError, false);
+		assert.equal(notices.length, 1, notices.join("\n"));
+
+		await replaceBrokerWithSharedStorage(first);
+		await vi.waitFor(
+			async () => {
+				const status = await alpha.status(alphaContext);
+				assert.equal(status.isError, false, status.content[0]?.text);
+			},
+			{ timeout: BROKER_WAIT_MS, interval: 200 },
+		);
+		assert.equal(notices.length, 1, notices.join("\n"));
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a resumed session restores the groups it chose under the project home that its broker's routing now gives it (#4320)",
+	async () => {
+		startBrokerWithStorage(sharedStorage());
+		await brokerRouting("on");
+		const saved = {
+			type: "custom",
+			customType: "intercom_session_memberships",
+			data: {
+				sessionId: "resumed-chosen",
+				homeGroup: "project:acme/alpha",
+				groups: ["project:acme/alpha", "reviewers", "default"],
+			},
+		};
+		const alphaContext = sessionContext(
+			repository("alpha", "git@github.com:acme/alpha.git"),
+			"resumed-chosen",
+			undefined,
+			[saved],
+		);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext, "resume");
+
+		const status = await alpha.status(alphaContext);
+		assert.equal(status.isError, false, status.content[0]?.text);
+		assert.deepEqual([...(status.details?.groups ?? [])].sort(), ["default", "project:acme/alpha", "reviewers"]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a reloaded session keeps the groups it joined when its broker's routing, and so its home group, is unchanged (#4320)",
+	async () => {
+		startBrokerWithStorage("");
+		await brokerRouting("off");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "reload-same-home");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+		assert.equal((await alpha.run(alphaContext, { action: "join", group: "reviewers" })).isError, false);
+
+		await alpha.stop(alphaContext, "reload");
+		await alpha.start(alphaContext, "reload");
+
+		const status = await alpha.status(alphaContext);
+		assert.equal(status.isError, false, status.content[0]?.text);
+		assert.deepEqual([...(status.details?.groups ?? [])].sort(), ["default", "reviewers"]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
