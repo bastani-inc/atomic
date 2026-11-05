@@ -172,9 +172,9 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
  * it on the path, otherwise every entry before the boundary.
  */
 function boundaryCoveredIndex(path: SessionEntry[], boundary: CompactionEntry, boundaryIndex: number): number {
-	const coveredId = boundary.coveredThroughEntryId;
-	if (coveredId === undefined) return boundaryIndex - 1;
-	const covered = path.findIndex((entry, index) => index < boundaryIndex && entry.id === coveredId);
+	const covered = path.findIndex(
+		(entry, index) => index < boundaryIndex && entry.id === boundary.coveredThroughEntryId,
+	);
 	return covered >= 0 ? covered : boundaryIndex - 1;
 }
 

@@ -141,7 +141,6 @@ export function isBackgroundCompactionResultRecord(value: unknown): value is Bac
 		typeof value.summary === "string" &&
 		value.summary.trim().length > 0 &&
 		(value.firstKeptEntryId === null || typeof value.firstKeptEntryId === "string") &&
-		typeof value.tokensBefore === "number" &&
 		Number.isFinite(value.tokensBefore) &&
 		typeof value.fromExtension === "boolean" &&
 		(value.usage === undefined || isRecord(value.usage)) &&
@@ -154,8 +153,7 @@ export function isBackgroundCompactionResultRecord(value: unknown): value is Bac
 }
 
 function toolCallIds(entry: SessionEntry): string[] {
-	if (entry.type !== "message" || entry.message.role !== "assistant" || !Array.isArray(entry.message.content))
-		return [];
+	if (entry.type !== "message" || entry.message.role !== "assistant") return [];
 	return entry.message.content.flatMap((block) => (block.type === "toolCall" ? [block.id] : []));
 }
 
@@ -219,9 +217,8 @@ export function coveredThroughIndex(
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index];
 		if (!isVerbatimBoundary(entry)) continue;
-		const covered =
-			entry.coveredThroughEntryId === undefined ? undefined : indexById.get(entry.coveredThroughEntryId);
-		return covered !== undefined && covered < index ? covered : index - 1;
+		const covered = (indexById as ReadonlyMap<string | undefined, number>).get(entry.coveredThroughEntryId);
+		return Math.min(covered ?? index, index - 1);
 	}
 	return -1;
 }
@@ -236,9 +233,8 @@ export function backgroundCompactionDiscardReason(
 	resultIndex: number,
 	indexById: ReadonlyMap<string, number> = indexBranch(branch),
 ): BackgroundCompactionDiscardReason | undefined {
-	const entry = branch[resultIndex];
-	if (entry?.type !== "custom" || !isBackgroundCompactionResultRecord(entry.data)) return "malformed";
-	const record = entry.data;
+	const record = (branch[resultIndex] as Partial<CustomEntry> | undefined)?.data;
+	if (!isBackgroundCompactionResultRecord(record)) return "malformed";
 	const upToIndex = indexById.get(record.upToEntryId);
 	if (upToIndex === undefined || upToIndex >= resultIndex) return "off-branch";
 	if (record.firstKeptEntryId !== null) {
@@ -248,9 +244,8 @@ export function backgroundCompactionDiscardReason(
 	if (upToIndex <= coveredThroughIndex(branch, indexById)) return "superseded";
 	for (let index = upToIndex + 1; index < branch.length; index++) {
 		const later = branch[index];
-		if (later.type !== "context_edit") continue;
-		const target = indexById.get(later.targetId);
-		if (target !== undefined && target <= upToIndex) return "context-edited";
+		if (later.type === "context_edit" && (indexById.get(later.targetId) ?? branch.length) <= upToIndex)
+			return "context-edited";
 	}
 	return undefined;
 }
@@ -265,8 +260,8 @@ export function selectReadyBackgroundCompaction(
 	const indexById = indexBranch(branch);
 	let best: ReadyBackgroundCompaction | undefined;
 	for (let index = 0; index < branch.length; index++) {
-		const entry = branch[index];
-		if (entry.type !== "custom" || entry.customType !== BACKGROUND_COMPACTION_RESULT_TYPE) continue;
+		const entry = branch[index] as CustomEntry;
+		if (entry.customType !== BACKGROUND_COMPACTION_RESULT_TYPE) continue;
 		if (backgroundCompactionDiscardReason(branch, index, indexById) !== undefined) continue;
 		const record = entry.data as BackgroundCompactionResultRecord;
 		const upToIndex = indexById.get(record.upToEntryId) as number;
@@ -275,18 +270,28 @@ export function selectReadyBackgroundCompaction(
 	return best;
 }
 
+/** Why a finished task's prefix can no longer be saved: it left the branch, or a newer boundary covers it. */
+export function staleBackgroundCompactionPrefix(
+	branch: readonly SessionEntry[],
+	upToEntryId: string,
+): "off-branch" | "superseded" | undefined {
+	const upToIndex = indexBranch(branch).get(upToEntryId);
+	if (upToIndex === undefined) return "off-branch";
+	return upToIndex <= coveredThroughIndex(branch) ? "superseded" : undefined;
+}
+
 /** The typed reason a known stored result was dropped, or undefined when it is still committable. */
 export function discardedBackgroundCompaction(
 	branch: readonly SessionEntry[],
-	resultEntryId: string,
+	resultEntryId: string | undefined,
 ): BackgroundCompactionDiscardedError | undefined {
 	const indexById = indexBranch(branch);
-	const resultIndex = indexById.get(resultEntryId);
+	const resultIndex = (indexById as ReadonlyMap<string | undefined, number>).get(resultEntryId);
 	if (resultIndex === undefined) return undefined;
 	const reason = backgroundCompactionDiscardReason(branch, resultIndex, indexById);
 	if (reason === undefined) return undefined;
 	const entry = branch[resultIndex] as CustomEntry;
-	const upToEntryId = isBackgroundCompactionResultRecord(entry.data) ? entry.data.upToEntryId : resultEntryId;
+	const upToEntryId = isBackgroundCompactionResultRecord(entry.data) ? entry.data.upToEntryId : entry.id;
 	return new BackgroundCompactionDiscardedError({ upToEntryId, reason });
 }
 
@@ -325,8 +330,9 @@ export function resolveBackgroundCompactionThresholdPercent(
 ): number {
 	if (value === undefined) return DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT;
 	const field = "compaction.backgroundThresholdPercent";
-	if (typeof value !== "number" || !Number.isFinite(value))
+	if (typeof value !== "number" || Number.isNaN(value))
 		throw new BackgroundCompactionConfigError({ source, field, reason: "not-a-number" });
-	if (value <= 0 || value >= 100) throw new BackgroundCompactionConfigError({ source, field, reason: "out-of-range" });
+	if (!(value > 0 && value < 100))
+		throw new BackgroundCompactionConfigError({ source, field, reason: "out-of-range" });
 	return value;
 }

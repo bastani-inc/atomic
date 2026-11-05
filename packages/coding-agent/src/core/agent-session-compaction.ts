@@ -105,7 +105,7 @@ export interface PlannedVerbatimCompaction {
  */
 export async function planVerbatimCompaction(
 	this: AgentSession,
-	options: VerbatimCompactionApplyOptions,
+	options: Omit<VerbatimCompactionApplyOptions, "backupLabel">,
 	pathEntries: SessionEntry[],
 ): Promise<PlannedVerbatimCompaction | undefined> {
 	assertCompactionOpen(this);

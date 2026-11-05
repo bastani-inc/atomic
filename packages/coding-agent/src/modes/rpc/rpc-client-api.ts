@@ -217,10 +217,10 @@ export abstract class RpcClientApi {
 		await this.request({ type: "set_auto_compaction", enabled });
 	}
 	async setBackgroundCompaction(enabled: boolean): Promise<void> {
-		await this.request({ type: "set_background_compaction", enabled });
+		this.data<void>(await this.request({ type: "set_background_compaction", enabled }));
 	}
 	async setBackgroundCompactionThreshold(percent: number): Promise<void> {
-		await this.request({ type: "set_background_compaction_threshold", percent });
+		this.data<void>(await this.request({ type: "set_background_compaction_threshold", percent }));
 	}
 	/**
 	 * Say what extension UI this client can show. With `questionnaire`, `ask_user_question` arrives as one

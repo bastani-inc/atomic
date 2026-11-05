@@ -51,6 +51,15 @@ function openSettingsSelector() {
 		model: chatModel,
 		setModel: () => assert.fail("compaction settings must not change the chat model"),
 		autoCompactionEnabled: true,
+		backgroundCompactionEnabled: true,
+		backgroundCompactionThresholdPercent: 75,
+		backgroundChanges: [] as Array<boolean | number>,
+		setBackgroundCompactionEnabled(enabled: boolean) {
+			this.backgroundChanges.push(enabled);
+		},
+		setBackgroundCompactionThresholdPercent(percent: number) {
+			this.backgroundChanges.push(percent);
+		},
 		steeringMode: "one-at-a-time",
 		followUpMode: "one-at-a-time",
 		thinkingLevel: "off",
@@ -137,6 +146,25 @@ test("settings selector searches and saves the compaction model without changing
 		assert.equal(settingsManager.getProjectSettings().compactionModel, undefined);
 		assert.equal(session.model, chatModel);
 		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Compaction model\s+openai\/gpt-4\.1-mini/);
+	} finally {
+		mode.ui.stop();
+	}
+});
+
+test("the background compaction rows reach the session (#4330)", () => {
+	const { mode, selector, session } = openSettingsSelector();
+	try {
+		const list = selector.getSettingsList();
+		const rendered = stripTerminalSequences(list.render(120).join("\n"));
+		assert.match(
+			rendered,
+			/Auto-compact\s+true\n.*Background compaction\s+true\n.*Background compaction threshold\s+75/,
+		);
+		list.handleInput("\x1b[B");
+		list.handleInput("\r");
+		list.handleInput("\x1b[B");
+		list.handleInput("\r");
+		assert.deepEqual(session.backgroundChanges, [false, 80]);
 	} finally {
 		mode.ui.stop();
 	}

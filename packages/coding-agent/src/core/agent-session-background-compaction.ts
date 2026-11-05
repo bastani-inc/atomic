@@ -7,6 +7,7 @@
  * compaction remains for the hard threshold and overflow when no result is ready.
  */
 
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	commitVerbatimCompaction,
@@ -23,13 +24,13 @@ import {
 	type BackgroundCompactionState,
 	backgroundCompactionRetryDelayMs,
 	type CompactionWakeDispatcher,
-	coveredThroughIndex,
 	discardedBackgroundCompaction,
 	findBackgroundCompactionSafePoint,
 	IDLE_BACKGROUND_COMPACTION_STATE,
 	selectReadyBackgroundCompaction,
 	serializeBackgroundCompactionState,
 	shouldStartBackgroundCompaction,
+	staleBackgroundCompactionPrefix,
 } from "./compaction/background-compaction.ts";
 import {
 	BackgroundCompactionDiscardedError,
@@ -71,7 +72,10 @@ type TaskOutcome =
 	| { readonly kind: "discarded"; readonly error: BackgroundCompactionDiscardedError }
 	| { readonly kind: "cancelled" };
 
-/** Per-session scheduler state. No timers: retries wait for a turn boundary after `nextAttemptAt`. */
+/**
+ * Per-session scheduler state. No timers: retries wait for a turn boundary after `nextAttemptAt`, a monotonic
+ * `performance.now()` reading so a wall-clock step cannot stretch the backoff.
+ */
 export class BackgroundCompactionRuntime {
 	task: RunningBackgroundCompaction | undefined;
 	failure:
@@ -237,7 +241,6 @@ async function runTask(
 				reason: "threshold",
 				urgency: "recoverable",
 				abortController: controller,
-				backupLabel: "background-compact",
 				resolvePlannerAuth: async (candidate, signal) => {
 					const auth = await session._getRequiredRequestAuth(candidate, signal ?? controller.signal);
 					return auth.apiKey || auth.headers ? authForStream(session, auth) : undefined;
@@ -246,27 +249,19 @@ async function runTask(
 			prefix,
 		);
 	} catch (error) {
-		if (controller.signal.aborted || session._disposed) return { kind: "cancelled" };
+		if (controller.signal.aborted) return { kind: "cancelled" };
 		return {
 			kind: "failed",
 			error: new BackgroundCompactionPlanningError({ upToEntryId, attempt: task.attempt }, { cause: error }),
 		};
 	}
-	if (controller.signal.aborted || session._disposed) return { kind: "cancelled" };
 	if (!planned) return { kind: "failed", error: new BackgroundCompactionNotCompactableError({ upToEntryId }) };
 
-	const branch = session.sessionManager.getBranch();
-	const upToIndex = branch.findIndex((entry) => entry.id === upToEntryId);
-	if (upToIndex < 0) {
+	const stale = staleBackgroundCompactionPrefix(session.sessionManager.getBranch(), upToEntryId);
+	if (stale) {
 		return {
 			kind: "discarded",
-			error: new BackgroundCompactionDiscardedError({ upToEntryId, reason: "off-branch", phase: "persist" }),
-		};
-	}
-	if (upToIndex <= coveredThroughIndex(branch)) {
-		return {
-			kind: "discarded",
-			error: new BackgroundCompactionDiscardedError({ upToEntryId, reason: "superseded", phase: "persist" }),
+			error: new BackgroundCompactionDiscardedError({ upToEntryId, reason: stale, phase: "persist" }),
 		};
 	}
 	try {
@@ -276,33 +271,33 @@ async function runTask(
 		);
 		return { kind: "ready", resultEntryId };
 	} catch (error) {
-		if (controller.signal.aborted || session._disposed) return { kind: "cancelled" };
+		if (controller.signal.aborted) return { kind: "cancelled" };
 		return { kind: "failed", error: new BackgroundCompactionPersistError({ upToEntryId }, { cause: error }) };
 	}
 }
 
 function settleTask(session: AgentSession, task: RunningBackgroundCompaction, outcome: TaskOutcome): void {
 	const runtime = runtimeOf(session);
-	if (runtime.task === task) runtime.task = undefined;
+	runtime.task = undefined;
 	switch (outcome.kind) {
 		case "ready": {
 			runtime.consecutiveFailures = 0;
 			runtime.nextAttemptAt = 0;
 			runtime.failure = undefined;
-			const entry = session.sessionManager.getEntry(outcome.resultEntryId);
-			if (entry) {
-				try {
-					session._emit({ type: "entry_appended", entry });
-				} catch (error) {
-					reportListenerFailure(session, error);
-				}
+			try {
+				session._emit({
+					type: "entry_appended",
+					entry: session.sessionManager.getEntry(outcome.resultEntryId) as SessionEntry,
+				});
+			} catch (error) {
+				reportListenerFailure(session, error);
 			}
 			announceReady(session, outcome.resultEntryId, task.upToEntryId);
 			return;
 		}
 		case "failed":
 			runtime.consecutiveFailures += 1;
-			runtime.nextAttemptAt = Date.now() + backgroundCompactionRetryDelayMs(runtime.consecutiveFailures);
+			runtime.nextAttemptAt = performance.now() + backgroundCompactionRetryDelayMs(runtime.consecutiveFailures);
 			runtime.failure = { error: outcome.error, upToEntryId: task.upToEntryId, startedAt: task.startedAt };
 			emitBackgroundCompactionState(session);
 			return;
@@ -323,7 +318,7 @@ function startTask(session: AgentSession, prefix: SessionEntry[]): void {
 	const controller = new AbortController();
 	const lifetime = sessionLifetime(session);
 	const relayAbort = () => controller.abort(lifetime.reason);
-	lifetime.addEventListener("abort", relayAbort, { once: true });
+	lifetime.addEventListener("abort", relayAbort);
 	let settle!: () => void;
 	const settled = new Promise<void>((resolve) => {
 		settle = resolve;
@@ -343,7 +338,7 @@ function startTask(session: AgentSession, prefix: SessionEntry[]): void {
 			settleTask(session, task, await runTask(session, task, prefix));
 		} finally {
 			lifetime.removeEventListener("abort", relayAbort);
-			if (runtime.task === task) runtime.task = undefined;
+			runtime.task = undefined;
 			settle();
 		}
 	}).catch((error: unknown) => reportListenerFailure(session, error));
@@ -356,16 +351,15 @@ function startTask(session: AgentSession, prefix: SessionEntry[]): void {
 export function _maybeStartBackgroundCompaction(this: AgentSession, contextTokens: number): void {
 	const runtime = runtimeOf(this);
 	if (runtime.task || this._disposed || foregroundCompactionActive(this)) return;
-	const model = this.model;
-	if (!model) return;
 	const settings = backgroundSettings(this);
 	if (!settings?.enabled) return;
-	if (!shouldStartBackgroundCompaction(contextTokens, model.contextWindow ?? 0, settings.thresholdPercent)) return;
-	if (Date.now() < runtime.nextAttemptAt) return;
+	if (!shouldStartBackgroundCompaction(contextTokens, this.model?.contextWindow ?? 0, settings.thresholdPercent))
+		return;
+	if (performance.now() < runtime.nextAttemptAt) return;
 	const branch = this.sessionManager.getBranch();
 	if (selectReadyBackgroundCompaction(branch)) return;
 	const safe = findBackgroundCompactionSafePoint(branch);
-	if (safe < 0 || safe <= coveredThroughIndex(branch)) return;
+	if (safe < 0) return;
 	startTask(this, branch.slice(0, safe + 1));
 }
 
@@ -396,13 +390,10 @@ async function commitReady(
 		if (session._disposed || session._persistenceFailure !== undefined) return undefined;
 	}
 	const branch = session.sessionManager.getBranch();
-	const announced = runtime.announcedResultEntryId;
-	if (announced !== undefined) {
-		const discarded = discardedBackgroundCompaction(branch, announced);
-		if (discarded) {
-			runtime.announcedResultEntryId = undefined;
-			emitBackgroundCompactionState(session, discarded);
-		}
+	const discarded = discardedBackgroundCompaction(branch, runtime.announcedResultEntryId);
+	if (discarded) {
+		runtime.announcedResultEntryId = undefined;
+		emitBackgroundCompactionState(session, discarded);
 	}
 	const ready = selectReadyBackgroundCompaction(branch);
 	if (!ready) return undefined;
@@ -436,23 +427,18 @@ export function _commitReadyBackgroundCompaction(
 	const inFlight = runtime.commitInFlight;
 	if (inFlight) return inFlight.then(() => undefined);
 	const flight = commitReady(this, options).finally(() => {
-		if (runtime.commitInFlight === flight) runtime.commitInFlight = undefined;
+		runtime.commitInFlight = undefined;
 	});
 	runtime.commitInFlight = flight;
 	return flight;
 }
 
-/**
- * Turn-boundary step: commit a ready result, or start a task when `contextTokens` passes the soft
- * threshold. Returns true when a boundary was committed.
- */
+/** Turn-boundary step: commit a ready result and announce it. Returns true when a boundary was committed. */
 export async function _runBackgroundCompactionBoundary(
 	this: AgentSession,
-	contextTokens: number | undefined,
 	midTurn: boolean,
 	awaitPersistence = false,
 ): Promise<boolean> {
-	if (foregroundCompactionActive(this)) return false;
 	const committed = await this._commitReadyBackgroundCompaction({ awaitPersistence });
 	if (committed) {
 		this._emit({
@@ -467,7 +453,6 @@ export async function _runBackgroundCompactionBoundary(
 		});
 		return true;
 	}
-	if (contextTokens !== undefined) this._maybeStartBackgroundCompaction(contextTokens);
 	return false;
 }
 
@@ -478,19 +463,17 @@ export async function _runBackgroundCompactionBoundary(
  */
 export async function _useReadyBackgroundCompaction(
 	this: AgentSession,
+	model: Model<Api>,
 ): Promise<ForegroundBackgroundCompaction | undefined> {
 	const committed = await this._commitReadyBackgroundCompaction({ foreground: true });
-	const model = this.model;
-	const sufficient =
-		committed !== undefined &&
-		model !== undefined &&
-		!shouldCompact(
-			estimateContextTokens(committedContextMessages(this)).tokens,
-			model.contextWindow ?? 0,
-			this.settingsManager.getCompactionSettings(model),
-		);
-	if (!sufficient) this._abortBackgroundCompaction();
-	return committed === undefined ? undefined : { ...committed, sufficient };
+	this._abortBackgroundCompaction();
+	if (committed === undefined) return undefined;
+	const sufficient = !shouldCompact(
+		estimateContextTokens(committedContextMessages(this)).tokens,
+		model.contextWindow,
+		this.settingsManager.getCompactionSettings(model),
+	);
+	return { ...committed, sufficient };
 }
 
 export function _abortBackgroundCompaction(this: AgentSession): void {

@@ -366,12 +366,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	setBackgroundCompactionThresholdPercent(percent: number): void;
 	_maybeStartBackgroundCompaction(contextTokens: number): void;
 	_commitReadyBackgroundCompaction(options?: CommitReadyOptions): Promise<CommittedBackgroundCompaction | undefined>;
-	_runBackgroundCompactionBoundary(
-		contextTokens: number | undefined,
-		midTurn: boolean,
-		awaitPersistence?: boolean,
-	): Promise<boolean>;
-	_useReadyBackgroundCompaction(): Promise<ForegroundBackgroundCompaction | undefined>;
+	_runBackgroundCompactionBoundary(midTurn: boolean, awaitPersistence?: boolean): Promise<boolean>;
+	_useReadyBackgroundCompaction(model: Model<Api>): Promise<ForegroundBackgroundCompaction | undefined>;
 	_abortBackgroundCompaction(): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;

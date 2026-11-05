@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { committedContextMessages } from "../src/core/agent-session-background-compaction.ts";
 import {
 	BACKGROUND_COMPACTION_RESULT_TYPE,
 	BACKGROUND_COMPACTION_RETRY_BASE_MS,
@@ -11,11 +16,14 @@ import {
 } from "../src/core/compaction/background-compaction.ts";
 import {
 	BackgroundCompactionConfigError,
+	BackgroundCompactionPersistError,
 	BackgroundCompactionPlanningError,
 	isBackgroundCompactionDiscardedError,
+	isBackgroundCompactionNotCompactableError,
 } from "../src/core/compaction/background-compaction-errors.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { convertToLlm } from "../src/core/messages.ts";
+import { sessionLifetime } from "../src/core/session-lifecycle-work.ts";
 import {
 	type CompactionEntry,
 	type CustomEntry,
@@ -40,9 +48,12 @@ interface PlannerCall {
  */
 class Planner {
 	readonly calls: PlannerCall[] = [];
+	/** `fromExtension` of each `session_compact_failed` event. */
+	readonly compactFailures: boolean[] = [];
 	session: AgentSession | undefined;
 	failures = 0;
-	text = "[User]: retained";
+	/** Undefined lets the model planner run. */
+	text: string | undefined = "[User]: retained";
 	#released = false;
 	#releaseWaiters: Array<() => void> = [];
 	#callWaiters: Array<{ count: number; resolve: () => void }> = [];
@@ -64,7 +75,10 @@ class Planner {
 				this.failures -= 1;
 				return { compactedText: "   " };
 			}
-			return { compactedText: this.text };
+			return this.text === undefined ? undefined : { compactedText: this.text };
+		});
+		pi.on("session_compact_failed", (event) => {
+			this.compactFailures.push(event.fromExtension);
 		});
 	};
 
@@ -94,6 +108,7 @@ interface HarnessOptions {
 	tools?: AgentTool[];
 	compactionWake?: { compactionReady(wake: CompactionReadyWake): void };
 	sessionManager?: SessionManager;
+	extensionFactories?: ExtensionFactory[];
 }
 
 async function createBackgroundHarness(
@@ -107,7 +122,7 @@ async function createBackgroundHarness(
 		settings: options.settings ?? BASE_SETTINGS,
 		responses,
 		baseToolsOverride: Object.fromEntries(tools.map((tool) => [tool.name, tool])),
-		extensionFactories: [planner.factory],
+		extensionFactories: [planner.factory, ...(options.extensionFactories ?? [])],
 		...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 		...(options.sessionManager ? { sessionManager: options.sessionManager } : {}),
 	});
@@ -175,6 +190,8 @@ describe("background compaction (#4330)", () => {
 			planner,
 		);
 		harnesses.push(harness);
+		const extensionErrors: string[] = [];
+		harness.session.extensionRunner.onError((error) => extensionErrors.push(String(error.error)));
 
 		await harness.session.prompt(longPrompt);
 		assert.equal(harness.session.compaction.state, "idle");
@@ -217,10 +234,14 @@ describe("background compaction (#4330)", () => {
 		const backgroundEnds = harness.eventsOfType("compaction_end").filter((event) => event.background === true);
 		assert.equal(backgroundEnds.length, 1);
 		assert.equal(backgroundEnds[0].reason, "threshold");
+		assert.equal(backgroundEnds[0].midTurn, true, "applied before the next prompt's first request");
 		assert.equal(backgroundEnds[0].result?.compactedText, "[User]: retained");
+		assert.equal(backgroundEnds[0].aborted, false);
+		assert.equal(backgroundEnds[0].willRetry, false);
 		assert.equal(harness.eventsOfType("compaction_start").length, 0);
 		assert.equal(harness.session.compaction.state, "idle");
 		assert.deepEqual(backgroundStates(harness), ["running", "ready", "idle"]);
+		assert.deepEqual(extensionErrors, [], "a session without a wake dispatcher reports nothing");
 
 		const tailAfter = tailBefore.map((entry) => JSON.stringify(harness.sessionManager.getEntry(entry.id)));
 		assert.deepEqual(tailAfter, tailJson, "appended entries stay byte-identical");
@@ -259,12 +280,17 @@ describe("background compaction (#4330)", () => {
 			},
 		]);
 		assert.deepEqual(ready, ["ready"]);
+		unsubscribe();
+		await harness.sessionManager.appendCustomEntry(BACKGROUND_COMPACTION_RESULT_TYPE, {
+			...stored.data,
+			startedAt: "later",
+		});
 		assert.ok(
 			harness.eventsOfType("entry_appended").some((event) => event.entry.id === stored.id),
 			"the stored result is announced like other appended entries",
 		);
-		unsubscribe();
 		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready", "await is idempotent");
+		assert.deepEqual(ready, ["ready"], "an unsubscribed listener hears nothing more");
 	});
 
 	test("a fork or branch taken before the commit reconstructs its pre-compaction history (#4330)", async () => {
@@ -278,6 +304,11 @@ describe("background compaction (#4330)", () => {
 		const before = JSON.stringify(harness.sessionManager.buildSessionProjection().messages);
 		await harness.session.prompt("next");
 		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		assert.equal(
+			harness.eventsOfType("compaction_end").find((event) => event.background)?.midTurn,
+			false,
+			"applied when the run that stored it ended",
+		);
 		assert.notEqual(JSON.stringify(harness.sessionManager.buildSessionProjection().messages), before);
 
 		const header = harness.sessionManager.getHeader();
@@ -346,10 +377,10 @@ describe("background compaction (#4330)", () => {
 		harness = await createBackgroundHarness(
 			[
 				SEED,
-				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 60, cacheRead: 700, output: 10 } },
 				{
 					text: "over the hard threshold",
-					usage: { input: 850, output: 10 },
+					usage: { input: 150, cacheRead: 700, output: 10 },
 					beforeEmit: async () => {
 						planner.release();
 						await harness.session.awaitBackgroundCompaction();
@@ -369,6 +400,7 @@ describe("background compaction (#4330)", () => {
 		assert.equal(ends[0].reason, "threshold");
 		assert.equal(ends[0].background, true);
 		assert.equal(ends[0].result?.compactedText, "[User]: retained");
+		assert.ok((ends[0].cacheMiss?.expectedMissedTokens ?? 0) > 0, "the foreground commit reports its cache miss");
 		const [boundary] = compactionEntries(harness.sessionManager);
 		assert.equal(boundary.coveredThroughEntryId, resultEntries(harness.sessionManager)[0].data?.upToEntryId);
 		assert.equal(harness.session.compaction.state, "idle");
@@ -420,8 +452,8 @@ describe("background compaction (#4330)", () => {
 	});
 
 	test("a failed task leaves history unchanged, records a typed reason and retries with backoff (#4330)", async () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		vi.setSystemTime(new Date("2026-11-05T00:00:00.000Z"));
+		vi.useFakeTimers({ toFake: ["Date", "performance"] });
+		vi.setSystemTime(new Date("2026-11-05T00:08:00.000Z"));
 		const planner = new Planner(true);
 		planner.failures = 1;
 		const harness = await createBackgroundHarness(
@@ -438,16 +470,18 @@ describe("background compaction (#4330)", () => {
 		assert.equal(failed.error.retryable, true);
 		assert.equal((failed.error.cause as Error).message, "No compacted text provided by extension");
 		assert.equal(failed.upToEntryId, planner.calls[0].branchIds.at(-1));
+		assert.equal(failed.startedAt, "2026-11-05T00:08:00.000Z");
 		assert.equal(resultEntries(harness.sessionManager).length, 0);
 		assert.equal(compactionEntries(harness.sessionManager).length, 0);
 
-		vi.setSystemTime(Date.now() + BACKGROUND_COMPACTION_RETRY_BASE_MS - 1);
+		vi.setSystemTime(new Date("2026-11-05T00:00:00.000Z"));
+		vi.advanceTimersByTime(BACKGROUND_COMPACTION_RETRY_BASE_MS - 1);
 		await harness.session.prompt("inside the backoff");
 		assert.equal(planner.calls.length, 1, "no retry before the backoff elapses");
 		assert.equal(harness.session.compaction.state, "failed");
 
-		vi.setSystemTime(Date.now() + 2);
-		await harness.session.prompt("after the backoff");
+		vi.advanceTimersByTime(1);
+		await harness.session.prompt("after the backoff, though the wall clock stepped back");
 		await planner.called(2);
 		assert.notEqual((await harness.session.awaitBackgroundCompaction()).state, "failed");
 		assert.equal(resultEntries(harness.sessionManager).length, 1, "the retry stored its result");
@@ -511,6 +545,7 @@ describe("background compaction (#4330)", () => {
 		harness.session.abortCompaction();
 		planner.release();
 		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+		assert.deepEqual(backgroundStates(harness), ["running", "idle"], "the cancellation is reported");
 		assert.equal(resultEntries(harness.sessionManager).length, 0);
 	});
 
@@ -591,6 +626,8 @@ describe("background compaction (#4330)", () => {
 				error.field === "compaction.backgroundThresholdPercent" &&
 				error.reason === "out-of-range",
 		);
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.equal(harness.session.compaction.state, "running", "enabling again keeps the running task");
 		harness.session.setBackgroundCompactionEnabled(false);
 		assert.equal(harness.settingsManager.getCompactionBackground(), false);
 		assert.equal(harness.session.backgroundCompactionEnabled, false);
@@ -610,6 +647,8 @@ describe("background compaction (#4330)", () => {
 		await harness.session.prompt(`${longPrompt}\nsecond`);
 		const state = harness.session.compaction;
 		assert.equal(state.state, "failed");
+		assert.deepEqual(Object.keys(state), ["state", "error"], "a settings failure has no task position");
+		assert.deepEqual(backgroundStates(harness), ["failed"], "reported once, not at every boundary");
 		assert.ok(state.error instanceof BackgroundCompactionConfigError);
 		assert.equal(state.error.source, "settings");
 		assert.equal(state.error.reason, "out-of-range");
@@ -726,5 +765,625 @@ describe("background compaction turn latency (counted, #4330)", () => {
 		assert.equal(harness.eventsOfType("compaction_start").length, 0);
 		planner.release();
 		await harness.session.awaitBackgroundCompaction();
+	});
+});
+
+describe("background compaction scheduling edges (#4330)", () => {
+	const harnesses: Harness[] = [];
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
+
+	async function readyHarness(responses: FauxResponseInput[] = [...TRIGGER, "after"]) {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(responses, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		return { harness, planner };
+	}
+
+	test("a stored result is never applied twice by concurrent boundaries", async () => {
+		const { harness } = await readyHarness();
+		const [first, second] = await Promise.all([
+			harness.session._commitReadyBackgroundCompaction(),
+			harness.session._commitReadyBackgroundCompaction(),
+		]);
+		assert.ok(first);
+		assert.equal(second, undefined);
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		assert.ok(await harness.session._commitReadyBackgroundCompaction().then((value) => value === undefined));
+	});
+
+	test("a foreground owner may apply a stored result; an ordinary boundary may not while it runs", async () => {
+		const { harness } = await readyHarness();
+		harness.session._autoCompactionAbortController = new AbortController();
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.ok(await harness.session._commitReadyBackgroundCompaction({ foreground: true }));
+		harness.session._autoCompactionAbortController = undefined;
+	});
+
+	test("nothing is applied after a failed save, after disposal, or while background compaction is off", async () => {
+		const { harness } = await readyHarness();
+		harness.session._persistenceFailure = "could not save";
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		harness.session._persistenceFailure = undefined;
+		harness.settingsManager.setCompactionBackground(false);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		harness.settingsManager.setCompactionBackground(true);
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		await harness.session.dispose();
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+	});
+
+	test("a next-turn commit waits for queued saves so the boundary follows them", async () => {
+		const { harness } = await readyHarness();
+		let probeId = "";
+		harness.session._agentEventQueue = new Promise<void>((resolve) => {
+			setTimeout(async () => {
+				probeId = await harness.sessionManager.appendCustomEntry("probe", {});
+				resolve();
+			}, 5);
+		});
+		assert.equal(await harness.session._runBackgroundCompactionBoundary(true, true), true);
+		const [boundary] = compactionEntries(harness.sessionManager);
+		assert.equal(boundary.parentId, probeId);
+		assert.equal(harness.eventsOfType("compaction_end").at(-1)?.midTurn, true);
+	});
+
+	test("a commit reports session_compact with the threshold reason", async () => {
+		const reasons: string[] = [];
+		const planner = new Planner();
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: BASE_SETTINGS,
+			responses: [...TRIGGER, "after"],
+			baseToolsOverride: { echo: echoTool() },
+			extensionFactories: [
+				planner.factory,
+				(pi) => {
+					pi.on("session_compact", (event) => {
+						reasons.push(event.reason);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		planner.session = harness.session;
+		await harness.session.bindExtensions({});
+		harness.session.setActiveToolsByName(["echo"]);
+		harness.agent.convertToLlm = convertToLlm;
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		await harness.session.awaitBackgroundCompaction();
+		await harness.session.prompt("next");
+		assert.deepEqual(reasons, ["threshold"]);
+	});
+
+	test("does not start when a result already waits or nothing is safe to freeze", async () => {
+		const { harness, planner } = await readyHarness();
+		harness.session._maybeStartBackgroundCompaction(900);
+		assert.equal(planner.calls.length, 1, "a stored result is committed before anything new starts");
+
+		const fresh = new Planner(true);
+		const empty = await createBackgroundHarness(["unused"], fresh);
+		harnesses.push(empty);
+		await empty.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "toolCall", id: "pending", name: "echo", arguments: {} }],
+			api: "anthropic-messages",
+			provider: "faux",
+			model: "faux-1",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		});
+		empty.session._maybeStartBackgroundCompaction(900);
+		assert.equal(empty.session.compaction.state, "idle", "only an unanswered call: nothing is safe");
+
+		assert.equal(fresh.calls.length, 0);
+	});
+
+	test("a prefix with too few compactable lines fails as not-compactable", async () => {
+		const planner = new Planner(true);
+		const harness = await createBackgroundHarness([{ text: "short", usage: { input: 760, output: 10 } }], planner);
+		harnesses.push(harness);
+		await harness.session.prompt("tiny");
+		const state = await harness.session.awaitBackgroundCompaction();
+		assert.equal(state.state, "failed");
+		assert.ok(isBackgroundCompactionNotCompactableError(state.error));
+		assert.ok(state.upToEntryId);
+		assert.equal(state.error.upToEntryId, state.upToEntryId);
+		assert.equal(planner.calls.length, 0, "the extension hook never runs for an empty region");
+	});
+
+	test("a result whose prefix left the branch, or that a newer boundary covers, is discarded on save", async () => {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		const [first] = harness.sessionManager.getBranch();
+		await harness.sessionManager.branch(first.id);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+		const offBranch = harness.eventsOfType("background_compaction").at(-1)?.discarded;
+		assert.equal(offBranch?.fields.reason, "off-branch");
+		assert.equal(offBranch?.phase, "persist");
+		assert.equal(resultEntries(harness.sessionManager).length, 0);
+
+		const second = new Planner();
+		const superseded = await createBackgroundHarness(TRIGGER, second);
+		harnesses.push(superseded);
+		await startBackgroundTask(superseded, second);
+		const template = await storedRecordFor(superseded, new Planner(true));
+		const upToEntryId = second.calls[0].branchIds.at(-1);
+		await superseded.sessionManager.appendCompaction(
+			"[User]: newer",
+			null,
+			900,
+			template.details,
+			undefined,
+			upToEntryId,
+		);
+		second.release();
+		assert.equal((await superseded.session.awaitBackgroundCompaction()).state, "idle");
+		const covered = superseded.eventsOfType("background_compaction").at(-1)?.discarded;
+		assert.equal(covered?.fields.reason, "superseded", "a boundary covering exactly the frozen prefix supersedes it");
+		assert.equal(covered?.phase, "persist");
+		assert.equal(resultEntries(superseded.sessionManager).length, 0);
+	});
+
+	test("a failed save is a retryable typed failure with its cause", async () => {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		const diskFull = new Error("disk full");
+		harness.sessionManager.appendCustomEntry = async () => {
+			throw diskFull;
+		};
+		planner.release();
+		const state = await harness.session.awaitBackgroundCompaction();
+		assert.equal(state.state, "failed");
+		assert.ok(state.error instanceof BackgroundCompactionPersistError);
+		assert.equal(state.error.retryable, true);
+		assert.equal(state.error.cause, diskFull);
+		assert.equal(state.error.upToEntryId, planner.calls[0].branchIds.at(-1));
+	});
+
+	test("listener, wake and settings failures are reported instead of escaping", async () => {
+		const planner = new Planner();
+		const reported: string[] = [];
+		const harness = await createBackgroundHarness(TRIGGER, planner, {
+			compactionWake: {
+				compactionReady: () => {
+					throw new Error("wake failed");
+				},
+			},
+		});
+		harnesses.push(harness);
+		harness.session.extensionRunner.onError((error) =>
+			reported.push(`${error.extensionPath}:${error.event}:${error.error}`),
+		);
+		harness.session.onCompactionReady(() => {
+			throw new Error("listener failed");
+		});
+		harness.session.subscribe((event) => {
+			if (event.type === "background_compaction" && event.compaction.state === "ready")
+				throw new Error("subscriber failed");
+			if (event.type === "entry_appended" && event.entry.type === "custom") throw new Error("entry listener failed");
+		});
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		assert.deepEqual(reported.sort(), [
+			"<background_compaction>:background_compaction:entry listener failed",
+			"<background_compaction>:background_compaction:listener failed",
+			"<background_compaction>:background_compaction:subscriber failed",
+			"<background_compaction>:background_compaction:wake failed",
+		]);
+		harness.settingsManager.getCompactionBackground = () => {
+			throw new Error("settings unavailable");
+		};
+		assert.throws(() => harness.session._maybeStartBackgroundCompaction(900), /settings unavailable/);
+	});
+
+	test("a finished task releases its session-lifetime listener", async () => {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		const lifetime = sessionLifetime(harness.session);
+		const before = getEventListeners(lifetime, "abort").length;
+		await startBackgroundTask(harness, planner);
+		assert.equal(getEventListeners(lifetime, "abort").length, before + 1);
+		planner.release();
+		await harness.session.awaitBackgroundCompaction();
+		assert.equal(getEventListeners(lifetime, "abort").length, before);
+	});
+
+	test("a JSONL session backs up before applying a stored result", async () => {
+		const planner = new Planner();
+		const directory = mkdtempSync(join(tmpdir(), "background-compaction-backup-"));
+		try {
+			const sessionManager = await SessionManager.create(directory, join(directory, "sessions"));
+			const harness = await createBackgroundHarness([...TRIGGER, "after"], planner, { sessionManager });
+			harnesses.push(harness);
+			await startBackgroundTask(harness, planner);
+			planner.release();
+			await harness.session.awaitBackgroundCompaction();
+			await harness.session.prompt("next");
+			const [boundary] = compactionEntries(harness.sessionManager);
+			const backupPath = (boundary.details as { backupPath?: string }).backupPath;
+			assert.ok(backupPath?.endsWith(".background-compact.bak"), backupPath);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("a hard-threshold commit that still leaves the context too large compacts again in the foreground", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 200 }, (_, line) => `[User]: kept line ${line}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					text: "over the hard threshold",
+					usage: { input: 850, output: 10 },
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = "[User]: small";
+					},
+				},
+			],
+			planner,
+		);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+		harnesses.push(harness);
+		const boundaries = compactionEntries(harness.sessionManager);
+		assert.equal(boundaries.length, 2, "the stored result, then a foreground boundary on top");
+		assert.equal(boundaries[0].coveredThroughEntryId !== undefined, true);
+		assert.equal(boundaries[1].coveredThroughEntryId, undefined);
+		const ends = harness.eventsOfType("compaction_end");
+		assert.equal(ends.at(-1)?.background, undefined, "the event reports the foreground boundary");
+		assert.equal(planner.calls.at(-1)?.foreground, true);
+	});
+
+	test("the post-tool preflight applies a stored result instead of planning", async () => {
+		const cached = { input: 60, cacheRead: 700, output: 10 };
+		const { harness, planner } = await readyHarness([
+			SEED,
+			{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: cached },
+			{ text: "after tool", usage: cached },
+			"after",
+		]);
+		const oversized = Array.from({ length: 40 }, (_, index) => ({
+			role: "user" as const,
+			content: [{ type: "text" as const, text: `filler ${index} ${longPrompt}` }],
+			timestamp: index,
+		}));
+		await harness.session._preflightPostToolContext(oversized);
+		harness.session._finishPostToolCompactionPreflight(harness.session.agent.state.messages.slice());
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.background, true);
+		assert.equal(end?.midTurn, true);
+		assert.ok((end?.cacheMiss?.expectedMissedTokens ?? 0) > 0, "the mid-turn commit reports its cache miss");
+		assert.equal(planner.calls.length, 1, "the stored result was used without planning again");
+		assert.equal(compactionEntries(harness.sessionManager)[0].coveredThroughEntryId !== undefined, true);
+	});
+});
+
+describe("background compaction task lifecycle (#4330)", () => {
+	const harnesses: Harness[] = [];
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
+
+	async function harnessFor(responses: FauxResponseInput[], planner: Planner, options: HarnessOptions = {}) {
+		const harness = await createBackgroundHarness(responses, planner, options);
+		harnesses.push(harness);
+		return harness;
+	}
+
+	async function ready(responses: FauxResponseInput[] = [...TRIGGER, "after"], planner = new Planner()) {
+		const harness = await harnessFor(responses, planner);
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		return harness;
+	}
+
+	const oversizedContext = () =>
+		Array.from({ length: 40 }, (_, index) => ({
+			role: "user" as const,
+			content: [{ type: "text" as const, text: `filler ${index} ${longPrompt}` }],
+			timestamp: index,
+		}));
+
+	test("a manual compaction, running or about to start, keeps an ordinary boundary from committing", async () => {
+		const harness = await ready();
+		harness.session._compactionAbortController = new AbortController();
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		harness.session._compactionAbortController = undefined;
+		harness.session._manualCompactionPromise = new Promise(() => {});
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		harness.session._manualCompactionPromise = undefined;
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.ok(await harness.session._commitReadyBackgroundCompaction());
+	});
+
+	test("a save failure reported while queued saves drain stops the next-turn commit", async () => {
+		const harness = await ready();
+		harness.session._agentEventQueue = new Promise<void>((resolve) => {
+			setTimeout(() => {
+				harness.session._persistenceFailure = "could not save";
+				resolve();
+			}, 5);
+		});
+		assert.equal(await harness.session._runBackgroundCompactionBoundary(true, true), false);
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		harness.session._persistenceFailure = undefined;
+	});
+
+	test("cancelling while the result is being saved settles as cancelled, not failed", async () => {
+		const planner = new Planner();
+		const harness = await harnessFor(TRIGGER, planner);
+		await startBackgroundTask(harness, planner);
+		harness.sessionManager.appendCustomEntry = async () => {
+			harness.session.abortCompaction();
+			throw new Error("save interrupted");
+		};
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+		assert.deepEqual(backgroundStates(harness), ["running", "idle"]);
+	});
+
+	test("an unexpected failure inside the task is reported and the task still settles", async () => {
+		const planner = new Planner();
+		const harness = await harnessFor(TRIGGER, planner);
+		await startBackgroundTask(harness, planner);
+		const reported: string[] = [];
+		harness.session.extensionRunner.onError((error) => reported.push(String(error.error)));
+		const getBranch = harness.sessionManager.getBranch.bind(harness.sessionManager);
+		harness.sessionManager.getBranch = () => {
+			throw new Error("branch unavailable");
+		};
+		planner.release();
+		await vi.waitFor(() => assert.deepEqual(reported, ["branch unavailable"]));
+		harness.sessionManager.getBranch = getBranch;
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+		assert.equal(resultEntries(harness.sessionManager).length, 0);
+	});
+
+	test("a session without a model never starts a task", async () => {
+		const planner = new Planner(true);
+		const harness = await harnessFor(["unused"], planner);
+		await harness.sessionManager.appendMessage({ role: "user", content: longPrompt, timestamp: 1 });
+		harness.agent.state.model = undefined as never;
+		harness.session._maybeStartBackgroundCompaction(900);
+		assert.equal(harness.session.compaction.state, "idle");
+	});
+
+	test("a one-entry history can be frozen", async () => {
+		const planner = new Planner(true);
+		const harness = await harnessFor(["unused"], planner);
+		await harness.sessionManager.appendMessage({ role: "user", content: longPrompt, timestamp: 1 });
+		harness.session._maybeStartBackgroundCompaction(900);
+		assert.equal(harness.session.compaction.state, "running");
+		const settled = await harness.session.awaitBackgroundCompaction();
+		assert.equal(settled.state, "failed", "the recent-message tail leaves nothing to compact");
+		assert.equal(settled.upToEntryId, harness.sessionManager.getBranch()[0].id);
+	});
+
+	test("an unsubscribed ready listener is not called", async () => {
+		const planner = new Planner();
+		const harness = await harnessFor(TRIGGER, planner);
+		const kept: string[] = [];
+		const dropped: string[] = [];
+		const unsubscribe = harness.session.onCompactionReady((wake) => dropped.push(wake.upToEntryId));
+		harness.session.onCompactionReady((wake) => kept.push(wake.upToEntryId));
+		unsubscribe();
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		await harness.session.awaitBackgroundCompaction();
+		assert.equal(kept.length, 1);
+		assert.deepEqual(dropped, []);
+	});
+
+	test("enabling background compaction while a task runs lets it finish", async () => {
+		const planner = new Planner();
+		const harness = await harnessFor(TRIGGER, planner);
+		await startBackgroundTask(harness, planner);
+		harness.session.setBackgroundCompactionEnabled(true);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+	});
+
+	test("a result that is ready by the next tool turn is applied mid-turn before its request", async () => {
+		const planner = new Planner(true);
+		let harness!: Harness;
+		harness = await harnessFor(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					toolCalls: [{ id: "call-b", name: "echo", args: {} }],
+					usage: { input: 770, output: 10 },
+					beforeEmit: async () => {
+						await harness.session.awaitBackgroundCompaction();
+					},
+				},
+				{ text: "done", usage: { input: 300, output: 10 } },
+			],
+			planner,
+			{
+				extensionFactories: [
+					(pi) => {
+						pi.on("message_end", async (event) => {
+							if (event.message.role === "toolResult") await new Promise((resolve) => setTimeout(resolve, 20));
+						});
+					},
+				],
+			},
+		);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		const [committed] = harness.eventsOfType("compaction_end").filter((event) => event.background === true);
+		assert.ok(committed, "the stored result was applied during the turn");
+		assert.equal(committed.midTurn, true);
+		const [boundary] = compactionEntries(harness.sessionManager);
+		const parent = boundary.parentId ? harness.sessionManager.getEntry(boundary.parentId) : undefined;
+		assert.ok(
+			parent?.type === "message" && parent.message.role === "toolResult" && parent.message.toolCallId === "call-b",
+			"the boundary follows the tool result that was still being saved",
+		);
+		assert.equal(harness.session.getLastAssistantText(), "done");
+		const roles = harness.faux.contexts.at(-1)?.messages.map((message) => message.role);
+		assert.equal(roles?.[1], "user", "the request after the commit starts from the compacted context");
+	});
+
+	test("the committed context is a copy the agent loop may append to", async () => {
+		const harness = await harnessFor(["unused"], new Planner(true));
+		const live = harness.agent.state.messages;
+		const committed = committedContextMessages(harness.session);
+		assert.notEqual(committed, live);
+		assert.deepEqual(committed, live);
+	});
+
+	test("a post-tool crossing with nothing compactable and no stored result sends the request unchanged", async () => {
+		const harness = await harnessFor(["unused"], new Planner(true));
+		const fitting = [
+			{ role: "user" as const, content: [{ type: "text" as const, text: "x".repeat(3_400) }], timestamp: 1 },
+		];
+		assert.equal(await harness.session._preflightPostToolContext(fitting), fitting);
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.result, undefined);
+		assert.equal(end?.midTurn, true);
+	});
+
+	test("a post-tool commit that leaves the context too large compacts again and reports the foreground boundary", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 200 }, (_, line) => `[User]: kept line ${line}`).join("\n");
+		const harness = await ready([...TRIGGER, "after"], planner);
+		planner.text = "[User]: small";
+		await harness.session._preflightPostToolContext(oversizedContext());
+		harness.session._finishPostToolCompactionPreflight(harness.session.agent.state.messages.slice());
+		assert.equal(compactionEntries(harness.sessionManager).length, 2);
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.background, undefined);
+		assert.equal(end?.result?.compactedText.includes("[User]: small"), true);
+	});
+
+	test("a background task can plan with the session model and records the planner's usage", async () => {
+		const planner = new Planner(true);
+		planner.text = undefined;
+		const harness = await harnessFor(
+			[
+				{ text: "first answer", usage: { input: 760, output: 10 } },
+				{ text: "1:2,6\n", usage: { input: 40, output: 4 } },
+				"after commit",
+			],
+			planner,
+			{ settings: settingsWith({ preserve_recent: 0 }) },
+		);
+		const model = harness.session.model;
+		assert.ok(model);
+		harness.session.modelRuntime.registerProvider(model.provider, {
+			baseUrl: model.baseUrl,
+			apiKey: "faux-key",
+			api: model.api,
+			models: [model],
+		});
+		await harness.session.prompt(longPrompt);
+		const settled = await harness.session.awaitBackgroundCompaction();
+		assert.equal(settled.state, "ready");
+		const [stored] = resultEntries(harness.sessionManager);
+		assert.equal(stored.data?.fromExtension, false);
+		assert.equal(stored.data?.usage?.input, 40);
+		await harness.session.prompt("next");
+		const [boundary] = compactionEntries(harness.sessionManager);
+		assert.deepEqual(boundary.usage, stored.data?.usage);
+	});
+});
+
+describe("foreground compaction with background compaction off (#4330)", () => {
+	const OFF = settingsWith({ background: false });
+
+	async function jsonlHarness(
+		responses: FauxResponseInput[],
+		planner: Planner,
+		run: (harness: Harness) => Promise<void>,
+	) {
+		const directory = mkdtempSync(join(tmpdir(), "foreground-compaction-backup-"));
+		const sessionManager = await SessionManager.create(directory, join(directory, "sessions"));
+		const harness = await createBackgroundHarness(responses, planner, { settings: OFF, sessionManager });
+		try {
+			await run(harness);
+		} finally {
+			harness.cleanup();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}
+
+	const backupPath = (harness: Harness) =>
+		(compactionEntries(harness.sessionManager)[0]?.details as { backupPath?: string } | undefined)?.backupPath;
+
+	test("a threshold compaction backs up as auto-compact and an overflow as overflow-auto-compact", async () => {
+		await jsonlHarness(
+			[...TRIGGER, { text: "over the hard threshold", usage: { input: 850, output: 10 } }],
+			new Planner(true),
+			async (harness) => {
+				await harness.session.prompt(longPrompt);
+				await harness.session.prompt(`${longPrompt}\nsecond`);
+				await harness.session.prompt("push past the hard threshold");
+				assert.ok(backupPath(harness)?.endsWith(".auto-compact.bak"), backupPath(harness));
+			},
+		);
+		await jsonlHarness(
+			[
+				SEED,
+				{ error: "prompt is too long: 1200 tokens > 1000 maximum", usage: { input: 0, output: 0 } },
+				"recovered",
+			],
+			new Planner(true),
+			async (harness) => {
+				await harness.session.prompt(longPrompt);
+				await harness.session.prompt(`${longPrompt}\nsecond`);
+				await harness.session._awaitPendingPostCompactionContinuation();
+				assert.ok(backupPath(harness)?.endsWith(".overflow-auto-compact.bak"), backupPath(harness));
+			},
+		);
+	});
+
+	test("a failed save after an extension supplied the text reports fromExtension", async () => {
+		const planner = new Planner(true);
+		const harness = await createBackgroundHarness(
+			[...TRIGGER, { text: "over the hard threshold", usage: { input: 850, output: 10 } }],
+			planner,
+			{ settings: OFF },
+		);
+		try {
+			harness.sessionManager.appendCompaction = async () => {
+				throw new Error("disk full");
+			};
+			await harness.session.prompt(longPrompt);
+			await harness.session.prompt(`${longPrompt}\nsecond`);
+			await harness.session.prompt("push past the hard threshold").catch(() => {});
+			assert.deepEqual(planner.compactFailures, [true]);
+		} finally {
+			harness.cleanup();
+		}
 	});
 });

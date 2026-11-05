@@ -163,14 +163,13 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {
-		const committed = await this._runBackgroundCompactionBoundary(undefined, true, true);
+		const committed = await this._runBackgroundCompactionBoundary(true, true);
 		const boundaryMessages = committed ? committedContextMessages(this) : turn.context.messages;
 		const compactedMessages =
 			turn.toolResults.length > 0
 				? await this._preflightPostToolContext(boundaryMessages, signal)
 				: boundaryMessages;
-		if (!committed && compactedMessages === boundaryMessages)
-			this._maybeStartBackgroundCompaction(estimateContextTokens(compactedMessages).tokens);
+		this._maybeStartBackgroundCompaction(estimateContextTokens(compactedMessages).tokens);
 		const compactedContext =
 			compactedMessages === turn.context.messages ? turn.context : { ...turn.context, messages: compactedMessages };
 		const preparedTurn = compactedContext === turn.context ? turn : { ...turn, context: compactedContext };

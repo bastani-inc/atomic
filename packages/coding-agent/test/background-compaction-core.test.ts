@@ -25,7 +25,9 @@ import {
 } from "../src/core/compaction/background-compaction.ts";
 import {
 	BackgroundCompactionConfigError,
+	type BackgroundCompactionConfigReason,
 	BackgroundCompactionDiscardedError,
+	type BackgroundCompactionDiscardReason,
 	BackgroundCompactionError,
 	BackgroundCompactionNotCompactableError,
 	BackgroundCompactionPersistError,
@@ -205,6 +207,38 @@ describe("background compaction safe point (#4330)", () => {
 		assert.equal(findBackgroundCompactionSafePoint(branch), 5);
 	});
 
+	test("walks past every entry that contributes no model message", () => {
+		const passive: SessionEntry[] = [
+			{ type: "custom", ...base(), customType: "x", data: {} },
+			{ type: "label", ...base(), targetId: "u1", label: "l" },
+			{ type: "model_change", ...base(), provider: "faux", modelId: "m" },
+			{ type: "thinking_level_change", ...base(), thinkingLevel: "high" },
+			{ type: "usage", ...base(), kind: "k", provider: "faux", model: "m", usage: usage() },
+			{ type: "session_info", ...base(), name: "n" },
+			{ type: "session_summary", ...base(), summary: "s", summarizedThroughId: "u1" },
+			{ type: "context_edit", ...base(), targetId: "u1", replacement: null },
+		];
+		for (const entry of passive) {
+			const branch = [user("u1"), assistant("a1", ["c1"]), entry, assistant("a2", ["c2"]), toolResult("r2", "c2")];
+			assert.equal(findBackgroundCompactionSafePoint(branch), 0, `${entry.type} does not end the trailing run`);
+		}
+		const ending: SessionEntry[] = [
+			user("stop"),
+			assistant("plain"),
+			boundary("stop-boundary"),
+			{ type: "custom_message", ...base(), customType: "x", content: "c", display: true },
+		];
+		for (const entry of ending) {
+			const branch = [user("u1"), assistant("a1", ["c1"]), entry, assistant("a2", ["c2"]), toolResult("r2", "c2")];
+			assert.equal(findBackgroundCompactionSafePoint(branch), 4, `${entry.type} ends the trailing run`);
+		}
+	});
+
+	test("a result recorded before its own prefix entry is off-branch", () => {
+		const branch = [user("u1"), result("r1", record("a1")), assistant("a1")];
+		assert.equal(backgroundCompactionDiscardReason(branch, 1), "off-branch");
+	});
+
 	test("never ends on a label, which a branched copy drops", () => {
 		const branch = [user("u1"), assistant("a1"), label("l1", "u1"), assistant("a2", ["c1"])];
 		assert.equal(findBackgroundCompactionSafePoint(branch), 1);
@@ -378,6 +412,8 @@ describe("background compaction scheduling (#4330)", () => {
 		assert.equal(resolveBackgroundCompactionThresholdPercent(undefined, "settings"), 75);
 		assert.equal(resolveBackgroundCompactionThresholdPercent(60, "sdk"), 60);
 		assert.equal(resolveBackgroundCompactionThresholdPercent(99.5, "sdk"), 99.5);
+		assert.equal(resolveBackgroundCompactionThresholdPercent(0.5, "sdk"), 0.5);
+		assert.equal(resolveBackgroundCompactionEnabled(true, "sdk"), true);
 		const cases: Array<[() => unknown, string, string, string]> = [
 			[
 				() => resolveBackgroundCompactionEnabled("yes", "settings"),
@@ -395,7 +431,19 @@ describe("background compaction scheduling (#4330)", () => {
 				() => resolveBackgroundCompactionThresholdPercent(Number.POSITIVE_INFINITY, "sdk"),
 				"sdk",
 				"compaction.backgroundThresholdPercent",
+				"out-of-range",
+			],
+			[
+				() => resolveBackgroundCompactionThresholdPercent(Number.NaN, "sdk"),
+				"sdk",
+				"compaction.backgroundThresholdPercent",
 				"not-a-number",
+			],
+			[
+				() => resolveBackgroundCompactionThresholdPercent(-5, "settings"),
+				"settings",
+				"compaction.backgroundThresholdPercent",
+				"out-of-range",
 			],
 			[
 				() => resolveBackgroundCompactionThresholdPercent(0, "sdk"),
@@ -497,6 +545,60 @@ describe("BackgroundCompactionError (#4330)", () => {
 		assert.equal(
 			error.message,
 			"Background compaction failed: planning the prefix through entry u1 (attempt 1) (planner-failed). History is unchanged; Atomic retries with backoff at a later turn boundary. Check the compaction model and its credentials",
+		);
+	});
+
+	test("renders each class once as a UX contract", () => {
+		assert.equal(
+			new BackgroundCompactionNotCompactableError({ upToEntryId: "u2" }).message,
+			"Background compaction failed: the prefix through entry u2 has too few compactable lines (not-compactable). History is unchanged; Atomic tries again after more turns, and overflow still compacts in the foreground",
+		);
+		assert.equal(
+			new BackgroundCompactionPersistError({ upToEntryId: "u3" }).message,
+			"Background compaction failed: saving the result for entry u3 (result-persist-failed). History is unchanged; Atomic retries with backoff. Check that session storage is writable",
+		);
+		assert.equal(
+			new BackgroundCompactionDiscardedError({ upToEntryId: "u4", reason: "superseded" }).message,
+			"Background compaction failed: the result for entry u4 is covered by a newer compaction (result-discarded). History is unchanged; a later turn compacts the current branch again when it still needs it",
+		);
+		assert.equal(
+			new BackgroundCompactionConfigError({
+				source: "settings",
+				field: "compaction.backgroundThresholdPercent",
+				reason: "out-of-range",
+			}).message,
+			"Background compaction failed: compaction.backgroundThresholdPercent from settings is not above 0 and below 100 (invalid-setting). Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
+		);
+	});
+
+	test("each discard and config reason explains itself", () => {
+		const discard: Array<[BackgroundCompactionDiscardReason, string]> = [
+			["superseded", "covered by a newer compaction"],
+			["off-branch", "no longer on the current branch"],
+			["context-edited", "out of date after a context edit inside its prefix"],
+			["malformed", "not a valid background compaction record"],
+		];
+		for (const [reason, phrase] of discard) {
+			const error = new BackgroundCompactionDiscardedError({ upToEntryId: "u", reason });
+			assert.ok(error.message.includes(`is ${phrase} (result-discarded)`), reason);
+		}
+		const config: Array<[BackgroundCompactionConfigReason, string, string]> = [
+			["not-a-boolean", "is not true or false", "Set f to true or false"],
+			["not-a-number", "is not a finite number", "Set f to a percentage of the context window, for example 75"],
+			[
+				"out-of-range",
+				"is not above 0 and below 100",
+				"Set f to a percentage above 0 and below 100, for example 75",
+			],
+		];
+		for (const [reason, subject, hint] of config) {
+			const error = new BackgroundCompactionConfigError({ source: "sdk", field: "f", reason });
+			assert.ok(error.message.includes(`f from sdk ${subject} (invalid-setting)`), reason);
+			assert.equal(error.hint, hint);
+		}
+		assert.equal(
+			new BackgroundCompactionPlanningError({ upToEntryId: "u", attempt: 1 }).hint,
+			"History is unchanged; Atomic retries with backoff at a later turn boundary. Check the compaction model and its credentials",
 		);
 	});
 
@@ -656,14 +758,47 @@ describe("background compaction cache miss (#4330)", () => {
 				usage({
 					input: 1_000,
 					cacheRead: 9_000,
-					cacheWrite: 0,
-					cost: { input: 0.003, output: 0, cacheRead: 0.0027, cacheWrite: 0, total: 0.0057 },
+					cacheWrite: 500,
+					cost: { input: 0.003, output: 0, cacheRead: 0.0027, cacheWrite: 0.0045, total: 0.0102 },
 				}),
 			),
+			custom("after"),
+			user("u2"),
 		];
 		const miss = estimateCompactionCacheMiss(branch, 4_000, models);
 		assert.equal(miss?.expectedMissedTokens, 4_000);
-		assert.ok(Math.abs((miss?.expectedMissedCost ?? 0) - 4_000 * (0.003 / 1_000 - 0.0027 / 9_000)) < 1e-12);
+		const paidRate = (0.003 + 0.0045) / 1_500;
+		const readRate = 0.0027 / 9_000;
+		assert.ok(Math.abs((miss?.expectedMissedCost ?? 0) - 4_000 * (paidRate - readRate)) < 1e-12);
+	});
+
+	test("prices from the model when the last request read nothing from the cache or there is no request", () => {
+		const writeOnly = [
+			assistant(
+				"a1",
+				[],
+				usage({ input: 100, cacheWrite: 900, cost: { ...ZERO_COST, input: 0.0003, cacheWrite: 0.00225 } }),
+			),
+		];
+		const miss = estimateCompactionCacheMiss(writeOnly, 400, models);
+		assert.equal(miss?.expectedMissedTokens, 400);
+		assert.ok(Math.abs((miss?.expectedMissedCost ?? 0) - 400 * (0.00255 / 1_000 - 0.3 / 1_000_000)) < 1e-12);
+		const warmed: SessionEntry[] = [
+			user("u1"),
+			{
+				type: "usage",
+				...base("w1"),
+				kind: "cache_warm",
+				provider: "faux",
+				model: "faux-1",
+				usage: usage({ cacheRead: 800 }),
+			},
+		];
+		const fromWarm = estimateCompactionCacheMiss(warmed, 300, models);
+		assert.equal(fromWarm?.expectedMissedTokens, 300);
+		assert.ok(Math.abs((fromWarm?.expectedMissedCost ?? 0) - 300 * (3 / 1_000_000 - 0.3 / 1_000_000)) < 1e-12);
+		const unknownModel = estimateCompactionCacheMiss(warmed, 300, { getModel: () => undefined });
+		assert.equal(unknownModel?.expectedMissedCost, 0);
 	});
 
 	test("caps the miss at the previously cached prompt and prices from the model without paid tokens", () => {
@@ -798,5 +933,325 @@ describe("background compaction boundary storage (#4330)", () => {
 		});
 		assert.ok(preparation);
 		assert.deepEqual(preparation.regionEntryIds, ["r1", "q3", "q4"], "replayed entries stay compactable");
+	});
+});
+
+describe("background compaction boundary positions (#4330)", () => {
+	const settings = { enabled: true, reserveTokens: 100, compression_ratio: 0.5, preserve_recent: 2 };
+	const longUser = (id: string) =>
+		({
+			type: "message",
+			...base(id),
+			message: {
+				role: "user",
+				content: Array.from({ length: 24 }, (_, line) => `${id} line ${line}`).join("\n"),
+				timestamp: sequence,
+			},
+		}) as SessionEntry;
+	const chain = (...items: SessionEntry[]): SessionEntry[] =>
+		items.map((entry, index) => ({ ...entry, parentId: index === 0 ? null : items[index - 1].id }) as SessionEntry);
+	const regionOf = (entries: SessionEntry[]) => prepareCompactionBoundary(entries, settings)?.regionEntryIds;
+	const previous = (firstKeptEntryId: string | null, coveredThroughEntryId?: string) => ({
+		...boundary("b", coveredThroughEntryId),
+		firstKeptEntryId,
+	});
+
+	test("the next region starts at the previous kept tail, after its covered entry, or after the boundary", () => {
+		assert.deepEqual(
+			regionOf(
+				chain(longUser("k1"), assistant("k2"), previous("k1"), longUser("k3"), assistant("k4"), longUser("k5")),
+			),
+			["k1", "k2", "k3"],
+			"a kept tail that starts at the first entry",
+		);
+		assert.deepEqual(
+			regionOf(
+				chain(
+					longUser("c1"),
+					longUser("c2"),
+					previous(null, "c1"),
+					longUser("c3"),
+					assistant("c4"),
+					longUser("c5"),
+				),
+			),
+			["c2", "c3"],
+			"a covered entry at the first position",
+		);
+		assert.deepEqual(
+			regionOf(
+				chain(longUser("f1"), longUser("f2"), previous(null), longUser("f3"), assistant("f4"), longUser("f5")),
+			),
+			["f3"],
+			"a foreground boundary covers everything before it",
+		);
+		assert.deepEqual(
+			regionOf(
+				chain(
+					longUser("a1"),
+					longUser("a2"),
+					previous(null, "a4"),
+					longUser("a3"),
+					assistant("a4"),
+					longUser("a5"),
+				),
+			),
+			["a3"],
+			"a covered entry after the boundary is ignored",
+		);
+	});
+
+	test("the projection keeps a tail from the first entry and ignores covered entries it cannot use", () => {
+		const projected = (entries: SessionEntry[]) =>
+			buildSessionProjection(entries).entries.map((item) => [item.sourceEntry.id, item.messages.length]);
+		const ids = (entries: SessionEntry[]) => buildContextEntries(entries).map((entry) => entry.id);
+
+		const keptFromFirst = chain(user("p1"), user("p2"), previous("p1", "p2"), user("after"));
+		assert.deepEqual(projected(keptFromFirst), [
+			["b", 1],
+			["p1", 0],
+			["p2", 0],
+			["after", 1],
+		]);
+		assert.deepEqual(ids(keptFromFirst), ["b", "p1", "p2", "after"]);
+
+		const coveredFirst = chain(user("p1"), user("p2"), previous(null, "p1"), user("after"));
+		assert.deepEqual(ids(coveredFirst), ["b", "p2", "after"]);
+
+		const unknownCovered = chain(user("p1"), user("p2"), previous("p1", "gone"), user("after"));
+		assert.deepEqual(projected(unknownCovered), [
+			["b", 1],
+			["p1", 0],
+			["p2", 0],
+			["after", 1],
+		]);
+
+		const selfCovered = chain(user("p1"), user("p2"), previous("p1", "b"), user("after"));
+		const boundaryText = (entries: SessionEntry[]) =>
+			JSON.stringify((buildSessionProjection(entries).messages[0] as { content: unknown }).content);
+		assert.deepEqual(projected(selfCovered), projected(unknownCovered));
+		assert.equal(
+			boundaryText(selfCovered),
+			boundaryText(unknownCovered),
+			"a boundary that names itself covers everything before it",
+		);
+
+		const coveredAfter = chain(user("p1"), user("p2"), previous(null, "after"), user("after"));
+		assert.deepEqual(ids(coveredAfter), ["b", "after"]);
+		assert.deepEqual(projected(coveredAfter), [
+			["b", 1],
+			["after", 1],
+		]);
+		const keptWithCoveredAfter = chain(user("p1"), user("p2"), previous("p1", "after"), user("after"));
+		assert.deepEqual(projected(keptWithCoveredAfter), projected(unknownCovered), "the entry after it still replays");
+	});
+});
+
+describe("background compaction edge positions (#4330)", () => {
+	test("a prefix of only labels is not safe to freeze", () => {
+		assert.equal(findBackgroundCompactionSafePoint([label("l1", "x"), assistant("a1", ["c1"])]), -1);
+	});
+
+	test("only verbatim compaction entries are boundaries", () => {
+		const legacy: SessionEntry = { ...boundary("legacy"), details: { strategy: "summary-v1" } } as SessionEntry;
+		const customMessage: SessionEntry = {
+			type: "custom_message",
+			...base("cm"),
+			customType: "x",
+			content: "c",
+			display: true,
+			details: { strategy: "verbatim-lines" },
+		};
+		assert.equal(coveredThroughIndex([user("u1"), legacy, user("u2")]), -1);
+		assert.equal(coveredThroughIndex([user("u1"), customMessage, user("u2")]), -1);
+		assert.equal(coveredThroughIndex([user("u1"), { ...boundary("nd"), details: undefined } as SessionEntry]), -1);
+	});
+
+	test("a covered entry at or after its boundary covers only what precedes the boundary", () => {
+		assert.equal(coveredThroughIndex([user("u1"), boundary("self", "self"), user("u2")]), 0);
+		assert.equal(coveredThroughIndex([user("u1"), boundary("ahead", "later"), user("later")]), 0);
+	});
+
+	test("of two results for the same position, the later one wins", () => {
+		const branch = [
+			user("u1"),
+			assistant("a1"),
+			result("older", record("a1", { summary: "[User]: older" })),
+			result("newer", record("a1", { summary: "[User]: newer" })),
+		];
+		assert.equal(selectReadyBackgroundCompaction(branch)?.entry.id, "newer");
+	});
+
+	test("ignores custom entries of other types even with a valid record", () => {
+		const other: SessionEntry = { type: "custom", ...base("other"), customType: "someone-else", data: record("u1") };
+		assert.equal(selectReadyBackgroundCompaction([user("u1"), other]), undefined);
+	});
+
+	test("a kept tail that starts at the frozen entry itself is valid", () => {
+		const branch = [user("u1"), result("r1", record("u1", { firstKeptEntryId: "u1" }))];
+		assert.equal(backgroundCompactionDiscardReason(branch, 1), undefined);
+	});
+
+	test("an edit of the frozen entry itself, or of the replayed tail, is judged by position", () => {
+		const edited = [user("u1"), assistant("a1"), result("r1", record("a1")), contextEdit("x1", "a1")];
+		assert.equal(backgroundCompactionDiscardReason(edited, 2), "context-edited");
+		const labelled = [user("u1"), assistant("a1"), result("r1", record("a1")), label("l1", "u1")];
+		assert.equal(backgroundCompactionDiscardReason(labelled, 2), undefined, "a label is not a context edit");
+		const missingTarget = [user("u1"), result("r1", record("u1")), contextEdit("x1", "gone")];
+		assert.equal(backgroundCompactionDiscardReason(missingTarget, 1), undefined);
+	});
+
+	test("a result that names itself as its prefix end is not on the branch before it", () => {
+		assert.equal(backgroundCompactionDiscardReason([user("u1"), result("self", record("self"))], 1), "off-branch");
+	});
+
+	test("an index outside the branch is malformed", () => {
+		assert.equal(backgroundCompactionDiscardReason([user("u1")], 5), "malformed");
+	});
+
+	test("idle and failed states serialize without absent fields", () => {
+		assert.deepStrictEqual(rehydrateBackgroundCompactionState({ state: "idle" }), { state: "idle" });
+		const config = new BackgroundCompactionConfigError({ source: "settings", field: "f", reason: "not-a-number" });
+		const serialized = serializeBackgroundCompactionState({ state: "failed", error: config });
+		assert.deepStrictEqual(Object.keys(serialized), ["state", "error"]);
+		const back = rehydrateBackgroundCompactionState(serialized);
+		assert.deepStrictEqual(Object.keys(back), ["state", "error"]);
+		assert.ok(back.error instanceof BackgroundCompactionConfigError);
+		assert.deepStrictEqual(
+			serializeBackgroundCompactionState({ state: "running", upToEntryId: "u", startedAt: "t" }),
+			{ state: "running", upToEntryId: "u", startedAt: "t" },
+		);
+	});
+});
+
+describe("BackgroundCompactionError guards and envelopes (#4330)", () => {
+	const errorInstances = () => ({
+		BackgroundCompactionPlanningError: new BackgroundCompactionPlanningError({ upToEntryId: "u", attempt: 1 }),
+		BackgroundCompactionNotCompactableError: new BackgroundCompactionNotCompactableError({ upToEntryId: "u" }),
+		BackgroundCompactionPersistError: new BackgroundCompactionPersistError({ upToEntryId: "u" }),
+		BackgroundCompactionDiscardedError: new BackgroundCompactionDiscardedError({
+			upToEntryId: "u",
+			reason: "malformed",
+		}),
+		BackgroundCompactionConfigError: new BackgroundCompactionConfigError({
+			source: "sdk",
+			field: "f",
+			reason: "out-of-range",
+		}),
+	});
+
+	const guards = {
+		BackgroundCompactionPlanningError: isBackgroundCompactionPlanningError,
+		BackgroundCompactionNotCompactableError: isBackgroundCompactionNotCompactableError,
+		BackgroundCompactionPersistError: isBackgroundCompactionPersistError,
+		BackgroundCompactionDiscardedError: isBackgroundCompactionDiscardedError,
+		BackgroundCompactionConfigError: isBackgroundCompactionConfigError,
+	};
+
+	test("each guard accepts its own class, here and structurally, and nothing else", () => {
+		for (const [guardName, guard] of Object.entries(guards)) {
+			for (const [name, instance] of Object.entries(errorInstances())) {
+				const structural = { name, code: instance.code };
+				assert.equal(guard(instance), guardName === name, `${guardName}(${name})`);
+				assert.equal(guard(structural), guardName === name, `${guardName}(structural ${name})`);
+			}
+			assert.equal(guard({ name: guardName, code: "unknown-code" }), false);
+			assert.equal(guard(null), false);
+		}
+		for (const instance of Object.values(errorInstances())) assert.equal(isBackgroundCompactionError(instance), true);
+	});
+
+	test("each class keeps its phase through serialization", () => {
+		assert.equal(errorInstances().BackgroundCompactionNotCompactableError.phase, "plan");
+		assert.equal(errorInstances().BackgroundCompactionPlanningError.phase, "plan");
+		const persistPhase = new BackgroundCompactionDiscardedError({
+			upToEntryId: "u",
+			reason: "off-branch",
+			phase: "persist",
+		});
+		const back = rehydrateBackgroundCompactionError(serializeBackgroundCompactionError(persistPhase));
+		assert.equal(back.phase, "persist");
+		const commitPhase = rehydrateBackgroundCompactionError(
+			serializeBackgroundCompactionError(errorInstances().BackgroundCompactionDiscardedError),
+		);
+		assert.equal(commitPhase.phase, "commit");
+	});
+
+	test("an envelope missing any field its class needs rehydrates into the family base", () => {
+		const envelope = (
+			name: string,
+			fields: Record<string, string | number>,
+		): SerializedBackgroundCompactionError => ({
+			name,
+			code: "planner-failed",
+			message: "m",
+			hint: "h",
+			retryable: false,
+			phase: "plan",
+			fields,
+		});
+		for (const mismatched of [
+			envelope("BackgroundCompactionPlanningError", { attempt: 1 }),
+			envelope("BackgroundCompactionPlanningError", { upToEntryId: 5, attempt: 1 }),
+			envelope("BackgroundCompactionPlanningError", { upToEntryId: "u", attempt: "1" }),
+			envelope("BackgroundCompactionNotCompactableError", {}),
+			envelope("BackgroundCompactionPersistError", {}),
+			envelope("BackgroundCompactionDiscardedError", { reason: "superseded" }),
+			envelope("BackgroundCompactionDiscardedError", { upToEntryId: "u" }),
+			envelope("BackgroundCompactionConfigError", { source: "sdk", reason: "out-of-range" }),
+			envelope("BackgroundCompactionConfigError", { field: "f", reason: "out-of-range" }),
+			envelope("BackgroundCompactionConfigError", { source: "sdk", field: "f" }),
+		]) {
+			const back = rehydrateBackgroundCompactionError(mismatched);
+			assert.equal(back.constructor.name, "RehydratedBackgroundCompactionError", JSON.stringify(mismatched.fields));
+			assert.equal(back.name, mismatched.name);
+		}
+	});
+
+	test("an envelope keeps only the causes that exist", () => {
+		const causeless = serializeBackgroundCompactionError(errorInstances().BackgroundCompactionPersistError);
+		assert.equal("cause" in causeless, false);
+		assert.equal("cause" in rehydrateBackgroundCompactionError(causeless), false);
+		const chained = serializeBackgroundCompactionError(
+			new BackgroundCompactionPersistError(
+				{ upToEntryId: "u" },
+				{ cause: new Error("outer", { cause: new Error("inner") }) },
+			),
+		);
+		const outer = chained.cause;
+		assert.ok(outer && !("code" in outer));
+		assert.equal(outer.message, "outer");
+		assert.equal(outer.cause?.message, "inner");
+		assert.equal("cause" in (outer.cause ?? {}), false);
+		const rehydrated = rehydrateBackgroundCompactionError(chained);
+		assert.equal((rehydrated.cause as Error).message, "outer");
+		assert.equal(((rehydrated.cause as Error).cause as Error).message, "inner");
+		assert.equal("cause" in ((rehydrated.cause as Error).cause as Error), false);
+	});
+
+	test("a structural cause from another realm serializes without class fields", () => {
+		const foreign = {
+			name: "BackgroundCompactionPersistError",
+			code: "result-persist-failed",
+			message: "x",
+			hint: "h",
+		};
+		const serialized = serializeBackgroundCompactionError(
+			new BackgroundCompactionPlanningError({ upToEntryId: "u", attempt: 1 }, { cause: foreign }),
+		);
+		assert.deepEqual((serialized.cause as SerializedBackgroundCompactionError).fields, {});
+		const primitive = serializeBackgroundCompactionError(
+			new BackgroundCompactionPlanningError({ upToEntryId: "u", attempt: 1 }, { cause: "text cause" }),
+		);
+		assert.deepEqual(primitive.cause, { name: "string", message: "text cause" });
+	});
+
+	test("retryability stops at a non-error in the chain", () => {
+		assert.equal(
+			isRetryableBackgroundCompactionError({ cause: new BackgroundCompactionPersistError({ upToEntryId: "u" }) }),
+			false,
+		);
+		assert.equal(isRetryableBackgroundCompactionError("text"), false);
+		assert.equal(isRetryableBackgroundCompactionError(null), false);
 	});
 });

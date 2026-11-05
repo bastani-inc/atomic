@@ -67,7 +67,7 @@ export async function _preflightPostToolContext(
 		this._compactionReason = "threshold";
 		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
-		const ready = await this._useReadyBackgroundCompaction();
+		const ready = await this._useReadyBackgroundCompaction(model);
 		const result =
 			ready?.sufficient === true
 				? ready.result

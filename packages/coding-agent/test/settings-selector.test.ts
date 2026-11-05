@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { Container } from "@earendil-works/pi-tui";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -473,6 +473,7 @@ test("shows background compaction next to auto-compact, enabled by default with 
 	assert.deepEqual(toggle.values, ["true", "false"]);
 	const threshold = items[autocompact + 2];
 	assert.equal(threshold.label, "Background compaction threshold");
+	assert.equal(threshold.description, "Percentage of the context window at which background compaction starts");
 	assert.equal(threshold.currentValue, "75");
 	assert.deepEqual(threshold.values, ["50", "60", "70", "75", "80", "90"]);
 	assert.deepEqual(BACKGROUND_COMPACTION_THRESHOLD_CHOICES, [50, 60, 70, 75, 80, 90]);
@@ -533,5 +534,54 @@ test("persists the background compaction settings like other settings (#4330)", 
 		);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("saving a background compaction setting keeps other compaction settings, including ones changed on disk (#4330)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "background-compaction-merge-"));
+	try {
+		const agentDir = join(dir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const settingsPath = join(agentDir, "settings.json");
+		writeFileSync(settingsPath, JSON.stringify({ compaction: { enabled: false } }));
+		const manager = SettingsManager.create(dir, agentDir);
+		writeFileSync(settingsPath, JSON.stringify({ compaction: { enabled: false, reserveTokens: 5000 } }));
+		manager.setCompactionBackground(false);
+		manager.setCompactionBackgroundThresholdPercent(80);
+		await manager.flush();
+		assert.equal(manager.getCompactionEnabled(), false);
+		const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+		assert.deepEqual(saved.compaction, {
+			enabled: false,
+			reserveTokens: 5000,
+			background: false,
+			backgroundThresholdPercent: 80,
+		});
+		assert.throws(
+			() => manager.setCompactionBackground("yes" as never),
+			(error: unknown) =>
+				error instanceof Error &&
+				error.name === "BackgroundCompactionConfigError" &&
+				(error as { source?: string }).source === "sdk",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("image and UI toggles follow the compaction rows in both terminal kinds (#4330)", () => {
+	try {
+		for (const images of [false, "kitty"] as const) {
+			setCapabilities({ images: images || null, trueColor: true, hyperlinks: true });
+			const ids = buildSettingsItems(settingsConfig(), {} as SettingsCallbacks).map(({ id }) => id);
+			const start = ids.indexOf("background-compaction-threshold") + 1;
+			const expected = images
+				? ["show-images", "image-width-cells", "auto-resize-images", "block-images"]
+				: ["auto-resize-images", "block-images"];
+			assert.deepEqual(ids.slice(start, start + expected.length), expected, String(images));
+			assert.equal(ids[1], "background-compaction");
+		}
+	} finally {
+		resetCapabilitiesCache();
 	}
 });

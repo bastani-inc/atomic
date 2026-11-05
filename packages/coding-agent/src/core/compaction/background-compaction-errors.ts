@@ -36,13 +36,15 @@ interface BackgroundCompactionErrorInit {
 	readonly code: BackgroundCompactionErrorCode;
 	readonly phase: BackgroundCompactionPhase;
 	readonly retryable: boolean;
-	readonly subject: string;
+	/** What failed, rendered into the message; a rehydrated error passes its original `message` instead. */
+	readonly subject?: string;
+	readonly message?: string;
 	readonly hint: string;
 	readonly upToEntryId?: string;
 }
 
 /** Base class of the family. Catch this to handle every background compaction failure. */
-export class BackgroundCompactionError extends Error {
+export abstract class BackgroundCompactionError extends Error {
 	override readonly name: string = BACKGROUND_COMPACTION_ERROR_NAME;
 	readonly code: BackgroundCompactionErrorCode;
 	readonly phase: BackgroundCompactionPhase;
@@ -52,7 +54,7 @@ export class BackgroundCompactionError extends Error {
 	readonly upToEntryId: string | undefined;
 
 	constructor(init: BackgroundCompactionErrorInit, options?: ErrorOptions) {
-		super(`Background compaction failed: ${init.subject} (${init.code}). ${init.hint}`, options);
+		super(init.message ?? `Background compaction failed: ${init.subject} (${init.code}). ${init.hint}`, options);
 		this.code = init.code;
 		this.phase = init.phase;
 		this.retryable = init.retryable;
@@ -61,15 +63,14 @@ export class BackgroundCompactionError extends Error {
 	}
 
 	/** The JSON-safe fields this class declares, used when the error crosses a process boundary. */
-	fields(): BackgroundCompactionErrorFields {
-		return this.upToEntryId === undefined ? {} : { upToEntryId: this.upToEntryId };
-	}
+	abstract fields(): BackgroundCompactionErrorFields;
 }
 
 /** The compaction ladder (planner, fallback models, extension hook) failed. Retried with backoff. */
 export class BackgroundCompactionPlanningError extends BackgroundCompactionError {
 	override readonly name = "BackgroundCompactionPlanningError" as const;
 	declare readonly code: "planner-failed";
+	declare readonly upToEntryId: string;
 	declare readonly retryable: true;
 	/** One-based attempt number of the failed task. */
 	readonly attempt: number;
@@ -90,7 +91,7 @@ export class BackgroundCompactionPlanningError extends BackgroundCompactionError
 	}
 
 	override fields(): BackgroundCompactionErrorFields {
-		return { ...super.fields(), attempt: this.attempt };
+		return { upToEntryId: this.upToEntryId, attempt: this.attempt };
 	}
 }
 
@@ -98,6 +99,7 @@ export class BackgroundCompactionPlanningError extends BackgroundCompactionError
 export class BackgroundCompactionNotCompactableError extends BackgroundCompactionError {
 	override readonly name = "BackgroundCompactionNotCompactableError" as const;
 	declare readonly code: "not-compactable";
+	declare readonly upToEntryId: string;
 	declare readonly retryable: false;
 
 	constructor(fields: { upToEntryId: string }) {
@@ -110,12 +112,17 @@ export class BackgroundCompactionNotCompactableError extends BackgroundCompactio
 			upToEntryId: fields.upToEntryId,
 		});
 	}
+
+	override fields(): BackgroundCompactionErrorFields {
+		return { upToEntryId: this.upToEntryId };
+	}
 }
 
 /** The ready result could not be saved to session storage. Retried with backoff. */
 export class BackgroundCompactionPersistError extends BackgroundCompactionError {
 	override readonly name = "BackgroundCompactionPersistError" as const;
 	declare readonly code: "result-persist-failed";
+	declare readonly upToEntryId: string;
 	declare readonly retryable: true;
 
 	constructor(fields: { upToEntryId: string }, options?: ErrorOptions) {
@@ -131,12 +138,17 @@ export class BackgroundCompactionPersistError extends BackgroundCompactionError 
 			options,
 		);
 	}
+
+	override fields(): BackgroundCompactionErrorFields {
+		return { upToEntryId: this.upToEntryId };
+	}
 }
 
 /** A ready result no longer fits the current branch and was dropped without changing history. */
 export class BackgroundCompactionDiscardedError extends BackgroundCompactionError {
 	override readonly name = "BackgroundCompactionDiscardedError" as const;
 	declare readonly code: "result-discarded";
+	declare readonly upToEntryId: string;
 	declare readonly retryable: false;
 	readonly reason: BackgroundCompactionDiscardReason;
 
@@ -157,7 +169,7 @@ export class BackgroundCompactionDiscardedError extends BackgroundCompactionErro
 	}
 
 	override fields(): BackgroundCompactionErrorFields {
-		return { ...super.fields(), reason: this.reason };
+		return { upToEntryId: this.upToEntryId, reason: this.reason };
 	}
 }
 
@@ -231,15 +243,15 @@ const BACKGROUND_COMPACTION_ERROR_NAMES: ReadonlySet<string> = new Set([
 /** Cause chains are walked at most this deep. */
 export const MAX_BACKGROUND_COMPACTION_CAUSE_DEPTH = 8;
 
+const ANY_NAME: ReadonlySet<unknown> = BACKGROUND_COMPACTION_ERROR_NAMES;
+const ANY_CODE: ReadonlySet<unknown> = BACKGROUND_COMPACTION_ERROR_CODES;
+
+/** Structural match for errors from another realm or process: a family `name` (or exactly `name`) and a family `code`. */
 function isStructurally(value: unknown, name?: string): value is BackgroundCompactionError {
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as { name?: unknown; code?: unknown };
-	return (
-		typeof candidate.name === "string" &&
-		(name === undefined ? BACKGROUND_COMPACTION_ERROR_NAMES.has(candidate.name) : candidate.name === name) &&
-		typeof candidate.code === "string" &&
-		BACKGROUND_COMPACTION_ERROR_CODES.has(candidate.code)
-	);
+	const named = name === undefined ? ANY_NAME.has(candidate.name) : candidate.name === name;
+	return named && ANY_CODE.has(candidate.code);
 }
 
 /** Whether `error` is any background compaction error, here or rehydrated from another process. */
@@ -281,9 +293,10 @@ export function isBackgroundCompactionConfigError(error: unknown): error is Back
 /** Whether any error in the cause chain is a retryable background compaction error. */
 export function isRetryableBackgroundCompactionError(error: unknown): boolean {
 	let current = error;
-	for (let depth = 0; depth < MAX_BACKGROUND_COMPACTION_CAUSE_DEPTH && current != null; depth++) {
+	for (let depth = 0; depth < MAX_BACKGROUND_COMPACTION_CAUSE_DEPTH; depth++) {
 		if (isBackgroundCompactionError(current) && current.retryable === true) return true;
-		current = current instanceof Error ? current.cause : undefined;
+		if (!(current instanceof Error)) return false;
+		current = current.cause;
 	}
 	return false;
 }
@@ -323,7 +336,7 @@ function serializeAt(error: BackgroundCompactionError, depth: number): Serialize
 		hint: error.hint,
 		retryable: error.retryable,
 		phase: error.phase,
-		fields: typeof error.fields === "function" ? error.fields() : {},
+		fields: error instanceof BackgroundCompactionError ? error.fields() : {},
 		...(cause === undefined ? {} : { cause }),
 	};
 }
@@ -338,7 +351,7 @@ export function serializeBackgroundCompactionError(
 function isSerializedBackgroundCompactionError(
 	value: SerializedErrorCause,
 ): value is SerializedBackgroundCompactionError {
-	return "code" in value && BACKGROUND_COMPACTION_ERROR_CODES.has(value.code);
+	return "code" in value;
 }
 
 function rehydrateCause(cause: SerializedErrorCause | undefined): Error | undefined {
@@ -356,7 +369,7 @@ function stringField(fields: BackgroundCompactionErrorFields, key: string): stri
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[]): value is T {
-	return value !== undefined && (allowed as readonly string[]).includes(value);
+	return (allowed as readonly (string | undefined)[]).includes(value);
 }
 
 /**
@@ -422,16 +435,13 @@ class RehydratedBackgroundCompactionError extends BackgroundCompactionError {
 				code: serialized.code,
 				phase: serialized.phase,
 				retryable: serialized.retryable,
-				subject: "",
+				message: serialized.message,
 				hint: serialized.hint,
-				...(stringField(serialized.fields, "upToEntryId") === undefined
-					? {}
-					: { upToEntryId: stringField(serialized.fields, "upToEntryId") }),
+				upToEntryId: stringField(serialized.fields, "upToEntryId"),
 			},
 			options,
 		);
 		this.name = serialized.name;
-		this.message = serialized.message;
 		this.#fields = serialized.fields;
 	}
 

@@ -138,8 +138,7 @@ export async function _checkCompaction(
 	const assistantIsFromBeforeCompactionBoundary =
 		compactionBoundaryEntry !== null &&
 		assistantMessage.timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime();
-	const backgroundBoundary = (contextTokens?: number) =>
-		this._runBackgroundCompactionBoundary(contextTokens, !isLiveTurnCompletion);
+	const backgroundBoundary = () => this._runBackgroundCompactionBoundary(!isLiveTurnCompletion);
 	if (assistantIsFromBeforeCompactionBoundary) {
 		await backgroundBoundary();
 		return;
@@ -277,7 +276,7 @@ export async function _checkCompaction(
 		await this._runAutoCompaction("threshold", willRetry);
 		return;
 	}
-	await backgroundBoundary(contextTokens);
+	if (!(await backgroundBoundary())) this._maybeStartBackgroundCompaction(contextTokens);
 
 	// A length stop that reached its requested output cap is not the
 	// context-limited truncation recovered above. Preserve Atomic's bounded
@@ -565,7 +564,7 @@ export async function _runAutoCompaction(
 			return manualTakeoverPending ? "deferred" : "failed";
 		}
 
-		const ready = await this._useReadyBackgroundCompaction();
+		const ready = await this._useReadyBackgroundCompaction(this.model);
 		// Resolve auth only after extension hooks have had an opportunity to cancel
 		// compaction or provide compacted text, so local extension compaction does not
 		// require provider credentials. Missing auth then fails model-driven compaction
