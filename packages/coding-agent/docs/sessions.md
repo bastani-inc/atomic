@@ -97,6 +97,8 @@ Each session records the working directory it was created in and never changes i
 | `--resume`, `/resume`, `--session` | The session's working directory, which can differ from the current directory |
 | `--fork`, or a `--session` ID from another directory that you choose to fork | The current directory, in a new session |
 
+`atomic --session <id>` from another directory offers a fork only when the session's working directory exists on this machine. When it does not and lies inside a checkout the session recorded a [worktree snapshot](/worktree-snapshots) of, the session opens as itself and continues in the restored worktree.
+
 If a session's working directory no longer exists, interactive mode offers to continue in the current directory instead; other modes exit with an error that names both directories.
 
 A session that recorded [worktree snapshots](/worktree-snapshots) is checked against its last snapshot when it resumes. When its checkout drifted, or does not exist on this machine, Atomic restores the snapshot into a fresh worktree under `~/.atomic/agent/worktree-snapshots/`, prints one line naming it, and runs the session there. `/session snapshot` shows the recorded snapshots and how they differ from the current tree.
