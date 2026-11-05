@@ -17,6 +17,8 @@ export interface ActivityWatchdogDiagnostic {
 	 * engine replacement status, or `"stderr"` for child diagnostics.
 	 */
 	source?: "watchdog" | "recovery" | "stderr";
+	/** The failure behind the diagnostic, when one was thrown. */
+	error?: Error;
 }
 
 /**

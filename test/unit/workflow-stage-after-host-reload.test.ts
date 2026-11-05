@@ -32,8 +32,8 @@ import { trackLiveHostGeneration } from "../../packages/workflows/src/extension/
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
@@ -112,7 +112,7 @@ async function gatedWorkflowHost(prefix: string) {
 		messageStream(context.messages.at(-1)?.role === "toolResult" ? finalReply() : decisionMessage({ ok: true })),
 	);
 	const settingsManager = SettingsManager.inMemory({
-		routerModel: "decision-test/chat",
+		decisionModel: "decision-test/chat",
 		compaction: { enabled: false },
 		sessionSummary: { enabled: false },
 	});
@@ -139,7 +139,7 @@ async function gatedWorkflowHost(prefix: string) {
 				cwd: project,
 				agentDir,
 				modelRuntime,
-				model: decisionModel,
+				model: decisionChatModel,
 				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 				settingsManager,
 				resourceLoader,
@@ -509,7 +509,7 @@ type SessionHandler = Parameters<NonNullable<ExtensionAPI["on"]>>[1];
 type SessionContext = Parameters<SessionHandler>[1];
 
 function sessionContext(): SessionContext {
-	return { model: decisionModel, ui: { notify() {} } };
+	return { model: decisionChatModel, ui: { notify() {} } };
 }
 
 function generationHost(scope: object): {

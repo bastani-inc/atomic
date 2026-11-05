@@ -3,8 +3,14 @@ import assert from "node:assert/strict";
 import type { ClassifierApi, ClassifierModel, JsonObject } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionMessage, decisionModel, decisionRequest, messageStream } from "../helpers/structured-output.js";
+
+import {
+	decisionChatModel,
+	decisionMessage,
+	decisionRequest,
+	messageStream,
+	routeModel,
+} from "../helpers/structured-output.js";
 
 const pairs = Array.from({ length: 1997 }, (_, index) => ({
 	model: `provider/model-${index}`,
@@ -68,7 +74,7 @@ for (const [name, value] of [
 }
 
 const classifier: ClassifierModel<ClassifierApi> = {
-	...decisionModel,
+	...decisionChatModel,
 	type: "classifier",
 	provider: "fixture",
 	id: "pair",
@@ -88,7 +94,7 @@ for (const valid of [true, false]) {
 			stopReason: "stop" as const,
 			timestamp: Date.now(),
 		}));
-		request.settings = { getRouterModel: () => "fixture/pair" };
+		request.settings = { getDecisionModel: () => "fixture/pair" };
 		request.currentModel = undefined;
 		request.classifier.decode = () => value;
 		request.modelRegistry = {

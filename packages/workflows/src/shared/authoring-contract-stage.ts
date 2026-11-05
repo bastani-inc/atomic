@@ -3,6 +3,9 @@
 import type {
 	AgentSession,
 	AgentSessionEvent,
+	DecisionQuestions,
+	DecisionRequest,
+	DecisionResult,
 	ModelConstraints,
 	ModelRoute,
 	ModelRouterOutput,
@@ -133,10 +136,23 @@ export interface WorkflowModelCatalogPort {
 		/** Deadline and concurrency limit the stage owns for routing inference. */
 		inference?: RoutingInferenceBounds;
 	}): Promise<ModelRoute>;
+	/**
+	 * The host's decision service, bound to the user's `decisionModel`: `decide()` with the host's settings, model
+	 * registry and current chat model. Absent when the host has no decision model.
+	 */
+	decide?<const Q extends DecisionQuestions>(request: WorkflowDecisionRequest<Q>): Promise<DecisionResult<Q>>;
+	/** The `workflows.autoAdvanceAfterSteer` setting, read when a readiness decision is due. */
+	autoAdvanceAfterSteer?(): boolean;
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;
 	recordWarning?: (warning: string) => void;
 }
+
+/** A decision a workflow asks of the host's decision model; the host supplies settings, registry and current model. */
+export type WorkflowDecisionRequest<Q extends DecisionQuestions = DecisionQuestions> = Pick<
+	DecisionRequest<Q>,
+	"state" | "questions" | "instructions" | "deadline" | "signal" | "requireProbabilities" | "model"
+>;
 
 export interface WorkflowMaxOutput {
 	readonly bytes?: number;

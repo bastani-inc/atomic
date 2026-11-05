@@ -1,20 +1,21 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { isDecisionModelUnavailableError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import {
 	generateStructuredOutput,
-	resolveRouterModel,
-	routeModel,
+	resolveDecisionModel,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	messageStream,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 
@@ -59,10 +60,10 @@ for (const environmentKey of ["", "mock-env-jev-key"]) {
 		vi.stubGlobal("fetch", transport);
 		const request = {
 			...decisionRequest(),
-			settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
+			settings: SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" }),
 			modelRegistry: registry,
 		};
-		assert.equal(resolveRouterModel(request).kind, "classifier");
+		assert.equal(resolveDecisionModel(request).kind, "classifier");
 		assert.equal((await routeModel(request)).model, "typesafe/jev-latest");
 		const direct = await generateStructuredOutput({
 			...structuredOutputRequest(),
@@ -83,12 +84,12 @@ test("saved and ambient classifier credentials do not auto-select a router", asy
 	vi.stubEnv("TYPESAFE_API_KEY", "mock-env-key");
 	const { runtime, registry } = await storedRuntime();
 	const request = { ...decisionRequest(), settings: SettingsManager.inMemory(), modelRegistry: registry };
-	assert.equal(resolveRouterModel(request).kind, "chat");
+	assert.equal(resolveDecisionModel(request).kind, "chat");
 	await runtime.logout("typesafe");
-	assert.equal(resolveRouterModel(request).kind, "chat");
+	assert.equal(resolveDecisionModel(request).kind, "chat");
 	assert.equal((await registry.getProviderAuth("typesafe"))?.auth.apiKey, "mock-env-key");
 	assert.equal(
-		resolveRouterModel({ ...request, settings: SettingsManager.inMemory({ routerModel: "auto" }) }).kind,
+		resolveDecisionModel({ ...request, settings: SettingsManager.inMemory({ decisionModel: "auto" }) }).kind,
 		"chat",
 	);
 });
@@ -99,7 +100,7 @@ test("classifier runtime failure does not leak private auth diagnostics across f
 		...structuredOutputRequest(),
 		model: "decision-test/classifier",
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			streamSimple: chat,
 			getClassifierModel: () => decisionClassifier,
 			classify: async () => {
@@ -121,7 +122,7 @@ test("classifier cancellation prevents fallback", async () => {
 		model: "decision-test/classifier",
 		signal: controller.signal,
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			streamSimple: chat,
 			getClassifierModel: () => decisionClassifier,
 			classify: async (_model, _context, options) => {
@@ -145,17 +146,20 @@ test("only chat and registered classifiers can be selected, never image generati
 	assert.ok(classifier);
 	const router = { ...decisionRequest(), modelRegistry: registry };
 	assert.deepEqual(
-		resolveRouterModel({ ...router, settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }) }),
+		resolveDecisionModel({ ...router, settings: SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" }) }),
 		{ kind: "classifier", fullId: "typesafe/jev-latest", model: classifier },
 	);
-	assert.equal(resolveRouterModel({ ...router, settings: SettingsManager.inMemory() }).kind, "chat");
+	assert.equal(resolveDecisionModel({ ...router, settings: SettingsManager.inMemory() }).kind, "chat");
 	assert.throws(
 		() =>
-			resolveRouterModel({
+			resolveDecisionModel({
 				...router,
-				settings: SettingsManager.inMemory({ routerModel: `${image.provider}/${image.id}` }),
+				settings: SettingsManager.inMemory({ decisionModel: `${image.provider}/${image.id}` }),
 			}),
-		/Invalid routerModel.*chat or classifier catalog/,
+		(error: unknown) =>
+			isDecisionModelUnavailableError(error) &&
+			error.reason === "not-in-catalog" &&
+			error.model === `${image.provider}/${image.id}`,
 	);
 	await assert.rejects(
 		generateStructuredOutput({

@@ -112,7 +112,7 @@ async function runStageAgainstConfiguredChains(
 	const settingsManager = SettingsManager.inMemory({
 		retry: { enabled: false },
 		fallbackModels: settingsChain,
-		routerModel: `${SOURCE}-7/${MODEL_ID}`,
+		decisionModel: `${SOURCE}-7/${MODEL_ID}`,
 		modelRouting: {
 			allowedProviders: ["openai-codex", "anthropic", "xai"],
 			excludedProviders: [ACCOUNTS.stagePrimary, ACCOUNTS.stageFallback],

@@ -1,10 +1,15 @@
 import { isModelType } from "@bastani/pi-ai";
-import type { RouterModelSelectionOptions, StructuredOutputModel } from "./types.js";
+import { DecisionConfigError, DecisionModelUnavailableError } from "../decision/errors.js";
+import type { DecisionModelSelectionOptions, StructuredOutputModel } from "./types.js";
 
-export function resolveRouterModel(options: RouterModelSelectionOptions): StructuredOutputModel {
-	const configured = options.settings.getRouterModel();
+/**
+ * Resolve the configured `decisionModel` once: an exact registered classifier, else an exact registered chat model.
+ * An empty or `auto` setting means the current chat model.
+ */
+export function resolveDecisionModel(options: DecisionModelSelectionOptions): StructuredOutputModel {
+	const configured = options.settings.getDecisionModel();
 	if (typeof configured !== "string" || configured.trim() !== configured) {
-		throw new Error("Invalid routerModel: use an exact provider/model ID, auto, or an empty string.");
+		throw new DecisionConfigError({ code: "invalid-setting", source: "settings", field: "decisionModel" });
 	}
 	const explicit = configured === "auto" ? "" : configured;
 	if (explicit) {
@@ -19,11 +24,9 @@ export function resolveRouterModel(options: RouterModelSelectionOptions): Struct
 		? options.modelRegistry.getAll().find((candidate) => `${candidate.provider}/${candidate.id}` === explicit)
 		: options.currentModel;
 	if (!model || model.id === "auto" || !isModelType(model, "chat")) {
-		throw new Error(
-			explicit
-				? "Invalid routerModel: the exact model is not in the current chat or classifier catalog. Check settings.json."
-				: "Router inference needs a selected chat model or an explicit routerModel.",
-		);
+		throw explicit
+			? new DecisionModelUnavailableError({ reason: "not-in-catalog", model: explicit })
+			: new DecisionModelUnavailableError({ reason: "no-chat-model" });
 	}
 	return { kind: "chat", fullId: `${model.provider}/${model.id}`, model };
 }

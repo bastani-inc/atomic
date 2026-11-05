@@ -237,6 +237,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					elapsedMs: 0,
 					level: "unresponsive",
 					message: error.message,
+					error,
 				});
 			});
 		});

@@ -70,7 +70,7 @@ const prompt = [
 ].join("\n\n");
 ```
 
-An explicit `routerModel` chooses the routing decision provider. An unset or `auto` value uses the current chat model; saved classifier credentials do not change that choice. The setting does not choose which workflow to launch. A classifier can make the routing decision but never executes the stage. See [automatic stage operation](/workflows/operations#automatic-stage-models) for failures and resume behavior.
+An explicit `decisionModel` chooses the routing decision provider. An unset or `auto` value uses the current chat model; saved classifier credentials do not change that choice. The setting does not choose which workflow to launch. A classifier can make the routing decision but never executes the stage. See [automatic stage operation](/workflows/operations#automatic-stage-models) for failures and resume behavior.
 
 **Write workflow code for both Atomic hosts.** Standalone binaries run under Bun; npm installs run under Node. A `Bun.*` global is available only when Atomic itself runs under Bun. Otherwise it fails with `Bun is not defined`, even if Bun is installed separately.
 
@@ -679,7 +679,7 @@ A `verified` result is cached durably, so a resumed run does not click again. A 
 
 ### Classifier and image models in `ctx.tool`
 
-Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `routerModel` may select a classifier for routing, but a classifier never executes a chat stage.
+Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `decisionModel` may select a classifier for routing, but a classifier never executes a chat stage.
 
 Atomic provides `@bastani/atomic/workflows`, `typebox`, and the exact imports `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` to workflow files. The latter three use the running CLI's module instances and version, including `AuthStorage`. These examples need no project-local package installation, in npm or standalone-binary installs. A project copy does not override these host-provided imports.
 

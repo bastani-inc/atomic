@@ -344,6 +344,7 @@ export {
 	serializeDebugError,
 } from "./core/debug-errors.ts";
 export { onDebugSettingChange, setDebugSetting } from "./core/debug-setting.ts";
+export * from "./core/decision/index.js";
 export type {
 	ErrorFieldValue,
 	SerializedErrorCause,

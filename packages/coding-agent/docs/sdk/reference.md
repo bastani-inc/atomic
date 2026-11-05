@@ -154,7 +154,9 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 ### Structured decisions
 
-Use `generateStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model; the current chat model is also the terminal fallback. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema and never read `routerModel`. Workflow-stage and subagent `model: "auto"` selection use `routerModel` internally; no separate routing-decision API is exported. See [Structured decisions](/sdk/structured-decisions).
+Use `generateStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model, or with `decisionModel` when you pass `settings`; the current chat model is also the terminal fallback. With `settings`, `decisionModel` resolves as `decide()` resolves it, and a failure there rejects with a `DecisionError`. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema. See [Structured decisions](/sdk/structured-decisions).
+
+Use `decide()` to ask the user's configured `decisionModel` typed Choice, yes/no and Score questions over your state. It returns typed answers, with probabilities when a classifier answered, and rejects with a `DecisionError`. Workflow-stage and subagent `model: "auto"` selection and workflow readiness after a steer decide through it; the `structured_output` tool starts on the same decision model. See [decide](/sdk/structured-decisions#decide).
 
 ### System Prompt
 
@@ -427,7 +429,7 @@ The calling model does not supply the decision fields. It calls `structured_outp
 
 - `instructions`: the judgment to make.
 - `state`: a nonempty named object containing the task and relevant context. Do not put secrets here.
-- `model`: optional exact `provider/model` ID of a chat model or a registered classifier. Omit it to use the current stage or session chat model.
+- `model`: optional exact `provider/model` ID of a chat model or a registered classifier. Omit it to use the session's `decisionModel`, which defaults to the current stage or session chat model.
 - `fallbackModels`: optional ordered exact IDs tried after the primary.
 
 The tool infers the result through the session model registry. A successful call returns the schema-validated value as pretty-printed JSON, stores that value in `details`, and sets `terminate: true`. It does not capture the calling model's arguments as the decision. A classifier is used only when the registered schema is a finite Choice; otherwise that candidate is skipped and the next fallback, then the current chat model, is tried. A classifier failure such as missing credentials, an unavailable provider, an unsupported classify operation, a refusal, or a malformed answer advances the same chain. A chat provider refusal advances immediately when reported as an error; plain text without a result gets up to three repairs before advancing. Cancellation stops the call. Saved `/login` credentials are used through the session model registry; a listed model does not prove live access.
@@ -1003,6 +1005,19 @@ type TranscriptPart
 SessionManager
 SettingsManager
 
+// Decision service
+decide
+type DecisionRequest
+type DecisionResult
+type DecisionQuestion, DecisionQuestions, DecisionChoiceQuestion, DecisionBoolQuestion, DecisionScoreQuestion
+type DecisionAnswers, DecisionChoiceAnswer, DecisionBoolAnswer, DecisionScoreAnswer, DecisionSource
+DecisionError, DecisionConfigError, DecisionRequestError, DecisionModelUnavailableError
+DecisionTimeoutError, DecisionOutputError, DecisionProviderError
+type DecisionErrorCode, DecisionConfigErrorCode, DecisionRequestErrorReason, DecisionModelUnavailableReason
+isDecisionError, isDecisionConfigError, isDecisionRequestError, isDecisionModelUnavailableError
+isDecisionTimeoutError, isDecisionOutputError, isDecisionProviderError
+findDecisionError, isRetryableDecisionError, serializeDecisionError, rehydrateDecisionError
+
 // Workflow run control and observation (session.workflows)
 type SessionWorkflows
 type WorkflowRunControl
@@ -1101,10 +1116,6 @@ type StructuredOutputCapture
 type StructuredOutputToolOptions
 type StructuredOutputRequest
 type StructuredOutputResult
-type StructuredOutputModel
-type RouterModelSelectionOptions
-type RouterDecisionRequest
-type StructuredChoiceQuestion
 type ExtensionFactory
 type ExtensionAPI
 type ToolDefinition

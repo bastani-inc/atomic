@@ -14,6 +14,7 @@
 import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { RunDetail } from "../runs/background/status.js";
+import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import type {
@@ -139,6 +140,7 @@ type StageListItem = {
 	promptFootprint?: PendingPrompt;
 	startup?: StageSnapshot["startup"];
 	workerExecution?: StageSnapshot["workerExecution"];
+	readinessDecision?: StageSnapshot["readinessDecision"];
 };
 type StageListResult = { action: "stages"; runId: string; filter: string; stages: StageListItem[]; error?: string };
 type StageDetailItem = StageSnapshot & { transcriptPath?: string };
@@ -518,7 +520,10 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 			const r = result as StageListResult;
 			if (r.error) return renderNotice("WORKFLOW STAGES", `${r.runId || "(none)"}: ${r.error}`, opts, themed);
 			const counts = r.stages
-				.map((s) => `${s.name} (${s.id}): ${s.status}${s.skippedReason ? ` — ${s.skippedReason}` : ""}`)
+				.map(
+					(s) =>
+						`${s.name} (${s.id}): ${s.status}${s.skippedReason ? ` — ${s.skippedReason}` : ""}${s.readinessDecision ? ` — ${describeReadinessDecision(s.readinessDecision)}` : ""}`,
+				)
 				.join("; ");
 			return renderNotice("WORKFLOW STAGES", `${r.runId}: ${r.filter} — ${counts || "no stages"}`, opts, themed);
 		}

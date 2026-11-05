@@ -1,4 +1,5 @@
 import { setCallbackActivityReporter } from "../../core/callback-activity.ts";
+import { findDecisionError, serializeDecisionError } from "../../core/decision/errors.js";
 import { writeRawStdoutControl } from "../../core/output-guard.ts";
 import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import { startParentProcessGuardian } from "../../utils/shell.ts";
@@ -71,7 +72,12 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 		resourcesFailed: (error) => {
 			if (resourceState === "failed") return;
 			resourceState = "failed";
-			send({ type: "engine_resources_failed", message: error.message });
+			const decisionError = findDecisionError(error);
+			send({
+				type: "engine_resources_failed",
+				message: error.message,
+				...(decisionError ? { decisionError: serializeDecisionError(decisionError) } : {}),
+			});
 		},
 		stop: () => {
 			clearInterval(heartbeat);

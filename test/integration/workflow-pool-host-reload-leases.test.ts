@@ -26,7 +26,7 @@ import type { Store } from "../../packages/workflows/src/shared/store-public-typ
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend } from "../helpers/store-backend.js";
-import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { decisionChatModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 
 const CHILDREN = 2;
 const childPath = fileURLToPath(new URL("../fixtures/pool-resume-child.ts", import.meta.url));
@@ -168,7 +168,7 @@ test.skipIf(process.platform === "win32")(
 				cwd: project,
 				agentDir,
 				modelRuntime,
-				model: decisionModel,
+				model: decisionChatModel,
 				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 				settingsManager,
 				resourceLoader,

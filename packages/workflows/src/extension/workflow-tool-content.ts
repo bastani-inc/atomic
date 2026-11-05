@@ -1,3 +1,4 @@
+import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import { poolCoordinationLine } from "../shared/pool-coordination.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
@@ -231,6 +232,8 @@ function renderStagesToolContent(result: Extract<WorkflowToolResult, { action: "
 		if (stage.transcriptPath) lines.push(`transcriptPathJson: ${JSON.stringify(stage.transcriptPath)}`);
 		if (stage.error) lines.push(`error: ${stage.error}`);
 		if (stage.skippedReason) lines.push(`skippedReason: ${stage.skippedReason}`);
+		if (stage.readinessDecision)
+			lines.push(`readinessDecision: ${describeReadinessDecision(stage.readinessDecision)}`);
 		if (stage.awaitingInputSince !== undefined) lines.push(`awaitingInputSince: ${stage.awaitingInputSince}`);
 		if (stage.pendingPrompt !== undefined) {
 			lines.push("pendingPrompt:");

@@ -301,6 +301,41 @@ export function toolResultHasChatAnswer(result: unknown): boolean {
 
 export type ReadinessDecision = { readonly action: "advance" } | { readonly action: "stay"; readonly message?: string };
 
+/** The ask_user_question tool's "Chat about this" label; an answer with only this text carries no user message. */
+const CHAT_ANSWER_LABEL = "Chat about this";
+
+/** The text the user typed into an ask_user_question "chat" answer, when there is any. */
+export function toolResultChatText(result: unknown): string | undefined {
+	if (result === null || typeof result !== "object") return undefined;
+	const details = (result as Record<string, unknown>).details;
+	if (details === null || typeof details !== "object") return undefined;
+	const answers = (details as Record<string, unknown>).answers;
+	if (!Array.isArray(answers)) return undefined;
+	const texts = answers.flatMap((answer) => {
+		if (answer === null || typeof answer !== "object") return [];
+		const { kind, answer: text } = answer as Record<string, unknown>;
+		if (kind !== "chat" || typeof text !== "string") return [];
+		const trimmed = text.trim();
+		return trimmed.length === 0 || trimmed === CHAT_ANSWER_LABEL ? [] : [text];
+	});
+	return texts.length === 0 ? undefined : texts.join("\n\n");
+}
+
+/** The text of a user message delivered to a stage; images carry no text. */
+export function userMessageText(content: unknown): string | undefined {
+	if (typeof content === "string") return content.trim().length === 0 ? undefined : content;
+	if (!Array.isArray(content)) return undefined;
+	const text = content
+		.flatMap((part) =>
+			part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text"
+				? [String((part as { text?: unknown }).text ?? "")]
+				: [],
+		)
+		.join("\n")
+		.trim();
+	return text.length === 0 ? undefined : text;
+}
+
 function firstReadinessAnswer(result: unknown): Record<string, unknown> | undefined {
 	if (result === null || typeof result !== "object") return undefined;
 	const details = (result as Record<string, unknown>).details;

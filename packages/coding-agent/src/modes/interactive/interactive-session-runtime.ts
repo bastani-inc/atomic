@@ -2,9 +2,12 @@ import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
+import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
+import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
+import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (this: InteractiveModeBase): Promise<void> {
 	const uiContext = this.createExtensionUIContext();
@@ -165,6 +168,19 @@ InteractiveModeBase.prototype.handleFatalRuntimeError = async function (
 	// must remain on screen after the process dies, whatever the setting says.
 	this.stop("transcript");
 	process.exit(1);
+};
+
+/** Shows an interactive-engine diagnostic, and stops Atomic when the engine refused a decision-model setting. */
+InteractiveModeBase.prototype.handleEngineDiagnostic = function (
+	this: InteractiveModeBase,
+	diagnostic: ActivityWatchdogDiagnostic,
+): void {
+	exitOnRefusedDecisionSetting(this, diagnostic.error);
+	renderEngineDiagnostic(diagnostic, {
+		stopWorkingLoader: () => this.stopWorkingLoader(),
+		showStatus: (message, persist) => this.showStatus(message, persist),
+		showError: (message) => this.showError(message),
+	});
 };
 
 InteractiveModeBase.prototype.renderCurrentSessionState = function (this: InteractiveModeBase): void {

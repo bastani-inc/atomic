@@ -266,7 +266,7 @@ export class ExtensionRunner {
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () =>
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
-	private getRouterModelFn: ExtensionContextActions["getRouterModel"] = undefined;
+	private getDecisionModelFn: ExtensionContextActions["getDecisionModel"] = undefined;
 	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
 	private getHttpIdleTimeoutMsFn: ExtensionContextActions["getHttpIdleTimeoutMs"] = undefined;
 	private executeToolFn: ExtensionContextActions["executeTool"];
@@ -352,7 +352,7 @@ export class ExtensionRunner {
 		this.getSystemPromptOptionsFn =
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
-		this.getRouterModelFn = contextActions.getRouterModel;
+		this.getDecisionModelFn = contextActions.getDecisionModel;
 		this.getModelRoutingFn = contextActions.getModelRouting;
 		this.getHttpIdleTimeoutMsFn = contextActions.getHttpIdleTimeoutMs;
 		this.executeToolFn = contextActions.executeTool;
@@ -928,7 +928,7 @@ export class ExtensionRunner {
 			compact: (options) => this.compactFn(options),
 			getSystemPrompt: () => this.getSystemPromptFn(),
 			...(this.getSkillCatalogFn ? { getSkillCatalog: () => this.getSkillCatalogFn!() } : {}),
-			...(this.getRouterModelFn ? { getRouterModel: () => this.getRouterModelFn!() } : {}),
+			...(this.getDecisionModelFn ? { getDecisionModel: () => this.getDecisionModelFn!() } : {}),
 			...(this.getModelRoutingFn ? { getModelRouting: () => this.getModelRoutingFn!() } : {}),
 			...(this.getHttpIdleTimeoutMsFn ? { getHttpIdleTimeoutMs: () => this.getHttpIdleTimeoutMsFn!() } : {}),
 			getSystemPromptOptions: () => this.getSystemPromptOptionsFn(),

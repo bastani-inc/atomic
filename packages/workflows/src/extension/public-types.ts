@@ -147,7 +147,7 @@ export interface PiToolOpts<TArgs, TDetails> {
 }
 
 export interface PiExecuteContext extends PiModelContext {
-	getRouterModel?: () => string;
+	getDecisionModel?: () => string;
 	getModelRouting?: () => import("@bastani/atomic").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 	sessionId?: string;

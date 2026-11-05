@@ -5,6 +5,47 @@
  * discovery. The package root re-exports this module directly.
  */
 
+export {
+	type DecisionAnswerFor,
+	type DecisionAnswers,
+	type DecisionBoolAnswer,
+	type DecisionBoolQuestion,
+	type DecisionChoiceAnswer,
+	type DecisionChoiceQuestion,
+	DecisionConfigError,
+	type DecisionConfigErrorCode,
+	DecisionError,
+	type DecisionErrorCode,
+	DecisionModelUnavailableError,
+	type DecisionModelUnavailableReason,
+	DecisionOutputError,
+	type DecisionPhase,
+	DecisionProviderError,
+	type DecisionQuestion,
+	type DecisionQuestions,
+	type DecisionRequest,
+	DecisionRequestError,
+	type DecisionRequestErrorReason,
+	type DecisionResult,
+	type DecisionScoreAnswer,
+	type DecisionScoreQuestion,
+	type DecisionSource,
+	DecisionTimeoutError,
+	decide,
+	findDecisionError,
+	isDecisionConfigError,
+	isDecisionError,
+	isDecisionModelUnavailableError,
+	isDecisionOutputError,
+	isDecisionProviderError,
+	isDecisionRequestError,
+	isDecisionTimeoutError,
+	isRetryableDecisionError,
+	parseSerializedDecisionError,
+	rehydrateDecisionError,
+	type SerializedDecisionError,
+	serializeDecisionError,
+} from "@bastani/atomic";
 export type { Static, TSchema } from "typebox";
 export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
 export type {
@@ -35,10 +76,20 @@ export type { ActiveRunEntry, CancellationRegistry } from "./runs/background/can
 export { cancellationRegistry, createCancellationRegistry } from "./runs/background/cancellation-registry.js";
 export type { ResolvedInputs, RunOpts, RunResult } from "./runs/foreground/executor.js";
 export { resolveInputs } from "./runs/foreground/executor.js";
+export {
+	READINESS_DECISION_THRESHOLDS,
+	type ReadinessDecisionThresholds,
+	type ReadinessOutcome,
+	type ReadinessProbabilities,
+	type ReadinessVerdict,
+	readinessVerdict,
+	type StageReadinessDecision,
+} from "./runs/foreground/readiness-decision.js";
 export { run } from "./runs/foreground/sdk-run.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";
+export type { WorkflowDecisionRequest } from "./shared/authoring-contract-stage.js";
 export { createStore, store } from "./shared/store.js";
 export type {
 	CustomPromptIdentitySource,

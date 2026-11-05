@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../../config.js";
+import { DecisionModelUnavailableError } from "../decision/errors.js";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -66,7 +67,7 @@ export interface ExtensionContextSource {
 	getContextUsage(): ContextUsage | undefined;
 	compact(options?: CompactOptions): void;
 	getSystemPrompt(): string;
-	getRouterModel?(): string;
+	getDecisionModel?(): string;
 	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?(): number;
 	getSkillCatalog?(): SkillCatalog;
@@ -363,10 +364,10 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertAction?.();
 			source.compact(options);
 		},
-		getRouterModel: () => {
+		getDecisionModel: () => {
 			source.assertActive();
-			if (!source.getRouterModel) throw new Error("Router settings are unavailable in this extension host.");
-			return source.getRouterModel();
+			if (!source.getDecisionModel) throw new DecisionModelUnavailableError({ reason: "host-unsupported" });
+			return source.getDecisionModel();
 		},
 		getModelRouting: () => {
 			source.assertActive();

@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	messageStream,
 	parseInferenceUserPayload,
+	routeModel,
 } from "../helpers/structured-output.js";
 
 function largeDecision() {
@@ -19,7 +20,7 @@ function largeDecision() {
 	}));
 	return {
 		...request,
-		settings: { getRouterModel: () => "decision-test/classifier" },
+		settings: { getDecisionModel: () => "decision-test/classifier" },
 		state: { ...request.state, candidates },
 		classifier: {
 			questions: {
@@ -69,9 +70,9 @@ for (const task of ["x".repeat(40_000), "🌙".repeat(15_000)]) {
 		const result = await routeModel({
 			...request,
 			state,
-			settings: { getRouterModel: () => "decision-test/classifier" },
+			settings: { getDecisionModel: () => "decision-test/classifier" },
 			modelRegistry: {
-				getAll: () => [decisionModel],
+				getAll: () => [decisionChatModel],
 				streamSimple: chat,
 				getClassifierModel: () => decisionClassifier,
 				classify,

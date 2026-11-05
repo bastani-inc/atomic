@@ -1,4 +1,5 @@
 import { isReopenableSession } from "../../shared/session-transcript.js";
+import { userMessageText } from "./executor-hil.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import type { AgentSessionEventListener, StageControlHandle } from "./stage-control-registry.js";
@@ -50,6 +51,18 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			await runtime.innerCtx.__queueUserText(text, kind, options);
 		else if (kind === "steer") await runtime.innerCtx.steer(text);
 		else await runtime.innerCtx.followUp(text);
+	};
+	/**
+	 * Keep the user's latest message, so readiness after it can be judged. It is kept when delivery is admitted, before
+	 * the turn it starts can end; the returned function restores the previous one when no turn took the message.
+	 */
+	const rememberUserMessage = (content: unknown): (() => void) => {
+		const previous = runtime.state.latestUserMessage;
+		runtime.state.latestUserMessage = userMessageText(content) ?? previous;
+		runtime.state.userMessageSeq += 1;
+		return () => {
+			runtime.state.latestUserMessage = previous;
+		};
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
@@ -145,12 +158,15 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		async sendUserMessage(text, options, beforeDelivery) {
 			runtime.throwIfStageMutationBlocked();
 			const preparation = messagePreparation();
+			let forget: (() => void) | undefined;
 			const admitDelivery = (): void => {
 				runtime.throwIfStageMutationBlocked();
 				beforeDelivery?.();
+				forget = rememberUserMessage(text);
 			};
 			try {
 				const action = await runtime.innerCtx.__sendUserMessage(text, options, admitDelivery, preparation);
+				if (action === "handled") forget?.();
 				if (action === "steer" || action === "followUp") {
 					runtime.state.resumeContinuationPending = "queued-user-message";
 				}
@@ -163,13 +179,18 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			runtime.throwIfStageMutationBlocked();
 			const preparation = messagePreparation();
 			let action: StageUserMessageDeliveryAction | undefined;
+			let forget: (() => void) | undefined;
 			try {
 				action = await runtime.innerCtx.__sendUserMessage(
 					text,
 					undefined,
-					runtime.throwIfStageMutationBlocked,
+					() => {
+						runtime.throwIfStageMutationBlocked();
+						forget = rememberUserMessage(text);
+					},
 					preparation,
 				);
+				if (action === "handled") forget?.();
 			} finally {
 				void runtime.captureStageSessionMeta();
 			}
@@ -191,7 +212,11 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				runtime.innerCtx.__agentSession()?.isStreaming === true ||
 				runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
-				await queueIntoLiveTurn(text, "steer", options);
+				const forget = rememberUserMessage(text);
+				await queueIntoLiveTurn(text, "steer", options).catch((error: unknown) => {
+					forget();
+					throw error;
+				});
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
 				void runtime.captureStageSessionMeta();
@@ -209,7 +234,11 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				runtime.innerCtx.__agentSession()?.isStreaming === true ||
 				runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
-				await queueIntoLiveTurn(text, "followUp", options);
+				const forget = rememberUserMessage(text);
+				await queueIntoLiveTurn(text, "followUp", options).catch((error: unknown) => {
+					forget();
+					throw error;
+				});
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
 				void runtime.captureStageSessionMeta();

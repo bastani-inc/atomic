@@ -53,7 +53,7 @@ function routingContext(modelRouting?: ModelRoutingSettings) {
 	const offered: string[][] = [];
 	const ctx: ModelRoutingContext = {
 		model: models[0],
-		getRouterModel: () => "typesafe/jev-latest",
+		getDecisionModel: () => "typesafe/jev-latest",
 		...(modelRouting ? { getModelRouting: () => modelRouting } : {}),
 		modelRegistry: {
 			getAvailable: () => models,
@@ -305,4 +305,32 @@ test("routerSelection echoes the post-filter candidates, and a restored decision
 		false,
 		"a legacy decision without candidates stays valid and unchanged",
 	);
+});
+
+test("the chat model that reads the task stays a chat model when a classifier shares its ID (#4358)", async () => {
+	const { ctx } = routingContext();
+	const reader = models[0]!;
+	const twin = { ...jev, provider: reader.provider, id: reader.id, name: "Classifier twin" } as ClassifierModel<Api>;
+	const registry = ctx.modelRegistry;
+	const classified: string[][] = [];
+	const read: string[] = [];
+	const classify = registry.classify!;
+	const streamSimple = registry.streamSimple;
+	const twinRegistry: ModelRoutingContext["modelRegistry"] = {
+		...registry,
+		getClassifierModel: (provider: string, id: string) =>
+			`${provider}/${id}` === `${reader.provider}/${reader.id}` ? twin : registry.getClassifierModel!(provider, id),
+		classify: (model, context, options) => {
+			classified.push(Object.keys(context.questions));
+			return classify(model, context, options);
+		},
+		streamSimple: (model, context, options) => {
+			read.push(`${model.provider}/${model.id}`);
+			return streamSimple(model, context, options);
+		},
+	};
+	await route({ ...ctx, modelRegistry: twinRegistry });
+	assert.deepEqual(read, [`${reader.provider}/${reader.id}`], "the selected chat reader reads the task");
+	assert.ok(classified.length > 0, "the classifier decision model still chooses the model");
+	for (const questions of classified) assert.equal(questions.includes("work"), false, "no classifier reads the task");
 });

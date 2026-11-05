@@ -11,6 +11,7 @@ import {
 	setRegisteredThemes,
 } from "./interactive-mode-deps.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
+import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
 
 export interface DeferredStartupMode {
 	deferredStartupPending: boolean;
@@ -90,6 +91,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		void loadAllHighlightLanguages().then(() => this.ui.requestRender());
 		loaded = true;
 	} catch (error) {
+		exitOnRefusedDecisionSetting(this, error);
 		// Same ownership rule as the success path: this catch swallows the error,
 		// so prompt preflight continues and must keep its indicator.
 		if (!this.promptTurnWorkingLoaderActive) {

@@ -18,6 +18,7 @@
  */
 
 import type { RunDetail } from "../runs/background/status.js";
+import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import type {
 	PendingWorkflowRunStatusResolver,
 	WorkflowBoundarySegmentsResolver,
@@ -355,6 +356,11 @@ function renderStageRowsPlain(
 	if (stage.error) {
 		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
 	}
+	if (stage.readinessDecision) {
+		rows.push(
+			`   ready  ${truncateToWidth(describeReadinessDecision(stage.readinessDecision), Math.max(1, width - 10), "…")} `,
+		);
+	}
 	return rows;
 }
 
@@ -386,6 +392,11 @@ function renderStageRowsThemed(
 		const errFg = hexToAnsi(theme.error);
 		rows.push(
 			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${errFg}${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `,
+		);
+	}
+	if (stage.readinessDecision) {
+		rows.push(
+			`   ${hexToAnsi(theme.textMuted)}ready${RESET}  ${truncateToWidth(describeReadinessDecision(stage.readinessDecision), Math.max(1, width - 12), "…")} `,
 		);
 	}
 	return rows;

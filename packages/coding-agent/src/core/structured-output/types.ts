@@ -1,4 +1,4 @@
-import type { Api, ClassifierApi, ClassifierModel, Model, RetryPolicy } from "@bastani/pi-ai";
+import type { Api, ClassifierAnswer, ClassifierApi, ClassifierModel, Model, RetryPolicy } from "@bastani/pi-ai";
 import type { Static, TSchema } from "typebox";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SettingsManager } from "../settings-manager.ts";
@@ -6,12 +6,29 @@ import type { JsonObject } from "../tools/structured-output.ts";
 
 /** A semantic judgment, not an execution instruction. IDs are only correlation keys. */
 export interface StructuredChoiceQuestion {
+	readonly type?: "choice";
 	readonly instructions: string;
 	readonly criteria: Readonly<Record<string, string>>;
 }
 
-export interface RouterModelSelectionOptions {
-	readonly settings: Pick<SettingsManager, "getRouterModel"> &
+/** A yes/no judgment; the classifier answers with the probability of `true`. */
+export interface StructuredBoolQuestion {
+	readonly type: "bool";
+	readonly instructions: string;
+	readonly criteria: { readonly true: string; readonly false: string };
+}
+
+/** A graded judgment over ordered levels, lowest first. */
+export interface StructuredScoreQuestion {
+	readonly type: "score";
+	readonly instructions: string;
+	readonly criteria: readonly string[];
+}
+
+export type StructuredDecisionQuestion = StructuredChoiceQuestion | StructuredBoolQuestion | StructuredScoreQuestion;
+
+export interface DecisionModelSelectionOptions {
+	readonly settings: Pick<SettingsManager, "getDecisionModel"> &
 		Partial<Pick<SettingsManager, "getRetrySettings" | "getHttpIdleTimeoutMs">>;
 	readonly modelRegistry: Pick<ModelRegistry, "getAll"> &
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getClassifierModel" | "classify">>;
@@ -31,7 +48,13 @@ export interface ModelAttempt {
 }
 
 export interface StructuredOutputRequest<T extends TSchema> {
+	/** Exact provider/model ID to try first. Omitted: the configured `decisionModel` when `settings` is given, else the current chat model. */
 	readonly model?: string;
+	/**
+	 * The session's settings. With no explicit `model`, the decision starts on `decisionModel` (a classifier when the
+	 * result schema is a finite Choice), then `fallbackModels`, then the current chat model.
+	 */
+	readonly settings?: Pick<SettingsManager, "getDecisionModel">;
 	readonly fallbackModels?: readonly string[];
 	readonly currentModel?: Model<Api>;
 	readonly modelRegistry: Pick<ModelRegistry, "streamSimple" | "getAll"> &
@@ -54,23 +77,29 @@ export interface StructuredOutputRequest<T extends TSchema> {
 }
 
 export interface InternalStructuredOutputRequest<T extends TSchema>
-	extends Omit<StructuredOutputRequest<T>, "model" | "modelRegistry"> {
+	extends Omit<StructuredOutputRequest<T>, "model" | "modelRegistry" | "settings"> {
 	readonly model: StructuredOutputModel;
 	readonly modelRegistry: Pick<ModelRegistry, "streamSimple"> &
 		Partial<Pick<ModelRegistry, "getProviderAuth" | "getClassifierModel" | "classify">>;
 	readonly candidateFallback?: true;
 	readonly classifier: {
 		/** Independent judgments, packed together where possible. Conditional questions must describe their premise. */
-		readonly questions: Readonly<Record<string, StructuredChoiceQuestion>>;
-		/** Pure exact lookup/composition only. No inference, execution or authorization here. */
-		readonly decode: (choices: Readonly<Record<string, string>>) => Static<T>;
+		readonly questions: Readonly<Record<string, StructuredDecisionQuestion>>;
+		/**
+		 * Pure exact lookup/composition only. No inference, execution or authorization here. `choices` holds each
+		 * Choice answer's option; `answers` holds every classifier answer with its probabilities.
+		 */
+		readonly decode: (
+			choices: Readonly<Record<string, string>>,
+			answers: Readonly<Record<string, ClassifierAnswer>>,
+		) => Static<T>;
 	};
 }
 
-/** Shared prerequisite router request. Neither routing consumer is activated by this API alone. */
-export interface RouterDecisionRequest<T extends TSchema>
+/** A schema-shaped decision on the configured decision model. Neither routing consumer is activated by this API alone. */
+export interface DecisionModelRequest<T extends TSchema>
 	extends Omit<InternalStructuredOutputRequest<T>, "model" | "modelRegistry" | "currentModel" | "fallbackModels">,
-		RouterModelSelectionOptions {
+		DecisionModelSelectionOptions {
 	readonly modelRegistry: Pick<ModelRegistry, "getAll" | "streamSimple"> &
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">>;
 }

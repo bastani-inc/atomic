@@ -12,15 +12,20 @@ import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTo
 import { builtinModels } from "@bastani/pi-ai/providers/all";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
+import {
+	isDecisionConfigError,
+	isDecisionModelUnavailableError,
+} from "../../packages/coding-agent/src/core/decision/errors.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { resolveRouterModel } from "../../packages/coding-agent/src/core/structured-output/resolver.js";
+
+import { resolveDecisionModel } from "../../packages/coding-agent/src/core/structured-output/resolver.js";
 import {
 	decisionMessage,
 	decisionRequest,
 	decisionSchema,
 	messageStream,
 	registeredDecisionRuntime,
+	routeModel,
 } from "../helpers/structured-output.js";
 
 const FAST_RETRY = { enabled: true, maxRetries: 3, baseDelayMs: 1 };
@@ -77,7 +82,7 @@ function classifierRequest(
 	const request = decisionRequest();
 	return {
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
+		settings: SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" }),
 		currentModel,
 		modelRegistry: {
 			...request.modelRegistry,
@@ -96,7 +101,7 @@ afterEach(() => {
 for (const setting of ["test/alternate", "typesafe/jev-latest", "judge/general-classifier", "", "auto"] as const) {
 	test(`router resolves ${JSON.stringify(setting)} only through its model registry`, () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
-		const settings = SettingsManager.inMemory({ routerModel: setting });
+		const settings = SettingsManager.inMemory({ decisionModel: setting });
 		const registry = {
 			...modelRegistry,
 			getClassifierModel: (provider: string, id: string) => {
@@ -106,7 +111,7 @@ for (const setting of ["test/alternate", "typesafe/jev-latest", "judge/general-c
 			},
 		};
 		const expected = setting === "" || setting === "auto" ? "test/chat" : setting;
-		assert.equal(resolveRouterModel({ settings, modelRegistry: registry, currentModel: chat }).fullId, expected);
+		assert.equal(resolveDecisionModel({ settings, modelRegistry: registry, currentModel: chat }).fullId, expected);
 		assert.equal(settings.getDefaultModel(), undefined);
 		assert.equal(chat.id, "chat");
 	});
@@ -119,7 +124,7 @@ test("router credentials alone never change automatic model selection", async ()
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
 	const result = await routeModel({
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "auto" }),
+		settings: SettingsManager.inMemory({ decisionModel: "auto" }),
 		currentModel: chat,
 		modelRegistry: { ...request.modelRegistry, getAll: () => [chat], streamSimple: dispatch },
 	});
@@ -131,9 +136,12 @@ test("router credentials alone never change automatic model selection", async ()
 test("empty default reads the current chat model on each invocation", () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	const settings = SettingsManager.inMemory();
-	assert.equal(settings.getRouterModel(), "");
-	assert.equal(resolveRouterModel({ settings, modelRegistry, currentModel: alternate }).fullId, "test/alternate");
-	assert.throws(() => resolveRouterModel({ settings, modelRegistry }), /selected chat model/);
+	assert.equal(settings.getDecisionModel(), "");
+	assert.equal(resolveDecisionModel({ settings, modelRegistry, currentModel: alternate }).fullId, "test/alternate");
+	assert.throws(
+		() => resolveDecisionModel({ settings, modelRegistry }),
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "no-chat-model",
+	);
 });
 
 for (const explicit of [
@@ -146,21 +154,27 @@ for (const explicit of [
 ]) {
 	test(`invalid explicit selection ${JSON.stringify(explicit)} never substitutes another model`, () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
-		const settings = SettingsManager.inMemory({ routerModel: explicit });
-		assert.throws(() => resolveRouterModel({ settings, modelRegistry, currentModel: chat }), /Invalid routerModel/);
+		const settings = SettingsManager.inMemory({ decisionModel: explicit });
+		assert.throws(
+			() => resolveDecisionModel({ settings, modelRegistry, currentModel: chat }),
+			(error: unknown) =>
+				explicit.trim() === explicit
+					? isDecisionModelUnavailableError(error) && error.reason === "not-in-catalog" && error.model === explicit
+					: isDecisionConfigError(error) && error.code === "invalid-setting" && error.field === "decisionModel",
+		);
 	});
 }
 
 test("a registered classifier is not selected as the current execution chat model", () => {
-	const settings = SettingsManager.inMemory({ routerModel: "auto" });
+	const settings = SettingsManager.inMemory({ decisionModel: "auto" });
 	assert.throws(
 		() =>
-			resolveRouterModel({
+			resolveDecisionModel({
 				settings,
 				modelRegistry: { ...modelRegistry, getClassifierModel: () => classifier },
 				currentModel: undefined,
 			}),
-		/selected chat model/,
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "no-chat-model",
 	);
 });
 
@@ -197,7 +211,7 @@ test("ordinary entrypoint uses configured provider/auth, complete state, one sch
 	assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 10 });
 	assert.equal(dispatch.mock.calls.length, 1);
 	assert.equal(JSON.stringify(request.currentModel), before);
-	assert.equal(request.settings.getRouterModel(), "decision-test/chat");
+	assert.equal(request.settings.getDecisionModel(), "decision-test/chat");
 	assert.equal(
 		runtime.getModels().some((model) => model.provider === "typesafe-ai"),
 		false,
@@ -305,7 +319,7 @@ test("registered non-Jev classifier receives all Choice questions and returns a 
 	const request = classifierRequest(classify);
 	const result = await routeModel({
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "judge/general-classifier" }),
+		settings: SettingsManager.inMemory({ decisionModel: "judge/general-classifier" }),
 		modelRegistry: {
 			...request.modelRegistry,
 			getClassifierModel: (provider, id) =>

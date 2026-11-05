@@ -23,7 +23,7 @@ test("startup migrates Azure config files atomically without replacing canonical
 				defaultProvider: legacy,
 				enabledModels: [`${legacy}/*:high`],
 				fallbackModels: [`${legacy}/gpt-5.4:low`],
-				routerModel: `${legacy}/gpt-5.4`,
+				decisionModel: `${legacy}/gpt-5.4`,
 				modelThinkingLevels: { [`${legacy}/gpt-5.4`]: "low", "azure/gpt-5.4": "high" },
 				modelRouting: { allowedProviders: [legacy], excludedProviders: [legacy] },
 				compaction: { modelOverrides: { [`${legacy}/gpt-5.4`]: { maxTokens: 1024 } } },
@@ -72,7 +72,7 @@ test("startup migrates Azure config files atomically without replacing canonical
 				assert.equal(parsed.defaultProvider, "azure");
 				assert.deepEqual(parsed.enabledModels, ["azure/*:high"]);
 				assert.deepEqual(parsed.fallbackModels, ["azure/gpt-5.4:low"]);
-				assert.equal(parsed.routerModel, "azure/gpt-5.4");
+				assert.equal(parsed.decisionModel, "azure/gpt-5.4");
 				assert.deepEqual(parsed.modelThinkingLevels, { "azure/gpt-5.4": "high" });
 				assert.deepEqual(parsed.modelRouting, { allowedProviders: ["azure"], excludedProviders: ["azure"] });
 				assert.deepEqual(parsed.compaction.modelOverrides, { "azure/gpt-5.4": { maxTokens: 1024 } });

@@ -18,7 +18,7 @@ import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import type { ExtensionAPI, WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { fileExists } from "../helpers/runtime.js";
 import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
-import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { decisionChatModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 /** Real resource loader, real SDK sessions, and a real `/new` or `/fork` transaction. */
@@ -95,7 +95,7 @@ async function switchHost(
 		throw new Error("the switch-adoption workflow makes no model calls");
 	});
 	const settingsManager = SettingsManager.inMemory({
-		routerModel: "decision-test/chat",
+		decisionModel: "decision-test/chat",
 		compaction: { enabled: false },
 		sessionSummary: { enabled: false },
 	});
@@ -122,7 +122,7 @@ async function switchHost(
 			cwd: project,
 			agentDir,
 			modelRuntime,
-			model: decisionModel,
+			model: decisionChatModel,
 			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 			settingsManager,
 			resourceLoader,

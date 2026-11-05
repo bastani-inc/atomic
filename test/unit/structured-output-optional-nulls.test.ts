@@ -3,7 +3,7 @@ import type { JsonObject } from "@bastani/pi-ai";
 import { type TSchema, Type } from "typebox";
 import { test, vi } from "vitest";
 import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionMessage, decisionModel, messageStream } from "../helpers/structured-output.js";
+import { decisionChatModel, decisionMessage, messageStream } from "../helpers/structured-output.js";
 
 const REPAIR_ATTEMPTS = 4;
 
@@ -21,7 +21,7 @@ function requestFor<T extends TSchema>(schema: T, response: JsonObject) {
 		streamSimple,
 		request: {
 			model: "decision-test/chat",
-			modelRegistry: { getAll: () => [decisionModel], streamSimple },
+			modelRegistry: { getAll: () => [decisionChatModel], streamSimple },
 			schema,
 			state: { task: "Report the stage result" },
 			instructions: "Report the stage result.",

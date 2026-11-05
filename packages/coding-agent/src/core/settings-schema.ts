@@ -254,7 +254,7 @@ const ModelRoutingSettingsSchema = Type.Object(
 	},
 	{
 		description:
-			'Provider and model filters for the candidates model "auto" may route to. Does not affect routerModel.',
+			'Provider and model filters for the candidates model "auto" may route to. Does not affect decisionModel.',
 	},
 );
 
@@ -413,6 +413,13 @@ const WorkflowsSettingsSchema = Type.Union(
 		StringArraySchema,
 		Type.Object({
 			paths: Type.Optional(Type.Array(Type.String(), { description: "Workflow resource paths." })),
+			autoAdvanceAfterSteer: Type.Optional(
+				Type.Boolean({
+					description:
+						'After you steer a stage that asked you a question, let the decision model advance the stage or keep it open without asking "Are you ready to move on to the next stage?". It asks when the decision is uncertain or fails. Default: true.',
+					default: SETTINGS_DEFAULTS.workflows.autoAdvanceAfterSteer,
+				}),
+			),
 			journal: Type.Optional(StorageSelectionSchema),
 			localWorkers: Type.Optional(
 				Type.Object(
@@ -488,7 +495,7 @@ const WorkflowsSettingsSchema = Type.Union(
 	],
 	{
 		description:
-			'Local workflow paths, or an object with "paths", "journal" storage, "localWorkers" and "admission" settings.',
+			'Local workflow paths, or an object with "paths", "autoAdvanceAfterSteer", "journal" storage, "localWorkers" and "admission" settings.',
 	},
 );
 
@@ -517,11 +524,11 @@ export const SettingsSchema = Type.Object(
 		),
 		defaultProvider: Type.Optional(Type.String()),
 		defaultModel: Type.Optional(Type.String()),
-		routerModel: Type.Optional(
+		decisionModel: Type.Optional(
 			Type.String({
 				description:
-					'Inference model for workflow-stage and subagent model: "auto" selection only. An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
-				default: SETTINGS_DEFAULTS.routerModel,
+					'The model every decision uses: workflow-stage and subagent model: "auto" selection, structured_output calls without their own model, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
+				default: SETTINGS_DEFAULTS.decisionModel,
 			}),
 		),
 		compactionModel: Type.Optional(

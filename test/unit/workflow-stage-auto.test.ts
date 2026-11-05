@@ -22,8 +22,8 @@ import { areaRecords, DEBUG_MODE_SOURCES, withDebugLog } from "../helpers/debug-
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { chatPayload, chatRouter, defaultClassifierChoice } from "../helpers/model-routing.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
@@ -64,16 +64,16 @@ function classifierWireResponse(request: ClassifierWireRequest) {
 	};
 }
 
-const OTHER_MODEL = { ...decisionModel, id: "other", name: "Other" };
+const OTHER_MODEL = { ...decisionChatModel, id: "other", name: "Other" };
 
 async function fixture() {
 	vi.stubEnv("TYPESAFE_API_KEY", "");
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry, runtime: decisionRuntime } = await registeredDecisionRuntime(infer);
 	const models = workflowModelCatalogFromContext({
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: registry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 	});
 	const admissions: string[] = [];
 	const store = createStore();
@@ -189,7 +189,7 @@ test("public stage auto asks the router about the actual prompt before admission
 test("long stage prompts reach the chat reader and execution complete, never the classifier", async () => {
 	const f = await fixture();
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-jev-key");
-	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
+	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, OTHER_MODEL]);
 	const task = `Review this implementation.\n${"reference ".repeat(20_000)}\n<keepContext>Read-only review.</keepContext>\nReport defects.`;
 	const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 		assert.match(String(url), /\/systemone$/);
@@ -200,9 +200,9 @@ test("long stage prompts reach the chat reader and execution complete, never the
 	});
 	vi.stubGlobal("fetch", transport);
 	const models = workflowModelCatalogFromContext({
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: f.modelRegistry,
-		getRouterModel: () => "typesafe/jev-latest",
+		getDecisionModel: () => "typesafe/jev-latest",
 	});
 	const executed: string[] = [];
 	const ctx = createStageContext(
@@ -241,7 +241,7 @@ test("malformed stage decision admits no execution session without a current cha
 	// No catalog currentModel: the total-routing failure stays fatal (#3206).
 	f.models = workflowModelCatalogFromContext({
 		modelRegistry: f.modelRegistry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 	});
 	f.infer.mockImplementation(() =>
 		messageStream(decisionMessage({ modelId: "decision-test/chat", reasoningEffort: "high" })),
@@ -365,8 +365,8 @@ for (const [allowed, status, admissions] of [
 	test(`auto stage total routing failure with allowedModels=${allowed} ${status === "completed" ? "degrades to" : "never runs"} the current chat model (#3206)`, async () => {
 		const f = await fixture();
 		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([
-			decisionModel,
-			{ ...decisionModel, provider: "second-provider", id: "other" },
+			decisionChatModel,
+			{ ...decisionChatModel, provider: "second-provider", id: "other" },
 		]);
 		f.infer.mockImplementation(() => {
 			throw new Error("mock router outage");
@@ -590,7 +590,7 @@ test("model-dependent pre-prompt operations do not fabricate auto tasks; setMode
 		makeOpts({ adapters: f.adapters, models: f.models, stageOptions: { model: "auto" } }),
 	);
 	await assert.rejects(ctx.compact(), /requires prompt text/);
-	await ctx.setModel(decisionModel);
+	await ctx.setModel(decisionChatModel);
 	assert.equal(f.admissions.length, 1);
 	assert.equal(f.infer.mock.calls.length, 0);
 	await ctx.__dispose();
@@ -642,13 +642,13 @@ test("reasoning fallback preserves explicit and inherited efforts and immutable 
 	for (const suffix of ["", ":low"]) {
 		const f = await fixture();
 		const primary = {
-			...decisionModel,
+			...decisionChatModel,
 			id: "primary",
 			reasoning: true,
 			thinkingLevelMap: { high: "high", low: "low", off: null, minimal: null, medium: null, xhigh: null, max: null },
 		};
 		const fallback = { ...primary, id: "fallback" };
-		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, primary, fallback]);
+		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, primary, fallback]);
 		f.infer.mockImplementation(
 			chatRouter(
 				(offered) =>
@@ -705,7 +705,7 @@ for (const auth of ["stored", "env"] as const) {
 		const key = "synthetic-stage-jev-key";
 		if (auth === "env") vi.stubEnv("TYPESAFE_API_KEY", key);
 		else await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key }, { refreshCatalog: false });
-		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
+		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, OTHER_MODEL]);
 		const classify = vi.spyOn(f.modelRegistry, "classify");
 		const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
 			assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);
@@ -715,9 +715,9 @@ for (const auth of ["stored", "env"] as const) {
 		});
 		vi.stubGlobal("fetch", fetch);
 		const models = workflowModelCatalogFromContext({
-			model: decisionModel,
+			model: decisionChatModel,
 			modelRegistry: f.modelRegistry,
-			getRouterModel: () => "typesafe/jev-latest",
+			getDecisionModel: () => "typesafe/jev-latest",
 		});
 		const ctx = createStageContext(makeOpts({ adapters: f.adapters, models, stageOptions: { model: "auto" } }));
 		await ctx.prompt("Actual task");
@@ -731,8 +731,8 @@ for (const auth of ["stored", "env"] as const) {
 	});
 }
 
-for (const routerModel of ["", "auto"]) {
-	test(`stage auto with routerModel=${JSON.stringify(routerModel)} routes on the current chat model even with classifier credentials`, async () => {
+for (const decisionModel of ["", "auto"]) {
+	test(`stage auto with decisionModel=${JSON.stringify(decisionModel)} routes on the current chat model even with classifier credentials`, async () => {
 		const f = await fixture();
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-stage-jev-key");
 		await f.decisionRuntime.saveCredential(
@@ -744,9 +744,9 @@ for (const routerModel of ["", "auto"]) {
 		const fetch = vi.fn();
 		vi.stubGlobal("fetch", fetch);
 		const models = workflowModelCatalogFromContext({
-			model: decisionModel,
+			model: decisionChatModel,
 			modelRegistry: f.modelRegistry,
-			getRouterModel: () => routerModel,
+			getDecisionModel: () => decisionModel,
 		});
 		const ctx = createStageContext(makeOpts({ adapters: f.adapters, models, stageOptions: { model: "auto" } }));
 		await ctx.prompt("Actual task");
@@ -769,11 +769,11 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 			credentials: AuthStorage.inMemory(),
 			refreshOnCreate: false,
 		});
-		runtime.registerProvider(decisionModel.provider, {
-			api: decisionModel.api,
-			baseUrl: decisionModel.baseUrl,
+		runtime.registerProvider(decisionChatModel.provider, {
+			api: decisionChatModel.api,
+			baseUrl: decisionChatModel.baseUrl,
 			apiKey: "mock-chat-secret",
-			models: [decisionModel, OTHER_MODEL],
+			models: [decisionChatModel, OTHER_MODEL],
 			streamSimple: (model, context) => chatRouter()(model, context),
 		});
 		const key = "synthetic-stored-proxy-jev-key";
@@ -790,9 +790,9 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 			}),
 		);
 		const models = workflowModelCatalogFromContext({
-			model: decisionModel,
+			model: decisionChatModel,
 			modelRegistry,
-			getRouterModel: () => "typesafe/jev-latest",
+			getDecisionModel: () => "typesafe/jev-latest",
 		});
 		assert.ok(models?.routeModel);
 		const route = await models.routeModel({ task: "Actual task", stageName: "analyze", constraints: [] });
@@ -885,7 +885,7 @@ test("parallel failure cancels no-longer-needed sibling routing before any child
 	// failure instead of degrading to the chat model (#3206).
 	f.models = workflowModelCatalogFromContext({
 		modelRegistry: f.modelRegistry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 	});
 	const failure = createAssistantMessageEventStream();
 	let siblingSignal: AbortSignal | undefined;
@@ -1124,7 +1124,7 @@ for (const change of ["empty catalog", "price exceeds maxInputCost", "still elig
 		if (change === "empty catalog") vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([]);
 		if (change === "price exceeds maxInputCost") {
 			vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([
-				{ ...decisionModel, cost: { ...decisionModel.cost, input: 2 } },
+				{ ...decisionChatModel, cost: { ...decisionChatModel.cost, input: 2 } },
 			]);
 		}
 		await handle.resume("Authorized resumed task");
@@ -1142,8 +1142,8 @@ for (const change of ["empty catalog", "price exceeds maxInputCost", "still elig
 test("ranked stage candidates run before configured fallback and survive checkpoint encoding", async () => {
 	const f = await fixture();
 	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([
-		decisionModel,
-		...["a", "b", "c", "d"].map((id) => ({ ...decisionModel, id })),
+		decisionChatModel,
+		...["a", "b", "c", "d"].map((id) => ({ ...decisionChatModel, id })),
 	]);
 	f.infer.mockImplementation(chatRouter(() => "decision-test/c"));
 	const attempts: string[] = [];
@@ -1210,9 +1210,9 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 test("an auto stage whose modelRouting gate leaves no candidate fails before admission and names the setting (#3528)", async () => {
 	const f = await fixture();
 	const models = workflowModelCatalogFromContext({
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: f.modelRegistry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 		getModelRouting: () => ({ excludedModels: ["decision-test/*"] }),
 	});
 	const def = workflow({
@@ -1234,11 +1234,11 @@ test("an auto stage whose modelRouting gate leaves no candidate fails before adm
 
 test("builtin stages that omit a model route only to models the modelRouting gate admits (#3528)", async () => {
 	const f = await fixture();
-	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
+	vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, OTHER_MODEL]);
 	const models = workflowModelCatalogFromContext({
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: f.modelRegistry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 		getModelRouting: () => ({ allowedModels: ["decision-test/oth*"] }),
 	});
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-builtin-gated-auto-"));

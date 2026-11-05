@@ -1,0 +1,7 @@
+{
+	"model": "jev-latest",
+	"usage": { "input_tokens": 120, "output_tokens": 4 },
+	"answers": {
+		"severity": { "type": "score", "score": 1.6, "confidence": 0.74 }
+	}
+}

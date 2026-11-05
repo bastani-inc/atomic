@@ -19,8 +19,8 @@ import type {
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { chatPayload, chatRouter, DEFAULT_NEEDS } from "../helpers/model-routing.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
@@ -66,10 +66,10 @@ async function fixture(model?: string) {
 	);
 	const ctx = {
 		cwd,
-		model: decisionModel,
+		model: decisionChatModel,
 		thinkingLevel: "low",
 		modelRegistry: registry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 		sessionManager: {
 			getSessionFile: () => join(cwd, "session.jsonl"),
 			getSessionId: () => "parent",
@@ -153,7 +153,7 @@ test("discovered builtin defaults route on single and parallel execution without
 		assert.notEqual(result.isError, true, JSON.stringify(result));
 		assert.equal(f.infer.mock.calls.length, 1);
 		assert.equal(f.runSync.mock.calls[0]?.[4].modelOverride, "decision-test/chat");
-		assert.equal(f.ctx.model, decisionModel);
+		assert.equal(f.ctx.model, decisionChatModel);
 		await f.call({ ...task, model: "decision-test/chat:off" });
 		assert.equal(f.infer.mock.calls.length, 1);
 		assert.equal(f.runSync.mock.calls[1]?.[4].modelOverride, "decision-test/chat:off");
@@ -172,8 +172,8 @@ test("concrete overrides and ordinary omission bypass inference with existing ef
 });
 test("parallel tasks do not share the first decision", async () => {
 	const f = await fixture("auto");
-	const second = { ...decisionModel, id: "other" };
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, second]);
+	const second = { ...decisionChatModel, id: "other" };
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, second]);
 	const pick = (offered: string[], context: Parameters<typeof chatPayload>[0]) =>
 		(chatPayload(context).state.needs as { difficulty?: string }).difficulty === "hard" &&
 		offered.includes("decision-test/other")

@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import type { ClassifierResult } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import { chatRouter } from "../helpers/model-routing.js";
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	messageStream,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 
@@ -28,9 +29,9 @@ function routedClassifier(
 	const request = decisionRequest();
 	return {
 		...request,
-		settings: { getRouterModel: () => "decision-test/classifier" },
+		settings: { getDecisionModel: () => "decision-test/classifier" },
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			getClassifierModel: () => decisionClassifier,
 			classify,
 			streamSimple,
@@ -144,11 +145,11 @@ test("execution auto routing uses selected current chat even with classifier cre
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	const selection = { model: "decision-test/chat", effort: null };
 	const dispatch = vi.fn(chatRouter());
-	const available = [decisionModel];
+	const available = [decisionChatModel];
 	const result = await routeExecutionModel({
 		ctx: {
-			model: decisionModel,
-			getRouterModel: () => "",
+			model: decisionChatModel,
+			getDecisionModel: () => "",
 			modelRegistry: {
 				getAll: () => available,
 				getAvailable: () => available,

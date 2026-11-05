@@ -4,8 +4,8 @@ import { Readable } from "node:stream";
 import { normalizeContext } from "@bastani/pi-ai";
 import type { HttpRequest } from "@smithy/types";
 import { afterEach, test, vi } from "vitest";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionModel, decisionRequest } from "../helpers/structured-output.js";
+
+import { decisionChatModel, decisionRequest, routeModel } from "../helpers/structured-output.js";
 
 const { handle, bedrockSdkPath } = await vi.hoisted(async () => {
 	const { createRequire } = await import("node:module");
@@ -60,7 +60,7 @@ function bedrockFailure() {
 test("Bedrock router inference performs only one SDK transport attempt on a retryable failure", async () => {
 	bedrockFailure();
 	vi.stubEnv("AWS_MAX_ATTEMPTS", "3");
-	const model = { ...decisionModel, api: "bedrock-converse-stream" as const, compat: undefined };
+	const model = { ...decisionChatModel, api: "bedrock-converse-stream" as const, compat: undefined };
 	await assert.rejects(
 		routeModel({
 			...decisionRequest(),
@@ -87,7 +87,7 @@ for (const maxRetries of [undefined, 1]) {
 	test(`Bedrock preserves ${maxRetries === undefined ? "omitted SDK retry configuration" : "explicit retry budget"}`, async () => {
 		bedrockFailure();
 		vi.stubEnv("AWS_MAX_ATTEMPTS", "3");
-		const model = { ...decisionModel, api: "bedrock-converse-stream" as const, compat: undefined };
+		const model = { ...decisionChatModel, api: "bedrock-converse-stream" as const, compat: undefined };
 		const result = await bedrockStream(
 			model,
 			normalizeContext({
@@ -105,7 +105,7 @@ for (const maxRetries of [undefined, 1]) {
 for (const api of ["google-generative-ai", "google-vertex"] as const) {
 	for (const status of [429, 503]) {
 		test(`${api} router inference performs one fetch at status ${status}`, async () => {
-			const model = { ...decisionModel, api, compat: undefined, id: "gemini-2.5-flash" };
+			const model = { ...decisionChatModel, api, compat: undefined, id: "gemini-2.5-flash" };
 			const transport = vi.fn<(...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>>(async () =>
 				Response.json({ error: { code: status, message: "mock unavailable", status: "UNAVAILABLE" } }, { status }),
 			);
@@ -113,7 +113,7 @@ for (const api of ["google-generative-ai", "google-vertex"] as const) {
 			await assert.rejects(
 				routeModel({
 					...decisionRequest(),
-					settings: { getRouterModel: () => `${model.provider}/${model.id}` },
+					settings: { getDecisionModel: () => `${model.provider}/${model.id}` },
 					currentModel: model,
 					retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
 					modelRegistry: {
@@ -149,8 +149,8 @@ for (const api of ["google-generative-ai", "google-vertex"] as const) {
 			const options = { apiKey: "mock-key", ...(maxRetries !== undefined ? { maxRetries } : {}) };
 			const pending = (
 				api === "google-generative-ai"
-					? googleStream({ ...decisionModel, api, compat: undefined }, context, options)
-					: vertexStream({ ...decisionModel, api, compat: undefined }, context, options)
+					? googleStream({ ...decisionChatModel, api, compat: undefined }, context, options)
+					: vertexStream({ ...decisionChatModel, api, compat: undefined }, context, options)
 			).result();
 			await vi.runAllTimersAsync();
 			const result = await pending;

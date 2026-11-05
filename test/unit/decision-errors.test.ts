@@ -1,0 +1,455 @@
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import {
+	DecisionConfigError,
+	DecisionError,
+	DecisionModelUnavailableError,
+	DecisionOutputError,
+	DecisionProviderError,
+	DecisionRequestError,
+	DecisionTimeoutError,
+	findDecisionError,
+	isDecisionConfigError,
+	isDecisionError,
+	isDecisionModelUnavailableError,
+	isDecisionOutputError,
+	isDecisionProviderError,
+	isDecisionRequestError,
+	isDecisionTimeoutError,
+	isRetryableDecisionError,
+	parseSerializedDecisionError,
+	rehydrateDecisionError,
+	serializeDecisionError,
+} from "../../packages/coding-agent/src/core/decision/errors.js";
+
+const ERRORS = {
+	config: new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel" }),
+	request: new DecisionRequestError({ field: "state", reason: "invalid-state" }),
+	unavailable: new DecisionModelUnavailableError({ reason: "no-chat-model" }),
+	timeout: new DecisionTimeoutError({ timeoutMs: 5, elapsedMs: 6, phase: "resolve" }),
+	output: new DecisionOutputError({ model: "a/b" }),
+	provider: new DecisionProviderError({}),
+} as const;
+
+const GUARDS = {
+	config: isDecisionConfigError,
+	request: isDecisionRequestError,
+	unavailable: isDecisionModelUnavailableError,
+	timeout: isDecisionTimeoutError,
+	output: isDecisionOutputError,
+	provider: isDecisionProviderError,
+} as const;
+
+test("each class renders its message and hint once, as a UX contract (#4358)", () => {
+	const rendered = (error: DecisionError) => ({ message: error.message, hint: error.hint });
+	assert.deepEqual(rendered(ERRORS.config), {
+		message:
+			'Invalid decision model setting: "decisionModel" in the SDK settings (invalid-setting). Set "decisionModel" in the settings you pass to an exact provider/model ID, "auto", or an empty string.',
+		hint: 'Set "decisionModel" in the settings you pass to an exact provider/model ID, "auto", or an empty string.',
+	});
+	assert.deepEqual(
+		rendered(new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" })),
+		{
+			message:
+				'Renamed setting: "routerModel" in settings.json (renamed-setting). Rename "routerModel" to "decisionModel" in settings.json.',
+			hint: 'Rename "routerModel" to "decisionModel" in settings.json.',
+		},
+	);
+	assert.deepEqual(rendered(ERRORS.request), {
+		message:
+			"Invalid decision request: state is invalid-state (invalid-request). Pass state as a nonempty object of finite, acyclic JSON values.",
+		hint: "Pass state as a nonempty object of finite, acyclic JSON values.",
+	});
+	assert.equal(
+		new DecisionModelUnavailableError({ reason: "not-in-catalog", model: "x/y" }).message,
+		'Decision model unavailable: x/y is not-in-catalog (model-unavailable). Set "decisionModel" to a registered chat or classifier model in /settings, or leave it empty.',
+	);
+	assert.equal(
+		ERRORS.unavailable.message,
+		'Decision model unavailable: no-chat-model (model-unavailable). Select a chat model with /model, or set "decisionModel" in /settings.',
+	);
+	assert.equal(
+		new DecisionModelUnavailableError({ reason: "no-probabilities" }).hint,
+		'Set "decisionModel" to a classifier, such as typesafe/jev-latest, in /settings; a chat model\'s answers carry no probabilities.',
+	);
+	assert.equal(
+		ERRORS.timeout.message,
+		"Decision timed out: no answer within its 5ms deadline while waiting for the decision model (timeout). Retry, or allow a longer deadline (httpIdleTimeoutMs).",
+	);
+	assert.equal(
+		new DecisionTimeoutError({ timeoutMs: 5, elapsedMs: 6, phase: "classifier", attempts: "Attempts: 1) x." })
+			.message,
+		"Decision timed out: no answer within its 5ms deadline while waiting for the classifier model (timeout). Retry, or allow a longer deadline (httpIdleTimeoutMs). Attempts: 1) x.",
+	);
+	assert.deepEqual(rendered(new DecisionOutputError({ model: "a/b", detail: "bad shape" })), {
+		message:
+			"Decision output invalid: a/b gave no valid answer: bad shape (invalid-output). Make the questions and their options unambiguous, or choose another decision model.",
+		hint: "Make the questions and their options unambiguous, or choose another decision model.",
+	});
+	assert.equal(
+		ERRORS.output.message,
+		"Decision output invalid: a/b gave no valid answer (invalid-output). Make the questions and their options unambiguous, or choose another decision model.",
+	);
+	assert.deepEqual(rendered(ERRORS.provider), {
+		message:
+			"Decision model request failed: the decision model (provider-failure). Check the decision model's provider configuration and connectivity.",
+		hint: "Check the decision model's provider configuration and connectivity.",
+	});
+	assert.deepEqual(
+		rendered(
+			new DecisionProviderError({
+				model: "a/b",
+				providerStatus: 429,
+				providerCode: "rate_limit_exceeded",
+				retryAfterMs: 250,
+				detail: "rate limited",
+			}),
+		),
+		{
+			message:
+				"Decision model request failed: a/b returned HTTP 429: rate limited (provider-failure). Retry after 250ms; the provider reported rate_limit_exceeded.",
+			hint: "Retry after 250ms; the provider reported rate_limit_exceeded.",
+		},
+	);
+	assert.equal(
+		new DecisionProviderError({ providerCode: "insufficient_quota" }).hint,
+		"Retry after a moment; the provider reported insufficient_quota.",
+	);
+});
+
+test("each invalid-request reason carries its own corrective hint", () => {
+	const hints = Object.fromEntries(
+		(
+			[
+				"invalid-state",
+				"no-questions",
+				"invalid-question",
+				"invalid-instructions",
+				"invalid-deadline",
+				"invalid-model",
+				"credential-in-state",
+			] as const
+		).map((reason) => [reason, new DecisionRequestError({ field: "state", reason }).hint]),
+	);
+	assert.deepEqual(hints, {
+		"invalid-state": "Pass state as a nonempty object of finite, acyclic JSON values.",
+		"no-questions": "Pass at least one question.",
+		"invalid-question":
+			'Give each question a nonempty ID and instructions; a "choice" needs described options, a "bool" describes true and false, a "score" lists its levels.',
+		"invalid-instructions": "Pass instructions as nonempty text, or omit them.",
+		"invalid-deadline": "Pass deadline as a positive integer number of milliseconds, or omit it.",
+		"invalid-model": 'Pass model as an exact provider/model ID other than "auto", or omit it.',
+		"credential-in-state": "Remove credentials from state; a decision never sends them to a model.",
+	});
+});
+
+test("each class carries its code, retry semantics and only the fields that are set", () => {
+	assert.deepEqual(
+		Object.entries(ERRORS).map(([key, error]) => [key, error.code, error.retryable, error.fields()]),
+		[
+			["config", "invalid-setting", false, { source: "sdk", field: "decisionModel" }],
+			["request", "invalid-request", false, { field: "state", reason: "invalid-state" }],
+			["unavailable", "model-unavailable", false, { reason: "no-chat-model" }],
+			["timeout", "timeout", true, { timeoutMs: 5, elapsedMs: 6, phase: "resolve" }],
+			["output", "invalid-output", false, { model: "a/b" }],
+			["provider", "provider-failure", false, {}],
+		],
+	);
+	assert.equal(new DecisionProviderError({ providerCode: "insufficient_quota" }).retryable, true);
+	assert.deepEqual(new DecisionError("timeout", "m", "h").fields(), {});
+	assert.equal(new DecisionError("timeout", "m", "h").retryable, false);
+	assert.equal(new DecisionError("timeout", "m", "h").name, "DecisionError");
+	assert.equal(
+		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }).scope,
+		undefined,
+	);
+	assert.equal(new DecisionOutputError({ model: "a/b", detail: "" }).detail, undefined);
+	assert.equal(
+		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 1, phase: "chat", attempts: "" }).attempts,
+		undefined,
+	);
+	assert.equal(new DecisionProviderError({ detail: "" }).detail, undefined);
+});
+
+test("each guard accepts only its own class, live or structural", () => {
+	for (const [key, guard] of Object.entries(GUARDS)) {
+		for (const [other, error] of Object.entries(ERRORS)) {
+			const plain = JSON.parse(JSON.stringify({ name: error.name, code: error.code }));
+			assert.equal(guard(error), key === other, `${key} guard on ${other}`);
+			assert.equal(guard(plain), key === other, `${key} guard on structural ${other}`);
+			assert.equal(guard({ ...plain, code: "unknown-code" }), false);
+		}
+		assert.equal(guard(new Error("plain")), false);
+		assert.equal(guard({ name: "DecisionError", code: "timeout" }), false);
+		assert.equal(guard(undefined), false);
+	}
+	for (const error of Object.values(ERRORS)) assert.equal(isDecisionError(error), true);
+	assert.equal(isDecisionError({ name: "DecisionError", code: "timeout" }), true);
+	assert.equal(isDecisionError({ name: "DecisionError", code: "nope" }), false);
+	assert.equal(isDecisionError({ name: "toString", code: "timeout" }), false);
+	assert.equal(isDecisionError({ name: 7, code: "timeout" }), false);
+	assert.equal(isDecisionError({ name: "DecisionTimeoutError", code: 7 }), false);
+	assert.equal(isDecisionError(null), false);
+	assert.equal(isDecisionError("DecisionError"), false);
+});
+
+test("a serialized chain keeps at most eight errors, and a non-error cause is dropped", () => {
+	let chain: DecisionError = new DecisionOutputError({ model: "root" });
+	for (let depth = 1; depth < 12; depth++) chain = new DecisionOutputError({ model: `m${depth}` }, { cause: chain });
+	let serialized = serializeDecisionError(chain);
+	let levels = 0;
+	for (
+		let node: typeof serialized.cause = serialized;
+		node !== undefined;
+		node = "code" in node ? node.cause : undefined
+	)
+		levels++;
+	assert.equal(levels, 8);
+	serialized = serializeDecisionError(new DecisionOutputError({ model: "a" }, { cause: "text cause" }));
+	assert.equal(serialized.cause, undefined);
+	const plainCause = serializeDecisionError(
+		new DecisionOutputError({ model: "a" }, { cause: new RangeError("inner") }),
+	);
+	assert.deepEqual(plainCause.cause, { name: "RangeError", message: "inner" });
+	const restored = rehydrateDecisionError(plainCause);
+	assert.ok(restored.cause instanceof Error);
+	assert.equal((restored.cause as Error).name, "RangeError");
+	assert.equal(
+		rehydrateDecisionError(serializeDecisionError(new DecisionOutputError({ model: "a" }))).cause,
+		undefined,
+	);
+	const base = rehydrateDecisionError(serializeDecisionError(new DecisionError("timeout", "m", "h")));
+	assert.equal(base.constructor, DecisionError);
+	assert.equal(base.name, "DecisionError");
+	assert.equal(base.message, "m");
+});
+
+test("finding a decision error walks causes, stops at eight, and reports retryability", () => {
+	const timeout = ERRORS.timeout;
+	assert.equal(findDecisionError(timeout), timeout);
+	assert.equal(findDecisionError(new Error("a", { cause: { cause: timeout } })), timeout);
+	assert.equal(findDecisionError(new Error("a", { cause: "x" })), undefined);
+	let wrapped: unknown = timeout;
+	for (let depth = 0; depth < 7; depth++) wrapped = new Error(`w${depth}`, { cause: wrapped });
+	assert.equal(findDecisionError(wrapped), timeout);
+	assert.equal(findDecisionError(new Error("w", { cause: wrapped })), undefined);
+	assert.equal(isRetryableDecisionError(new Error("w", { cause: timeout })), true);
+	assert.equal(isRetryableDecisionError(ERRORS.output), false);
+	assert.equal(isRetryableDecisionError(undefined), false);
+});
+
+test("a structural decision error is recognized for every family code, and a plain cause stays a plain error", () => {
+	for (const code of [
+		"renamed-setting",
+		"invalid-setting",
+		"invalid-request",
+		"model-unavailable",
+		"timeout",
+		"invalid-output",
+		"provider-failure",
+	]) {
+		assert.equal(isDecisionError({ name: "DecisionError", code }), true, code);
+	}
+	assert.equal(findDecisionError(new Error("a", { cause: null })), undefined);
+	const restored = rehydrateDecisionError(
+		serializeDecisionError(new DecisionOutputError({ model: "a" }, { cause: new RangeError("inner") })),
+	);
+	assert.equal(restored.cause?.constructor, Error);
+	assert.equal(isDecisionError(restored.cause), false);
+	const unknown = rehydrateDecisionError({
+		name: "DecisionFutureError",
+		code: "timeout",
+		message: "m",
+		hint: "h",
+		retryable: false,
+		fields: {},
+	});
+	assert.equal(Object.getOwnPropertyDescriptor(unknown, "name")?.enumerable, false);
+	assert.equal(Object.keys(unknown).includes("name"), false);
+});
+
+test("a serialized error received across a process boundary is validated before it is rehydrated", () => {
+	const chain = new DecisionProviderError(
+		{ model: "a/b", providerStatus: 429 },
+		{
+			cause: new DecisionConfigError(
+				{ code: "renamed-setting", source: "settings", field: "routerModel", scope: "project" },
+				{ cause: new RangeError("inner") },
+			),
+		},
+	);
+	const wire = JSON.parse(JSON.stringify(serializeDecisionError(chain)));
+	assert.deepEqual(parseSerializedDecisionError(wire), serializeDecisionError(chain));
+	const restored = rehydrateDecisionError(parseSerializedDecisionError(wire)!);
+	assert.ok(isDecisionProviderError(restored));
+	assert.ok(isDecisionConfigError(restored.cause));
+	assert.equal((restored.cause as DecisionConfigError).scope, "project");
+	const valid = serializeDecisionError(ERRORS.request);
+	for (const malformed of [
+		undefined,
+		null,
+		"DecisionConfigError",
+		[valid],
+		{ ...valid, name: 1 },
+		{ ...valid, code: undefined },
+		{ ...valid, message: {} },
+		{ ...valid, hint: null },
+		{ ...valid, retryable: "false" },
+		{ ...valid, fields: [] },
+		{ ...valid, fields: { field: { nested: true } } },
+		{ ...valid, cause: "text" },
+		{ ...valid, cause: null },
+		{ ...valid, cause: { message: "x" } },
+		{ ...valid, fields: { field: "state", nested: { deep: true } } },
+		{ ...valid, cause: { name: "Error" } },
+		{ ...valid, cause: { ...valid, code: 7 } },
+	])
+		assert.equal(parseSerializedDecisionError(malformed), undefined, JSON.stringify(malformed));
+	const primitiveFields = { ...valid, fields: { ...valid.fields, count: 2, flag: true } };
+	assert.deepEqual(parseSerializedDecisionError(primitiveFields), primitiveFields);
+	let deep: object = valid;
+	for (let depth = 0; depth < 8; depth++) deep = { ...valid, cause: deep };
+	assert.equal(parseSerializedDecisionError(deep), undefined);
+	let longest: DecisionError = new DecisionOutputError({ model: "root" });
+	for (let depth = 1; depth < 12; depth++)
+		longest = new DecisionOutputError({ model: `m${depth}` }, { cause: longest });
+	assert.deepEqual(parseSerializedDecisionError(serializeDecisionError(longest)), serializeDecisionError(longest));
+	assert.deepEqual(
+		parseSerializedDecisionError({ ...valid, cause: { name: "RangeError", message: "x", extra: 1 } })?.cause,
+		{
+			name: "RangeError",
+			message: "x",
+		},
+	);
+});
+
+test("a host without decision support is a model-unavailable error that keeps its reason and hint across processes", () => {
+	const error = new DecisionModelUnavailableError({ reason: "host-unsupported" });
+	assert.equal(
+		error.message,
+		"Decision model unavailable: host-unsupported (model-unavailable). Run this in an Atomic session, whose host provides the decision model and a model registry.",
+	);
+	const restored = rehydrateDecisionError(
+		parseSerializedDecisionError(JSON.parse(JSON.stringify(serializeDecisionError(error))))!,
+	);
+	assert.ok(isDecisionModelUnavailableError(restored));
+	assert.equal(restored.reason, "host-unsupported");
+	assert.equal(restored.hint, error.hint);
+});
+
+test("malformed concrete decision errors are rejected before host rehydration (#4358)", () => {
+	const wire = serializeDecisionError(
+		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }),
+	);
+	assert.equal(parseSerializedDecisionError({ ...wire, fields: {} }), undefined);
+	for (const error of Object.values(ERRORS)) {
+		const serialized = serializeDecisionError(error);
+		assert.deepEqual(parseSerializedDecisionError(serialized), serialized);
+		assert.equal(parseSerializedDecisionError({ ...serialized, code: "future-code" }), undefined);
+	}
+});
+
+test("concrete error fields reject invalid enum values, types and timing data (#4358)", () => {
+	const cases: ReadonlyArray<readonly [DecisionError, Readonly<Record<string, string | number | boolean>>]> = [
+		[ERRORS.config, { source: "other" }],
+		[ERRORS.config, { source: "constructor" }],
+		[ERRORS.config, { source: true }],
+		[ERRORS.config, { field: 1 }],
+		[ERRORS.config, { scope: "workspace" }],
+		[ERRORS.config, { scope: false }],
+		[ERRORS.request, { field: false }],
+		[ERRORS.request, { reason: "constructor" }],
+		[ERRORS.request, { reason: false }],
+		[ERRORS.unavailable, { reason: "constructor" }],
+		[ERRORS.unavailable, { reason: false }],
+		[ERRORS.unavailable, { model: 1 }],
+		[ERRORS.timeout, { timeoutMs: "5" }],
+		[ERRORS.timeout, { timeoutMs: 0 }],
+		[ERRORS.timeout, { timeoutMs: -1 }],
+		[ERRORS.timeout, { elapsedMs: "6" }],
+		[ERRORS.timeout, { elapsedMs: -1 }],
+		[ERRORS.timeout, { phase: "constructor" }],
+		[ERRORS.timeout, { phase: false }],
+		[ERRORS.timeout, { attempts: false }],
+		[ERRORS.output, { model: false }],
+		[ERRORS.output, { detail: false }],
+		[ERRORS.provider, { model: false }],
+		[ERRORS.provider, { detail: false }],
+		[ERRORS.provider, { providerStatus: false }],
+		[ERRORS.provider, { providerStatus: 99 }],
+		[ERRORS.provider, { providerStatus: 600 }],
+		[ERRORS.provider, { providerStatus: 200.5 }],
+		[ERRORS.provider, { providerCode: "other" }],
+		[ERRORS.provider, { providerCode: true }],
+		[ERRORS.provider, { retryAfterMs: false }],
+		[ERRORS.provider, { retryAfterMs: -1 }],
+		[ERRORS.provider, { retryAfterMs: Number.NaN }],
+		[ERRORS.provider, { retryAfterMs: Number.POSITIVE_INFINITY }],
+	];
+	for (const [error, patch] of cases) {
+		const serialized = serializeDecisionError(error);
+		assert.equal(
+			parseSerializedDecisionError({ ...serialized, fields: { ...serialized.fields, ...patch } }),
+			undefined,
+			`${error.name} ${Object.keys(patch).join(",")}`,
+		);
+	}
+	for (const error of [ERRORS.config, ERRORS.request, ERRORS.unavailable, ERRORS.timeout, ERRORS.output]) {
+		const serialized = serializeDecisionError(error);
+		for (const field of Object.keys(serialized.fields)) {
+			const fields = { ...serialized.fields };
+			delete fields[field];
+			assert.equal(parseSerializedDecisionError({ ...serialized, fields }), undefined, `${error.name} ${field}`);
+		}
+	}
+	assert.equal(
+		parseSerializedDecisionError({
+			...serializeDecisionError(ERRORS.provider),
+			cause: { ...serializeDecisionError(ERRORS.config), fields: {} },
+		}),
+		undefined,
+	);
+});
+
+test("valid concrete error variants and future names retain their transport fields (#4358)", () => {
+	for (const error of [
+		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel", scope: "global" }),
+		new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel", scope: "project" }),
+		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 0, phase: "classifier", attempts: "one attempt" }),
+		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 1, phase: "chat" }),
+		new DecisionOutputError({ model: "a/b", detail: "invalid choice" }),
+		new DecisionModelUnavailableError({ reason: "not-in-catalog", model: "a/b" }),
+		new DecisionProviderError({
+			model: "a/b",
+			providerStatus: 100,
+			providerCode: "rate_limit_exceeded",
+			retryAfterMs: 0,
+			detail: "limited",
+		}),
+		new DecisionProviderError({ providerStatus: 599, providerCode: "insufficient_quota", retryAfterMs: 1 }),
+	]) {
+		const wire = serializeDecisionError(error);
+		assert.deepEqual(parseSerializedDecisionError(wire), wire);
+		assert.deepEqual(rehydrateDecisionError(parseSerializedDecisionError(wire)!).fields(), error.fields());
+	}
+	const future = {
+		...serializeDecisionError(ERRORS.provider),
+		name: "FutureDecisionError",
+		code: "future-code",
+		fields: { revision: 1 },
+	};
+	assert.deepEqual(parseSerializedDecisionError(future), future);
+});
+
+test("the public SDK and workflow entry points expose the untrusted-error parser (#4358)", async () => {
+	const sdk = await import("@bastani/atomic");
+	const workflows = await import("../../packages/workflows/src/sdk-surface.js");
+	const authoring = await import("../../packages/workflows/src/authoring.js");
+	for (const entry of [sdk, workflows, authoring]) {
+		assert.equal(entry.parseSerializedDecisionError, parseSerializedDecisionError);
+		assert.deepEqual(
+			entry.parseSerializedDecisionError(serializeDecisionError(ERRORS.config)),
+			serializeDecisionError(ERRORS.config),
+		);
+	}
+});

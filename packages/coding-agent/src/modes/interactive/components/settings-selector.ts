@@ -5,6 +5,7 @@ import { createSettingsChangeHandler } from "./settings-selector-handlers.ts";
 import { buildSettingsItems } from "./settings-selector-items.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
 
+export { decisionSettingScopes } from "./settings-selector-items.ts";
 export type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
 
 /**

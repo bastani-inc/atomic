@@ -66,9 +66,9 @@
     "defaultModel": {
       "type": "string"
     },
-    "routerModel": {
+    "decisionModel": {
       "type": "string",
-      "description": "Inference model for workflow-stage and subagent model: \"auto\" selection only. An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
+      "description": "The model every decision uses: workflow-stage and subagent model: \"auto\" selection, structured_output calls without their own model, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
       "default": ""
     },
     "compactionModel": {
@@ -107,7 +107,7 @@
           "description": "Models matching these full-ID or glob patterns are never routing candidates. Applied after allowedModels."
         }
       },
-      "description": "Provider and model filters for the candidates model \"auto\" may route to. Does not affect routerModel."
+      "description": "Provider and model filters for the candidates model \"auto\" may route to. Does not affect decisionModel."
     },
     "defaultThinkingLevel": {
       "$ref": "#/$defs/ModelThinkingLevel"
@@ -573,6 +573,11 @@
               },
               "description": "Workflow resource paths."
             },
+            "autoAdvanceAfterSteer": {
+              "type": "boolean",
+              "description": "After you steer a stage that asked you a question, let the decision model advance the stage or keep it open without asking \"Are you ready to move on to the next stage?\". It asks when the decision is uncertain or fails. Default: true.",
+              "default": true
+            },
             "journal": {
               "$ref": "#/$defs/StorageSelection"
             },
@@ -694,7 +699,7 @@
           }
         }
       ],
-      "description": "Local workflow paths, or an object with \"paths\", \"journal\" storage, \"localWorkers\" and \"admission\" settings."
+      "description": "Local workflow paths, or an object with \"paths\", \"autoAdvanceAfterSteer\", \"journal\" storage, \"localWorkers\" and \"admission\" settings."
     },
     "enableSkillCommands": {
       "type": "boolean",

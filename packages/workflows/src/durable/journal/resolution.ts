@@ -22,6 +22,8 @@ export interface RunJournalSettings {
 				journal?: StorageSettingsSelection;
 				localWorkers?: import("../../workers/public-options.js").LocalWorkerOptions;
 				admission?: import("../../workers/public-options.js").WorkflowAdmissionOptions;
+				/** Whether the decision model may decide a stage's readiness after a steer. Default: true. */
+				autoAdvanceAfterSteer?: boolean;
 		  };
 	storage?: StorageSettingsSelection;
 }

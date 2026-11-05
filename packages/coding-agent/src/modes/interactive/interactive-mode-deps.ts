@@ -158,7 +158,7 @@ export { ModelSelectorComponent } from "./components/model-selector.ts";
 export { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";
 export { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 export { SessionSelectorComponent } from "./components/session-selector.ts";
-export { SettingsSelectorComponent } from "./components/settings-selector.ts";
+export { decisionSettingScopes, SettingsSelectorComponent } from "./components/settings-selector.ts";
 export { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 export { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 export { ToolExecutionComponent } from "./components/tool-execution.ts";

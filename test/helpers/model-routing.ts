@@ -28,9 +28,26 @@ function toolParameters(context: ChatRequest): { properties?: Record<string, { e
 	return tool?.parameters as { properties?: Record<string, { enum?: string[] }> } | undefined;
 }
 
+/** Each option key (`m0`, `m1`, …) of a chat choice request and the model ID it offers, or undefined for a task-needs request. */
+export function chatChoiceOptions(context: ChatRequest): Record<string, string> | undefined {
+	const keys = toolParameters(context)?.properties?.model?.enum;
+	if (keys === undefined) return undefined;
+	const question = chatPayload(context).questions?.model as { criteria?: Record<string, string> } | undefined;
+	return Object.fromEntries(
+		keys.map((key) => [key, (JSON.parse(question?.criteria?.[key] ?? "{}") as { id?: string }).id ?? key]),
+	);
+}
+
 /** The model IDs a chat choice request offers, or undefined for a task-needs request. */
 export function offeredModels(context: ChatRequest): string[] | undefined {
-	return toolParameters(context)?.properties?.modelId?.enum;
+	const options = chatChoiceOptions(context);
+	return options === undefined ? undefined : Object.values(options);
+}
+
+/** The chat answer that picks `modelId` in a choice request: its option key, or `modelId` itself when not offered. */
+export function chatChoiceAnswer(context: ChatRequest, modelId: string): JsonObject {
+	const options = chatChoiceOptions(context) ?? {};
+	return { model: Object.keys(options).find((key) => options[key] === modelId) ?? modelId };
 }
 
 /**
@@ -44,7 +61,7 @@ export function chatRouter(
 	return (_model: unknown, context: ChatRequest) => {
 		const offered = offeredModels(context);
 		const args: JsonObject = offered
-			? { modelId: pick(offered, context) }
+			? chatChoiceAnswer(context, pick(offered, context))
 			: (Object.fromEntries(
 					Object.keys(toolParameters(context)?.properties ?? {}).map((key) => [
 						key,

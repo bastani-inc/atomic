@@ -1,3 +1,4 @@
+import { isDecisionProviderError } from "../decision/errors.js";
 import { normalizeModelFailureSignal } from "../model-fallback-failures.ts";
 import { providerRetryHint } from "../provider-rate-limits.js";
 
@@ -34,7 +35,10 @@ export function withProviderFailure<T extends Error>(error: T, signal: ProviderF
 	return Object.assign(error, signal);
 }
 
-/** The signal an error from this module carries, for an error that wraps it. */
+/** The signal an error from this module, or a decision provider error, carries, for an error that wraps it. */
 export function carriedProviderFailure(error: unknown): ProviderFailureSignal | undefined {
-	return error instanceof Error ? carried.get(error) : undefined;
+	if (!isDecisionProviderError(error)) return carried.get(error as Error);
+	const { providerStatus: status, providerCode: code, retryAfterMs } = error;
+	if (status === undefined || code === undefined) return undefined;
+	return retryAfterMs === undefined ? { status, code } : { status, code, retryAfterMs };
 }

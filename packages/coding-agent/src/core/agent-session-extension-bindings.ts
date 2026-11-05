@@ -725,7 +725,7 @@ export function _bindExtensionCore(
 				else void compact();
 			},
 			getSystemPrompt: () => this.systemPrompt,
-			getRouterModel: () => this.settingsManager.getRouterModel(),
+			getDecisionModel: () => this.settingsManager.getDecisionModel(),
 			getModelRouting: () => this.settingsManager.getModelRouting(),
 			getHttpIdleTimeoutMs: () => this.settingsManager.getHttpIdleTimeoutMs(),
 			getSkillCatalog: () => getSkillCatalog(publication?.resourceLoader ?? this._resourceLoader),

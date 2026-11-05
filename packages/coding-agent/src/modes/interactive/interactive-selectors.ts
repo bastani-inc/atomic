@@ -2,6 +2,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
 	configureHttpDispatcher,
+	decisionSettingScopes,
 	getAvailableThemes,
 	SettingsSelectorComponent,
 	setDebugSetting,
@@ -46,8 +47,9 @@ InteractiveModeBase.prototype.showSelector = function (
 
 InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		const routerModelScope =
-			this.settingsManager.getProjectSettings().routerModel !== undefined ? "project" : "global";
+		const { decisionModelScope, autoAdvanceAfterSteerScope } = decisionSettingScopes(
+			this.settingsManager.getProjectSettings(),
+		);
 		const compactionModelScope =
 			this.settingsManager.getProjectSettings().compactionModel !== undefined ? "project" : "global";
 		const component = new SettingsSelectorComponent(
@@ -70,8 +72,10 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				availableDefaultModels: [...this.session.modelRuntime.getAvailableSnapshot()],
 				availableClassifierModels: [...this.session.modelRuntime.getModelsOfType("classifier")],
 				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
-				routerModel: this.settingsManager.getRouterModel(),
-				routerModelScope,
+				decisionModel: this.settingsManager.getDecisionModel(),
+				decisionModelScope,
+				autoAdvanceAfterSteer: this.settingsManager.getAutoAdvanceAfterSteer(),
+				autoAdvanceAfterSteerScope,
 				availableCompactorModels: [...this.session.modelRuntime.getModelsOfType("compactor")],
 				morphAuthenticated: this.session.modelRuntime.hasConfiguredAuth("morph"),
 				compactionModel: this.settingsManager.getCompactionModel(),
@@ -161,8 +165,11 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 				},
-				onRouterModelChange: (model) => {
-					this.settingsManager.setRouterModel(model, routerModelScope);
+				onDecisionModelChange: (model) => {
+					this.settingsManager.setDecisionModel(model, decisionModelScope);
+				},
+				onAutoAdvanceAfterSteerChange: (enabled) => {
+					this.settingsManager.setAutoAdvanceAfterSteer(enabled, autoAdvanceAfterSteerScope);
 				},
 				onCompactionModelChange: (model) => {
 					this.settingsManager.setCompactionModel(model, compactionModelScope);

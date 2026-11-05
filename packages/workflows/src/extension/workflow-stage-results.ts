@@ -18,6 +18,7 @@ export type WorkflowStageSummary = {
 	startup?: StageSnapshot["startup"];
 	workerExecution?: StageSnapshot["workerExecution"];
 	compaction?: StageSnapshot["compaction"];
+	readinessDecision?: StageSnapshot["readinessDecision"];
 };
 
 export type WorkflowTranscriptEntry = {
@@ -62,6 +63,7 @@ export function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
 		inputRequest: stage.inputRequest === undefined ? undefined : structuredClone(stage.inputRequest),
 		promptFootprint: stage.promptFootprint === undefined ? undefined : structuredClone(stage.promptFootprint),
 		...(stage.compaction === undefined ? {} : { compaction: structuredClone(stage.compaction) }),
+		...(stage.readinessDecision === undefined ? {} : { readinessDecision: structuredClone(stage.readinessDecision) }),
 	};
 }
 
@@ -208,6 +210,16 @@ function transcriptEntriesFromToolEvents(
 	}));
 }
 
+/** Readiness decisions after a steer, as notices in the stage transcript. */
+function decisionNoticeEntries(snapshot: StageSnapshot): WorkflowTranscriptEntry[] {
+	return (
+		snapshot.notices
+			?.filter((notice) => notice.kind === "decision")
+			.map((notice) => ({ role: "notice", text: notice.meta ?? `decision → ${notice.to}`, timestamp: notice.ts })) ??
+		[]
+	);
+}
+
 function sortTranscriptEntriesChronologically(entries: readonly WorkflowTranscriptEntry[]): WorkflowTranscriptEntry[] {
 	return entries
 		.map((entry, index) => ({ entry, index }))
@@ -239,6 +251,7 @@ export function snapshotTranscriptEntries(
 	if (snapshot === undefined) return [];
 	const entries: WorkflowTranscriptEntry[] = [
 		...transcriptEntriesFromToolEvents(snapshot.toolEvents ?? [], includeOutput),
+		...decisionNoticeEntries(snapshot),
 	];
 	if (snapshot.result !== undefined) {
 		entries.push(terminalTranscriptEntry("assistant", snapshot.result, snapshot.endedAt));
@@ -252,6 +265,7 @@ export function snapshotTranscriptEntries(
 export function snapshotTranscriptEntryCount(snapshot: StageSnapshot | undefined): number {
 	return (
 		(snapshot?.toolEvents?.length ?? 0) +
+		(snapshot === undefined ? 0 : decisionNoticeEntries(snapshot).length) +
 		(snapshot?.result !== undefined ? 1 : 0) +
 		(snapshot?.error !== undefined ? 1 : 0)
 	);

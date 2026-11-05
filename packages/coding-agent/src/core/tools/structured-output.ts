@@ -47,7 +47,7 @@ export const StructuredOutputParameters = Type.Object(
 		model: Type.Optional(
 			Type.String({
 				description:
-					"Exact provider/model ID of a chat or classifier model, such as typesafe/jev-latest. Omit to use the current chat model.",
+					"Exact provider/model ID of a chat or classifier model, such as typesafe/jev-latest. Omit to use the configured decision model, which defaults to the current chat model.",
 			}),
 		),
 		fallbackModels: Type.Optional(
@@ -101,11 +101,11 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 		name,
 		label: "Structured Output",
 		description:
-			"Infer the final machine-readable result from instructions and named state using the selected model, then any fallbacks, then the current chat model.",
+			"Infer the final machine-readable result from instructions and named state using the selected model (default: the configured decision model), then any fallbacks, then the current chat model.",
 		promptSnippet: "Return final machine-readable output",
 		promptGuidelines: [
 			`${name} is the final machine-readable result channel; call ${name} exactly once when done.`,
-			"Pass complete instructions and named state; omit model to use the current chat model.",
+			"Pass complete instructions and named state; omit model to use the configured decision model.",
 			`Do not write a prose final answer after calling ${name}.`,
 		],
 		parameters: StructuredOutputParameters,
@@ -119,6 +119,9 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 				state: params.state as JsonObject,
 				...(params.model !== undefined ? { model: params.model } : {}),
 				...(params.fallbackModels !== undefined ? { fallbackModels: params.fallbackModels } : {}),
+				...(typeof ctx.getDecisionModel === "function"
+					? { settings: { getDecisionModel: () => ctx.getDecisionModel() } }
+					: {}),
 				currentModel: ctx.model,
 				modelRegistry: ctx.modelRegistry,
 				timeoutMs: resolveDecisionDeadlineMs(options.timeoutMs, ctx.getHttpIdleTimeoutMs?.()),

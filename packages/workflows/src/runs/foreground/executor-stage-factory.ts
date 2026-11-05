@@ -21,7 +21,7 @@ import {
 	stageOptionsWithInputDefaults,
 } from "./executor-direct-helpers.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
-import { askUserQuestionToolEvent, toolResultHasChatAnswer } from "./executor-hil.js";
+import { askUserQuestionToolEvent, toolResultChatText, toolResultHasChatAnswer } from "./executor-hil.js";
 import { stageReplayFields } from "./executor-lifecycle.js";
 import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-user-message.js";
 import type { StageScheduler } from "./executor-scheduler.js";
@@ -249,6 +249,7 @@ export function createWorkflowStageFactory(input: {
 		const state: LiveStageMutableState = {
 			activeAskUserQuestionAnonymousCalls: 0,
 			askUserQuestionObservedThisTurn: false,
+			userMessageSeq: 0,
 			chatAnswerObservedThisTurn: false,
 			resumeContinuationPending: false,
 			suppressQueuedUserMessageContinuation: false,
@@ -270,6 +271,7 @@ export function createWorkflowStageFactory(input: {
 			if (!toolEvent) return;
 			if (toolEvent.phase === "start") {
 				state.askUserQuestionObservedThisTurn = true;
+				state.latestUserMessage = undefined;
 				if (toolEvent.callId !== undefined) activeAskUserQuestionCalls.add(toolEvent.callId);
 				else state.activeAskUserQuestionAnonymousCalls += 1;
 				provideStageQuestion(
@@ -292,6 +294,8 @@ export function createWorkflowStageFactory(input: {
 			}
 			if (toolResultHasChatAnswer((event as Record<string, unknown>).result))
 				state.chatAnswerObservedThisTurn = true;
+			state.latestUserMessage =
+				toolResultChatText((event as Record<string, unknown>).result) ?? state.latestUserMessage;
 			if (!hasActiveAskUserQuestion()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 				input.stageUiBroker.clearStagePrompt(input.runId, stageId);

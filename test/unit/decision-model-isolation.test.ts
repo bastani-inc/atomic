@@ -1,29 +1,31 @@
-// #3089/#3090: routerModel is routing-only, never a general structured-output model override.
+// #3089/#3090/#4358: an SDK structured-output call chooses its own model; the structured_output tool without its own
+// model starts on the session's configured decision model.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Static } from "typebox";
+import { type Static, Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	createStructuredOutputCapture,
 	createStructuredOutputTool,
 } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	decisionSchema,
 	inferenceRequestTools,
 	messageStream,
 	parseInferenceUserPayload,
 	registeredDecisionRuntime,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 
@@ -54,16 +56,16 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
-for (const routerModel of ["typesafe/jev-latest", "auto", "missing/model"]) {
-	test(`general structured-output inference ignores routerModel=${routerModel} and environment preference`, async () => {
+for (const decisionModel of ["typesafe/jev-latest", "auto", "missing/model"]) {
+	test(`general structured-output inference ignores decisionModel=${decisionModel} and environment preference`, async () => {
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const transport = vi.fn(async () => Response.json(classifierResult()));
 		vi.stubGlobal("fetch", transport);
-		const settings = SettingsManager.inMemory({ routerModel });
-		const readSetting = vi.spyOn(settings, "getRouterModel");
+		const settings = SettingsManager.inMemory({ decisionModel });
+		const readSetting = vi.spyOn(settings, "getDecisionModel");
 		const dispatch = vi.fn((model) => {
-			assert.equal(model.provider, decisionModel.provider);
-			assert.equal(model.id, decisionModel.id);
+			assert.equal(model.provider, decisionChatModel.provider);
+			assert.equal(model.id, decisionChatModel.id);
 			return messageStream(decisionMessage());
 		});
 		const { registry } = await registeredDecisionRuntime(dispatch);
@@ -87,8 +89,8 @@ test("general structured-output can explicitly select a registered classifier wi
 		Response.json(classifierWireResponse(String(init?.body))),
 	);
 	vi.stubGlobal("fetch", transport);
-	const settings = SettingsManager.inMemory({ routerModel: "decision-test/chat" });
-	const readSetting = vi.spyOn(settings, "getRouterModel");
+	const settings = SettingsManager.inMemory({ decisionModel: "decision-test/chat" });
+	const readSetting = vi.spyOn(settings, "getDecisionModel");
 	const { registry } = await registeredDecisionRuntime(() => messageStream(decisionMessage()));
 	const result = await generateStructuredOutput({
 		...structuredOutputRequest(),
@@ -101,7 +103,7 @@ test("general structured-output can explicitly select a registered classifier wi
 	assert.equal(transport.mock.calls.length, 1);
 });
 
-test("general structured output defaults to the current chat model, not routerModel or a TypeSafe key", async () => {
+test("general structured output defaults to the current chat model, not decisionModel or a TypeSafe key", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 	const transport = vi.fn(async () => Response.json(classifierResult()));
 	vi.stubGlobal("fetch", transport);
@@ -109,7 +111,7 @@ test("general structured output defaults to the current chat model, not routerMo
 	const result = await generateStructuredOutput({
 		...structuredOutputRequest(),
 		schema: decisionSchema,
-		modelRegistry: { getAll: () => [decisionModel], streamSimple: dispatch },
+		modelRegistry: { getAll: () => [decisionChatModel], streamSimple: dispatch },
 	});
 	assert.equal(result.model, "decision-test/chat");
 	assert.equal(dispatch.mock.calls.length, 1);
@@ -146,7 +148,7 @@ test("ordinary routing keeps the complete candidate set beyond one provider's Ch
 	assert.equal(dispatch.mock.calls.length, 1);
 });
 
-test("routing entrypoint alone applies the routerModel setting", async () => {
+test("routing entrypoint alone applies the decisionModel setting", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 	const transport = vi.fn(async () => Response.json(classifierResult()));
 	vi.stubGlobal("fetch", transport);
@@ -154,23 +156,33 @@ test("routing entrypoint alone applies the routerModel setting", async () => {
 	const result = await routeModel({
 		...decisionRequest(),
 		modelRegistry: registry,
-		settings: SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" }),
+		settings: SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" }),
 	});
 	assert.equal(result.model, "typesafe/jev-latest");
 	assert.equal(transport.mock.calls.length, 1);
 });
 
-for (const routerModel of ["typesafe/jev-latest", "auto"]) {
+const routeSchema = Type.Object(
+	{ route: Type.Union([Type.Literal("none"), Type.Literal("review")]) },
+	{ additionalProperties: false },
+);
+
+for (const [decisionModel, classified] of [
+	["typesafe/jev-latest", true],
+	["auto", false],
+] as const) {
 	test(
-		`structured_output session tool keeps the chat model with routerModel=${routerModel}`,
+		`structured_output session tool starts on the decision model and keeps the chat model with decisionModel=${decisionModel} (#4358)`,
 		async () => {
 			vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
-			const transport = vi.fn(async () => Response.json(classifierResult()));
+			const transport = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+				Response.json(classifierWireResponse(String(init?.body))),
+			);
 			vi.stubGlobal("fetch", transport);
 			let calls = 0;
 			const dispatch = vi.fn((model, context) => {
-				assert.equal(model.id, decisionModel.id);
-				assert.equal(model.provider, decisionModel.provider);
+				assert.equal(model.id, decisionChatModel.id);
+				assert.equal(model.provider, decisionChatModel.provider);
 				assert.ok(inferenceRequestTools(context).some((tool) => tool.name === "structured_output"));
 				return messageStream(
 					decisionMessage(
@@ -182,14 +194,14 @@ for (const routerModel of ["typesafe/jev-latest", "auto"]) {
 			});
 			const { runtime } = await registeredDecisionRuntime(dispatch);
 			const settings = SettingsManager.inMemory({
-				routerModel,
+				decisionModel,
 				defaultModel: "chat",
 				defaultProvider: "decision-test",
 			});
-			const readSetting = vi.spyOn(settings, "getRouterModel");
+			const readSetting = vi.spyOn(settings, "getDecisionModel");
 			const cwd = mkdtempSync(join(tmpdir(), "atomic-router-isolation-"));
-			const capture = createStructuredOutputCapture<Static<typeof decisionSchema>>();
-			const tool = createStructuredOutputTool({ schema: decisionSchema, capture });
+			const capture = createStructuredOutputCapture<Static<typeof routeSchema>>();
+			const tool = createStructuredOutputTool({ schema: routeSchema, capture });
 			const loader = new DefaultResourceLoader({
 				cwd,
 				agentDir: cwd,
@@ -207,7 +219,7 @@ for (const routerModel of ["typesafe/jev-latest", "auto"]) {
 					cwd,
 					agentDir: cwd,
 					modelRuntime: runtime,
-					model: decisionModel,
+					model: decisionChatModel,
 					settingsManager: settings,
 					sessionManager: SessionManager.inMemory(cwd),
 					resourceLoader: loader,
@@ -217,13 +229,13 @@ for (const routerModel of ["typesafe/jev-latest", "auto"]) {
 				});
 				try {
 					await session.prompt("Return the structured result.");
-					assert.equal(session.model?.id, decisionModel.id);
-					assert.equal(session.model?.provider, decisionModel.provider);
+					assert.equal(session.model?.id, decisionChatModel.id);
+					assert.equal(session.model?.provider, decisionChatModel.provider);
 					assert.equal(capture.called, true);
 					assert.deepEqual(capture.value, { route: "review" });
-					assert.equal(dispatch.mock.calls.length, 2);
-					assert.equal(transport.mock.calls.length, 0);
-					assert.equal(readSetting.mock.calls.length, 0);
+					assert.equal(dispatch.mock.calls.length, classified ? 1 : 2);
+					assert.equal(transport.mock.calls.length, classified ? 1 : 0);
+					assert.ok(readSetting.mock.calls.length > 0);
 				} finally {
 					session.dispose();
 				}

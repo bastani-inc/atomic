@@ -10,14 +10,16 @@ import type {
 	TranscriptContext,
 } from "@bastani/pi-ai";
 import { createAssistantMessageEventStream, getCurrentTools } from "@bastani/pi-ai";
-import { Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import type {
-	RouterDecisionRequest,
-	StructuredOutputRequest,
+import {
+	type DecisionModelRequest,
+	runDecision,
+	type StructuredOutputRequest,
+	type StructuredOutputResult,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 
 /** 0.86 folds systemPrompt/tools into a leading system message before provider streamSimple. */
@@ -41,7 +43,7 @@ export function inferenceRequestTools(context: {
 	return context.tools ?? getCurrentTools(context.messages);
 }
 
-export const decisionModel: Model<Api> = {
+export const decisionChatModel: Model<Api> = {
 	provider: "decision-test",
 	id: "chat",
 	name: "Test chat",
@@ -90,16 +92,16 @@ export const decisionSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export function decisionRequest(): RouterDecisionRequest<typeof decisionSchema> {
+export function decisionRequest(): DecisionModelRequest<typeof decisionSchema> {
 	return {
-		settings: SettingsManager.inMemory({ routerModel: "decision-test/chat" }),
+		settings: SettingsManager.inMemory({ decisionModel: "decision-test/chat" }),
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			streamSimple: () => {
 				throw new Error("Unexpected chat inference");
 			},
 		},
-		currentModel: decisionModel,
+		currentModel: decisionChatModel,
 		state: {
 			task: "Review the patch",
 			conversation: [{ role: "user", text: "Review only; do not execute." }],
@@ -143,9 +145,9 @@ export function decisionMessage(args: JsonObject = { route: "review", limit: 1.2
 	return {
 		role: "assistant",
 		content: [{ type: "toolCall", id: "result", name: "structured_output", arguments: args }],
-		api: decisionModel.api,
-		provider: decisionModel.provider,
-		model: decisionModel.id,
+		api: decisionChatModel.api,
+		provider: decisionChatModel.provider,
+		model: decisionChatModel.id,
 		stopReason: "toolUse",
 		timestamp: Date.now(),
 		usage: {
@@ -179,12 +181,21 @@ export async function registeredDecisionRuntime(
 		credentials: AuthStorage.inMemory(),
 		refreshOnCreate: false,
 	});
-	runtime.registerProvider(decisionModel.provider, {
-		api: decisionModel.api,
-		baseUrl: decisionModel.baseUrl,
+	runtime.registerProvider(decisionChatModel.provider, {
+		api: decisionChatModel.api,
+		baseUrl: decisionChatModel.baseUrl,
 		apiKey: "mock-chat-secret",
-		models: [decisionModel],
+		models: [decisionChatModel],
 		streamSimple,
 	});
 	return { runtime, registry: new ModelRegistry(runtime) };
+}
+
+/** One schema-shaped decision through the decision engine, without the answer source and classifier answers. */
+export async function routeModel<T extends TSchema>(
+	request: DecisionModelRequest<T>,
+	validateDecision?: (value: Static<T>) => boolean,
+): Promise<StructuredOutputResult<Static<T>>> {
+	const { classifierAnswers: _answers, source: _source, ...result } = await runDecision(request, validateDecision);
+	return result;
 }

@@ -37,10 +37,12 @@ if (heapArgs.length > 0) {
 } else {
 	// No top-level await: the compiled binary is built with --bytecode (CJS),
 	// which forbids TLA anywhere in the bundled graph.
-	void Promise.all([import("./core/http-dispatcher.ts"), import("./main.ts")]).then(
-		([{ configureHttpDispatcher }, { main }]) => {
-			configureHttpDispatcher();
-			main(args);
-		},
-	);
+	void Promise.all([
+		import("./core/http-dispatcher.ts"),
+		import("./main.ts"),
+		import("./cli/settings-startup.ts"),
+	]).then(([{ configureHttpDispatcher }, { main }, { exitOnDecisionConfigError }]) => {
+		configureHttpDispatcher();
+		main(args).catch(exitOnDecisionConfigError);
+	});
 }

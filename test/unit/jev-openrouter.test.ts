@@ -6,8 +6,8 @@ import { resolveRestoredModelReference } from "../../packages/coding-agent/src/c
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { resolveRouterModel, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionRequest } from "../helpers/structured-output.js";
+import { resolveDecisionModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { decisionRequest, routeModel } from "../helpers/structured-output.js";
 
 const OPENROUTER_KEY = "mock-openrouter-key";
 const ALLOWED_CHAT_MODEL = "~anthropic/claude-sonnet-latest";
@@ -88,10 +88,10 @@ test("a personalized OpenRouter catalog keeps Jev routable and saved chat IDs re
 	assert.ok(registry.getClassifierModel("openrouter", JEV));
 	const request = {
 		...decisionRequest(),
-		settings: SettingsManager.inMemory({ routerModel: `openrouter/${JEV}` }),
+		settings: SettingsManager.inMemory({ decisionModel: `openrouter/${JEV}` }),
 		modelRegistry: registry,
 	};
-	assert.equal(resolveRouterModel(request).kind, "classifier");
+	assert.equal(resolveDecisionModel(request).kind, "classifier");
 	assert.equal((await routeModel(request)).model, `openrouter/${JEV}`);
 	assert.ok(transport.mock.calls.some(([url]) => String(url) === "https://openrouter.ai/api/v1/systemone"));
 

@@ -121,6 +121,9 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "cache-miss-notices":
 				callbacks.onShowCacheMissNoticesChange(newValue === "true");
 				break;
+			case "auto-advance-after-steer":
+				callbacks.onAutoAdvanceAfterSteerChange?.(newValue === "true");
+				break;
 			case "theme":
 				callbacks.onThemeChange(newValue);
 				break;

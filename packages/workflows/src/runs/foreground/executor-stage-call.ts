@@ -11,14 +11,27 @@ import { closeBlockedStageForGoodWhenRunEnds } from "./blocked-stage-close.js";
 import { raceAbort, WORKFLOW_KILLED_ABORT_REASON } from "./executor-abort.js";
 import {
 	askReadinessViaStageBroker,
+	READINESS_GATE_CHAT_MESSAGE,
 	RESUME_CONTINUATION_PROMPT,
 	type ReadinessDecision,
 	shouldInjectResumeContinuation,
+	userMessageText,
 } from "./executor-hil.js";
 import { applyFailureToStage } from "./executor-lifecycle.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import { structuredTaskOutputText, truncateTaskOutput } from "./executor-task-prompts.js";
+import {
+	decisionModelGivesNoProbabilities,
+	describeReadinessDecision,
+	READINESS_DECISION_INSTRUCTIONS,
+	READINESS_DECISION_QUESTIONS,
+	readinessDecisionRecord,
+	readinessFailureRecord,
+	readinessState,
+	readinessVerdict,
+	type StageReadinessDecision,
+} from "./readiness-decision.js";
 import type { StageAdapters } from "./stage-runner.js";
 
 export interface TrackedStageCallOptions {
@@ -40,6 +53,27 @@ function normalizeTrackedStageCallOptions(
 
 function throwFinalizationError(error: unknown): never {
 	throw error;
+}
+
+/** How often readiness checks whether the turn a newer user message started has ended. */
+const STAGE_TURN_POLL_MS = 50;
+
+/** The stage's objective: the text of its first user message, which is the stage prompt. */
+function stageObjective(messages: readonly object[]): string | undefined {
+	const first = messages.find((message) => (message as { readonly role?: unknown }).role === "user");
+	return first === undefined ? undefined : userMessageText((first as { readonly content?: unknown }).content);
+}
+
+function recordReadinessDecision(runtime: LiveStageRuntime, decision: StageReadinessDecision): void {
+	runtime.stageSnapshot.readinessDecision = decision;
+	runtime.activeStore.recordStageNotice(runtime.runId, runtime.stageId, {
+		id: crypto.randomUUID(),
+		ts: decision.at,
+		kind: "decision",
+		to: decision.outcome,
+		...(decision.model === undefined ? {} : { from: decision.model }),
+		meta: describeReadinessDecision(decision),
+	});
 }
 
 export function createTrackedStageCaller(input: {
@@ -67,6 +101,52 @@ export function createTrackedStageCaller(input: {
 			return ready ? { action: "advance" } : { action: "stay" };
 		}
 		return await askReadinessViaStageBroker(runtime.runId, runtime.stageId, signal, runtime.stageUiBroker);
+	};
+	/**
+	 * Readiness after a steer: the decision model advances the stage or keeps it open without asking. An uncertain or
+	 * failed decision returns `undefined`, and the user is asked as before. `superseded`: the user sent another message
+	 * while the decision model answered, so its verdict is discarded unrecorded. A pause or abort rejects, keeping the
+	 * user's message for the next attempt.
+	 */
+	const decideReadiness = async (signal: AbortSignal): Promise<ReadinessDecision | "superseded" | undefined> => {
+		const models = runtime.opts.models;
+		const userMessage = runtime.state.latestUserMessage;
+		if (models?.decide === undefined || userMessage === undefined || models.autoAdvanceAfterSteer?.() === false)
+			return undefined;
+		const messageSeq = runtime.state.userMessageSeq;
+		let decision: StageReadinessDecision | undefined;
+		try {
+			const result = await models.decide({
+				state: readinessState({
+					objective: stageObjective(runtime.innerCtx.messages),
+					userMessage,
+					reply: runtime.innerCtx.__getLastAssistantText(),
+				}),
+				questions: READINESS_DECISION_QUESTIONS,
+				instructions: READINESS_DECISION_INSTRUCTIONS,
+				requireProbabilities: true,
+				signal,
+			});
+			decision = readinessDecisionRecord(readinessVerdict(result), result.model);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			decision = decisionModelGivesNoProbabilities(error) ? undefined : readinessFailureRecord(error);
+		}
+		if (runtime.state.userMessageSeq !== messageSeq) return "superseded";
+		runtime.state.latestUserMessage = undefined;
+		if (decision === undefined) return undefined;
+		recordReadinessDecision(runtime, decision);
+		if (decision.outcome === "advanced") return { action: "advance" };
+		if (decision.outcome === "stayed") return { action: "stay" };
+		return undefined;
+	};
+
+	/** Waits while the stage's session runs or admits a turn, such as the one a newer user message started. */
+	const waitForNewerUserTurn = async (): Promise<void> => {
+		while (runtime.innerCtx.isStreaming || runtime.innerCtx.__turnLoopBusy?.() === true)
+			await runtime.raceStageSessionHeartbeat(
+				raceAbort(new Promise<void>((resolve) => setTimeout(resolve, STAGE_TURN_POLL_MS)), runtime.signal),
+			);
 	};
 
 	const suppressReadinessForCurrentTurn = (): void => {
@@ -259,8 +339,15 @@ export function createTrackedStageCaller(input: {
 							const controller = new AbortController();
 							runtime.state.readinessController = controller;
 							let decision: ReadinessDecision;
+							let superseded: boolean;
 							try {
-								decision = await confirmReadiness(AbortSignal.any([runtime.signal, controller.signal]));
+								const readinessSignal = AbortSignal.any([runtime.signal, controller.signal]);
+								const decided = await decideReadiness(readinessSignal);
+								superseded = decided === "superseded";
+								decision =
+									decided === "superseded"
+										? { action: "stay" }
+										: (decided ?? (await confirmReadiness(readinessSignal)));
 								// An answer can win its promise race while pause still wins admission.
 								if (decision.action === "advance" || decision.message !== undefined) {
 									await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
@@ -283,7 +370,14 @@ export function createTrackedStageCaller(input: {
 							if (runtime.signal.aborted) break;
 							runtime.state.askUserQuestionObservedThisTurn = false;
 							runtime.state.chatAnswerObservedThisTurn = false;
-							if (decision.message !== undefined) {
+							if (superseded) {
+								await waitForNewerUserTurn();
+								result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
+								repeatReadinessAfterChatTurn = true;
+							} else if (decision.message !== undefined) {
+								// Text typed into the readiness question is the user's message; "chat more" is not.
+								if (decision.message !== READINESS_GATE_CHAT_MESSAGE)
+									runtime.state.latestUserMessage = decision.message;
 								result = (await runtime.raceStageSessionHeartbeat(
 									raceAbort(runtime.innerCtx.__continuePrompt(decision.message), runtime.signal),
 								)) as T;

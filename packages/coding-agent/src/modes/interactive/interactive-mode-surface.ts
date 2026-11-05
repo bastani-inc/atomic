@@ -6,6 +6,7 @@ import type { MarkdownTransformer, SessionRecoveryReason, ToolRenderers } from "
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
+import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import type {
@@ -151,6 +152,7 @@ declare module "./interactive-mode-base.ts" {
 		applyRuntimeSettings(): void;
 		rebindCurrentSession(): Promise<void>;
 		handleFatalRuntimeError(prefix: string, error: unknown): Promise<never>;
+		handleEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void;
 		renderCurrentSessionState(): void;
 		startSessionRecovery(reason: SessionRecoveryReason): void;
 		getRegisteredToolDefinition(toolName: string): ToolRenderers | undefined;

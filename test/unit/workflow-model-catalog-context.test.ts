@@ -76,7 +76,7 @@ test("workflow stage auto routing refuses a host registry without classifier loo
 	try {
 		const catalog = workflowModelCatalogFromContext({
 			model: current,
-			getRouterModel: () => "",
+			getDecisionModel: () => "",
 			modelRegistry: {
 				getAvailable: () => [current],
 				getAll: () => [current],

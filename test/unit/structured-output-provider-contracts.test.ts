@@ -8,17 +8,19 @@ import {
 } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { isDecisionConfigError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+
 import type { JsonObject } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	messageStream,
+	routeModel,
 } from "../helpers/structured-output.js";
 
 afterEach(() => {
@@ -40,7 +42,7 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 	for (const status of [200, 401, 429, 529]) {
 		test(`${api} real serializer makes one HTTP request at status ${status}`, async () => {
 			const model: Model<typeof api> = {
-				...decisionModel,
+				...decisionChatModel,
 				api,
 				id: api === "anthropic-messages" ? "claude-fable-5-1" : "chat",
 				compat:
@@ -48,7 +50,11 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 						? {
 								supportsForcedToolChoice: false,
 								allowedFallbackModels: [
-									{ provider: decisionModel.provider, model: "forbidden-fallback", cost: decisionModel.cost },
+									{
+										provider: decisionChatModel.provider,
+										model: "forbidden-fallback",
+										cost: decisionChatModel.cost,
+									},
 								],
 							}
 						: {},
@@ -137,7 +143,7 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 			runtime.registerProvider(model.provider, { api, baseUrl: model.baseUrl, apiKey: "mock-key", models: [model] });
 			const pending = routeModel({
 				...decisionRequest(),
-				settings: SettingsManager.inMemory({ routerModel: `${model.provider}/${model.id}` }),
+				settings: SettingsManager.inMemory({ decisionModel: `${model.provider}/${model.id}` }),
 				currentModel: model,
 				modelRegistry: new ModelRegistry(runtime),
 				// Decision-layer transient retries are covered elsewhere; disable them
@@ -160,12 +166,17 @@ for (const api of ["openai-completions", "anthropic-messages"] as const) {
 for (const invalid of [null, false, 7, [], {}, " "]) {
 	test(`loaded invalid setting ${JSON.stringify(invalid)} rejects before inference`, async () => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () => JSON.stringify({ routerModel: invalid }));
+		storage.withLock("global", () => JSON.stringify({ decisionModel: invalid }));
 		const settings = SettingsManager.fromStorage(storage);
 		vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
 		const transport = vi.fn<typeof fetch>();
 		vi.stubGlobal("fetch", transport);
-		await assert.rejects(routeModel({ ...decisionRequest(), settings }), /Invalid routerModel/);
+		await assert.rejects(routeModel({ ...decisionRequest(), settings }), (error: unknown) => {
+			assert.ok(isDecisionConfigError(error));
+			assert.equal(error.code, "invalid-setting");
+			assert.equal(error.field, "decisionModel");
+			return true;
+		});
 		assert.equal(transport.mock.calls.length, 0);
 	});
 }
@@ -174,21 +185,21 @@ test("global/project settings honor trust, explicit empty override and reload wi
 	const storage = new InMemorySettingsStorage();
 	storage.withLock("global", () =>
 		JSON.stringify({
-			routerModel: "decision-test/chat",
+			decisionModel: "decision-test/chat",
 			defaultModel: "saved-chat",
 			defaultProvider: "saved-provider",
 		}),
 	);
-	storage.withLock("project", () => JSON.stringify({ routerModel: "typesafe/jev-latest" }));
+	storage.withLock("project", () => JSON.stringify({ decisionModel: "typesafe/jev-latest" }));
 	const settings = SettingsManager.fromStorage(storage);
-	assert.equal(settings.getRouterModel(), "typesafe/jev-latest");
+	assert.equal(settings.getDecisionModel(), "typesafe/jev-latest");
 	const untrusted = SettingsManager.fromStorage(storage, { projectTrusted: false });
-	assert.equal(untrusted.getRouterModel(), "decision-test/chat");
+	assert.equal(untrusted.getDecisionModel(), "decision-test/chat");
 	untrusted.setProjectTrusted(true);
-	assert.equal(untrusted.getRouterModel(), "typesafe/jev-latest");
-	storage.withLock("project", () => JSON.stringify({ routerModel: "" }));
+	assert.equal(untrusted.getDecisionModel(), "typesafe/jev-latest");
+	storage.withLock("project", () => JSON.stringify({ decisionModel: "" }));
 	await settings.reload();
-	assert.equal(settings.getRouterModel(), "");
+	assert.equal(settings.getDecisionModel(), "");
 	assert.equal(settings.getDefaultModel(), "saved-chat");
 	assert.equal(settings.getDefaultProvider(), "saved-provider");
 });
@@ -217,7 +228,7 @@ for (const maxTokens of [0, -1, 0.5, Infinity, NaN, 2 ** 31]) {
 }
 
 const classifierModel: ClassifierModel<ClassifierApi> = {
-	...decisionModel,
+	...decisionChatModel,
 	type: "classifier",
 	provider: "fixture",
 	id: "intent",
@@ -229,7 +240,7 @@ function classifierRequest(classify?: ModelRegistry["classify"]) {
 	const request = decisionRequest();
 	return {
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "fixture/intent" }),
+		settings: SettingsManager.inMemory({ decisionModel: "fixture/intent" }),
 		modelRegistry: {
 			...request.modelRegistry,
 			getClassifierModel: (provider: string, id: string) =>
@@ -239,16 +250,16 @@ function classifierRequest(classify?: ModelRegistry["classify"]) {
 	};
 }
 
-test("routerModel auto uses the current chat model even with classifier credentials", async () => {
+test("decisionModel auto uses the current chat model even with classifier credentials", async () => {
 	vi.stubEnv("TYPESAFE_API_KEY", "unused-key");
 	const dispatch = vi.fn(() => messageStream(decisionMessage()));
 	const request = decisionRequest();
 	const result = await routeModel({
 		...request,
-		settings: SettingsManager.inMemory({ routerModel: "auto" }),
+		settings: SettingsManager.inMemory({ decisionModel: "auto" }),
 		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch },
 	});
-	assert.equal(result.model, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.equal(result.model, `${decisionChatModel.provider}/${decisionChatModel.id}`);
 	assert.equal(dispatch.mock.calls.length, 1);
 });
 
@@ -329,13 +340,13 @@ for (const reason of ["cancel", "delayed-cancel"] as const) {
 			modelsPath: null,
 			refreshOnCreate: false,
 			credentials: AuthStorage.inMemory({
-				[decisionModel.provider]: { type: "oauth", access: "expired", refresh: "mock-refresh", expires: 1 },
+				[decisionChatModel.provider]: { type: "oauth", access: "expired", refresh: "mock-refresh", expires: 1 },
 			}),
 		});
-		runtime.registerProvider(decisionModel.provider, {
-			api: decisionModel.api,
-			baseUrl: decisionModel.baseUrl,
-			models: [decisionModel],
+		runtime.registerProvider(decisionChatModel.provider, {
+			api: decisionChatModel.api,
+			baseUrl: decisionChatModel.baseUrl,
+			models: [decisionChatModel],
 			streamSimple: dispatch,
 			oauth: {
 				name: "Decision test",

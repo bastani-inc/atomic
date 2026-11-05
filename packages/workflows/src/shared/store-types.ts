@@ -198,7 +198,8 @@ export interface ToolEvent {
 export interface StageNotice {
 	readonly id: string;
 	readonly ts: number;
-	readonly kind: "model" | "thinking" | "compaction" | "tree" | "abort" | "mcp" | "cleanup";
+	/** `decision`: the decision model judged the stage's readiness after a steer; `to` is the outcome, `meta` its summary. */
+	readonly kind: "model" | "thinking" | "compaction" | "tree" | "abort" | "mcp" | "cleanup" | "decision";
 	readonly from?: string;
 	readonly to: string;
 	readonly meta?: string;
@@ -487,6 +488,11 @@ export interface StageSnapshot {
 	modelAttempts?: readonly import("./types.js").WorkflowModelAttempt[];
 	rateLimits?: readonly import("./types.js").WorkflowProviderRateLimit[];
 	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
+	/**
+	 * The latest readiness decision after a steer: whether the decision model advanced the stage, kept it open, or the
+	 * user was asked, with its probabilities, model, and the typed error when the decision failed. Live only.
+	 */
+	readinessDecision?: import("../runs/foreground/readiness-decision.js").StageReadinessDecision;
 	/** Schema-backed task/stage value, when distinct from assistant text. */
 	structured?: WorkflowSerializableValue;
 	/** Worktree or output artifacts collected after a completed task. */

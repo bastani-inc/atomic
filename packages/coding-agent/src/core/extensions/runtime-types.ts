@@ -216,7 +216,7 @@ export interface ExtensionContextActions {
 	getSystemPrompt: () => string;
 	getSkillCatalog?: () => SkillCatalog;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
-	getRouterModel?: () => string;
+	getDecisionModel?: () => string;
 	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 	executeTool?: (

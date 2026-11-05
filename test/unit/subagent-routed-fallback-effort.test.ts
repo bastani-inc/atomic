@@ -11,7 +11,7 @@ import { routeSubagentModel } from "../../packages/subagents/src/runs/shared/mod
 import { toModelInfo } from "../../packages/subagents/src/shared/model-info.ts";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.ts";
 import { chatRouter } from "../helpers/model-routing.js";
-import { decisionModel } from "../helpers/structured-output.ts";
+import { decisionChatModel } from "../helpers/structured-output.ts";
 
 const capture = vi.hoisted(() => ({ spec: undefined as ChildSpec | undefined }));
 vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () => ({
@@ -30,7 +30,7 @@ async function dispatch(
 	routed = true,
 	restrictEffort = true,
 ): Promise<ChildSpec> {
-	const primary = { ...decisionModel, id: "primary", reasoning: effort !== null };
+	const primary = { ...decisionChatModel, id: "primary", reasoning: effort !== null };
 	const models = [
 		primary,
 		{ ...primary, id: "fallback", reasoning: true },
@@ -65,7 +65,7 @@ async function dispatch(
 				ctx: {
 					model: primary,
 					modelRegistry: registry,
-					getRouterModel: () => "decision-test/primary",
+					getDecisionModel: () => "decision-test/primary",
 				} as unknown as ExtensionContext,
 				agent,
 				task: "Inspect synthetic data",
