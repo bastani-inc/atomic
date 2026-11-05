@@ -270,6 +270,31 @@ test("a pooled fork refuses options bound to this process before writing, and in
 		{ field: "localWorkers", expected: "localWorkers without options bound to this process (registry, onStageEnd)" },
 	]);
 	assert.equal((await backend.journal.listRuns()).length, 1, "nothing was written");
+	const everyBound = [
+		"adapters",
+		"persistence",
+		"mcp",
+		"overlay",
+		"models",
+		"registry",
+		"toolAdmissionBoundary",
+		"onStageStart",
+		"onStageEnd",
+		"onStageSession",
+		"onStageSessionEvent",
+		"confirmStageReadiness",
+		"rootBudget",
+	];
+	const everyBoundOption = Object.fromEntries(everyBound.map((key) => [key, {}]));
+	const allRefused = await forkRun(
+		runId,
+		Object.assign(
+			{ fromStage: "worker", durableBackend: backend, definition: eventsDefinition, localWorkers },
+			everyBoundOption,
+		),
+	).catch((error: Error) => error);
+	assert.ok(isForkConfigError(allRefused), String(allRefused));
+	assert.equal(allRefused.expected, `localWorkers without options bound to this process (${everyBound.join(", ")})`);
 	let captured: Parameters<typeof run>[2];
 	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
 		captured = options;
