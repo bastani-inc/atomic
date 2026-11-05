@@ -89,10 +89,10 @@ export class MemoryRunJournal implements RunJournal {
 			};
 		});
 		if (this.runs.has(header.runId)) return "exists";
-		const latest = entries.findLast((entry) => entry.event.type === "StatusChanged")?.event.payload as
-			| { readonly status: string }
-			| undefined;
-		this.runs.set(header.runId, { header: { ...stored, status: latest?.status ?? stored.status }, entries });
+		let status = stored.status;
+		for (const { event } of entries)
+			if (event.type === "StatusChanged") status = (event.payload as { readonly status: string }).status;
+		this.runs.set(header.runId, { header: { ...stored, status }, entries });
 		return "created";
 	}
 
