@@ -91,6 +91,11 @@ export class SessionWorktreeSnapshotRecorder {
 		return directories.size === 0 ? undefined : [...directories];
 	}
 
+	/** Whether the turn may record a snapshot when it ends: a persisted session called a tool that can change files. */
+	callsFileWritingTool(message: AssistantMessage): boolean {
+		return this.deps.sessionManager.isPersisted() && this.touchedDirectories(message) !== undefined;
+	}
+
 	async recordTurn(message: AssistantMessage): Promise<void> {
 		const directories = this.touchedDirectories(message);
 		if (!directories) return;
