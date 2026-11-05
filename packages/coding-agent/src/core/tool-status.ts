@@ -1,5 +1,6 @@
 import { basename } from "node:path";
-import type { GitToolStatus } from "../utils/tools-manager.ts";
+import type { SerializedGitProvisionError } from "../utils/git-errors.ts";
+import type { GitToolStatus, GitUpdateStatus } from "../utils/tools-manager.ts";
 import type { ToolDefinition, ToolExposure } from "./extensions/tool-types.ts";
 import { BUILTIN_PATH_PREFIX, type SourceInfo } from "./source-info.ts";
 
@@ -204,11 +205,38 @@ export interface ToolStatusFormatStyle {
 
 const plainStyle: ToolStatusFormatStyle = { heading: (text) => text, dim: (text) => text, warning: (text) => text };
 
+function summaryAndHint(error: SerializedGitProvisionError): { summary: string; hint: string } {
+	const { message, hint } = error;
+	return {
+		summary: message.endsWith(hint) ? message.slice(0, message.length - hint.length).trimEnd() : message,
+		hint,
+	};
+}
+
+function formatGitUpdate(update: GitUpdateStatus, style: ToolStatusFormatStyle): string[] {
+	const installed = update.installedTag ?? "unrecorded release";
+	if (update.reason === undefined)
+		return [`  ${style.dim(`update to ${update.pinnedTag} pending; installed ${installed}`)}`];
+	const { summary, hint } = summaryAndHint(update.reason);
+	return [
+		`  ${style.warning(`update to ${update.pinnedTag} failed`)}  ${style.dim(`${update.reason.code}; installed ${installed}`)}`,
+		`    ${summary}`,
+		`    ${style.dim(hint)}`,
+	];
+}
+
 function formatGitStatus(git: GitToolStatus, style: ToolStatusFormatStyle): string[] {
-	if (git.source !== "unavailable") return [`  ${git.source} ${git.version}  ${style.dim(git.path)}`];
-	const { message, hint, code } = git.error;
-	const summary = message.endsWith(hint) ? message.slice(0, message.length - hint.length).trimEnd() : message;
-	return [`  ${style.warning("unavailable")}  ${style.dim(code)}`, `    ${summary}`, `    ${style.dim(hint)}`];
+	if (git.source !== "unavailable")
+		return [
+			`  ${git.source} ${git.version}  ${style.dim(git.path)}`,
+			...(git.update === undefined ? [] : formatGitUpdate(git.update, style)),
+		];
+	const { summary, hint } = summaryAndHint(git.error);
+	return [
+		`  ${style.warning("unavailable")}  ${style.dim(git.error.code)}`,
+		`    ${summary}`,
+		`    ${style.dim(hint)}`,
+	];
 }
 
 /** Render a report as plain multi-line text; pass a style to add terminal colors. */

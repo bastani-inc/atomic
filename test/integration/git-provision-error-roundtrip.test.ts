@@ -13,7 +13,7 @@ import {
 	type SerializedGitProvisionError,
 } from "../../packages/coding-agent/src/utils/git-errors.js";
 import { gitInstallCommand, readOsRelease } from "../../packages/coding-agent/src/utils/git-install-command.js";
-import type { GitToolStatus } from "../../packages/coding-agent/src/utils/tools-manager.js";
+import { GIT_RELEASE, type GitToolStatus } from "../../packages/coding-agent/src/utils/tools-manager.js";
 import {
 	bunExecutable,
 	makeTempDirectory,
@@ -44,6 +44,7 @@ test(
 				offline: SerializedGitProvisionError;
 				timeout: SerializedGitProvisionError;
 				status: GitToolStatus;
+				staleStatus: GitToolStatus;
 			};
 
 			const installCommand = gitInstallCommand(
@@ -94,6 +95,15 @@ test(
 				assert.ok(reason instanceof GitUnavailableError);
 				assert.equal(reason.code, "offline");
 			}
+
+			assert.ok(wire.staleStatus.source === "provisioned" && wire.staleStatus.update?.reason !== undefined);
+			assert.equal(wire.staleStatus.update.pinnedTag, GIT_RELEASE.tag);
+			assert.equal(wire.staleStatus.update.installedTag, "v-older");
+			const refused = rehydrateGitProvisionError(wire.staleStatus.update.reason);
+			assert.ok(refused instanceof GitUnavailableError);
+			assert.equal(refused.code, "offline");
+			assert.equal(refused.fields.installCommand, installCommand);
+			assert.equal(refused.hint, wire.staleStatus.update.reason.hint);
 		} finally {
 			removeTempDirectory(root);
 		}

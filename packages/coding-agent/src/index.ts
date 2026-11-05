@@ -901,6 +901,7 @@ export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
 export {
 	type GitToolStatus,
+	type GitUpdateStatus,
 	getGitStatus,
 	type ResolvedGit,
 	type ResolvedGitSource,

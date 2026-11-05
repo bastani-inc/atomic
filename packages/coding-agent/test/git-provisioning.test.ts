@@ -139,6 +139,7 @@ let GitProvisionTimeoutError: GitErrors["GitProvisionTimeoutError"];
 let GitUnavailableError: GitErrors["GitUnavailableError"];
 let isGitProvisionError: GitErrors["isGitProvisionError"];
 let isGitUnavailableError: GitErrors["isGitUnavailableError"];
+let rehydrateGitProvisionError: GitErrors["rehydrateGitProvisionError"];
 
 function makeSystemGit(version: string | undefined, status = 0): string {
 	const dir = mkdtempSync(join(tempDir, "system-"));
@@ -266,6 +267,7 @@ beforeEach(async () => {
 		GitUnavailableError,
 		isGitProvisionError,
 		isGitUnavailableError,
+		rehydrateGitProvisionError,
 	} = await import("../src/utils/git-errors.ts"));
 	const actualFs = mocks.actualFs ?? (await vi.importActual<typeof import("fs")>("fs"));
 	mocks.readdirSync.mockReset();
@@ -2159,5 +2161,127 @@ describe("git install command on this machine (#4322)", () => {
 		assert.equal((caught(() => tools.resolveGitSync()) as { code?: string }).code, "download-failed");
 		tools.resetGitProvisionStateForTest();
 		assert.equal((caught(() => tools.resolveGitSync()) as { code?: string }).code, "not-installed");
+	});
+
+	describe.skipIf(isWindows)("a refresh that cannot be made is not retried by every resolution", () => {
+		const provision = (overrides: Parameters<ToolsManager["withGitProvisionSettingsForTest"]>[0], options = {}) =>
+			tools.withGitProvisionSettingsForTest(overrides, () => tools.resolveGit(options));
+
+		async function installOlder() {
+			const first = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')), undefined, "v2.56.0-2");
+			serveArchive(first.bytes);
+			await provision({ release: first.release });
+			return { first, newer: releaseFor(first.bytes, undefined, "v2.56.0-3") };
+		}
+
+		/** Every download attempt answers 503, so one provisioning cycle is three requests; earlier calls are forgotten. */
+		function failDownloads() {
+			const fetchMock = vi
+				.spyOn(globalThis, "fetch")
+				.mockImplementation(async () => new Response("busy", { status: 503 }));
+			fetchMock.mockClear();
+			return fetchMock;
+		}
+
+		it("makes one download cycle and one warning however many times git is resolved", async () => {
+			const { newer } = await installOlder();
+			const fetchMock = failDownloads();
+			const warnings: string[] = [];
+			const onStatus = (status: { type: string; message: string }) => {
+				if (status.type === "warning") warnings.push(status.message);
+			};
+			await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () => {
+				for (const _ of [1, 2, 3, 4]) await tools.resolveGit({ onStatus });
+				await tools.getToolPath("git", { onStatus });
+				await tools.getToolEnv("git", { onStatus });
+			});
+			assert.equal(fetchMock.mock.calls.length, 3);
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0]!, /\(HTTP 503\) \(download-failed\)/);
+
+			tools.resetGitProvisionStateForTest();
+			await provision({ release: newer.release }, { onStatus });
+			assert.equal(fetchMock.mock.calls.length, 6);
+			assert.equal(warnings.length, 2);
+		});
+
+		it("records the typed reason, shows it in the status, and clears it once the update succeeds", async () => {
+			const { newer } = await installOlder();
+			const pending = tools.withGitProvisionSettingsForTest({ release: newer.release }, async () =>
+				tools.getGitStatus(),
+			);
+			const before = await pending;
+			assert.equal(before.source, "provisioned");
+			assert.deepEqual(before.source === "unavailable" ? undefined : before.update, {
+				pinnedTag: "v2.56.0-3",
+				installedTag: "v2.56.0-2",
+			});
+
+			failDownloads();
+			const failed = await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () => {
+				await tools.resolveGit();
+				return tools.getGitStatus();
+			});
+			assert.ok(failed.source !== "unavailable" && failed.update?.reason !== undefined);
+			const reason = rehydrateGitProvisionError(failed.update.reason);
+			assert.ok(reason instanceof GitUnavailableError);
+			assert.equal(reason.code, "download-failed");
+			assert.equal(failed.update.pinnedTag, "v2.56.0-3");
+			assert.equal(failed.update.installedTag, "v2.56.0-2");
+
+			tools.resetGitProvisionStateForTest();
+			serveArchive(newer.bytes);
+			await provision({ release: newer.release });
+			const current = await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () =>
+				tools.getGitStatus(),
+			);
+			assert.ok(current.source !== "unavailable");
+			assert.equal(current.update, undefined);
+		});
+
+		it("records the offline reason with the install command, warns once, and retries when online", async () => {
+			const { newer } = await installOlder();
+			mocks.osRelease = { id: "debian", idLike: [] };
+			mocks.platform.mockReturnValue("linux");
+			const fetchMock = vi.spyOn(globalThis, "fetch");
+			fetchMock.mockClear();
+			vi.stubEnv(ENV_OFFLINE, "1");
+			const warnings: string[] = [];
+			const onStatus = (status: { type: string; message: string }) => {
+				if (status.type === "warning") warnings.push(status.message);
+			};
+			const status = await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () => {
+				await tools.resolveGit({ onStatus });
+				await tools.resolveGit({ onStatus });
+				return tools.getGitStatus();
+			});
+			assert.equal(fetchMock.mock.calls.length, 0);
+			assert.equal(warnings.length, 1);
+			assert.ok(status.source !== "unavailable" && status.update?.reason !== undefined);
+			const reason = rehydrateGitProvisionError(status.update.reason);
+			assert.ok(reason instanceof GitUnavailableError);
+			assert.equal(reason.code, "offline");
+			assert.equal(reason.fields.installCommand, "apt-get install git");
+
+			vi.stubEnv(ENV_OFFLINE, "");
+			const online = serveArchive(newer.bytes);
+			online.mockClear();
+			await provision({ release: newer.release });
+			assert.equal(online.mock.calls.length, 1);
+		});
+
+		it("never takes the install lock to resolve an install of the pinned release", async () => {
+			const first = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')), undefined, "v2.56.0-2");
+			serveArchive(first.bytes);
+			await provision({ release: first.release });
+			let locks = 0;
+			mocks.lock = async (real, file, options) => {
+				locks += 1;
+				return real.lock(file, options);
+			};
+			await provision({ release: first.release });
+			await provision({ release: first.release });
+			assert.equal(locks, 0);
+		});
 	});
 });

@@ -764,6 +764,7 @@ let lastProvisionFailure: GitProvisionError | undefined;
 /** Forget probes and the last provisioning failure, as a new process would. Not part of the public API. */
 export function resetGitProvisionStateForTest(): void {
 	sweptAbandonedInstalls = false;
+	staleRefresh = undefined;
 	systemGitProbes.clear();
 	provisionedGitVersions.clear();
 	lastProvisionFailure = undefined;
@@ -973,24 +974,44 @@ async function selectGit(options: ResolveGitOptions): Promise<GitSelection> {
 	return { path: layout.executable, source: "provisioned", version, layout };
 }
 
+/** Why the install of an older pinned release was not replaced in this process, once it was tried. */
+let staleRefresh: { readonly tag: string; readonly error: GitProvisionError } | undefined;
+
+function keepStaleInstall(selection: GitSelection, error: GitProvisionError, options: ResolveGitOptions): GitSelection {
+	staleRefresh = { tag: gitProvisionSettings.release.tag, error };
+	options.onStatus?.({
+		type: "warning",
+		message: `Could not update the portable git to ${gitProvisionSettings.release.version}; using git ${selection.version}. ${error.message}`,
+	});
+	return selection;
+}
+
 /**
  * Replace a provisioned install of an older pinned release when a download is possible. An install that cannot be
- * replaced, offline or after a failed download, keeps working and the failure is reported once.
+ * replaced keeps working, and the typed reason is recorded and reported once per process and pinned release: a
+ * failed download is not retried by every later resolution, and the status surface shows the reason.
  */
 async function refreshStaleInstall(selection: GitSelection, options: ResolveGitOptions): Promise<GitSelection> {
 	const layout = selection.layout!;
 	const target = currentGitTarget();
-	if (!target.supported || isCurrentRelease(layout, target.target) || isOfflineModeEnabled()) return selection;
+	if (!target.supported || isCurrentRelease(layout, target.target)) return selection;
+	const tag = gitProvisionSettings.release.tag;
+	if (isOfflineModeEnabled()) {
+		if (staleRefresh?.tag === tag && staleRefresh.error.code === "offline") return selection;
+		return keepStaleInstall(
+			selection,
+			new GitUnavailableError({ code: "offline", offlineVariable: ENV_OFFLINE, ...hostPlatform() }),
+			options,
+		);
+	}
+	if (staleRefresh?.tag === tag && staleRefresh.error.code !== "offline") return selection;
 	try {
 		const version = await joinGitProvision(target.target, layout, probeSystemGit(), options);
+		staleRefresh = undefined;
 		return { path: layout.executable, source: "provisioned", version, layout };
 	} catch (error) {
 		if (!isGitProvisionError(error)) throw error;
-		options.onStatus?.({
-			type: "warning",
-			message: `Could not update the portable git to ${gitProvisionSettings.release.version}; using git ${selection.version}. ${error.message}`,
-		});
-		return selection;
+		return keepStaleInstall(selection, error, options);
 	}
 }
 
@@ -1023,15 +1044,48 @@ async function ensureGit(onStatus: ((status: ToolStatus) => void) | undefined): 
 	}
 }
 
+/** A provisioned install older than the pinned release, and why it was not replaced when that was tried. */
+export interface GitUpdateStatus {
+	readonly pinnedTag: string;
+	/** The release the install recorded; absent when it recorded none or its record is unreadable. */
+	readonly installedTag?: string;
+	/** Present once a replacement was tried in this process and could not be made. */
+	readonly reason?: SerializedGitProvisionError;
+}
+
 /** Git as the tools status surface shows it; resolving never downloads. */
 export type GitToolStatus =
-	| { readonly source: ResolvedGitSource; readonly version: string; readonly path: string }
+	| {
+			readonly source: ResolvedGitSource;
+			readonly version: string;
+			readonly path: string;
+			readonly update?: GitUpdateStatus;
+	  }
 	| { readonly source: "unavailable"; readonly error: SerializedGitProvisionError };
+
+function pendingUpdate(selection: GitSelection): GitUpdateStatus | undefined {
+	const target = currentGitTarget();
+	if (selection.layout === undefined || !target.supported || isCurrentRelease(selection.layout, target.target))
+		return undefined;
+	const tag = gitProvisionSettings.release.tag;
+	const installedTag = readReleaseMarker(selection.layout)?.tag;
+	return {
+		pinnedTag: tag,
+		...(typeof installedTag === "string" ? { installedTag } : {}),
+		...(staleRefresh?.tag === tag ? { reason: staleRefresh.error.toJSON() } : {}),
+	};
+}
 
 export function getGitStatus(): GitToolStatus {
 	try {
 		const selection = selectGitSync();
-		return { source: selection.source, version: selection.version, path: selection.path };
+		const update = pendingUpdate(selection);
+		return {
+			source: selection.source,
+			version: selection.version,
+			path: selection.path,
+			...(update === undefined ? {} : { update }),
+		};
 	} catch (error) {
 		if (!isGitProvisionError(error)) throw error;
 		return { source: "unavailable", error: error.toJSON() };

@@ -371,3 +371,39 @@ test("a session's tool status includes the git Atomic runs (#4322)", async () =>
 		assert.ok(git.source === "unavailable" ? git.error.name === "GitUnavailableError" : git.version.length > 0);
 	});
 });
+
+test("tool status shows a pending git update and one that could not be made (#4322)", async () => {
+	const { GitUnavailableError } = await import("../src/utils/git-errors.js");
+	const selection = { source: "no-tools" as const, description: "--no-tools", names: [], modifiers: [] };
+	const git = { source: "provisioned" as const, version: "2.56.0", path: "/agent/bin/git/bin/git" };
+	const render = (update: object) =>
+		formatToolStatus(
+			buildToolStatusReport({ tools: [], activeToolNames: [], selection, git: { ...git, update } as never }),
+		);
+
+	assert.ok(
+		render({ pinnedTag: "v2.56.0-3", installedTag: "v2.56.0-2" }).endsWith(
+			"\n\nGit\n  provisioned 2.56.0  /agent/bin/git/bin/git\n  update to v2.56.0-3 pending; installed v2.56.0-2",
+		),
+	);
+	assert.ok(render({ pinnedTag: "v2.56.0-3" }).endsWith("pending; installed unrecorded release"));
+
+	const reason = new GitUnavailableError({
+		code: "offline",
+		offlineVariable: "ATOMIC_OFFLINE",
+		platform: "linux",
+		arch: "x64",
+		installCommand: "apt-get install git",
+	}).toJSON();
+	assert.ok(
+		render({ pinnedTag: "v2.56.0-3", installedTag: "v2.56.0-2", reason }).endsWith(
+			[
+				"\n\nGit",
+				"  provisioned 2.56.0  /agent/bin/git/bin/git",
+				"  update to v2.56.0-3 failed  offline; installed v2.56.0-2",
+				"    Git is unavailable: ATOMIC_OFFLINE is set, so no portable git is downloaded (offline).",
+				"    Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with `apt-get install git`.",
+			].join("\n"),
+		),
+	);
+});

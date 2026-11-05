@@ -256,7 +256,7 @@ Inactive (2)
 
 Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or an extension that failed to load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` to add terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
 
-The report's `git` field says which git Atomic runs: `{ source: "system" | "provisioned", version, path }`, or `{ source: "unavailable", error }`, where `error` is a serialized [git error](#git-errors). Reading the status never downloads git.
+The report's `git` field says which git Atomic runs: `{ source: "system" | "provisioned", version, path, update? }`, or `{ source: "unavailable", error }`, where `error` is a serialized [git error](#git-errors). A provisioned install of an older pinned release carries `update: { pinnedTag, installedTag?, reason? }`; `reason`, a serialized git error, appears once a replacement was tried in this process and could not be made (offline, or a failed download). A failed replacement is not retried by every later resolution in the same process, and the next start tries again. Reading the status never downloads git.
 
 #### Resolving git
 
