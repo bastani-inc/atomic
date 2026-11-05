@@ -39,7 +39,7 @@ const TREE = "b".repeat(40);
 describe("WorkspaceError base", () => {
 	test("renders <summary> (<code>). <hint>, keeps a frozen copy of its fields and exposes them as properties", () => {
 		const fields = { subject: "/repo", count: 2 };
-		const error = new WorkspaceError("git-failed", "Something failed", "Try again.", fields);
+		const error = new WorkspaceError({ code: "git-failed", summary: "Something failed", hint: "Try again.", fields });
 		assert.equal(error.name, "WorkspaceError");
 		assert.equal(error.message, "Something failed (git-failed). Try again.");
 		assert.equal(error.code, "git-failed");
@@ -56,7 +56,7 @@ describe("WorkspaceError base", () => {
 
 	test("wraps a lower-level failure as its cause", () => {
 		const cause = new Error("disk");
-		const error = new WorkspaceError("git-failed", "Failed", "Retry.", {}, cause);
+		const error = new WorkspaceError({ code: "git-failed", summary: "Failed", hint: "Retry.", fields: {}, cause });
 		assert.equal(error.cause, cause);
 	});
 });
@@ -191,7 +191,12 @@ describe("WorkspaceRestoreError messages", () => {
 		blobMissing:
 			"Use the storage the snapshot was recorded in, or import (`atomic --import <file>`) a session saved with `/export <file>.jsonl`, which carries its blobs.",
 	};
-	const cases: readonly [string, WorkspaceRestoreErrorCode, WorkspaceRestoreErrorFields, string][] = [
+	const cases: readonly [
+		string,
+		Exclude<WorkspaceRestoreErrorCode, "restore-failed">,
+		WorkspaceRestoreErrorFields,
+		string,
+	][] = [
 		[
 			"snapshot-not-found",
 			"snapshot-not-found",
@@ -596,16 +601,25 @@ describe("findWorkspaceError", () => {
 });
 
 describe("serialization across a process boundary", () => {
-	test("keeps at most four levels: the error and three causes", () => {
-		let error: Error = new Error("level 5");
-		for (let level = 4; level >= 0; level--) error = new Error(`level ${level}`, { cause: error });
+	test("keeps at most eight levels: the error and seven causes", () => {
+		let error: Error = new Error("level 9");
+		for (let level = 8; level >= 0; level--) error = new Error(`level ${level}`, { cause: error });
 		let serialized: SerializedWorkspaceError | undefined = serializeWorkspaceError(error);
 		const messages: string[] = [];
 		while (serialized) {
 			messages.push(serialized.message);
 			serialized = serialized.cause;
 		}
-		assert.deepEqual(messages, ["level 0", "level 1", "level 2", "level 3"]);
+		assert.deepEqual(messages, [
+			"level 0",
+			"level 1",
+			"level 2",
+			"level 3",
+			"level 4",
+			"level 5",
+			"level 6",
+			"level 7",
+		]);
 	});
 
 	test("a plain error serializes as name and message only; a workspace error adds code, hint and fields", () => {
@@ -616,6 +630,7 @@ describe("serialization across a process boundary", () => {
 			code: "git-failed",
 			hint: git.hint,
 			fields: { operation: "x", cwd: "/", exitCode: 2, detail: "d" },
+			retryable: false,
 			message: git.message,
 		});
 		const unavailable = new GitUnavailableError({

@@ -126,7 +126,7 @@ describe("workspace error family (#3109)", () => {
 		])
 			assert.equal(guard(unrelated), false, guard.name);
 		assert.equal(isWorkspaceError({ name: "WorkspaceBindingError", code: 7 }), false, "a code must be a string");
-		const base = new WorkspaceError({ code: "c", message: "m", hint: "h", fields: {}, retryable: false });
+		const base = new WorkspaceError({ code: "git-failed", summary: "m", hint: "h", fields: {}, retryable: false });
 		assert.equal(base.name, "WorkspaceError");
 	});
 
@@ -227,7 +227,12 @@ describe("workspace error family (#3109)", () => {
 	});
 
 	test("serialized errors rehydrate into the same class with fields, cause chain and message intact (#3109)", () => {
-		const unavailable = new GitUnavailableError({ gitPath: "/opt/git" });
+		const unavailable = new GitUnavailableError({
+			code: "not-installed",
+			platform: process.platform,
+			arch: process.arch,
+			installDir: "/opt/git",
+		});
 		const wrapped = new WorkspaceBindingError({
 			code: "git-unavailable",
 			fields: { gitPath: "/opt/git", installCommand: gitInstallCommand("linux") },
@@ -235,7 +240,7 @@ describe("workspace error family (#3109)", () => {
 		});
 		for (const original of [...Object.values(samples).map((make) => make()), wrapped]) {
 			const wire = JSON.parse(JSON.stringify(serializeWorkspaceError(original)));
-			const rehydrated = rehydrateWorkspaceError(wire);
+			const rehydrated = rehydrateWorkspaceError(wire) as WorkspaceError;
 			assert.equal(rehydrated.constructor, original.constructor);
 			assert.equal(rehydrated.name, original.name);
 			assert.equal(rehydrated.code, original.code);
@@ -250,7 +255,12 @@ describe("workspace error family (#3109)", () => {
 		assert.ok(rehydrated.cause instanceof GitUnavailableError);
 		assert.equal(rehydrated.cause.message, unavailable.message);
 		assert.equal(rehydrated.cause.code, "not-installed");
-		const offline = new GitUnavailableError({ gitPath: "git", code: "offline" });
+		const offline = new GitUnavailableError({
+			code: "offline",
+			platform: process.platform,
+			arch: process.arch,
+			offlineVariable: "ATOMIC_OFFLINE",
+		});
 		const offlineWire = serializeWorkspaceError(
 			new WorkspaceBindingError({ code: "git-unavailable", fields: { gitPath: "git" }, cause: offline }),
 		);
@@ -363,7 +373,9 @@ describe("workspace error family (#3109)", () => {
 			}),
 		];
 		for (const original of originals) {
-			const rehydrated = rehydrateWorkspaceError(JSON.parse(JSON.stringify(serializeWorkspaceError(original))));
+			const rehydrated = rehydrateWorkspaceError(
+				JSON.parse(JSON.stringify(serializeWorkspaceError(original))),
+			) as WorkspaceError;
 			assert.equal(rehydrated.constructor, original.constructor);
 			assert.equal(rehydrated.code, original.code);
 			assert.equal(rehydrated.reason, original.reason);
@@ -416,7 +428,7 @@ describe("workspace error family (#3109)", () => {
 			reason: "sub-case",
 			cause: { name: "TypeError", message: "inner", cause: { name: "Error", message: "innermost" } },
 		};
-		const rehydrated = rehydrateWorkspaceError(wire);
+		const rehydrated = rehydrateWorkspaceError(wire) as WorkspaceError;
 		assert.equal(rehydrated.constructor, WorkspaceError);
 		assert.equal(rehydrated.name, "WorkspaceFutureError");
 		assert.equal(rehydrated.code, "future-code");
@@ -457,7 +469,12 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(nested.cause.fields.phase, "push");
 		const gitless = rehydrateWorkspaceError({
 			...JSON.parse(JSON.stringify(wire)),
-			cause: { name: "GitUnavailableError", code: "offline", message: "offline wording" },
+			cause: {
+				name: "GitUnavailableError",
+				code: "offline",
+				message: "offline wording",
+				fields: { code: "offline", platform: "linux", arch: "x64", offlineVariable: "ATOMIC_OFFLINE" },
+			},
 		});
 		const cause = gitless.cause as GitUnavailableError;
 		assert.ok(cause instanceof GitUnavailableError);
@@ -466,10 +483,10 @@ describe("workspace error family (#3109)", () => {
 		const causeMessage = Object.getOwnPropertyDescriptor(cause, "message");
 		assert.equal(causeMessage?.writable, true);
 		assert.equal(causeMessage?.configurable, true);
-		assert.equal(cause.fields.gitPath, "git");
+		assert.equal(cause.fields.code === "offline" && cause.fields.offlineVariable, "ATOMIC_OFFLINE");
 		assert.equal(cause.retryable, false);
-		assert.equal(cause.platform, process.platform);
-		assert.equal(cause.hint, `Install git (${gitInstallCommand()}) and make sure it is on PATH.`);
+		assert.equal(cause.platform, "linux");
+		assert.match(cause.hint, /Unset ATOMIC_OFFLINE/);
 	});
 
 	test("serialization terminates on a cyclic cause chain (#3109)", () => {
@@ -647,10 +664,6 @@ describe("workspace error messages (#3109)", () => {
 		assert.equal(
 			samples.sandbox().message,
 			"Write denied in a read-only workspace: write cannot change /wt/api (write-denied). This stage is a read-only reviewer; report the change instead of making it.",
-		);
-		assert.equal(
-			new GitUnavailableError({ gitPath: "git" }).message,
-			`Git is unavailable: git could not be started (not-installed). Install git (${gitInstallCommand()}) and make sure it is on PATH.`,
 		);
 	});
 

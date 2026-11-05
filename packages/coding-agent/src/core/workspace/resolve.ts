@@ -4,6 +4,7 @@ import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
+import type { WorkspaceBinding } from "../worktree-snapshot/types.ts";
 import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
 import { processAlive, withRepositoryLock } from "./lease.ts";
@@ -20,15 +21,9 @@ import {
 
 /**
  * The portable identity of a workspace from #4245's worktree snapshots: the remotes that hold its history, the commit
- * it is based on, the Git tree of its content and a fingerprint of its dependency inputs. Declared here with #4245's
- * exact fields until that change lands; its export then replaces this declaration.
+ * it is based on, the Git tree of its content and a fingerprint of its dependency inputs.
  */
-export interface WorkspaceBinding {
-	remotes: string[];
-	head: string;
-	tree: string;
-	envHash: string;
-}
+export type { WorkspaceBinding };
 
 /** #4245's binding plus the repository, branch and worktree a workspace is bound to. */
 export type WorktreeBinding = WorkspaceBinding & {

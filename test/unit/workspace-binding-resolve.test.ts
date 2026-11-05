@@ -601,7 +601,13 @@ describe("workspace git runner (#3109)", () => {
 	});
 
 	test("wraps a resolver's GitUnavailableError without losing it (#3109)", async () => {
-		const unavailable = new GitUnavailableError({ gitPath: "provisioned-git" });
+		const unavailable = new GitUnavailableError({
+			code: "not-installed",
+			platform: process.platform,
+			arch: process.arch,
+			installDir: "/opt/git",
+			systemGit: { path: "provisioned-git", problem: "probe-failed" },
+		});
 		const restore = setWorkspaceGitExecutableResolver(async () => {
 			throw unavailable;
 		});

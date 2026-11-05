@@ -787,7 +787,7 @@ describe("workspace bindings across resume (#3109)", () => {
 		assert.equal(resumed.status, "failed");
 		assert.equal(resumed.workspaceError?.name, "WorkspaceBindingError");
 		assert.equal(resumed.workspaceError?.code, "wrong-branch");
-		assert.equal(resumed.workspaceError?.fields.actual, "somebody-else");
+		assert.equal(resumed.workspaceError?.fields?.actual, "somebody-else");
 		await resumedBackend.close();
 	});
 
@@ -866,7 +866,7 @@ describe("workspace bindings across resume (#3109)", () => {
 		assert.equal(resumed.workspaceError?.name, "WorkspaceBindingError");
 		assert.equal(resumed.workspaceError?.code, "drift");
 		assert.equal(resumed.workspaceError?.reason, "history-rewritten");
-		assert.equal(resumed.workspaceError?.fields.expected, stepHead, "names the step's commit");
+		assert.equal(resumed.workspaceError?.fields?.expected, stepHead, "names the step's commit");
 		assert.deepEqual(sessions, [], "no step ran on the tree without the step's work");
 	});
 
@@ -908,7 +908,7 @@ describe("workspace bindings across resume (#3109)", () => {
 		assert.equal(resumed.status, "failed");
 		assert.equal(resumed.workspaceError?.name, "WorkspaceRestoreError");
 		assert.equal(resumed.workspaceError?.reason, "commits-unavailable");
-		assert.deepEqual(resumed.workspaceError?.fields.missingCommits, [stepHead]);
+		assert.deepEqual(resumed.workspaceError?.fields?.missingCommits, [stepHead]);
 		assert.equal(
 			transcript.some((line) => line.startsWith("fetch: ")),
 			false,
@@ -935,7 +935,7 @@ describe("workspace bindings across resume (#3109)", () => {
 		const { resumed, transcript, sessions } = await resume();
 		assert.equal(resumed.status, "failed");
 		assert.equal(resumed.workspaceError?.code, "drift", "fetched, the commit exists but this worktree lacks it");
-		assert.equal(resumed.workspaceError?.fields.expected, stepHead);
+		assert.equal(resumed.workspaceError?.fields?.expected, stepHead);
 		assert.ok(transcript.includes("fetch: fetch --prune origin"));
 		assert.deepEqual(sessions, []);
 	});
@@ -1823,7 +1823,12 @@ describe("unbound children and binding failures (#3109)", () => {
 		let childError: unknown;
 		const restore = setWorkspaceGitExecutableResolver(async () => {
 			await exited;
-			throw new GitUnavailableError({ gitPath: "git" });
+			throw new GitUnavailableError({
+				code: "not-installed",
+				platform: process.platform,
+				arch: process.arch,
+				installDir: "git",
+			});
 		});
 		try {
 			const parent = workflow({

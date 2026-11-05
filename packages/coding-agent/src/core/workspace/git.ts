@@ -1,5 +1,7 @@
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import {
@@ -19,14 +21,21 @@ export interface WorkspaceGitExecutable {
 	readonly env: Readonly<Record<string, string>>;
 }
 
-export type WorkspaceGitExecutableResolver = () => Promise<WorkspaceGitExecutable>;
+export type WorkspaceGitExecutableResolver = (signal?: AbortSignal) => Promise<WorkspaceGitExecutable>;
 
-const SYSTEM_GIT: WorkspaceGitExecutableResolver = async () => ({ path: "git", env: {} });
-let resolveExecutable: WorkspaceGitExecutableResolver = SYSTEM_GIT;
+/** Git provisioning's git (#4322): a system git when it is recent enough, else a portable one it downloads. */
+const PROVISIONED_GIT: WorkspaceGitExecutableResolver = async (signal) => {
+	const { resolveGit } = await import("../../utils/tools-manager.ts");
+	const git = await resolveGit({ signal });
+	const env: Record<string, string> = {};
+	for (const [key, value] of Object.entries(git.env)) if (value !== undefined) env[key] = value;
+	return { path: git.path, env };
+};
+let resolveExecutable: WorkspaceGitExecutableResolver = PROVISIONED_GIT;
 
 /**
- * The single injection point for the git executable used by workspace bindings. Defaults to `git` on PATH.
- * Returns a function that restores the previous resolver.
+ * The single injection point for the git executable used by workspace bindings. Defaults to git provisioning's
+ * `resolveGit()`. Returns a function that restores the previous resolver.
  */
 export function setWorkspaceGitExecutableResolver(resolver: WorkspaceGitExecutableResolver): () => void {
 	const previous = resolveExecutable;
@@ -87,14 +96,17 @@ function errnoCode(error: Error): string | undefined {
 	return typeof code === "string" ? code : undefined;
 }
 
-async function executable(): Promise<WorkspaceGitExecutable> {
+async function executable(signal: AbortSignal | undefined): Promise<WorkspaceGitExecutable> {
 	try {
-		return await resolveExecutable();
+		return await resolveExecutable(signal);
 	} catch (error) {
 		if (isGitUnavailableError(error))
 			throw new WorkspaceBindingError({
 				code: "git-unavailable",
-				fields: { gitPath: String(error.fields.gitPath), installCommand: gitInstallCommand() },
+				fields: {
+					gitPath: error.fields.systemGit?.path ?? "git",
+					installCommand: error.fields.installCommand ?? gitInstallCommand(),
+				},
 				cause: error,
 			});
 		throw error;
@@ -107,7 +119,7 @@ async function executable(): Promise<WorkspaceGitExecutable> {
  */
 export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<WorkspaceGitResult> {
 	command.signal?.throwIfAborted();
-	const git = await executable();
+	const git = await executable(command.signal);
 	command.signal?.throwIfAborted();
 	for (const observer of observers) observer({ cwd: command.cwd, args: command.args, phase: command.phase });
 	const timeoutMs = command.timeoutMs ?? (LONG_PHASES.has(command.phase) ? LONG_TIMEOUT_MS : LOCAL_TIMEOUT_MS);
@@ -121,8 +133,8 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 	];
 	const env = {
 		...createGitEnvironment(
-			{ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", ...git.env },
-			createChildProcessEnvironment(),
+			{ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+			createChildProcessEnvironment(git.env),
 		),
 		...command.env,
 	};
@@ -143,7 +155,17 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 			throw new WorkspaceBindingError({
 				code: "git-unavailable",
 				fields: { gitPath: git.path, installCommand: gitInstallCommand() },
-				cause: new GitUnavailableError({ gitPath: git.path, cause: error }),
+				cause: new GitUnavailableError(
+					{
+						code: "not-installed",
+						platform: process.platform,
+						arch: process.arch,
+						installDir: join(getBinDir(), "git"),
+						installCommand: gitInstallCommand(),
+						systemGit: { path: git.path, problem: "probe-failed" },
+					},
+					{ cause: error },
+				),
 			});
 		throw new WorkspaceBindingError({
 			code: "git-failed",
@@ -204,7 +226,7 @@ function assertSupportedVersion(gitPath: string, versionOutput: string): void {
  * operation does any other work. A failed check is not remembered, so installing git fixes the next call.
  */
 export async function assertWorkspaceGitAvailable(signal?: AbortSignal): Promise<void> {
-	const { path } = await executable();
+	const { path } = await executable(signal);
 	let check = availableExecutables.get(path);
 	if (check === undefined) {
 		check = runWorkspaceGit({ cwd: tmpdir(), args: ["--version"], phase: "probe" }).then((result) =>
