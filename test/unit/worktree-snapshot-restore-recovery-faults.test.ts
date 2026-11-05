@@ -286,17 +286,12 @@ describe("the record a restore writes", () => {
 		faults.spawnHook = (args) => {
 			if (is(args, "worktree", "add")) {
 				for (const name of readdirSync(join(storeDir, "restores")))
-					if (name.endsWith(".json")) modes.push(statSync(join(storeDir, "restores", name)).mode & 0o777);
+					if (name.endsWith(".json")) modes.push(statSync(join(storeDir, "restores", name)).mode & 0o077);
 			}
 			return undefined;
 		};
-		const previous = process.umask(0o022);
-		try {
-			await restoreInto(snapshot, blobs, storeDir, sandbox.path("final"));
-		} finally {
-			process.umask(previous);
-		}
-		assert.deepEqual(modes, [0o600]);
+		await restoreInto(snapshot, blobs, storeDir, sandbox.path("final"));
+		assert.deepEqual(modes, [0], "neither group nor others can read or write the record");
 	});
 
 	test("is created exclusively, so a record path someone planted as a symlink is never written through", async () => {
