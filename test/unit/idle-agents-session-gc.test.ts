@@ -8,9 +8,11 @@ import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
+import {
+	ChildTaskWaits,
+	createChildCommandTaskOwner,
+} from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
-import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
-import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
 	forwardDetachedResults,
@@ -18,15 +20,10 @@ import {
 	subagentWakeKey,
 	subagentWakeNamespace,
 } from "../../packages/subagents/src/runs/foreground/released-children.ts";
-import {
-	createSubagentChildRecordSink,
-	readSubagentChildRecords,
-	SUBAGENT_CHILD_RELEASED_STATUS,
-} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
-import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { collectGarbage, trackCollection } from "../helpers/collect-garbage.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
+import { agent, launchReleasedTask } from "../helpers/released-task-launch.js";
 import { trackLastEntry, trackSessions } from "../helpers/track-sessions.js";
 
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
@@ -38,17 +35,6 @@ afterEach(() => {
 	while (cleanups.length > 0) cleanups.pop()?.();
 	clearSubagentControls();
 });
-
-const agent: AgentConfig = {
-	name: "waiter",
-	description: "waits on CI",
-	systemPrompt: "",
-	systemPromptMode: "replace",
-	inheritProjectContext: false,
-	inheritSkills: false,
-	source: "user",
-	filePath: "/tmp/waiter.md",
-};
 
 test(
 	"released subagent children can be collected while their detachable calls are still running (#4326)",
@@ -144,51 +130,6 @@ test(
 	CHILD_LOAD_TIMEOUT_MS,
 );
 
-async function launchReleasedTask(
-	index: number,
-	env: Awaited<ReturnType<typeof liveChildEnvironment>>,
-	host: AgentTaskHost,
-	owner: SessionManager,
-	dispatcher: AgentWakeDispatcher,
-): Promise<void> {
-	env.faux.setResponses([
-		{
-			role: "assistant",
-			content: [{ type: "toolCall", id: `ci-${index}`, name: "wait_for_ci", arguments: { run: String(index) } }],
-			stopReason: "toolUse",
-		} as never,
-	]);
-	const response = await runAgentTask({
-		host,
-		cwd: env.root,
-		agents: [agent],
-		agent: "waiter",
-		task: "watch CI",
-		options: {
-			...env.options(`gct-${index}`, {
-				sessionManager: await SessionManager.create(new MemorySessionStore(), env.root),
-				resumeSession: true,
-				releaseWhenWaiting: subagentReleasePolicy(0),
-			}),
-			index: 0,
-		},
-		wakeDispatcher: dispatcher,
-		wait: { kind: "background" },
-		recordChild: createSubagentChildRecordSink(
-			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-			{ sessionManager: owner, orchestrationContext: undefined },
-		),
-		runtime: { runSync },
-	});
-	assert.equal(response.kind, "admitted");
-	for (let turn = 0; turn < 2000; turn++) {
-		const record = readSubagentChildRecords(owner.getEntries()).get(`gct-${index}:0`);
-		if (record?.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	throw new Error(`child gct-${index} was never recorded released`);
-}
-
 test(
 	"released subagent children launched as tasks can be collected while their calls run: no transcript or route stays behind (#4326)",
 	async () => {
@@ -213,3 +154,30 @@ test(
 	},
 	CHILD_LOAD_TIMEOUT_MS,
 );
+
+function bindChildRoute(
+	owner: ReturnType<typeof createChildCommandTaskOwner>,
+	tracked: ReturnType<typeof trackCollection>,
+	childId: string,
+	unbind: boolean,
+): void {
+	const child = { childId, history: Array.from({ length: 1_000 }, (_, line) => `${childId} line ${line}`) };
+	tracked.track(child);
+	owner.bind(childId, { isOpen: () => child.history.length > 0, deliver: async () => {} }, new ChildTaskWaits());
+	if (unbind) owner.unbind(childId);
+}
+
+test("a child whose route its parent forgot is collected, and one still bound is not: the route is what held it (#4326)", async () => {
+	const tracked = trackCollection();
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "route-owner" }, authorizeLaunch() {} });
+	cleanups.push(() => void host.close("session-close"));
+	const owner = createChildCommandTaskOwner(() => host);
+	for (let index = 0; index < CHILDREN; index++) bindChildRoute(owner, tracked, `bound-${index}`, false);
+	for (let index = 0; index < CHILDREN; index++) bindChildRoute(owner, tracked, `unbound-${index}`, true);
+	await collectGarbage();
+	assert.deepEqual(
+		tracked.uncollected(),
+		Array.from({ length: CHILDREN }, (_, index) => index + 1),
+		"only the children whose route was never unbound stay reachable",
+	);
+});

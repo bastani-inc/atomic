@@ -23,6 +23,8 @@ export interface ChildTaskCompletionRoute {
  */
 export interface ChildCommandTaskOwner {
 	bind(childId: string, route: ChildTaskCompletionRoute, waits: ChildTaskWaits): SupervisedCommandOwner;
+	/** The child's session closed: forget its route, which holds the whole session, so a released child holds nothing. */
+	unbind(childId: string): void;
 }
 
 class ChildCommandTaskRoutes {
@@ -31,6 +33,15 @@ class ChildCommandTaskRoutes {
 
 	bind(childId: string, route: ChildTaskCompletionRoute): void {
 		this.routes.set(childId, route);
+	}
+
+	unbind(childId: string): void {
+		this.routes.delete(childId);
+	}
+
+	/** Routes held now; counted by tests. */
+	get routeCount(): number {
+		return this.routes.size;
 	}
 
 	recordLaunch(taskId: TaskId, childId: string): void {
@@ -64,9 +75,17 @@ export function childTaskCompletionRoute(host: AgentTaskHost, taskId: TaskId): C
 	return routesByHost.get(host)?.openRoute(taskId);
 }
 
+/** How many children have a completion route in this host's owner. */
+export function childCommandRouteCount(host: AgentTaskHost): number {
+	return routesByHost.get(host)?.routeCount ?? 0;
+}
+
 /** Resolve the parent's live owner per call so session replacement is followed like the parent's own shells. */
 export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): ChildCommandTaskOwner {
 	return {
+		unbind(childId) {
+			routesByHost.get(resolveHost())?.unbind(childId);
+		},
 		bind(childId, route, waits) {
 			const host = resolveHost();
 			const routes = routesFor(host);

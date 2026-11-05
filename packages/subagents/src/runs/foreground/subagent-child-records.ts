@@ -621,3 +621,8 @@ export function findSubagentChildRecord(
 	}
 	return undefined;
 }
+
+/** Owners with appends in flight and stop requests not taken yet; both are empty when nothing is happening. */
+export function subagentChildRecordRegistrySizes(): { readonly appendChains: number; readonly stopRequests: number } {
+	return { appendChains: appendChains.size, stopRequests: stopRequests.size };
+}

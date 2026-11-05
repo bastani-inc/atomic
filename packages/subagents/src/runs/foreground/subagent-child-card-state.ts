@@ -209,3 +209,20 @@ export function subagentChildTranscript(record: SubagentChildRecord): readonly s
 	})().catch(() => undefined);
 	return entry.lines;
 }
+
+/** What the child cards keep, by kind; counted by tests and the benchmark. */
+export function subagentChildCardStateSizes(): {
+	readonly records: number;
+	readonly taskIds: number;
+	readonly targets: number;
+	readonly transcripts: number;
+	readonly owners: number;
+} {
+	return {
+		records: latest.size,
+		taskIds: childIdsByTaskId.size,
+		targets: childIdsByIntercomTarget.size,
+		transcripts: transcripts.size,
+		owners: loadedOwners.size,
+	};
+}

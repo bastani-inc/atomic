@@ -741,3 +741,8 @@ export async function runAgentTask(input: {
 	if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
 	return { kind: "admitted", observation: observed.value };
 }
+
+/** Queued children and remembered run schedulers held in this process; counted by tests and the benchmark. */
+export function subagentTaskRegistrySizes(): { readonly queued: number; readonly schedules: number } {
+	return { queued: queuedChildren.size, schedules: childSchedules.size };
+}

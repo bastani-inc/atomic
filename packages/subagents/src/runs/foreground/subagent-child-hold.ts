@@ -344,3 +344,8 @@ export function holdDormantRunSubagentChildren(
 		},
 	};
 }
+
+/** Holds made before a child's restoration took them over; counted by tests and the benchmark. */
+export function earlyChildHoldCount(): number {
+	return earlyHolds.size;
+}

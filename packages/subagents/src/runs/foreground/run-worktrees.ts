@@ -222,3 +222,8 @@ export function resumeRunWorktree(
 	}
 	return release;
 }
+
+/** Runs whose worktrees this process still tracks; counted by tests and the benchmark. */
+export function trackedRunWorktreeCount(): number {
+	return runs.size;
+}

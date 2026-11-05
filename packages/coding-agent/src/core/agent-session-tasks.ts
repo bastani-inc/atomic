@@ -255,6 +255,7 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 }
 
 export async function closeSessionTasks(this: AgentSession): Promise<void> {
+	this._parentCommandTaskOwner?.unbind(this.sessionManager.getSessionId());
 	// Replacement stage sessions share generation lifetime; disposal is not stage closure. The session's own view of
 	// the stage's tasks ends with it: the stage opens a new one for each session.
 	if (stageTaskAdmission(this)) {

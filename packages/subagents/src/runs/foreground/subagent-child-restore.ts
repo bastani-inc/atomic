@@ -935,3 +935,8 @@ export async function recordReportedGoneSubagentChildren(
 		await recordSubagentChildGone(pi, outcome.record).catch(() => undefined);
 	}
 }
+
+/** Restorations in flight and children reported gone, held in this process; counted by tests and the benchmark. */
+export function subagentRestoreRegistrySizes(): { readonly active: number; readonly gone: number } {
+	return { active: activeRestorations.size, gone: goneChildren.size };
+}

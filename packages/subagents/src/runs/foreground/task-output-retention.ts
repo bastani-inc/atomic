@@ -100,3 +100,8 @@ export function retainTaskOutput(
 export function retainedTaskOutput(ownerId: string, taskId: string): RetainedTaskOutput | undefined {
 	return retained.get(retentionKey(ownerId, taskId));
 }
+
+/** Task outputs retained now; counted by tests and the benchmark. */
+export function retainedTaskOutputCount(): number {
+	return retained.size;
+}

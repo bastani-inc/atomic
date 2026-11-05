@@ -285,3 +285,8 @@ export function runOwnerlessChild(input: {
 	});
 	return { launchId, result };
 }
+
+/** Children launched without a task host that are live or stopped while queued; counted by tests and the benchmark. */
+export function ownerlessChildCounts(): { readonly live: number; readonly stoppedQueued: number } {
+	return { live: liveLaunches.size, stoppedQueued: stoppedQueued.size };
+}

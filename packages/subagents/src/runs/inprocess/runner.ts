@@ -1117,6 +1117,19 @@ export class SubagentControlRuntime {
 		return this.childIds.get(pathValue);
 	}
 
+	/** What this control keeps per child, by kind; counted by tests and the benchmark. */
+	registrySizes(): Readonly<Record<string, number>> {
+		return {
+			controlRunning: this.runningAttempts.size,
+			controlTokens: this.attemptTokens.size,
+			controlTerminators: this.attemptTerminators.size,
+			controlDelivered: this.delivered.size,
+			controlEnvelopes: this.deliveredEnvelopes.size,
+			controlKilled: this.killedChildren.size,
+			controlChildIds: this.childIds.size,
+		};
+	}
+
 	/** The latest admitted path of a child id; a resumed child is admitted again under a new path. */
 	pathOfChildId(childId: string): string | undefined {
 		let latest: string | undefined;
