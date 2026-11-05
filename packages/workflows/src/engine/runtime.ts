@@ -4,10 +4,13 @@ import {
 	type WorkflowBoundaryStage,
 } from "../runs/foreground/executor-child-boundary.js";
 import type { ContinuationReplayIndex } from "../runs/foreground/executor-continuation.js";
-import type { GitWorktreeSetupCache } from "../runs/foreground/executor-direct-helpers.js";
+import {
+	type GitWorktreeSetupCache,
+	stageOptionsWithInputDefaults,
+} from "../runs/foreground/executor-direct-helpers.js";
 import type { WorkflowExitManager } from "../runs/foreground/executor-exit-manager.js";
 import type { StageScheduler } from "../runs/foreground/executor-scheduler.js";
-import { createWorkflowStageFactory } from "../runs/foreground/executor-stage-factory.js";
+import { agentStageReplayKey, createWorkflowStageFactory } from "../runs/foreground/executor-stage-factory.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageMcpScope } from "../runs/foreground/executor-stage-types.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
@@ -97,6 +100,7 @@ export class EngineRuntime {
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
 	readonly assertLiveWorkAllowed?: () => void;
+	private readonly replayIndex: ContinuationReplayIndex;
 	private readonly terminalArtifactCollectors = new Map<string, () => readonly WorkflowArtifact[]>();
 	private readonly spawnAgentStage: (
 		name: string,
@@ -129,6 +133,7 @@ export class EngineRuntime {
 		this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
 		this.assertLiveWorkAllowed = input.assertLiveWorkAllowed;
+		this.replayIndex = input.replayIndex;
 
 		// The runtime only wires host-injected ports; stage sessions are still
 		// created lazily by the stage runner through input.adapters.agentSession.
@@ -181,6 +186,12 @@ export class EngineRuntime {
 			kind: "agent",
 			context: this.spawnAgentStage(name, opts.options, opts.failFastScope, opts.prepareLiveOptions),
 		};
+	}
+
+	agentStageReplaysSavedResult(name: string, options?: StageOptions): boolean {
+		return this.replayIndex.replaysCompletedStage(
+			agentStageReplayKey(name, stageOptionsWithInputDefaults(options, this.inputRuntimeDefaults)),
+		);
 	}
 
 	registerTerminalArtifactCollector(replayKey: string, collect: () => readonly WorkflowArtifact[]): void {

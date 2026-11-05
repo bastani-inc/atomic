@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -16,7 +16,9 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
+import { run as runWorkflow } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { inputsSelectGitWorktree } from "../../packages/workflows/src/runs/foreground/executor-direct-helpers.js";
+import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import {
 	prepareRunGit,
 	prepareTaskGit,
@@ -31,6 +33,25 @@ import {
 	WorkflowGitRequiredError,
 } from "../../packages/workflows/src/shared/workflow-git-required-error.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
+
+/** Counts the git resolution calls workflow code makes through the host entry, without changing what they do. */
+const gitResolution = vi.hoisted(() => ({ resolveGit: 0, resolveGitSync: 0 }));
+vi.mock("@bastani/atomic", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@bastani/atomic")>();
+	return {
+		...actual,
+		resolveGit: (...args: Parameters<typeof actual.resolveGit>) => {
+			gitResolution.resolveGit++;
+			return actual.resolveGit(...args);
+		},
+		resolveGitSync: () => {
+			gitResolution.resolveGitSync++;
+			return actual.resolveGitSync();
+		},
+	};
+});
+
+const hostPath = process.env.PATH;
 
 const isolatedAgentDir = await vi.hoisted(async () => {
 	const fs = await import("node:fs");
@@ -202,13 +223,19 @@ describe("workflow runs without git (#4322)", () => {
 	test("a task that creates its own worktree gets one download attempt before its stage, then fails typed", async () => {
 		vi.stubEnv("ATOMIC_OFFLINE", "");
 		const fetchMock = failingFetch();
+		let thrown: unknown;
 		const def = workflow({
 			name: "task-worktree",
 			description: "",
 			inputs: {},
 			outputs: { ok: Type.Optional(Type.Boolean()) },
 			run: async (ctx) => {
-				await ctx.task("edit", { prompt: "x", worktree: true });
+				try {
+					await ctx.task("edit", { prompt: "x", worktree: true });
+				} catch (error) {
+					thrown = error;
+					throw error;
+				}
 				return { ok: true };
 			},
 		}) as unknown as WorkflowDefinition;
@@ -216,7 +243,17 @@ describe("workflow runs without git (#4322)", () => {
 
 		assert.equal(run.status, "failed");
 		assert.equal(fetchMock.mock.calls.length, 3);
-		assert.match(run.error ?? "", /download-failed/);
+		assert.ok(thrown instanceof WorkflowGitRequiredError);
+		assert.equal(thrown.code, "git-required");
+		assert.deepEqual(thrown.fields, {
+			workflow: "task-worktree",
+			runId: run.id,
+			source: "task-option",
+			field: "edit",
+		});
+		assert.equal(thrown.cause.code, "download-failed");
+		assert.equal(thrown.retryable, true);
+		assert.equal(thrown.hint, thrown.cause.hint);
 	});
 
 	test("a task that asks for no worktree never starts a download, and one that names a gitWorktreeDir does", async () => {
@@ -248,6 +285,115 @@ describe("workflow runs without git (#4322)", () => {
 		const { run } = await finish(named, {});
 		assert.equal(run.status, "failed");
 		assert.equal(fetchMock.mock.calls.length, 3);
+	});
+
+	test("a resumed run replays saved worktree tasks without resolving git, then provisions for the task it runs (#4322)", async () => {
+		const repo = join(root, "repo");
+		mkdirSync(repo);
+		vi.stubEnv("PATH", hostPath);
+		runGitChecked(repo, ["init", "-b", "main"]);
+		runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+		runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+		writeFileSync(join(repo, "tracked.txt"), "base\n");
+		runGitChecked(repo, ["add", "."]);
+		runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+
+		let shipError: unknown;
+		const def = workflow({
+			name: "saved-worktree-tasks",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Optional(Type.Boolean()) },
+			run: async (ctx) => {
+				await ctx.task("edit", { prompt: "TASK_EDIT", worktree: true });
+				await ctx.task("review", { prompt: "TASK_REVIEW", worktree: true });
+				await ctx.stage("gate").prompt("GATE");
+				try {
+					await ctx.task("ship", { prompt: "TASK_SHIP", worktree: true });
+				} catch (error) {
+					shipError = error;
+					throw error;
+				}
+				return { ok: true };
+			},
+		}) as unknown as WorkflowDefinition;
+
+		const sourceStore = createStore();
+		const first = await runWorkflow(
+			def,
+			{},
+			{
+				store: sourceStore,
+				cwd: repo,
+				adapters: {
+					prompt: {
+						prompt: async (text: string) => {
+							if (text.includes("GATE")) throw new Error("gate failed");
+							return "done";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(first.status, "failed");
+		const source = sourceStore.runs().find((snapshot) => snapshot.id === first.runId);
+		assert.ok(source?.failedStageId);
+		assert.deepEqual(
+			source.stages.filter((stage) => stage.status === "completed").map((stage) => stage.name),
+			["edit", "review"],
+		);
+
+		// Resume on a node with no git, where a download already failed in a retryable way and fails again.
+		resetGitProvisionStateForTest();
+		vi.stubEnv("PATH", join(root, "empty-path"));
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = failingFetch();
+		const earlier = await resolveGit().catch((error: Error) => error);
+		assert.ok(isGitUnavailableError(earlier) && earlier.code === "download-failed" && earlier.retryable);
+		fetchMock.mockClear();
+		gitResolution.resolveGit = 0;
+		gitResolution.resolveGitSync = 0;
+		const livePrompts: string[] = [];
+		let beforeLiveWork: { fetches: number; resolveGit: number; resolveGitSync: number } | undefined;
+		const resumed = await runWorkflow(
+			def,
+			{},
+			{
+				store: createStore(),
+				cwd: repo,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: {
+					prompt: {
+						prompt: async (text: string) => {
+							livePrompts.push(text);
+							beforeLiveWork ??= { fetches: fetchMock.mock.calls.length, ...gitResolution };
+							return "done";
+						},
+					},
+				},
+			},
+		);
+
+		assert.equal(resumed.status, "failed");
+		assert.deepEqual(
+			resumed.stages.filter((stage) => stage.replayed).map((stage) => stage.name),
+			["edit", "review"],
+		);
+		assert.equal(livePrompts.length, 1);
+		assert.match(livePrompts[0] ?? "", /GATE/);
+		assert.deepEqual(beforeLiveWork, { fetches: 0, resolveGit: 0, resolveGitSync: 0 });
+		assert.equal(gitResolution.resolveGit, 1);
+		assert.equal(fetchMock.mock.calls.length, 3);
+		assert.ok(isWorkflowGitRequiredError(shipError));
+		assert.equal(shipError.code, "git-required");
+		assert.deepEqual(shipError.fields, {
+			workflow: "saved-worktree-tasks",
+			runId: resumed.runId,
+			source: "task-option",
+			field: "ship",
+		});
+		assert.equal(shipError.cause.code, "download-failed");
+		assert.equal(shipError.retryable, true);
 	});
 
 	test("prepareTaskGit attempts a download when git is missing and downloadable, and again after a retryable failure", async () => {

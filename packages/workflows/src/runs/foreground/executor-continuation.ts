@@ -39,6 +39,7 @@ interface ContinuationReplayInput {
 
 export interface ContinuationReplayIndex {
 	decide(input: ContinuationReplayInput): ContinuationReplayDecision;
+	replaysCompletedStage(replayKey: string): boolean;
 	markPromptAnswerReplayed(stageId: string): void;
 }
 
@@ -63,6 +64,7 @@ export function createContinuationReplayIndex(
 				parentIds: input.parentIds,
 				answerReplay: "unavailable",
 			}),
+			replaysCompletedStage: () => false,
 			markPromptAnswerReplayed: () => {},
 		};
 	}
@@ -77,6 +79,7 @@ export function createContinuationReplayIndex(
 				parentIds: input.parentIds,
 				answerReplay: "unavailable",
 			}),
+			replaysCompletedStage: () => false,
 			markPromptAnswerReplayed: () => {},
 		};
 	}
@@ -154,6 +157,12 @@ export function createContinuationReplayIndex(
 	return {
 		markPromptAnswerReplayed(stageId: string): void {
 			replayablePromptContinuationStageIds.add(stageId);
+		},
+
+		replaysCompletedStage(replayKey: string): boolean {
+			const candidates =
+				stagesByReplayIdentity.get(replayKey)?.filter((stage) => !consumedSourceStageIds.has(stage.id)) ?? [];
+			return candidates.length > 0 && candidates.every((stage) => stage.status === "completed");
 		},
 
 		decide(input: ContinuationReplayInput): ContinuationReplayDecision {

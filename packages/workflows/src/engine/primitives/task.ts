@@ -56,11 +56,14 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			prepareLiveOptions?: () => WorkflowTaskOptions,
 		): Promise<WorkflowTaskResult> => {
 			runtime.exit.throwIfWorkflowExitSelected();
-			if (taskOptions.worktree === true || inputsSelectGitWorktree(taskOptions))
-				await prepareTaskGit(runtime.signal);
 			let resolvedTaskOptions =
 				stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults) ?? taskOptions;
 			const stageOptions = taskStageOptions(resolvedTaskOptions);
+			if (
+				(taskOptions.worktree === true || inputsSelectGitWorktree(taskOptions)) &&
+				!runtime.agentStageReplaysSavedResult(name, stageOptions)
+			)
+				await prepareTaskGit(runtime.signal);
 			const stageHandle = runtime.spawnStage(name, {
 				kind: "agent",
 				...(stageOptions !== undefined ? { options: stageOptions } : {}),
