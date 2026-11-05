@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { GitUnavailableError, WorkspaceGitError } from "./errors.ts";
@@ -119,14 +120,16 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() =>
 				reject(
-					error.code === "ENOENT" || error.code === "EACCES"
+					(error.code === "ENOENT" || error.code === "EACCES") && existsSync(options.cwd)
 						? new GitUnavailableError("not-installed", executable.path, { cause: error })
 						: new WorkspaceGitError(
 								{
 									operation: gitOperation(args),
 									cwd: options.cwd,
 									exitCode: null,
-									detail: firstLine(error.message),
+									detail: existsSync(options.cwd)
+										? firstLine(error.message)
+										: "the working directory does not exist",
 								},
 								error,
 							),

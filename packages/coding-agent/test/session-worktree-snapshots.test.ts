@@ -292,14 +292,39 @@ describe("resumeSessionWorktree", () => {
 		);
 	});
 
-	test("reports Git as unavailable and leaves the session where it was", async () => {
+	test("rejects with GitUnavailableError when Git cannot verify a recorded snapshot, and records no restore", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const manager = await SessionManager.create(await sqlStore("sessions"), clone);
 		await writeTurn(await harnessFor(manager), join(clone, "a.txt"), "a\n");
-		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		const resume = await resumeSessionWorktree(manager, { settings });
-		assert.equal(resume.status, "unavailable");
-		assert.ok(resume.status === "unavailable" && resume.reason instanceof GitUnavailableError);
+		const entriesBefore = manager.getEntries().length;
+		let lookups = 0;
+		setWorktreeSnapshotGit(async () => {
+			lookups++;
+			return { path: sandbox.path("no-git"), env: {} };
+		});
+		await assert.rejects(resumeSessionWorktree(manager, { settings }), (error: unknown) => {
+			assert.ok(error instanceof GitUnavailableError);
+			assert.equal(error.code, "not-installed");
+			assert.equal(error.executable, sandbox.path("no-git"));
+			return true;
+		});
+		assert.equal(lookups, 1);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(manager.getEntries().length, entriesBefore);
+	});
+
+	test("resumes without touching Git when snapshots are disabled", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const manager = await SessionManager.create(await sqlStore("sessions"), clone);
+		await writeTurn(await harnessFor(manager), join(clone, "a.txt"), "a\n");
+		let lookups = 0;
+		setWorktreeSnapshotGit(async () => {
+			lookups++;
+			return { path: sandbox.path("no-git"), env: {} };
+		});
+		const resume = await resumeSessionWorktree(manager, { settings: { ...settings, enabled: false } });
+		assert.deepEqual(resume, { status: "none" });
+		assert.equal(lookups, 0);
 	});
 });
 
@@ -397,7 +422,8 @@ describe("cross-machine session resume", () => {
 		]);
 		await runtime.session.prompt("where are we");
 		const result = runtime.session.messages.findLast((message) => message.role === "toolResult");
-		const text = (result?.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("");
+		assert.ok(result);
+		const text = (result.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("");
 		assert.match(
 			text,
 			new RegExp(`${realpathSync(mapping.to).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+written by the agent`),

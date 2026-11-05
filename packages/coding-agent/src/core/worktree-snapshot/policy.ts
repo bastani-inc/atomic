@@ -39,7 +39,8 @@ export async function loadSnapshotPathPolicy(root: string): Promise<SnapshotPath
 	try {
 		projectIgnore = ignore().add(await readFile(join(root, SNAPSHOT_IGNORE_FILE), "utf8"));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
 	}
 	return {
 		exclusion(path) {
