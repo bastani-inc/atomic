@@ -457,8 +457,11 @@ test("a failed open keeps its error and attaches the catalog's failed close; sev
 				openShard: (path) => openSqlRunJournal(path),
 				legacyJournal: legacy,
 			}),
-			(error: Error & { cleanupCause?: unknown }) =>
-				isJournalCatalogError(error) && error.code === "write-failed" && error.cleanupCause === closeFailure,
+			(error: Error) =>
+				isJournalCatalogError(error) &&
+				error.code === "write-failed" &&
+				Object.getOwnPropertyDescriptor(error, "cleanupCause")?.value === closeFailure &&
+				Object.getOwnPropertyDescriptor(error, "cleanupCause")?.configurable === true,
 		);
 	} finally {
 		restore();
@@ -481,6 +484,7 @@ test("a failed open keeps its error and attaches the catalog's failed close; sev
 	await assert.rejects(failing.close(), (error: Error) => {
 		assert.ok(error instanceof AggregateError);
 		assert.equal(error.errors.length, 2);
+		assert.equal(error.message, "2 journal store databases failed to close");
 		return true;
 	});
 });

@@ -140,6 +140,7 @@ test("a reservation holds its shard until the root is created or its time runs o
 	await withCatalog(async (catalog) => {
 		const reserved = await catalog.place({ runId: "reserved" });
 		assert.equal((await catalog.locate("reserved"))!.run.status, undefined);
+		await new Promise((resolve) => setTimeout(resolve, 25));
 		const other = await catalog.place({ runId: "other", status: "running" });
 		assert.notEqual(other.shard.id, reserved.shard.id);
 		const created = await catalog.place({ runId: "reserved", name: "wf", cwd: "/p", status: "running" });

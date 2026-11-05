@@ -146,6 +146,8 @@ try {
 }
 ```
 
+Each entry of `report.discovered` names the journal that referenced it and, when it was skipped, the `reason`. `consolidateJournalStore` reports each run as `moved`, with the shard it moved `to`, or `skipped` with a `reason`, and for `conflict` or `shard-unavailable` the typed `error`. When adoption, consolidation or opening the catalog fails and closing a file then fails too, the original typed error is thrown with the close failure as its `cleanupCause`.
+
 ### When to select a journal
 
 Select a journal file only to isolate runs, for example in tests or a sandbox: `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, `RunOpts.journal` and `createAgentSession({ journal })` keep working as one file. You do not need separate journals for performance: the store already keeps concurrent roots apart. A shared libSQL or Turso database stays one selection; the adapter scales it.
