@@ -34,6 +34,8 @@ A capture that finds `HEAD` and the recomputed tree unchanged records a referenc
 
 When Git is not installed, or a directory is not inside a Git repository, nothing is recorded for it and behavior is exactly as without snapshots. In-memory sessions record nothing. A persisted store that cannot hold blobs (JSONL session directories, storage adapters without a database) records nothing and reports `blob-store-unsupported` once.
 
+When a file or directory a capture has to read cannot be read, for example because of a permission error or a symbolic link that loops, that checkout's capture records nothing and reports `unreadable-path` naming the path. The turn or stage carries on. Make the path readable, or list it in `.atomic/snapshot-ignore`, to snapshot that checkout again.
+
 ## What is left out
 
 - Files ignored by `.gitignore`, `.git/info/exclude`, or your global excludes file. Build outputs and dependencies are rebuilt, never captured.
@@ -101,7 +103,7 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 - `captureWorktreeSnapshot(dir, { settings?, previous?, blobs?, signal? })` resolves `captured`, `unchanged`, `disabled`, or `unavailable` with the typed reason (`GitUnavailableError` or `WorkspaceSnapshotError`).
 - `restoreWorktreeSnapshot(bindingOrSnapshot, { into?, blobs?, snapshots?, storeDir?, settings?, onWarning?, signal? })` resolves to the path of a new, verified worktree. `into` must be a new or empty directory. A binding is restored from a matching entry of `snapshots`, or from a host whose object store already holds its tree. Restore checks the target and every blob before writing, and removes what it created when it fails.
 - `verifyWorktree(binding, dir)` resolves to the checkout's current binding when its `HEAD` and tree match, and rejects with `WorkspaceDriftError` otherwise.
-- `removeRestoredWorktree(path, { storeDir? })` removes a worktree a restore created, for rolling back a restore of several checkouts. It refuses any other directory.
+- `removeRestoredWorktree(path, { storeDir? })` removes a worktree a restore created, for rolling back a restore of several checkouts. It refuses any other path, including a regular file.
 - `collectSnapshotGarbage(blobs, retained)` deletes blobs that none of the retained snapshots needs. Retain the latest snapshot of each session (`listRetainedSessionSnapshots(sessionStore)`) and the snapshots resumable workflow runs reference (`listResumableWorkflowSnapshots(journal)` from `@bastani/atomic/workflows`). When sessions and runs share one database they share one blob table, so pass both sets together. Atomic does not run this collection on its own yet.
 
 ## Errors
@@ -116,11 +118,13 @@ Every error except `GitUnavailableError` extends `WorkspaceError`; all of them c
 | `WorkspaceSnapshotError` | `not-a-repository` | The directory is outside any Git work tree | `subject` | Work inside a Git checkout |
 | `WorkspaceSnapshotError` | `unborn-head` | The repository has no commits | `subject` | Create a first commit |
 | `WorkspaceSnapshotError` | `blob-store-unsupported` | The selected storage cannot hold snapshot blobs | `subject` | Use local SQLite or a database-backed adapter |
+| `WorkspaceSnapshotError` | `unreadable-path` | A file or directory that a capture, restore or verification reads cannot be read (permissions, a looping or dangling symbolic link). A capture reports it as its `unavailable` reason; a restore or verification rejects with it | `subject` (the path); `cause` holds the filesystem error | Make the path readable, fix the link, or list it in `.gitignore` or `.atomic/snapshot-ignore` |
 | `WorkspaceRestoreError` | `snapshot-not-found` | A binding has no recorded snapshot and its tree is not on this host | `head`, `tree` | Pass the recorded snapshot, or restore where the tree is warm |
 | `WorkspaceRestoreError` | `blob-missing` | A patch or bundle is not in storage | `snapshotId`, `blob`, `role`, `deltaIndex` | Use the storage the snapshot was recorded in, or import an exported session file |
 | `WorkspaceRestoreError` | `blob-corrupt` | A stored or imported blob does not match its hash | `snapshotId`, `blob`, `role` | Restore an earlier snapshot or re-export the session |
 | `WorkspaceRestoreError` | `commits-unavailable` | `HEAD` cannot be fetched from the remotes and no usable bundle exists | `head`, `commits`, `paths`, `remotes`, `reason` (`denied-history`, `bundle-over-cap`, `not-fetched`) | Push the named commits, or check access to the named remote |
 | `WorkspaceRestoreError` | `delta-failed` | A patch did not produce its recorded tree | `snapshotId`, `deltaIndex`, `blob`, `expectedTree`, `actualTree` | Restore an earlier snapshot |
 | `WorkspaceRestoreError` | `tree-mismatch` | The materialized worktree's tree differs from the snapshot | `target`, `expectedTree`, `actualTree` | Check the repository's `.gitattributes` filters on this host, then retry |
-| `WorkspaceRestoreError` | `unsafe-target` | `into` exists and is not an empty directory (`reason: "not-empty"`), or `removeRestoredWorktree` was given a directory no restore created (`reason: "not-restored"`) | `target`, `reason` | Choose a new or empty directory, or omit `into`; remove only paths a restore returned |
+| `WorkspaceRestoreError` | `unsafe-target` | `into` exists and is not an empty directory (`reason: "not-empty"`), or `removeRestoredWorktree` was given a path no restore created (`reason: "not-restored"`) | `target`, `reason` | Choose a new or empty directory, or omit `into`; remove only paths a restore returned |
+| `WorkspaceRestoreError` | `unwritable-path` | A restore or `removeRestoredWorktree` could not write a directory or file it needs, for example because the disk is full or the directory is read-only | `target`, `snapshotId`; `cause` holds the filesystem error | Free space on that volume, or make the path and its parent writable, then retry |
 | `WorkspaceDriftError` | `tree-drift` | A checkout no longer matches the snapshot work would resume from, and it could not be restored | `root`, `expectedHead`, `actualHead`, `expectedTree`, `actualTree`, `snapshotId` | Follow the `cause`'s hint, or restore the snapshot into a new worktree |

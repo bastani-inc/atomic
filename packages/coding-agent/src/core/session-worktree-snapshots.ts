@@ -19,6 +19,7 @@ import {
 	isGitUnavailableError,
 	isWorkspaceDriftError,
 	isWorkspaceSnapshotError,
+	unreadablePathError,
 	WorkspaceDriftError,
 	type WorkspaceError,
 	WorkspaceRestoreError,
@@ -157,7 +158,7 @@ async function nearestExisting(directory: string): Promise<string> {
 			if ((await stat(current)).isDirectory()) return current;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR")
-				throw error;
+				throw unreadablePathError(current, error);
 		}
 		if (resolve(current, "..") === current) return current;
 	}

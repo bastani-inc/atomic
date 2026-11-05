@@ -19,7 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { assertCaptureUnreadable, assertUnreadablePath, GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -86,14 +86,11 @@ describe("which directories can be captured", () => {
 		assert.equal(result.snapshot.head, await sandbox.git(bare, "rev-parse", "HEAD"));
 	});
 
-	test("an index that cannot be read is an error, not a silently empty snapshot", async () => {
+	test("an index that cannot be read makes the capture unavailable with the typed reason, not a silently empty snapshot", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		unlinkSync(join(clone, ".git", "index"));
 		mkdirSync(join(clone, ".git", "index"));
-		await assert.rejects(
-			captureWorktreeSnapshot(clone),
-			(error: unknown) => (error as NodeJS.ErrnoException).code === "EISDIR",
-		);
+		assertCaptureUnreadable(await captureWorktreeSnapshot(clone), join(clone, ".git", "index"), "EISDIR");
 	});
 });
 
@@ -353,16 +350,16 @@ describe("environment hash inputs", () => {
 });
 
 describe("snapshot ignore policy file", () => {
-	test("a missing file means no extra exclusions, an unreadable one is an error", async () => {
+	test("a missing file means no extra exclusions, an unreadable one is a typed error naming it", async () => {
 		const dir = mkdtempSync(join(sandbox.root, "policy-"));
 		const policy = await loadSnapshotPathPolicy(dir);
 		assert.equal(policy.exclusion("anything.txt"), undefined);
 		assert.equal(policy.exclusion(".env"), "denied");
 		mkdirSync(join(dir, ".atomic", "snapshot-ignore"), { recursive: true });
-		await assert.rejects(
-			loadSnapshotPathPolicy(dir),
-			(error: unknown) => (error as NodeJS.ErrnoException).code === "EISDIR",
-		);
+		await assert.rejects(loadSnapshotPathPolicy(dir), (error: unknown) => {
+			assertUnreadablePath(error, join(dir, ".atomic", "snapshot-ignore"), "EISDIR");
+			return true;
+		});
 	});
 });
 

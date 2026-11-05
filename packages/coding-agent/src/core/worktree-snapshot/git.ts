@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
@@ -91,14 +91,34 @@ function firstLine(text: string): string {
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
 	const executable = await resolveExecutable();
+	options.signal?.throwIfAborted();
 	const env = createGitEnvironment(
 		{ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GCM_INTERACTIVE: "never" },
 		createChildProcessEnvironment(),
 	);
 	Object.assign(env, executable.env, options.env);
 	const argv = [...BASE_CONFIG, ...(options.neutral ? NEUTRAL_CONVERSION_CONFIG : []), ...args];
+	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
+		(error.code === "ENOENT" || error.code === "EACCES") && existsSync(options.cwd)
+			? new GitUnavailableError("not-installed", executable.path, { cause: error })
+			: new WorkspaceGitError(
+					{
+						operation: gitOperation(args),
+						cwd: options.cwd,
+						exitCode: null,
+						detail: existsSync(options.cwd) ? firstLine(error.message) : "the working directory does not exist",
+					},
+					error,
+				);
 	return new Promise<GitRunResult>((resolve, reject) => {
-		const child = spawn(executable.path, argv, { cwd: options.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+		let child: ChildProcessWithoutNullStreams;
+		try {
+			child = spawn(executable.path, argv, { cwd: options.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+		} catch (error) {
+			// Node throws instead of emitting `error` for some failures, such as a path component that is a file.
+			reject(spawnFailure(error as NodeJS.ErrnoException));
+			return;
+		}
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
 		let settled = false;
@@ -117,25 +137,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		};
 		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
 		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-		child.on("error", (error: NodeJS.ErrnoException) =>
-			finish(() =>
-				reject(
-					(error.code === "ENOENT" || error.code === "EACCES") && existsSync(options.cwd)
-						? new GitUnavailableError("not-installed", executable.path, { cause: error })
-						: new WorkspaceGitError(
-								{
-									operation: gitOperation(args),
-									cwd: options.cwd,
-									exitCode: null,
-									detail: existsSync(options.cwd)
-										? firstLine(error.message)
-										: "the working directory does not exist",
-								},
-								error,
-							),
-				),
-			),
-		);
+		child.on("error", (error: NodeJS.ErrnoException) => finish(() => reject(spawnFailure(error))));
 		child.stdin.on("error", exitStatusReportsClosedInput);
 		child.on("close", (code) =>
 			finish(() => {

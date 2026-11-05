@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import ignore, { type Ignore } from "ignore";
+import { unreadablePathError } from "./errors.ts";
 
 /** Built-in patterns, in `.gitignore` syntax, for files that commonly hold credentials. */
 export const SNAPSHOT_DENY_PATTERNS: readonly string[] = Object.freeze([
@@ -40,7 +41,7 @@ export async function loadSnapshotPathPolicy(root: string): Promise<SnapshotPath
 		projectIgnore = ignore().add(await readFile(join(root, SNAPSHOT_IGNORE_FILE), "utf8"));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+		if (code !== "ENOENT" && code !== "ENOTDIR") throw unreadablePathError(join(root, SNAPSHOT_IGNORE_FILE), error);
 	}
 	return {
 		exclusion(path) {

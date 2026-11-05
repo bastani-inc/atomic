@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
+	unreadablePathError,
+	unwritablePathError,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
+import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	findWorkspaceError,
 	GitUnavailableError,
@@ -137,6 +141,10 @@ describe("WorkspaceGitError and WorkspaceSnapshotError", () => {
 				"blob-store-unsupported",
 				"Worktree snapshot unavailable: /w storage cannot hold snapshot blobs (blob-store-unsupported). Use local SQLite, JSONL, memory, or a database-backed storage adapter to record snapshots.",
 			],
+			[
+				"unreadable-path",
+				"Worktree snapshot unavailable: /w cannot be read (unreadable-path). Make /w readable by the current user (for example `chmod u+rwX` on it and its parent directories), replace a symbolic link that loops or points nowhere, or list the path in .gitignore or .atomic/snapshot-ignore, then retry.",
+			],
 		] as const;
 		for (const [code, message] of cases) {
 			const error = new WorkspaceSnapshotError(code, "/w", cause);
@@ -245,6 +253,18 @@ describe("WorkspaceRestoreError messages", () => {
 			"unsafe-target",
 			{ snapshotId: null, target: "/dir", reason: "not-restored" },
 			"Cannot remove /dir: it is not a worktree that a snapshot restore created (unsafe-target). Remove only paths returned by restoreWorktreeSnapshot, with the same storeDir.",
+		],
+		[
+			"unwritable-path during a restore",
+			"unwritable-path",
+			{ snapshotId: "snap1", target: "/host/repositories" },
+			"Cannot write /host/repositories while restoring snapshot snap1 (unwritable-path). Free space on the volume that holds /host/repositories, or make it and its parent directory writable by the current user (for example `chmod u+rwX`), then retry.",
+		],
+		[
+			"unwritable-path without a snapshot",
+			"unwritable-path",
+			{ snapshotId: null, target: "/dir" },
+			"Cannot write /dir (unwritable-path). Free space on the volume that holds /dir, or make it and its parent directory writable by the current user (for example `chmod u+rwX`), then retry.",
 		],
 	];
 
@@ -532,6 +552,31 @@ describe("serialization across a process boundary", () => {
 		assert.equal((back.cause as Error).message, "spawn git ENOENT");
 	});
 
+	test("filesystem failures keep their class, code, path and cause message through a round trip", () => {
+		const loop = Object.assign(new Error("ELOOP: too many symbolic links encountered, stat '/w/loop'"), {
+			code: "ELOOP",
+			syscall: "stat",
+		});
+		const full = Object.assign(new Error("ENOSPC: no space left on device, mkdir '/host/repositories'"), {
+			code: "ENOSPC",
+			syscall: "mkdir",
+		});
+		const unreadable = unreadablePathError("/w/loop", loop);
+		const unwritable = unwritablePathError("/host/repositories", "snap1", full);
+		for (const [original, guard, subject] of [
+			[unreadable, isWorkspaceSnapshotError, { subject: "/w/loop" }],
+			[unwritable, isWorkspaceRestoreError, { snapshotId: "snap1", target: "/host/repositories" }],
+		] as const) {
+			assert.ok(guard(original));
+			const back = rehydrateWorkspaceError(JSON.parse(JSON.stringify(serializeWorkspaceError(original))));
+			assert.equal(back.constructor, original.constructor);
+			assert.ok(guard(back));
+			assert.equal(back.code, original.code);
+			assert.deepEqual(back.fields, subject);
+			assert.equal(back.message, original.message);
+			assert.equal((back.cause as Error).message, (original.cause as Error).message);
+		}
+	});
 	test("a plain error keeps its name and cause", () => {
 		const back = rehydrateWorkspaceError({
 			name: "RangeError",
@@ -608,6 +653,39 @@ describe("serialization across a process boundary", () => {
 			assert.ok(back instanceof WorkspaceError);
 			assert.ok(!(back instanceof WorkspaceDriftError));
 			assert.equal(back.message, "m");
+		}
+	});
+});
+
+describe("filesystem failure wrappers", () => {
+	const failure = (code: string, syscall: string) =>
+		Object.assign(new Error(`${code}: failed, ${syscall} '/w/a'`), { code, syscall });
+
+	test("an unreadable path wraps a filesystem error with the path as its subject", () => {
+		const cause = failure("EACCES", "lstat");
+		const error = unreadablePathError("/w/a", cause);
+		assert.ok(error instanceof WorkspaceSnapshotError);
+		assert.equal(error.code, "unreadable-path");
+		assert.deepEqual(error.fields, { subject: "/w/a" });
+		assert.equal(error.cause, cause);
+		assert.equal(error.retryable, false);
+	});
+
+	test("an unwritable path wraps a filesystem error with the target and snapshot", () => {
+		const cause = failure("ENOSPC", "write");
+		const error = unwritablePathError("/w/a", null, cause);
+		assert.ok(error instanceof WorkspaceRestoreError);
+		assert.equal(error.code, "unwritable-path");
+		assert.deepEqual(error.fields, { snapshotId: null, target: "/w/a" });
+		assert.equal(error.cause, cause);
+	});
+
+	test("errors that are not filesystem failures pass through both unchanged", () => {
+		const coded = Object.assign(new Error("no syscall"), { code: "EACCES" });
+		const typed = new GitUnavailableError("offline", "git");
+		for (const error of [coded, typed, "text", undefined]) {
+			assert.equal(unreadablePathError("/w/a", error), error);
+			assert.equal(unwritablePathError("/w/a", "snap1", error), error);
 		}
 	});
 });
