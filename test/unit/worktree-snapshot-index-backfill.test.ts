@@ -13,6 +13,7 @@ import type {
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import {
+	BackgroundCollectionPace,
 	SNAPSHOT_COLLECTION_BATCH,
 	SNAPSHOT_INDEX_BACKFILL_BATCH,
 	SqlSnapshotBlobStore,
@@ -702,6 +703,222 @@ describe("a long session tree written before the index existed is linked in orde
 			"every snapshot but the latest one is released",
 		);
 	});
+});
+
+describe("session entries written at a rowid the backfill has already gone by (#4355)", () => {
+	const OLDER_ENTRIES = SNAPSHOT_INDEX_BACKFILL_BATCH - 100;
+	const NEWEST_ENTRIES = SNAPSHOT_INDEX_BACKFILL_BATCH + 300;
+
+	const chain = (count: number) => {
+		const entries: SessionEntry[] = [messageEntry("start")];
+		for (let index = 1; index < count; index++) entries.push(messageEntry(`entry ${index}`, entries.at(-1)!.id));
+		return entries;
+	};
+
+	/**
+	 * Two sessions written before the index existed, the second the newest rows of the table, and a backfill stopped
+	 * after its first batch, which covers the first session and the start of the second.
+	 */
+	async function stoppedBackfill(olderEntries = OLDER_ENTRIES) {
+		const database = await openDatabase();
+		const before = await openStores(database);
+		const [kept, released] = [textBlob("kept"), textBlob("released")];
+		await before.blobs.putBlobs([kept, released]);
+		await createSession(before.sessions, "older", chain(olderEntries));
+		await createSession(before.sessions, "newest", chain(NEWEST_ENTRIES));
+		await before.close();
+		await dropSnapshotIndex(database);
+		const upgraded = await openStores(database);
+		const controller = new AbortController();
+		class StoppingPace extends BackgroundCollectionPace {
+			override wait(milliseconds: number): Promise<void> {
+				controller.abort(new Error("stopped after the first batch"));
+				return super.wait(milliseconds);
+			}
+		}
+		await assert.rejects(
+			upgraded.blobs.completeIndex({ signal: controller.signal, pace: new StoppingPace(controller.signal) }),
+		);
+		const progress = await database.get<{ watermark: number; backfilled_through: number }>(
+			"SELECT watermark, backfilled_through FROM snapshot_index_sources WHERE source = 'session-entries'",
+		);
+		assert.equal(progress?.backfilled_through, SNAPSHOT_INDEX_BACKFILL_BATCH, "the pass stopped after one batch");
+		assert.ok(progress!.watermark > progress!.backfilled_through);
+		return { database, upgraded, kept, released };
+	}
+
+	/** A session of two snapshots, the later one the one a collection must keep. */
+	function snapshots(kept: { hash: string }, released: { hash: string }): SessionEntry[] {
+		const root = messageEntry("a new start");
+		const first = {
+			...snapshotEntry("/repo", "first", syntheticSnapshot("first", [released.hash])),
+			parentId: root.id,
+		} as SessionEntry;
+		const last = {
+			...snapshotEntry("/repo", "last", syntheticSnapshot("last", [kept.hash])),
+			parentId: first.id,
+		} as SessionEntry;
+		return [root, first, last];
+	}
+
+	test.each([
+		[
+			"deleting the newest session and writing another",
+			async ({ upgraded }: Awaited<ReturnType<typeof stoppedBackfill>>, entries: SessionEntry[]) => {
+				await upgraded.sessions.delete("newest");
+				await createSession(upgraded.sessions, "replacement", entries);
+			},
+		],
+		[
+			"replacing the newest session's entries",
+			async ({ upgraded }: Awaited<ReturnType<typeof stoppedBackfill>>, entries: SessionEntry[]) => {
+				const { header, lastSeq } = await upgraded.sessions.load("newest");
+				await upgraded.sessions.replace("newest", header, entries, { expectSeq: lastSeq });
+			},
+		],
+	])("%s indexes the rows SQLite reuses, so the later snapshot is kept", async (_name, write) => {
+		const stopped = await stoppedBackfill();
+		const { database, upgraded, kept, released } = stopped;
+		await write(stopped, snapshots(kept, released));
+		const reused = await database.get<{ lowest: number }>(
+			'SELECT min(rowid) AS lowest FROM session_entries WHERE entry_json LIKE \'%"snapshotId":"first"%\'',
+		);
+		assert.ok(
+			reused!.lowest <= SNAPSHOT_INDEX_BACKFILL_BATCH,
+			"the new rows took rowids the pass had already gone by",
+		);
+		await ageBlobs(database, "snapshot_blobs", 10_000);
+
+		await upgraded.blobs.completeIndex();
+		const { deleted } = await collectSnapshotGarbage(upgraded.blobs);
+
+		assert.deepEqual(deleted, [released.hash], "only the snapshot a later one replaced is collected");
+		assert.deepEqual(await stored(upgraded), [kept.hash]);
+		assert.notEqual(await upgraded.blobs.getBlob(kept.hash), undefined, "the retained blob is still readable");
+		assert.equal(await upgraded.blobs.getBlob(released.hash), undefined);
+		const expected = await fullScanRetainedHashes(upgraded.journal, upgraded.sessions);
+		for (const hash of expected) assert.ok((await stored(upgraded)).includes(hash), `${hash} was needed`);
+	});
+
+	test("a row written at the very rowid the pass stopped on is indexed too", async () => {
+		const stopped = await stoppedBackfill(SNAPSHOT_INDEX_BACKFILL_BATCH - 1);
+		const { database, upgraded, kept } = stopped;
+		await upgraded.sessions.delete("newest");
+
+		await createSession(upgraded.sessions, "replacement", [
+			snapshotEntry("/repo", "only", syntheticSnapshot("only", [kept.hash])),
+		]);
+
+		const row = await database.get<{ id: number }>(
+			"SELECT rowid AS id FROM session_entries WHERE session_id = 'replacement'",
+		);
+		assert.equal(row?.id, SNAPSHOT_INDEX_BACKFILL_BATCH, "the new row took the rowid the pass had stopped on");
+		await ageBlobs(database, "snapshot_blobs", 10_000);
+
+		await upgraded.blobs.completeIndex();
+		await collectSnapshotGarbage(upgraded.blobs);
+
+		assert.deepEqual(await stored(upgraded), [kept.hash]);
+		assert.notEqual(await upgraded.blobs.getBlob(kept.hash), undefined, "the retained blob is still readable");
+	});
+
+	test("the next batch revisits exactly the rows from the reused rowid up to where the pass had got", async () => {
+		const stopped = await stoppedBackfill();
+		const { database, upgraded } = stopped;
+		await upgraded.sessions.delete("newest");
+		const lowest = OLDER_ENTRIES + 1;
+
+		await createSession(upgraded.sessions, "replacement", chain(3));
+
+		const progress = await database.get<{ backfilled_through: number }>(
+			"SELECT backfilled_through FROM snapshot_index_sources WHERE source = 'session-entries'",
+		);
+		assert.equal(progress?.backfilled_through, lowest - 1, "the pass moves back to just before the first reused row");
+	});
+});
+
+describe("random writes during a stopped backfill never cost a retained snapshot (#4355)", () => {
+	/** A deterministic generator, so a failing seed reproduces. */
+	function random(seed: number) {
+		let state = seed >>> 0 || 1;
+		return (bound: number) => {
+			state ^= state << 13;
+			state ^= state >>> 17;
+			state ^= state << 5;
+			return Math.floor(((state >>> 0) / 0x1_0000_0000) * bound);
+		};
+	}
+
+	test.each(Array.from({ length: 8 }, (_, index) => index + 1))(
+		"seed %i: deleting, replacing and writing sessions between batches keeps at least what a full scan retains",
+		async (seed) => {
+			const next = random(seed);
+			const database = await openDatabase();
+			const before = await openStores(database);
+			const blobs = Array.from({ length: 60 }, (_, index) => textBlob(`blob ${seed}-${index}`));
+			await before.blobs.putBlobs(blobs);
+			let counter = 0;
+			const session = (length: number): SessionEntry[] => {
+				const entries: SessionEntry[] = [messageEntry("start")];
+				for (let index = 1; index < length; index++) {
+					const parent = entries.at(-1)!.id;
+					if (next(10) > 0) {
+						entries.push(messageEntry(`entry ${index}`, parent));
+						continue;
+					}
+					const name = `snapshot-${seed}-${counter++}`;
+					const record = syntheticSnapshot(name, [blobs[next(blobs.length)]!.hash]);
+					entries.push({
+						...snapshotEntry(next(2) === 0 ? "/a" : "/b", name, record),
+						parentId: parent,
+					} as SessionEntry);
+				}
+				return entries;
+			};
+			const created: string[] = [];
+			for (let index = 0; index < 3; index++) {
+				created.push(`session-${index}`);
+				await createSession(before.sessions, `session-${index}`, session(200 + next(500)));
+			}
+			await before.close();
+			await dropSnapshotIndex(database);
+			const upgraded = await openStores(database);
+			const controller = new AbortController();
+			class StoppingPace extends BackgroundCollectionPace {
+				override wait(milliseconds: number): Promise<void> {
+					controller.abort(new Error("stopped after the first batch"));
+					return super.wait(milliseconds);
+				}
+			}
+			await assert.rejects(
+				upgraded.blobs.completeIndex({ signal: controller.signal, pace: new StoppingPace(controller.signal) }),
+			);
+
+			const newest = async () =>
+				(
+					await database.get<{ id: string }>(
+						"SELECT session_id AS id FROM session_entries ORDER BY rowid DESC LIMIT 1",
+					)
+				)?.id;
+			for (let operation = 0; operation < 4; operation++) {
+				const target = await newest();
+				const kind = target === undefined ? 2 : next(3);
+				if (kind === 0) await upgraded.sessions.delete(target!);
+				else if (kind === 1) {
+					const { header, lastSeq } = await upgraded.sessions.load(target!);
+					await upgraded.sessions.replace(target!, header, session(1 + next(40)), { expectSeq: lastSeq });
+				} else await createSession(upgraded.sessions, `late-${operation}`, session(1 + next(40)));
+			}
+			const expected = await fullScanRetainedHashes(upgraded.journal, upgraded.sessions);
+			await ageBlobs(database, "snapshot_blobs", 10_000);
+
+			await upgraded.blobs.completeIndex();
+			await collectSnapshotGarbage(upgraded.blobs);
+
+			const remaining = new Set(await upgraded.blobs.listBlobHashes());
+			for (const hash of expected) assert.ok(remaining.has(hash), `${hash} was needed and collected`);
+		},
+	);
 });
 
 describe("session entries written while their table is being backfilled (#4355)", () => {

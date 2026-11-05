@@ -414,7 +414,9 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 		],
 		createTriggers: [
 			// While the rows that existed first are indexed, new rows wait for that pass, which keeps parents ahead of
-			// their children: the pass reaches them by extending its watermark.
+			// their children: the pass reaches them by extending its watermark. A row written at a rowid the pass has
+			// already gone by, which SQLite reuses once the newest rows are deleted, moves the pass back to it; indexing
+			// a row twice changes nothing.
 			createTrigger(`${entries}_snapshot_links`, "INSERT", entries, sessionLink(triggerEntry), indexComplete),
 			createTrigger(
 				`${entries}_snapshot_refs`,
@@ -429,6 +431,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 				entries,
 				[
 					`UPDATE ${t.sources} SET watermark = NEW.rowid WHERE source = 'session-entries' AND watermark < NEW.rowid`,
+					`UPDATE ${t.sources} SET backfilled_through = NEW.rowid - 1 WHERE source = 'session-entries' AND backfilled_through >= NEW.rowid`,
 				],
 				`NOT COALESCE(${indexComplete}, 1)`,
 			),
