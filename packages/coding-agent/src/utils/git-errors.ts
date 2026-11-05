@@ -30,7 +30,7 @@ export const GIT_UNAVAILABLE_CODES: ReadonlySet<string> = new Set<GitUnavailable
 
 /** Why automatic provisioning cannot serve this machine. */
 export type GitUnsupportedPlatformReason = "platform" | "architecture" | "musl" | "glibc-too-old";
-/** The installation step that failed after a verified download. */
+/** An installation or cached-release validation step that failed. */
 export type GitInstallPhase = "stage" | "extract" | "verify" | "promote";
 /** The provisioning step that was running when a time limit expired. */
 export type GitProvisionPhase = "lock" | "download" | "extract" | "verify";

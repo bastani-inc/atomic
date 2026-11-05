@@ -16,7 +16,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { delimiter, join, relative } from "node:path";
+import { basename, delimiter, dirname, join, relative } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
@@ -743,32 +743,95 @@ describe("git resolution (#4322)", () => {
 		},
 	);
 
-	it("restores the working install a killed upgrade set aside, offline, and keeps other owners' trees", async () => {
-		const executable = makeProvisionedGit("2.56.0");
-		const binDir = join(agentDir, "bin");
-		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-		const savedByKilledUpgrade = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
-		const live = join(binDir, `.git-replaced-${hostTag()}-${process.pid}-1`);
-		const otherHost = join(
-			binDir,
-			`.git-replaced-${hostTag() === "00000000" ? "11111111" : "00000000"}-${exitedPid}-1`,
+	function makeRelease(name: string, version: string, status = 0): string {
+		const executable = provisionedExecutable(join(installDir, "releases", name));
+		mkdirSync(join(executable, ".."), { recursive: true });
+		writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+		chmodSync(executable, 0o755);
+		mocks.probes.set(executable, { status, stdout: `git version ${version}\n` });
+		return executable;
+	}
+
+	function markRelease(executable: string, marker: object | null): void {
+		writeFileSync(join(dirname(dirname(executable)), ".atomic-git-release.json"), JSON.stringify(marker));
+	}
+
+	function selectRelease(name: string): void {
+		writeFileSync(join(installDir, "releases", "selected"), `${name}\n`);
+	}
+
+	function shellGit(): { readonly pathEntry: string; readonly env: Record<string, string> } | undefined {
+		return tools.getGitShellEnvironment({ PATH: join(tempDir, "none") });
+	}
+
+	it("resolves the selected release for the SDK and agent shells, and the base install when the selection is unusable", () => {
+		const base = makeProvisionedGit("2.55.0");
+		const current = tools.getGitReleaseMarker();
+		markRelease(base, { ...current, tag: "v-older" });
+		const selectedName = "0b8f6c1e-4d2a-4c3b-9a1f-2e3d4c5b6a7f";
+		const selected = makeRelease(selectedName, "2.56.0");
+		markRelease(selected, current);
+		selectRelease(selectedName);
+
+		const git = tools.resolveGitSync();
+		assert.deepEqual([git.path, git.version], [selected, "2.56.0"]);
+		assert.equal(relative(dirname(dirname(selected)), git.env.GIT_EXEC_PATH ?? "").startsWith(".."), false);
+		assert.equal(shellGit()?.pathEntry, dirname(selected));
+		assert.equal(shellGit()?.env.GIT_EXEC_PATH, git.env.GIT_EXEC_PATH);
+
+		const outside = makeRelease(join("..", selectedName), "2.56.0");
+		markRelease(outside, current);
+		for (const escaping of [`../${selectedName}`, `${selectedName}/../../${selectedName}`, "x"]) {
+			selectRelease(escaping);
+			assert.equal(tools.resolveGitSync().path, base, escaping);
+			assert.equal(shellGit()?.pathEntry, dirname(base), escaping);
+		}
+
+		const brokenName = "1c9a7d2f-5e3b-4d4c-8b2a-3f4e5d6c7b8a";
+		const broken = makeRelease(brokenName, "2.57.0", 1);
+		markRelease(broken, current);
+		selectRelease(brokenName);
+		assert.equal(tools.resolveGitSync().path, base);
+		assert.equal(shellGit()?.pathEntry, dirname(base));
+	});
+
+	it("prefers an install of the pinned release over a newer selection of another release", () => {
+		const base = makeProvisionedGit("2.56.0");
+		const selectedName = "2d0b8e3a-6f4c-4e5d-9c3b-4a5f6e7d8c9b";
+		const selected = makeRelease(selectedName, "2.57.0");
+		markRelease(selected, { ...tools.getGitReleaseMarker(), tag: "v-newer" });
+		selectRelease(selectedName);
+		assert.equal(tools.resolveGitSync().path, base);
+		assert.equal(shellGit()?.pathEntry, dirname(base));
+		assert.deepEqual(tools.getGitStatus(), { source: "provisioned", version: "2.56.0", path: base });
+		markRelease(base, null);
+		assert.equal(tools.resolveGitSync().path, selected);
+		assert.equal(shellGit()?.pathEntry, dirname(selected));
+	});
+
+	it("treats a non-directory releases path as absent and reports unreadable selection metadata as a typed failure", () => {
+		const base = makeProvisionedGit("2.56.0");
+		writeFileSync(join(installDir, "releases"), "");
+		assert.equal(tools.resolveGitSync().path, base);
+		rmSync(join(installDir, "releases"));
+		mkdirSync(join(installDir, "releases", "selected"), { recursive: true });
+		assert.throws(
+			() => tools.resolveGitSync(),
+			(error: Error) => {
+				assert.ok(error instanceof GitUnavailableError);
+				assert.equal(error.code, "install-failed");
+				assert.equal(error.fields.code, "install-failed");
+				if (error.fields.code === "install-failed") {
+					assert.equal(error.fields.phase, "verify");
+					assert.equal(error.fields.asset, "selected");
+					assert.equal(error.fields.installDir, installDir);
+				}
+				assert.equal((error.cause as NodeJS.ErrnoException).code, "EISDIR");
+				assert.ok(error.hint.length > 0);
+				return true;
+			},
 		);
-		const unowned = join(binDir, ".git-replaced-unowned");
-		mocks.actualFs!.renameSync(installDir, savedByKilledUpgrade);
-		for (const dir of [live, otherHost, unowned]) mkdirSync(dir, { recursive: true });
-		assert.equal(existsSync(installDir), false);
-		vi.stubEnv(ENV_OFFLINE, "1");
-		const fetchMock = vi.spyOn(globalThis, "fetch");
-
-		const git = await tools.resolveGit();
-
-		assert.equal(git.source, "provisioned");
-		assert.equal(git.path, executable);
-		assert.equal(git.version, "2.56.0");
-		assert.equal(existsSync(savedByKilledUpgrade), false);
-		assert.equal(existsSync(join(installDir, ".atomic-git-release.json")), true);
-		for (const kept of [live, otherHost, unowned]) assert.equal(existsSync(kept), true, kept);
-		assert.equal(fetchMock.mock.calls.length, 0);
+		assert.equal(tools.getGitStatus().source, "unavailable");
 	});
 
 	it("sweeps without a warning when another process removes an abandoned tree after it was listed", async () => {
@@ -792,20 +855,6 @@ describe("git resolution (#4322)", () => {
 		assert.deepEqual(statuses, []);
 		assert.equal(fetchMock.mock.calls.length, 0);
 		assert.equal(existsSync(abandoned), false);
-	});
-
-	it("discards a killed upgrade's saved tree when the published install is present", async () => {
-		const executable = makeProvisionedGit("2.56.0");
-		const binDir = join(agentDir, "bin");
-		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-		const savedByKilledUpgrade = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
-		mkdirSync(join(savedByKilledUpgrade, "stale"), { recursive: true });
-		vi.stubEnv(ENV_OFFLINE, "1");
-
-		assert.equal((await tools.resolveGit()).path, executable);
-
-		assert.equal(existsSync(savedByKilledUpgrade), false);
-		assert.equal(existsSync(executable), true);
 	});
 
 	it.each([
@@ -1179,7 +1228,7 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		assert.equal(existsSync(lockPath), false);
 	});
 
-	it("keeps a healthy install another process published first and replaces a broken one", async () => {
+	it("keeps a healthy install another process published first and publishes beside a broken one", async () => {
 		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
 			makeProvisionedGit("2.55.0");
@@ -1196,10 +1245,14 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 			mkdirSync(join(installDir, "broken-leftover"), { recursive: true });
 			return new Response(new Uint8Array(fake.bytes));
 		});
-		const replaced = await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () => fresh.resolveGit());
-		assert.equal(replaced.version, "2.56.0");
-		assert.ok(existsSync(join(installDir, "bin", "git")));
-		assert.equal(existsSync(join(installDir, "broken-leftover")), false);
+		const published = await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () =>
+			fresh.resolveGit(),
+		);
+		assert.equal(published.version, "2.56.0");
+		assert.equal(dirname(dirname(dirname(published.path))), join(installDir, "releases"));
+		assert.ok(existsSync(join(installDir, "broken-leftover")));
+		assert.equal(fresh.resolveGitSync().path, published.path);
+		assert.deepEqual(leftovers(), []);
 	});
 
 	it("reports a full disk as install-failed with nothing installed", async () => {
@@ -1963,7 +2016,7 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		assert.equal(error.cause, denied);
 	});
 
-	it("reports a failed replacement of a broken install", async () => {
+	it("reports a failed publication beside a broken install, leaving the install in place", async () => {
 		const fake = healthy();
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
 			mkdirSync(join(installDir, "broken"), { recursive: true });
@@ -1980,7 +2033,51 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		const error = await failure(provision({ release: fake.release }));
 		assert.ok(isGitUnavailableError(error));
 		assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "promote");
+		assert.equal(error.fields.code === "install-failed" ? error.fields.installDir : undefined, installDir);
 		assert.equal(error.cause, denied);
+		assert.ok(existsSync(join(installDir, "broken")));
+		assert.deepEqual(readdirSync(join(installDir, "releases")), []);
+		assert.deepEqual(leftovers(), []);
+	});
+
+	it("reports a release selection that cannot be switched, keeping the complete release unselected", async () => {
+		const fake = healthy();
+		serveArchive(fake.bytes);
+		mkdirSync(join(installDir, "broken"), { recursive: true });
+		const selection = join(installDir, "releases", "selected");
+		const denied = Object.assign(new Error("EACCES: rename selection"), { code: "EACCES" });
+		const lost = Object.assign(new Error("EIO: remove pending selection"), { code: "EIO" });
+		const actualRename = mocks.actualFs!.renameSync;
+		const actualRm = mocks.actualFs!.rmSync;
+		mocks.renameSync.mockImplementation((from: string, to: string) => {
+			if (to === selection) throw denied;
+			return actualRename(from, to);
+		});
+		mocks.rmSync.mockImplementation((path: string, options: object) => {
+			if (String(path).startsWith(`${selection}.`)) throw lost;
+			return actualRm(path, options);
+		});
+		const error = await failure(provision({ release: fake.release }));
+		assert.ok(isGitUnavailableError(error));
+		assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "promote");
+		assert.equal(error.cause, denied);
+		assert.equal(error.cleanupCause, lost);
+		assert.equal(
+			caught(() => tools.resolveGitSync()),
+			error,
+		);
+		const [unselected, pending, ...rest] = readdirSync(join(installDir, "releases")).sort();
+		assert.deepEqual(rest, []);
+		assert.equal(pending, `selected.${unselected}`);
+		assert.ok(existsSync(provisionedExecutable(join(installDir, "releases", unselected!))));
+
+		mocks.renameSync.mockImplementation(actualRename);
+		mocks.rmSync.mockImplementation(actualRm);
+		const git = await provision({ release: fake.release });
+		const published = basename(dirname(dirname(git.path)));
+		assert.notEqual(published, unselected);
+		assert.equal(readFileSync(selection, "utf-8"), published);
+		assert.ok(existsSync(provisionedExecutable(join(installDir, "releases", unselected!))));
 	});
 
 	it("keeps a staging directory whose owner is alive but not ours, and one that only resembles staging", async () => {
@@ -2140,6 +2237,8 @@ describe("git install command on this machine (#4322)", () => {
 		const bytes = () => archiveOf(gitScript('echo "git version 2.56.0"'));
 		const markerPath = () => join(installDir, ".atomic-git-release.json");
 		const readMarker = () => JSON.parse(readFileSync(markerPath(), "utf-8"));
+		const releaseMarker = (git: { readonly path: string }) =>
+			JSON.parse(readFileSync(join(dirname(dirname(git.path)), ".atomic-git-release.json"), "utf-8"));
 		const marked = (fake: FakeRelease) => ({
 			tag: fake.release.tag,
 			asset: "fake-git.tar.gz",
@@ -2153,7 +2252,8 @@ describe("git install command on this machine (#4322)", () => {
 		it("records the release it installed from, and installs it again only when the pin changes", async () => {
 			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
 			const fetchMock = serveArchive(first.bytes);
-			await installAs(first);
+			const installed = await installAs(first);
+			assert.equal(installed.path, join(installDir, "bin", "git"));
 			assert.deepEqual(readMarker(), { ...marked(first), sha256: readMarker().sha256 });
 			assert.equal(readMarker().tag, "v2.56.0-2");
 			assert.equal(fetchMock.mock.calls.length, 1);
@@ -2162,10 +2262,13 @@ describe("git install command on this machine (#4322)", () => {
 			assert.equal(fetchMock.mock.calls.length, 1);
 
 			const rebuild = releaseFor(first.bytes, undefined, "v2.56.0-3");
-			await installAs(rebuild);
+			const rebuilt = await installAs(rebuild);
 			assert.equal(fetchMock.mock.calls.length, 2);
-			assert.equal(readMarker().tag, "v2.56.0-3");
-			await installAs(rebuild);
+			assert.equal(releaseMarker(rebuilt).tag, "v2.56.0-3");
+			assert.equal(readMarker().tag, "v2.56.0-2");
+			assert.equal((await installAs(rebuild)).path, rebuilt.path);
+			assert.equal(fetchMock.mock.calls.length, 2);
+			assert.equal((await installAs(first)).path, installed.path);
 			assert.equal(fetchMock.mock.calls.length, 2);
 			assert.deepEqual(leftovers(), []);
 		});
@@ -2217,24 +2320,25 @@ describe("git install command on this machine (#4322)", () => {
 		])("treats %s as an older release", async (_label, damage) => {
 			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
 			const fetchMock = serveArchive(first.bytes);
-			await installAs(first);
+			const installed = await installAs(first);
 			damage();
-			await installAs(first);
+			const again = await installAs(first);
 			assert.equal(fetchMock.mock.calls.length, 2);
-			assert.equal(readMarker().tag, "v2.56.0-2");
+			assert.notEqual(again.path, installed.path);
+			assert.equal(releaseMarker(again).tag, "v2.56.0-2");
+			assert.equal(tools.resolveGitSync().path, again.path);
 			assert.deepEqual(leftovers(), []);
 		});
 
-		it("restores the older install when the new one cannot be put in place", async () => {
+		it("keeps the older install when the new release cannot be published", async () => {
 			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
 			serveArchive(first.bytes);
-			await installAs(first);
+			const older = await installAs(first);
 			const newer = releaseFor(first.bytes, undefined, "v2.56.0-3");
 			const denied = Object.assign(new Error("EACCES: rename"), { code: "EACCES" });
 			const actualRename = mocks.actualFs!.renameSync;
-			let intoPlace = 0;
 			mocks.renameSync.mockImplementation((from: string, to: string) => {
-				if (String(from).includes(".git-staging-") && to === installDir && ++intoPlace === 2) throw denied;
+				if (String(from).includes(".git-staging-") && dirname(to) === join(installDir, "releases")) throw denied;
 				return actualRename(from, to);
 			});
 			const statuses: { type: string; message: string }[] = [];
@@ -2242,31 +2346,29 @@ describe("git install command on this machine (#4322)", () => {
 				{ release: newer.release },
 				{ onStatus: (status: { type: string; message: string }) => statuses.push(status) },
 			);
-			assert.equal(git.source, "provisioned");
+			assert.equal(git.path, older.path);
 			const warnings = statuses.filter((status) => status.type === "warning");
 			assert.equal(warnings.length, 1);
 			assert.match(warnings[0]!.message, /could not be installed into .*\(install-failed\)/);
 			assert.equal(readMarker().tag, "v2.56.0-2");
-			assert.ok(existsSync(join(installDir, "bin", "git")));
+			assert.deepEqual(readdirSync(join(installDir, "releases")), []);
 			assert.deepEqual(leftovers(), []);
 		});
 
-		it("sweeps a killed upgrade's leftovers on the next resolve even when no install is needed", async () => {
+		it("sweeps abandoned staging on the next resolve even when no install is needed", async () => {
 			const fake = releaseFor(bytes());
 			const fetchMock = serveArchive(fake.bytes);
 			await installAs(fake);
 			fetchMock.mockClear();
 			const binDir = join(agentDir, "bin");
 			const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-			const replaced = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
 			const staging = join(binDir, `.git-staging-${hostTag()}-${exitedPid}-1`);
 			const live = join(binDir, `.git-staging-${hostTag()}-${process.pid}-1`);
-			for (const dir of [replaced, staging, live]) mkdirSync(dir, { recursive: true });
+			for (const dir of [staging, live]) mkdirSync(dir, { recursive: true });
 			vi.resetModules();
 			const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 			await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () => fresh.resolveGit());
 			assert.equal(fetchMock.mock.calls.length, 0);
-			assert.equal(existsSync(replaced), false);
 			assert.equal(existsSync(staging), false);
 			assert.equal(existsSync(live), true);
 		});
@@ -2306,19 +2408,6 @@ describe("git install command on this machine (#4322)", () => {
 			);
 			assert.equal(silent.source, "provisioned");
 		});
-
-		it("sweeps replaced installs left by exited processes only", async () => {
-			const fake = releaseFor(bytes());
-			serveArchive(fake.bytes);
-			const binDir = join(agentDir, "bin");
-			const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-			const abandoned = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
-			const live = join(binDir, `.git-replaced-${hostTag()}-${process.pid}-1`);
-			for (const dir of [abandoned, live]) mkdirSync(dir, { recursive: true });
-			await installAs(fake);
-			assert.equal(existsSync(abandoned), false);
-			assert.equal(existsSync(live), true);
-		});
 	});
 
 	describe.skipIf(isWindows)("replacement details", () => {
@@ -2334,44 +2423,88 @@ describe("git install command on this machine (#4322)", () => {
 			return { first, fetchMock, newer: releaseFor(first.bytes, undefined, "v2.56.0-3") };
 		}
 
-		it("returns the replacement install, not the older one", async () => {
+		it("publishes the newer release beside the older one, whose resolved path and environment keep working", async () => {
 			const { newer } = await installOlder();
+			const older = tools.resolveGitSync();
+			const runsOlder = () =>
+				runProcess(older.path, ["--version"], { encoding: "utf-8", env: older.env }).stdout.trim();
+			const actualRename = mocks.actualFs!.renameSync;
+			const observedDuringPublication: string[] = [];
+			mocks.renameSync.mockImplementation((from: string, to: string) => {
+				observedDuringPublication.push(runsOlder());
+				actualRename(from, to);
+				observedDuringPublication.push(runsOlder());
+			});
 			const git = await provision({ release: newer.release });
 			assert.equal(git.source, "provisioned");
-			assert.equal(git.path, join(installDir, "bin", "git"));
 			assert.equal(git.version, "2.56.0");
-			assert.equal(git.env.GIT_EXEC_PATH, join(installDir, "libexec", "git-core"));
+			assert.notEqual(git.path, older.path);
+			assert.equal(older.path, join(installDir, "bin", "git"));
+			const releaseRoot = dirname(dirname(git.path));
+			assert.equal(dirname(releaseRoot), join(installDir, "releases"));
+			assert.equal(git.env.GIT_EXEC_PATH, join(releaseRoot, "libexec", "git-core"));
+			assert.equal(
+				JSON.parse(readFileSync(join(releaseRoot, ".atomic-git-release.json"), "utf-8")).tag,
+				"v2.56.0-3",
+			);
+			assert.equal(JSON.parse(readFileSync(markerPath(), "utf-8")).tag, "v2.56.0-2");
+			assert.ok(observedDuringPublication.length >= 4);
+			assert.ok(observedDuringPublication.every((output) => output === "git version 2.56.0"));
+			assert.equal(runsOlder(), "git version 2.56.0");
+			assert.equal(tools.resolveGitSync().path, git.path);
+			assert.deepEqual(leftovers(), []);
 		});
 
-		it("reinstalls over a marker that cannot be read as a file", async () => {
+		it("gives concurrent callers in a process the one release their shared update published", async () => {
+			const { newer, fetchMock } = await installOlder();
+			const [first, second] = await tools.withGitProvisionSettingsForTest({ release: newer.release }, () =>
+				Promise.all([tools.resolveGit(), tools.resolveGit()]),
+			);
+			assert.equal(fetchMock.mock.calls.length, 2);
+			assert.equal(first.path, second.path);
+			assert.equal(dirname(dirname(dirname(first.path))), join(installDir, "releases"));
+			assert.deepEqual(readdirSync(join(installDir, "releases")).sort(), [
+				basename(dirname(dirname(first.path))),
+				"selected",
+			]);
+		});
+
+		it("uses the release another process publishes while it waits for the install lock", async () => {
+			const { newer, fetchMock } = await installOlder();
+			const binDir = join(agentDir, "bin");
+			const release = await lockfile.lock(binDir, {
+				lockfilePath: join(binDir, "git.install.lock"),
+				realpath: false,
+			});
+			const pending = tools.withGitProvisionSettingsForTest({ release: newer.release, lockPollMs: 20 }, () =>
+				tools.resolveGit(),
+			);
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 60));
+			const name = "3e1c9f4b-7a5d-4f6e-8d4c-5b6a7f8e9d0c";
+			const executable = provisionedExecutable(join(installDir, "releases", name));
+			mkdirSync(dirname(executable), { recursive: true });
+			writeFileSync(executable, '#!/bin/sh\necho "git version 2.57.0"\n');
+			chmodSync(executable, 0o755);
+			const marker = await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () =>
+				tools.getGitReleaseMarker(),
+			);
+			writeFileSync(join(installDir, "releases", name, ".atomic-git-release.json"), JSON.stringify(marker));
+			writeFileSync(join(installDir, "releases", "selected"), name);
+			const git = await pending;
+			await release();
+			assert.deepEqual([git.path, git.version], [executable, "2.57.0"]);
+			assert.equal(fetchMock.mock.calls.length, 1);
+		});
+
+		it("reinstalls beside a marker that cannot be read as a file", async () => {
 			const { first, fetchMock } = await installOlder();
 			rmSync(markerPath());
 			mkdirSync(markerPath());
-			await provision({ release: first.release });
+			const again = await provision({ release: first.release });
 			assert.equal(fetchMock.mock.calls.length, 2);
-			assert.equal(JSON.parse(readFileSync(markerPath(), "utf-8")).tag, "v2.56.0-2");
-		});
-
-		it("warns once and keeps the new install when the replaced one cannot be removed", async () => {
-			const { newer } = await installOlder();
-			const busy = new Error("EBUSY: replaced install in use");
-			const actualRm = mocks.actualFs!.rmSync;
-			mocks.rmSync.mockImplementation((path: string, options: object) => {
-				if (String(path).includes(".git-replaced-")) throw busy;
-				return actualRm(path, options);
-			});
-			const statuses: { type: string; message: string }[] = [];
-			const git = await provision(
-				{ release: newer.release },
-				{ onStatus: (status: { type: string; message: string }) => statuses.push(status) },
-			);
-			assert.equal(JSON.parse(readFileSync(markerPath(), "utf-8")).tag, "v2.56.0-3");
-			assert.equal(git.source, "provisioned");
-			const warnings = statuses.filter((status) => status.type === "warning");
-			assert.equal(warnings.length, 1);
-			assert.match(
-				warnings[0]!.message,
-				/^Could not remove the replaced git install .*\/\.git-replaced-[0-9a-f]{8}-\d+-\d+: Error: EBUSY: replaced install in use$/,
+			assert.equal(
+				JSON.parse(readFileSync(join(dirname(dirname(again.path)), ".atomic-git-release.json"), "utf-8")).tag,
+				"v2.56.0-2",
 			);
 		});
 
@@ -2397,29 +2530,6 @@ describe("git install command on this machine (#4322)", () => {
 			vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("gone", { status: 404 }));
 			const git = await provision({ release: newer.release });
 			assert.equal(git.source, "provisioned");
-		});
-
-		it("restores the older install and attaches the failure when putting the new one in place fails twice", async () => {
-			const { first } = await installOlder();
-			rmSync(markerPath());
-			const denied = Object.assign(new Error("EACCES: rename"), { code: "EACCES" });
-			const lost = new Error("EIO: restore failed");
-			const actualRename = mocks.actualFs!.renameSync;
-			mocks.rmSync.mockImplementation(mocks.actualFs!.rmSync);
-			vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(new Uint8Array(first.bytes)));
-			rmSync(join(installDir, "bin", "git"));
-			mkdirSync(join(installDir, "bin"), { recursive: true });
-			let intoPlace = 0;
-			mocks.renameSync.mockImplementation((from: string, to: string) => {
-				if (String(from).includes(".git-staging-") && to === installDir && ++intoPlace === 2) throw denied;
-				if (String(from).includes(".git-replaced-") && to === installDir) throw lost;
-				return actualRename(from, to);
-			});
-			const error = await provision({ release: first.release }).catch((caught: Error) => caught);
-			assert.ok(isGitUnavailableError(error));
-			assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "promote");
-			assert.equal(error.cause, denied);
-			assert.equal(error.cleanupCause, lost);
 		});
 
 		it("fails the install, publishing nothing, when the release marker cannot be written", async () => {

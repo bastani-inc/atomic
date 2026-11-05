@@ -4,9 +4,12 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { ENV_AGENT_DIR } from "../src/config.js";
 
 const isWindows = process.platform === "win32";
+const ORIGINAL_PATH = process.env.PATH ?? "";
+const BUN_EXECUTABLE = bunExecutable();
 
 function pathOf(env: NodeJS.ProcessEnv): string | undefined {
 	return env[Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH"];
@@ -44,10 +47,27 @@ describe("agent shell git PATH (#4322)", () => {
 	});
 
 	it("puts the provisioned git first, with its environment, when no git is on PATH", () => {
-		writeExecutable(join(gitBinDir, isWindows ? "git.exe" : "git"), '#!/bin/sh\necho "git version 2.56.0"\n');
+		const executable = join(gitBinDir, isWindows ? "git.exe" : "git");
+		if (isWindows) {
+			const source = join(tempDir, "git-version.ts");
+			writeFileSync(source, 'process.stdout.write("git version 2.56.0\\n");\n');
+			mkdirSync(gitBinDir, { recursive: true });
+			const built = spawnSync(BUN_EXECUTABLE, ["build", "--compile", source, "--outfile", executable], {
+				env: { ...process.env, PATH: ORIGINAL_PATH },
+				encoding: "utf8",
+			});
+			assert.equal(built.status, 0, `${built.stderr}${built.stdout}`);
+		} else writeExecutable(executable, '#!/bin/sh\necho "git version 2.56.0"\n');
 		const env = getShellEnv();
 		assert.equal(pathOf(env), [gitBinDir, binDir, emptyDir].join(delimiter));
-		assert.equal(env.GIT_EXEC_PATH, isWindows ? env.GIT_EXEC_PATH : join(binDir, "git", "libexec", "git-core"));
+		const architectureDirectory =
+			process.arch === "arm64" ? "clangarm64" : process.arch === "ia32" ? "mingw32" : "ucrt64";
+		assert.equal(
+			env.GIT_EXEC_PATH,
+			isWindows
+				? join(binDir, "git", architectureDirectory, "libexec", "git-core")
+				: join(binDir, "git", "libexec", "git-core"),
+		);
 	});
 
 	it("leaves PATH to the user's git, even an old one", () => {
@@ -72,8 +92,11 @@ describe("agent shell git PATH (#4322)", () => {
 	});
 
 	it.skipIf(isWindows)("lets an agent shell run the provisioned git", () => {
-		writeExecutable(join(gitBinDir, "git"), '#!/bin/sh\necho "portable git $GIT_EXEC_PATH"\n');
-		const result = spawnSync("/bin/sh", ["-c", "git --version"], { env: getShellEnv(), encoding: "utf-8" });
+		writeExecutable(
+			join(gitBinDir, "git"),
+			'#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.56.0"; exit 0; fi\necho "portable git $GIT_EXEC_PATH"\n',
+		);
+		const result = spawnSync("/bin/sh", ["-c", "git --check-helpers"], { env: getShellEnv(), encoding: "utf-8" });
 		assert.equal(result.stdout.trim(), `portable git ${join(binDir, "git", "libexec", "git-core")}`);
 	});
 });

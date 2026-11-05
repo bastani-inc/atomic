@@ -3,7 +3,7 @@
 
 import { mock } from "bun:test";
 import { appendFileSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { GitRelease } from "../../../packages/coding-agent/src/utils/tools-manager.js";
 
 const archive = readFileSync(process.env.CHAOS_ARCHIVE ?? "");
@@ -26,22 +26,27 @@ const release: GitRelease = {
 	},
 };
 
-if (process.env.CHAOS_STOP_AFTER_REPLACE === "1") {
+if (process.env.CHAOS_STOP_DURING_PUBLISH === "1") {
 	const realFs = { ...(await import("node:fs")) };
 	const realRename = realFs.renameSync;
 	mock.module("fs", () => ({
 		...realFs,
 		renameSync: (from: string, to: string) => {
-			realRename(from, to);
-			if (basename(to).startsWith(".git-replaced-")) {
-				appendFileSync(log, `replaced ${process.pid}\n`);
+			const movingPublishedRoot = from === join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "bin", "git");
+			if (movingPublishedRoot) realRename(from, to);
+			if (movingPublishedRoot || basename(to) === "selected") {
+				appendFileSync(log, `publishing ${process.pid}\n`);
 				process.kill(process.pid, "SIGSTOP");
 			}
+			if (!movingPublishedRoot) realRename(from, to);
 		},
 	}));
 }
-const { resolveGit, withGitProvisionSettingsForTest } = await import(
-	"../../../packages/coding-agent/src/utils/tools-manager.js"
+const {
+	resolveGit,
+	withGitProvisionSettingsForTest,
+}: typeof import("../../../packages/coding-agent/src/utils/tools-manager.js") = await import(
+	process.env.CHAOS_TOOLS_MODULE ?? "../../../packages/coding-agent/src/utils/tools-manager.js"
 );
 
 globalThis.fetch = Object.assign(async () => {
@@ -55,7 +60,9 @@ try {
 		{ release, lockStaleMs: 2_000, lockUpdateMs: 500, lockPollMs: 50 },
 		() => resolveGit(),
 	);
-	process.stdout.write(`${JSON.stringify({ pid: process.pid, ok: true, path: git.path, version: git.version })}\n`);
+	process.stdout.write(
+		`${JSON.stringify({ pid: process.pid, ok: true, path: git.path, root: dirname(dirname(git.path)), version: git.version })}\n`,
+	);
 } catch (error) {
 	const payload =
 		typeof (error as { toJSON?: () => object }).toJSON === "function"

@@ -26,6 +26,7 @@ import {
 } from "../helpers/runtime.js";
 
 const CHILD = join(moduleDir(import.meta.url), "fixtures", "git-provision-chaos-child.ts");
+const READER_CHILD = join(moduleDir(import.meta.url), "fixtures", "git-provision-stable-reader.ts");
 /** Real child processes, a stale-lock takeover (2 s), and archive extraction per installer. */
 const CHAOS_TEST_TIMEOUT_MS = 120_000;
 const INSTALLERS = 8;
@@ -34,6 +35,7 @@ interface ChildResult {
 	readonly pid: number;
 	readonly ok: boolean;
 	readonly path?: string;
+	readonly root?: string;
 	readonly version?: string;
 	readonly error?: { readonly name: string; readonly code?: string };
 }
@@ -41,6 +43,14 @@ interface ChildResult {
 interface Installer {
 	readonly process: SpawnedProcess;
 	readonly result: Promise<ChildResult | undefined>;
+}
+
+interface ReaderResult {
+	readonly ok: boolean;
+	readonly samples?: number;
+	readonly cachedPath?: string;
+	readonly selectedPath?: string;
+	readonly error?: { readonly name: string; readonly code?: string };
 }
 
 describe.skipIf(process.platform === "win32")("git provisioning under contention and faults (#4322)", () => {
@@ -62,11 +72,16 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 		const source = join(root, "archive-src");
 		for (const dir of ["bin", "libexec/git-core", "share/git-core/templates", "etc", "ssl"])
 			mkdirSync(join(source, dir), { recursive: true });
-		writeFileSync(join(source, "bin", "git"), '#!/bin/sh\necho "git version 2.56.0"\n');
+		writeFileSync(
+			join(source, "bin", "git"),
+			'#!/bin/sh\nif [ "$1" = "--check-helpers" ]; then [ -d "$GIT_EXEC_PATH" ] && [ -d "$GIT_TEMPLATE_DIR" ] || exit 71; fi\necho "git version 2.56.0"\n',
+		);
 		chmodSync(join(source, "bin", "git"), 0o755);
 		for (let index = 0; index < 200; index++)
 			writeFileSync(join(source, "share", "git-core", `payload-${index}.txt`), `payload ${index}\n`.repeat(200));
 		writeFileSync(join(source, "COMPLETE"), "complete\n");
+		writeFileSync(join(source, "etc", "gitconfig"), "");
+		writeFileSync(join(source, "ssl", "cacert.pem"), "");
 		archive = join(root, "fake-git.tar.gz");
 		assert.equal(spawnSync("tar", ["czf", archive, "-C", source, "."]).status, 0);
 		sha256 = createHash("sha256").update(readFileSync(archive)).digest("hex");
@@ -131,9 +146,16 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 		}
 	}
 
-	async function waitForReplacedBackup(): Promise<void> {
-		for (let attempt = 0; !readFileSync(log, "utf-8").includes("replaced "); attempt++) {
-			assert.ok(attempt < 1_500, "the installer never renamed the old install aside");
+	async function waitForPublication(): Promise<void> {
+		for (let attempt = 0; !readFileSync(log, "utf-8").includes("publishing "); attempt++) {
+			assert.ok(attempt < 1_500, "the installer never reached publication");
+			await sleep(20);
+		}
+	}
+
+	async function waitForFile(path: string): Promise<void> {
+		for (let attempt = 0; !existsSync(path); attempt++) {
+			assert.ok(attempt < 1_500, "the child did not reach its reader checkpoint");
 			await sleep(20);
 		}
 	}
@@ -154,11 +176,11 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 		})();
 	}
 
-	function assertHealthyInstall(): void {
-		const run = spawnSync(join(installDir, "bin", "git"), ["--version"], { encoding: "utf-8" });
+	function assertHealthyInstall(directory = installDir): void {
+		const run = spawnSync(join(directory, "bin", "git"), ["--version"], { encoding: "utf-8" });
 		assert.equal(run.stdout.trim(), "git version 2.56.0");
 		assert.equal(
-			readdirSync(join(installDir, "share", "git-core")).filter((name) => name.startsWith("payload-")).length,
+			readdirSync(join(directory, "share", "git-core")).filter((name) => name.startsWith("payload-")).length,
 			200,
 		);
 	}
@@ -281,8 +303,9 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 				}
 				const recovered = await startInstaller(0, "v2").result;
 				assert.equal(recovered?.ok, true, JSON.stringify(recovered));
-				assert.equal(JSON.parse(readFileSync(markerPath, "utf-8")).tag, "v2");
-				assertHealthyInstall();
+				assert.ok(recovered?.root);
+				assert.equal(JSON.parse(readFileSync(join(recovered.root, ".atomic-git-release.json"), "utf-8")).tag, "v2");
+				assertHealthyInstall(recovered.root);
 				assert.deepEqual(
 					leftoverStagingPids().filter((pid) => pid !== victim.process.pid),
 					[],
@@ -296,31 +319,77 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 	);
 
 	test(
-		"SIGKILL between renaming the old install aside and publishing the new one is recovered offline from the backup",
+		"cached paths and synchronous readers remain usable while an upgrade is stopped at publication",
 		async () => {
 			const first = await startInstaller(0, "v1").result;
 			assert.equal(first?.ok, true, JSON.stringify(first));
-			const victim = startInstaller(0, "v2", { CHAOS_STOP_AFTER_REPLACE: "1" });
-			await waitForReplacedBackup();
+			const ready = join(root, "reader-ready");
+			const gates = [join(root, "reader-go-1"), join(root, "reader-go-2")];
+			const reports = [join(root, "reader-report-1"), join(root, "reader-report-2")];
+			const reader = spawnProcess([bunExecutable(), READER_CHILD], {
+				env: {
+					...process.env,
+					PATH: toolsPath,
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+					ATOMIC_OFFLINE: "1",
+					CHAOS_SHA256: sha256,
+					CHAOS_TAG: "v2",
+					CHAOS_READER_READY: ready,
+					CHAOS_READER_GATE_1: gates[0],
+					CHAOS_READER_GATE_2: gates[1],
+					CHAOS_READER_REPORT_1: reports[0],
+					CHAOS_READER_REPORT_2: reports[1],
+				},
+				stdout: "pipe",
+				stderr: "inherit",
+			});
+			spawned.push(reader);
+			const readerResult = readStreamText(reader.stdout).then((text) => JSON.parse(text.trim()) as ReaderResult);
+			await waitForFile(ready);
+			const updater = startInstaller(0, "v2", { CHAOS_STOP_DURING_PUBLISH: "1" });
+			await waitForPublication();
+			writeFileSync(gates[0]!, "go");
+			await waitForFile(reports[0]!);
+			const paused = JSON.parse(readFileSync(reports[0]!, "utf8")) as ReaderResult;
+			assert.equal(paused.ok, true, JSON.stringify(paused));
+			assert.equal(paused.cachedPath, first?.path);
+			assert.equal(paused.selectedPath, first?.path);
+			assert.equal(paused.samples, 40);
+			updater.process.kill("SIGCONT");
+			const updated = await updater.result;
+			assert.equal(updated?.ok, true, JSON.stringify(updated));
+			assert.notEqual(updated?.path, first?.path);
+			writeFileSync(gates[1]!, "go");
+			const completed = await readerResult;
+			assert.equal(completed.ok, true, JSON.stringify(completed));
+			assert.equal(completed.samples, 80);
+			assert.equal(completed.cachedPath, first?.path);
+			assert.equal(completed.selectedPath, updated?.path);
+			assert.equal(await reader.exited, 0);
+			assertHealthyInstall();
+			assertHealthyInstall(updated?.root);
+			assert.equal(fetchesBy().length, 2);
+		},
+		CHAOS_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"SIGKILL before the release selection switch preserves the prior install for offline readers",
+		async () => {
+			const first = await startInstaller(0, "v1").result;
+			assert.equal(first?.ok, true, JSON.stringify(first));
+			const victim = startInstaller(0, "v2", { CHAOS_STOP_DURING_PUBLISH: "1" });
+			await waitForPublication();
 			victim.process.kill("SIGKILL");
 			await victim.process.exited;
-			const binDir = join(agentDir, "bin");
-			assert.equal(existsSync(installDir), false, "the kill landed in the gap with nothing published");
-			assert.ok(readdirSync(binDir).some((name) => name.startsWith(".git-replaced-")));
-			const fetchesBefore = fetchesBy().length;
-
-			const recovered = await startInstaller(0, "v2", { ATOMIC_OFFLINE: "1" }).result;
-
-			assert.equal(recovered?.ok, true, JSON.stringify(recovered));
-			assert.equal(recovered?.path, join(installDir, "bin", "git"));
-			assert.equal(fetchesBy().length, fetchesBefore, "offline recovery downloads nothing");
-			assert.equal(JSON.parse(readFileSync(join(installDir, ".atomic-git-release.json"), "utf-8")).tag, "v1");
 			assertHealthyInstall();
-			assert.deepEqual(
-				readdirSync(binDir).filter((name) => name.startsWith(".git-")),
-				[],
-				"the backup was restored, not left behind",
-			);
+			const fetchesBefore = fetchesBy().length;
+			const recovered = await startInstaller(0, "v2", { ATOMIC_OFFLINE: "1" }).result;
+			assert.equal(recovered?.ok, true, JSON.stringify(recovered));
+			assert.equal(recovered?.path, first?.path);
+			assert.equal(fetchesBy().length, fetchesBefore);
+			assertHealthyInstall();
+			assert.deepEqual(leftoverStagingPids(), []);
 		},
 		CHAOS_TEST_TIMEOUT_MS,
 	);

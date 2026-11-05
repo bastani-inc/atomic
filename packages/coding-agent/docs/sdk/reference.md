@@ -278,9 +278,11 @@ spawnSync(git.path, ["status", "--short"], { cwd: projectDir, env: git.env, enco
 
 `ResolvedGit` has `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`: a copy of `process.env` plus, for a provisioned git, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows). Pass `env` to the child process; a `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` you already set is kept. `env` is computed per call, so later changes to `process.env` are picked up.
 
+For a provisioned git, the returned `path` and matching `env` remain usable across automatic updates. Keep them together for a running command; resolve again when starting work with the currently selected release. Do not construct executable or helper paths from the cache directory yourself.
+
 #### Git errors
 
-Every git resolution failure is a `GitProvisionError`, with `code`, `hint` (the remediation), `retryable`, and JSON-safe `fields`. Nothing is installed when one is thrown. Branch on `code` or the class, never on `message`.
+Every git resolution failure is a `GitProvisionError`, with `code`, `hint` (the remediation), `retryable`, and JSON-safe `fields`. Invalid SDK options are rejected before provisioning starts. Failed downloads, checksums, and verification never select a partial installation; failed updates leave earlier resolved paths usable. Branch on `code` or the class, never on `message`.
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
@@ -289,7 +291,7 @@ Every git resolution failure is a `GitProvisionError`, with `code`, `hint` (the 
 | `GitUnavailableError` | `not-installed` | `resolveGitSync()` found no usable git and does not download | `platform`, `arch`, `installDir`, `systemGit?` | `await resolveGit()` first, or install git 2.30.0+ |
 | `GitUnavailableError` | `checksum-mismatch` | The download's SHA-256 differs from the pinned value | `platform`, `arch`, `asset`, `url`, `expectedSha256`, `actualSha256` | Check for a proxy that alters downloads, or install git yourself. Not retryable |
 | `GitUnavailableError` | `download-failed` | The download failed; `httpStatus` is absent for network errors | `platform`, `arch`, `asset`, `url`, `httpStatus?` | Check access to github.com and retry. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
-| `GitUnavailableError` | `install-failed` | Staging, extracting, running, or publishing the download failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, this system cannot run the build, so install git yourself |
+| `GitUnavailableError` | `install-failed` | Reading the selected install, staging, extracting, running, or publishing the download failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, check cache readability or install git yourself if this system cannot run the build |
 | `GitProvisionTimeoutError` | `provision-timeout` | A step exceeded its limit (`phase`: `lock`, `download`, `extract`, `verify`) | `phase`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
 | `GitProvisionConfigError` | `invalid-option` | A `resolveGit()` option had the wrong type; checked before any probe | `source` (`"sdk"`), `field`, `expected` | Fix the option |
 
