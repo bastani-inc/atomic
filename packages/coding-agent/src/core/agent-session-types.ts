@@ -104,6 +104,14 @@ export type AgentSessionEvent =
 			type: "task_cleanup_quarantined";
 			taskId: TaskId;
 			resources: readonly ResourceFailure[];
+	  }
+	/**
+	 * Once per distinct reason a turn's worktree snapshot could not be recorded; the turn itself is unaffected. `reason`
+	 * is the typed error in JSON form, so it crosses RPC; `rehydrateWorkspaceError(reason)` restores its class.
+	 */
+	| {
+			type: "worktree_snapshot_unavailable";
+			reason: import("./worktree-snapshot/errors.ts").SerializedWorkspaceError;
 	  };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -233,6 +241,8 @@ export interface AgentSessionConfig {
 	 */
 	contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	orchestrationContext?: OrchestrationContext;
+	/** Resolved worktree snapshot settings; default: the settings manager's `snapshots.*`. */
+	worktreeSnapshots?: import("./worktree-snapshot/types.ts").WorktreeSnapshotSettings;
 }
 
 export interface ExtensionBindings {

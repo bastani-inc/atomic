@@ -1,6 +1,6 @@
 /** Durable workflow contract and private journal projection. */
 import { closeSync, openSync, readSync } from "node:fs";
-import type { JournalShardUnavailableError } from "@bastani/atomic/storage";
+import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/storage";
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
@@ -293,6 +293,8 @@ export type DurableInactiveDeleteResult =
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
+	/** The root journal used for snapshot blobs and full-sequence frontier reads, when available. */
+	readonly snapshotJournal?: RunJournal;
 	workflowOwnership(
 		workflowId: string,
 	): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available">;
@@ -690,6 +692,7 @@ class JournalProjection {
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
 			resources: handle.resources ?? existing?.handle.resources,
+			snapshots: handle.snapshots ?? existing?.handle.snapshots,
 			...(handle.invocationCwd !== undefined
 				? { invocationCwd: handle.invocationCwd }
 				: existing?.handle.invocationCwd !== undefined
@@ -717,6 +720,9 @@ class JournalProjection {
 				: existing?.handle.gitWorktreeRoot !== undefined
 					? { gitWorktreeRoot: existing.handle.gitWorktreeRoot }
 					: {}),
+			...((handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings) !== undefined
+				? { worktreeRootMappings: handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings }
+				: {}),
 			pendingStageMessages: handle.pendingStageMessages ?? existing?.handle.pendingStageMessages ?? [],
 			...(handle.possibleStages !== undefined
 				? { possibleStages: handle.possibleStages }
@@ -1109,6 +1115,8 @@ class JournalProjection {
 			...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
 			...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
+			...(h.snapshots !== undefined ? { snapshots: h.snapshots } : {}),
+			...(h.worktreeRootMappings !== undefined ? { worktreeRootMappings: h.worktreeRootMappings } : {}),
 			updatedAt: h.updatedAt,
 		};
 	}

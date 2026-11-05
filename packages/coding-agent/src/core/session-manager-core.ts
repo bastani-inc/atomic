@@ -22,6 +22,7 @@ import {
 	createSessionInfoEntry,
 	createSessionSummaryEntry,
 	createThinkingLevelChangeEntry,
+	createWorktreeSnapshotEntry,
 	getEntriesWithoutHeader,
 	getLatestSessionName,
 } from "./session-manager-entries.ts";
@@ -51,6 +52,7 @@ import type {
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 	UsageEntry,
+	WorktreeRestoreHostWarning,
 } from "./session-manager-types.ts";
 import {
 	assertValidSessionId,
@@ -59,6 +61,7 @@ import {
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
 import { listSessionStore } from "./session-store-list.js";
+import { adoptInlineSnapshotBlobs } from "./session-worktree-snapshots.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
 	SessionFormatVersionError,
@@ -70,6 +73,8 @@ import {
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
+import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
+import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
@@ -320,7 +325,11 @@ export class SessionManager {
 			scanExisting: false,
 		});
 		try {
-			const snapshot = await source.loadFile(inputPath);
+			const loaded = await source.loadFile(inputPath);
+			const snapshot = {
+				...loaded,
+				entries: await adoptInlineSnapshotBlobs(loaded.entries, this.store.snapshotBlobs),
+			};
 			const manager = new SessionManager(this.store, cwdOverride ?? snapshot.header.cwd, this.sessionDir);
 			manager.restore(snapshot);
 			await manager.initialize();
@@ -506,6 +515,73 @@ export class SessionManager {
 			await this._appendEntry(entry);
 			return entry.id;
 		});
+	}
+
+	/**
+	 * Record a checkout's snapshot at the current leaf. Pass the snapshot when it is new; omit it to refer to an earlier
+	 * entry's snapshot with the same id (an unchanged capture). `restore` records that the snapshot was restored on
+	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record.
+	 */
+	appendWorktreeSnapshot(
+		root: string,
+		snapshotId: string,
+		snapshot?: WorktreeSnapshot,
+		restore?: WorktreeRootMapping,
+		restoreWarnings: readonly WorktreeRestoreHostWarning[] = [],
+	): Promise<string> {
+		return this.runMutation(async () => {
+			if (snapshot !== undefined && snapshot.id !== snapshotId) {
+				throw new WorkspaceConfigError("sdk", "snapshot", "a snapshot whose id is snapshotId");
+			}
+			if (snapshot === undefined && !this.getWorktreeSnapshotRecords().has(snapshotId)) {
+				throw new WorkspaceConfigError("sdk", "snapshotId", "the id of a snapshot recorded in this session");
+			}
+			if (restore !== undefined && (restore.to !== root || restore.snapshotId !== snapshotId)) {
+				throw new WorkspaceConfigError("sdk", "restore", "a mapping to root for snapshotId");
+			}
+			if (restore === undefined && restoreWarnings.length > 0) {
+				throw new WorkspaceConfigError("sdk", "restoreWarnings", "warnings recorded together with their restore");
+			}
+			const entry = createWorktreeSnapshotEntry(
+				root,
+				snapshotId,
+				snapshot,
+				restore,
+				restoreWarnings,
+				this.byId,
+				this.leafId,
+			);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
+	}
+
+	/** Restores recorded on the active branch, oldest first: work recorded under `from` continues under `to`. */
+	getWorktreeRootMappings(): WorktreeRootMapping[] {
+		return this.getBranch().flatMap((entry) =>
+			entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
+		);
+	}
+
+	/** Every snapshot record in the session, by id. */
+	getWorktreeSnapshotRecords(): Map<string, WorktreeSnapshot> {
+		const records = new Map<string, WorktreeSnapshot>();
+		for (const entry of this.fileEntries) {
+			if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
+		}
+		return records;
+	}
+
+	/** The latest snapshot of each checkout root on the active branch, keyed by the root it was last recorded under. */
+	getLatestWorktreeSnapshots(): Map<string, WorktreeSnapshot> {
+		const records = this.getWorktreeSnapshotRecords();
+		const latest = new Map<string, WorktreeSnapshot>();
+		for (const entry of this.getBranch()) {
+			if (entry.type !== "worktree_snapshot") continue;
+			const snapshot = records.get(entry.snapshotId);
+			if (snapshot) latest.set(entry.root, snapshot);
+		}
+		return latest;
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

@@ -476,6 +476,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.persistent = !(journal instanceof MemoryRunJournal);
 	}
 
+	get snapshotJournal(): Journal {
+		return this.journal;
+	}
+
 	static async open<Journal extends RunJournal>(
 		journal: Journal,
 		options: { ownsJournal?: boolean; runs?: readonly string[] } = {},

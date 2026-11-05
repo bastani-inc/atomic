@@ -11,6 +11,40 @@ import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import type {} from "./authoring/typebox-defaults.js";
 
+export {
+	captureWorktreeSnapshot,
+	findWorkspaceError,
+	GitUnavailableError,
+	type GitUnavailableErrorCode,
+	isGitUnavailableError,
+	isWorkspaceConfigError,
+	isWorkspaceDriftError,
+	isWorkspaceError,
+	isWorkspaceGitError,
+	isWorkspaceRestoreError,
+	isWorkspaceSnapshotError,
+	rehydrateWorkspaceError,
+	restoreWorktreeSnapshot,
+	type SerializedWorkspaceError,
+	serializeWorkspaceError,
+	verifyWorktree,
+	type WorkspaceBinding,
+	WorkspaceConfigError,
+	type WorkspaceConfigErrorCode,
+	WorkspaceDriftError,
+	type WorkspaceDriftErrorCode,
+	WorkspaceError,
+	type WorkspaceErrorCode,
+	WorkspaceGitError,
+	type WorkspaceGitErrorCode,
+	WorkspaceRestoreError,
+	type WorkspaceRestoreErrorCode,
+	WorkspaceSnapshotError,
+	type WorkspaceSnapshotErrorCode,
+	type WorktreeRootMapping,
+	type WorktreeSnapshot,
+	type WorktreeSnapshotSettingsInput,
+} from "@bastani/atomic";
 export type { Static, TSchema } from "typebox";
 export type {
 	ObserveRunJournalRead,
@@ -24,6 +58,17 @@ export type { RunJournalOption, RunJournalSettings } from "./durable/journal/res
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
+export type { WorkflowSnapshotBoundary } from "./shared/worktree-snapshot-contract.js";
+export declare function listWorkflowSnapshotBoundaries(
+	journal: import("@bastani/atomic/storage").RunJournal,
+	runId: string,
+): Promise<readonly import("./shared/worktree-snapshot-contract.js").WorkflowSnapshotBoundary[]>;
+export declare function workflowSnapshotFrontier(
+	boundaries: readonly import("./shared/worktree-snapshot-contract.js").WorkflowSnapshotBoundary[],
+): readonly import("./shared/worktree-snapshot-contract.js").WorkflowSnapshotBoundary[];
+export declare function listResumableWorkflowSnapshots(
+	journal: import("@bastani/atomic/storage").RunJournal,
+): Promise<readonly import("@bastani/atomic").WorktreeSnapshot[]>;
 
 export type {
 	AgentSessionAdapter,
@@ -54,6 +99,7 @@ export type {
 	StageStatus,
 	StageUserMessageContent,
 	StageUserMessageDelivery,
+	StageWorktreeSnapshot,
 	ToolNodeSnapshot,
 	WorkflowAction,
 	WorkflowArtifact,

@@ -393,6 +393,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				)
 					return undefined;
 				if (key === "persistent") return true;
+				if (key === "snapshotJournal") return journal;
 				if (key === "workflowOwnership") return () => "local";
 				if (key === "persistPendingStageMessages") return async () => false;
 				if (key === "reservePendingPrompt")

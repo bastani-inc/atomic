@@ -1,4 +1,4 @@
-import type { SessionEntry, SessionMessageEntry } from "../../session-manager-types.ts";
+import type { SessionEntry, SessionMessageEntry, WorktreeRestoreHostWarning } from "../../session-manager-types.ts";
 import { SessionFormatVersionError } from "./errors.js";
 import { SESSION_FORMAT_VERSION } from "./types.js";
 
@@ -71,9 +71,46 @@ function validPayload(entry: SessionEntry): boolean {
 			return entry.name === undefined || typeof entry.name === "string";
 		case "session_summary":
 			return typeof entry.summary === "string" && typeof entry.summarizedThroughId === "string";
+		case "worktree_snapshot":
+			return (
+				typeof entry.root === "string" &&
+				typeof entry.snapshotId === "string" &&
+				(entry.snapshot === undefined ||
+					(entry.snapshot !== null &&
+						typeof entry.snapshot === "object" &&
+						entry.snapshot.id === entry.snapshotId &&
+						typeof entry.snapshot.tree === "string" &&
+						Array.isArray(entry.snapshot.chain))) &&
+				(entry.restore === undefined ||
+					(entry.restore !== null &&
+						typeof entry.restore === "object" &&
+						typeof entry.restore.from === "string" &&
+						entry.restore.to === entry.root &&
+						entry.restore.snapshotId === entry.snapshotId)) &&
+				(entry.restoreWarnings === undefined ||
+					(entry.restore !== undefined &&
+						Array.isArray(entry.restoreWarnings) &&
+						entry.restoreWarnings.every(validRestoreHostWarning))) &&
+				(entry.blobs === undefined ||
+					(entry.blobs !== null &&
+						typeof entry.blobs === "object" &&
+						!Array.isArray(entry.blobs) &&
+						Object.values(entry.blobs).every((value) => typeof value === "string")))
+			);
 		default:
 			return false;
 	}
+}
+
+const LEFTOVER_KINDS = new Set<string>(["worktree", "record", "records-directory"]);
+
+function validRestoreHostWarning(warning: WorktreeRestoreHostWarning | null): boolean {
+	if (warning?.code === "lfs-objects-unavailable") {
+		return Array.isArray(warning.paths) && warning.paths.every((path) => typeof path === "string");
+	}
+	return (
+		warning?.code === "stale-restore-retained" && typeof warning.path === "string" && LEFTOVER_KINDS.has(warning.kind)
+	);
 }
 
 function validMessage(message: SessionMessageEntry["message"]): boolean {

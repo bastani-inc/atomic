@@ -26,6 +26,7 @@ export interface RunJournalSettings {
 				autoAdvanceAfterSteer?: boolean;
 		  };
 	storage?: StorageSettingsSelection;
+	snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 }
 
 let hostModules: Readonly<Record<string, object>> = {};

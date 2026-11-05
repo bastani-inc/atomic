@@ -11,6 +11,13 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";
+import type { WorktreeRestoreWarning, WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
+
+/** A restore warning that depends on the host and the moment of the restore rather than on the snapshot. */
+export type WorktreeRestoreHostWarning = Extract<
+	WorktreeRestoreWarning,
+	{ readonly code: "lfs-objects-unavailable" | "stale-restore-retained" }
+>;
 
 export const CURRENT_SESSION_VERSION = SESSION_FORMAT_VERSION;
 
@@ -239,6 +246,26 @@ export interface ContextEditEntry extends SessionEntryBase {
 	replacement: { content: ContextEditableContent } | null;
 }
 
+/**
+ * The repository state of one checkout at the end of a turn that ran a file-writing tool. `snapshot` is present when
+ * the state changed; an entry without it refers to the earlier entry whose snapshot has the same `snapshotId`.
+ * `restore` marks the entry written when that snapshot was restored on this host into `root`.
+ */
+export interface WorktreeSnapshotEntry extends SessionEntryBase {
+	type: "worktree_snapshot";
+	root: string;
+	snapshotId: string;
+	snapshot?: WorktreeSnapshot;
+	restore?: WorktreeRootMapping;
+	/** What the restore in `restore` reported that its snapshot record cannot reproduce: LFS objects it could not fetch, and leftovers of interrupted restores on this host. */
+	restoreWarnings?: WorktreeRestoreHostWarning[];
+	/**
+	 * Base64 patch and bundle content by SHA-256, carried by exported session files so a moved file is complete.
+	 * Import verifies each hash and moves the content into the store's blob table.
+	 */
+	blobs?: Record<string, string>;
+}
+
 /** Session entry - has id/parentId for tree structure (returned by "read" methods in SessionManager) */
 export type SessionEntry =
 	| SessionMessageEntry
@@ -253,7 +280,8 @@ export type SessionEntry =
 	| ContextEditEntry
 	| LabelEntry
 	| SessionInfoEntry
-	| SessionSummaryEntry;
+	| SessionSummaryEntry
+	| WorktreeSnapshotEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;

@@ -1478,6 +1478,7 @@ Without an attached workflow UI, a stage that calls `ask_user_question` waits fo
 interface RunOpts {
   readonly adapters?: StageAdapters;
   readonly cwd?: string;
+  readonly snapshots?: WorktreeSnapshotSettingsInput;
   readonly ui?: WorkflowUIAdapter;
   readonly executionMode?: WorkflowExecutionMode;
   readonly usePromptNodesForUi?: boolean;
@@ -1520,6 +1521,25 @@ interface RunOpts {
 ```
 
 Supplies runtime adapters, execution policy, persistence, MCP, cancellation, graph/store integration, continuation metadata, and lifecycle callbacks to `run(...)`. Every field is optional.
+
+#### Worktree snapshots
+
+`snapshots` overrides the session's `snapshots` settings for this run. It accepts `enabled`, `includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, and `fullEvery`. Both `enabled` and `includeUntracked` default to `true`. A checkpoint records its repository snapshot only when Git, a committed repository, and snapshot-capable journal storage are available.
+
+On resume Atomic compares each worktree with its latest recorded snapshot. A worktree whose files match and whose `HEAD` descends from the recorded one (for example after committing the recorded edits) continues in place, and paths reached through symbolic links are compared by the directories they point at. When it differs or is missing, Atomic restores into a fresh worktree under the Atomic home, reports its location, and runs subsequent work there. It never applies a snapshot to the user's existing checkout. `RunSnapshot.worktreeRootMappings` records `{ from, to, snapshotId, tree, restoredAt }`; each stage's `snapshot` summary reports its id, root, head, tree, omitted count and warnings. Restore preserves Git-stored content, not host-specific pre-clean-filter bytes. Files excluded by ignore rules or size limits must be recreated as needed.
+
+From `@bastani/atomic/workflows`, `listWorkflowSnapshotBoundaries(journal, runId)` lists tool and stage boundaries in journal sequence; `workflowSnapshotFrontier(boundaries)` selects the latest for each root. Pass a boundary's `snapshot` and its journal's `snapshotBlobs` to `restoreWorktreeSnapshot` to materialize that boundary explicitly. `listResumableWorkflowSnapshots(journal)` returns snapshots pinned by resumable runs for blob-retention management.
+
+Snapshot errors are also exported from `@bastani/atomic/workflows`. Each has a stable `code`, a remediation `hint`, and a matching `is...` guard; use `findWorkspaceError(error, guard)` to find a workspace error in a cause chain.
+
+| Class | Codes | When and important fields | What to do |
+| --- | --- | --- | --- |
+| `WorkspaceConfigError` | `invalid-setting` | Invalid `snapshots` input; `source`, `field`, `expected` | Correct the named setting before retrying. |
+| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | Git cannot be provided; `platform`, `arch`, `installDir`, `installCommand?`, `systemGit?` | Follow the installation or recovery command in `hint`. |
+| `WorkspaceGitError` | `git-failed` | A Git operation failed; `operation`, `cwd`, `exitCode` | Check repository access and the error's hint. |
+| `WorkspaceSnapshotError` | `not-a-repository`, `unborn-head`, `blob-store-unsupported`, `unreadable-path` | Capture unavailable; `subject` (for `unreadable-path`, the path that could not be read) | Use a committed Git checkout and a snapshot-capable journal; make an unreadable path readable or list it in `.atomic/snapshot-ignore`. |
+| `WorkspaceRestoreError` | `snapshot-not-found`, `blob-missing`, `blob-corrupt`, `commits-unavailable`, `delta-failed`, `tree-mismatch`, `unsafe-target`, `unwritable-path`, `invalid-snapshot` | A restore could not be verified, or a recorded snapshot is malformed (`invalid-snapshot`, with `field` and `reason`); fields include `snapshotId`, `blob`, `deltaIndex`, `head`, `commits`, or `target` as relevant | Follow `hint`; restore required blobs, push the head commit, or free space and fix permissions on `target` before retrying. Resume only runs from journals you trust. |
+| `WorkspaceDriftError` | `tree-drift` | Worktree differs and automatic restore failed; `root`, `expectedHead`, `actualHead`, `expectedTree`, `actualTree`, `snapshotId`, `reason: "restore-failed"`, `restoreCode` | The message names the restore failure and `hint` is its fix; the failure is the `cause`. |
 
 `LocalWorkerOptions` is `{ count: number, definitions: { path: string, exportName: string }[], startupTimeoutMs?: number, leaseMs?: number, heartbeatMs?: number, maxLoadPerCpu?: number, maxWorkerRssBytes?: number }`, where `count` and `startupTimeoutMs` are positive integers, `leaseMs` is an integer of at least `2000`, and `heartbeatMs` is an integer from `100` to half of `leaseMs`. `WorkflowAdmissionOptions` contains optional root `limits`, user-wide `userLimits`, `userDatabase`, and host thresholds. `limits` and `userLimits` accept `session` and `process` counts.
 

@@ -1,4 +1,6 @@
 import { dirname } from "node:path";
+import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
+import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -19,6 +21,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
+import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
@@ -328,6 +331,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 	await this.ensureDeferredStartupComplete();
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+	const resumeStartedAt = new Date().toISOString();
 	try {
 		const result = await this.runtimeHost.switchSession(sessionId, {
 			withSession: options?.withSession,
@@ -342,9 +346,14 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus("Resumed session");
+		showSessionNotices(this, worktreeRestoreNotices(this.sessionManager, resumeStartedAt));
 		this.startSessionRecovery("resume");
 		return result;
 	} catch (error: unknown) {
+		if (isWorkspaceError(error) || isGitUnavailableError(error)) {
+			this.showError(error.message);
+			return { cancelled: true };
+		}
 		if (error instanceof MissingSessionCwdError) {
 			const selectedCwd = await this.promptForMissingSessionCwd(error);
 			if (!selectedCwd) {

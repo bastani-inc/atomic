@@ -6,6 +6,7 @@
  */
 
 export {
+	captureWorktreeSnapshot,
 	type DecisionAnswerFor,
 	type DecisionAnswers,
 	type DecisionBoolAnswer,
@@ -33,6 +34,9 @@ export {
 	DecisionTimeoutError,
 	decide,
 	findDecisionError,
+	findWorkspaceError,
+	GitUnavailableError,
+	type GitUnavailableErrorCode,
 	isDecisionConfigError,
 	isDecisionError,
 	isDecisionModelUnavailableError,
@@ -40,11 +44,39 @@ export {
 	isDecisionProviderError,
 	isDecisionRequestError,
 	isDecisionTimeoutError,
+	isGitUnavailableError,
 	isRetryableDecisionError,
+	isWorkspaceConfigError,
+	isWorkspaceDriftError,
+	isWorkspaceError,
+	isWorkspaceGitError,
+	isWorkspaceRestoreError,
+	isWorkspaceSnapshotError,
 	parseSerializedDecisionError,
 	rehydrateDecisionError,
+	rehydrateWorkspaceError,
+	restoreWorktreeSnapshot,
 	type SerializedDecisionError,
+	type SerializedWorkspaceError,
 	serializeDecisionError,
+	serializeWorkspaceError,
+	verifyWorktree,
+	type WorkspaceBinding,
+	WorkspaceConfigError,
+	type WorkspaceConfigErrorCode,
+	WorkspaceDriftError,
+	type WorkspaceDriftErrorCode,
+	WorkspaceError,
+	type WorkspaceErrorCode,
+	WorkspaceGitError,
+	type WorkspaceGitErrorCode,
+	WorkspaceRestoreError,
+	type WorkspaceRestoreErrorCode,
+	WorkspaceSnapshotError,
+	type WorkspaceSnapshotErrorCode,
+	type WorktreeRootMapping,
+	type WorktreeSnapshot,
+	type WorktreeSnapshotSettingsInput,
 } from "@bastani/atomic";
 export type { Static, TSchema } from "typebox";
 export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
@@ -68,6 +100,12 @@ export type { RunJournalOption, RunJournalSettings } from "./durable/journal/res
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
+export {
+	listResumableWorkflowSnapshots,
+	listWorkflowSnapshotBoundaries,
+	type WorkflowSnapshotBoundary,
+	workflowSnapshotFrontier,
+} from "./durable/worktree-snapshots.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";
 export { createAgentSessionAdapter } from "./extension/wiring.js";
@@ -123,6 +161,7 @@ export type {
 	RunStatus,
 	StageSnapshot,
 	StageStatus,
+	StageWorktreeSnapshot,
 	StoreSnapshot,
 	ToolEvent,
 	ToolNodeSnapshot,

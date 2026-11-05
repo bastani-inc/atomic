@@ -183,6 +183,7 @@ test.skipIf(process.platform === "win32")(
 				{
 					runId,
 					origin: "user",
+					cwd: directory,
 					store,
 					durableBackend: backend,
 					jobs,

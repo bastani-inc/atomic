@@ -42,6 +42,7 @@
               "usage",
               "guides/non-interactive",
               "sessions",
+              "worktree-snapshots",
               "compaction",
               "guides/configuration"
             ]

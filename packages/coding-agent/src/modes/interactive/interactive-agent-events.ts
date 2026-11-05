@@ -28,6 +28,9 @@ import { handleSummarizationRetryEvent } from "./interactive-summarization-retry
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
+/** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
+const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["not-installed", "not-a-repository", "unborn-head"]);
+
 InteractiveModeBase.prototype.maybeShowInstallChangeWarning = function (this: InteractiveModeBase): boolean {
 	if (this.installChangeWarningShown) return true;
 	const change = detectInstallChange();
@@ -553,6 +556,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 
+		case "worktree_snapshot_unavailable": {
+			if (!WORKSPACE_ABSENCE_CODES.has(event.reason.code ?? "")) this.showWarning(event.reason.message);
+			break;
+		}
 		case "model_fallback_end": {
 			if (this.fallbackLoader) {
 				this.fallbackLoader.stop();

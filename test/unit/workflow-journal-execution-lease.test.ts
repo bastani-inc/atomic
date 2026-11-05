@@ -92,6 +92,8 @@ async function createDeferredPauseBackend(journal: Parameters<typeof JournalDura
 }
 
 test("detached quit releases only its own lease after final persistence and permits resume (#3647)", async () => {
+	// The runs work in their temporary directory: in the repository checkout, which other tests change while this one
+	// waits, the resume would see the checkout drift from its worktree snapshot (#4245) and try to restore it.
 	const runId = testRunId("detached-quit-lease");
 	const directory = makeTempDirectory("detached-quit-lease-");
 	const path = join(directory, "journal.sqlite");
@@ -143,10 +145,14 @@ test("detached quit releases only its own lease after final persistence and perm
 	runDetached(
 		definition,
 		{},
-		{ runId, origin: "user", store, durableBackend: backend, toolControlRegistry: controls, jobs },
+		{ runId, origin: "user", store, durableBackend: backend, toolControlRegistry: controls, jobs, cwd: directory },
 	);
 	const quittingJob = jobs.get(runId)!;
-	const unrelated = engineRun(unrelatedDefinition, {}, { runId: "unrelated", store, durableBackend: backend });
+	const unrelated = engineRun(
+		unrelatedDefinition,
+		{},
+		{ runId: "unrelated", store, durableBackend: backend, cwd: directory },
+	);
 	let quitting: ReturnType<typeof quitRun> | undefined;
 	try {
 		await Promise.all([started.promise, unrelatedStarted.promise]);
@@ -176,7 +182,7 @@ test("detached quit releases only its own lease after final persistence and perm
 			let completion: Promise<void> | undefined;
 			const resumed = await resumeDurableWorkflow(runId, {
 				registry: createRegistry().register(definition),
-				baseRunOpts: { store: resumedStore },
+				baseRunOpts: { store: resumedStore, cwd: directory },
 				durableBackend: successor,
 				jobs,
 				onRunAccepted: (id) => {

@@ -14,6 +14,7 @@ function resumeMode(order: string[], recover: (reason: SessionRecoveryReason) =>
 	return {
 		statusContainer: new Container(),
 		settingsManager: { getClearOnShrink: () => false },
+		sessionManager: { getBranch: () => [], getWorktreeSnapshotRecords: () => new Map() },
 		firstRunNoticeVisible: false,
 		ensureDeferredStartupComplete: async () => {},
 		runtimeHost: {

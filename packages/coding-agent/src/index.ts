@@ -104,6 +104,7 @@ export {
 	type TranscriptToolResult,
 	type TranscriptToolResultFormat,
 } from "./core/transcript.js";
+export * from "./core/worktree-snapshot/index.ts";
 export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.js";
 export {
 	type CodemodeToolDetails,
@@ -624,6 +625,8 @@ export {
 	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
+	type WorktreeRestoreHostWarning,
+	type WorktreeSnapshotEntry,
 } from "./core/session-manager.ts";
 export {
 	WORKFLOW_SESSION_METADATA_ENV,
@@ -656,6 +659,15 @@ export {
 	SessionStartTimeoutError,
 	serializeSessionStartError,
 } from "./core/session-start-errors.ts";
+export {
+	formatWorktreeRestoreNotice,
+	formatWorktreeRestoreWarning,
+	listRetainedSessionSnapshots,
+	openSessionInWorktree,
+	type ResumeSessionWorktreeOptions,
+	resumeSessionWorktree,
+	type SessionWorktreeResume,
+} from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
 	type CompactionModelOverride,

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionImportFileNotFoundError } from "../src/core/agent-session-runtime.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
+import { formatWorktreeRestoreNotice, formatWorktreeRestoreWarning } from "../src/core/session-worktree-snapshots.ts";
+import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type PathCommand = "/export" | "/import";
@@ -13,8 +16,13 @@ type ImportCommandContext = {
 	loadingAnimation?: { stop: () => void };
 	statusContainer: { clear: () => void };
 	runtimeHost: { importFromJsonl: (inputPath: string, cwdOverride?: string) => Promise<{ cancelled: boolean }> };
+	sessionManager: {
+		getBranch: () => SessionEntry[];
+		getWorktreeSnapshotRecords: () => Map<string, WorktreeSnapshot>;
+	};
 	showError: (message: string) => void;
-	showStatus: (message: string) => void;
+	showWarning: (message: string) => void;
+	showStatus: (message: string, persist?: boolean) => void;
 	showExtensionConfirm: (title: string, message: string) => Promise<boolean>;
 	handleRuntimeSessionChange: () => Promise<void>;
 	renderCurrentSessionState: () => void;
@@ -24,6 +32,11 @@ type ImportCommandContext = {
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
+
+const sessionWithoutRestores = (): ImportCommandContext["sessionManager"] => ({
+	getBranch: () => [],
+	getWorktreeSnapshotRecords: () => new Map(),
+});
 
 describe("InteractiveMode /import parsing", () => {
 	it("strips quotes from /import path arguments", () => {
@@ -60,7 +73,9 @@ describe("InteractiveMode /import parsing", () => {
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
 			runtimeHost: { importFromJsonl },
+			sessionManager: sessionWithoutRestores(),
 			showError,
+			showWarning: vi.fn(),
 			showStatus,
 			showExtensionConfirm,
 			handleRuntimeSessionChange: vi.fn(async () => {}),
@@ -92,7 +107,9 @@ describe("InteractiveMode /import parsing", () => {
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
 			runtimeHost: { importFromJsonl },
+			sessionManager: sessionWithoutRestores(),
 			showError,
+			showWarning: vi.fn(),
 			showStatus,
 			showExtensionConfirm,
 			handleRuntimeSessionChange: vi.fn(async () => {}),
@@ -111,6 +128,61 @@ describe("InteractiveMode /import parsing", () => {
 		expect(showStatus).toHaveBeenCalledWith("Session imported from: john's/session.jsonl");
 	});
 
+	it("shows each restore the import performed as a lasting line, with the warnings it recorded (#4245)", async () => {
+		const branch: SessionEntry[] = [];
+		const restore = {
+			from: "/recorded/repo",
+			to: "/host/worktrees/restored",
+			snapshotId: "0123456789abcdef0123456789abcdef",
+			tree: "t",
+			restoredAt: "",
+		};
+		const warning = { code: "lfs-objects-unavailable" as const, paths: ["data.bin"] };
+		const importFromJsonl = vi.fn(async () => {
+			const mapping = { ...restore, restoredAt: new Date().toISOString() };
+			branch.push({
+				type: "worktree_snapshot",
+				id: "restore",
+				parentId: null,
+				timestamp: mapping.restoredAt,
+				root: mapping.to,
+				snapshotId: mapping.snapshotId,
+				restore: mapping,
+				restoreWarnings: [warning],
+			});
+			return { cancelled: false };
+		});
+		const showStatus = vi.fn();
+		const showWarning = vi.fn();
+		const context: ImportCommandContext = {
+			statusContainer: { clear: vi.fn() },
+			runtimeHost: { importFromJsonl },
+			sessionManager: { getBranch: () => branch, getWorktreeSnapshotRecords: () => new Map() },
+			showError: vi.fn(),
+			showWarning,
+			showStatus,
+			showExtensionConfirm: vi.fn(async () => true),
+			handleRuntimeSessionChange: vi.fn(async () => {}),
+			renderCurrentSessionState: vi.fn(),
+			handleFatalRuntimeError: vi.fn(async () => {
+				throw new Error("unexpected fatal error");
+			}),
+			promptForMissingSessionCwd: vi.fn(async () => undefined),
+			getPathCommandArgument: interactiveModePrototype.getPathCommandArgument,
+		};
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		const recorded = branch[0];
+		expect(recorded?.type === "worktree_snapshot" && recorded.restore).toBeTruthy();
+		if (recorded?.type !== "worktree_snapshot" || !recorded.restore) return;
+		expect(showStatus.mock.calls).toEqual([
+			["Session imported from: exported.jsonl"],
+			[formatWorktreeRestoreNotice(recorded.restore), true],
+		]);
+		expect(showWarning.mock.calls).toEqual([[formatWorktreeRestoreWarning(warning)]]);
+	});
+
 	it("shows a non-fatal error when /import path does not exist", async () => {
 		const importFromJsonl = vi.fn(async () => {
 			throw new SessionImportFileNotFoundError("/tmp/missing-session.jsonl");
@@ -125,7 +197,9 @@ describe("InteractiveMode /import parsing", () => {
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
 			runtimeHost: { importFromJsonl },
+			sessionManager: sessionWithoutRestores(),
 			showError,
+			showWarning: vi.fn(),
 			showStatus,
 			showExtensionConfirm,
 			handleRuntimeSessionChange: vi.fn(async () => {}),

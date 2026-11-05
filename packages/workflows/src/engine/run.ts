@@ -1,3 +1,8 @@
+import {
+	formatWorktreeRestoreNotice,
+	formatWorktreeRestoreWarning,
+	resolveWorktreeSnapshotSettings,
+} from "@bastani/atomic";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -17,6 +22,11 @@ import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from ".
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
+import {
+	createWorkflowSnapshotRecorder,
+	releaseWorkflowSnapshotAncestry,
+} from "../durable/worktree-snapshot-recorder.js";
+import { mapWorkflowWorktreePath, resolveWorkflowSnapshotFrontier } from "../durable/worktree-snapshots.js";
 import {
 	findWorkflowExitSignal,
 	parentWorkflowExitAbortReason,
@@ -110,6 +120,7 @@ import { toolControlRegistry as defaultToolControlRegistry } from "./run-tool-co
 import { createTrackedToolPrimitive, unconsumedToolFrontier } from "./run-tool-node-lifecycle.js";
 import { EngineRuntime } from "./runtime.js";
 import { isSessionClosedError } from "./session-closed-error.js";
+import { stageWorkingDirectory } from "./stage-workspace.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
 import {
 	findWorkflowGracefulQuit,
@@ -134,6 +145,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	inputs: WorkflowRunInputArgument,
 	opts: RunOpts = {},
 ): Promise<RunResult> {
+	resolveWorktreeSnapshotSettings(opts.snapshots, "sdk", "snapshots");
 	if (!isWorkflowDefinition(def))
 		throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
 	const depth = opts.depth ?? 0;
@@ -158,33 +170,77 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				availableStoreDurableBackendOverride(activeStore))
 			: undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
-	const publicResources =
-		opts.parentRun === undefined &&
-		(opts.localWorkers || opts.admission || backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
-	if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
-	const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
-	try {
-		if (opts.effectiveResources)
-			opts = {
-				...opts,
-				localWorkers: opts.effectiveResources.localWorkers,
-				admission: opts.effectiveResources.admission,
-			};
-		if (publicPool && !opts.admission) opts = { ...opts, admission: {} };
-		if (opts.parentRun === undefined) childWorkerDispatcher(backend, runId)?.validateOptions(opts);
-		if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
-			bindStoreDurableBackend(activeStore, backend);
+	const execute = async () => {
+		const previous = opts.parentRun === undefined ? backend.getWorkflow(runId) : undefined;
+		const journal = backend.snapshotJournal;
+		if (previous !== undefined && journal !== undefined) {
+			const mappings = previous.worktreeRootMappings ?? [];
+			let warningCount = 0;
+			const restored = await resolveWorkflowSnapshotFrontier(journal, runId, {
+				mappings,
+				settings: previous.snapshots ?? opts.snapshots,
+				signal: opts.signal,
+				onRestore: (mapping) =>
+					activeStore.recordNotice({
+						id: `workflow-worktree-restore:${runId}:${mapping.snapshotId}:${mapping.restoredAt}`,
+						runId,
+						level: "info",
+						message: formatWorktreeRestoreNotice(mapping),
+						createdAt: Date.now(),
+					}),
+				onWarning: (warning, mapping) =>
+					activeStore.recordNotice({
+						id: `workflow-worktree-restore-warning:${runId}:${mapping.snapshotId}:${mapping.restoredAt}:${warningCount++}`,
+						runId,
+						level: "warning",
+						message: formatWorktreeRestoreWarning(warning),
+						createdAt: Date.now(),
+					}),
+			});
+			const allMappings = [...mappings, ...restored];
+			if (restored.length > 0) {
+				await backend.commitWorkflowRegistration({ ...previous, worktreeRootMappings: allMappings });
+			}
+			if (allMappings.length > 0) {
+				const cwd = previous.invocationCwd ?? opts.cwd;
+				opts = {
+					...opts,
+					...(cwd === undefined ? {} : { cwd: mapWorkflowWorktreePath(cwd, allMappings) }),
+					worktreeRootMappings: allMappings,
+				};
+			}
 		}
-		const execute = () =>
-			admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
+		const publicResources =
+			opts.parentRun === undefined &&
+			(opts.localWorkers || opts.admission || backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
+		if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
+		const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
+		try {
+			if (opts.effectiveResources)
+				opts = {
+					...opts,
+					localWorkers: opts.effectiveResources.localWorkers,
+					admission: opts.effectiveResources.admission,
+				};
+			if (publicPool && !opts.admission) opts = { ...opts, admission: {} };
+			if (opts.parentRun === undefined) childWorkerDispatcher(backend, runId)?.validateOptions(opts);
+			if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
+				bindStoreDurableBackend(activeStore, backend);
+			}
+			return await admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
 				executeRun(def, resolvedInputs, { ...admittedOpts, store: activeStore, runId, durableBackend: backend }),
 			);
-		return opts.parentRun === undefined && backend instanceof JournalDurableBackend
-			? await backend.withWorkflowLease(runId, execute)
-			: await execute();
-	} finally {
-		await publicPool?.close();
-	}
+		} finally {
+			try {
+				await publicPool?.close();
+			} finally {
+				if (opts.parentRun === undefined && journal !== undefined) releaseWorkflowSnapshotAncestry(journal, runId);
+			}
+		}
+	};
+	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
+		? await backend.withWorkflowLease(runId, execute)
+		: await execute();
 }
 
 async function executeRun(
@@ -306,6 +362,7 @@ async function executeRun(
 		phaseStartedAt: Date.now(),
 		stages: [],
 		toolNodes: [],
+		...(opts.worktreeRootMappings !== undefined ? { worktreeRootMappings: opts.worktreeRootMappings } : {}),
 		pendingStageMessages: [
 			...pendingStageMessagesForDurableRun(rootBackend, runId, opts.parentRun?.rootRunId ?? runId),
 		],
@@ -397,6 +454,23 @@ async function executeRun(
 		workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache);
 		return workflowCwd;
 	};
+	const recordLiveCheckpoint = createWorkflowSnapshotRecorder({
+		backend: durableBackend,
+		rootBackend,
+		rootRunId: opts.parentRun?.rootRunId ?? runId,
+		cwd: resolveWorkflowCwd,
+		settings: opts.snapshots,
+		run: runSnapshot,
+	});
+	const mapStageOptions = <T extends StageOptions>(options: T): T => ({
+		...options,
+		...(options.cwd === undefined
+			? {}
+			: { cwd: mapWorkflowWorktreePath(options.cwd, opts.worktreeRootMappings ?? []) }),
+		...(options.gitWorktreeDir === undefined
+			? {}
+			: { gitWorktreeDir: mapWorkflowWorktreePath(options.gitWorktreeDir, opts.worktreeRootMappings ?? []) }),
+	});
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
 	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
@@ -487,6 +561,11 @@ async function executeRun(
 		nextReplayKey: stageReplayKeyGenerator,
 		completedReplayKeys: completedStageReplayKeys,
 		beforeCheckpoint: drainBeforeCheckpoint,
+		recordLiveCheckpoint,
+		stageDirectories: (stage) => {
+			const cwd = stageWorkingDirectory(stage);
+			return cwd === undefined ? [] : [cwd];
+		},
 	});
 	const durableOnStageEnd = createDurableStageEndRecorder({
 		rootRunId: runId,
@@ -556,6 +635,8 @@ async function executeRun(
 		rootBudget,
 		durableBackend,
 		durableRootBackend: rootBackend,
+		snapshots: opts.snapshots,
+		worktreeRootMappings: opts.worktreeRootMappings,
 	};
 	const runtime = new EngineRuntime({
 		runId,
@@ -627,6 +708,7 @@ async function executeRun(
 		continuationSourceId: opts.continuation?.source.id,
 		...(persistedPossibleStages === undefined ? {} : { possibleStages: persistedPossibleStages }),
 		resources: opts.effectiveResources,
+		snapshots: opts.snapshots,
 	});
 	const { tool, admittedTools, assertFrontierConsumed, abandonInFlightAsCancelled, observedQuitCancellation } =
 		createTrackedToolPrimitive({
@@ -649,6 +731,7 @@ async function executeRun(
 			budget,
 			beforeToolCall: drainCachedStagePersistence,
 			beforeCheckpoint: drainBeforeCheckpoint,
+			recordLiveCheckpoint,
 		});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
@@ -788,6 +871,7 @@ async function executeRun(
 		task: taskRunners.task,
 		recordCachedTask: recordCachedStage,
 		beforeCheckpoint: drainBeforeCheckpoint,
+		recordLiveCheckpoint,
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -831,13 +915,16 @@ async function executeRun(
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
 		stage: (name, options, replayKey) => {
-			const stage = runtime.stage(name, options);
+			const stage = runtime.stage(name, mapStageOptions(options));
 			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;
 			if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
 			return stage;
 		},
 	});
-	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
+	const gatedTask: typeof durableTask = (...args) => {
+		args[1] = mapStageOptions(args[1]);
+		return whenRunning(() => durableTask(...args));
+	};
 	const chain = createChainPrimitive({ runtime, task: gatedTask });
 	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
 	const ui = buildExitGatedUiContext({

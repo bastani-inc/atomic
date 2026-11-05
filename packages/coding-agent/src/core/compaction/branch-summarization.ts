@@ -198,6 +198,7 @@ function getRawMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 		case "session_info":
 		case "session_summary":
 		case "context_compaction":
+		case "worktree_snapshot":
 			return undefined;
 	}
 }

@@ -1,0 +1,278 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { delimiter, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { afterEach, beforeEach, describe, test } from "vitest";
+import {
+	captureWorktreeSnapshot,
+	MemorySnapshotBlobStore,
+	restoreWorktree,
+	setWorktreeSnapshotGit,
+	verifyWorktree,
+	type WorktreeRestoreWarning,
+	type WorktreeSnapshot,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
+import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
+
+const LFS_POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1";
+
+let sandbox: GitSandbox;
+beforeEach(() => {
+	sandbox = new GitSandbox();
+});
+afterEach(() => sandbox.dispose());
+
+async function capture(dir: string, blobs: MemorySnapshotBlobStore): Promise<WorktreeSnapshot> {
+	const result = await captureWorktreeSnapshot(dir, { blobs });
+	assert.equal(result.status, "captured");
+	if (result.status !== "captured") throw new Error("capture failed");
+	return result.snapshot;
+}
+
+const realLfs = (process.env.PATH ?? "")
+	.split(delimiter)
+	.map((directory) => join(directory, "git-lfs"))
+	.find((candidate) => existsSync(candidate));
+
+/**
+ * A `git-lfs` on PATH that logs the remote it is asked to pull from, fails for every remote in `failing`, and hands
+ * every other pull, and every other command, to the real Git LFS.
+ */
+function fakeLfs(failing: readonly string[]): { log: string } {
+	const bin = mkdtempSync(join(sandbox.root, "bin-"));
+	const log = join(sandbox.root, "lfs.log");
+	const script = join(bin, "git-lfs");
+	writeFileSync(
+		script,
+		`#!/bin/sh\n[ "$1" = pull ] || exec '${realLfs}' "$@"\nfor last; do :; done\nprintf '%s|%s|%s\\n' "$*" "$GIT_TERMINAL_PROMPT" "$GIT_SSH_COMMAND" >> '${log}'\ncase ",$FAKE_LFS_FAIL," in *",$last,"*) exit 1 ;; esac\nexec '${realLfs}' "$@"\n`,
+	);
+	chmodSync(script, 0o755);
+	setWorktreeSnapshotGit(async () => ({
+		path: "git",
+		env: { ...sandbox.executable.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LFS_FAIL: failing.join(",") },
+	}));
+	return { log };
+}
+
+/** What Git LFS is asked for when the recorded remote is a local path: its `file://` URL. */
+const asUrl = (path: string): string => pathToFileURL(path).href;
+
+const pulls = (log: string): string[] =>
+	existsSync(log)
+		? readFileSync(log, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => line.split("|")[0]!)
+		: [];
+
+/** Two remotes that both hold the repository and the LFS object of `data.bin`, and a snapshot that names them in this order. */
+async function lfsSnapshotWithTwoRemotes() {
+	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
+	const { clone, remote } = await sandbox.remoteWithClone("repo", {
+		".gitattributes": "*.bin filter=lfs -text\n",
+		"data.bin": "LFS-CONTENT-123\n",
+	});
+	await sandbox.git(clone, "lfs", "push", "--all", "origin");
+	const mirror = sandbox.path("mirror.git");
+	await sandbox.git(sandbox.root, "clone", "-q", "--bare", remote, mirror);
+	cpSync(join(remote, "lfs"), join(mirror, "lfs"), { recursive: true });
+	sandbox.write(join(clone, "notes.txt"), "notes\n");
+	const blobs = new MemorySnapshotBlobStore();
+	const snapshot = { ...(await capture(clone, blobs)), remotes: [remote, mirror] };
+	assert.deepEqual(snapshot.filters?.drivers, ["lfs"]);
+	return { blobs, snapshot, remote, mirror };
+}
+
+async function restoreCollectingWarnings(snapshot: WorktreeSnapshot, blobs: MemorySnapshotBlobStore) {
+	const warnings: WorktreeRestoreWarning[] = [];
+	const restored = await restoreWorktree(snapshot, {
+		blobs,
+		storeDir: sandbox.path("host"),
+		onWarning: (warning) => warnings.push(warning),
+	});
+	return { restored, warnings };
+}
+
+describe.skipIf(process.platform === "win32")("which remotes an LFS restore pulls from (#4245)", () => {
+	test("the first recorded remote that has the objects ends the search, and the pull names it after `--`", async () => {
+		const { blobs, snapshot, remote } = await lfsSnapshotWithTwoRemotes();
+		const { log } = fakeLfs([]);
+		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`]);
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
+	});
+
+	test("a remote that fails is followed by the next one, in the recorded order, with no warning when it succeeds", async () => {
+		const { blobs, snapshot, remote, mirror } = await lfsSnapshotWithTwoRemotes();
+		const { log } = fakeLfs([asUrl(remote)]);
+		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
+	});
+
+	test("when every remote fails the pointer files are reported once, after each remote was tried", async () => {
+		const { blobs, snapshot, remote, mirror } = await lfsSnapshotWithTwoRemotes();
+		const { log } = fakeLfs([asUrl(remote), asUrl(mirror)]);
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
+		assert.deepEqual(warnings, [
+			{ code: "lfs-objects-unavailable", paths: ["data.bin"] },
+			{ code: "filters", filters: { autocrlf: null, eol: null, drivers: ["lfs"] } },
+		]);
+		assert.deepEqual(restored.warnings, warnings);
+	});
+
+	test("a remote that is a URL, not a path, is handed to Git LFS exactly as recorded", async () => {
+		const { blobs, snapshot, remote } = await lfsSnapshotWithTwoRemotes();
+		const url = "https://example.invalid/team/repo.git";
+		const { log } = fakeLfs([asUrl(remote)]);
+		await restoreCollectingWarnings({ ...snapshot, remotes: [remote, url] }, blobs);
+		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`, `pull -- ${url}`]);
+	});
+
+	test("the download can never wait for a person: no terminal prompt, and ssh runs in batch mode", async () => {
+		const { blobs, snapshot } = await lfsSnapshotWithTwoRemotes();
+		const { log } = fakeLfs([]);
+		await restoreCollectingWarnings(snapshot, blobs);
+		const [, prompt, ssh] = readFileSync(log, "utf8").trim().split("|");
+		assert.equal(prompt, "0");
+		assert.match(ssh ?? "", /BatchMode=yes/);
+	});
+
+	test("a repository with no recorded remote has nothing to pull from, so it warns without running git-lfs", async () => {
+		const repository = sandbox.path("solo");
+		mkdirSync(repository);
+		await sandbox.git(repository, "init", "-q");
+		sandbox.write(join(repository, ".gitattributes"), "*.bin filter=lfs -text\n");
+		sandbox.write(join(repository, "data.bin"), `${LFS_POINTER_PREFIX}\noid sha256:${sha256("x\n")}\nsize 2\n`);
+		await sandbox.commitAll(repository, "initial");
+		sandbox.write(join(repository, "notes.txt"), "notes\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = await capture(repository, blobs);
+		assert.deepEqual(snapshot.remotes, []);
+		const { log } = fakeLfs([]);
+		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.deepEqual(pulls(log), []);
+		assert.deepEqual(warnings[0], { code: "lfs-objects-unavailable", paths: ["data.bin"] });
+	});
+});
+
+describe.skipIf(process.platform === "win32")("restoring real Git LFS content (#4245)", () => {
+	test("a file stored in LFS on the remote is restored with its content, with no warning, and the tree verifies", async () => {
+		const version = await sandbox.git(sandbox.root, "lfs", "version").catch((error: unknown) => {
+			throw new Error(
+				`These tests need git-lfs on PATH, and it could not be started: ${String(error)}. Install it with \`git lfs install\` available, for example \`sudo apt-get install git-lfs\`.`,
+			);
+		});
+		assert.match(version, /^git-lfs\//);
+		await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
+		const { clone } = await sandbox.remoteWithClone("repo", {
+			".gitattributes": "*.bin filter=lfs -text\n",
+			"data.bin": "LFS-CONTENT-123\n",
+		});
+		await sandbox.git(clone, "lfs", "push", "--all", "origin");
+		sandbox.write(join(clone, "notes.txt"), "unrelated edit\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = await capture(clone, blobs);
+		assert.deepEqual(snapshot.filters?.drivers, ["lfs"]);
+		const warnings: WorktreeRestoreWarning[] = [];
+		const restored = await restoreWorktree(snapshot, {
+			blobs,
+			storeDir: sandbox.path("host"),
+			onWarning: (warning) => warnings.push(warning),
+		});
+		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "LFS-CONTENT-123\n");
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
+		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
+	});
+});
+
+/** A repository whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's object pushed. */
+async function lfsEditedSnapshot(
+	extra: Record<string, string> = {},
+	pushed: readonly string[] = [],
+	prepare: (clone: string) => void = () => {},
+) {
+	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
+	const { clone } = await sandbox.remoteWithClone("repo", {
+		".gitattributes": "*.bin filter=lfs -text\n",
+		"data.bin": "ORIGINAL-CONTENT\n",
+	});
+	await sandbox.git(clone, "lfs", "push", "--all", "origin");
+	sandbox.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
+	for (const [file, content] of Object.entries(extra)) sandbox.write(join(clone, file), content);
+	prepare(clone);
+	await sandbox.git(clone, "add", "-A");
+	const objects = ["EDITED-CONTENT\n", ...pushed].map(sha256);
+	await sandbox.git(clone, "lfs", "push", "--object-id", "origin", ...objects);
+	await sandbox.git(clone, "reset", "-q");
+	const blobs = new MemorySnapshotBlobStore();
+	return { blobs, snapshot: await capture(clone, blobs) };
+}
+
+describe.skipIf(process.platform === "win32")("restoring LFS files that changed since HEAD (#4245)", () => {
+	test("an edited LFS file whose new object is on the remote is restored with its content and no LFS warning", async () => {
+		const { blobs, snapshot } = await lfsEditedSnapshot();
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
+		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
+		assert.equal(
+			await sandbox.git(restored.path, "diff-files", "--name-only"),
+			"data.bin",
+			"only the edit differs from a fresh index",
+		);
+	});
+
+	test("fetched content that only starts like a pointer is content, and a link named like an LFS file is left alone", async () => {
+		const lookalike = `${LFS_POINTER_PREFIX}\n`.padEnd(1024, "x");
+		const { blobs, snapshot } = await lfsEditedSnapshot({ "lookalike.bin": lookalike }, [lookalike], (clone) =>
+			symlinkSync("missing-target", join(clone, "link.bin")),
+		);
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.equal(readFileSync(join(restored.path, "lookalike.bin"), "utf8"), lookalike);
+		assert.equal(readlinkSync(join(restored.path, "link.bin")), "missing-target");
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
+	});
+
+	test("a new LFS file whose object was never pushed stays a pointer, and only it is reported", async () => {
+		const { blobs, snapshot } = await lfsEditedSnapshot({ "fresh.bin": "NEVER-PUSHED\n" });
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
+		assert.ok(readFileSync(join(restored.path, "fresh.bin"), "utf8").startsWith(LFS_POINTER_PREFIX));
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["lfs-objects-unavailable", "filters"],
+		);
+		assert.deepEqual(warnings[0], { code: "lfs-objects-unavailable", paths: ["fresh.bin"] });
+		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
+	});
+});

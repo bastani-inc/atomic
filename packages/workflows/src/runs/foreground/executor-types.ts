@@ -143,6 +143,8 @@ export interface RunOpts
 	 * Durable workflow backend selected for this execution and its readers.
 	 */
 	durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
+	/** Internal durable mapping of original roots to restored worktrees. */
+	worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
 	/** Internal physical backend used to reconstruct full nested topology through stacked scopes. */
 	durableRootBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
 	/**

@@ -65,6 +65,7 @@ import {
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
+import { showSessionNotices } from "./session-notices.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
@@ -393,11 +394,7 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 	// Show startup warnings
 	const { migratedProviders, startupDiagnostics, initialMessage, initialImages, initialMessages } = this.options;
 
-	for (const diagnostic of startupDiagnostics ?? []) {
-		if (diagnostic.type === "error") this.showError(diagnostic.message);
-		else if (diagnostic.type === "warning") this.showWarning(diagnostic.message);
-		else this.showStatus(diagnostic.message);
-	}
+	showSessionNotices(this, startupDiagnostics);
 
 	if (migratedProviders && migratedProviders.length > 0) {
 		this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);

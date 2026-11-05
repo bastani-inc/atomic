@@ -10,6 +10,7 @@ import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
+import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/session-worktree-snapshots.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
 import type { SessionStore } from "./core/storage/session/types.js";
@@ -288,6 +289,13 @@ async function createSessionManagerWithStore(
 				return openSessionOrExit(resolved.id, store);
 
 			case "global": {
+				if (
+					(await sessionContinuesIn(store, resolved.id, cwd)) ||
+					(settingsManager.getWorktreeSnapshotSettings().enabled &&
+						(await sessionRunsInRecordedCheckout(store, resolved.id)))
+				) {
+					return openSessionOrExit(resolved.id, store);
+				}
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
 				const shouldFork = await promptConfirm("Fork this session into current directory?");
 				if (!shouldFork) {

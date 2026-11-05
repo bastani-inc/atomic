@@ -46,6 +46,8 @@ export type {
 	SessionWorkflowMetadata,
 	ThinkingLevelChangeEntry,
 	UsageEntry,
+	WorktreeRestoreHostWarning,
+	WorktreeSnapshotEntry,
 } from "./session-manager-types.ts";
 export { CURRENT_SESSION_VERSION } from "./session-manager-types.ts";
 export { assertValidSessionId } from "./session-manager-validation.ts";

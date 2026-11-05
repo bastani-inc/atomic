@@ -30,6 +30,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
+import { openSessionInWorktree } from "./session-worktree-snapshots.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -557,6 +558,15 @@ export class AgentSessionRuntime {
 		});
 	}
 
+	/**
+	 * Resumes a session's worktree: verifies its checkout against the last recorded snapshot and, when it drifted or
+	 * is missing, restores it into a fresh worktree under Atomic home. Returns the session opened where it continues.
+	 */
+	private async resumeWorktree(sessionManager: SessionManager, sessionDirectory?: string): Promise<SessionManager> {
+		const settings = this.services.settingsManager.getWorktreeSnapshotSettings();
+		return (await openSessionInWorktree(sessionManager, { settings, sessionDirectory })).sessionManager;
+	}
+
 	async switchSession(
 		sessionId: string,
 		options?: {
@@ -574,11 +584,12 @@ export class AgentSessionRuntime {
 			}
 
 			const previousSessionId = this.session.sessionId;
-			const sessionManager = await this.session.sessionManager.openSessionById(
+			const opened = await this.session.sessionManager.openSessionById(
 				sessionId,
 				options?.cwdOverride,
 				options?.sessionDirectory,
 			);
+			const sessionManager = await this.resumeWorktree(opened, options?.sessionDirectory);
 			assertSessionCwdExists(sessionManager, this.cwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
 				cwd: sessionManager.getCwd(),
@@ -697,7 +708,9 @@ export class AgentSessionRuntime {
 			this.assertOpen();
 			if (beforeResult.cancelled) return beforeResult;
 			const previousSessionId = this.session.sessionId;
-			const sessionManager = await this.session.sessionManager.importFromJsonl(resolvedPath, cwdOverride);
+			const sessionManager = await this.resumeWorktree(
+				await this.session.sessionManager.importFromJsonl(resolvedPath, cwdOverride),
+			);
 			assertSessionCwdExists(sessionManager, this.cwd);
 			await this.teardownCurrent("resume", sessionManager.getSessionId());
 			await this.apply(

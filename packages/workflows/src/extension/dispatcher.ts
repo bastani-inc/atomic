@@ -72,6 +72,7 @@ export interface DispatcherOpts {
 	routeConsoleToLog?: boolean;
 	/** The host's `workflows.localWorkers` settings, validated as such before a run starts. */
 	localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
+	snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 	admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
 	/** Registry of compiled workflow definitions. */
 	registry: WorkflowRegistry;
@@ -244,6 +245,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					[hostWorkerBindings]: true,
 					localWorkers: opts.localWorkers,
 					admission: opts.admission,
+					snapshots: opts.snapshots,
 					registry: opts.registry,
 					adapters: opts.adapters,
 					store: opts.store,

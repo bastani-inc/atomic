@@ -2,11 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	openNodeSqliteDatabase,
 	renderStorageIdentifiers,
+	type SnapshotBlobStore,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteStatement,
 	type SqliteValue,
+	SqlSnapshotBlobStore,
 	type StorageDescriptor,
 	type StorageFailureCause,
 	StorageUnavailableError,
@@ -136,6 +138,7 @@ export class SqlRunJournal implements RunJournal {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
+	readonly snapshotBlobs: SnapshotBlobStore;
 	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
 	private readonly readerFile: string | undefined;
 	private reader?: Promise<SqliteDatabase>;
@@ -146,11 +149,13 @@ export class SqlRunJournal implements RunJournal {
 		tables: Tables,
 		legacy: LegacyJournalRuns | undefined,
 		readerFile: string | undefined,
+		snapshotBlobs: SnapshotBlobStore,
 	) {
 		this.database = database;
 		this.tables = tables;
 		this.legacy = legacy;
 		this.readerFile = readerFile;
+		this.snapshotBlobs = snapshotBlobs;
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.transaction(body)),
 			read: (body) => this.operation(() => this.readSnapshot(body)),
@@ -164,10 +169,11 @@ export class SqlRunJournal implements RunJournal {
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
-		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t);
+		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t, options.prefix);
 		const readerFile = await sharedFile(database, database);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
-		return new SqlRunJournal(database, t, legacy, readerFile);
+		const snapshotBlobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+		return new SqlRunJournal(database, t, legacy, readerFile, snapshotBlobs);
 	}
 
 	/**
@@ -194,7 +200,7 @@ export class SqlRunJournal implements RunJournal {
 		if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
 	}
 
-	private static async initialize(database: SqliteDatabase, t: Tables): Promise<void> {
+	private static async initialize(database: SqliteDatabase, t: Tables, prefix?: string): Promise<void> {
 		// Opening a journal waits for the lock as its writes do: a process starting while another stalls must not fail.
 		await database.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
@@ -219,6 +225,8 @@ export class SqlRunJournal implements RunJournal {
 					${c.holderId} TEXT, ${c.epoch} INTEGER NOT NULL, ${c.renewedAt} INTEGER NOT NULL
 				);
 			`);
+			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
+			await SqlSnapshotBlobStore.initialize(tx, prefix);
 		}, JOURNAL_TRANSACTION);
 	}
 
