@@ -4,7 +4,9 @@
  * queries, and VM-level faults. Every resource is recorded in the manifest before the command that creates it, and
  * every taggable resource carries the run tag and expiry.
  */
-import { azJson, retrying, runCommand, settleAll } from "./commands.mjs";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
+import { azJson, retrying, settleAll } from "./commands.mjs";
 import { DistributedPrerequisiteError, DistributedProvisionError, isCancellation } from "./errors.mjs";
 import { allocateAddressSpaces, subnetOf, subnetRules } from "./network.mjs";
 import { networkNames, RUN_TAG, runTags, tagArguments } from "./ownership.mjs";
@@ -20,27 +22,116 @@ import { networkNames, RUN_TAG, runTags, tagArguments } from "./ownership.mjs";
 const AZ_TIMEOUT_MS = 20 * 60_000;
 
 /**
- * Checks every tool, login and network the run needs, reporting all missing pieces together.
+ * @typedef {{ tool: string, what: string, why: string, fix: string }} ToolRequirement
+ */
+
+/**
+ * The local tools a run needs, given what it will do: a reused topology needs no key, download or build tools, the
+ * sqld image is pulled only when its binary is not cached, and git only resolves a ref that is not already a SHA.
+ * @param {{ reuse: boolean, builder: boolean, sqldCached: boolean, ref: string }} input
+ * @returns {ToolRequirement[]}
+ */
+export function requiredTools({ reuse, builder, sqldCached, ref }) {
+	/** @type {ToolRequirement[]} */
+	const tools = [
+		{
+			tool: "ssh",
+			what: "ssh",
+			why: "the controller reaches private VMs over SSH",
+			fix: "sudo apt-get install -y openssh-client",
+		},
+		{
+			tool: "scp",
+			what: "scp",
+			why: "artifacts and credentials are copied to the VMs over SSH",
+			fix: "sudo apt-get install -y openssh-client",
+		},
+		{
+			tool: "openssl",
+			what: "openssl",
+			why: "the run CA and host certificates are created locally",
+			fix: "sudo apt-get install -y openssl",
+		},
+	];
+	if (!reuse) {
+		tools.push(
+			{
+				tool: "ssh-keygen",
+				what: "ssh-keygen",
+				why: "each run gets its own SSH key",
+				fix: "sudo apt-get install -y openssh-client",
+			},
+			{
+				tool: "curl",
+				what: "curl",
+				why: "the pinned Node runtime and its checksums are downloaded",
+				fix: "sudo apt-get install -y curl",
+			},
+		);
+		if (!sqldCached)
+			tools.push({
+				tool: "docker",
+				what: "docker",
+				why: "the pinned sqld binary is extracted from its image",
+				fix: "install Docker Engine",
+			});
+		if (!/^[0-9a-f]{40}$/.test(ref))
+			tools.push({
+				tool: "git",
+				what: "git",
+				why: "--ref is resolved to a commit SHA with git ls-remote",
+				fix: "sudo apt-get install -y git, or pass a full commit SHA",
+			});
+		if (builder)
+			tools.push({
+				tool: "crabbox",
+				what: "crabbox",
+				why: "the ref is built on a Crabbox runner",
+				fix: "install crabbox, or pass --artifact <tarball>",
+			});
+	}
+	tools.push({
+		tool: "az",
+		what: "az",
+		why: "every resource is created with the az CLI",
+		fix: "install the Azure CLI",
+	});
+	return tools;
+}
+
+/**
+ * Whether an executable named `tool` is on `path` (a PATH value).
+ * @param {string} tool
+ * @param {string} path
+ */
+export function onPath(tool, path) {
+	return path.split(delimiter).some((dir) => {
+		if (dir === "") return false;
+		try {
+			accessSync(join(dir, tool), constants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	});
+}
+
+/**
+ * Checks every tool, login and network the run needs before anything is created, reporting all missing pieces
+ * together. Tools are looked up on PATH without running them; `az` is called only when it is present.
  * @param {import("./commands.mjs").CommandContext} context
- * @param {{ control: import("./config.mjs").ControlNetwork, needsBuilder: boolean, signal?: AbortSignal }} input
+ * @param {{ control: import("./config.mjs").ControlNetwork, tools: readonly ToolRequirement[], path: string, signal?: AbortSignal }} input
  * @returns {Promise<{ subscription: string, controlVnetId: string, controlPrefixes: string[] }>}
  */
-export async function checkPrerequisites(context, { control, needsBuilder, signal }) {
-	/** @type {{ what: string, why: string, fix: string }[]} */
-	const missing = [];
+export async function checkPrerequisites(context, { control, tools, path, signal }) {
+	const missing = tools.filter((item) => !onPath(item.tool, path)).map(({ what, why, fix }) => ({ what, why, fix }));
+	if (missing.some((item) => item.what === "az")) throw new DistributedPrerequisiteError({ missing });
 	/** @type {unknown[]} */
 	const causes = [];
-	const probe = async (
-		/** @type {string} */ tool,
-		/** @type {string[]} */ args,
-		/** @type {{ what: string, why: string, fix: string }} */ item,
-	) => {
+	/** @param {string[]} args @param {{ what: string, why: string, fix: string }} item */
+	const query = async (args, item) => {
 		try {
-			return await runCommand(context, tool, args, {
-				operation: `prerequisite ${item.what}`,
-				timeoutMs: 120_000,
-				signal,
-			});
+			return await azJson(context, args, { operation: `prerequisite ${item.what}`, timeoutMs: 120_000, signal });
 		} catch (error) {
 			if (isCancellation(error, signal)) throw error;
 			missing.push(item);
@@ -48,29 +139,12 @@ export async function checkPrerequisites(context, { control, needsBuilder, signa
 			return undefined;
 		}
 	};
-	await probe("ssh", ["-V"], {
-		what: "ssh",
-		why: "the controller reaches private VMs over SSH",
-		fix: "sudo apt-get install -y openssh-client",
-	});
-	await probe("openssl", ["version"], {
-		what: "openssl",
-		why: "the run CA and host certificates are created locally",
-		fix: "sudo apt-get install -y openssl",
-	});
-	if (needsBuilder)
-		await probe("crabbox", ["--version"], {
-			what: "crabbox",
-			why: "the ref is built on a Crabbox runner",
-			fix: "install crabbox, or pass --artifact <tarball>",
-		});
-	const account = await probe("az", ["account", "show", "--query", "id", "-o", "tsv"], {
+	const account = await query(["account", "show", "--query", "id"], {
 		what: "az login",
 		why: "every resource is created with the az CLI",
 		fix: "az login",
 	});
-	const controlVnet = await probe(
-		"az",
+	const controlVnet = await query(
 		[
 			"network",
 			"vnet",
@@ -81,8 +155,6 @@ export async function checkPrerequisites(context, { control, needsBuilder, signa
 			control.vnet,
 			"--query",
 			"{id:id,prefixes:addressSpace.addressPrefixes}",
-			"-o",
-			"json",
 		],
 		{
 			what: `control VNet ${control.vnet}`,
@@ -91,13 +163,8 @@ export async function checkPrerequisites(context, { control, needsBuilder, signa
 		},
 	);
 	if (missing.length > 0) throw new DistributedPrerequisiteError({ missing, cause: causes[0] });
-	/** @type {{ id: string, prefixes: string[] }} */
-	const shown = JSON.parse(controlVnet?.stdout ?? "{}");
-	return {
-		subscription: account?.stdout.trim() ?? "",
-		controlVnetId: shown.id,
-		controlPrefixes: shown.prefixes ?? [],
-	};
+	const shown = /** @type {{ id: string, prefixes: string[] | null }} */ (controlVnet);
+	return { subscription: String(account), controlVnetId: shown.id, controlPrefixes: shown.prefixes ?? [] };
 }
 
 export class AzureRun {

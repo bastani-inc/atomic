@@ -16,21 +16,27 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACT_REMOTE_DIR, artifactBuildScript } from "./harness/artifact.mjs";
-import { AzureRun, checkPrerequisites } from "./harness/azure.mjs";
+import { AzureRun, checkPrerequisites, requiredTools } from "./harness/azure.mjs";
 import { profileCoverage } from "./harness/chaos.mjs";
 import { azJson, runCommand, settleAll } from "./harness/commands.mjs";
 import {
 	buildPlan,
+	encryptionAtHostSkip,
 	newRunId,
 	parseControlEnv,
 	parseRunArgs,
 	parseTopology,
+	readJsonInput,
+	replayValues,
 	resolveRunOptions,
 	SUITES,
 } from "./harness/config.mjs";
 import {
+	attachCleanupFailure,
+	attachConcurrentFailures,
 	DistributedConfigError,
 	DistributedProvisionError,
+	DistributedTimeoutError,
 	isDistributedTestError,
 	serializeDistributedError,
 } from "./harness/errors.mjs";
@@ -81,35 +87,6 @@ function printError(message, error) {
 	const hint = isDistributedTestError(error) ? error.hint : undefined;
 	const text = error instanceof Error ? error.message : String(error);
 	process.stderr.write(`${message}: ${text}\n${hint === undefined || text.includes(hint) ? "" : `${hint}\n`}`);
-}
-
-/**
- * Replay values recorded by an earlier report.
- * @param {string} path
- */
-function loadReplay(path) {
-	try {
-		const report = JSON.parse(readFileSync(path, "utf8"));
-		const replay = report.replay ?? {};
-		return {
-			ref: replay.sha ?? replay.ref,
-			suite: replay.suite,
-			nodes: replay.nodes === undefined ? undefined : String(replay.nodes),
-			regions: Array.isArray(replay.regions) ? replay.regions.join(",") : undefined,
-			chaos: replay.chaos,
-			seed: replay.seed === undefined ? undefined : String(replay.seed),
-			dbStorage: replay.dbStorage,
-			dbRegion: replay.dbRegion,
-		};
-	} catch {
-		throw new DistributedConfigError({
-			source: "replay",
-			field: "--replay",
-			reason: "unreadable",
-			expected: "a report.json written by an earlier run",
-			actual: path,
-		});
-	}
 }
 
 /**
@@ -203,15 +180,24 @@ async function sqldBinary(context, database, signal) {
 			signal,
 		});
 		const id = created.stdout.trim();
+		/** @type {unknown} */
+		let copyFailure;
 		try {
 			await runCommand(context, "docker", ["cp", `${id}:/bin/sqld`, path], {
 				operation: "copy sqld binary",
 				timeoutMs: 120_000,
 				signal,
 			});
-		} finally {
-			await runCommand(context, "docker", ["rm", id], { operation: "remove sqld container", timeoutMs: 60_000 });
+		} catch (error) {
+			copyFailure = error;
 		}
+		try {
+			await runCommand(context, "docker", ["rm", id], { operation: "remove sqld container", timeoutMs: 60_000 });
+		} catch (error) {
+			if (copyFailure === undefined) throw error;
+			attachCleanupFailure(copyFailure, error);
+		}
+		if (copyFailure !== undefined) throw copyFailure;
 	}
 	const version = await runCommand(context, path, ["--version"], {
 		operation: "sqld version",
@@ -237,7 +223,7 @@ async function buildArtifact(context, { sha, repository, nodeVersion, builder, m
 	const dir = join(CACHE_ROOT, "artifacts");
 	mkdirSync(dir, { recursive: true });
 	const path = join(dir, `atomic-${sha}.tar.zst`);
-	if (existsSync(path)) return { path, digest: await sha256File(path), builder: undefined, cached: true };
+	if (existsSync(path)) return { path, digest: await sha256File(path), cached: true };
 	let slug = builder;
 	let warmed = false;
 	if (slug === undefined) {
@@ -257,15 +243,19 @@ async function buildArtifact(context, { sha, repository, nodeVersion, builder, m
 		warmed = true;
 		manifest.setBuilder(slug);
 	}
+	/** @type {unknown} */
+	let failure;
+	/** @type {{ path: string, digest: string, cached: boolean } | undefined} */
+	let built;
 	try {
 		const script = artifactBuildScript({ sha, repository, nodeVersion, bunVersion: BUN_VERSION });
-		const built = await runCommand(context, "crabbox", ["run", "--id", slug, "--", "bash", "-lc", script], {
+		const output = await runCommand(context, "crabbox", ["run", "--id", slug, "--", "bash", "-lc", script], {
 			operation: "build ref artifact",
 			timeoutMs: 3_600_000,
 			signal,
 			cwd: REPO_ROOT,
 		});
-		const remoteDigest = built.stdout
+		const remoteDigest = output.stdout
 			.trim()
 			.split("\n")
 			.filter((line) => /^[0-9a-f]{64}$/.test(line))
@@ -288,11 +278,21 @@ async function buildArtifact(context, { sha, repository, nodeVersion, builder, m
 			timeoutMs: 10_000,
 			signal,
 		});
-		return { path, digest, builder: warmed ? slug : undefined, cached: false };
+		built = { path, digest, cached: false };
 	} catch (error) {
-		if (warmed) await stopBuilder(context, slug);
-		throw error;
+		failure = error;
 	}
+	if (warmed) {
+		try {
+			await stopBuilder(context, slug);
+			manifest.setBuilder(undefined);
+		} catch (stopFailure) {
+			if (failure === undefined) failure = stopFailure;
+			else attachCleanupFailure(failure, stopFailure);
+		}
+	}
+	if (failure !== undefined || built === undefined) throw failure;
+	return built;
 }
 
 /**
@@ -429,17 +429,14 @@ function saveState(outDir, state) {
  * @returns {RunState}
  */
 function loadState(runId) {
-	try {
-		return JSON.parse(readFileSync(join(STATE_ROOT, runId, "state.json"), "utf8"));
-	} catch {
-		throw new DistributedConfigError({
+	return /** @type {RunState} */ (
+		readJsonInput((path) => readFileSync(path, "utf8"), {
 			source: "cli",
 			field: "--reuse",
-			reason: "unreadable",
+			path: join(STATE_ROOT, runId, "state.json"),
 			expected: "the id of a run kept with --keep whose topology was provisioned",
-			actual: runId,
-		});
-	}
+		})
+	);
 }
 
 async function main() {
@@ -471,20 +468,15 @@ async function main() {
 			process.stdout.write(`${USAGE}\n`);
 			return 0;
 		}
-		const topologyPath = args.topology ?? join(HERE, "topology.json");
-		let json;
-		try {
-			json = JSON.parse(readFileSync(topologyPath, "utf8"));
-		} catch {
-			throw new DistributedConfigError({
+		const read = (/** @type {string} */ path) => readFileSync(path, "utf8");
+		topology = parseTopology(
+			readJsonInput(read, {
 				source: "cli",
 				field: "--topology",
-				reason: "invalid-json",
+				path: args.topology ?? join(HERE, "topology.json"),
 				expected: "a readable JSON topology file",
-				actual: topologyPath,
-			});
-		}
-		topology = parseTopology(json);
+			}),
+		);
 		reused = args.reuse === undefined ? undefined : loadState(args.reuse);
 		const replay =
 			reused !== undefined
@@ -499,7 +491,14 @@ async function main() {
 					}
 				: args.replay === undefined
 					? {}
-					: loadReplay(args.replay);
+					: replayValues(
+							readJsonInput(read, {
+								source: "replay",
+								field: "--replay",
+								path: args.replay,
+								expected: "a report.json written by an earlier run",
+							}),
+						);
 		options = resolveRunOptions(args, topology, { randomSeed: randomInt(2 ** 32), replay });
 		const now = new Date();
 		plan = reused?.plan ?? buildPlan(options, topology, { runId: newRunId(now, randomInt(65536)), now });
@@ -560,8 +559,6 @@ async function main() {
 	log(`run ${plan.runId}${reused === undefined ? "" : " (reused)"}: evidence in ${outDir}`);
 	/** @type {Manifest | undefined} */
 	let manifest = reused === undefined ? undefined : Manifest.load(outDir);
-	/** @type {string | undefined} */
-	let builder;
 	/** @type {RunState | undefined} */
 	let state = reused;
 	/** @type {AzureRun | undefined} */
@@ -612,7 +609,13 @@ async function main() {
 					prerequisites = await timed("prerequisites", () =>
 						checkPrerequisites(context, {
 							control,
-							needsBuilder: reused === undefined && args.artifact === undefined,
+							tools: requiredTools({
+								reuse: reused !== undefined,
+								builder: reused === undefined && args.artifact === undefined,
+								sqldCached: existsSync(join(CACHE_ROOT, "sqld", topology.database.version, "sqld")),
+								ref: options.ref,
+							}),
+							path: process.env.PATH ?? "",
 							signal,
 						}),
 					);
@@ -631,11 +634,9 @@ async function main() {
 							],
 							{ operation: "encryption-at-host feature", timeoutMs: 120_000, signal },
 						);
-						if (feature !== "Registered") {
-							report.nvmeSkip = {
-								code: "encryption-at-host-unavailable",
-								detail: `Microsoft.Compute/EncryptionAtHost is ${String(feature)}; the Premium SSD variant runs instead`,
-							};
+						const skip = encryptionAtHostSkip(options.dbStorage, feature);
+						if (skip !== undefined) {
+							report.nvmeSkip = skip;
 							options.dbStorage = "premium-ssd";
 							plan = buildPlan(options, topology, {
 								runId: plan.runId,
@@ -710,7 +711,6 @@ async function main() {
 								? sha256File(args.artifact).then((digest) => ({
 										path: /** @type {string} */ (args.artifact),
 										digest,
-										builder: /** @type {string | undefined} */ (undefined),
 										cached: true,
 									}))
 								: buildArtifact(context, {
@@ -735,16 +735,10 @@ async function main() {
 						timed("sqld-binary", () => sqldBinary(context, topology.database, signal)),
 					]).then(
 						(values) =>
-							/** @type {[{ path: string, digest: string, builder: string | undefined, cached: boolean }, undefined, { path: string, digest: string }, { path: string, digest: string, version: string }]} */ (
+							/** @type {[{ path: string, digest: string, cached: boolean }, undefined, { path: string, digest: string }, { path: string, digest: string, version: string }]} */ (
 								/** @type {unknown} */ (values)
 							),
 					);
-					builder = artifact.builder;
-					if (builder !== undefined) {
-						await stopBuilder(context, builder);
-						runManifest.setBuilder(undefined);
-						builder = undefined;
-					}
 					report.replay.artifactDigest = artifact.digest;
 					report.environment = { artifactCached: artifact.cached };
 					state = {
@@ -892,6 +886,7 @@ async function main() {
 			},
 			{
 				name: "security-gate",
+				teardownOnFailure: true,
 				run: async () => {
 					const run = current();
 					const { nodes, primary, replica } = /** @type {NonNullable<typeof hosts>} */ (hosts);
@@ -967,13 +962,21 @@ async function main() {
 			}
 		},
 		teardown: async () => {
-			if (builder !== undefined) await stopBuilder(context, builder);
 			const runManifest = /** @type {Manifest} */ (manifest);
 			log("tearing down and proving absence");
 			const cleanup = new AbortController();
+			const budgetMs = 90 * 60_000;
+			const teardownStarted = performance.now();
 			const timer = setTimeout(
-				() => cleanup.abort(new DOMException("teardown budget exhausted", "AbortError")),
-				90 * 60_000,
+				() =>
+					cleanup.abort(
+						new DistributedTimeoutError({
+							phase: "teardown",
+							timeoutMs: budgetMs,
+							elapsedMs: Math.round(performance.now() - teardownStarted),
+						}),
+					),
+				budgetMs,
 			);
 			try {
 				const result = await timed("teardown", () =>
@@ -992,8 +995,19 @@ async function main() {
 						pollMs: 20_000,
 					}),
 				);
+				const leftoverBuilder = runManifest.data.builder;
+				/** @type {unknown} */
+				let builderFailure;
+				if (leftoverBuilder !== undefined) {
+					try {
+						await stopBuilder(context, leftoverBuilder);
+						runManifest.setBuilder(undefined);
+					} catch (error) {
+						builderFailure = error;
+					}
+				}
 				report.teardown = {
-					ok: result.ok,
+					ok: result.ok && builderFailure === undefined,
 					steps: result.steps.map((step) => ({
 						operation: step.operation,
 						ok: step.ok,
@@ -1001,8 +1015,18 @@ async function main() {
 					})),
 					queries: result.queries,
 					remaining: result.remaining,
+					...(leftoverBuilder === undefined
+						? {}
+						: { builder: builderFailure === undefined ? "stopped" : serializeDistributedError(builderFailure) }),
 				};
-				return { ok: result.ok, error: result.error };
+				if (builderFailure === undefined) return { ok: result.ok, error: result.error };
+				return {
+					ok: false,
+					error:
+						result.error === undefined
+							? builderFailure
+							: attachConcurrentFailures(result.error, [builderFailure]),
+				};
 			} finally {
 				clearTimeout(timer);
 			}

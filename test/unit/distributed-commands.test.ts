@@ -6,6 +6,8 @@ import { test } from "vitest";
 import { azJson, redact, retrying, runCommand, settleAll, shellQuote } from "../distributed/harness/commands.mjs";
 import { DistributedCommandError, isDistributedCommandError } from "../distributed/harness/errors.mjs";
 
+const posixOnly = test.skipIf(process.platform === "win32");
+
 test("redaction removes registered secrets, JWTs, bearer headers and private keys", () => {
 	const jwt = "eyJhbGciOiJFZERTQSJ9.eyJwIjp7fX0xxxx.c2lnbmF0dXJlLXZhbHVl";
 	assert.equal(redact(`token=${jwt}`, []), "token=[redacted-jwt]");
@@ -37,7 +39,7 @@ test("shell words are quoted only when they need it", () => {
 	assert.equal(shellQuote("a;b"), "'a;b'");
 });
 
-test("settleAll waits for every operation before failing with the first rejection", async () => {
+test("settleAll waits for every operation, fails with the first rejection and keeps the others", async () => {
 	const finished: string[] = [];
 	const slow = new Promise<void>((resolve) =>
 		setTimeout(() => {
@@ -46,11 +48,17 @@ test("settleAll waits for every operation before failing with the first rejectio
 		}, 30),
 	);
 	const first = new Error("first");
-	await assert.rejects(
-		settleAll([Promise.reject(first), slow, Promise.reject(new Error("second"))]),
-		(error) => error === first,
-	);
+	const second = new Error("second");
+	await assert.rejects(settleAll([Promise.reject(first), slow, Promise.reject(second)]), (error) => {
+		assert.equal(error, first);
+		assert.deepEqual(Reflect.get(first, "concurrentFailures"), [second]);
+		assert.ok(!Object.keys(first).includes("concurrentFailures"));
+		return true;
+	});
 	assert.deepEqual(finished, ["slow"]);
+	const alone = new Error("alone");
+	await assert.rejects(settleAll([Promise.reject(alone), Promise.resolve(1)]), (error) => error === alone);
+	assert.equal(Reflect.get(alone, "concurrentFailures"), undefined);
 	assert.deepEqual(await settleAll<number | string>([Promise.resolve(1), Promise.resolve("two")]), [1, "two"]);
 	assert.deepEqual(await settleAll([]), []);
 });
@@ -110,7 +118,7 @@ test("retrying repeats only retryable failures, up to the attempt limit", async 
 	assert.equal(calls, 1);
 });
 
-test("az output is parsed as JSON, empty output is null, and anything else is a typed failure", async () => {
+posixOnly("az output is parsed as JSON, empty output is null, and anything else is a typed failure", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-az-json-"));
 	const script = (body: string) =>
 		writeFileSync(join(dir, "az"), `#!/bin/sh\necho "$@" >> ${join(dir, "calls")}\n${body}\n`, { mode: 0o755 });
@@ -141,7 +149,7 @@ test("az output is parsed as JSON, empty output is null, and anything else is a 
 	}
 });
 
-test("commands log redacted lines, honour cwd and report signals, long stderr and elapsed time", async () => {
+posixOnly("commands log redacted lines, honour cwd and report signals, long stderr and elapsed time", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-run-"));
 	const log = join(dir, "commands.log");
 	const context = { log, secrets: new Set(["very-secret-value"]) };
@@ -211,7 +219,7 @@ test("commands log redacted lines, honour cwd and report signals, long stderr an
 	assert.equal(redact("Authorization: Bearer   spaced-token-value", []), "Authorization: Bearer   [redacted]");
 });
 
-test("a timeout kills the command's whole process group, so a wrapper's child cannot hold it open", async () => {
+posixOnly("a timeout kills the command's whole process group, so a wrapper's child cannot hold it open", async () => {
 	const context = { secrets: new Set<string>() };
 	const started = performance.now();
 	await assert.rejects(

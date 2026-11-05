@@ -28,7 +28,7 @@
  */
 /**
  * @typedef {{ name: string, code: string, message: string, hint?: string, retryable: boolean, fields: ErrorFields,
- *   cause?: SerializedError, errors?: SerializedError[], cleanupCause?: SerializedError }} SerializedError
+ *   cause?: SerializedError, errors?: SerializedError[], cleanupCause?: SerializedError, concurrentFailures?: SerializedError[] }} SerializedError
  */
 
 /** How deep cause chains are followed when serializing or searching. */
@@ -64,14 +64,15 @@ export class DistributedConfigError extends DistributedTestError {
 	/**
 	 * @param {{ source: "cli" | "topology" | "env" | "replay", field: string,
 	 *   reason: "unknown-flag" | "missing-value" | "required" | "invalid-value" | "unknown-name" | "invalid-json" | "unreadable", expected: string,
-	 *   actual?: FieldValue }} init
+	 *   actual?: FieldValue, cause?: unknown }} init
 	 */
-	constructor({ source, field, reason, expected, actual = null }) {
+	constructor({ source, field, reason, expected, actual = null, cause }) {
 		super({
 			code: "invalid-config",
 			summary: `Invalid distributed-test configuration: ${source} ${field} is ${reason}`,
 			hint: reason === "unknown-flag" ? `Remove ${field}; expected ${expected}.` : `Set ${field} to ${expected}.`,
 			fields: { source, field, reason, expected, actual },
+			cause,
 		});
 	}
 }
@@ -210,7 +211,7 @@ export class DistributedTeardownError extends DistributedTestError {
 		super({
 			code: "teardown-incomplete",
 			summary: `Teardown of run ${runId} left ${remaining.length} resource(s) and ${errors.length} failure(s)`,
-			hint: `Rerun \`node test/distributed/sweep.mjs --run-id ${runId}\` after fixing the failures.`,
+			hint: `Rerun \`node test/distributed/sweep.mjs --run-id ${runId} --force\` after fixing the failures.`,
 			fields: { runId, remaining: [...remaining] },
 			retryable: true,
 		});
@@ -337,6 +338,25 @@ export function attachCleanupFailure(primary, cleanup) {
 }
 
 /**
+ * Keeps `primary` and records the failures of operations that ran beside it, so none is silently dropped.
+ * @template T
+ * @param {T} primary
+ * @param {readonly unknown[]} others
+ * @returns {T}
+ */
+export function attachConcurrentFailures(primary, others) {
+	if (others.length > 0 && typeof primary === "object" && primary !== null) {
+		Object.defineProperty(primary, "concurrentFailures", {
+			value: [...others],
+			enumerable: false,
+			writable: true,
+			configurable: true,
+		});
+	}
+	return primary;
+}
+
+/**
  * JSON form of any thrown value, bounded in depth and safe against cycles.
  * @param {unknown} error
  * @param {number} [depth]
@@ -372,6 +392,8 @@ export function serializeDistributedError(error, depth = 0, seen = new Set()) {
 	if (cleanup !== undefined) out.cleanupCause = nested(cleanup);
 	const errors = Reflect.get(error, "errors");
 	if (Array.isArray(errors)) out.errors = errors.map((item) => nested(item));
+	const concurrent = Reflect.get(error, "concurrentFailures");
+	if (Array.isArray(concurrent)) out.concurrentFailures = concurrent.map((item) => nested(item));
 	return out;
 }
 
@@ -407,5 +429,11 @@ export function rehydrateDistributedError(json) {
 	if (json.cleanupCause !== undefined) attachCleanupFailure(error, rehydrateDistributedError(json.cleanupCause));
 	if (json.errors !== undefined)
 		Object.assign(error, { errors: json.errors.map((item) => rehydrateDistributedError(item)) });
+	if (json.concurrentFailures !== undefined) {
+		attachConcurrentFailures(
+			error,
+			json.concurrentFailures.map((item) => rehydrateDistributedError(item)),
+		);
+	}
 	return error;
 }

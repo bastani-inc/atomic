@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { ARTIFACT_REMOTE_DIR, artifactBuildScript } from "../distributed/harness/artifact.mjs";
 import {
 	catalogIsComplete,
 	dmVolumeScript,
@@ -12,7 +13,9 @@ import {
 	profileCoverage,
 } from "../distributed/harness/chaos.mjs";
 import { CHAOS_PROFILES } from "../distributed/harness/config.mjs";
+import { isDistributedFaultError, rehydrateDistributedError } from "../distributed/harness/errors.mjs";
 import { createRandom, PRNG_NAME } from "../distributed/harness/prng.mjs";
+import { exerciseProfile } from "../distributed/harness/suites.mjs";
 
 test("every advertised chaos profile has a mechanism, an observable effect and a recovery", () => {
 	assert.ok(catalogIsComplete());
@@ -199,4 +202,254 @@ test("counter, netem and catalog parsing edge cases", () => {
 
 test("counter lines must start with the chain name", () => {
 	assert.deepEqual(parseCounters("junk OUTPUT 5\nINPUT 2"), { INPUT: 2 });
+});
+
+type FaultRecord = NonNullable<Awaited<ReturnType<typeof exerciseProfile>>>;
+type Step = (fault: FaultRecord, mark: (event: string) => void) => Promise<void>;
+
+/** Runs one profile with steps that record their order and fail where asked. */
+const exercised = async (
+	failures: Partial<Record<"apply" | "applyAfterInjecting" | "revert" | "recover" | "cleanup", unknown>> = {},
+	options: { profiles?: readonly string[]; signal?: AbortSignal; withoutRevert?: boolean } = {},
+) => {
+	const calls: string[] = [];
+	const logged: string[] = [];
+	const faults: FaultRecord[] = [];
+	const step =
+		(name: "revert" | "recover" | "cleanup"): Step =>
+		async (fault, mark) => {
+			calls.push(name);
+			mark(name);
+			if (name === "recover") fault.recovered = true;
+			if (failures[name] !== undefined) throw failures[name];
+		};
+	const record = await exerciseProfile(
+		{
+			profiles: options.profiles ?? ["partition"],
+			faults,
+			started: performance.now(),
+			log: (line) => logged.push(line),
+			...(options.signal === undefined ? {} : { signal: options.signal }),
+		},
+		{
+			profile: "partition",
+			target: "n1",
+			parameters: { windowMs: 20_000 },
+			apply: async (fault, mark) => {
+				calls.push("apply");
+				if (failures.apply !== undefined) throw failures.apply;
+				fault.applied = true;
+				mark("applied");
+				if (failures.applyAfterInjecting !== undefined) throw failures.applyAfterInjecting;
+				fault.effectObserved = true;
+			},
+			...(options.withoutRevert === true ? {} : { revert: step("revert") }),
+			recover: step("recover"),
+			cleanup: step("cleanup"),
+		},
+	);
+	return { record, calls, logged, faults };
+};
+
+test("a profile applies, reverts, recovers and cleans up in that order, recording each step (#4331)", async () => {
+	const { record, calls, logged, faults } = await exercised();
+	assert.deepEqual(calls, ["apply", "revert", "recover", "cleanup"]);
+	assert.deepEqual(faults, [record]);
+	assert.deepEqual(
+		{ ...record, timeline: undefined },
+		{
+			profile: "partition",
+			target: "n1",
+			parameters: { windowMs: 20_000 },
+			applied: true,
+			effectObserved: true,
+			recovered: true,
+			observed: {},
+			timeline: undefined,
+		},
+	);
+	assert.deepEqual(
+		record?.timeline.map((entry) => entry.event),
+		["begin", "applied", "revert", "recover", "cleanup", "end"],
+	);
+	assert.ok(record?.timeline.every((entry) => Number.isInteger(entry.at) && entry.at >= 0 && entry.at < 10_000));
+	assert.deepEqual(logged, [
+		"partition: begin",
+		"partition: applied",
+		"partition: revert",
+		"partition: recover",
+		"partition: cleanup",
+		"partition: end",
+	]);
+	const skipped = await exercised({}, { profiles: ["sigkill"] });
+	assert.equal(skipped.record, undefined);
+	assert.deepEqual([skipped.calls, skipped.faults, skipped.logged], [[], [], []]);
+	const unreverted = await exercised({}, { withoutRevert: true });
+	assert.deepEqual(unreverted.calls, ["apply", "recover", "cleanup"]);
+});
+
+test("a fault is reverted whenever it was injected, even when observing it failed (#4331)", async () => {
+	const observing = new Error("counters unreadable");
+	const { record, calls } = await exercised({ applyAfterInjecting: observing });
+	assert.deepEqual(calls, ["apply", "revert", "cleanup"]);
+	assert.deepEqual([record?.applied, record?.effectObserved, record?.recovered], [true, false, false]);
+	const error = rehydrateDistributedError(record?.error as NonNullable<FaultRecord["error"]>);
+	assert.ok(isDistributedFaultError(error));
+	assert.deepEqual(Reflect.get(error, "fields"), { profile: "partition", stage: "observe", target: "n1", detail: "" });
+	assert.equal((error.cause as Error).message, "counters unreadable");
+	assert.equal(record?.timeline.at(-1)?.event, `failed: ${error.message}`);
+	assert.ok(!record?.timeline.some((entry) => entry.event === "end"));
+});
+
+test("a fault that was never injected is not reverted, and cleanup still runs (#4331)", async () => {
+	const { record, calls } = await exercised({ apply: new Error("iptables missing") });
+	assert.deepEqual(calls, ["apply", "cleanup"]);
+	assert.equal(Reflect.get(record?.error?.fields ?? {}, "stage"), "apply");
+	assert.deepEqual([record?.applied, record?.effectObserved, record?.recovered], [false, false, false]);
+	assert.equal(record?.error?.cause?.message, "iptables missing");
+	assert.equal(record?.error?.cause?.cleanupCause, undefined);
+});
+
+test("revert and recovery failures are recorded at the recover stage, and later failures never replace the first", async () => {
+	const revertFailure = new Error("rule still present");
+	const reverted = await exercised({ revert: revertFailure });
+	assert.deepEqual(reverted.calls, ["apply", "revert", "cleanup"]);
+	assert.equal(Reflect.get(reverted.record?.error?.fields ?? {}, "stage"), "recover");
+	assert.equal(reverted.record?.error?.cause?.message, "rule still present");
+	const recovering = await exercised({ recover: new Error("acks did not resume") });
+	assert.deepEqual(recovering.calls, ["apply", "revert", "recover", "cleanup"]);
+	assert.equal(Reflect.get(recovering.record?.error?.fields ?? {}, "stage"), "recover");
+	const cleaning = await exercised({ cleanup: new Error("volume busy") });
+	assert.equal(Reflect.get(cleaning.record?.error?.fields ?? {}, "stage"), "recover");
+	assert.equal(cleaning.record?.error?.cause?.message, "volume busy");
+	const observing = new Error("observe failed");
+	const both = await exercised({
+		applyAfterInjecting: observing,
+		revert: new Error("revert failed"),
+		cleanup: "cleanup failed",
+	});
+	assert.deepEqual(both.calls, ["apply", "revert", "cleanup"]);
+	assert.equal(Reflect.get(both.record?.error?.fields ?? {}, "stage"), "observe");
+	assert.equal(both.record?.error?.cause?.message, "observe failed");
+	const later = both.record?.error?.cause?.cleanupCause;
+	assert.deepEqual([later?.name, later?.message], ["AggregateError", "2 later steps of partition failed"]);
+	assert.deepEqual(
+		later?.errors?.map((item) => item.message),
+		["revert failed", "cleanup failed"],
+	);
+	const one = await exercised({ applyAfterInjecting: observing, revert: new Error("only revert failed") });
+	assert.equal(one.record?.error?.cause?.cleanupCause?.message, "only revert failed");
+});
+
+test("a cancellation still reverts and cleans up, then propagates as the cancellation", async () => {
+	const controller = new AbortController();
+	const reason = new Error("operator stopped the run");
+	controller.abort(reason);
+	let thrown: unknown;
+	const faults: FaultRecord[] = [];
+	const calls: string[] = [];
+	try {
+		await exerciseProfile(
+			{ profiles: ["partition"], faults, started: performance.now(), log: () => {}, signal: controller.signal },
+			{
+				profile: "partition",
+				target: "n1",
+				parameters: {},
+				apply: async (fault) => {
+					fault.applied = true;
+					throw reason;
+				},
+				revert: async () => void calls.push("revert"),
+				recover: async () => void calls.push("recover"),
+				cleanup: async () => void calls.push("cleanup"),
+			},
+		);
+	} catch (error) {
+		thrown = error;
+	}
+	assert.equal(thrown, reason);
+	assert.deepEqual(calls, ["revert", "cleanup"]);
+	assert.equal(faults[0]?.error, undefined);
+	const unsignalled = await exercised({ applyAfterInjecting: reason });
+	assert.equal(Reflect.get(unsignalled.record?.error?.fields ?? {}, "stage"), "observe");
+	const abort = new DOMException("stop", "AbortError");
+	const recorded: FaultRecord[] = [];
+	await assert.rejects(
+		exerciseProfile(
+			{ profiles: ["partition"], faults: recorded, started: performance.now(), log: () => {} },
+			{
+				profile: "partition",
+				target: "n1",
+				parameters: {},
+				apply: async () => {
+					throw new Error("iptables missing");
+				},
+				cleanup: async () => {
+					throw abort;
+				},
+			},
+		),
+		(error) => error === abort,
+	);
+	assert.equal(Reflect.get(recorded[0]?.error?.fields ?? {}, "stage"), "apply");
+	assert.equal(recorded[0]?.error?.cause?.cleanupCause?.name, "AbortError");
+	assert.match(String(recorded[0]?.timeline.at(-1)?.event), /^failed: Chaos profile partition could not apply on n1/);
+	await assert.rejects(
+		exerciseProfile(
+			{ profiles: ["partition"], faults: [], started: performance.now(), log: () => {} },
+			{
+				profile: "partition",
+				target: "n1",
+				parameters: {},
+				apply: async (fault) => {
+					fault.applied = true;
+				},
+				revert: async () => {
+					throw abort;
+				},
+				cleanup: async () => void calls.push("cleanup after abort"),
+			},
+		),
+		(error) => error === abort,
+	);
+	assert.equal(calls.at(-1), "cleanup after abort");
+});
+
+test("the artifact build fetches exactly the requested commit, builds it and prints the tarball digest last", () => {
+	const sha = "0123456789abcdef0123456789abcdef01234567";
+	assert.equal(ARTIFACT_REMOTE_DIR, "/tmp/atomic-distributed-test-build");
+	const script = artifactBuildScript({
+		sha,
+		repository: "https://github.com/example/atomic.git",
+		nodeVersion: "v24.22.0",
+		bunVersion: "1.4.4",
+	});
+	assert.deepEqual(script.split("\n"), [
+		"set -euo pipefail",
+		"if ! command -v cc >/dev/null || ! command -v zstd >/dev/null; then sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq build-essential pkg-config unzip zstd git >/dev/null; fi",
+		'export PATH="$HOME/.local/node/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"',
+		'if [ "$(node --version 2>/dev/null)" != "v24.22.0" ]; then mkdir -p "$HOME/.local/node" && curl -fsSL https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz | tar -xJ -C "$HOME/.local/node" --strip-components=1; fi',
+		'if [ "$(bun --version 2>/dev/null)" != "1.4.4" ]; then curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4" >/dev/null; fi',
+		"if ! command -v cargo >/dev/null; then curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null; fi",
+		"rm -rf /tmp/atomic-distributed-test-build && mkdir -p /tmp/atomic-distributed-test-build/atomic && cd /tmp/atomic-distributed-test-build/atomic",
+		"git init -q . && git remote add origin https://github.com/example/atomic.git",
+		`git fetch -q --depth 1 origin ${sha} && git checkout -q FETCH_HEAD`,
+		`test "$(git rev-parse HEAD)" = "${sha}"`,
+		"npm ci --ignore-scripts --no-audit --no-fund >/tmp/adt-npm-ci.log 2>&1 || { tail -40 /tmp/adt-npm-ci.log; exit 1; }",
+		"npm run build >/tmp/adt-build.log 2>&1 || { tail -60 /tmp/adt-build.log; exit 1; }",
+		`printf '{"sha":"%s","node":"%s","builtAt":"%s"}\\n' ${sha} "$(node --version)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .atomic-distributed-artifact.json`,
+		"rm -rf .git",
+		"find . -type d -name target -prune -path '*/crates/*' -exec rm -rf {} + 2>/dev/null || true",
+		"rm -rf target packages/natives/target",
+		"cd /tmp/atomic-distributed-test-build && tar -I 'zstd -T0 -6' -cf atomic.tar.zst atomic",
+		"sha256sum /tmp/atomic-distributed-test-build/atomic.tar.zst | cut -d' ' -f1",
+	]);
+	for (const ref of ["main", sha.toUpperCase(), sha.slice(1), `${sha}0`, `x${sha}`, `${sha}x`, `${sha};rm -rf /`]) {
+		assert.throws(
+			() => artifactBuildScript({ sha: ref, repository: "r", nodeVersion: "v", bunVersion: "b" }),
+			(error) =>
+				error instanceof TypeError && error.message === "artifactBuildScript needs a full lowercase commit SHA",
+			ref,
+		);
+	}
 });

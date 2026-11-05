@@ -2,7 +2,8 @@
 /**
  * Per-run credentials: a private CA and host certificates for the database gateway and replication, an Ed25519 JWT
  * key pair, and namespace-scoped tokens. Every secret is written to a mode-600 file in the run's private directory
- * and moved to hosts as a file; none is ever placed in a command line, a log or the report.
+ * (OpenSSL creates its private keys owner-only) and moved to hosts as a file; none is ever placed in a command line,
+ * a log or the report.
  */
 import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -77,7 +78,6 @@ export async function createRunSecrets(context, { dir, runId, hosts, namespaces,
 			],
 			`create ${name}`,
 		);
-		chmodSync(join(dir, `${name}.key`), 0o600);
 	}
 	for (const host of hosts) {
 		const key = join(dir, `${host.name}.key`);
@@ -91,7 +91,6 @@ export async function createRunSecrets(context, { dir, runId, hosts, namespaces,
 			["req", "-new", ...ec, "-keyout", key, "-out", csr, "-subj", `/CN=${host.name}`],
 			`create ${host.name} key`,
 		);
-		chmodSync(key, 0o600);
 		await openssl(
 			[
 				"x509",

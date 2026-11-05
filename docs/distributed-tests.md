@@ -26,14 +26,19 @@ export ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX=10.0.1.0/24      # CIDR of the cont
 ```
 
 The harness reads the control VNet's address space from Azure and never allocates an overlapping prefix. It checks
-everything below before it creates anything and lists every missing piece in one `DistributedPrerequisiteError`:
+everything below before it creates anything and lists every missing piece in one `DistributedPrerequisiteError`. Tools
+are looked up on `PATH`; `az` is called only once it is found:
 
 - the three variables above, and read access to the control VNet;
-- `az login` with rights to create resource groups, VNets, NSGs, NICs, VMs and peerings, and to add and remove
-  peerings on the control VNet;
-- `ssh`, `scp`, `ssh-keygen`, `openssl`, `curl`, `docker` (to extract the pinned `sqld` binary once) and `git`;
+- `az` and `az login` with rights to create resource groups, VNets, NSGs, NICs, VMs and peerings, and to add and
+  remove peerings on the control VNet;
+- `ssh`, `scp` and `openssl` on every run;
+- `ssh-keygen` and `curl` when the run brings up a new topology rather than reusing one;
+- `docker` when the pinned `sqld` binary is not cached yet (it is extracted from its image once);
+- `git` when `--ref` is not already a full commit SHA;
 - `crabbox` when the ref has to be built. Pass `--artifact <file.tar.zst>` to deploy a tarball you already built, or
-  `--builder <crabbox-id>` to build on a lease you already hold.
+  `--builder <crabbox-id>` to build on a lease you already hold. A lease the harness warmed itself is stopped as soon
+  as the build finishes or fails, and again by teardown if that stop failed.
 
 ## What one run does
 
@@ -51,7 +56,8 @@ everything below before it creates anything and lists every missing piece in one
    replication over mutual TLS, behind a TLS gateway on each database VM's private address.
 5. Runs the security gate. Any failure aborts the run before a scenario starts and tears everything down.
 6. Runs the selected suites and chaos profiles, then checks the invariants.
-7. Tears down in `finally` and proves absence with `az` queries. `--keep` skips teardown; the TTL still applies.
+7. Tears down in `finally` and proves absence with `az` queries. `--keep` skips teardown, except after a failed security
+   gate, which always tears down; the TTL still applies.
 
 ## Default topology
 
@@ -63,9 +69,9 @@ everything below before it creates anything and lists every missing piece in one
 | `db-primary` | sqld primary, Premium SSD data disk | `eastus2` | `Standard_D2s_v7` |
 | `db-replica` | sqld replica in the second region | `westus3` | `Standard_D2s_v7` |
 
-Nodes take the topology's templates in order and are spread over `--regions` round-robin; nodes beyond the templates
-use `extraNode`. `--db-region` moves the replica (the second database tier) to another region. `--db-storage
-local-nvme` puts both database VMs on the local NVMe temporary disk of `Standard_D2ds_v7` with
+`--nodes` accepts 1 to 80. Nodes take the topology's templates in order and are spread over `--regions` round-robin;
+nodes beyond the templates use `extraNode`. `--db-region` moves the replica (the second database tier) to another
+region. `--db-storage local-nvme` puts both database VMs on the local NVMe temporary disk of `Standard_D2ds_v7` with
 `--encryption-at-host true`; when the subscription has not registered `Microsoft.Compute/EncryptionAtHost`, the run
 records the skip reason `encryption-at-host-unavailable` and uses Premium SSD instead. Local NVMe is ephemeral: a
 deallocation erases it.
@@ -128,8 +134,10 @@ feature adds its scenarios to `test/distributed/harness/suites.mjs` and sets `im
 
 A chain of writers holds the lease on one run in the shared journal (the `smoke` namespace on sqld, opened through
 `@bastani/atomic-storage-libsql` from the deployed ref) and appends keyed checkpoints, recording every acknowledged
-append. Each chaos profile is applied to the writer's node or VM, its effect is observed, it is reverted, and the
-writers recover on their own, taking an expired lease over at the next epoch where a writer died. The disk profiles
+append. Each chaos profile is applied to the writer's node or VM and its effect is observed. Whenever the fault was
+applied it is reverted, even when observing it failed, so a failed profile never leaves a partition, qdisc, skewed
+clock, cgroup or device-mapper target behind for the next one. The writers then recover on their own, taking an
+expired lease over at the next epoch where a writer died. The disk profiles
 use local SQLite journals on device-mapper volumes on one node. At the end the suite checks:
 
 - every acknowledged checkpoint is in the journal with the same sequence, epoch and payload digest;
@@ -177,8 +185,8 @@ Azure only removes a NIC from a deallocated VM with at least two NICs.
 same values; explicit flags override them. A seed reproduces choices and their order, not Azure scheduling or packet
 timing.
 
-`--keep` leaves the topology up after the run. `--reuse <run-id>` runs the security gate and the suites again on a
-kept topology, which is the fast way to iterate on a scenario.
+`--keep` leaves the topology up after the run, unless its security gate failed. `--reuse <run-id>` runs the security
+gate and the suites again on a kept topology, which is the fast way to iterate on a scenario.
 
 ## Evidence
 
@@ -238,7 +246,7 @@ Every harness failure is a `DistributedTestError` from `test/distributed/harness
 | `DistributedTimeoutError` | `timeout` | A phase exceeded its budget | Check reachability of the target |
 | `DistributedProvisionError` | `provision-failed` | A resource could not be created or verified | Check quota and SKU availability |
 | `DistributedSecurityError` | `security-check-failed` | The security gate failed; no scenario ran | Fix the configuration named in `violations` |
-| `DistributedFaultError` | `fault-failed` | A profile could not be applied, observed or recovered | Check the node's facts for tool support |
+| `DistributedFaultError` | `fault-failed` | A profile could not be applied, observed or recovered; failures of its revert or cleanup are attached as `cleanupCause` | Check the node's facts for tool support |
 | `DistributedInvariantError` | `invariant-violated` | An invariant failed | A finding against the ref under test |
 | `DistributedFeatureUnavailableError` | `feature-unavailable` | The ref lacks a suite's interface (skip) | Run against a ref with the feature |
 | `DistributedScenarioPendingError` | `scenario-pending` | The ref has the interface but the suite is unwritten (skip) | Write the suite's scenarios |
@@ -249,5 +257,7 @@ Cancellation (Ctrl-C) is reported as `cancelled`, not as a failure, and teardown
 ## Unit tests
 
 `test/unit/distributed-*.test.ts` cover the harness's own logic (configuration, network rules and their effective
-evaluation, ownership and TTL decisions, teardown, invariants, errors, the report, the lifecycle and the sweeper)
-without Azure. They run in the normal unit project.
+evaluation, ownership and TTL decisions, teardown, invariants, errors, fault sequencing, run credentials, the build
+script, the report, the lifecycle and the sweeper) without Azure. They run in the normal unit project. The harness
+itself needs a Linux controller; the tests that depend on POSIX file modes, shell scripts or process groups are
+skipped on Windows.

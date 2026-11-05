@@ -5,7 +5,12 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { DistributedCommandError, DistributedTimeoutError, isRetryableDistributedError } from "./errors.mjs";
+import {
+	attachConcurrentFailures,
+	DistributedCommandError,
+	DistributedTimeoutError,
+	isRetryableDistributedError,
+} from "./errors.mjs";
 
 /**
  * @typedef {{ log?: string, secrets: Set<string> }} CommandContext
@@ -193,14 +198,14 @@ export function shellQuote(word) {
 
 /**
  * Waits for every operation to settle before failing with the first rejection, so no create is still in flight when
- * the caller starts tearing down.
+ * the caller starts tearing down. The other rejections are attached to it as `concurrentFailures`.
  * @template T
  * @param {readonly Promise<T>[]} operations
  * @returns {Promise<T[]>}
  */
 export async function settleAll(operations) {
 	const settled = await Promise.allSettled(operations);
-	const failed = settled.find((result) => result.status === "rejected");
-	if (failed !== undefined) throw failed.reason;
+	const reasons = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+	if (reasons.length > 0) throw attachConcurrentFailures(reasons[0], reasons.slice(1));
 	return settled.map((result) => /** @type {PromiseFulfilledResult<T>} */ (result).value);
 }

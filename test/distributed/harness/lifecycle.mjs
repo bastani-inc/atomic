@@ -2,13 +2,14 @@
 /**
  * The run's lifecycle guarantees, independent of Azure: steps run in order and scenarios start only after every step
  * (including the security gate) succeeded; teardown runs whenever anything was provisioned, unless the caller keeps
- * the topology; a teardown failure is attached to the primary failure and never replaces it; cancellation stays a
+ * the topology, and a kept topology is still torn down when a step marked `teardownOnFailure` (the security gate)
+ * failed; a teardown failure is attached to the primary failure and never replaces it; cancellation stays a
  * cancellation.
  */
 import { attachCleanupFailure, isCancellation } from "./errors.mjs";
 
 /**
- * @typedef {{ name: string, run: () => Promise<void> }} LifecycleStep
+ * @typedef {{ name: string, run: () => Promise<void>, teardownOnFailure?: boolean }} LifecycleStep
  * @typedef {{ ok: boolean, error?: unknown }} TeardownOutcome
  * @typedef {{ completed: string[], scenariosStarted: boolean, error: unknown, cancelled: boolean,
  *   teardown: TeardownOutcome | undefined, teardownSkipped: "kept" | "nothing-provisioned" | undefined }} LifecycleOutcome
@@ -29,10 +30,13 @@ export async function runLifecycle({ steps, scenarios, teardown, provisioned, ke
 		teardown: undefined,
 		teardownSkipped: undefined,
 	};
+	let mustTearDown = false;
 	try {
 		for (const step of steps) {
 			if (signal?.aborted) throw signal.reason;
+			mustTearDown = step.teardownOnFailure === true;
 			await step.run();
+			mustTearDown = false;
 			outcome.completed.push(step.name);
 		}
 		if (signal?.aborted) throw signal.reason;
@@ -42,7 +46,7 @@ export async function runLifecycle({ steps, scenarios, teardown, provisioned, ke
 		outcome.error = error;
 		outcome.cancelled = isCancellation(error, signal);
 	}
-	if (keep) {
+	if (keep && !mustTearDown) {
 		outcome.teardownSkipped = "kept";
 		return outcome;
 	}

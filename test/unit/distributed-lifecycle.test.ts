@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, verify, X509Certificate } from "node:crypto";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "vitest";
+import { dirname, join } from "node:path";
+import { test, vi } from "vitest";
 import {
 	isDistributedConfigError,
 	isDistributedFeatureUnavailableError,
@@ -14,10 +15,12 @@ import {
 import { runLifecycle } from "../distributed/harness/lifecycle.mjs";
 import { Manifest } from "../distributed/harness/manifest.mjs";
 import { overallStatus, renderMarkdown, suiteStatus, writeReport } from "../distributed/harness/report.mjs";
-import { createRunSecrets, loadRunSecrets, mintToken } from "../distributed/harness/secrets.mjs";
+import { createRunSecrets, loadRunSecrets, mintToken, writeSecretFile } from "../distributed/harness/secrets.mjs";
 import { bindViolations, gateVerdict } from "../distributed/harness/security.mjs";
 import { FEATURE_PROBES, featureSkip, parseCapabilities, selectedSuites } from "../distributed/harness/suites.mjs";
 import { parseSweepArgs, sweep } from "../distributed/sweep.mjs";
+
+const posixOnly = test.skipIf(process.platform === "win32");
 
 const lifecycle = (overrides: Partial<Parameters<typeof runLifecycle>[0]> & { log?: string[] } = {}) => {
 	const log = overrides.log ?? [];
@@ -87,6 +90,59 @@ test("a failed security gate starts zero scenarios and still tears down (#4331)"
 	assert.ok(isDistributedSecurityError(outcome.error));
 	assert.equal(outcome.cancelled, false);
 	assert.deepEqual(outcome.teardown, { ok: true });
+});
+
+test("--keep never keeps a topology whose security gate failed (#4331)", async () => {
+	const gateFailure = new Error("gate failed");
+	const run = async (steps: { name: string; fail?: Error; teardownOnFailure?: boolean }[], scenarios?: Error) => {
+		const log: string[] = [];
+		const outcome = await runLifecycle({
+			steps: steps.map(({ name, fail, teardownOnFailure }) => ({
+				name,
+				...(teardownOnFailure === undefined ? {} : { teardownOnFailure }),
+				run: async () => {
+					log.push(name);
+					if (fail !== undefined) throw fail;
+				},
+			})),
+			scenarios: async () => {
+				log.push("scenarios");
+				if (scenarios !== undefined) throw scenarios;
+			},
+			teardown: async () => {
+				log.push("teardown");
+				return { ok: true };
+			},
+			provisioned: () => true,
+			keep: true,
+		});
+		return { log, outcome };
+	};
+	const failedGate = await run([
+		{ name: "provision" },
+		{ name: "security-gate", fail: gateFailure, teardownOnFailure: true },
+	]);
+	assert.deepEqual(failedGate.log, ["provision", "security-gate", "teardown"]);
+	assert.equal(failedGate.outcome.error, gateFailure);
+	assert.equal(failedGate.outcome.teardownSkipped, undefined);
+	assert.deepEqual(failedGate.outcome.teardown, { ok: true });
+	const failedScenario = await run(
+		[{ name: "provision" }, { name: "security-gate", teardownOnFailure: true }],
+		new Error("scenario failed"),
+	);
+	assert.deepEqual(failedScenario.log, ["provision", "security-gate", "scenarios"]);
+	assert.equal(failedScenario.outcome.teardownSkipped, "kept");
+	const failedAfterGate = await run([
+		{ name: "security-gate", teardownOnFailure: true },
+		{ name: "deploy", fail: new Error("deploy failed") },
+	]);
+	assert.deepEqual(failedAfterGate.log, ["security-gate", "deploy"]);
+	assert.equal(failedAfterGate.outcome.teardownSkipped, "kept");
+	const failedProvision = await run([{ name: "provision", fail: new Error("quota"), teardownOnFailure: false }]);
+	assert.equal(failedProvision.outcome.teardownSkipped, "kept");
+	const noSteps = await run([], new Error("scenario failed"));
+	assert.deepEqual(noSteps.log, ["scenarios"]);
+	assert.equal(noSteps.outcome.teardownSkipped, "kept");
 });
 
 test("a teardown failure is attached to the primary failure, or reported on its own", async () => {
@@ -383,7 +439,6 @@ test("the report is rendered from one object and never contains a registered sec
 		assert.ok(!text.includes(token));
 		assert.ok(!text.includes("my-shared-secret-value"));
 	}
-	assert.equal(statSync(paths.json).mode & 0o777, 0o600);
 	assert.equal(JSON.parse(json).paths.markdown, paths.markdown);
 	assert.ok(markdown.startsWith("# Distributed test run adt2611050230-beef\n\nStatus: **passed**"));
 	for (const fragment of [
@@ -422,7 +477,7 @@ test("the report is rendered from one object and never contains a registered sec
 	);
 });
 
-test("tokens are EdDSA JWTs sqld accepts, scoped to the run's namespaces, and stored mode 600", async () => {
+test("tokens are EdDSA JWTs sqld accepts and scoped to the run's namespaces", async () => {
 	const keys = generateKeyPairSync("ed25519");
 	const token = mintToken(keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(), {
 		namespaces: ["smoke"],
@@ -446,9 +501,6 @@ test("tokens are EdDSA JWTs sqld accepts, scoped to the run's namespaces, and st
 		namespaces: ["smoke"],
 		validHours: 6,
 	});
-	for (const file of ["token", "foreign-token", "jwt.key", "jwt.pub", "ca.key", "decoy-ca.key", "db.key"])
-		assert.equal(statSync(join(dir, file)).mode & 0o777, 0o600, file);
-	assert.equal(statSync(dir).mode & 0o777, 0o700);
 	assert.deepEqual([...context.secrets], secrets.tokenValues);
 	const [own, foreign] = secrets.tokenValues;
 	const publicKey = createPublicKey(readFileSync(secrets.jwtPublicKey));
@@ -462,9 +514,150 @@ test("tokens are EdDSA JWTs sqld accepts, scoped to the run's namespaces, and st
 	assert.equal(claims.exp - claims.iat, 300 + 6 * 3600);
 	const certificate = readFileSync(secrets.hostCert("db").cert, "utf8");
 	assert.ok(certificate.startsWith("-----BEGIN CERTIFICATE-----"));
-	const reloaded = loadRunSecrets({ secrets: new Set() }, dir);
-	assert.deepEqual(reloaded.tokenValues, secrets.tokenValues);
-	assert.equal(reloaded.hostCert("db").key, join(dir, "db.key"));
+	const reloadContext = { secrets: new Set<string>(["earlier"]) };
+	const reloaded = loadRunSecrets(reloadContext, dir);
+	assert.deepEqual([...reloadContext.secrets], ["earlier", ...secrets.tokenValues]);
+	const { hostCert: reloadedHost, ...reloadedPaths } = reloaded;
+	const { hostCert: createdHost, ...createdPaths } = secrets;
+	assert.deepEqual(reloadedPaths, createdPaths);
+	assert.deepEqual(createdPaths, {
+		dir,
+		caCert: join(dir, "ca.pem"),
+		decoyCaCert: join(dir, "decoy-ca.pem"),
+		jwtPublicKey: join(dir, "jwt.pub"),
+		token: join(dir, "token"),
+		foreignToken: join(dir, "foreign-token"),
+		tokenValues: secrets.tokenValues,
+	});
+	assert.deepEqual(reloadedHost("db"), createdHost("db"));
+	assert.deepEqual(createdHost("db"), { cert: join(dir, "db.pem"), key: join(dir, "db.key") });
+});
+
+posixOnly("reports, manifests and run secrets are owner-only files (#4331)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "adt-modes-"));
+	const report = writeReport(root, { runId: "r", status: "passed" }, []);
+	const manifest = new Manifest(root, {
+		runId: "r",
+		resourceGroup: "g",
+		expiresAt: "e",
+		subscription: "s",
+		control: { resourceGroup: "c", vnet: "v" },
+		entries: [],
+	});
+	manifest.plan("vm", "r-n1", "g");
+	const dir = join(root, "nested", "secrets");
+	await createRunSecrets(
+		{ secrets: new Set<string>() },
+		{
+			dir,
+			runId: "adt2611050230-beef",
+			hosts: [{ name: "db", ip: "10.60.0.10" }],
+			namespaces: ["smoke"],
+			validHours: 6,
+		},
+	);
+	const mode = (path: string) => statSync(path).mode & 0o777;
+	assert.equal(mode(report.json), 0o600);
+	assert.equal(mode(report.markdown), 0o600);
+	assert.equal(mode(join(root, "manifest.json")), 0o600);
+	assert.equal(mode(dir), 0o700);
+	for (const file of ["token", "foreign-token", "jwt.key", "jwt.pub", "ca.key", "decoy-ca.key", "db.key"])
+		assert.equal(mode(join(dir, file)), 0o600, file);
+	const existing = join(root, "existing");
+	writeFileSync(existing, "old", { mode: 0o644 });
+	chmodSync(existing, 0o644);
+	writeSecretFile(existing, "new");
+	assert.equal(mode(existing), 0o600);
+	assert.equal(readFileSync(existing, "utf8"), "new");
+});
+
+test("run tokens are issued five minutes in the past and expire after the TTL plus that margin", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(1_800_000_000_750));
+	try {
+		const dir = join(mkdtempSync(join(tmpdir(), "adt-claims-")), "secrets");
+		const secrets = await createRunSecrets(
+			{ secrets: new Set<string>() },
+			{ dir, runId: "adt2611050230-beef", hosts: [], namespaces: ["smoke", "other"], validHours: 0.0001 },
+		);
+		for (const value of secrets.tokenValues) {
+			assert.deepEqual(JSON.parse(Buffer.from(value.split(".")[1], "base64url").toString()), {
+				iat: 1_800_000_000 - 300,
+				exp: 1_800_000_000 - 300 + 300 + 1,
+				p: { rw: { ns: ["smoke", "other"] } },
+			});
+		}
+		assert.equal(readFileSync(secrets.token, "utf8"), `${secrets.tokenValues[0]}\n`);
+		assert.equal(readFileSync(secrets.foreignToken, "utf8"), `${secrets.tokenValues[1]}\n`);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("the run CA signs host certificates for the database names and address, valid for the TTL in whole days", async () => {
+	const validity = async (validHours: number) => {
+		const dir = join(mkdtempSync(join(tmpdir(), "adt-certs-")), "secrets");
+		const log = join(dirname(dir), "commands.log");
+		const secrets = await createRunSecrets(
+			{ log, secrets: new Set<string>() },
+			{
+				dir,
+				runId: "adt2611050230-beef",
+				hosts: [{ name: "db-primary", ip: "10.60.0.10" }],
+				namespaces: [],
+				validHours,
+			},
+		);
+		const ca = new X509Certificate(readFileSync(secrets.caCert));
+		const decoy = new X509Certificate(readFileSync(secrets.decoyCaCert));
+		const host = new X509Certificate(readFileSync(secrets.hostCert("db-primary").cert));
+		const days = (certificate: X509Certificate) =>
+			Math.round((Date.parse(certificate.validTo) - Date.parse(certificate.validFrom)) / 86_400_000);
+		return { secrets, ca, decoy, host, log, days: [days(ca), days(decoy), days(host)] };
+	};
+	const { secrets, ca, decoy, host, log, days } = await validity(6);
+	assert.deepEqual(
+		readFileSync(log, "utf8")
+			.split("\n")
+			.filter((line) => line.includes(" $ openssl "))
+			.map((line) => line.slice(line.lastIndexOf("  # ") + 4)),
+		["create ca", "create decoy-ca", "create db-primary key", "sign db-primary certificate"],
+	);
+	const extensions = (path: string) =>
+		execFileSync("openssl", ["x509", "-noout", "-ext", "basicConstraints,keyUsage", "-in", path], {
+			encoding: "utf8",
+		})
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line !== "");
+	for (const path of [secrets.caCert, secrets.decoyCaCert]) {
+		assert.deepEqual(extensions(path), [
+			"X509v3 Basic Constraints: critical",
+			"CA:TRUE",
+			"X509v3 Key Usage: critical",
+			"Certificate Sign, CRL Sign",
+		]);
+	}
+	assert.deepEqual(days, [2, 2, 2]);
+	assert.equal(ca.subject, "CN=atomic-distributed-test adt2611050230-beef CA");
+	assert.equal(decoy.subject, "CN=atomic-distributed-test adt2611050230-beef decoy CA");
+	assert.equal(host.subject, "CN=db-primary");
+	assert.equal(host.issuer, ca.subject);
+	assert.equal(ca.ca, true);
+	assert.equal(decoy.ca, true);
+	assert.equal(host.ca, false);
+	assert.ok(host.verify(ca.publicKey));
+	assert.ok(!host.verify(decoy.publicKey));
+	assert.equal(host.subjectAltName, "DNS:sqld, DNS:db-primary, IP Address:10.60.0.10");
+	assert.deepEqual(host.keyUsage?.sort(), ["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"]);
+	assert.equal(host.publicKey.asymmetricKeyDetails?.namedCurve, "prime256v1");
+	assert.equal(ca.publicKey.asymmetricKeyDetails?.namedCurve, "prime256v1");
+	assert.equal(
+		createPrivateKey(readFileSync(secrets.hostCert("db-primary").key)).asymmetricKeyDetails?.namedCurve,
+		"prime256v1",
+	);
+	assert.deepEqual((await validity(49)).days, [4, 4, 4]);
+	assert.deepEqual((await validity(0)).days, [1, 1, 1]);
 });
 
 test("the manifest records planned resources before creation and survives a reload", () => {
@@ -489,7 +682,6 @@ test("the manifest records planned resources before creation and survives a relo
 		{ kind: "vm", name: "r-n1", scope: "g", state: "created" },
 	]);
 	assert.equal(loaded.data.builder, "slug");
-	assert.equal(statSync(join(dir, "manifest.json")).mode & 0o777, 0o600);
 });
 
 test("the sweeper's flags are validated before any az call", () => {
@@ -990,7 +1182,6 @@ test("the Markdown report renders every section exactly", () => {
 	);
 	const dir = mkdtempSync(join(tmpdir(), "adt-report-modes-"));
 	const paths = writeReport(dir, { runId: "r", status: "passed" }, []);
-	assert.equal(statSync(paths.markdown).mode & 0o777, 0o600);
 	assert.equal(
 		readFileSync(paths.json, "utf8"),
 		`${JSON.stringify({ runId: "r", status: "passed", paths }, null, "\t")}\n`,

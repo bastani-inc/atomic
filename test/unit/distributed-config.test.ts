@@ -4,11 +4,15 @@ import { test } from "vitest";
 import {
 	buildPlan,
 	CHAOS_PROFILES,
+	encryptionAtHostSkip,
+	MAX_NODES,
 	newRunId,
 	parseControlEnv,
 	parseRunArgs,
 	parseTopology,
 	RUN_ID_PATTERN,
+	readJsonInput,
+	replayValues,
 	resolveRunOptions,
 	SUITES,
 } from "../distributed/harness/config.mjs";
@@ -121,9 +125,9 @@ test("renders one configuration error message as a UX contract", () => {
 	const error = configError(() => options(["--ref", "main", "--nodes", "0"]));
 	assert.equal(
 		error.message,
-		"Invalid distributed-test configuration: cli --nodes is invalid-value (invalid-config). Set --nodes to a positive integer.",
+		"Invalid distributed-test configuration: cli --nodes is invalid-value (invalid-config). Set --nodes to an integer from 1 to 80.",
 	);
-	assert.equal(error.hint, "Set --nodes to a positive integer.");
+	assert.equal(error.hint, "Set --nodes to an integer from 1 to 80.");
 	assert.equal(error.retryable, false);
 	assert.equal(error.name, "DistributedConfigError");
 });
@@ -222,6 +226,8 @@ test("rejects every invalid option with its field and reason", () => {
 		[["--ref", "m", "--nodes", "-1"], "--nodes", "invalid-value"],
 		[["--ref", "m", "--nodes", "1.5"], "--nodes", "invalid-value"],
 		[["--ref", "m", "--nodes", "03"], "--nodes", "invalid-value"],
+		[["--ref", "m", "--nodes", "81"], "--nodes", "invalid-value"],
+		[["--ref", "m", "--nodes", "240"], "--nodes", "invalid-value"],
 		[["--ref", "m", "--regions", "eastus2,"], "--regions", "invalid-value"],
 		[["--ref", "m", "--regions", ",eastus2"], "--regions", "invalid-value"],
 		[["--ref", "m", "--chaos", "earthquake"], "--chaos", "unknown-name"],
@@ -492,6 +498,151 @@ test("plans extra nodes, the local-NVMe variant and a second database region", (
 		single.vms.map((vm) => vm.template),
 		["large", "database-primary", "database-replica"],
 	);
+});
+
+test("the largest topology keeps every private address unique and inside its /24", () => {
+	assert.equal(MAX_NODES, 80);
+	const plan = buildPlan(options(["--ref", "main", "--nodes", String(MAX_NODES)]), topology, {
+		runId: "adt2611050230-0003",
+		now: NOW,
+	});
+	const addresses = new Map<string, number[]>();
+	for (const vm of plan.vms) {
+		const used = addresses.get(vm.region) ?? [];
+		used.push(vm.hostIndex, ...(vm.secondaryNic ? [vm.hostIndex + 100] : []));
+		addresses.set(vm.region, used);
+	}
+	for (const [region, used] of addresses) {
+		assert.equal(new Set(used).size, used.length, region);
+		assert.ok(
+			used.every((index) => index >= 4 && index <= 254),
+			region,
+		);
+	}
+	assert.equal(Math.max(...plan.vms.map((vm) => vm.hostIndex)), 20 + MAX_NODES - 1);
+});
+
+test("JSON inputs distinguish an unreadable file from malformed JSON and keep the cause", () => {
+	const missing = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+	const unreadable = configError(() =>
+		readJsonInput(
+			() => {
+				throw missing;
+			},
+			{ source: "cli", field: "--topology", path: "/nope.json", expected: "a readable JSON topology file" },
+		),
+	);
+	assert.deepEqual(unreadable.fields, {
+		source: "cli",
+		field: "--topology",
+		reason: "unreadable",
+		expected: "a readable JSON topology file",
+		actual: "/nope.json",
+	});
+	assert.equal(unreadable.cause, missing);
+	const malformed = configError(() =>
+		readJsonInput(() => "{not json", { source: "replay", field: "--replay", path: "/r.json", expected: "a report" }),
+	);
+	assert.deepEqual(malformed.fields, {
+		source: "replay",
+		field: "--replay",
+		reason: "invalid-json",
+		expected: "a report",
+		actual: "/r.json",
+	});
+	assert.ok(malformed.cause instanceof SyntaxError);
+	const reads: string[] = [];
+	assert.deepEqual(
+		readJsonInput(
+			(path) => {
+				reads.push(path);
+				return '{"a":[1]}';
+			},
+			{ source: "cli", field: "--reuse", path: "/s.json", expected: "state" },
+		),
+		{ a: [1] },
+	);
+	assert.deepEqual(reads, ["/s.json"]);
+});
+
+test("a report's replay section becomes flag values, preferring the resolved SHA", () => {
+	const sha = "0123456789abcdef0123456789abcdef01234567";
+	assert.deepEqual(
+		replayValues({
+			replay: {
+				ref: "main",
+				sha,
+				suite: "smoke",
+				nodes: 3,
+				regions: ["eastus2", "westus3"],
+				chaos: "smoke",
+				seed: 1434725318,
+				dbStorage: "premium-ssd",
+				dbRegion: "westus3",
+				prng: "mulberry32/v1",
+			},
+		}),
+		{
+			ref: sha,
+			suite: "smoke",
+			nodes: "3",
+			regions: "eastus2,westus3",
+			chaos: "smoke",
+			seed: "1434725318",
+			dbStorage: "premium-ssd",
+			dbRegion: "westus3",
+		},
+	);
+	assert.deepEqual(replayValues({ replay: { ref: "main" } }), { ref: "main" });
+	assert.deepEqual(replayValues({ replay: {} }), {});
+	assert.deepEqual(options([], replayValues({ replay: { ref: "main", nodes: 2, seed: 9 } })).nodes, 2);
+	for (const report of [null, "x", {}, { replay: null }, { replay: [] }, { replay: "r" }]) {
+		assert.deepEqual(configError(() => replayValues(report)).fields, {
+			source: "replay",
+			field: "replay",
+			reason: "required",
+			expected: "the replay section of a report.json written by run.mjs",
+			actual: null,
+		});
+	}
+	for (const [key, value] of [
+		["nodes", Number.POSITIVE_INFINITY],
+		["seed", Number.NaN],
+		["suite", true],
+		["ref", { branch: "main" }],
+		["sha", null],
+	] as const) {
+		assert.deepEqual(configError(() => replayValues({ replay: { [key]: value } })).fields, {
+			source: "replay",
+			field: `replay.${key}`,
+			reason: "invalid-value",
+			expected: "a string or a number",
+			actual: JSON.stringify(value),
+		});
+	}
+	for (const regions of ["eastus2", [1], ["a", null]]) {
+		assert.deepEqual(configError(() => replayValues({ replay: { regions } })).fields, {
+			source: "replay",
+			field: "replay.regions",
+			reason: "invalid-value",
+			expected: "an array of region names",
+			actual: JSON.stringify(regions),
+		});
+	}
+});
+
+test("local NVMe falls back only when encryption at host is not registered", () => {
+	assert.equal(encryptionAtHostSkip("local-nvme", "Registered"), undefined);
+	assert.equal(encryptionAtHostSkip("premium-ssd", "NotRegistered"), undefined);
+	assert.equal(encryptionAtHostSkip("premium-ssd", undefined), undefined);
+	assert.deepEqual(encryptionAtHostSkip("local-nvme", "NotRegistered"), {
+		code: "encryption-at-host-unavailable",
+		detail: "Microsoft.Compute/EncryptionAtHost is NotRegistered; the Premium SSD variant runs instead",
+	});
+	assert.deepEqual(encryptionAtHostSkip("local-nvme", null), {
+		code: "encryption-at-host-unavailable",
+		detail: "Microsoft.Compute/EncryptionAtHost is null; the Premium SSD variant runs instead",
+	});
 });
 
 test("the control network comes from the environment, with every missing variable reported together", () => {

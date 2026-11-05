@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "vitest";
-import { AzureRun, checkPrerequisites } from "../distributed/harness/azure.mjs";
+import { AzureRun, checkPrerequisites, onPath, requiredTools } from "../distributed/harness/azure.mjs";
 import { runCommand } from "../distributed/harness/commands.mjs";
 import { buildPlan, parseRunArgs, parseTopology, resolveRunOptions } from "../distributed/harness/config.mjs";
 import {
 	attachCleanupFailure,
+	attachConcurrentFailures,
 	DistributedCommandError,
 	DistributedConfigError,
 	DistributedFaultError,
@@ -48,6 +49,7 @@ const topology = parseTopology(
 const node = process.execPath;
 const control = { resourceGroup: "control-rg", vnet: "control-vnet", sshSourcePrefix: "10.20.1.0/24" };
 const context = () => ({ secrets: new Set<string>() });
+const posixOnly = test.skipIf(process.platform === "win32");
 
 const samples = (): [Error, (value: unknown) => boolean, string][] => [
 	[
@@ -194,6 +196,46 @@ test("a cleanup failure is attached to the primary failure and never replaces it
 	assert.equal(attachCleanupFailure(undefined, cleanup), undefined);
 });
 
+test("failures of operations that ran beside the primary are kept with it, never instead of it", () => {
+	const primary = new DistributedProvisionError({ step: "create VM", resource: "vm" });
+	const others = [
+		new DistributedCommandError({ tool: "curl", operation: "download", exitCode: 6, signal: null }),
+		"text",
+	];
+	assert.equal(attachConcurrentFailures(primary, others), primary);
+	assert.deepEqual(Object.getOwnPropertyDescriptor(primary, "concurrentFailures"), {
+		value: others,
+		enumerable: false,
+		writable: true,
+		configurable: true,
+	});
+	assert.notEqual(Reflect.get(primary, "concurrentFailures"), others);
+	const alone = new Error("alone");
+	assert.equal(attachConcurrentFailures(alone, []), alone);
+	assert.ok(!Object.hasOwn(alone, "concurrentFailures"));
+	assert.equal(attachConcurrentFailures("text", others), "text");
+	assert.equal(attachConcurrentFailures(null, others), null);
+	const wire = JSON.parse(JSON.stringify(serializeDistributedError(primary)));
+	assert.deepEqual(
+		wire.concurrentFailures.map((item: { name: string; code: string }) => [item.name, item.code]),
+		[
+			["DistributedCommandError", "command-failed"],
+			["NonError", "non-error"],
+		],
+	);
+	const back = rehydrateDistributedError(wire);
+	const concurrent = Reflect.get(back, "concurrentFailures") as unknown[];
+	assert.ok(isDistributedCommandError(concurrent[0]));
+	assert.equal(Reflect.get(concurrent[0] as object, "fields").exitCode, 6);
+	assert.equal(concurrent.length, 2);
+	assert.ok(!Object.keys(back).includes("concurrentFailures"));
+	assert.equal(serializeDistributedError(alone).concurrentFailures, undefined);
+	assert.equal(
+		Reflect.get(rehydrateDistributedError(serializeDistributedError(alone)), "concurrentFailures"),
+		undefined,
+	);
+});
+
 test("errors round-trip across a process boundary as the same class with fields and causes", () => {
 	const cause = new DistributedCommandError({
 		tool: "az",
@@ -324,36 +366,206 @@ test("serialization is bounded, cycle-safe and handles non-errors", () => {
 	);
 });
 
-test("missing prerequisites fail fast with every missing piece and no Azure call", async () => {
+const ssh = {
+	tool: "ssh",
+	what: "ssh",
+	why: "the controller reaches private VMs over SSH",
+	fix: "sudo apt-get install -y openssh-client",
+};
+const scp = {
+	tool: "scp",
+	what: "scp",
+	why: "artifacts and credentials are copied to the VMs over SSH",
+	fix: "sudo apt-get install -y openssh-client",
+};
+const openssl = {
+	tool: "openssl",
+	what: "openssl",
+	why: "the run CA and host certificates are created locally",
+	fix: "sudo apt-get install -y openssl",
+};
+const sshKeygen = {
+	tool: "ssh-keygen",
+	what: "ssh-keygen",
+	why: "each run gets its own SSH key",
+	fix: "sudo apt-get install -y openssh-client",
+};
+const curl = {
+	tool: "curl",
+	what: "curl",
+	why: "the pinned Node runtime and its checksums are downloaded",
+	fix: "sudo apt-get install -y curl",
+};
+const docker = {
+	tool: "docker",
+	what: "docker",
+	why: "the pinned sqld binary is extracted from its image",
+	fix: "install Docker Engine",
+};
+const git = {
+	tool: "git",
+	what: "git",
+	why: "--ref is resolved to a commit SHA with git ls-remote",
+	fix: "sudo apt-get install -y git, or pass a full commit SHA",
+};
+const crabbox = {
+	tool: "crabbox",
+	what: "crabbox",
+	why: "the ref is built on a Crabbox runner",
+	fix: "install crabbox, or pass --artifact <tarball>",
+};
+const az = { tool: "az", what: "az", why: "every resource is created with the az CLI", fix: "install the Azure CLI" };
+const sha = "0123456789abcdef0123456789abcdef01234567";
+
+test("the required tools follow what the run will do", () => {
+	assert.deepEqual(requiredTools({ reuse: false, builder: true, sqldCached: false, ref: "main" }), [
+		ssh,
+		scp,
+		openssl,
+		sshKeygen,
+		curl,
+		docker,
+		git,
+		crabbox,
+		az,
+	]);
+	assert.deepEqual(requiredTools({ reuse: false, builder: false, sqldCached: true, ref: sha }), [
+		ssh,
+		scp,
+		openssl,
+		sshKeygen,
+		curl,
+		az,
+	]);
+	assert.deepEqual(requiredTools({ reuse: true, builder: true, sqldCached: false, ref: "main" }), [
+		ssh,
+		scp,
+		openssl,
+		az,
+	]);
+	const needsGit = (ref: string) =>
+		requiredTools({ reuse: false, builder: false, sqldCached: true, ref }).some((item) => item.tool === "git");
+	assert.deepEqual([sha, sha.toUpperCase(), sha.slice(1), `${sha}0`, `x${sha}`, `${sha}x`, "main"].map(needsGit), [
+		false,
+		true,
+		true,
+		true,
+		true,
+		true,
+		true,
+	]);
+});
+
+/** Runs `action` with `dir` first on the process PATH, where commands are resolved. */
+const withPath = async <T>(dir: string, action: () => Promise<T>) => {
 	const path = process.env.PATH;
-	process.env.PATH = mkdtempSync(join(tmpdir(), "adt-empty-path-"));
+	process.env.PATH = `${dir}${delimiter}${path}`;
 	try {
-		await assert.rejects(checkPrerequisites(context(), { control, needsBuilder: true }), (error) => {
-			assert.ok(isDistributedPrerequisiteError(error));
-			assert.equal(Reflect.get(error as object, "code"), "missing-prerequisite");
-			const missing = Reflect.get(error as object, "fields").missing as { what: string; fix: string }[];
-			assert.deepEqual(
-				missing.map((item) => item.what),
-				["ssh", "openssl", "crabbox", "az login", "control VNet control-vnet"],
-			);
-			assert.equal(Reflect.get(error as object, "hint"), `Fix: ${missing.map((item) => item.fix).join("; ")}.`);
-			assert.ok(isDistributedCommandError(Reflect.get(error as object, "cause")));
-			return true;
-		});
-		await assert.rejects(checkPrerequisites(context(), { control, needsBuilder: false }), (error) => {
-			assert.ok(
-				!(Reflect.get(error as object, "fields").missing as { what: string }[]).some(
-					(item) => item.what === "crabbox",
-				),
-			);
-			return true;
-		});
+		return await action();
 	} finally {
 		process.env.PATH = path;
 	}
+};
+
+/** A PATH directory holding an executable for each of `tools`, and an `az` script when `azScript` is given. */
+const toolDir = (tools: readonly string[], azScript?: string) => {
+	const dir = mkdtempSync(join(tmpdir(), "adt-tools-"));
+	for (const tool of tools) writeFileSync(join(dir, tool), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	if (azScript !== undefined)
+		writeFileSync(join(dir, "az"), `#!/bin/sh\necho "$@" >> ${join(dir, "az-calls")}\n${azScript}\n`, {
+			mode: 0o755,
+		});
+	return dir;
+};
+
+posixOnly("a tool is on PATH only as an executable file in a non-empty entry", () => {
+	const dir = toolDir(["adt-tool"]);
+	writeFileSync(join(dir, "adt-plain"), "", { mode: 0o644 });
+	const other = mkdtempSync(join(tmpdir(), "adt-tools-"));
+	assert.equal(onPath("adt-tool", [other, dir].join(delimiter)), true);
+	assert.equal(onPath("adt-tool", ["", dir].join(delimiter)), true);
+	assert.equal(onPath("adt-tool", other), false);
+	assert.equal(onPath("adt-plain", dir), false);
+	assert.equal(onPath("adt-missing", dir), false);
+	assert.equal(onPath(join(dir, "adt-tool"), ""), false);
 });
 
-test("commands fail with typed exit, timeout and cancellation outcomes", async () => {
+posixOnly("missing tools fail fast with every missing piece, before any az call", async () => {
+	const empty = mkdtempSync(join(tmpdir(), "adt-empty-path-"));
+	const tools = requiredTools({ reuse: false, builder: true, sqldCached: false, ref: "main" });
+	await assert.rejects(checkPrerequisites(context(), { control, tools, path: empty }), (error) => {
+		assert.ok(isDistributedPrerequisiteError(error));
+		assert.deepEqual(
+			Reflect.get(error as object, "fields").missing,
+			tools.map(({ what, why, fix }) => ({ what, why, fix })),
+		);
+		assert.equal(Reflect.get(error as object, "cause"), undefined);
+		return true;
+	});
+	const dir = toolDir(
+		["ssh", "scp", "openssl", "ssh-keygen", "curl", "git"],
+		'echo "ERROR: not logged in" >&2; exit 1',
+	);
+	await assert.rejects(
+		withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir })),
+		(error) => {
+			assert.ok(isDistributedPrerequisiteError(error));
+			assert.deepEqual(Reflect.get(error as object, "fields").missing, [
+				{ what: "docker", why: docker.why, fix: docker.fix },
+				{ what: "crabbox", why: crabbox.why, fix: crabbox.fix },
+				{ what: "az login", why: "every resource is created with the az CLI", fix: "az login" },
+				{
+					what: "control VNet control-vnet",
+					why: "test VNets are peered to it for private control",
+					fix: "check that control-rg/control-vnet exists and that you can read it",
+				},
+			]);
+			assert.equal(
+				Reflect.get(error as object, "hint"),
+				"Fix: install Docker Engine; install crabbox, or pass --artifact <tarball>; az login; check that control-rg/control-vnet exists and that you can read it.",
+			);
+			const cause = Reflect.get(error as object, "cause");
+			assert.ok(isDistributedCommandError(cause));
+			assert.equal(Reflect.get(cause as object, "fields").operation, "prerequisite az login");
+			return true;
+		},
+	);
+});
+
+posixOnly("present prerequisites resolve the subscription and the control VNet with exact az queries", async () => {
+	const dir = toolDir(
+		["ssh", "scp", "openssl"],
+		'case "$1" in account) echo \'"sub-1"\' ;; network) echo \'{"id":"/vnet/c","prefixes":["10.20.0.0/16"]}\' ;; esac',
+	);
+	const tools = requiredTools({ reuse: true, builder: false, sqldCached: true, ref: sha });
+	assert.deepEqual(await withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir })), {
+		subscription: "sub-1",
+		controlVnetId: "/vnet/c",
+		controlPrefixes: ["10.20.0.0/16"],
+	});
+	assert.deepEqual(readFileSync(join(dir, "az-calls"), "utf8").trim().split("\n"), [
+		"account show --query id -o json --only-show-errors",
+		"network vnet show --resource-group control-rg --name control-vnet --query {id:id,prefixes:addressSpace.addressPrefixes} -o json --only-show-errors",
+	]);
+	const bare = toolDir(
+		["ssh", "scp", "openssl"],
+		'case "$1" in account) echo \'"sub-2"\' ;; network) echo \'{"id":"/vnet/d","prefixes":null}\' ;; esac',
+	);
+	assert.deepEqual(await withPath(bare, () => checkPrerequisites(context(), { control, tools, path: bare })), {
+		subscription: "sub-2",
+		controlVnetId: "/vnet/d",
+		controlPrefixes: [],
+	});
+	const controller = new AbortController();
+	const reason = new DOMException("stop", "AbortError");
+	controller.abort(reason);
+	await assert.rejects(
+		withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir, signal: controller.signal })),
+		(error) => error === reason,
+	);
+});
+
+posixOnly("commands fail with typed exit, timeout and cancellation outcomes", async () => {
 	const log = join(mkdtempSync(join(tmpdir(), "adt-cmd-")), "commands.log");
 	const ctx = { log, secrets: new Set(["super-secret-token-value"]) };
 	const ok = await runCommand(
@@ -436,7 +648,7 @@ test("commands fail with typed exit, timeout and cancellation outcomes", async (
 	assert.ok(!readFileSync(log, "utf8").includes("super-secret-token-value"));
 });
 
-test("a failed create is wrapped with its step and stays recorded in the manifest for cleanup", async () => {
+posixOnly("a failed create is wrapped with its step and stays recorded in the manifest for cleanup", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-fake-az-"));
 	writeFileSync(join(dir, "az"), '#!/bin/sh\necho "ERROR: quota exceeded" >&2\nexit 1\n', { mode: 0o755 });
 	const path = process.env.PATH;
@@ -526,7 +738,7 @@ test("each error renders its message from its fields", () => {
 		"Invariant i failed in s (invariant-violated). Compare expected and actual in the evidence report; this is a finding against the ref under test.",
 		"Suite s needs c from #1, which the ref under test does not provide (feature-unavailable). Run the suite against a ref that contains #1.",
 		"Suite s found c from #1, but its scenarios are not written yet (scenario-pending). Add the s scenarios in test/distributed/harness/suites.mjs together with #1.",
-		"Teardown of run r left 1 resource(s) and 0 failure(s) (teardown-incomplete). Rerun `node test/distributed/sweep.mjs --run-id r` after fixing the failures.",
+		"Teardown of run r left 1 resource(s) and 0 failure(s) (teardown-incomplete). Rerun `node test/distributed/sweep.mjs --run-id r --force` after fixing the failures.",
 	]);
 	assert.equal(
 		new DistributedCommandError({

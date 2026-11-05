@@ -39,6 +39,8 @@ export const CHAOS_PROFILES = Object.freeze([
 
 export const DB_STORAGE = Object.freeze(["premium-ssd", "local-nvme"]);
 export const RUN_ID_PATTERN = /^adt\d{10}-[0-9a-f]{4}$/;
+/** Nodes take host addresses from .20 and secondary NICs from .120 of a /24, so more than 80 would collide. */
+export const MAX_NODES = 80;
 
 /**
  * @typedef {{ ref?: string, suite?: string, nodes?: string, regions?: string, chaos?: string, keep: boolean,
@@ -386,7 +388,8 @@ export function resolveRunOptions(args, topology, { randomSeed, replay = {} }) {
 		});
 	}
 	const nodesText = args.nodes ?? replay.nodes ?? "3";
-	if (!/^[1-9]\d*$/.test(nodesText)) throw cliError("--nodes", "a positive integer", nodesText);
+	if (!/^[1-9]\d*$/.test(nodesText) || Number(nodesText) > MAX_NODES)
+		throw cliError("--nodes", `an integer from 1 to ${MAX_NODES}`, nodesText);
 	const regionsText = args.regions ?? replay.regions;
 	const regions = regionsText === undefined ? [...topology.regions] : regionsText.split(",");
 	if (regionsText !== undefined && regions.some((region) => region === ""))
@@ -432,6 +435,97 @@ export function resolveRunOptions(args, topology, { randomSeed, replay = {} }) {
 		ttlHours: ttlText === undefined ? topology.ttlHours : Number(ttlText),
 		dbStorage,
 		dbRegion,
+	};
+}
+
+/**
+ * Reads and parses a JSON file named by a flag. An unreadable file and malformed JSON are distinct configuration
+ * errors, each carrying the underlying failure as its cause.
+ * @param {(path: string) => string} read
+ * @param {{ source: "cli" | "replay", field: string, path: string, expected: string }} input
+ * @returns {unknown}
+ */
+export function readJsonInput(read, { source, field, path, expected }) {
+	let text;
+	try {
+		text = read(path);
+	} catch (cause) {
+		throw new DistributedConfigError({ source, field, reason: "unreadable", expected, actual: path, cause });
+	}
+	try {
+		return JSON.parse(text);
+	} catch (cause) {
+		throw new DistributedConfigError({ source, field, reason: "invalid-json", expected, actual: path, cause });
+	}
+}
+
+/**
+ * The run options an earlier report recorded, as flag values for `resolveRunOptions`. The resolved SHA is preferred
+ * over the ref it came from, so a replay deploys the same commit.
+ * @param {unknown} report
+ * @returns {Partial<Record<"ref" | "suite" | "nodes" | "regions" | "chaos" | "seed" | "dbStorage" | "dbRegion", string>>}
+ */
+export function replayValues(report) {
+	const replay = typeof report === "object" && report !== null ? Reflect.get(report, "replay") : undefined;
+	if (typeof replay !== "object" || replay === null || Array.isArray(replay)) {
+		throw new DistributedConfigError({
+			source: "replay",
+			field: "replay",
+			reason: "required",
+			expected: "the replay section of a report.json written by run.mjs",
+		});
+	}
+	/** @param {string} key */
+	const text = (key) => {
+		const value = Reflect.get(replay, key);
+		if (value === undefined || typeof value === "string") return value;
+		if (Number.isFinite(value)) return String(value);
+		throw new DistributedConfigError({
+			source: "replay",
+			field: `replay.${key}`,
+			reason: "invalid-value",
+			expected: "a string or a number",
+			actual: JSON.stringify(value),
+		});
+	};
+	const regions = Reflect.get(replay, "regions");
+	if (regions !== undefined && !(Array.isArray(regions) && regions.every((region) => typeof region === "string"))) {
+		throw new DistributedConfigError({
+			source: "replay",
+			field: "replay.regions",
+			reason: "invalid-value",
+			expected: "an array of region names",
+			actual: JSON.stringify(regions),
+		});
+	}
+	/** @type {Partial<Record<"ref" | "suite" | "nodes" | "regions" | "chaos" | "seed" | "dbStorage" | "dbRegion", string>>} */
+	const values = {};
+	const entries = /** @type {const} */ ([
+		["ref", text("sha") ?? text("ref")],
+		["suite", text("suite")],
+		["nodes", text("nodes")],
+		["regions", regions?.join(",")],
+		["chaos", text("chaos")],
+		["seed", text("seed")],
+		["dbStorage", text("dbStorage")],
+		["dbRegion", text("dbRegion")],
+	]);
+	for (const [key, value] of entries) if (value !== undefined) values[key] = value;
+	return values;
+}
+
+/**
+ * Why the local-NVMe variant cannot run, when it cannot: it needs encryption at host, which the subscription must
+ * have registered. Undefined when the run can use the storage it asked for.
+ * @param {string} storage
+ * @param {unknown} featureState the `properties.state` of `Microsoft.Compute/EncryptionAtHost`
+ * @returns {{ code: "encryption-at-host-unavailable", detail: string } | undefined}
+ */
+export function encryptionAtHostSkip(storage, featureState) {
+	if (storage !== "local-nvme" || featureState === "Registered") return undefined;
+	return {
+		code: "encryption-at-host-unavailable",
+		detail: `Microsoft.Compute/EncryptionAtHost is ${String(featureState)}; the Premium SSD variant runs instead`,
 	};
 }
 
