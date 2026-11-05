@@ -300,7 +300,6 @@ export {
 	isDebugLogUnwritableError,
 	rehydrateDebugError,
 	type SerializedDebugError,
-	type SerializedErrorCause,
 	serializeDebugError,
 } from "./core/debug-errors.ts";
 export { onDebugSettingChange, setDebugSetting } from "./core/debug-setting.ts";
