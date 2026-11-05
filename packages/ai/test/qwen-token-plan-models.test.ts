@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { getModels, streamSimple } from "../src/compat.ts";
 import { findEnvKeys } from "../src/env-api-keys.ts";
+import { createModels } from "../src/models.ts";
+import { qwenTokenPlanIndividualCnProvider } from "../src/providers/qwen-token-plan-individual-cn.ts";
 
 vi.mock("openai", () => {
 	class FakeOpenAI {
@@ -92,7 +94,11 @@ const QWEN_THINKING_MODELS = [
 	"qwen3.8-max",
 ] as const;
 
-type QwenTokenPlanProvider = "qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual";
+type QwenTokenPlanProvider =
+	| "qwen-token-plan"
+	| "qwen-token-plan-cn"
+	| "qwen-token-plan-individual"
+	| "qwen-token-plan-individual-cn";
 type QwenTokenPlanModelCase = { provider: QwenTokenPlanProvider; modelId: string };
 
 const QWEN_THINKING_MODEL_CASES: QwenTokenPlanModelCase[] = [
@@ -100,6 +106,7 @@ const QWEN_THINKING_MODEL_CASES: QwenTokenPlanModelCase[] = [
 		QWEN_THINKING_MODELS.map((modelId) => ({ provider, modelId })),
 	),
 	...INDIVIDUAL_TEXT_MODELS.map((modelId) => ({ provider: "qwen-token-plan-individual" as const, modelId })),
+	...INDIVIDUAL_TEXT_MODELS.map((modelId) => ({ provider: "qwen-token-plan-individual-cn" as const, modelId })),
 ];
 
 const QWEN_REASONING_EFFORT_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5", "glm-5.1", "glm-5.2"] as const;
@@ -109,14 +116,18 @@ const QWEN_REASONING_EFFORT_MODEL_CASES: QwenTokenPlanModelCase[] = [
 	...(["qwen-token-plan", "qwen-token-plan-cn"] as const).flatMap((provider) =>
 		QWEN_REASONING_EFFORT_MODELS.map((modelId) => ({ provider, modelId })),
 	),
-	...["deepseek-v4-flash-0731", "deepseek-v4-pro", "deepseek-v4-pro-0813", "glm-5.2"].map((modelId) => ({
+	...["deepseek-v4-flash-0731", "deepseek-v4-pro", "deepseek-v4-pro-0813", "glm-5.2", "glm-5.3"].map((modelId) => ({
 		provider: "qwen-token-plan-individual" as const,
+		modelId,
+	})),
+	...["deepseek-v4-flash-0731", "deepseek-v4-pro", "deepseek-v4-pro-0813", "glm-5.2", "glm-5.3"].map((modelId) => ({
+		provider: "qwen-token-plan-individual-cn" as const,
 		modelId,
 	})),
 ];
 
 const QWEN38_MODEL_CASES: QwenTokenPlanModelCase[] = (
-	["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"] as const
+	["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual", "qwen-token-plan-individual-cn"] as const
 ).flatMap((provider) => QWEN38_MODELS.map((modelId) => ({ provider, modelId })));
 
 describe("Qwen Token Plan models", () => {
@@ -132,6 +143,36 @@ describe("Qwen Token Plan models", () => {
 	it("reuses the international Token Plan environment variable", () => {
 		expect(findEnvKeys("qwen-token-plan-individual", { QWEN_TOKEN_PLAN_API_KEY: "test" })).toEqual([
 			"QWEN_TOKEN_PLAN_API_KEY",
+		]);
+	});
+
+	it("exposes exactly the documented Individual text models on the China endpoint", () => {
+		const modelIds = getModels("qwen-token-plan-individual-cn")
+			.map((model) => model.id)
+			.sort();
+
+		expect(modelIds).toEqual([...INDIVIDUAL_TEXT_MODELS].sort());
+	});
+
+	it("serves the Individual China provider from the China endpoint with the China API key", async () => {
+		const provider = qwenTokenPlanIndividualCnProvider();
+		expect(provider.name).toBe("Qwen Token Plan Individual CN");
+		expect(provider.baseUrl).toBe("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1");
+		expect(provider.auth.apiKey?.name).toBe("Qwen Token Plan Individual CN API key");
+
+		const models = createModels({
+			authContext: {
+				env: async (name) => (name === "QWEN_TOKEN_PLAN_CN_API_KEY" ? "cn-key" : undefined),
+				fileExists: async () => false,
+			},
+		});
+		models.setProvider(provider);
+		expect((await models.getAuth("qwen-token-plan-individual-cn"))?.auth.apiKey).toBe("cn-key");
+	});
+
+	it("uses the China Token Plan environment variable", () => {
+		expect(findEnvKeys("qwen-token-plan-individual-cn", { QWEN_TOKEN_PLAN_CN_API_KEY: "test" })).toEqual([
+			"QWEN_TOKEN_PLAN_CN_API_KEY",
 		]);
 	});
 
@@ -192,7 +233,7 @@ describe("Qwen Token Plan models", () => {
 
 			expect(model.thinkingLevelMap).toMatchObject({
 				minimal: null,
-				low: null,
+				low: modelId === "glm-5.3" ? "low" : null,
 				medium: null,
 				high: "high",
 				xhigh: null,
@@ -233,13 +274,15 @@ describe("Qwen Token Plan models", () => {
 		},
 	);
 
-	it.each(["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"] as const)(
-		"omits retired qwen3.8-max-preview on %s",
-		(provider) => {
-			const modelIds = getModels(provider).map((model) => model.id);
-			expect(modelIds).not.toContain("qwen3.8-max-preview");
-		},
-	);
+	it.each([
+		"qwen-token-plan",
+		"qwen-token-plan-cn",
+		"qwen-token-plan-individual",
+		"qwen-token-plan-individual-cn",
+	] as const)("omits retired qwen3.8-max-preview on %s", (provider) => {
+		const modelIds = getModels(provider).map((model) => model.id);
+		expect(modelIds).not.toContain("qwen3.8-max-preview");
+	});
 
 	it.each(QWEN_REASONING_EFFORT_MODEL_CASES)(
 		"sends Qwen reasoning_effort for $provider/$modelId",

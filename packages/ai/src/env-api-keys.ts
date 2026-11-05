@@ -76,6 +76,7 @@ const apiKeyEnvMap: Record<string, string> = {
 	"qwen-token-plan": "QWEN_TOKEN_PLAN_API_KEY",
 	"qwen-token-plan-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
 	"qwen-token-plan-individual": "QWEN_TOKEN_PLAN_API_KEY",
+	"qwen-token-plan-individual-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
 	openai: "OPENAI_API_KEY",
 	"openai-api": "OPENAI_API_KEY",
 	"anthropic-api": ANTHROPIC_API_KEY_ENV,

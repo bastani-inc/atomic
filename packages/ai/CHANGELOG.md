@@ -16,6 +16,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - `describeGitHubCopilotModel(model)` returns a Copilot model's capabilities from its metadata: API, thinking levels and reasoning replay, tool calls, usage, images and limits ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Added the `requiresNonNullAssistantContent` OpenAI Completions compat flag for providers that reject `null` assistant content: replayed assistant messages with no text, such as tool-call-only messages, then send `""` (upstream [#8118](https://github.com/earendil-works/pi/pull/8118))
 - Added the `promptCacheKeyMode` compat option (`auto`, `enabled`, `disabled`) for OpenAI Completions and Responses models. `enabled` sends `prompt_cache_key` to compatible proxies whenever caching is active, independently of long cache retention; `disabled` never sends it, for proxies that reject it. `auto` keeps each API's previous behavior, and `cacheRetention: "none"` still sends no key (upstream [#9442](https://github.com/earendil-works/pi/pull/9442))
+- Added the `qwen-token-plan-individual-cn` provider: the Qwen Token Plan Individual catalog on the China endpoint, using `QWEN_TOKEN_PLAN_CN_API_KEY` (upstream [#7989](https://github.com/earendil-works/pi/pull/7989))
 
 ### Changed
 

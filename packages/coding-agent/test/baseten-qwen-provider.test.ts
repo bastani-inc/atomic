@@ -9,6 +9,8 @@ import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.ts";
+import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.ts";
 
 type ProviderCase = {
 	provider: "baseten" | "qwen-token-plan-individual";
@@ -159,4 +161,12 @@ describe("Baseten and Qwen Token Plan Individual providers", () => {
 			await assert.rejects(runtime.getAuth(model), new RegExp(`for ${provider.provider}`, "u"));
 		},
 	);
+
+	test("names each Qwen Token Plan Individual region in the API-key login options", () => {
+		const options = getBuiltinApiKeyLoginOptions((id) => BUILT_IN_PROVIDER_DISPLAY_NAMES[id] ?? id);
+		const names = new Map(options.map((option) => [option.id, option.name]));
+
+		assert.equal(names.get("qwen-token-plan-individual"), "Qwen Token Plan (Individual)");
+		assert.equal(names.get("qwen-token-plan-individual-cn"), "Qwen Token Plan (Individual, China)");
+	});
 });
