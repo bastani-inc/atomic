@@ -61,8 +61,8 @@ import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/sessio
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
-import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
 import { SettingsManager } from "./core/settings-manager.ts";
+import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
