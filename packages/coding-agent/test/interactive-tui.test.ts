@@ -763,6 +763,7 @@ describe("clear-on-shrink working status spacing", () => {
 		const context = {
 			extensionDialogs: [],
 			ui: { hideOverlay: vi.fn() },
+			blockingOverlaySources: new Set<string>(),
 			clearExtensionTerminalInputListeners: vi.fn(),
 			setExtensionFooter: vi.fn(),
 			setExtensionHeader: vi.fn(),

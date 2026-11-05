@@ -468,6 +468,10 @@ export class InteractiveModeBase {
 	// Extension dialogs shown in the editor slot (select, confirm, input, editor, inline custom).
 	// The last entry is visible; see pushExtensionDialog().
 	extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
+	/** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
+	nextBlockingOverlayId = 0;
+	/** Program status sources of blocking overlays that are still open. */
+	readonly blockingOverlaySources = new Set<string>();
 
 	tuiInputSubscriptions = new Set<InteractiveTuiInputSubscription>();
 

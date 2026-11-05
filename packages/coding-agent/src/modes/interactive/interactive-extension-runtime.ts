@@ -262,6 +262,9 @@ InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveMode
 		this.showTopExtensionDialog();
 	}
 	this.ui.hideOverlay();
+	// Reload and session switches drop overlays without calling done(), so clear their blocked status here.
+	for (const source of this.blockingOverlaySources) this.programStatus.setBlocked(source, undefined);
+	this.blockingOverlaySources.clear();
 	this.clearExtensionTerminalInputListeners();
 	this.setExtensionFooter(undefined);
 	this.setExtensionHeader(undefined);

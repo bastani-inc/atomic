@@ -91,6 +91,9 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		let transcriptReserveCoordinator: TranscriptOverlayReserve | undefined;
 		let releaseTranscriptReserveRegistration: (() => void) | undefined;
 		let releaseOverlayFocusListener: (() => void) | undefined;
+		// An overlay stays blocked until its interaction ends, also while setHidden() hides it.
+		const overlayStatusSource =
+			isOverlay && options?.blocked ? `extension-overlay:${this.nextBlockingOverlayId++}` : undefined;
 
 		const disposeComponent = () => {
 			try {
@@ -139,6 +142,10 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 				// generic top-overlay call would close that instead.
 				if (overlayHandle) overlayHandle.hide();
 				else this.ui.hideOverlay();
+				if (overlayStatusSource) {
+					this.blockingOverlaySources.delete(overlayStatusSource);
+					this.programStatus.setBlocked(overlayStatusSource, undefined);
+				}
 				if (options?.reserveTranscriptRows && ownedInput && !this.ui.hasOverlay()) {
 					// Navigation may have closed while this prompt waited; its preFocus is stale.
 					this.ui.setFocus(this.editorContainer.children.at(-1) ?? this.editor);
@@ -291,6 +298,10 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 					const handle = this.ui.showOverlay(mountedComponent, mountedOverlayOptions);
 					overlayHandle = handle;
 					mounted = true;
+					if (overlayStatusSource) {
+						this.blockingOverlaySources.add(overlayStatusSource);
+						this.programStatus.setBlocked(overlayStatusSource, options?.blocked);
+					}
 					// Register only once the overlay is really up and `mounted` is
 					// set: a throw before this point must not leave a registry entry
 					// or blank-row component in the transcript document.

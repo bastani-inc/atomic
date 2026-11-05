@@ -40,7 +40,7 @@ interface CustomUiOptions {
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	onHandle?: (handle: OverlayHandle) => void;
 	signal?: AbortSignal;
-	/** Report the host as blocked on user input while this inline component is visible. */
+	/** Report the host as blocked on user input: inline while visible, an overlay until `done()`. */
 	blocked?: EngineBlockedStatus;
 }
 
