@@ -1,5 +1,6 @@
 import type { AgentTaskHost } from "./agent-adapter.js";
-import type { CancelCause, OwnerSnapshot, TaskRecord } from "./contracts.js";
+import { TaskCleanupError } from "./cleanup-error.js";
+import type { CancelCause, OwnerSnapshot, TaskId, TaskRecord } from "./contracts.js";
 
 /**
  * The caller synchronously blocks new launches; this never closes the owner or its messages. Agents are stopped
@@ -9,6 +10,8 @@ import type { CancelCause, OwnerSnapshot, TaskRecord } from "./contracts.js";
  */
 export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void> {
 	const errors: Error[] = [];
+	// Only cleanup this pause started is its to wait for: an earlier quarantine is confirmed by the owner's close.
+	const stopped = new Set<TaskId>();
 	const cancel = async (tasks: TaskRecord[], cause: CancelCause): Promise<void> => {
 		// Cancel every queued agent before an active cancellation can free a dispatch slot.
 		const ordered = tasks.sort(
@@ -18,6 +21,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 		for (const result of results) {
 			if (result.status === "rejected") errors.push(new Error(String(result.reason)));
 			else if (!result.value.ok) errors.push(new Error(`${result.value.error.code}: ${result.value.error.message}`));
+			else if (result.value.value.decision === "cancellation-requested") stopped.add(result.value.value.taskId);
 		}
 	};
 	const watched = host.watchOwnerTasks();
@@ -45,19 +49,15 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 						(task) =>
 							task.cleanup.kind === "active" ||
 							task.cleanup.kind === "draining" ||
+							(task.cleanup.kind === "quarantined" && stopped.has(task.ref.taskId)) ||
 							(task.execution.kind !== "settled" && task.cleanup.kind !== "failed"),
 					)
 				)
 					return;
 				const failures = snapshot.tasks.flatMap((task) =>
-					task.cleanup.kind === "failed" ? task.cleanup.resources : [],
+					task.cleanup.kind === "failed" ? [{ taskId: task.ref.taskId, resources: task.cleanup.resources }] : [],
 				);
-				if (failures.length)
-					reject(
-						new Error(
-							`Workflow stage task cleanup failed: ${failures.map((failure) => `${failure.resource}: ${failure.message}`).join("; ")}`,
-						),
-					);
+				if (failures.length) reject(new TaskCleanupError("stage-pause", failures));
 				else resolve();
 			};
 			watch.drain();

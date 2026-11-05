@@ -7,6 +7,7 @@ import type { AgentSessionEvent } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
+import type { TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
@@ -73,6 +74,8 @@ export type TrustedTaskHost = {
 	authorizeLaunch(intent: C.AgentIntent): void;
 	resourceAdmission?: import("../sdk-types.ts").ResourceAdmission;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
+	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
+	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
 	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
 	defaultHeartbeatMs?(): number | undefined;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
@@ -85,6 +88,7 @@ type OwnerState = {
 	tasks: Map<C.TaskId, TaskLease>;
 	watches: Set<TaskSubscription>;
 	settledTasks: Set<C.TaskId>;
+	quarantinedTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
 	closing: AbortController;
 	permits: Map<C.TaskId, ResourcePermit>;
@@ -500,6 +504,21 @@ function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnap
 	}
 	return next;
 }
+/**
+ * Every quarantined cleanup a drain shows, in its events first: a quarantine confirmed again before the drain is gone
+ * from the projection, which still carries the quarantines a journal reset left without events.
+ */
+export function quarantinedCleanups(
+	projection: C.OwnerSnapshot,
+	events: readonly C.NativeEvent[],
+): Array<{ ref: C.NativeTaskRef; resources: C.ResourceFailure[] }> {
+	return [
+		...events.flatMap((event) =>
+			event.payload.kind === "cleanup-changed" ? [{ ref: event.payload.ref, cleanup: event.payload.cleanup }] : [],
+		),
+		...projection.tasks.map((task) => ({ ref: task.ref, cleanup: task.cleanup })),
+	].flatMap(({ ref, cleanup }) => (cleanup.kind === "quarantined" ? [{ ref, resources: cleanup.resources }] : []));
+}
 /** One bounded wake poll per live subscription, including a journal with no retained event. */
 const RECONCILE_INTERVAL_MS = 25;
 const MAX_PENDING_EVENTS = 64;
@@ -672,6 +691,7 @@ export class TaskSupervisor {
 					tasks: new Map(),
 					watches: new Set(),
 					settledTasks: new Set(),
+					quarantinedTasks: new Set(),
 					commandAdmissions: new Set(),
 					closing: new AbortController(),
 					permits: new Map(),
@@ -683,7 +703,7 @@ export class TaskSupervisor {
 				this.#ownerIds.set(id, owner);
 				const watched = this.watchOwnerTasks(owner);
 				if (!watched.ok) throw new Error(watched.error.message);
-				watched.value.onReconcile = (projection) => {
+				watched.value.onReconcile = (projection, events) => {
 					if (projection.state === "closed") this.#ownerIds.delete(projection.ownerId);
 					for (const record of projection.tasks) {
 						const cause =
@@ -699,6 +719,15 @@ export class TaskSupervisor {
 					let failure: Error | undefined;
 					for (const record of projection.tasks) {
 						if (record.cleanup.kind === "reaped") this.#releasePermit(ownerState, record.ref.taskId);
+					}
+					for (const { ref, resources } of quarantinedCleanups(projection, events)) {
+						if (ownerState.quarantinedTasks.has(ref.taskId)) continue;
+						ownerState.quarantinedTasks.add(ref.taskId);
+						try {
+							state.binding.onTaskCleanupQuarantined?.(ref, resources);
+						} catch (error) {
+							failure ??= new Error(rejectionMessage(error));
+						}
 					}
 					for (const record of projection.tasks) {
 						if (
@@ -1194,6 +1223,15 @@ export class TaskSupervisor {
 			if (failure) throw failure;
 		}
 		return result;
+	}
+	/** Every task whose cleanup failed, as the owner's live projection holds it: a closing owner cannot be watched anew. */
+	failedTaskCleanups(owner: OwnerLease): TaskCleanupFailure[] {
+		const [watch] = this.#owner(owner).watches;
+		if (!watch) return [];
+		watch.drain();
+		return watch.snapshot.tasks.flatMap((task) =>
+			task.cleanup.kind === "failed" ? [{ taskId: task.ref.taskId, resources: task.cleanup.resources }] : [],
+		);
 	}
 	/**
 	 * The bounded stream carries only authentic deltas. Overflow/native reset publishes

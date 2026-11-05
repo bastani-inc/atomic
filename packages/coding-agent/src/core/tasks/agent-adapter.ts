@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { TaskCleanupError, type TaskCleanupPhase } from "./cleanup-error.js";
 import type * as C from "./contracts.js";
 import { trackAdmittedAgentTask } from "./execution-scope.js";
 import { defaultTaskHeartbeatMs, type TaskHeartbeatDelivery, TaskHeartbeatMonitor } from "./heartbeat.js";
@@ -54,6 +55,7 @@ export class AgentTaskHost {
 				this.binding.authorizeCommandLaunch?.(intent);
 			},
 			onTaskSettled: (ref, receipt) => this.binding.onTaskSettled?.(ref, receipt),
+			onTaskCleanupQuarantined: (ref, resources) => this.binding.onTaskCleanupQuarantined?.(ref, resources),
 			defaultHeartbeatMs: () =>
 				this.binding.heartbeat ? defaultTaskHeartbeatMs(this.binding.heartbeat) : undefined,
 			createRunner: (context, intent) => {
@@ -149,6 +151,12 @@ export class AgentTaskHost {
 	close(cause: C.OwnerCloseCause) {
 		this.heartbeats.dispose();
 		return this.supervisor.closeTaskOwner(this.owner, cause);
+	}
+
+	/** The error a failed close reports: a {@link TaskCleanupError} naming every unconfirmed resource when cleanup failed. */
+	closeError(phase: TaskCleanupPhase, failure: C.CloseError): Error {
+		if (failure.code !== "CleanupFailed") return new Error(`${failure.code}: ${failure.message}`);
+		return new TaskCleanupError(phase, this.supervisor.failedTaskCleanups(this.owner), { cause: failure });
 	}
 
 	private tasksPaused = false;
