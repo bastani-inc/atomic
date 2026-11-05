@@ -76,7 +76,7 @@ class WindowsProcessSuspender implements ProcessSuspender {
 	private readonly replies: string[] = [];
 	private waiter: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
 	private failure: Error | undefined;
-	private queue: Promise<unknown> = Promise.resolve();
+	private queue: Promise<void> = Promise.resolve();
 
 	private constructor(private readonly controller: ChildProcessWithoutNullStreams) {
 		createInterface({ input: controller.stdout }).on("line", (line) => {
@@ -157,7 +157,10 @@ class WindowsProcessSuspender implements ProcessSuspender {
 			return result.join(" ");
 		};
 		const result = this.queue.then(run, run);
-		this.queue = result.catch(() => undefined);
+		this.queue = result.then(
+			() => undefined,
+			() => undefined,
+		);
 		return result;
 	}
 
