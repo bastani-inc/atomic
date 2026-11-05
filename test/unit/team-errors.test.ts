@@ -726,6 +726,82 @@ test("a team error from another realm with complete fields crosses a process bou
 	});
 });
 
+test("only a cause in the team error family with complete fields is serialized as a team error (#4320)", () => {
+	const lookalike = Object.assign(new Error("raw sk-synthetic-value"), {
+		code: "ECONNREFUSED",
+		subject: "libsql://team.example.invalid",
+		hint: "Check the URL.",
+		retryable: true,
+	});
+	assert.deepEqual(serializedNestedCause(lookalike), { name: "Error", message: "ECONNREFUSED", code: "ECONNREFUSED" });
+
+	const withoutMissing = new TeamProfileConfigError("missing-url", { source: "sdk", field: "url", hint: "Pass it." });
+	const restored = acrossProcesses(
+		new TeamProfileError("token-delete-failed", { subject: "/t", hint: "h", cause: withoutMissing }),
+	).received.cause;
+	assert.ok(restored instanceof TeamProfileConfigError);
+	assert.deepEqual([restored.code, restored.field, restored.missing], ["missing-url", "url", undefined]);
+
+	const mixedMissing = foreignTeamError("raw sk-synthetic-value", {
+		name: "TeamProfileConfigError",
+		code: "incomplete-profile",
+		source: "env",
+		field: "ATOMIC_PROFILE",
+		hint: "Set them.",
+		retryable: false,
+		missing: ["ATOMIC_TEAM_URL", 1],
+	});
+	assert.deepEqual(serializedNestedCause(mixedMissing), {
+		name: "Error",
+		message: "incomplete-profile",
+		code: "incomplete-profile",
+	});
+});
+
+test("a serialized cause rehydrates as a team error only with a string code and hint and object fields (#4320)", () => {
+	const outer = serializeTeamError(new TeamProfileError("token-delete-failed", { subject: "/t", hint: "h" }));
+	const complete = {
+		name: "TeamProfileError",
+		code: "connection-failed",
+		message: "m",
+		hint: "h",
+		fields: { retryable: true, subject: "s" },
+	};
+	const rehydrated = (cause: Readonly<Record<string, unknown>>) =>
+		rehydrateTeamError({ ...outer, cause: cause as unknown as SerializedTeamError["cause"] }).cause;
+	assert.ok(rehydrated(complete) instanceof TeamProfileError);
+	const { code: _code, ...withoutCode } = complete;
+	const { hint: _hint, ...withoutHint } = complete;
+	const { fields: _fields, ...withoutFields } = complete;
+	const malformed = [
+		withoutCode,
+		withoutHint,
+		withoutFields,
+		{ ...complete, code: 7 },
+		{ ...complete, hint: 7 },
+		{ ...complete, fields: "retryable" },
+	];
+	for (const cause of malformed) {
+		const restored = rehydrated(cause);
+		assert.ok(restored instanceof Error, JSON.stringify(cause));
+		assert.equal(restored instanceof TeamProfileError, false, JSON.stringify(cause));
+		assert.equal(restored.message, "m");
+	}
+
+	let deep: SerializedTeamError["cause"];
+	for (let level = 50; level >= 1; level--) {
+		deep = { name: "Error", message: `level ${level}`, ...(deep === undefined ? {} : { cause: deep }) };
+	}
+	let levels = 0;
+	for (
+		let cause = rehydrated(deep as unknown as Readonly<Record<string, unknown>>);
+		cause instanceof Error;
+		cause = cause.cause
+	)
+		levels++;
+	assert.equal(levels, 8);
+});
+
 test("a malformed settings file reaches getTeamProfile and leaveTeam callers, serialized, without its content (#4320)", async () => {
 	const credential = "sk-synthetic-team-credential";
 	const root = makeTempDirectory("team-errors-");

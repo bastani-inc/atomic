@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,7 +14,11 @@ import {
 	LOCAL_SESSIONS_STORAGE,
 	STORAGE_TOKEN_FILE,
 } from "../../packages/coding-agent/src/core/storage/selection.js";
-import { joinSharedDatabase, leaveTeamWith } from "../../packages/coding-agent/src/core/storage/team.js";
+import {
+	joinSharedDatabase,
+	leaveTeamWith,
+	storageFingerprint,
+} from "../../packages/coding-agent/src/core/storage/team.js";
 import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
@@ -338,6 +343,82 @@ describe("team leave and global settings that the default agent directory also r
 			const left = await leave();
 
 			assert.deepEqual(left.removed, ["storage", "sessions.storage"]);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+});
+
+describe("the join record's fingerprint format (#4320)", () => {
+	type Selection = Parameters<typeof storageFingerprint>[0];
+	const tokenReference = "agent/storage-token.00000000-0000-4000-8000-000000000000";
+	const selection = {
+		prefix: "team_",
+		options: {
+			url: "libsql://db.example.turso.io",
+			tls: false,
+			tags: ["b", null, { z: 1, a: [2, "x"], skipped: undefined }],
+			nested: { zeta: true, alpha: null, skipped: undefined },
+		},
+		adapter: "@bastani/atomic-storage-libsql",
+		secrets: { authToken: { file: tokenReference } },
+		skipped: undefined,
+	} as unknown as Selection;
+	const canonical =
+		'{"adapter":"@bastani/atomic-storage-libsql","options":{"nested":{"alpha":null,"zeta":true},"tags":["b",null,{"a":[2,"x"],"z":1}],"tls":false,"url":"libsql://db.example.turso.io"},"prefix":"team_","secrets":{"authToken":{"file":"agent/storage-token.00000000-0000-4000-8000-000000000000"}}}';
+	const digest = "6d92334de5e1bcc3a2efaf577cc2c9b9fb3b76eabffb8eb1ff60d97cdff212a2";
+
+	test("is the sha256 of the key-sorted, whitespace-free JSON, with undefined entries left out", () => {
+		assert.equal(createHash("sha256").update(canonical).digest("hex"), digest);
+		assert.equal(storageFingerprint(selection), `sha256:${digest}`);
+	});
+
+	test("does not depend on object key order, but does on array order and on every value", () => {
+		const reorder = (value: unknown): unknown =>
+			Array.isArray(value)
+				? value.map(reorder)
+				: value !== null && typeof value === "object"
+					? Object.fromEntries(
+							Object.entries(value)
+								.reverse()
+								.map(([key, entry]) => [key, reorder(entry)]),
+						)
+					: value;
+		assert.equal(storageFingerprint(reorder(selection) as Selection), `sha256:${digest}`);
+
+		const edits: Selection[] = [
+			{ ...selection, prefix: "other_" },
+			{ ...selection, options: { ...selection.options, url: "libsql://db.example.turso.io/" } },
+			{
+				...selection,
+				options: { ...selection.options, tags: [null, "b", { z: 1, a: [2, "x"] }] },
+			} as unknown as Selection,
+			{ ...selection, secrets: { authToken: { file: `${tokenReference}0` } } },
+		];
+		for (const edit of edits) assert.notEqual(storageFingerprint(edit), `sha256:${digest}`);
+	});
+
+	test(
+		"a null, array or nested option edited into the saved selection is kept byte for byte through a leave",
+		async () => {
+			const edits = [
+				(options: Record<string, unknown>) => void Object.assign(options, { url: ["libsql://a.example.io"] }),
+				(options: Record<string, unknown>) => void Object.assign(options, { url: null }),
+				(options: Record<string, unknown>) => void Object.assign(options, { extra: { inner: [null, 1] } }),
+			];
+			for (const edit of edits) {
+				writeFileSync(settingsPath, JSON.stringify({ theme: "dark", packages: [packageRoot] }, null, 2));
+				const joined = await joinTeamDatabase();
+				assert.ok(joined.tokenPath);
+				editStorage((storage) => edit(storage.options));
+				const edited = settingsText();
+
+				const left = await leave();
+
+				assert.deepEqual(left.removed, [], edited);
+				assert.deepEqual(left.kept[0], { key: "storage", reason: "changed" });
+				assert.equal(settingsText(), edited);
+				assert.equal(existsSync(joined.tokenPath), true);
+			}
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
