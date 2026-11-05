@@ -4,7 +4,7 @@ import { createWriteStream } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { sqlPoolStorage } from "../durable/journal/internal.js";
+import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
@@ -45,11 +45,18 @@ import type {
 	PoolRootProjection,
 	PoolWorkToken,
 } from "./coordinator-protocol.js";
-import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
+import { POOL_COORDINATION_STATS_INTERVAL_MS, POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, POOL_DURABLE_JOURNAL_ENV } from "./pool-journal.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
-import type { DistributiveOmit, WorkerRateLimits, WorkerRequest, WorkerStageCommand } from "./protocol.js";
+import type {
+	DistributiveOmit,
+	WorkerPoolControl,
+	WorkerRateLimits,
+	WorkerRequest,
+	WorkerStageCommand,
+} from "./protocol.js";
 import { RateLimitObservationOutbox, RateLimitObservationSet } from "./rate-limit-sharing.js";
 import {
 	type ProcessPermitScope,
@@ -418,9 +425,9 @@ export class PoolCoordinator {
 	private readonly controlAcks = new Map<string, number>();
 	private readonly lastHeard = new Map<string, { readonly at: number; readonly stalled: number }>();
 	/**
-	 * Requests of each worker this coordinator has not answered yet. A worker sends its next renewal, control poll or
-	 * usage report only once the previous one is answered, so while one waits here the worker waits on the pool: its
-	 * silence is the pool's (a slow journal, a busy root), not the worker's, and lease recovery must not end it.
+	 * Requests of each worker this coordinator has not answered yet. A worker sends its next heartbeat only once the
+	 * previous one is answered, so while one waits here the worker waits on the pool: its silence is the pool's (a slow
+	 * journal, a busy root), not the worker's, and lease recovery must not end it.
 	 */
 	private readonly awaiting = new Map<string, number>();
 	private readonly pendingActivity = new Map<string, PoolActivityEntry>();
@@ -442,6 +449,11 @@ export class PoolCoordinator {
 	private lastTick = performance.now();
 	private stalledMs = 0;
 	private readonly ticker: NodeJS.Timeout;
+	/** Requests and journal writes by kind, sent to the root while they change. */
+	private readonly counters = new PoolCoordinationCounters();
+	private readonly statsTimer: NodeJS.Timeout;
+	/** The newest pool control committed, as pushed to ready workers. */
+	private committedControl?: PoolControl;
 	private recoveryTimer?: NodeJS.Timeout;
 	private flushTimer?: NodeJS.Timeout;
 	private lastFlushAt = 0;
@@ -498,6 +510,19 @@ export class PoolCoordinator {
 	constructor(private readonly port: CoordinatorPort<CoordinatorEvent, CoordinatorInbound>) {
 		port.onMessage((message) => this.receive(message));
 		this.ticker = setInterval(() => this.observeResponsiveness(), TICK_INTERVAL_MS).unref();
+		this.statsTimer = setInterval(() => this.sendCoordinationStats(), POOL_COORDINATION_STATS_INTERVAL_MS).unref();
+	}
+
+	/** The pool's journal, with every pool transaction on it counted by the request or task that submits it. */
+	private async openCountedJournal(path: string): Promise<RunJournal> {
+		const journal = await resolveRunJournal({ journal: { path } });
+		observeSqlPoolTransactions(journal, () => this.counters.write());
+		return journal;
+	}
+
+	private sendCoordinationStats(): void {
+		const stats = this.counters.sample(true);
+		if (stats !== undefined) this.port.send({ kind: "coordination", stats });
 	}
 
 	/** Closes the journal connection once the pool is closed and every command already received has settled. */
@@ -572,17 +597,21 @@ export class PoolCoordinator {
 			else pending?.resolve(message.value);
 			return;
 		}
+		const kind = `root-${message.kind}`;
+		this.counters.request(kind);
 		if ("id" in message) {
 			const command = message as CoordinatorCommand;
-			const handled = this.execute(command).then(
-				(value) => this.port.send({ kind: "reply", id: command.id, value }),
-				(error: Error) => this.port.send({ kind: "reply", id: command.id, error: error.message }),
-			);
+			const handled = this.counters
+				.within(kind, () => this.execute(command))
+				.then(
+					(value) => this.port.send({ kind: "reply", id: command.id, value }),
+					(error: Error) => this.port.send({ kind: "reply", id: command.id, error: error.message }),
+				);
 			this.inflight.add(handled);
 			void handled.finally(() => this.inflight.delete(handled));
 			return;
 		}
-		this.notice(message as CoordinatorNotice);
+		this.counters.within(kind, () => this.notice(message as CoordinatorNotice));
 	}
 
 	private notice(notice: CoordinatorNotice): void {
@@ -660,7 +689,7 @@ export class PoolCoordinator {
 		this.options = options;
 		this.desiredControl ??= control;
 		configurePooledWatchTrace(options.journalPath, "coordinator");
-		this.journal ??= await resolveRunJournal({ journal: { path: options.journalPath } });
+		this.journal ??= await this.openCountedJournal(options.journalPath);
 		if (options.durable !== undefined && this.remote === undefined) {
 			this.durable = await openDurableJournal(options.durable);
 			this.remote = new PoolRemoteJournal(this.durable, sqlPoolStorage(this.journal)!);
@@ -698,7 +727,8 @@ export class PoolCoordinator {
 		);
 		for (;;) {
 			const intended = this.desiredControl ?? "running";
-			await this.whileRootLate(queue, () => queue.setControl(lease, intended));
+			const committed = await this.whileRootLate(queue, () => queue.setControl(lease, intended));
+			this.publishControl(committed);
 			if (intended === (this.desiredControl ?? "running")) break;
 		}
 		this.queue = queue;
@@ -761,12 +791,12 @@ export class PoolCoordinator {
 	}
 
 	/**
-	 * Records the pool's control state, then waits for the ready workers to acknowledge it. The state is durable: a live
-	 * worker reads it again on every heartbeat until it converges, and a worker that starts later reads it before it
-	 * claims work. So the wait is a confirmation, not a delivery: it lasts while acknowledgements keep arriving, and it
-	 * ends without failing once none has arrived for {@link CONTROL_ACKNOWLEDGEMENT_STALL_MS}, outside this process's
-	 * own stalls. A busy host slows the acknowledgements of hundreds of workers; it never fails a pause or resume.
-	 * Returns how many ready workers had not acknowledged it yet.
+	 * Records the pool's control state, pushes it to the ready workers, then waits for them to acknowledge it. The state
+	 * is durable: a worker that misses the push reads it again in its next heartbeat's reply, and a worker that starts
+	 * later reads it before it claims work. So the wait is a confirmation, not a delivery: it lasts while
+	 * acknowledgements keep arriving, and it ends without failing once none has arrived for
+	 * {@link CONTROL_ACKNOWLEDGEMENT_STALL_MS}, outside this process's own stalls. A busy host slows the acknowledgements
+	 * of hundreds of workers; it never fails a pause or resume. Returns how many ready workers had not acknowledged it yet.
 	 */
 	private async control(state: PoolControl["state"]): Promise<number> {
 		this.desiredControl = state;
@@ -774,6 +804,7 @@ export class PoolCoordinator {
 		const queue = this.queue;
 		const lease = this.lease;
 		const control = await this.whileRootLate(queue, () => queue.setControl(lease, state));
+		this.publishControl(control);
 		const unacknowledged = () =>
 			[...this.readyWorkers].filter((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision).length;
 		let pending = unacknowledged();
@@ -794,6 +825,23 @@ export class PoolCoordinator {
 		// Whatever workers published before acknowledging reaches the root before the acknowledgement.
 		this.flush();
 		return pending;
+	}
+
+	/**
+	 * Pushes committed pool control to every ready worker, so a pause or quit reaches a running attempt at once rather
+	 * than with its next heartbeat. An older revision than one already pushed is never sent: commits can settle out of
+	 * order. A worker that is not ready yet reads the control itself before it claims work. A worker the push cannot
+	 * reach is stopped, as one a reply cannot reach is: the pool replaces it and replays its child.
+	 */
+	private publishControl(control: PoolControl): void {
+		if (this.committedControl !== undefined && control.revision <= this.committedControl.revision) return;
+		this.committedControl = control;
+		const message: WorkerPoolControl = { kind: "pool-control", control };
+		for (const slot of this.slots)
+			if (this.readyWorkers.has(slot.worker) && slot.child.connected)
+				slot.child.send(message, (error) => {
+					if (error) slot.child.kill("SIGKILL");
+				});
 	}
 
 	private async start(
@@ -824,6 +872,7 @@ export class PoolCoordinator {
 		this.logDirectory = workerLogDirectory(this.options.journalPath, root);
 		await mkdir(this.logDirectory, { recursive: true }).catch(() => undefined);
 		this.recoveryTimer = setInterval(() => {
+			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
 				if (this.queue && isRootLeaseLost(error) && (await this.rootRenewal(this.queue).catch(() => false))) return;
@@ -1275,6 +1324,7 @@ export class PoolCoordinator {
 			[
 				JSON.stringify({
 					journalPath: options.journalPath,
+					heartbeatMs: options.heartbeatMs,
 					root,
 					definitions: this.sources,
 					admission: options.admission,
@@ -1464,6 +1514,7 @@ export class PoolCoordinator {
 			child.on("message", (message: WorkerRequest) => {
 				this.observeResponsiveness();
 				this.lastHeard.set(worker, { at: performance.now(), stalled: this.stalledMs });
+				this.counters.request(message.kind);
 				if (message.kind === "stage-command-result") {
 					const settle = slot.stageCommands.get(message.commandId);
 					slot.stageCommands.delete(message.commandId);
@@ -1490,9 +1541,9 @@ export class PoolCoordinator {
 					return;
 				}
 				// A route's registration wait can outlast a reconnect; it settles outside the worker's serial chain so
-				// the worker's control polls, acknowledgements and lease renewals are answered meanwhile.
+				// the worker's heartbeats and control acknowledgements are answered meanwhile.
 				let routeReady: Promise<string> | undefined;
-				const handled = serial.then(async () => {
+				const answer = async () => {
 					if (message.kind === "ready") {
 						if (terminated) return;
 						ready = true;
@@ -1600,8 +1651,17 @@ export class PoolCoordinator {
 					}
 					const held = slot.work;
 					if (!held) throw new Error("Worker has no active attempt");
+					// The heartbeat renews the attempt, records its usage and reads pool control in one transaction.
+					if (message.kind === "heartbeat") {
+						const record = this.usageLedger!.recording(lease, held, message.reports);
+						const beat = await leased(() => queue.heartbeat(lease, held, options.leaseMs, record));
+						slot.work = beat.work;
+						this.noteUsage(beat.recorded);
+						return beat.control;
+					}
+					// Any other request of a worker whose heartbeat is overdue renews its attempt on the way.
 					const work =
-						message.kind === "renew" || held.expiresAt - Date.now() < options.leaseMs / 2
+						held.expiresAt - Date.now() < options.leaseMs / 2
 							? await leased(() => queue.extend(lease, held, options.leaseMs))
 							: held;
 					slot.work = work;
@@ -1656,16 +1716,11 @@ export class PoolCoordinator {
 							this.deliveryRequests.delete(id);
 						}
 					}
-					if (message.kind === "renew") return;
 					if (message.kind === "commit") {
 						const receipt = await leased(() => queue.commit(lease, work, message.operation, message.mutation));
 						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
 						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
-					}
-					if (message.kind === "usage") {
-						this.noteUsage(await leased(() => this.usageLedger!.report(lease, work, message.reports)));
-						return;
 					}
 					if (message.kind === "budget") {
 						await leased(() => queue.assertCurrent(lease, work));
@@ -1678,7 +1733,8 @@ export class PoolCoordinator {
 					this.replacements = 0;
 					slot.work = undefined;
 					await this.sendResult(work.id);
-				});
+				};
+				const handled = this.counters.within(message.kind, () => serial.then(answer));
 				const response = handled.then((value) => routeReady ?? value);
 				// A delivery waits on the worker's own acknowledgements, so it does not count as the pool's wait.
 				if (message.kind !== "delivery" && message.kind !== "delivery-ready") {
@@ -1882,6 +1938,7 @@ export class PoolCoordinator {
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
 		clearInterval(this.mirrorTimer);
+		clearInterval(this.statsTimer);
 		this.rateLimitOutbox.close();
 		let failure: unknown;
 		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
@@ -1930,6 +1987,7 @@ export class PoolCoordinator {
 		}
 		for (const batch of this.batches.values()) batch.settle();
 		this.batches.clear();
+		this.sendCoordinationStats();
 		for (const pending of this.requests.values()) pending.reject(new Error("Local worker pool is closed"));
 		this.requests.clear();
 		if (failure !== undefined) throw failure;

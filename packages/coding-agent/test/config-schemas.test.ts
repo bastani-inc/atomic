@@ -449,6 +449,23 @@ describe("settings.json schema", () => {
 			);
 	});
 
+	it("validates the local worker heartbeat setting (#4313)", () => {
+		const validator = Compile(SettingsSchema);
+		const definitions = [{ path: "./child.ts", exportName: "child" }];
+		for (const heartbeatMs of [100, 15_000])
+			assert.equal(
+				validator.Check({ workflows: { localWorkers: { count: 2, definitions, leaseMs: 60_000, heartbeatMs } } }),
+				true,
+				String(heartbeatMs),
+			);
+		for (const heartbeatMs of [0, 99, 250.5, 1_073_741_824, "15s"])
+			assert.equal(
+				validator.Check({ workflows: { localWorkers: { count: 2, definitions, heartbeatMs } } }),
+				false,
+				String(heartbeatMs),
+			);
+	});
+
 	it("rejects settings values that runtime accessors reject", () => {
 		const validator = Compile(SettingsSchema);
 		const invalidSettings = [

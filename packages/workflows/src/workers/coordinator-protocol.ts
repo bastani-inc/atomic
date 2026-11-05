@@ -3,7 +3,7 @@ import type { PoolControl, PoolWork, PoolWorkDescriptor } from "../durable/journ
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import type { Lease } from "../durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
@@ -39,6 +39,9 @@ export interface PoolCoordinatorStart {
 /** Activity of pooled runs reaches the root at most this often, as one summary per interval. */
 export const POOL_SUMMARY_INTERVAL_MS = 250;
 
+/** The coordinator's request and write counts reach the root at most this often, and only while they change. */
+export const POOL_COORDINATION_STATS_INTERVAL_MS = 1_000;
+
 /** The identity and lease fields of one work attempt; the root keeps the descriptor from enqueue. */
 export type PoolWorkToken = Pick<PoolWork, "id" | "generation" | "worker" | "epoch" | "renewedAt" | "expiresAt">;
 
@@ -58,6 +61,8 @@ export interface PoolCoordinatorOptions {
 	readonly durable?: PoolDurableJournal;
 	readonly workers: number;
 	readonly leaseMs: number;
+	/** How often each worker's heartbeat renews its attempt's lease (`localWorkers.heartbeatMs`, resolved). */
+	readonly heartbeatMs: number;
 	readonly startupTimeoutMs: number;
 	readonly admission?: AdmissionConfiguration;
 	/** Load per CPU above which the root's pooled stage starts are paced (`localWorkers.maxLoadPerCpu`). */
@@ -213,7 +218,9 @@ export type CoordinatorEvent =
 	| { readonly kind: "stage-watch-ended"; readonly watch: WatchId; readonly reason: WatchEndReason }
 	| { readonly kind: "request"; readonly id: number; readonly request: CoordinatorRequestBody }
 	/** Provider and model limits a worker recorded, for the root process (#4023). */
-	| { readonly kind: "rate-limits"; readonly observations: readonly ProviderRateLimitObservation[] };
+	| { readonly kind: "rate-limits"; readonly observations: readonly ProviderRateLimitObservation[] }
+	/** What the coordinator handled so far; sent every {@link POOL_COORDINATION_STATS_INTERVAL_MS} while it changes. */
+	| { readonly kind: "coordination"; readonly stats: PoolCoordinationStats };
 
 /** Main thread answer to a coordinator `request`. */
 export interface CoordinatorRequestReply {

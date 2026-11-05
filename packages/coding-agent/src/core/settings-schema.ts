@@ -432,6 +432,14 @@ const WorkflowsSettingsSchema = Type.Union(
 									"Milliseconds a live worker that has stopped responding keeps its child before the child is replayed elsewhere. Default: 30000.",
 							}),
 						),
+						heartbeatMs: Type.Optional(
+							Type.Integer({
+								minimum: 100,
+								maximum: 1_073_741_823,
+								description:
+									"Milliseconds between a worker's heartbeats, each renewing its child's lease, reporting usage and reading pause or quit, in one request. At most half of leaseMs. Default: leaseMs / 4.",
+							}),
+						),
 						maxLoadPerCpu: Type.Optional(
 							Type.Number({
 								minimum: 0,

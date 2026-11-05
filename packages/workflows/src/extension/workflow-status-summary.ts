@@ -34,6 +34,7 @@ import type {
 	PendingPrompt,
 	RunBudgetSnapshot,
 	RunBudgetState,
+	RunPoolSnapshot,
 	RunSnapshot,
 	RunStatus,
 	StageInputRequest,
@@ -117,6 +118,8 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
 	readonly budget?: RunBudgetSnapshot;
 	readonly budgetState?: RunBudgetState;
+	/** The run's local worker pool, for a root that runs one: its coordinator's traffic by kind. */
+	readonly pool?: RunPoolSnapshot;
 	readonly exitReason?: string;
 	readonly error?: string;
 	/** True when a raw-running root has a completed frontier, no control node, and an exhausted duration budget. */
@@ -274,6 +277,7 @@ export function summarizeRunSnapshot(
 		elapsedMs,
 		...(run.budget !== undefined ? { budget: run.budget } : {}),
 		...(budgetState !== undefined ? { budgetState } : {}),
+		...(run.pool !== undefined ? { pool: run.pool } : {}),
 		activeStages: run.stages.filter(stageIsActive).map((stage) => ({
 			stageId: stage.id,
 			name: stage.name,

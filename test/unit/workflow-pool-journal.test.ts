@@ -346,6 +346,32 @@ test.each(["initialize", "enqueue", "claim", "renew", "expire"] as const)(
 	},
 );
 
+test("a heartbeat is refused for an attempt of an earlier root epoch and for a non-positive lease (#4313)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = await pool.claim(f.lease, "worker", [work], 60_000);
+		assert.ok(held);
+		let recorded = 0;
+		const record = async () => {
+			recorded++;
+		};
+		await assert.rejects(pool.heartbeat(f.lease, held, 0, record), /Pool duration must be a positive safe integer/);
+		await assert.rejects(pool.extend(f.lease, held, 0), /Pool duration must be a positive safe integer/);
+		await f.journal.release(f.lease);
+		const reacquired = await f.journal.acquire(f.lease.runId, f.lease.holderId);
+		if (reacquired.status !== "acquired") assert.fail("reacquisition failed");
+		await assert.rejects(pool.heartbeat(reacquired.lease, held, 60_000, record), /Stale work lease/);
+		await assert.rejects(pool.extend(reacquired.lease, held, 60_000), /Stale work lease/);
+		assert.equal(recorded, 0, "a refused heartbeat records nothing");
+		assert.deepEqual(await pool.inspect("root"), [held], "and renews nothing");
+	} finally {
+		await f.close();
+	}
+});
+
 test("coordinator expiry and takeover fence every queue mutation; paused roots grant no claims (#3869)", async () => {
 	const f = await fixture();
 	try {

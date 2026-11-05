@@ -599,6 +599,12 @@
                   "maximum": 2147483647,
                   "description": "Milliseconds a live worker that has stopped responding keeps its child before the child is replayed elsewhere. Default: 30000."
                 },
+                "heartbeatMs": {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 1073741823,
+                  "description": "Milliseconds between a worker's heartbeats, each renewing its child's lease, reporting usage and reading pause or quit, in one request. At most half of leaseMs. Default: leaseMs / 4."
+                },
                 "maxLoadPerCpu": {
                   "type": "number",
                   "minimum": 0,

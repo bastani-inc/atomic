@@ -10,6 +10,7 @@ import type {
 	LiveStageMessageValidationResult,
 	PendingPrompt,
 	PromptKind,
+	RunPoolSnapshot,
 	RunResumeSource,
 	RunSnapshot,
 	RunStatus,
@@ -133,6 +134,8 @@ export interface Store {
 	recordRunStart(run: RunSnapshot): void;
 	recordRunSummary?(runId: string, summary: string, summarizedThrough: number): void;
 	recordRunExecutionState(runId: string, update: RunExecutionState): void;
+	/** Replaces the run's local worker pool snapshot, as its pool's coordinator reports it. */
+	recordRunPool?(runId: string, pool: RunPoolSnapshot): void;
 	/** Persist, then queue, an ordinary intercom message for an exact future-stage key. */
 	queueStageMessage(
 		input: PendingStageMessageInput,

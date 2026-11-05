@@ -327,11 +327,14 @@ export class SqlPoolQueue {
 	async control(lease: Lease): Promise<PoolControl> {
 		return this.transaction(async (tx) => {
 			await this.authority(tx, lease);
-			const row = await tx.get(`SELECT state, revision FROM ${this.roots}_control WHERE root = ?`, lease.runId);
-			return row
-				? { state: row.state as PoolControl["state"], revision: Number(row.revision) }
-				: { state: "running", revision: 0 };
+			return this.controlIn(tx, lease);
 		});
+	}
+	private async controlIn(tx: SqliteExecutor, lease: Lease): Promise<PoolControl> {
+		const row = await tx.get(`SELECT state, revision FROM ${this.roots}_control WHERE root = ?`, lease.runId);
+		return row
+			? { state: row.state as PoolControl["state"], revision: Number(row.revision) }
+			: { state: "running", revision: 0 };
 	}
 	async setControl(lease: Lease, state: PoolControl["state"]): Promise<PoolControl> {
 		await this.remote?.fresh(lease);
@@ -1047,14 +1050,36 @@ export class SqlPoolQueue {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		await this.remote?.fresh(lease);
+		return this.transaction((tx) => this.extendIn(tx, lease, token, durationMs));
+	}
+	/**
+	 * A worker's heartbeat as one transaction: extends its attempt's lease as {@link extend} does, runs `record` (the
+	 * attempt's usage report) under that lease, and reads pool control, so a heartbeat costs one write however much it
+	 * carries.
+	 */
+	async heartbeat<T>(
+		lease: Lease,
+		token: WorkLease,
+		durationMs: number,
+		record: (tx: SqliteExecutor) => Promise<T>,
+	): Promise<{ readonly work: PoolWork; readonly recorded: T; readonly control: PoolControl }> {
+		positive(durationMs);
+		lease = snapshotLease(lease);
+		token = { ...token };
+		await this.remote?.fresh(lease);
 		return this.transaction(async (tx) => {
-			const { now } = await this.authority(tx, lease);
-			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
-			const expiresAt = Math.max(Number(row.expires_at), expiry(now, durationMs));
-			await tx.run(`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`, expiresAt, now, row.id);
-			return { ...fromRow(row), expiresAt, renewedAt: now };
+			const work = await this.extendIn(tx, lease, token, durationMs);
+			const recorded = await record(tx);
+			return { work, recorded, control: await this.controlIn(tx, lease) };
 		});
+	}
+	private async extendIn(tx: SqliteExecutor, lease: Lease, token: WorkLease, durationMs: number): Promise<PoolWork> {
+		const { now } = await this.authority(tx, lease);
+		const row = await this.current(tx, lease, token);
+		if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
+		const expiresAt = Math.max(Number(row.expires_at), expiry(now, durationMs));
+		await tx.run(`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`, expiresAt, now, row.id);
+		return { ...fromRow(row), expiresAt, renewedAt: now };
 	}
 	async releaseExited(lease: Lease, token: WorkLease): Promise<boolean> {
 		return this.settleExited(lease, token, "ready");

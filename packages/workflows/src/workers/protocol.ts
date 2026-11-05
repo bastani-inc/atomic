@@ -26,7 +26,11 @@ import type {
 	WatchRefusal,
 } from "./stage-watch-types.js";
 
-export const WORKER_HEARTBEAT_INTERVAL_MS = 1_000;
+/**
+ * How often a worker sweeps its stage watches and republishes its attempt's activity. Neither writes to the journal:
+ * the attempt's lease, usage and pool control travel in its heartbeat, every `WorkerStart.heartbeatMs`.
+ */
+export const WORKER_ACTIVITY_INTERVAL_MS = 1_000;
 
 /** `Omit` applied to each member of a union. */
 export type DistributiveOmit<T, K extends PropertyKey> = T extends T ? Omit<T, K> : never;
@@ -40,6 +44,11 @@ export interface WorkerStart {
 	readonly journalPath: string;
 	readonly root: string;
 	readonly definitions: readonly WorkerDefinitionSource[];
+	/**
+	 * How often the worker's heartbeat renews its attempt's work lease, reports its usage and reads pool control, all in
+	 * one request (`localWorkers.heartbeatMs`, a quarter of `localWorkers.leaseMs` by default).
+	 */
+	readonly heartbeatMs: number;
 	readonly admission?: AdmissionConfiguration;
 	/** Children raise `ctx.ui` prompts as prompt nodes for the root to answer (#3996). */
 	readonly promptNodes?: boolean;
@@ -52,7 +61,12 @@ export interface WorkerStart {
 	readonly maxRssBytes?: number;
 }
 export type WorkerRequest = { readonly id: number } & (
-	| { readonly kind: "ready" | "claim" | "renew" | "budget" | "control" }
+	| { readonly kind: "ready" | "claim" | "budget" | "control" }
+	/**
+	 * Renews the held attempt's work lease and records the attempt's cumulative usage, in one journal transaction that
+	 * also reads pool control; the reply is the current {@link PoolControl}.
+	 */
+	| { readonly kind: "heartbeat"; readonly reports: readonly PoolUsageReport[] }
 	/**
 	 * The worker ended its attempt because a reply reported it fenced, or because its run failed on a fault of the pool
 	 * (`fault` names it); neither is a worker fault, and the child replays within its attempt limit.
@@ -77,7 +91,6 @@ export type WorkerRequest = { readonly id: number } & (
 	  }
 	| { readonly kind: "delivery-ack"; readonly deliveryId: string; readonly error?: string }
 	| { readonly kind: "commit"; readonly operation: string; readonly mutation: PoolMutation }
-	| { readonly kind: "usage"; readonly reports: readonly PoolUsageReport[] }
 	| { readonly kind: "complete"; readonly result: RunResult }
 	// One-way stage watch traffic (#3996); the coordinator does not reply to these.
 	| {
@@ -156,5 +169,11 @@ export interface WorkerRateLimits {
 	readonly observations: readonly ProviderRateLimitObservation[];
 }
 
-/** Everything a worker receives over IPC: replies to its requests, stage commands, and shared limits. */
-export type WorkerInbound = WorkerReply | WorkerStageCommand | WorkerRateLimits;
+/** Coordinator -> worker push: pool control as committed, sent to every ready worker when it changes. */
+export interface WorkerPoolControl {
+	readonly kind: "pool-control";
+	readonly control: PoolControl;
+}
+
+/** Everything a worker receives over IPC: replies to its requests, stage commands, pool control and shared limits. */
+export type WorkerInbound = WorkerReply | WorkerStageCommand | WorkerPoolControl | WorkerRateLimits;

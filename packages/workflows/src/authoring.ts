@@ -234,6 +234,20 @@ export declare function run<
 export type { WorkflowInfrastructureFault } from "./shared/workflow-infrastructure-error.js";
 export { isRetryableWorkflowError, WorkflowInfrastructureError } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
+export type {
+	LocalWorkerOptionsErrorCode,
+	LocalWorkerOptionsErrorReason,
+	LocalWorkerOptionsSource,
+	LocalWorkerPoolErrorCode,
+	LocalWorkerTimingOption,
+} from "./workers/local-worker-pool-errors.js";
+export {
+	findLocalWorkerPoolError,
+	isLocalWorkerOptionsError,
+	isLocalWorkerPoolError,
+	LocalWorkerOptionsError,
+	LocalWorkerPoolError,
+} from "./workers/local-worker-pool-errors.js";
 export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
 /**
  * Build the default stage-session adapter: each stage runs an in-process Atomic
