@@ -76,7 +76,6 @@ export function classifyRepository(repo: string): WorkspaceRepository | undefine
 }
 
 function describeReceived(value: unknown): string {
-	if (value === undefined) return "undefined";
 	if (value === null) return "null";
 	if (typeof value === "string") return "an unsupported string";
 	return Array.isArray(value) ? "an array" : typeof value;

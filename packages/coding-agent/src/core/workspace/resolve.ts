@@ -431,15 +431,14 @@ async function removeIncompleteWorktree(
 		adminDir: state.adminDir,
 		marker: state.kind === "interrupted" ? state.marker : "",
 	};
-	const ours = state.kind === "interrupted" && state.marker === WORKTREE_ADDING_REASON;
-	if (!ours && !isAtomicWorktreePath(path))
+	if (fields.marker !== WORKTREE_ADDING_REASON && !isAtomicWorktreePath(path))
 		throw new WorkspaceBindingError({
 			code: "incomplete-worktree",
 			reason: state.kind === "orphaned" ? "orphaned-directory" : "interrupted-add",
 			fields,
 		});
 	if (state.kind === "orphaned") {
-		await filesystem("remove orphaned worktree", path, () => rm(path, { recursive: true, force: true }));
+		await filesystem("remove orphaned worktree", path, () => rm(path, { recursive: true }));
 		return;
 	}
 	try {

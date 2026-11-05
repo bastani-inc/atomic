@@ -169,7 +169,6 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 		const stop = (failure: () => void): void => {
 			if (stopped !== undefined) return;
 			stopped = failure;
-			command.signal?.removeEventListener("abort", onAbort);
 			terminate(child);
 			escalation = setTimeout(() => {
 				if (child.pid !== undefined) killProcessTree(child.pid);

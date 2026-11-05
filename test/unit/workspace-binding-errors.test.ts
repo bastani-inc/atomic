@@ -328,6 +328,19 @@ describe("workspace error family (#3109)", () => {
 			command: "git worktree add x",
 		});
 		assert.match(checkout.hint, /disk space and the repository's checkout size/);
+		const orphaned = new WorkspaceBindingError({
+			code: "incomplete-worktree",
+			reason: "orphaned-directory",
+			fields: { ...incomplete!.fields, adminDir: "/repos/api/.git/worktrees/gone", marker: "" },
+		});
+		assert.equal(
+			orphaned.message.split(" (incomplete-worktree)")[0],
+			"Workspace worktree is incomplete: /wt/api points at /repos/api/.git/worktrees/gone, which /repos/api no longer has",
+		);
+		assert.equal(
+			incomplete!.message.split(" (incomplete-worktree)")[0],
+			"Workspace worktree is incomplete: /wt/api was left by an interrupted checkout and could not be removed",
+		);
 		assert.equal("holderPid" in checkout.fields, false);
 	});
 

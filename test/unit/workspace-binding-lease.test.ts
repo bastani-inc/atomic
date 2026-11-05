@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.ts";
@@ -10,10 +10,11 @@ import {
 	acquireWorkspaceWriterLease,
 	isRetryableWorkspaceError,
 	isWorkspaceBindingError,
+	isWorkspaceTimeoutError,
 	resolveWorkspace,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
-import { closeAfter } from "../../packages/coding-agent/src/core/workspace/lease.ts";
+import { closeAfter, withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 import {
 	createRepository,
 	git,
@@ -269,5 +270,46 @@ describe("workspace writer lease (#3109)", () => {
 		);
 		assert.equal(value, "done");
 		assert.equal(closed, 1);
+	});
+});
+
+describe("repository lock wait (#3109)", () => {
+	test("a lock held past the wait fails with a repository-lock timeout, and the body never runs (#3109)", async () => {
+		const repo = createRepository(dirs.root, "held");
+		const lockFile = join(realpathSync(join(repo, ".git")), "atomic-repository-lock.sqlite");
+		await withRepositoryLock(dirname(lockFile), async () => undefined);
+		const holder = new DatabaseSync(lockFile);
+		holder.exec("BEGIN IMMEDIATE");
+		let ran = false;
+		try {
+			const error = await rejection(
+				withRepositoryLock(
+					dirname(lockFile),
+					async () => {
+						ran = true;
+					},
+					300,
+				),
+			);
+			assert.ok(isWorkspaceTimeoutError(error), String(error));
+			assert.equal(error.phase, "repository-lock");
+			assert.equal(error.timeoutMs, 300);
+			assert.ok(error.elapsedMs >= 300 && error.elapsedMs < 60_000, String(error.elapsedMs));
+			assert.equal(error.fields.command, lockFile);
+			assert.equal(error.fields.holderPid, null, "a holder that left no record is unnamed");
+			assert.equal(error.retryable, true);
+			assert.ok(error.cause instanceof StorageUnavailableError);
+			assert.match(error.message, /^Workspace repository lock wait timed out: another process held /);
+			assert.equal(ran, false);
+		} finally {
+			holder.exec("ROLLBACK");
+			holder.close();
+		}
+		const failing = await rejection(
+			withRepositoryLock(dirname(lockFile), async () => {
+				throw new Error("the body's own failure");
+			}),
+		);
+		assert.equal((failing as Error).message, "the body's own failure", "other failures pass through unchanged");
 	});
 });

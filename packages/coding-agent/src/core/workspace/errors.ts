@@ -709,7 +709,7 @@ function construct(record: SerializedWorkspaceError, cause: unknown): WorkspaceE
 				timeoutMs: Number(fields.timeoutMs),
 				elapsedMs: Number(fields.elapsedMs),
 				command: text(fields, "command"),
-				...(fields.holderPid === undefined ? {} : { holderPid: fields.holderPid as number | null }),
+				holderPid: fields.holderPid as number | null | undefined,
 				cause,
 			});
 		case "WorkspaceSandboxError":
