@@ -50,22 +50,48 @@ export function renameReplacing(
 	}
 }
 
+/** A rename that cannot replace the file at all: it is a mount point (EBUSY), or on another device (EXDEV). */
+const UNREPLACEABLE_FILE_CODES: ReadonlySet<string> = new Set(["EBUSY", "EXDEV"]);
+
+/** How {@link writeSettingsFile} wrote a file: `replaced` whole, or `in-place` because the file cannot be replaced. */
+export type SettingsFileWrite =
+	| { readonly mode: "replaced" }
+	| { readonly mode: "in-place"; readonly reason: NodeJS.ErrnoException };
+
+const inPlaceWrites = new Map<string, NodeJS.ErrnoException>();
+
+/** The settings files this process wrote in place, each with the rename failure that first required it. */
+export function settingsFilesWrittenInPlace(): ReadonlyMap<string, NodeJS.ErrnoException> {
+	return inPlaceWrites;
+}
+
 /**
  * Replace a settings file so readers and a killed or out-of-space writer only ever leave the old or the new content:
  * write a sibling temporary file with the same mode, then rename it over the file. A symbolic link stays a link; its
- * target is replaced.
+ * target is replaced. A file that cannot be replaced, such as a single file mounted into a container, is written in
+ * place instead, under the caller's lock; that fallback is returned and recorded in {@link settingsFilesWrittenInPlace}.
  */
-export function writeSettingsFile(path: string, content: string): void {
+export function writeSettingsFile(path: string, content: string): SettingsFileWrite {
 	const target = existsSync(path) ? realpathSync(path) : path;
 	const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	try {
 		writeFileSync(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
 		if (mode !== undefined) chmodSync(temporary, mode);
-		renameReplacing(temporary, target);
 	} catch (error) {
 		rmSync(temporary, { force: true });
 		throw error;
+	}
+	try {
+		renameReplacing(temporary, target);
+		return { mode: "replaced" };
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		const reason = error as NodeJS.ErrnoException;
+		if (!UNREPLACEABLE_FILE_CODES.has(reason.code ?? "")) throw error;
+		writeFileSync(target, content, "utf-8");
+		if (!inPlaceWrites.has(target)) inPlaceWrites.set(target, reason);
+		return { mode: "in-place", reason };
 	}
 }
 
