@@ -7,8 +7,10 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
+	ForkCleanupError,
 	ForkSessionNotFoundError,
 	ForkSessionUnavailableError,
+	isForkCleanupError,
 	isForkSessionNotFoundError,
 	isForkSessionUnavailableError,
 	isRetryableForkError,
@@ -221,5 +223,44 @@ test("a pool session store that cannot be read fails the fork as a retryable For
 		(await backend.journal.listRuns()).map((run) => run.runId),
 		[runId],
 		"no fork run was written",
+	);
+});
+
+test("a pooled reader close failure is reported once with its typed cleanup step without losing the points (#4321)", async () => {
+	const { backend, runId } = await pooledSource("fork-pool-close-failure");
+	const failure = new Error("reader close failed");
+	vi.spyOn(SqlSessionStore.prototype, "close").mockRejectedValue(failure);
+	const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const listed: string[] = [];
+	for await (const point of durableForkPoints(backend, runId, { sourceSessionStore: new MemorySessionStore() }))
+		listed.push(point.stagePath);
+	assert.deepEqual(listed, ["implement"]);
+	assert.equal(warned.mock.calls.length, 1);
+	const [error, ...extra] = warned.mock.calls[0]!;
+	assert.ok(error instanceof ForkCleanupError);
+	assert.ok(isForkCleanupError(error));
+	assert.deepEqual(
+		[error.code, error.step, error.runId, error.retryable],
+		["cleanup-failed", "close-source-sessions", runId, false],
+	);
+	assert.equal(error.cause, failure);
+	assert.deepEqual(extra, []);
+});
+
+test("an unexpected pool reader exception propagates instead of being recast as unavailable storage (#4321)", async () => {
+	const { backend, runId, directory } = await pooledSource("fork-pool-unexpected-failure");
+	const failure = new TypeError("reader invariant failed");
+	vi.spyOn(SqlSessionStore.prototype, "load").mockRejectedValue(failure);
+	const closes = vi.spyOn(SqlSessionStore.prototype, "close");
+	const destination = new MemorySessionStore();
+	await assert.rejects(
+		forkDurableRun(backend, forkRequest(runId, directory, new MemorySessionStore(), destination)),
+		(error) => error === failure,
+	);
+	assert.equal(closes.mock.calls.length, 1);
+	assert.deepEqual(await sessionIds(destination), []);
+	assert.deepEqual(
+		(await backend.journal.listRuns()).map((run) => run.runId),
+		[runId],
 	);
 });
