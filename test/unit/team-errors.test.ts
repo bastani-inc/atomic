@@ -4,12 +4,14 @@ import {
 	isRetryableTeamProfileError,
 	isTeamProfileConfigError,
 	isTeamProfileError,
+	isTeamProfileTimeoutError,
 	StorageConfigError,
 	StorageError,
 	TEAM_PROFILE_CONFIG_ERROR_CODES,
 	TEAM_PROFILE_ERROR_CODES,
 	TeamProfileConfigError,
 	TeamProfileError,
+	TeamProfileTimeoutError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 
 test("team errors carry an explicit name, a stable code, safe fields and a hint (#4320)", () => {
@@ -41,7 +43,7 @@ test("team errors carry an explicit name, a stable code, safe fields and a hint 
 	);
 	assert.deepEqual(
 		[...TEAM_PROFILE_ERROR_CODES].filter((code) => new TeamProfileError(code, { subject: "s", hint: "h" }).retryable),
-		["connection-failed", "settings-locked", "broker-restart-failed"],
+		["connection-failed", "connection-timeout", "settings-locked", "broker-restart-failed"],
 	);
 });
 
@@ -118,4 +120,45 @@ test("retryability walks the cause chain up to eight levels (#4320)", () => {
 		false,
 	);
 	assert.equal(isRetryableTeamProfileError(undefined), false);
+});
+
+test("a timeout is a retryable team error carrying its deadline, elapsed time and phase (#4320)", () => {
+	const timeout = new TeamProfileTimeoutError({
+		subject: "libsql://db",
+		hint: "Retry.",
+		timeoutMs: 15000,
+		elapsedMs: 15003,
+		phase: "connect",
+	});
+	assert.ok(timeout instanceof TeamProfileError);
+	assert.deepEqual(
+		[
+			timeout.name,
+			timeout.code,
+			timeout.retryable,
+			timeout.timeoutMs,
+			timeout.elapsedMs,
+			timeout.phase,
+			timeout.detail,
+		],
+		[
+			"TeamProfileTimeoutError",
+			"connection-timeout",
+			true,
+			15000,
+			15003,
+			"connect",
+			"no answer within 15000 ms (connect)",
+		],
+	);
+	assert.equal(isTeamProfileTimeoutError(timeout), true);
+	assert.equal(isTeamProfileError(timeout), true);
+	assert.equal(isRetryableTeamProfileError(new Error("wrapped", { cause: timeout })), true);
+	assert.equal(isTeamProfileTimeoutError({ name: "TeamProfileTimeoutError", code: "connection-timeout" }), true);
+	assert.equal(isTeamProfileTimeoutError({ name: "TeamProfileTimeoutError", code: "connection-failed" }), false);
+	assert.equal(
+		isTeamProfileTimeoutError(new TeamProfileError("connection-failed", { subject: "s", hint: "h" })),
+		false,
+	);
+	assert.equal(isTeamProfileError({ name: "TeamProfileTimeoutError", code: "connection-timeout" }), true);
 });

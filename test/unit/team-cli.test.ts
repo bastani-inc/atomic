@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { type AddressInfo, createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -16,6 +17,7 @@ import {
 	isRetryableTeamProfileError,
 	isTeamProfileConfigError,
 	isTeamProfileError,
+	isTeamProfileTimeoutError,
 	TeamProfileError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
@@ -30,6 +32,7 @@ import {
 	collectStorageStatus,
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
+import { joinTeamWith } from "../../packages/coding-agent/src/core/storage/team.js";
 import { selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
@@ -391,6 +394,43 @@ describe("atomic team join, status and leave (#4320)", () => {
 				release();
 			}
 			assert.equal((await joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project })).token, "new");
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a database that never answers fails the join within its deadline with a typed timeout, and nothing changes (#4320)",
+		async () => {
+			writeSettings({ packages: [packageRoot] });
+			const before = settingsText();
+			const silent = createServer(() => {});
+			await new Promise<void>((listening) => silent.listen(0, "127.0.0.1", listening));
+			const { port } = silent.address() as AddressInfo;
+			try {
+				const url = `https://127.0.0.1:${port}`;
+				const failure = await joinTeamWith({ url, tokenFile, agentDir, cwd: project }, "sdk", {
+					connectionTimeoutMs: 300,
+				}).then(
+					() => assert.fail("joined a database that never answered"),
+					(error: Error) => error,
+				);
+				assert.ok(isTeamProfileTimeoutError(failure));
+				assert.ok(isTeamProfileError(failure));
+				assert.ok(failure instanceof TeamProfileError);
+				assert.deepEqual(
+					[failure.name, failure.code, failure.retryable, failure.timeoutMs, failure.phase, failure.subject],
+					["TeamProfileTimeoutError", "connection-timeout", true, 300, "connect", url],
+				);
+				assert.ok(failure.elapsedMs >= 300 && failure.elapsedMs < 10_000, `elapsed ${failure.elapsedMs} ms`);
+				assert.equal(
+					failure.message,
+					`The team database did not answer in time: ${url} (connection-timeout): no answer within 300 ms (connect). Nothing was changed. Check that the database is reachable from this machine, then run the command again.`,
+				);
+				assert.equal(settingsText(), before);
+				assert.deepEqual(tokenFiles(), []);
+			} finally {
+				silent.close();
+			}
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);

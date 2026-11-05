@@ -13,7 +13,13 @@ import { resolvePackageStorageAdapter } from "../package-manager-storage-adapter
 import { selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
-import { describeStorageError, StorageAdapterLoadError, StorageError, TeamProfileError } from "./errors.js";
+import {
+	describeStorageError,
+	StorageAdapterLoadError,
+	StorageError,
+	TeamProfileError,
+	TeamProfileTimeoutError,
+} from "./errors.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, storageSelectionKey } from "./provider.js";
 import {
 	checkTeamPrefix,
@@ -120,6 +126,7 @@ export interface TeamProfile {
 /** Test seam: the CLI and tests pass their broker control. */
 export interface TeamOperationContext {
 	readonly loadControl?: () => Promise<IntercomBrokerControl>;
+	readonly connectionTimeoutMs?: number;
 }
 
 function settingsPathOf(agentDir: string): string {
@@ -164,6 +171,53 @@ async function checkConnection(url: string, token: string | undefined, agentDir:
 	} finally {
 		await database.close();
 	}
+}
+
+/** How long a join waits for the team database to load its adapter, connect and answer `SELECT 1`. */
+export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
+
+/**
+ * `checkConnection`, bounded by `timeoutMs`: a database that does not answer fails with a retryable
+ * {@link TeamProfileTimeoutError} instead of waiting for the operating system's connection timeout. A check that
+ * fails after the deadline is recorded as the timeout error's `cleanupCause`.
+ */
+async function checkConnectionWithin(
+	url: string,
+	token: string | undefined,
+	agentDir: string,
+	timeoutMs: number,
+): Promise<void> {
+	const started = Date.now();
+	const check = checkConnection(url, token, agentDir).then(() => "answered" as const);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<"timed-out">((resolveDeadline) => {
+		timer = setTimeout(() => resolveDeadline("timed-out"), timeoutMs);
+	});
+	let outcome: "answered" | "timed-out";
+	try {
+		outcome = await Promise.race([check, deadline]);
+	} catch (error) {
+		throw new TeamProfileError("connection-failed", {
+			subject: url,
+			detail: describeStorageError(error as Error),
+			hint: "Nothing was changed. Check the URL, the token and the network, then run the command again.",
+			cause: error as Error,
+		});
+	} finally {
+		clearTimeout(timer);
+	}
+	if (outcome === "answered") return;
+	const timeout = new TeamProfileTimeoutError({
+		subject: url,
+		timeoutMs,
+		elapsedMs: Date.now() - started,
+		phase: "connect",
+		hint: "Nothing was changed. Check that the database is reachable from this machine, then run the command again.",
+	});
+	check.catch((late: Error) => {
+		Object.defineProperty(timeout, "cleanupCause", { value: late, configurable: true });
+	});
+	throw timeout;
 }
 
 /** The token file a `{ file }` reference names, resolved like the storage provider resolves it. */
@@ -239,6 +293,7 @@ function cleanupAfter(primary: Error, cleanup: () => void): void {
 export async function joinSharedDatabase(
 	options: JoinTeamOptions & { readonly pinLocalSessions: boolean },
 	source: Exclude<TeamInputSource, "env">,
+	connectionTimeoutMs: number = TEAM_CONNECTION_TIMEOUT_MS,
 ): Promise<SharedDatabaseJoin> {
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
 	const cwd = resolve(options.cwd ?? process.cwd());
@@ -263,16 +318,7 @@ export async function joinSharedDatabase(
 			hint: `Install it, then run this command again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
 		});
 	}
-	try {
-		await checkConnection(url, token, agentDir);
-	} catch (error) {
-		throw new TeamProfileError("connection-failed", {
-			subject: url,
-			detail: describeStorageError(error as Error),
-			hint: "Nothing was changed. Check the URL, the token and the network, then run the command again.",
-			cause: error as Error,
-		});
-	}
+	await checkConnectionWithin(url, token, agentDir, connectionTimeoutMs);
 
 	const previous: StorageSettingsSelection | undefined = manager.getGlobalSettings().storage;
 	const reused = token === undefined ? undefined : reusableTokenFile(previous, token, agentDir);
@@ -406,7 +452,11 @@ export async function joinTeamWith(
 	source: Exclude<TeamInputSource, "env">,
 	context: TeamOperationContext = {},
 ): Promise<TeamJoinResult> {
-	const joined = await joinSharedDatabase({ ...options, pinLocalSessions: true }, source);
+	const joined = await joinSharedDatabase(
+		{ ...options, pinLocalSessions: true },
+		source,
+		context.connectionTimeoutMs ?? TEAM_CONNECTION_TIMEOUT_MS,
+	);
 	const broker = await restartBroker(dirname(joined.settingsPath), context, options.onProgress);
 	return { ...joined, sessionsStorage: LOCAL_SESSIONS_STORAGE, broker };
 }

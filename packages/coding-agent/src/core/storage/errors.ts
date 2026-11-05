@@ -587,6 +587,7 @@ export type TeamProfileErrorCode =
 	| "settings-unreadable"
 	| "adapter-not-installed"
 	| "connection-failed"
+	| "connection-timeout"
 	| "token-write-failed"
 	| "settings-write-failed"
 	| "settings-locked"
@@ -615,6 +616,7 @@ export const TEAM_PROFILE_ERROR_CODES: ReadonlySet<TeamProfileErrorCode> = new S
 	"settings-unreadable",
 	"adapter-not-installed",
 	"connection-failed",
+	"connection-timeout",
 	"token-write-failed",
 	"settings-write-failed",
 	"settings-locked",
@@ -650,6 +652,7 @@ const USAGE_CODES: ReadonlySet<TeamProfileConfigErrorCode> = new Set<TeamProfile
 
 const RETRYABLE_CODES: ReadonlySet<TeamProfileErrorCode> = new Set<TeamProfileErrorCode>([
 	"connection-failed",
+	"connection-timeout",
 	"settings-locked",
 	"broker-restart-failed",
 ]);
@@ -658,6 +661,7 @@ const SUMMARIES: Readonly<Record<TeamProfileErrorCode, string>> = {
 	"settings-unreadable": "Cannot update the global settings",
 	"adapter-not-installed": "The libSQL storage adapter is not installed",
 	"connection-failed": "Could not connect to the team database",
+	"connection-timeout": "The team database did not answer in time",
 	"token-write-failed": "Could not store the database token",
 	"settings-write-failed": "Could not write the global settings",
 	"settings-locked": "Another process is writing the global settings",
@@ -680,7 +684,7 @@ export interface TeamProfileErrorFields {
  * `atomic team`) after the inputs were accepted. Branch on `code`, never on the message.
  */
 export class TeamProfileError extends StorageError {
-	override readonly name = "TeamProfileError" as const;
+	override readonly name: "TeamProfileError" | "TeamProfileTimeoutError" = "TeamProfileError";
 	readonly code: TeamProfileErrorCode;
 	readonly subject: string;
 	readonly hint: string;
@@ -698,6 +702,34 @@ export class TeamProfileError extends StorageError {
 		this.hint = fields.hint;
 		if (fields.detail !== undefined) this.detail = fields.detail;
 		this.retryable = RETRYABLE_CODES.has(code);
+	}
+}
+
+/** What a team operation was doing when it ran out of time. */
+export type TeamProfileTimeoutPhase = "connect";
+
+/** A team operation that did not finish in time (`code` `connection-timeout`); retryable. */
+export class TeamProfileTimeoutError extends TeamProfileError {
+	override readonly name = "TeamProfileTimeoutError" as const;
+	readonly timeoutMs: number;
+	readonly elapsedMs: number;
+	readonly phase: TeamProfileTimeoutPhase;
+
+	constructor(
+		fields: Omit<TeamProfileErrorFields, "detail" | "cause"> & {
+			readonly timeoutMs: number;
+			readonly elapsedMs: number;
+			readonly phase: TeamProfileTimeoutPhase;
+		},
+	) {
+		super("connection-timeout", {
+			subject: fields.subject,
+			hint: fields.hint,
+			detail: `no answer within ${fields.timeoutMs} ms (${fields.phase})`,
+		});
+		this.timeoutMs = fields.timeoutMs;
+		this.elapsedMs = fields.elapsedMs;
+		this.phase = fields.phase;
 	}
 }
 
@@ -749,7 +781,19 @@ function hasNameAndCodeIn(value: unknown, name: string, codes: ReadonlySet<strin
 
 /** Whether `error` is a {@link TeamProfileError}, also across realms and processes (by `name` and `code`). */
 export function isTeamProfileError(error: unknown): error is TeamProfileError {
-	return error instanceof TeamProfileError || hasNameAndCodeIn(error, "TeamProfileError", TEAM_PROFILE_ERROR_CODES);
+	return (
+		error instanceof TeamProfileError ||
+		hasNameAndCodeIn(error, "TeamProfileError", TEAM_PROFILE_ERROR_CODES) ||
+		isTeamProfileTimeoutError(error)
+	);
+}
+
+/** Whether `error` is a {@link TeamProfileTimeoutError}, also across realms and processes (by `name` and `code`). */
+export function isTeamProfileTimeoutError(error: unknown): error is TeamProfileTimeoutError {
+	return (
+		error instanceof TeamProfileTimeoutError ||
+		hasNameAndCodeIn(error, "TeamProfileTimeoutError", new Set(["connection-timeout"]))
+	);
 }
 
 /** Whether `error` is a {@link TeamProfileConfigError}, also across realms and processes (by `name` and `code`). */
