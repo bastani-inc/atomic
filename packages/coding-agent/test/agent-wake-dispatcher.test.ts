@@ -1014,3 +1014,38 @@ describe("AgentWakeDispatcher handler takeover while a key runs (#4326)", () => 
 		assert.deepEqual(fired, ["x"]);
 	});
 });
+
+describe("AgentWakeDispatcher handler removal (#4326)", () => {
+	test("a handler removed while its wake runs keeps that wake counted against the namespace's limit for the next handler", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const started: string[] = [];
+		let finishFirst = () => {};
+		const stop = dispatcher.handle(
+			"ns",
+			async (key) => {
+				started.push(key);
+				await new Promise<void>((resolve) => {
+					finishFirst = resolve;
+				});
+			},
+			{ maxConcurrent: 1 },
+		);
+		const first = dispatcher.deliver("ns:a", wake("1", "timer"));
+		await flush();
+		stop();
+		dispatcher.handle(
+			"ns",
+			async (key) => {
+				started.push(`next:${key}`);
+			},
+			{ maxConcurrent: 1 },
+		);
+		const second = dispatcher.deliver("ns:b", wake("2", "timer"));
+		await flush();
+		assert.deepEqual(started, ["ns:a"], "the running wake still holds the namespace's only slot");
+
+		finishFirst();
+		await Promise.all([first, second]);
+		assert.deepEqual(started, ["ns:a", "next:ns:b"]);
+	});
+});

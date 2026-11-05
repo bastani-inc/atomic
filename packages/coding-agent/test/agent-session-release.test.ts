@@ -37,6 +37,7 @@ import type { ToolDefinition } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import type { ResourceAdmission } from "../src/core/sdk-types.ts";
+import { sessionLifecycleScopes } from "../src/core/session-lifecycle-scope.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
 import type { SessionStore, StorageDescriptor } from "../src/core/storage/session/types.ts";
@@ -623,6 +624,26 @@ describe("release and idle release details (#4326)", () => {
 		assert.equal(internal(h.session)._disposed, false);
 	});
 
+	test("the idle wake is a timer wake with an id of its own, when armed and when re-armed for a busy session", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const scheduled: Array<Parameters<AgentWakeDispatcher["schedule"]>[1]> = [];
+		const schedule = dispatcher.schedule.bind(dispatcher);
+		dispatcher.schedule = (key, wake, delayMs) => {
+			scheduled.push(wake);
+			return schedule(key, wake, delayMs);
+		};
+		const h = await harness();
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		internal(h.session)._followUpMessages.push("queued");
+		await time.advance(100);
+
+		assert.deepEqual(scheduled, [
+			{ id: "idle-release", kind: "timer" },
+			{ id: "idle-release", kind: "timer" },
+		]);
+	});
+
 	test("a busy session's idle wake is re-armed under the same wake, so the next run still cancels it", async () => {
 		const time = manualClock();
 		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
@@ -695,6 +716,17 @@ describe("AgentSessionRuntime.rehydrate details (#4326)", () => {
 		assert.notEqual(second, first);
 		assert.equal(internal(second)._disposed, false);
 		assert.equal(host.factoryCalls.length, 3);
+	});
+
+	test("a rehydrated session has a lifecycle scope of its own", async () => {
+		const host = await runtimeHost();
+		const other = await SessionManager.create(host.store.store, host.runtime.cwd);
+		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
+		const woken = await host.runtime.rehydrate(other.getSessionId());
+
+		const scope = sessionLifecycleScopes.get(woken);
+		assert.ok(scope);
+		assert.notEqual(scope, sessionLifecycleScopes.get(host.runtime.session));
 	});
 
 	test("a session saved in another cwd is built without the runtime's services", async () => {
@@ -790,6 +822,29 @@ describe("a session whose history could not be reopened is not released (#4326)"
 		);
 		assert.equal(admissions, 0);
 		assert.equal(armedIdleSessionCount(), 0);
+	});
+
+	test("the history check needs both a release policy and a session manager, and no more (#4326)", async () => {
+		const reached = new Error("admission reached");
+		let admissions = 0;
+		const resourceAdmission: ResourceAdmission = {
+			acquire: async () => {
+				admissions += 1;
+				throw reached;
+			},
+		};
+		const refusedAt = (options: Parameters<typeof createAgentSession>[0]) =>
+			createAgentSession(options).then(
+				() => undefined,
+				(error: Error) => error,
+			);
+
+		const withoutPolicy = await refusedAt({ sessionManager: SessionManager.inMemory(), resourceAdmission });
+		const withoutManager = await refusedAt({ resourceAdmission, releaseWhenIdle: { afterMs: 10 } });
+
+		assert.equal(withoutPolicy?.cause ?? withoutPolicy, reached);
+		assert.equal(withoutManager?.cause ?? withoutManager, reached);
+		assert.equal(admissions, 2);
 	});
 
 	test("a miss in memory storage points at the store, not at team join", () => {

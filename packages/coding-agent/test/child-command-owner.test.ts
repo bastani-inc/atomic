@@ -19,6 +19,7 @@ describe("a child's completion route in its parent's command owner (#4326)", () 
 	test("is held from bind until unbind, and unbinding a child nobody bound is harmless", () => {
 		const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "owner" }, authorizeLaunch() {} });
 		const owner = createChildCommandTaskOwner(() => host);
+		owner.unbind("before-any-bind");
 		assert.equal(childCommandRouteCount(host), 0);
 		owner.bind("child-a", route, new ChildTaskWaits());
 		owner.bind("child-b", route, new ChildTaskWaits());
