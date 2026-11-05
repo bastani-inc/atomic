@@ -28,6 +28,7 @@ import {
 } from "../runs/foreground/executor-child-helpers.js";
 import {
 	createGitWorktreeSetupCacheOwner,
+	inputsSelectGitWorktree,
 	workflowCwdWithInputWorktree,
 	workflowInvocationMetadata,
 } from "../runs/foreground/executor-direct-helpers.js";
@@ -54,6 +55,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
+import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
 import { raceAbort } from "../shared/abort.js";
 import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
@@ -1066,6 +1068,7 @@ async function executeRun(
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
+		await prepareRunGit(ownController.signal, inputsSelectGitWorktree(inputRuntimeDefaults));
 		if (opts.parentRun === undefined) {
 			if (durableRootRegistration !== undefined) {
 				await durableBackend.commitWorkflowRegistration({

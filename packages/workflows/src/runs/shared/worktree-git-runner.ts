@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { createChildProcessEnvironment, createGitEnvironment } from "@bastani/atomic";
+import {
+	createChildProcessEnvironment,
+	createGitEnvironment,
+	isGitProvisionError,
+	resolveGit,
+	resolveGitSync,
+} from "@bastani/atomic";
 import type { GitResult } from "./worktree-types.js";
 
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -23,13 +29,14 @@ function withDiagnostics(result: GitResult, cwd: string, args: readonly string[]
 	};
 }
 function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResult {
+	const git = resolveGitSync();
 	const startedAt = Date.now();
-	const result = spawnSync("git", plain ? args : gitCommandArgs(args), {
+	const result = spawnSync(git.path, plain ? args : gitCommandArgs(args), {
 		cwd,
 		encoding: "utf-8",
 		env: createGitEnvironment(
 			{ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
-			createChildProcessEnvironment(),
+			createChildProcessEnvironment(undefined, git.env),
 		),
 		timeout: GIT_COMMAND_TIMEOUT_MS,
 	});
@@ -41,6 +48,19 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 		elapsedMs: Math.max(0, Date.now() - startedAt),
 		...(result.error === undefined ? {} : { error: result.error }),
 	};
+}
+/**
+ * Provision git before a run's synchronous worktree helpers need it. A run whose inputs select a worktree fails here,
+ * before any stage starts, when git cannot be provided. Any other run starts anyway: the typed reason is recorded and
+ * thrown by the first git command it issues, and it is shown in the tools status.
+ */
+export async function prepareRunGit(signal: AbortSignal, requiresGit: boolean): Promise<void> {
+	if (gitRunnerOverride !== undefined) return;
+	try {
+		await resolveGit({ signal });
+	} catch (error) {
+		if (requiresGit || !isGitProvisionError(error)) throw error;
+	}
 }
 export function withGitRunnerForTest<T>(runner: GitRunner, callback: () => T): T {
 	const previous = gitRunnerOverride;

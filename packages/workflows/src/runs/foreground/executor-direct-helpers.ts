@@ -173,13 +173,19 @@ export function stageOptionsWithGitWorktree<T extends StageOptions>(
 	return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
+/** Whether the run's inputs select a git worktree, so the run cannot start without git. */
+export function inputsSelectGitWorktree(
+	inputDefaults: Partial<StageOptions>,
+): inputDefaults is Partial<StageOptions> & { readonly gitWorktreeDir: string } {
+	return typeof inputDefaults.gitWorktreeDir === "string" && inputDefaults.gitWorktreeDir.trim().length > 0;
+}
+
 export function setupWorkflowInputGitWorktree(
 	inputDefaults: Partial<StageOptions>,
 	workflowInvocationCwd: string,
 	cache?: GitWorktreeSetupCache,
 ): GitWorktreeSetupResult | undefined {
-	if (typeof inputDefaults.gitWorktreeDir !== "string" || inputDefaults.gitWorktreeDir.trim().length === 0)
-		return undefined;
+	if (!inputsSelectGitWorktree(inputDefaults)) return undefined;
 	return setupGitWorktreeCached(
 		{
 			gitWorktreeDir: inputDefaults.gitWorktreeDir,
