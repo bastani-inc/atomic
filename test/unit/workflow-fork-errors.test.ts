@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
 	FORK_ERROR_MAX_CAUSE_DEPTH,
+	ForkClaimReleaseError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkDefinitionMismatchError,
@@ -15,6 +16,7 @@ import {
 	ForkSourceNotFoundError,
 	ForkTargetNotFoundError,
 	findForkError,
+	isForkClaimReleaseError,
 	isForkConfigError,
 	isForkCopyFailedError,
 	isForkDefinitionMismatchError,
@@ -320,6 +322,24 @@ test("ForkJournalUnsupportedError and ForkCopyFailedError render stable messages
 	]);
 });
 
+test("ForkClaimReleaseError renders how long the source stays claimed and when to retry (#4321)", () => {
+	const cause = new Error("lease lost");
+	assertCases([
+		{
+			error: new ForkClaimReleaseError({ runId, claimExpiresInMs: 120_000 }, { cause }),
+			message: `Fork claim release failed: run ${runId} stays claimed by this fork for up to 120 s (claim-release-failed). Forks and resumes of run ${runId} report it busy until the claim expires; retry them after 120 s.`,
+			hint: `Forks and resumes of run ${runId} report it busy until the claim expires; retry them after 120 s.`,
+			fields: { runId, claimExpiresInMs: 120_000 },
+		},
+		{
+			error: new ForkClaimReleaseError({ runId, claimExpiresInMs: 1_500 }, { cause }),
+			message: `Fork claim release failed: run ${runId} stays claimed by this fork for up to 2 s (claim-release-failed). Forks and resumes of run ${runId} report it busy until the claim expires; retry them after 2 s.`,
+			hint: `Forks and resumes of run ${runId} report it busy until the claim expires; retry them after 2 s.`,
+			fields: { runId, claimExpiresInMs: 1_500 },
+		},
+	]);
+});
+
 test("ForkJournalUnavailableError renders each phase, its journal and whether to retry or resume (#4321)", () => {
 	const status = "atomic storage status shows the storage in use.";
 	const retry = `Nothing was written and run ${runId} is unchanged; retry the fork once the journal is reachable. ${status}`;
@@ -412,6 +432,10 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 		),
 		guard: isForkCopyFailedError,
 	},
+	{
+		error: new ForkClaimReleaseError({ runId, claimExpiresInMs: 120_000 }, { cause: new Error("lease lost") }),
+		guard: isForkClaimReleaseError,
+	},
 ];
 
 const guards = samples.map((sample) => sample.guard);
@@ -457,7 +481,7 @@ for (const { error, guard } of samples) {
 
 test("rehydrated fork errors keep their typed fields (#4321)", () => {
 	const typed = samples.map(({ error }) => rehydrateForkError(serializeForkError(error)));
-	const [target, mismatch, busy, entry, session, config, source, journal, unavailable, copy] = typed;
+	const [target, mismatch, busy, entry, session, config, source, journal, unavailable, copy, released] = typed;
 	assert.ok(target instanceof ForkTargetNotFoundError);
 	assert.deepEqual(
 		[target.runId, target.fromStage, target.validStagePaths, target.totalValidStagePaths],
@@ -509,6 +533,17 @@ test("rehydrated fork errors keep their typed fields (#4321)", () => {
 	const bare = rehydrateForkError({ ...serializeForkError(copy), cause: undefined });
 	assert.ok(bare instanceof ForkCopyFailedError);
 	assert.match((bare.cause as Error).message, /not serialized/);
+	assert.ok(released instanceof ForkClaimReleaseError);
+	assert.deepEqual(
+		[released.runId, released.claimExpiresInMs, released.retryable, (released.cause as Error).message],
+		[runId, 120_000, false, "lease lost"],
+	);
+	const releasedBare = rehydrateForkError({ ...serializeForkError(released), cause: undefined, fields: { runId } });
+	assert.ok(releasedBare instanceof ForkClaimReleaseError);
+	assert.deepEqual(
+		[releasedBare.claimExpiresInMs, (releasedBare.cause as Error).message],
+		[0, "The release failure's cause was not serialized."],
+	);
 	const legacyConfig = rehydrateForkError({
 		...serializeForkError(config),
 		fields: { source: "sdk", field: "cwd", expected: "an existing directory" },
@@ -700,6 +735,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"ForkJournalUnsupportedError",
 		"ForkJournalUnavailableError",
 		"ForkCopyFailedError",
+		"ForkClaimReleaseError",
 		"isForkError",
 		"isForkTargetNotFoundError",
 		"isForkDefinitionMismatchError",
@@ -711,6 +747,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"isForkJournalUnsupportedError",
 		"isForkJournalUnavailableError",
 		"isForkCopyFailedError",
+		"isForkClaimReleaseError",
 		"isRetryableForkError",
 		"findForkError",
 		"serializeForkError",

@@ -29,10 +29,11 @@ import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
-import type { WorkflowExecutionPolicy, WorkflowInputValues } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { discoverWorkflows } from "./discovery.js";
 import { withWorkflowResumeAdmission } from "./dormant-run-gate.js";
+import { resumeFailureCode, type WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
 /** Outcome of forking a durable run from this session and resuming the fork. */
@@ -41,8 +42,10 @@ export type ForkDurableWorkflowResult =
 			readonly ok: true;
 			readonly runId: string;
 			readonly forkedFrom: WorkflowForkedFrom;
-			/** False when the fork was created but its resume did not start; `/workflow resume` starts it. */
+			/** False when the fork was created but did not start; `startFailure` then says why. */
 			readonly started: boolean;
+			/** Why a created fork did not start, as the code of a failed resume. */
+			readonly startFailure?: WorkflowControlFailureCode;
 			readonly message: string;
 	  }
 	| { readonly ok: false; readonly error: ForkError; readonly message: string; readonly runId?: string };
@@ -80,6 +83,8 @@ export interface DurableResumeRuntime {
 			readonly forkModelOwner?: string;
 			/** Resume a root whose worker entry modules were edited: see `RunOpts.acceptEntryChanges` (#4200). */
 			readonly acceptEntryChanges?: boolean;
+			/** Run this definition instead of resolving the run's name: a fork's, found where its source ran. */
+			readonly definition?: WorkflowDefinition;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -183,16 +188,23 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				modelOwner: options.modelOwner,
 				signal: options.signal,
 				onRunAccepted: options.onRunAccepted,
+				definition: fork.definition,
 			});
 			const from = `${fork.forkedFrom.runId}${fork.forkedFrom.stagePath === undefined ? "" : ` from stage "${fork.forkedFrom.stagePath}"`}`;
-			if (!resumed.ok)
+			if (!resumed.ok) {
+				const next =
+					(await resolveDefinition(fork.definition.name, deps.runtimeCwd)) === undefined
+						? `Workflow "${fork.definition.name}" is not defined in this directory, so /workflow resume cannot start the fork here; fork the source again with /workflow fork ${fork.forkedFrom.runId}.`
+						: `Resume it with /workflow resume ${fork.runId}.`;
 				return {
 					ok: true,
 					runId: fork.runId,
 					forkedFrom: fork.forkedFrom,
 					started: false,
-					message: `Forked workflow ${from} into ${fork.runId}; it did not start: ${resumed.message} Resume it with /workflow resume ${fork.runId}.`,
+					startFailure: resumeFailureCode(resumed.reason),
+					message: `Forked workflow ${from} into ${fork.runId}; it did not start: ${resumed.message} ${next}`,
 				};
+			}
 			return {
 				ok: true,
 				runId: fork.runId,
@@ -240,13 +252,16 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 							...(options?.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
 						},
 						durableBackend: backend,
-						resolveDefinition: async (name, cwd) =>
-							(
-								await discoverWorkflows({
-									cwd: cwd ?? deps.runtimeCwd,
-									getWorkflowHostModules: deps.getWorkflowHostModules,
-								})
-							).registry.get(name),
+						resolveDefinition:
+							options?.definition === undefined
+								? async (name, cwd) =>
+										(
+											await discoverWorkflows({
+												cwd: cwd ?? deps.runtimeCwd,
+												getWorkflowHostModules: deps.getWorkflowHostModules,
+											})
+										).registry.get(name)
+								: async () => options.definition,
 						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
 					};
 					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);

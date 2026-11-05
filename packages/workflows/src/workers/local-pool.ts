@@ -83,7 +83,7 @@ import {
 	promptIdentity,
 	questionIdentity,
 } from "./held-prompt-answers.js";
-import { hostWorkerBindings } from "./host-options.js";
+import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import {
@@ -546,21 +546,7 @@ export class LocalWorkerPool {
 	}
 	validateOptions(options: RunOpts): void {
 		if (options[hostWorkerBindings]) return;
-		for (const key of [
-			"adapters",
-			"persistence",
-			"mcp",
-			"overlay",
-			"models",
-			"registry",
-			"toolAdmissionBoundary",
-			"onStageStart",
-			"onStageEnd",
-			"onStageSession",
-			"onStageSessionEvent",
-			"confirmStageReadiness",
-			"rootBudget",
-		] as const)
+		for (const key of PROCESS_BOUND_RUN_OPTIONS)
 			if (options[key] !== undefined) throw new Error(`Local workers refuse process-bound override: ${key}`);
 	}
 	private async start(root: string, promptNodes: boolean): Promise<void> {

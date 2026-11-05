@@ -10,6 +10,7 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
+	ForkClaimReleaseError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkSessionNotFoundError,
@@ -751,9 +752,9 @@ test("a claim release that fails after an abort is logged once and the abort rea
 	assert.equal(error, reason);
 	assert.equal(release.mock.calls.length, 1);
 	assert.equal(warn.mock.calls.length, 1);
-	const [warned, cleanup] = warn.mock.calls[0]!;
-	assert.ok(warned instanceof ForkSourceBusyError);
-	assert.deepEqual([warned.runId, warned.reason, cleanup], [sourceId, "fork-in-progress", releaseFailure]);
+	const [warned, ...extra] = warn.mock.calls[0]!;
+	assert.ok(warned instanceof ForkClaimReleaseError);
+	assert.deepEqual([warned.runId, warned.cause, extra], [sourceId, releaseFailure, []]);
 });
 
 test("forkDurableRun validates every option itself before reading the journal (#4321)", async () => {

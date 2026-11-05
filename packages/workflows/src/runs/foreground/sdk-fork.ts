@@ -15,32 +15,15 @@ import type { WorkflowForkedFrom } from "../../durable/types.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { currentWorkflowStore } from "../../shared/store-factory.js";
-import type { RunSnapshot, RunStatus, StageSnapshot } from "../../shared/store-types.js";
+import type { StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
+import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "../../workers/host-options.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
+import { runEventChannel, type WorkflowRunEvent } from "./run-event-channel.js";
 import { run } from "./sdk-run.js";
 
 export type { ForkCarryMessages, ForkPoint } from "../../durable/fork-run.js";
-
-/** One notification of a run, as `run()` reports it through `onRunStart`, `onStageStart`, `onStageEnd`, `onStageSessionEvent` and `onRunEnd`. */
-export type WorkflowRunEvent =
-	| { readonly type: "run_start"; readonly run: RunSnapshot }
-	| { readonly type: "stage_start"; readonly runId: string; readonly stage: StageSnapshot }
-	| { readonly type: "stage_end"; readonly runId: string; readonly stage: StageSnapshot }
-	| {
-			readonly type: "stage_session_event";
-			readonly runId: string;
-			readonly stageId: string;
-			readonly event: AgentSessionEvent;
-	  }
-	| {
-			readonly type: "run_end";
-			readonly runId: string;
-			readonly status: RunStatus;
-			readonly result?: WorkflowOutputValues;
-			readonly error?: string;
-			readonly exitReason?: string;
-	  };
+export type { WorkflowRunEvent } from "./run-event-channel.js";
 
 export interface ForkRunOptions<TDefinition = WorkflowDefinition>
 	extends Omit<RunOpts, "runId" | "continuation" | "parentRun" | "cwd"> {
@@ -58,7 +41,10 @@ export interface ForkRunOptions<TDefinition = WorkflowDefinition>
 	readonly sourceSessionStore?: SessionStore;
 }
 
-/** A forked run. `events` yields the run's notifications once, in order; `result` settles when the run ends. */
+/**
+ * A forked run. `events` yields the run's notifications once, in order: lifecycle events are kept until it is
+ * iterated, agent-session events only while it is. `result` settles when the run ends.
+ */
 export interface ForkedRun {
 	readonly runId: string;
 	readonly forkedFrom: WorkflowForkedFrom;
@@ -97,50 +83,6 @@ async function sdkDurableBackend(
 	};
 }
 
-interface RunEventChannel {
-	push(event: WorkflowRunEvent): void;
-	end(error?: Error): void;
-	readonly events: AsyncIterable<WorkflowRunEvent>;
-}
-
-function runEventChannel(): RunEventChannel {
-	const buffered: WorkflowRunEvent[] = [];
-	let wake: (() => void) | undefined;
-	let ended = false;
-	let failure: Error | undefined;
-	return {
-		push(event) {
-			if (ended) return;
-			buffered.push(event);
-			wake?.();
-		},
-		end(error) {
-			ended = true;
-			failure = error;
-			wake?.();
-		},
-		events: {
-			async *[Symbol.asyncIterator]() {
-				for (;;) {
-					const next = buffered.shift();
-					if (next !== undefined) {
-						yield next;
-						continue;
-					}
-					if (ended) {
-						if (failure !== undefined) throw failure;
-						return;
-					}
-					await new Promise<void>((resolve) => {
-						wake = resolve;
-					});
-					wake = undefined;
-				}
-			},
-		},
-	};
-}
-
 /**
  * Fork a durable run from a stage into a new run and execute it. The source run is claimed while it is
  * read and is never written. Every precondition is checked before anything is copied, so a failure
@@ -156,7 +98,11 @@ export async function forkRun<
 	typedOptions: ForkRunOptions<WorkflowDefinition<TInputs, TOutputs, TRunInputs>> = {},
 ): Promise<ForkedRun> {
 	const options = typedOptions as never as ForkRunOptions;
-	validateForkOptions("sdk", runId, options);
+	const pooled = options.localWorkers !== undefined && options[hostWorkerBindings] !== true;
+	validateForkOptions("sdk", runId, {
+		...options,
+		processBound: pooled ? PROCESS_BOUND_RUN_OPTIONS.filter((key) => options[key] !== undefined) : [],
+	});
 	const {
 		fromStage,
 		inputs,
@@ -204,18 +150,22 @@ export async function forkRun<
 			channel.push({ type: "run_start", run: snapshot });
 			onRunStart?.(snapshot);
 		},
-		onStageStart: (id, stage) => {
-			channel.push({ type: "stage_start", runId: id, stage });
-			onStageStart?.(id, stage);
-		},
-		onStageEnd: (id, stage) => {
-			channel.push({ type: "stage_end", runId: id, stage });
-			return onStageEnd?.(id, stage);
-		},
-		onStageSessionEvent: (id, stageId, event) => {
-			channel.push({ type: "stage_session_event", runId: id, stageId, event });
-			onStageSessionEvent?.(id, stageId, event);
-		},
+		...(pooled
+			? {}
+			: {
+					onStageStart: (id: string, stage: StageSnapshot) => {
+						channel.push({ type: "stage_start", runId: id, stage });
+						onStageStart?.(id, stage);
+					},
+					onStageEnd: (id: string, stage: StageSnapshot) => {
+						channel.push({ type: "stage_end", runId: id, stage });
+						return onStageEnd?.(id, stage);
+					},
+					onStageSessionEvent: (id: string, stageId: string, event: AgentSessionEvent) => {
+						channel.push({ type: "stage_session_event", runId: id, stageId, event });
+						onStageSessionEvent?.(id, stageId, event);
+					},
+				}),
 		onRunEnd: (id, status, output, error, exitReason) => {
 			channel.push({
 				type: "run_end",

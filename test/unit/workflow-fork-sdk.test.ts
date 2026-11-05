@@ -218,6 +218,79 @@ test("forkRun events carry stage session events to the iterator and the caller's
 	assert.ok(forwarded.some((event) => event.type === "stage_session_event"));
 });
 
+test("a fork nobody reads keeps no stage session events while the caller's own callback still gets every one (#4321)", async () => {
+	const { backend, runId } = await eventsSource("fork-sdk-unread-events");
+	const emitted = 2000;
+	const chattySessions: AgentSessionAdapter = {
+		async create() {
+			const mock = makeMockSession({
+				async prompt() {
+					for (let index = 0; index < emitted; index++)
+						mock.emit({ type: "tool_execution_start", toolCallId: `call-${index}`, toolName: "read", args: {} });
+				},
+				getLastAssistantText: () => "done",
+			});
+			return mock.session;
+		},
+	};
+	let received = 0;
+	const forked = await forkRun(runId, {
+		fromStage: "worker",
+		durableBackend: backend,
+		definition: eventsDefinition,
+		store: createStore(),
+		adapters: { complete: complete.complete, agentSession: chattySessions },
+		onStageSessionEvent: () => {
+			received++;
+		},
+	});
+	assert.equal((await forked.result).status, "completed");
+	assert.equal(received, emitted);
+	const late = await collect(forked.events);
+	assert.deepEqual(
+		late.map((event) => event.type),
+		["run_start", "stage_start", "stage_end", "run_end"],
+		"only lifecycle events wait for a reader",
+	);
+});
+
+test("a pooled fork refuses options bound to this process before writing, and installs no stage callbacks (#4321)", async () => {
+	const { backend, runId } = await eventsSource("fork-sdk-pooled");
+	const localWorkers = { count: 1, definitions: [] };
+	const refused = await forkRun(runId, {
+		fromStage: "worker",
+		durableBackend: backend,
+		definition: eventsDefinition,
+		localWorkers,
+		registry: createRegistry(),
+		onStageEnd: () => undefined,
+	}).catch((error: Error) => error);
+	assert.ok(isForkConfigError(refused), String(refused));
+	assert.deepEqual(refused.issues, [
+		{ field: "localWorkers", expected: "localWorkers without options bound to this process (registry, onStageEnd)" },
+	]);
+	assert.equal((await backend.journal.listRuns()).length, 1, "nothing was written");
+	let captured: Parameters<typeof run>[2];
+	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
+		captured = options;
+		return { status: "completed", stages: [] } as never;
+	});
+	const pooled = await forkRun(runId, {
+		fromStage: "worker",
+		durableBackend: backend,
+		definition: eventsDefinition,
+		localWorkers,
+	});
+	await pooled.result;
+	assert.deepEqual(captured?.localWorkers, localWorkers);
+	assert.equal(typeof captured?.onRunStart, "function");
+	assert.equal(typeof captured?.onRunEnd, "function");
+	assert.deepEqual(
+		[captured?.onStageStart, captured?.onStageEnd, captured?.onStageSessionEvent],
+		[undefined, undefined, undefined],
+	);
+});
+
 test("forkRun events can be read after the run ended, without an unhandled rejection, and ignore later notifications (#4321)", async () => {
 	const { backend, runId } = await eventsSource("fork-sdk-late-events");
 	const unhandled: unknown[] = [];

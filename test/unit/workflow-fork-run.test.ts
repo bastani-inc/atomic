@@ -10,6 +10,7 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
+	ForkClaimReleaseError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkDefinitionMismatchError,
@@ -765,7 +766,11 @@ test("a failed claim release is attached to the primary fork error, never replac
 		definition: def,
 	}).catch((failure: Error) => failure);
 	assert.ok(error instanceof ForkTargetNotFoundError);
-	assert.equal(error.cleanupCause, releaseFailure);
+	assert.ok(error.cleanupCause instanceof ForkClaimReleaseError);
+	assert.deepEqual(
+		[error.cleanupCause.code, error.cleanupCause.runId, error.cleanupCause.cause],
+		["claim-release-failed", runId, releaseFailure],
+	);
 });
 
 test("a fork carries the source's workspace and snapshot bindings through its launch (#4321)", async () => {

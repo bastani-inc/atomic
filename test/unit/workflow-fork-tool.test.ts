@@ -21,7 +21,7 @@ import { WorkflowParametersSchema } from "../../packages/workflows/src/extension
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { workflowForkAction } from "../../packages/workflows/src/extension/workflow-tool-fork.js";
-import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { createJobTracker, currentJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -370,7 +370,16 @@ async function discoverableSource(seed: string) {
 	writeFileSync(
 		join(sourceDir, ".atomic", "workflows", `${DISCOVERED}.ts`),
 		`import { workflow } from "@bastani/atomic/workflows";
-export default workflow({ name: "${DISCOVERED}", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
+export default workflow({
+	name: "${DISCOVERED}",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		await ctx.tool("noop", {}, async () => "ok");
+		return {};
+	},
+});
 `,
 	);
 	const runId = testRunId(seed);
@@ -391,40 +400,78 @@ export default workflow({ name: "${DISCOVERED}", description: "", inputs: {}, ou
 		output: "done",
 		completedAt: 2,
 	});
-	const runtime = createExtensionRuntime({ definitions: [], store, cwd: runtimeDir });
+	const jobs = createJobTracker();
+	const runtime = createExtensionRuntime({ definitions: [], store, jobs, cwd: runtimeDir });
 	const execute = makeExecuteWorkflowTool(
 		runtime,
 		() => undefined,
 		() => undefined,
 	);
-	return { backend, root, runId, runtimeDir, runtime, execute };
+	return { backend, root, runId, runtimeDir, runtime, execute, jobs };
 }
 
-test("a fork finds the source's workflow in the source's directory and reports a fork that could not start (#4321)", async () => {
-	const { backend, root, runId, execute } = await discoverableSource("fork-discovery");
+test("a fork of a workflow defined only in the source's project runs that definition to completion (#4321)", async () => {
+	const { backend, root, runId, execute, jobs } = await discoverableSource("fork-discovery");
 	try {
 		const staged = (await execute({ action: "fork", runId, fromStage: "plan" }, context())) as ForkResult;
-		assert.equal(staged.status, "forked", staged.message);
-		assert.equal(
+		assert.equal(staged.status, "running", staged.message);
+		assert.equal("startFailure" in staged, false);
+		assert.match(
 			staged.message,
-			`Forked workflow ${runId} from stage "plan" into ${staged.runId}; it did not start: Workflow definition not found: ${DISCOVERED} Resume it with /workflow resume ${staged.runId}.`,
+			new RegExp(
+				`^Forked workflow ${runId} from stage "plan" into ${staged.runId}\\. Resuming durable workflow "${DISCOVERED}"`,
+			),
 		);
 		assert.deepEqual(staged.forkedFrom, { runId, stagePath: "plan" });
-		assert.equal(backend.getWorkflow(staged.runId)?.status, "paused");
+		await jobs.get(staged.runId)?.promise;
+		assert.equal(backend.getWorkflow(staged.runId)?.status, "completed");
 		assert.equal(
 			renderWorkflowToolContent(staged, { action: "fork", runId }),
-			`fork: ${staged.runId} forked — ${staged.message}`,
+			`fork: ${staged.runId} running — ${staged.message}`,
 		);
 		const whole = (await execute({ action: "fork", runId }, context())) as ForkResult;
-		assert.equal(whole.status, "forked", whole.message);
-		assert.equal(
-			whole.message,
-			`Forked workflow ${runId} into ${whole.runId}; it did not start: Workflow definition not found: ${DISCOVERED} Resume it with /workflow resume ${whole.runId}.`,
-		);
+		assert.equal(whole.status, "running", whole.message);
+		assert.match(whole.message, new RegExp(`^Forked workflow ${runId} into ${whole.runId}\\. `));
 		assert.deepEqual(whole.forkedFrom, { runId });
+		await jobs.get(whole.runId)?.promise;
+		assert.equal(backend.getWorkflow(whole.runId)?.status, "completed");
+		assert.equal((await backend.journal.listRuns()).length, 3, "the source and its two forks");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("a fork written but unable to start reports why with a code and the next step that works here (#4321)", async () => {
+	const refuseStart = (backend: { commitWorkflowRegistration: (...args: never[]) => Promise<void> }) =>
+		vi.spyOn(backend, "commitWorkflowRegistration").mockRejectedValue(new Error("registration refused"));
+	const discovered = await discoverableSource("fork-not-started");
+	try {
+		refuseStart(discovered.backend);
+		const elsewhere = (await discovered.execute(
+			{ action: "fork", runId: discovered.runId, fromStage: "plan" },
+			context(),
+		)) as ForkResult;
+		assert.deepEqual([elsewhere.status, elsewhere.startFailure], ["forked", "control_failed"]);
+		assert.equal(
+			elsewhere.message,
+			`Forked workflow ${discovered.runId} from stage "plan" into ${elsewhere.runId}; it did not start: Failed to resume durable workflow ${elsewhere.runId}: registration refused Workflow "${DISCOVERED}" is not defined in this directory, so /workflow resume cannot start the fork here; fork the source again with /workflow fork ${discovered.runId}.`,
+		);
+		assert.equal((await discovered.backend.journal.getRun(elsewhere.runId))?.runId, elsewhere.runId);
+	} finally {
+		vi.restoreAllMocks();
+		rmSync(discovered.root, { recursive: true, force: true });
+	}
+	const local = await forkToolFixture("fork-not-started-local");
+	refuseStart(local.backend);
+	const here = (await local.execute(
+		{ action: "fork", runId: local.runId, fromStage: "plan" },
+		context(),
+	)) as ForkResult;
+	assert.deepEqual([here.status, here.startFailure], ["forked", "control_failed"]);
+	assert.ok(
+		here.message.endsWith(`registration refused Resume it with /workflow resume ${here.runId}.`),
+		here.message,
+	);
 });
 
 test("a fork of a run this process is still executing is refused as busy and creates no run (#4321)", async () => {
@@ -507,17 +554,23 @@ test("/workflow fork forks a run, prints what happened and reports bad arguments
 		const { messages: staged, levels: stagedLevels } = await run(`fork ${runId} --from plan`);
 		assert.equal(staged.length, 1, staged.join("\n"));
 		const stagedMatch =
-			/^Forked workflow (\S+) from stage "plan" into (\S+); it did not start: Workflow definition not found: fork-discovered Resume it with \/workflow resume (\S+)\.$/.exec(
+			/^Forked workflow (\S+) from stage "plan" into (\S+)\. Resuming durable workflow "fork-discovered"/.exec(
 				staged[0]!,
 			);
 		assert.ok(stagedMatch, staged[0]);
 		assert.deepEqual(stagedLevels, ["info"]);
 		assert.equal(stagedMatch[1], runId);
-		assert.equal(stagedMatch[3], stagedMatch[2]);
 		assert.deepEqual(backend.getWorkflow(stagedMatch[2]!)?.forkedFrom, { runId, stagePath: "plan" });
+		await currentJobTracker().get(stagedMatch[2]!)?.promise;
+		assert.equal(backend.getWorkflow(stagedMatch[2]!)?.status, "completed");
 		const { messages: whole } = await run(`fork ${runId}`);
 		assert.equal(whole.length, 1, whole.join("\n"));
-		assert.match(whole[0]!, new RegExp(`^Forked workflow ${runId} into \\S+; it did not start: `));
+		const wholeMatch = new RegExp(`^Forked workflow ${runId} into (\\S+)\\. Resuming durable workflow `).exec(
+			whole[0]!,
+		);
+		assert.ok(wholeMatch, whole[0]);
+		await currentJobTracker().get(wholeMatch[1]!)?.promise;
+		assert.equal(backend.getWorkflow(wholeMatch[1]!)?.status, "completed");
 		const runsBefore = await backend.journal.listRuns();
 		const { messages: invalid, levels: invalidLevels } = await run("fork");
 		assert.deepEqual(invalid, [(parseWorkflowForkArgs([]) as ForkConfigError).message]);

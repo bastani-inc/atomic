@@ -25,6 +25,7 @@ import { workflowNamesEqual } from "../workflows/identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./durable-hash.js";
 import {
+	ForkClaimReleaseError,
 	ForkConfigError,
 	type ForkConfigIssue,
 	type ForkConfigSource,
@@ -153,6 +154,8 @@ export function validateForkOptions(
 		readonly carryMessages?: unknown;
 		readonly definition?: unknown;
 		readonly signal?: unknown;
+		/** Process-bound run options passed together with `localWorkers`, which a worker pool refuses. */
+		readonly processBound?: readonly string[];
 	},
 ): void {
 	const issues: ForkConfigIssue[] = [];
@@ -186,6 +189,11 @@ export function validateForkOptions(
 		(typeof options.signal !== "object" || options.signal === null || !("aborted" in options.signal))
 	)
 		issues.push({ field: "signal", expected: "an AbortSignal" });
+	if (options.processBound !== undefined && options.processBound.length > 0)
+		issues.push({
+			field: "localWorkers",
+			expected: `localWorkers without options bound to this process (${options.processBound.join(", ")})`,
+		});
 	const [first, ...rest] = issues;
 	if (first !== undefined) throw new ForkConfigError({ source, issues: [first, ...rest] }, { cause });
 }
@@ -900,8 +908,12 @@ export async function forkDurableRun<
 		try {
 			await claim.release();
 		} catch (cleanup) {
-			if (primary instanceof ForkError) primary.withCleanupCause(cleanup as Error);
-			else console.warn(new ForkSourceBusyError({ runId: preview.runId, reason: "fork-in-progress" }), cleanup);
+			const released = new ForkClaimReleaseError(
+				{ runId: preview.runId, claimExpiresInMs: FOREIGN_LIVE_WORKFLOW_WINDOW_MS },
+				{ cause: cleanup as Error },
+			);
+			if (primary instanceof ForkError) primary.withCleanupCause(released);
+			else console.warn(released);
 		}
 	}
 }

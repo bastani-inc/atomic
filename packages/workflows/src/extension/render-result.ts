@@ -206,10 +206,11 @@ export type ForkResult = {
 	/** The fork's run id; empty when no fork was created. */
 	runId: string;
 	sourceRunId: string;
-	/** `forked` when the fork was created but did not start. */
+	/** `forked` when the fork was created but did not start; `startFailure` says why. */
 	status: "running" | "forked" | "failed";
 	message: string;
 	forkedFrom?: WorkflowForkedFrom;
+	startFailure?: WorkflowControlFailureCode;
 	code?: ForkErrorCode;
 	hint?: string;
 };

@@ -15,7 +15,8 @@ export type ForkErrorCode =
 	| "source-not-found"
 	| "journal-unsupported"
 	| "journal-unavailable"
-	| "copy-failed";
+	| "copy-failed"
+	| "claim-release-failed";
 
 export type ForkErrorName =
 	| "ForkTargetNotFoundError"
@@ -27,7 +28,8 @@ export type ForkErrorName =
 	| "ForkSourceNotFoundError"
 	| "ForkJournalUnsupportedError"
 	| "ForkJournalUnavailableError"
-	| "ForkCopyFailedError";
+	| "ForkCopyFailedError"
+	| "ForkClaimReleaseError";
 
 export type ForkErrorFieldValue =
 	| string
@@ -87,6 +89,7 @@ const FORK_ERROR_CODE_BY_NAME: Readonly<Record<ForkErrorName, ForkErrorCode>> = 
 	ForkJournalUnsupportedError: "journal-unsupported",
 	ForkJournalUnavailableError: "journal-unavailable",
 	ForkCopyFailedError: "copy-failed",
+	ForkClaimReleaseError: "claim-release-failed",
 };
 
 interface ForkErrorInit {
@@ -355,7 +358,8 @@ export type ForkConfigField =
 	| "carryMessages"
 	| "definition"
 	| "registry"
-	| "signal";
+	| "signal"
+	| "localWorkers";
 
 /** One invalid fork option: the option and what its value must be. */
 export interface ForkConfigIssue {
@@ -583,6 +587,38 @@ export class ForkCopyFailedError extends ForkError {
 	}
 }
 
+/**
+ * Releasing the fork's claim on its source run failed. Whatever the fork did is unaffected; the claim
+ * lapses on its own, and until then other forks and resumes of the source report it busy.
+ */
+export class ForkClaimReleaseError extends ForkError {
+	declare readonly name: "ForkClaimReleaseError";
+	declare readonly code: "claim-release-failed";
+	declare readonly retryable: false;
+	readonly runId: string;
+	/** Longest time the source stays claimed: the claim's lease window. */
+	readonly claimExpiresInMs: number;
+
+	constructor(
+		input: { readonly runId: string; readonly claimExpiresInMs: number },
+		options: { readonly cause: Error },
+	) {
+		const seconds = Math.ceil(input.claimExpiresInMs / 1000);
+		super({
+			name: "ForkClaimReleaseError",
+			code: "claim-release-failed",
+			what: "Fork claim release failed",
+			subject: `run ${input.runId} stays claimed by this fork for up to ${seconds} s`,
+			hint: `Forks and resumes of run ${input.runId} report it busy until the claim expires; retry them after ${seconds} s.`,
+			retryable: false,
+			fields: { runId: input.runId, claimExpiresInMs: input.claimExpiresInMs },
+			cause: options.cause,
+		});
+		this.runId = input.runId;
+		this.claimExpiresInMs = input.claimExpiresInMs;
+	}
+}
+
 export type KnownForkError =
 	| ForkTargetNotFoundError
 	| ForkDefinitionMismatchError
@@ -593,7 +629,8 @@ export type KnownForkError =
 	| ForkSourceNotFoundError
 	| ForkJournalUnsupportedError
 	| ForkJournalUnavailableError
-	| ForkCopyFailedError;
+	| ForkCopyFailedError
+	| ForkClaimReleaseError;
 
 interface ForkErrorShape {
 	readonly name?: string;
@@ -634,6 +671,7 @@ export const isForkSourceNotFoundError = guard(ForkSourceNotFoundError, "ForkSou
 export const isForkJournalUnsupportedError = guard(ForkJournalUnsupportedError, "ForkJournalUnsupportedError");
 export const isForkJournalUnavailableError = guard(ForkJournalUnavailableError, "ForkJournalUnavailableError");
 export const isForkCopyFailedError = guard(ForkCopyFailedError, "ForkCopyFailedError");
+export const isForkClaimReleaseError = guard(ForkClaimReleaseError, "ForkClaimReleaseError");
 
 /** The first fork error in `value`'s cause chain, walking at most {@link FORK_ERROR_MAX_CAUSE_DEPTH} links. */
 export function findForkError(value: unknown): ForkError | undefined {
@@ -793,6 +831,11 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 		new ForkCopyFailedError(
 			{ runId: text(f, "runId"), forkRunId: text(f, "forkRunId"), phase: text(f, "phase") as ForkCopyPhase },
 			{ cause: cause ?? new Error("The copy failure's cause was not serialized.") },
+		),
+	ForkClaimReleaseError: (f, cause) =>
+		new ForkClaimReleaseError(
+			{ runId: text(f, "runId"), claimExpiresInMs: Number(f.claimExpiresInMs ?? 0) },
+			{ cause: cause ?? new Error("The release failure's cause was not serialized.") },
 		),
 };
 

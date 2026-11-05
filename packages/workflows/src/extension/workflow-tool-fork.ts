@@ -65,5 +65,6 @@ export async function workflowForkAction(
 		status: forked.started ? "running" : "forked",
 		message: forked.message,
 		forkedFrom: forked.forkedFrom,
+		...(forked.startFailure === undefined ? {} : { startFailure: forked.startFailure }),
 	};
 }

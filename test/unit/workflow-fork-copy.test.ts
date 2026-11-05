@@ -9,12 +9,14 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableHash } from "../../packages/workflows/src/durable/durable-hash.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
+	ForkClaimReleaseError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkDefinitionMismatchError,
 	ForkSessionNotFoundError,
 	ForkSourceBusyError,
 	ForkSourceNotFoundError,
+	isForkClaimReleaseError,
 } from "../../packages/workflows/src/durable/fork-errors.js";
 import {
 	durableForkPoints,
@@ -725,10 +727,13 @@ test("the source claim is released after every fork, and a release failure after
 	const forked = await forkDurableRun(backend, request(sourceId));
 	assert.ok(forked.runId);
 	assert.equal(warn.mock.calls.length, 1);
-	const warned = warn.mock.calls[0]![0];
-	assert.ok(warned instanceof ForkSourceBusyError);
-	assert.deepEqual([warned.runId, warned.reason], [sourceId, "fork-in-progress"]);
-	assert.equal((warn.mock.calls[0]![1] as Error).message, "release failed");
+	const [warned, ...extra] = warn.mock.calls[0]!;
+	assert.ok(isForkClaimReleaseError(warned));
+	assert.ok(warned instanceof ForkClaimReleaseError);
+	assert.deepEqual(
+		[warned.code, warned.runId, warned.claimExpiresInMs, warned.retryable, (warned.cause as Error).message, extra],
+		["claim-release-failed", sourceId, 120_000, false, "release failed", []],
+	);
 	takeover.mockResolvedValueOnce({ status: "held", holderId: null, epoch: 3 });
 	const busy = await forkDurableRun(backend, request(sourceId)).catch((error: Error) => error);
 	assert.ok(busy instanceof ForkSourceBusyError);
