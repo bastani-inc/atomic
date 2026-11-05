@@ -120,7 +120,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			finish(() =>
 				reject(
 					error.code === "ENOENT" || error.code === "EACCES"
-						? new GitUnavailableError(executable.path, error)
+						? new GitUnavailableError("not-installed", executable.path, { cause: error })
 						: new WorkspaceGitError(
 								{
 									operation: gitOperation(args),

@@ -106,7 +106,10 @@ export type AgentSessionEvent =
 			resources: readonly ResourceFailure[];
 	  }
 	/** Once per distinct reason a turn's worktree snapshot could not be recorded; the turn itself is unaffected. */
-	| { type: "worktree_snapshot_unavailable"; reason: import("./worktree-snapshot/errors.ts").WorkspaceError };
+	| {
+			type: "worktree_snapshot_unavailable";
+			reason: import("./session-worktree-snapshots.ts").WorktreeSnapshotUnavailable;
+	  };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 

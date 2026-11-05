@@ -105,12 +105,12 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 
 ## Errors
 
-Every error extends `WorkspaceError` and carries a stable `code`, JSON-safe `fields`, a `hint`, and `retryable: false`. Check the class or code, never the message. `findWorkspaceError(error, guard)` finds one in a cause chain (up to 8 levels), and `serializeWorkspaceError` / `rehydrateWorkspaceError` carry them across process boundaries with their class and fields intact.
+Every error except `GitUnavailableError` extends `WorkspaceError`; all of them carry a stable `code`, JSON-safe `fields`, a `hint`, and `retryable: false`. Check the class or code, never the message. `findWorkspaceError(error, guard)` finds one in a cause chain (up to 8 levels), and `serializeWorkspaceError` / `rehydrateWorkspaceError` carry them across process boundaries with their class and fields intact.
 
 | Class | Code | When | Fields | What to do |
 |-------|------|------|--------|------------|
 | `WorkspaceConfigError` | `invalid-setting` | A snapshot setting or SDK option has the wrong type or range | `source`, `field`, `expected` | Fix the named setting or option |
-| `GitUnavailableError` | `git-unavailable` | Git could not be started | `executable`, `installCommand` | Install Git with the command in `installCommand`, or put it on `PATH` |
+| `GitUnavailableError` | `not-installed` | Git could not be started | `executable`, `platform` | Install Git with the command in `hint`, or put it on `PATH` |
 | `WorkspaceGitError` | `git-failed` | A Git command failed | `operation`, `cwd`, `exitCode`, `detail` | Check the repository is readable and not locked, then retry |
 | `WorkspaceSnapshotError` | `not-a-repository` | The directory is outside any Git work tree | `subject` | Work inside a Git checkout |
 | `WorkspaceSnapshotError` | `unborn-head` | The repository has no commits | `subject` | Create a first commit |

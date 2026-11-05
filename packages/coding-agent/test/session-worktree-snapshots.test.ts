@@ -151,7 +151,7 @@ describe("session worktree snapshots", () => {
 		assert.equal(snapshotEntries(manager).length, 0);
 	});
 
-	test("without Git the turn records nothing and reports git-unavailable once (#4245)", async () => {
+	test("without Git the turn records nothing and reports GitUnavailableError once (#4245)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const manager = await SessionManager.create(await sqlStore("sessions"), clone);
 		const harness = await harnessFor(manager);
