@@ -71,14 +71,28 @@ test("a lost shard is logged once however often the catalog is read (#4325)", as
 	}
 });
 
-test("a healthy store adds no unavailable shards to the catalog (#4325)", async () => {
+test("a healthy store or a single journal adds no unavailable shards to the catalog and reports nothing (#4325)", async () => {
 	const journal = await open();
 	await journal.createRun({ runId: "fine", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
 	const backend = await JournalDurableBackend.open(journal);
+	const single = await JournalDurableBackend.open(await openSqlRunJournal(join(directory, "single.sqlite")));
 	try {
-		const catalog = await backend.prepareWorkflowCatalog();
-		assert.equal("unavailableShards" in catalog, false);
+		assert.equal("unavailableShards" in (await backend.prepareWorkflowCatalog()), false);
+		assert.equal("unavailableShards" in (await single.prepareWorkflowCatalog()), false);
+		const reported: string[] = [];
+		const runtime = createDurableResumeRuntime({
+			registry: {} as never,
+			store: createStore(),
+			runtimeCwd: directory,
+			ensureReady: async (): Promise<DurableWorkflowBackend> => backend,
+			baseRunOpts: () => ({}),
+			reportWarning: (message) => reported.push(message),
+		});
+		assert.ok(runtime.prepareDurableCatalog);
+		await runtime.prepareDurableCatalog();
+		assert.deepEqual(reported, []);
 	} finally {
+		await single.close();
 		await backend.close();
 	}
 });

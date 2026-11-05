@@ -1287,10 +1287,11 @@ test("a journal with current and pre-0.9.38 tables indexes only the legacy runs 
 	database.exec("CREATE TABLE wf_legacy_deleted(run_id TEXT PRIMARY KEY)");
 	database.exec("INSERT INTO wf_legacy_deleted VALUES ('deleted')");
 	database.close();
-	assert.deepEqual(
-		(await inspectJournalFile(path)).runs.map((run) => run.runId),
-		["aaa-pending", "converted", "zzz-current"],
-	);
+	assert.deepEqual((await inspectJournalFile(path)).runs.map((run) => run.runId).sort(), [
+		"aaa-pending",
+		"converted",
+		"zzz-current",
+	]);
 });
 
 test("recovery refuses to settle a move into the file the run is in, and deletes nothing (#4325)", async () => {

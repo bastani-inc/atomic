@@ -174,7 +174,6 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 							`SELECT run_id, name, cwd, status, header_json FROM ${LEGACY_RUNS} WHERE 1 = 1 ${converted} ORDER BY run_id`,
 						)),
 					);
-					rows.sort((left, right) => (left.run_id < right.run_id ? -1 : left.run_id > right.run_id ? 1 : 0));
 				}
 				const references = new Set<string>();
 				for (const row of rows) {
