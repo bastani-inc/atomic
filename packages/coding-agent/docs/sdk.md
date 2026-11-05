@@ -792,10 +792,12 @@ Release and wake failures reject with `AgentRehydrateError` (or its subclass `Ag
 | --- | --- | --- | --- | --- |
 | `AgentReleaseConfigError` | `invalid-release-policy` | `releaseWhenIdle` isn't `{ afterMs }` with a finite `afterMs` of at least 0. | `source`, `field`, `value` | Fix the option. Nothing was created. |
 | `AgentRehydrateError` | `session-busy` | `release()` while a run, compaction, shell command or queued message is active. `retryable` is `true`. | `sessionId`, `activity` | Wait for `agent_settled`, then release again. |
+| `AgentRehydrateError` | `not-reopenable` | `release()`, or `createAgentSession({ releaseWhenIdle })`, on a session whose history lives in a private in-memory store (`SessionManager.inMemory()`): nothing could reopen it after release. It fails before any work. | `sessionId`, `storage` | Create the session over a store that outlives it: SQLite, JSONL, or a `MemorySessionStore` your host keeps and passes as `sessionStore`. |
 | `AgentRehydrateError` | `session-not-found` | `rehydrate()` names a session this node's storage doesn't hold. | `sessionId`, `storage`, `localOnly` | Check the id. On local storage, join shared storage with `atomic team join <url> --token-file <path>` if the session was saved on another node. |
 | `AgentRehydrateError` | `no-wake-handler` | A wake was delivered to a namespace with no handler. | `wakeKey`, `namespace` | Register a handler for the namespace first. |
 | `AgentRehydrateError` | `wake-handler-conflict` | A second handler was registered for a namespace. | `namespace` | Dispose the first handler before registering another. |
 | `AgentRehydrateError` | `wake-failed` | The handler failed while rehydrating or waking the agent. The `cause` says why. | `wakeKey`, `wakes` | Fix the cause, then deliver the wakes again. |
+| `AgentRehydrateError` | `release-failed` | `release()` could not close the session cleanly, for example because its store was unreachable. The `cause` is the close failure. | `sessionId`, `storage` | The session's memory is released either way. Rehydrate it and check its last entries before you continue. |
 
 ### Prompting and Message Queueing
 

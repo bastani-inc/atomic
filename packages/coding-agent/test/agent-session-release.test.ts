@@ -142,6 +142,36 @@ describe("AgentSession.release (#4326)", () => {
 		);
 	});
 
+	test("a close that fails rejects as release-failed, naming the fix and keeping the failure as its cause", async () => {
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("hello")]);
+		await h.session.prompt("hi");
+		const failure = new Error("close failed");
+		const dispose = h.session.dispose.bind(h.session);
+		Object.defineProperty(h.session, "dispose", {
+			configurable: true,
+			value: async () => {
+				throw failure;
+			},
+		});
+		cleanups.push(() => {
+			Object.defineProperty(h.session, "dispose", { configurable: true, value: dispose });
+		});
+		let reported: AgentRehydrateError | undefined;
+
+		await assert.rejects(h.session.release(), (error: AgentRehydrateError) => {
+			assert.ok(isAgentRehydrateError(error));
+			assert.equal(error.code, "release-failed");
+			assert.deepEqual(error.fields, { sessionId: h.session.sessionId, storage: "memory" });
+			assert.equal(error.retryable, false);
+			assert.equal(error.cause, failure);
+			assert.match(error.hint, /rehydrate\(sessionId\)/);
+			reported = error;
+			return true;
+		});
+		await assert.rejects(h.session.release(), (error: AgentRehydrateError) => error === reported);
+	});
+
 	test("a session with a run in flight is refused as retryable session-busy and keeps running", async () => {
 		const h = await harness();
 		let finish!: () => void;

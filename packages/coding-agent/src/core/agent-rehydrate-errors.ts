@@ -9,7 +9,8 @@ export type AgentRehydrateErrorCode =
 	| "session-not-found"
 	| "no-wake-handler"
 	| "wake-handler-conflict"
-	| "wake-failed";
+	| "wake-failed"
+	| "release-failed";
 
 /** What kept a session from being released. */
 export type AgentSessionActivity = "streaming" | "prompt" | "compaction" | "shell" | "queued-messages";
@@ -81,6 +82,7 @@ const AGENT_REHYDRATE_ERROR_CODES: ReadonlySet<string> = new Set<AgentRehydrateE
 	"no-wake-handler",
 	"wake-handler-conflict",
 	"wake-failed",
+	"release-failed",
 ]);
 
 function hintFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorFields): string {
@@ -105,6 +107,8 @@ function hintFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorField
 			return `Dispose the handler already registered for the "${fields.namespace}" wake namespace first; each namespace has one handler.`;
 		case "wake-failed":
 			return "The agent was not rehydrated and its wakes were not handled; fix the cause, then deliver them again.";
+		case "release-failed":
+			return "The session's memory is released either way, but its last writes may not be stored. Rehydrate it with AgentSessionRuntime.rehydrate(sessionId) and check its history before you continue.";
 	}
 }
 
@@ -124,6 +128,8 @@ function subjectFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorFi
 			return `A wake handler for namespace "${fields.namespace}" is already registered`;
 		case "wake-failed":
 			return `Waking ${fields.wakeKey} failed`;
+		case "release-failed":
+			return `Session ${fields.sessionId} was released, but closing it failed`;
 	}
 }
 

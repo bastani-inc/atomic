@@ -68,7 +68,7 @@ const releases = new WeakMap<AgentSession, Promise<ReleasedAgentSession>>();
  * timers, Intercom and MCP connections, provider caches) and keep only its stored history. Refused with a retryable
  * `session-busy` {@link AgentRehydrateError} while a run, compaction, shell command or queued message is pending, and
  * with a `not-reopenable` one when its history is in a private in-memory store that nothing could reopen it from.
- * Releasing again returns the same result. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`.
+ * A close that fails rejects with a `release-failed` one whose `cause` is the close failure. Releasing again returns the same result. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`.
  */
 export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 	const existing = releases.get(this);
@@ -85,7 +85,16 @@ export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 		...(sessionFile === undefined ? {} : { sessionFile }),
 	};
 	this._emit({ type: "session_released", released });
-	const closing = this.dispose().then(() => released);
+	const closing = this.dispose().then(
+		() => released,
+		(error: Error) => {
+			throw new AgentRehydrateError(
+				"release-failed",
+				{ sessionId, storage: this.sessionManager.getSessionStore().descriptor.adapter },
+				{ cause: error },
+			);
+		},
+	);
 	releases.set(this, closing);
 	return closing;
 }
