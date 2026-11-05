@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, open } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
@@ -122,7 +122,7 @@ export function isFinishedJournalStatus(status: string | undefined): boolean {
 export interface JournalCatalogOptions {
 	/**
 	 * Creates a new native shard's file, ready for use, before the catalog registers the shard, so no other process
-	 * finds the shard before it is ready. By default the file is created empty.
+	 * finds the shard before it is ready. By default the file is left empty.
 	 */
 	readonly prepareShard?: (path: string) => Promise<void>;
 }
@@ -144,7 +144,7 @@ export class JournalCatalog {
 		this.directory = directory;
 		this.path = join(directory, JOURNAL_CATALOG_FILE);
 		this.database = database;
-		this.prepareShard = options.prepareShard ?? ((path) => appendFile(path, ""));
+		this.prepareShard = options.prepareShard ?? (async () => undefined);
 	}
 
 	static async open(directory: string, options: JournalCatalogOptions = {}): Promise<JournalCatalog> {

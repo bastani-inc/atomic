@@ -6,6 +6,8 @@ import {
 	isJournalShardUnavailableError,
 	isJournalStoreError,
 	isRetryableJournalStoreError,
+	isRetryableStorageError,
+	isStorageError,
 	JournalAdoptError,
 	JournalCatalogError,
 	JournalShardUnavailableError,
@@ -425,4 +427,15 @@ test("run-moved names its run and shard by their ids when it has no run ID or pa
 		new JournalCatalogError({ code: "run-moved", catalogPath, shardId: 2, lastSeq: 5 }).message,
 		"Journal run moved while it was read: run unknown left shard 2 after sequence 5 and its new shard did not continue the history (run-moved).",
 	);
+});
+
+test("a retryable journal store error makes a storage failure retryable, a permanent one does not (#4325)", () => {
+	const retryable = new JournalCatalogError({ code: "run-moved", catalogPath, runId: "r1", shardId: 2 });
+	const permanent = new JournalCatalogError({ code: "corrupt", catalogPath });
+	assert.equal(isRetryableStorageError(retryable), true);
+	assert.equal(isRetryableStorageError(new Error("outer", { cause: retryable })), true);
+	assert.equal(isRetryableStorageError(permanent), false);
+	assert.equal(isRetryableStorageError(new Error("plain")), false);
+	assert.equal(isStorageError(permanent), true);
+	assert.equal(isStorageError({ name: "JournalCatalogError", code: "corrupt", fields: {}, retryable: false }), true);
 });

@@ -307,10 +307,7 @@ export async function adoptJournals(
 		const owners = new Map<string, string>();
 		for (const path of paths) {
 			const inspection = await inspectJournalFile(path);
-			if (
-				inspections.some((earlier) => earlier.path === inspection.path || isSameFile(earlier.path, inspection.path))
-			)
-				continue;
+			if (inspections.some((earlier) => isSameFile(earlier.path, inspection.path))) continue;
 			for (const run of inspection.runs) {
 				const other = owners.get(run.runId);
 				if (other !== undefined)

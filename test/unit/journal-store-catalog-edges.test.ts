@@ -272,7 +272,7 @@ test("a new native shard's file is prepared before the catalog registers it, and
 	const plain = await JournalCatalog.open(join(root, "plain"));
 	try {
 		const placed = await plain.place({ runId: "first", status: "running" });
-		assert.equal(statSync(placed.shard.path).size, 0, "by default the file is created empty");
+		assert.equal(statSync(placed.shard.path).size, 0, "by default the file is left empty");
 	} finally {
 		await plain.close();
 	}

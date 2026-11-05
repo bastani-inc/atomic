@@ -1275,10 +1275,10 @@ test("a journal of only the pre-0.9.38 tables has its runs indexed and conflict-
 });
 
 test("a journal with current and pre-0.9.38 tables indexes only the legacy runs not converted or deleted (#4325)", async () => {
-	const path = legacyJournal(join(root, "mixed", "journal.sqlite"), ["converted", "deleted", "pending"]);
+	const path = legacyJournal(join(root, "mixed", "journal.sqlite"), ["converted", "deleted", "aaa-pending"]);
 	const current = await journal(join(root, "scratch", "journal.sqlite"), [
 		{ runId: "converted" },
-		{ runId: "current" },
+		{ runId: "zzz-current" },
 	]);
 	const database = new DatabaseSync(path);
 	database.exec(`ATTACH DATABASE '${current}' AS source`);
@@ -1289,6 +1289,34 @@ test("a journal with current and pre-0.9.38 tables indexes only the legacy runs 
 	database.close();
 	assert.deepEqual(
 		(await inspectJournalFile(path)).runs.map((run) => run.runId),
-		["converted", "current", "pending"],
+		["aaa-pending", "converted", "zzz-current"],
 	);
+});
+
+test("recovery refuses to settle a move into the file the run is in, and deletes nothing (#4325)", async () => {
+	const adopted = await journal(join(root, "a", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [adopted]);
+	const alias = join(root, "alias.sqlite");
+	linkSync(adopted, alias);
+	const catalogFile = join(store, "catalog.sqlite");
+	raw(
+		catalogFile,
+		"INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (2, ?, 'native', 0, 1)",
+		alias,
+	);
+	raw(catalogFile, "UPDATE catalog_runs SET shard = 2 WHERE run_id = 'r'");
+	raw(
+		adopted,
+		"UPDATE wf_leases SET holder_id = ?, epoch = epoch + 1",
+		`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}crashed`,
+	);
+	const events = Number(scalar(adopted, FILE_EVENTS));
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	assert.ok(report.runs[0]?.error instanceof JournalCatalogError && report.runs[0].error.code === "corrupt");
+	assert.equal(scalar(adopted, FILE_EVENTS), events);
+	assert.equal(scalar(adopted, "SELECT count(*) FROM wf_runs"), 1);
 });

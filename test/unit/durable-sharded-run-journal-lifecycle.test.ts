@@ -883,3 +883,61 @@ test("a key range of a run is read from its shard's key index, and from the move
 interface KeyRangeReader {
 	readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<{ key?: string }>;
 }
+
+async function rangeKeys(
+	journal: RunJournal,
+	fromKey: string,
+	toKey: string,
+	runId = "paged",
+): Promise<(string | undefined)[]> {
+	const keys: (string | undefined)[] = [];
+	for await (const entry of (journal as unknown as KeyRangeReader).readKeyRange(runId, fromKey, toKey))
+		keys.push(entry.key);
+	return keys;
+}
+
+test("a key range refuses text no journal can store, field by field (#4325)", async () => {
+	const journal = await open();
+	for (const [runId, from, to, field] of [
+		["a\u0000b", "a", "b", "runId"],
+		["r", "a\u0000b", "b", "key"],
+		["r", "a", "a\u0000b", "key"],
+	] as const) {
+		const failure = await rangeKeys(journal, from, to, runId).catch((error: Error) => error);
+		assert.ok(failure instanceof Error && Reflect.get(failure, "field") === field, `${field}: ${String(failure)}`);
+	}
+});
+
+test("a key range of a shard without a key index is filtered from the run's entries (#4325)", async () => {
+	await adoptedPagedRun();
+	const journal = await open(async (path) => new Proxy(await openSqlRunJournal(path), {}));
+	const keys = await rangeKeys(journal, "k10", "k11");
+	assert.deepEqual(keys, ["k10", "k100", "k101", "k102", "k103", "k104", "k105", "k106", "k107", "k108", "k109"]);
+	assert.deepEqual(await rangeKeys(journal, "k600", "k601"), ["k600"], "the lower bound is included");
+	assert.deepEqual(await rangeKeys(journal, "k600", "k600"), [], "the upper bound is not");
+	assert.deepEqual(await rangeKeys(journal, "zz", "zzz"), []);
+});
+
+for (const [moves, outcome] of [
+	[3, "completes"],
+	[4, "fails with run-moved"],
+] as const)
+	test(`a key range read of a run that moves ${moves} times ${outcome}: it follows at most three moves (#4325)`, async () => {
+		await adoptedPagedRun();
+		const journal = await open();
+		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+		const locate = catalog.locate.bind(catalog);
+		let calls = 0;
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			const found = await locate(runId);
+			const moved = Math.min(calls++, moves);
+			return found === undefined || moved === 0 ? found : { ...found, shard: { ...found.shard, id: 100 + moved } };
+		});
+		const result = await rangeKeys(journal, "k", "l").catch((error: Error) => error);
+		if (outcome === "completes") {
+			assert.equal(Array.isArray(result) && result.length, PAGED_EVENTS - 2, "every event once");
+			return;
+		}
+		assert.ok(isJournalCatalogError(result) && result.code === "run-moved");
+		assert.equal(result.fields.lastSeq, PAGED_EVENTS);
+	});
