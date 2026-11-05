@@ -68,7 +68,8 @@ describe("GitUnavailableError", () => {
 	};
 
 	test("each code renders its own reason, the platform's install command and no stray cause", () => {
-		const hint = `Install Git with \`${gitInstallCommand()}\` or put it on PATH, then retry.`;
+		const alternative = process.platform === "linux" ? " (or your distribution's package manager)" : "";
+		const hint = `Install Git with \`${gitInstallCommand()}\`${alternative} or put it on PATH, then retry.`;
 		for (const [code, summary] of Object.entries(summaries) as [GitUnavailableErrorCode, string][]) {
 			const error = new GitUnavailableError(code, "/opt/git");
 			assert.equal(
@@ -95,7 +96,7 @@ describe("GitUnavailableError", () => {
 	test("names the install command of each platform", () => {
 		assert.equal(gitInstallCommand("darwin"), "xcode-select --install");
 		assert.equal(gitInstallCommand("win32"), "winget install --id Git.Git -e");
-		assert.equal(gitInstallCommand("linux"), "sudo apt-get install git (or your distribution's package manager)");
+		assert.equal(gitInstallCommand("linux"), "sudo apt-get install git");
 		assert.equal(gitInstallCommand("freebsd"), "install Git from https://git-scm.com/downloads");
 	});
 });

@@ -44,6 +44,7 @@ export {
 } from "./errors.ts";
 export { type CollectSnapshotGarbageOptions, collectSnapshotGarbage, DEFAULT_BLOB_GRACE_SECONDS } from "./garbage.ts";
 export { type GitExecutable, type GitExecutableResolver, setWorktreeSnapshotGit } from "./git.ts";
+export { canonicalizeWorktreePath } from "./paths.ts";
 export { SNAPSHOT_DENY_PATTERNS, SNAPSHOT_IGNORE_FILE } from "./policy.ts";
 export {
 	defaultWorktreeSnapshotStoreDir,
