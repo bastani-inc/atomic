@@ -489,13 +489,28 @@ test("forkRun refuses localWorkers or admission overrides its source's saved wor
 		assert.equal(outcome.code, "invalid-option");
 		assert.equal(outcome.source, "sdk");
 		assert.equal(outcome.retryable, false);
-		return outcome.issues.map((issue) => issue.field);
+		return outcome.issues;
 	};
+	const fields = (issues: readonly { readonly field: string }[]) => issues.map((issue) => issue.field);
 	const removedDefinition = { localWorkers: { count: 2, definitions: [] } };
 	const changedUserLimits = { admission: { ...admission, userLimits: { session: 3 } } };
-	assert.deepEqual(await refusal(removedDefinition), ["localWorkers"]);
-	assert.deepEqual(await refusal(changedUserLimits), ["admission"]);
-	assert.deepEqual(await refusal({ ...removedDefinition, ...changedUserLimits }), ["localWorkers", "admission"]);
+	assert.deepEqual(fields(await refusal(removedDefinition)), ["localWorkers"]);
+	assert.deepEqual(fields(await refusal(changedUserLimits)), ["admission"]);
+	assert.deepEqual(fields(await refusal({ ...removedDefinition, ...changedUserLimits })), [
+		"localWorkers",
+		"admission",
+	]);
+	const added = { path: resolve("/workers/summary.js"), exportName: "default" };
+	const [replaced, ...others] = await refusal({ localWorkers: { count: 2, definitions: [added] } });
+	assert.deepEqual(others, []);
+	assert.equal(replaced?.field, "localWorkers");
+	assert.ok(replaced?.expected.includes("localWorkers.count"), "names the changes a fork may make");
+	assert.ok(
+		replaced?.expected.includes(
+			`worker definition ${definition.path}#default is no longer listed; worker definition ${added.path}#default was added`,
+		),
+		replaced?.expected,
+	);
 	assert.equal(write.mock.calls.length, 0, "nothing was written");
 	assert.deepEqual(await backend.journal.getRun(runId), source, "the source is unchanged");
 	assert.equal((await backend.journal.listRuns()).length, 1, "no fork exists");
@@ -543,6 +558,7 @@ test("forkRun refuses user limits without a userDatabase on a journal worker pro
 		outcome.issues.map((issue) => issue.field),
 		["admission"],
 	);
+	assert.ok(outcome.expected.includes("workflows.journal"), "names how to select a journal workers can reopen");
 	assert.ok(outcome.cause instanceof Error, "the configuration failure is kept as the cause");
 	assert.ok(
 		!JSON.stringify(outcome.fields).includes(outcome.cause.message),
@@ -552,6 +568,41 @@ test("forkRun refuses user limits without a userDatabase on a journal worker pro
 	assert.deepEqual(await backend.journal.getRun(runId), source, "the source is unchanged");
 	assert.equal((await backend.journal.listRuns()).length, 1, "no fork exists");
 	assert.equal(vi.mocked(run).mock.calls.length, runs, "no fork was started");
+});
+
+test("forkRun resolves relative worker definitions against the fork's directory: its cwd option, else the source's (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = testRunId("fork-sdk-definition-directory");
+	const sourceDirectory = makeTempDir("fork-definition-source");
+	const otherDirectory = makeTempDir("fork-definition-other");
+	const definition = { path: join(sourceDirectory, "review.js"), exportName: "default" };
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: eventsDefinition.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		invocationCwd: sourceDirectory,
+		resources: {
+			localWorkers: { count: 2, definitions: [definition] },
+			definitions: [{ ...definition, digest: "a".repeat(64) }],
+		},
+	});
+	const write = vi.spyOn(backend.journal, "createRunWithEvents");
+	const request = { durableBackend: backend, definition: eventsDefinition };
+	const localWorkers = { count: 3, definitions: [{ path: "review.js", exportName: "default" }] };
+	const refused = await forkRun(runId, { ...request, cwd: otherDirectory, localWorkers }).catch(
+		(error: Error) => error,
+	);
+	assert.ok(isForkConfigError(refused), String(refused));
+	assert.equal(refused.field, "localWorkers");
+	assert.ok(refused.expected.includes(join(otherDirectory, "review.js")), refused.expected);
+	assert.equal(write.mock.calls.length, 0, "nothing was written");
+
+	vi.mocked(run).mockImplementationOnce(async () => ({ status: "completed", stages: [] }) as never);
+	const forked = await forkRun(runId, { ...request, localWorkers });
+	assert.equal((await forked.result).status, "completed");
+	assert.equal(write.mock.calls.length, 1, "the fork in the source's directory was written");
 });
 
 test("a fork of a source that saved local workers is pooled: it refuses process-bound options before writing and installs no stage callbacks (#4321)", async () => {

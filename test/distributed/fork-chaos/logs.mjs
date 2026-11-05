@@ -14,6 +14,18 @@ import { ChaosInvariantError } from "./verdict.mjs";
  * @typedef {(node: string, command: string, options: { readonly input?: Buffer | string, readonly binary?: boolean }) => Promise<TransferResult>} RemoteCommand
  */
 
+/**
+ * The {@link RemoteCommand} the controller uses: `ssh` with `sshOptions` to `azureuser` at the node's private IP, which
+ * `nodes` maps from the node's name.
+ *
+ * @param {(command: string, args: readonly string[], options: { readonly input?: Buffer | string, readonly binary?: boolean }) => Promise<TransferResult>} exec
+ * @param {readonly string[]} sshOptions
+ * @param {Readonly<Record<string, { readonly ip: string }>>} nodes
+ * @returns {RemoteCommand}
+ */
+export const sshRemote = (exec, sshOptions, nodes) => (node, command, options) =>
+	exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, command], options);
+
 const STATE = "/opt/fork-chaos/state";
 const COLLECTED = "/opt/fork-chaos/collected";
 const ARCHIVE = `tar -C ${STATE} -czf - $(cd ${STATE} && ls *.jsonl *.log sources.json 2>/dev/null)`;

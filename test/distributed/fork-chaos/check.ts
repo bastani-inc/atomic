@@ -934,10 +934,6 @@ async function checkJournal(
 	}
 }
 
-const USAGE =
-	"usage: bun run test/distributed/fork-chaos/check.ts snapshot <sources.json> <out.json>\n" +
-	"       bun run test/distributed/fork-chaos/check.ts check <collected-dir> <before.json> <timeline.json> <out.json>";
-
 /**
  * The checker command: `argv` holds the arguments after the script. Resolves the exit status: 0 when the snapshot was
  * written or every invariant passed, 1 when an invariant failed, and 2 after printing the usage for an unknown mode.
@@ -950,7 +946,10 @@ export async function main(argv: readonly string[]): Promise<number> {
 		case "check":
 			return (await check(argv[1]!, argv[2]!, argv[3]!, argv[4]!)) ? 0 : 1;
 		default:
-			console.error(USAGE);
+			console.error(
+				"usage: bun run test/distributed/fork-chaos/check.ts snapshot <sources.json> <out.json>\n" +
+					"       bun run test/distributed/fork-chaos/check.ts check <collected-dir> <before.json> <timeline.json> <out.json>",
+			);
 			return 2;
 	}
 }

@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectLogs } from "./logs.mjs";
+import { collectLogs, sshRemote } from "./logs.mjs";
 import { assertChaosInvariants, assertLocalSqliteReport, findChaosInvariantError } from "./verdict.mjs";
 
 const runId = process.env.RUN_ID;
@@ -561,8 +561,7 @@ async function main() {
 			workers,
 			timeline,
 			artifactDir,
-			remote: (node, command, options) =>
-				exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, command], options),
+			remote: sshRemote(exec, sshOptions, nodes),
 		});
 		await sshOk("a", `cat > /opt/fork-chaos/collected/timeline.json <<'JSON'\n${JSON.stringify(timeline)}\nJSON`);
 		const checked = await ssh(

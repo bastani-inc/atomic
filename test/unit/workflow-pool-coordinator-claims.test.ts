@@ -19,8 +19,9 @@ import {
 	coordinatorReplyError,
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
+import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { makeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const { work, boundary } = poolWorkFixture();
 const REPLY_WAIT_MS = 10_000;
@@ -105,7 +106,7 @@ async function coordinator() {
 		async close() {
 			await command({ kind: "close" });
 			await journal.close();
-			removeTempDirectory(directory);
+			await removeLibsqlDirectory(directory);
 		},
 	};
 }

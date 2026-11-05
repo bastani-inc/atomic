@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, test, vi } from "vitest";
-import { collectLogs, readWorkerLogs } from "../distributed/fork-chaos/logs.mjs";
+import { afterEach, describe, type MockInstance, test, vi } from "vitest";
+import { collectLogs, readWorkerLogs, sshRemote } from "../distributed/fork-chaos/logs.mjs";
 import { ensureLedger, loadConfig, openSharedStorage } from "../distributed/fork-chaos/shared.js";
 import {
 	ATTEMPT_TERMINALS,
@@ -36,6 +36,19 @@ const unixTest = process.platform === "win32" ? test.skip : test;
 const linuxTest = process.platform === "linux" ? test : test.skip;
 /** Imported inside each test, so a checker that fails at import time fails that test. */
 const checker = () => import("../distributed/fork-chaos/check.js");
+/** The `close` of every journal connection opened through the shared storage module; each still closes for real. */
+const journalCloses = vi.hoisted((): MockInstance[] => []);
+vi.mock("../distributed/fork-chaos/shared.js", async (importOriginal) => {
+	const shared = await importOriginal<typeof import("../distributed/fork-chaos/shared.js")>();
+	return {
+		...shared,
+		openSharedStorage: async (...args: Parameters<typeof shared.openSharedStorage>) => {
+			const storage = await shared.openSharedStorage(...args);
+			journalCloses.push(vi.spyOn(storage.database, "close"));
+			return storage;
+		},
+	};
+});
 const temporary: string[] = [];
 afterEach(() => {
 	vi.unstubAllEnvs();
@@ -672,6 +685,27 @@ describe("fork chaos log collection (#4321)", () => {
 		);
 	});
 
+	test("the controller's remote command runs ssh to the node's private IP with the command and its stdin", async () => {
+		const calls: unknown[] = [];
+		const exec = async (
+			command: string,
+			args: readonly string[],
+			options: { readonly input?: Buffer | string; readonly binary?: boolean },
+		) => {
+			calls.push([command, args, options]);
+			return { code: 0, stdout: "extracted" };
+		};
+		const remote = sshRemote(exec, ["-i", "ssh_key", "-o", "BatchMode=yes"], {
+			a: { ip: "10.60.2.4" },
+			b: { ip: "10.61.2.4" },
+		});
+		const input = Buffer.from("archive");
+		assert.deepEqual(await remote("b", "tar -xzf - -C /tmp", { input }), { code: 0, stdout: "extracted" });
+		assert.deepEqual(calls, [
+			["ssh", ["-i", "ssh_key", "-o", "BatchMode=yes", "azureuser@10.61.2.4", "tar -xzf - -C /tmp"], { input }],
+		]);
+	});
+
 	test("a collection failure is recognized structurally after crossing a process boundary", () => {
 		const error = new ChaosInvariantError("logs-not-collected", {
 			node: "b",
@@ -992,6 +1026,31 @@ describe("fork chaos checker over collected worker logs (#4321)", () => {
 		} finally {
 			usage.mockRestore();
 		}
+	});
+
+	test("check and snapshot close their journal connection, also when they fail", async () => {
+		const { check, main } = await checker();
+		const { args } = await round(allLogs(), WORKERS);
+		const root = dirname(args[1]);
+		const sources = join(root, "sources.json");
+		writeFileSync(sources, JSON.stringify([{ runId: "absent-run" }]));
+		const closesOf = async (run: () => Promise<unknown>) => {
+			journalCloses.length = 0;
+			await run();
+			return journalCloses.map((close) => close.mock.calls.length);
+		};
+		const rejected = (run: () => Promise<unknown>) => () => assert.rejects(run, { code: "ENOENT" });
+
+		assert.deepEqual(await closesOf(() => check(...args)), [1]);
+		assert.deepEqual(
+			await closesOf(rejected(() => check(args[0], join(root, "absent-before.json"), args[2], args[3]))),
+			[1],
+		);
+		assert.deepEqual(await closesOf(() => main(["snapshot", sources, join(root, "snapshot.json")])), [1]);
+		assert.deepEqual(
+			await closesOf(rejected(() => main(["snapshot", join(root, "absent.json"), join(root, "snapshot.json")]))),
+			[1],
+		);
 	});
 
 	test("the snapshot command fingerprints each source, and records a source the journal lacks as null", async () => {
