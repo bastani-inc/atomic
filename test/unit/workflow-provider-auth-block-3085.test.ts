@@ -29,8 +29,25 @@ import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 // Issue #3085 / #3087
 
-/** Real time all of the test's waits share, inside the 30 s test timeout, leaving room to report and clean up. */
-const WAITS_REAL_BUDGET_MS = 24_000;
+/**
+ * Each status poll gives the run a real-time slice for its I/O, then advances fake time (retry, cooldown and auth
+ * delays) by one step. A run under load needs more slices than an idle one before its next timer is even armed, so
+ * the waits end on the state they wait for, not after a fixed number of polls: 60 polls failed under CPU contention
+ * with the run still waiting on its first fallback (#3085/#3087).
+ */
+const RUN_STATUS_POLL_REAL_MS = 50;
+const RUN_STATUS_POLL_FAKE_MS = 1_000;
+/**
+ * Real time all of the test's waits share. Every wait ends on the state it waits for, so this only bounds a run that
+ * never gets there. It is sized to the scenario's real cost on a loaded Windows runner, not to its cost when idle: the
+ * run does about 2 s of work on an idle Linux machine, but 12-20 s on an 8-vCPU Windows runner sharing its CPUs with a
+ * unit shard, and the previous 24 s budget ran out under that load with the resumed run still running (#4393).
+ */
+const WAITS_REAL_BUDGET_MS = 60_000;
+/** Real time left after the waits to report a failed state and clean up. */
+const REPORT_AND_CLEANUP_REAL_MS = 6_000;
+/** The scenario's cost is structural, so its timeout is its waits' budget plus the time to report and clean up. */
+const SCENARIO_TIMEOUT_MS = WAITS_REAL_BUDGET_MS + REPORT_AND_CLEANUP_REAL_MS;
 
 /**
  * The real `process.hrtime.bigint`, saved when this module loads, before any test installs fake timers: vitest's fake
@@ -46,24 +63,6 @@ function realNow(): number {
 /** Runs `step` until `done`, or until the real clock passes `deadline` (whichever comes first). */
 async function pollUntil(done: () => boolean, step: () => Promise<void>, deadline: number): Promise<void> {
 	while (!done() && realNow() < deadline) await step();
-}
-
-/** Whether any filesystem call is still in flight in this process, by the libuv requests Node reports as active. */
-function filesystemCallsInFlight(): boolean {
-	return process.getActiveResourcesInfo().some((resource) => resource.startsWith("FSReq"));
-}
-
-/**
- * One status poll: wait, on the real clock, until no filesystem call is in flight or `deadline` passes, then fire the
- * next fake timer (retry, cooldown and auth delays). Polls wait on the run's I/O and its timers, never for a fixed real
- * slice: fixed slices spent the waits' shared real budget on a loaded Windows runner, where a real timer sleeps at
- * least 15.6 ms (#4393). Fake timers stay installed throughout, because reinstalling them drops the pending ones. A run
- * under load still needs more polls than an idle one, so the waits end on the state they wait for, not after a fixed
- * number of polls (#3085/#3087).
- */
-async function settleIoThenFireNextTimer(deadline: number): Promise<void> {
-	while (filesystemCallsInFlight() && realNow() < deadline) await realSleep(1);
-	await vi.advanceTimersToNextTimerAsync();
 }
 
 const spec = {
@@ -141,7 +140,10 @@ test("a wait on a run that never gets there ends at its real-time deadline while
 		const outcome = await Promise.race([
 			pollUntil(
 				() => abandoned,
-				() => settleIoThenFireNextTimer(deadline),
+				async () => {
+					await realSleep(RUN_STATUS_POLL_REAL_MS);
+					await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+				},
 				deadline,
 			).then(() => "ended at its deadline"),
 			realSleep(5_000).then(() => "still polling after 5 s of real time"),
@@ -153,11 +155,10 @@ test("a wait on a run that never gets there ends at its real-time deadline while
 	}
 });
 
-test("fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix", async () => {
+async function blockedProviderResumesWithoutReplayingPrefix(): Promise<void> {
 	const deadline = realNow() + WAITS_REAL_BUDGET_MS;
-	/** Polls until `done`, or until the test's shared real budget is spent. */
+	/** Polls until `done`, advancing fake time a step per real slice, or until the test's shared real budget is spent. */
 	const until = (done: () => boolean, step: () => Promise<void>) => pollUntil(done, step, deadline);
-	const poll = () => settleIoThenFireNextTimer(deadline);
 	const cleanup: Array<() => void | Promise<void>> = [];
 	try {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-wf-"));
@@ -279,7 +280,13 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const starting = runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} }).then((result) => {
 			started = result;
 		});
-		await until(() => started !== undefined, poll);
+		await until(
+			() => started !== undefined,
+			async () => {
+				await realSleep(1);
+				await vi.advanceTimersByTimeAsync(1);
+			},
+		);
 		assert.ok(started, "detached dispatch must acknowledge");
 		await starting;
 		const startedRun = started;
@@ -290,7 +297,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 
 		await until(
 			() => effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) === "blocked",
-			poll,
+			async () => {
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+			},
 		);
 		const source = store.runs().find((run) => run.id === startedRun.runId);
 		assert.ok(source);
@@ -327,13 +337,19 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		assert.equal(parentCards.length, 1, "parent transcript must persist exactly one blocked lifecycle card");
 
 		const blockedRunEnding = awaitJobSettlement(blockedRunJob);
-		let blockedRunEnded = false;
-		const markBlockedRunEnded = () => {
-			blockedRunEnded = true;
+		let blockedRunSettled = false;
+		const markBlockedRunSettled = () => {
+			blockedRunSettled = true;
 		};
-		blockedRunEnding.then(markBlockedRunEnded, markBlockedRunEnded);
-		await until(() => blockedRunEnded, poll);
-		assert.ok(blockedRunEnded, "the blocked run must finish recording its ending in the journal");
+		blockedRunEnding.then(markBlockedRunSettled, markBlockedRunSettled);
+		await until(
+			() => blockedRunSettled,
+			async () => {
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+			},
+		);
+		assert.ok(blockedRunSettled, "the blocked run must finish recording its ending in the journal");
 		await blockedRunEnding;
 		const fresh = await backend.reopen();
 		await fresh.hydrateWorkflow(source.id);
@@ -354,7 +370,15 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const resuming = recoveryRuntime.resumeDurableWorkflow(source.id).then((result) => {
 			resumed = result;
 		});
-		await until(() => resumed !== undefined, poll);
+		await until(
+			() => resumed !== undefined,
+			async () => {
+				vi.useRealTimers();
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				vi.useFakeTimers();
+				await vi.advanceTimersByTimeAsync(1);
+			},
+		);
 		assert.ok(resumed, "resume must acknowledge");
 		await resuming;
 		const resumedRun = resumed;
@@ -363,7 +387,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 
 		await until(
 			() => effectiveRunStatus(restoredStore.runs().find((run) => run.id === resumedRun.runId)!) === "completed",
-			poll,
+			async () => {
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+			},
 		);
 		const continuation = restoredStore.runs().find((run) => run.id === resumedRun.runId);
 		assert.ok(continuation);
@@ -374,4 +401,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		vi.useRealTimers();
 		for (const dispose of cleanup.splice(0).reverse()) await dispose();
 	}
-});
+}
+
+test(
+	"fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix",
+	blockedProviderResumesWithoutReplayingPrefix,
+	SCENARIO_TIMEOUT_MS,
+);
