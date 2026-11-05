@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -387,21 +387,34 @@ type WorktreeState =
 	| { readonly kind: "interrupted"; readonly adminDir: string; readonly marker: string }
 	| { readonly kind: "orphaned"; readonly adminDir: string };
 
+/**
+ * The text of `file`, undefined when it does not exist, or `directory` when it is one. Another process may add or
+ * remove these files at any moment, so they are read once rather than checked first.
+ */
+async function readState(file: string): Promise<string | undefined | "directory"> {
+	try {
+		return await readFile(file, "utf-8");
+	} catch (error) {
+		const code = (error as { readonly code?: unknown }).code;
+		if (code === "ENOENT") return undefined;
+		if (code === "EISDIR") return "directory";
+		throw error;
+	}
+}
+
 /** What is at `path`, judged by its `.git` link into `repository` and that worktree's lock. */
 async function worktreeState(repository: OpenRepository, path: string): Promise<WorktreeState> {
 	if (!existsSync(path)) return { kind: "missing" };
-	const link = join(path, ".git");
-	if (!existsSync(link)) return { kind: "unsettled" };
-	if (statSync(link).isDirectory()) return { kind: "complete" };
-	const gitdir = /^gitdir: (.+)$/m.exec(await readFile(link, "utf-8"))?.[1];
+	const link = await readState(join(path, ".git"));
+	if (link === undefined) return { kind: "unsettled" };
+	if (link === "directory") return { kind: "complete" };
+	const gitdir = /^gitdir: (.+)$/m.exec(link)?.[1];
 	if (gitdir === undefined) return { kind: "complete" };
 	const adminDir = resolve(path, gitdir.trim());
 	const parent = (await canonical(dirname(adminDir))) ?? dirname(adminDir);
 	if (parent !== join(repository.commonDir, "worktrees")) return { kind: "complete" };
 	if (!existsSync(adminDir)) return { kind: "orphaned", adminDir };
-	const lock = join(adminDir, "locked");
-	if (!existsSync(lock)) return { kind: "complete" };
-	const marker = (await readFile(lock, "utf-8")).trim();
+	const marker = (await readState(join(adminDir, "locked")))?.trim();
 	return marker === WORKTREE_ADDING_REASON || marker === GIT_ADDING_MARKER
 		? { kind: "interrupted", adminDir, marker }
 		: { kind: "complete" };

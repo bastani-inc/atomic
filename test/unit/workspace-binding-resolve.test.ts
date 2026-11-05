@@ -1223,7 +1223,7 @@ describe("interrupted worktree additions (#3109)", () => {
 				[1, 1, 1, 1],
 			);
 			assert.equal(result.worktree, realpathSync(path));
-			assert.equal(readFileSync(join(path, "app.txt"), "utf-8"), "app\n");
+			assert.equal(readFileSync(join(path, "app.txt"), "utf-8").replaceAll("\r\n", "\n"), "app\n");
 			assertCompleteWorktree(path, result.tree);
 		});
 
