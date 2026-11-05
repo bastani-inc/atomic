@@ -407,6 +407,7 @@ test("ForkDefinitionMismatchError reports each mismatch reason before copying (#
 		assert.equal(error.workflow, def.name);
 		assert.equal(error.definition, "definition" in testCase ? testCase.definition : undefined);
 		assert.equal(error.runId, runId);
+		assert.equal(error.cause instanceof Error, testCase.reason === "inputs-incompatible", testCase.reason);
 	}
 	assert.deepEqual(await backend.journal.listRuns(), runsBefore);
 });
@@ -426,7 +427,9 @@ test("replacement inputs that fail the definition are a ForkConfigError naming i
 	assert.equal(error.code, "invalid-option");
 	assert.equal(error.source, "sdk");
 	assert.equal(error.field, "inputs");
+	assert.equal(error.expected, 'inputs that satisfy workflow "fork-linear"');
 	assert.ok(error.cause instanceof Error);
+	assert.match(error.cause.message, /invalid inputs for workflow "fork-linear"/);
 	assert.equal((await backend.journal.listRuns()).length, 1);
 });
 
@@ -660,7 +663,11 @@ test("a journal storage failure is a ForkJournalUnavailableError that says wheth
 	};
 	const sourceEvents = await journalEvents(backend.journal, runId);
 	const unavailable = new StorageUnavailableError({ adapter: "memory", location: ":memory:" }, new Error("reset"));
-	const failedFork = () => forkDurableRun(backend, request).catch((failure: Error) => failure);
+	const failedFork = () =>
+		forkDurableRun(backend, request).then(
+			() => assert.fail("fork must fail"),
+			(failure: Error) => failure,
+		);
 	const expectUnavailable = (error: Error, phase: "read" | "claim" | "hydrate", cause: Error) => {
 		assert.ok(isForkJournalUnavailableError(error), String(error));
 		assert.ok(error instanceof ForkJournalUnavailableError);

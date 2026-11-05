@@ -106,10 +106,10 @@ test("a forked run's lineage reaches restored snapshots, run detail and the stat
 		renderRunDetail(detail.detail, { width: 160 }),
 		new RegExp(`forked from\\s+${sourceId} at implement-api\\.review-2`),
 	);
-	assert.match(
-		renderRunDetail({ ...detail.detail, forkedFrom: { runId: sourceId } }, { width: 160 }),
-		new RegExp(`forked from\\s+${sourceId} `),
-	);
+	const wholeRun = renderRunDetail({ ...detail.detail, forkedFrom: { runId: sourceId } }, { width: 160 });
+	assert.match(wholeRun, new RegExp(`forked from\\s+${sourceId}\\s`));
+	assert.doesNotMatch(wholeRun, /forked from.* at /);
+	assert.doesNotMatch(wholeRun, /undefined/);
 	const unforked = testRunId("fork-surface-unforked");
 	store.recordRunStart({
 		id: unforked,

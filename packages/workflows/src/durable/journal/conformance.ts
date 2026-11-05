@@ -582,7 +582,16 @@ export function registerRunJournalConformance(
 				{ event: { type: "RunStarted", payload: null } },
 				{ event: { type: "StatusChanged", payload: { status: "bad\u0000status" } } },
 			]),
-			JournalInvalidTextError,
+			(error: Error) =>
+				error.name === "JournalInvalidTextError" && (error as JournalInvalidTextError).field === "status",
+		);
+		const unserializable = { big: 1n } as never;
+		await assert.rejects(createRunWithEvents.call(journal, { ...other, inputs: unserializable }, []), {
+			name: "StorageUnavailableError",
+		});
+		await assert.rejects(
+			createRunWithEvents.call(journal, other, [{ event: { type: "RunStarted", payload: unserializable } }]),
+			{ name: "StorageUnavailableError" },
 		);
 		assert.equal(await journal.getRun(other.runId), undefined);
 		for (const field of ["runId", "name", "cwd", "status"] as const)
@@ -611,6 +620,12 @@ export function registerRunJournalConformance(
 			(await journal.listRuns()).map((run) => run.runId),
 			[header.runId],
 		);
+		const unchanged = { ...header, runId: "no-status-event", status: "running" };
+		assert.equal(
+			await createRunWithEvents.call(journal, unchanged, [{ event: { type: "RunStarted", payload: null } }]),
+			"created",
+		);
+		assert.equal((await journal.getRun(unchanged.runId))?.status, "running");
 	});
 	check("optional change tracking reports run versions and snapshot tails", async (journal) => {
 		const members = [journal.changeToken, journal.runVersions, journal.snapshotTail];
@@ -684,7 +699,10 @@ export function registerRunJournalConformance(
 			() => journal.deleteRun("\u0000"),
 			...(journal.createRunWithEvents === undefined
 				? []
-				: [() => journal.createRunWithEvents!.call(journal, { ...header, runId: "created-after-close" }, [])]),
+				: [
+						() => journal.createRunWithEvents!.call(journal, { ...header, runId: "created-after-close" }, []),
+						() => journal.createRunWithEvents!.call(journal, { ...header, runId: "\u0000" }, []),
+					]),
 		];
 		for (const operation of operations)
 			await assert.rejects(operation(), (error: Error) => {

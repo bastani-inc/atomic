@@ -177,7 +177,6 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				if (!isForkError(error)) throw error;
 				return { ok: false, error, message: error.message };
 			}
-			preparedCatalog = await prepareTargetedDurableResumable(backend, [fork.runId]);
 			const resumed = await runtime.resumeDurableWorkflow(fork.runId, {
 				policy: options.policy,
 				actor: options.actor,

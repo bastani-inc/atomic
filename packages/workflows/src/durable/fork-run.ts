@@ -187,8 +187,7 @@ export function validateForkOptions(
 	)
 		issues.push({ field: "signal", expected: "an AbortSignal" });
 	const [first, ...rest] = issues;
-	if (first !== undefined)
-		throw new ForkConfigError({ source, issues: [first, ...rest] }, cause === undefined ? undefined : { cause });
+	if (first !== undefined) throw new ForkConfigError({ source, issues: [first, ...rest] }, { cause });
 }
 
 type ResolvedForkRequest = DurableForkRequest & { readonly cwd: string };
@@ -206,9 +205,9 @@ function storageScope(descriptor: { readonly adapter: string; readonly location:
 	readonly adapter: string;
 	readonly scope: ForkStorageScope;
 } {
-	const adapter = descriptor?.adapter ?? "memory";
-	const local =
-		LOCAL_ONLY_ADAPTERS.has(adapter) || (adapter === "libsql" && /^file:/i.test(descriptor?.location ?? ""));
+	if (descriptor === undefined) return { adapter: "memory", scope: "local-only" };
+	const { adapter, location } = descriptor;
+	const local = LOCAL_ONLY_ADAPTERS.has(adapter) || (adapter === "libsql" && /^file:/i.test(location));
 	return { adapter, scope: local ? "local-only" : "shared" };
 }
 
@@ -433,7 +432,7 @@ async function resolveForkDefinition(
 			);
 		}
 	}
-	if (definition === undefined || !isWorkflowDefinition(definition))
+	if (!isWorkflowDefinition(definition))
 		throw new ForkDefinitionMismatchError({
 			runId: handle.workflowId,
 			workflow: handle.name,
@@ -479,8 +478,7 @@ interface ForkSelection {
 
 function selectForkEvents(source: ForkSource, request: DurableForkRequest): ForkSelection {
 	const records = forkPointRecords(source.checkpoints);
-	const target =
-		request.fromStage === undefined ? undefined : records.find((record) => record.stagePath === request.fromStage);
+	const target = records.find((record) => record.stagePath === request.fromStage);
 	if (request.fromStage !== undefined && target === undefined)
 		throw new ForkTargetNotFoundError({
 			runId: source.runId,
@@ -523,7 +521,7 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 
 class ForkIdentities {
 	private readonly ids: Map<string, string>;
-	readonly sessions = new Map<string, { readonly id: string; readonly file?: string }>();
+	readonly sessions = new Map<string, { readonly id: string; readonly file: string | undefined }>();
 
 	constructor(
 		readonly sourceRunId: string,
@@ -582,13 +580,13 @@ class ForkIdentities {
  */
 function forkUiCheckpoint(checkpoint: Extract<DurableCheckpoint, { kind: "ui" }>, ids: ForkIdentities) {
 	const copy = { ...checkpoint, workflowId: ids.forkRunId };
-	let identity: Record<string, WorkflowSerializableValue>;
+	let identity: Record<string, WorkflowSerializableValue> | null;
 	try {
 		identity = JSON.parse(checkpoint.message) as Record<string, WorkflowSerializableValue>;
 	} catch {
 		return copy;
 	}
-	if (identity === null || typeof identity !== "object" || identity.rootWorkflowId !== ids.sourceRunId) return copy;
+	if (identity?.rootWorkflowId !== ids.sourceRunId) return copy;
 	const previous = durableHash(identity);
 	if (!checkpoint.promptHash.endsWith(previous) || !checkpoint.checkpointId.endsWith(`ui:${previous}`)) return copy;
 	const rekeyed = { ...identity, rootWorkflowId: ids.forkRunId };
@@ -604,13 +602,13 @@ function forkUiCheckpoint(checkpoint: Extract<DurableCheckpoint, { kind: "ui" }>
 function forkCheckpoint(checkpoint: DurableCheckpoint, ids: ForkIdentities): DurableCheckpoint {
 	if (checkpoint.kind === "ui") return forkUiCheckpoint(checkpoint, ids);
 	if (checkpoint.kind === "tool") {
-		const run = checkpoint.topology?.run;
+		const toolTopology = checkpoint.topology;
 		return {
 			...checkpoint,
 			workflowId: ids.forkRunId,
-			...(checkpoint.topology === undefined || run === undefined
+			...(toolTopology?.run === undefined
 				? {}
-				: { topology: { ...checkpoint.topology, run: ids.runTopology(run) } }),
+				: { topology: { ...toolTopology, run: ids.runTopology(toolTopology.run) } }),
 		};
 	}
 	const { sessionId: sourceSessionId, sessionFile: sourceSessionFile, ...stage } = checkpoint;
@@ -959,7 +957,7 @@ async function copySessions(
 			);
 			created.push(id);
 			const file = (await SessionManager.open(destination, id, request.cwd)).getSessionFile();
-			ids.sessions.set(sessionId, file === undefined ? { id } : { id, file });
+			ids.sessions.set(sessionId, { id, file });
 		}
 		return copied;
 	} catch (error) {

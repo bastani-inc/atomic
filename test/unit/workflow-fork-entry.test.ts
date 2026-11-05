@@ -12,8 +12,8 @@ import {
 } from "../../packages/workflows/src/durable/fork-errors.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { forkStageSession } from "../../packages/workflows/src/shared/stage-session-store.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { type AgentSessionAdapter, makeMockSession, type StageSessionCreateOptions } from "./stage-runner-helpers.js";
@@ -251,21 +251,21 @@ test("a resumed stage keeps the caller's forkFromEntryId only with the caller's 
 			}).session;
 		},
 	};
-	let mode: "none" | "explicit" = "none";
+	let mode: "none" | "entry-only" | "explicit" = "none";
 	const def = workflow({
 		name: "fork-entry-resume",
 		description: "",
 		inputs: {},
 		outputs: {},
 		run: async (ctx) => {
-			if (mode === "none") await ctx.stage("retry").prompt("retry");
-			else
-				await ctx.task("retry", {
-					prompt: "retry",
-					context: "fork",
-					forkFromSessionId: chosen.sessionId,
-					forkFromEntryId: entryId,
-				});
+			await ctx.task(
+				"retry",
+				mode === "none"
+					? { prompt: "retry" }
+					: mode === "entry-only"
+						? { prompt: "retry", forkFromEntryId: replayed.entries[0]!.id }
+						: { prompt: "retry", context: "fork", forkFromSessionId: chosen.sessionId, forkFromEntryId: entryId },
+			);
 			return {};
 		},
 	});
@@ -277,14 +277,18 @@ test("a resumed stage keeps the caller's forkFromEntryId only with the caller's 
 	const stage = source.stages.find((candidate) => candidate.name === "retry")!;
 	stage.sessionId = replayed.sessionId;
 	fail = false;
-	for (const next of ["none", "explicit"] as const) {
+	for (const next of ["none", "entry-only", "explicit"] as const) {
 		mode = next;
 		created.length = 0;
-		const resumed = await run(def, {}, { store: createStore(), adapters, continuation: { source, resumeFromStageId: stage.id } });
+		const resumed = await run(
+			def,
+			{},
+			{ store: createStore(), adapters, continuation: { source, resumeFromStageId: stage.id } },
+		);
 		assert.equal(resumed.status, "completed", resumed.error);
 		assert.equal(created.length, 1, next);
 		const session = created[0]!.sessionManager!;
-		if (next === "none") {
+		if (next !== "explicit") {
 			assert.equal(session.getHeader()?.parentSessionId, replayed.sessionId);
 			assert.deepEqual(
 				session.getEntries().map((entry) => entry.id),

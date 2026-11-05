@@ -282,9 +282,14 @@ test("a fork re-keys prompt answers to its own root and copies other answers as 
 		answer(`ui:${foreignHash}`, foreignHash, JSON.stringify(identity("root", "other-run"))),
 		answer("ui:mismatched", "mismatched", JSON.stringify(identity("root"))),
 		answer("ui:array", "array", "[1,2]"),
+		answer("ui:null", "null", "null"),
+		answer(`ui:${rootHash}:other`, rootHash, JSON.stringify(identity("root"))),
+		answer(`x:ui:${rootHash}`, "other", JSON.stringify(identity("root"))),
 	]);
 	const fork = await forkDurableRun(backend, request(sourceId));
-	const [root, scoped, legacy, foreign, mismatched, array] = backend.listCheckpoints(fork.runId);
+	const [root, scoped, legacy, foreign, mismatched, array, nothing, hashOnly, idOnly] = backend.listCheckpoints(
+		fork.runId,
+	);
 	const forkHash = durableHash(identity("root", fork.runId));
 	const forkScopedHash = durableHash(identity("workflow:child:fp:1", fork.runId));
 	assert.ok(root?.kind === "ui");
@@ -298,14 +303,18 @@ test("a fork re-keys prompt answers to its own root and copies other answers as 
 		[scoped.checkpointId, scoped.promptHash],
 		[`workflow:child:fp:1:ui:${forkScopedHash}`, `workflow:child:fp:1:${forkScopedHash}`],
 	);
-	for (const [copy, original] of [
-		[legacy, "legacy"],
-		[foreign, foreignHash],
-		[mismatched, "mismatched"],
-		[array, "array"],
+	for (const [copy, original, checkpointId] of [
+		[legacy, "legacy", "ui:legacy"],
+		[foreign, foreignHash, `ui:${foreignHash}`],
+		[mismatched, "mismatched", "ui:mismatched"],
+		[array, "array", "ui:array"],
+		[nothing, "null", "ui:null"],
+		[hashOnly, rootHash, `ui:${rootHash}:other`],
+		[idOnly, "other", `x:ui:${rootHash}`],
 	] as const) {
 		assert.ok(copy?.kind === "ui");
 		assert.equal(copy.promptHash, original);
+		assert.equal(copy.checkpointId, checkpointId);
 		assert.equal(copy.workflowId, fork.runId);
 	}
 });
@@ -476,6 +485,15 @@ test("validateForkOptions accepts valid options and names each invalid one (#432
 			signal: new AbortController().signal,
 		});
 		validateForkOptions("cli", runId, { carryMessages: "before" });
+		const expectedText: Record<string, string> = {
+			runId: "a run id or 8-character prefix",
+			fromStage: "a stage path from listForkPoints",
+			inputs: "an object of workflow inputs",
+			cwd: "an existing directory",
+			carryMessages: '"before" or "all"',
+			definition: "a workflow definition created with workflow()",
+			signal: "an AbortSignal",
+		};
 		const invalid = (field: string, value: unknown) => {
 			const error = (() => {
 				try {
@@ -490,10 +508,9 @@ test("validateForkOptions accepts valid options and names each invalid one (#432
 				return undefined;
 			})();
 			assert.ok(error instanceof ForkConfigError, `${field}=${String(value)}`);
-			assert.deepEqual(
-				error.issues.map((issue) => issue.field),
-				[field],
-			);
+			assert.deepEqual(error.issues, [{ field, expected: expectedText[field] }]);
+			assert.equal(error.expected, expectedText[field]);
+			if (field !== "cwd") assert.equal(Object.hasOwn(error, "cause"), false, field);
 			return error;
 		};
 		for (const value of [undefined, 7, "", "   "]) invalid("runId", value);
@@ -504,7 +521,8 @@ test("validateForkOptions accepts valid options and names each invalid one (#432
 			invalid("cwd", join(directory, "missing")).cause instanceof Error,
 			"a missing directory keeps its cause",
 		);
-		assert.equal(invalid("cwd", file).cause, undefined);
+		for (const value of [file, "", 7, ["not-a-path"]])
+			assert.equal(Object.hasOwn(invalid("cwd", value), "cause"), false, String(value));
 		for (const value of ["later", 1]) invalid("carryMessages", value);
 		for (const value of [{}, "workflow"]) invalid("definition", value);
 		for (const value of [null, {}, "signal"]) invalid("signal", value);
@@ -545,6 +563,9 @@ test("journal storage reports libSQL files and in-process journals as local-only
 		[{ adapter: "libsql", location: "file:/tmp/x.db" }, "local-only"],
 		[{ adapter: "libsql", location: "FILE:/tmp/x.db" }, "local-only"],
 		[{ adapter: "libsql", location: "https://db.example" }, "shared"],
+		[{ adapter: "libsql", location: "https://db.example/file:x.db" }, "shared"],
+		[{ adapter: "custom", location: "file:/tmp/x.db" }, "shared"],
+		[{ adapter: "memory", location: ":memory:" }, "local-only"],
 		[{ adapter: "node-sqlite", location: "/tmp/x.db" }, "local-only"],
 		[{ adapter: "jsonl", location: "/tmp" }, "local-only"],
 		[{ adapter: "custom", location: "custom journal" }, "shared"],
@@ -598,6 +619,7 @@ test("a failed session copy removes the sessions it created and reports a cleanu
 	assert.deepEqual([error.phase, error.cause], ["sessions", failure]);
 	assert.ok(error.cleanupCause instanceof AggregateError);
 	assert.deepEqual((error.cleanupCause as AggregateError).errors, [deleteFailure, deleteFailure]);
+	assert.equal(error.cleanupCause.message, "Copied fork sessions were not removed");
 	assert.equal(await backend.journal.getRun(error.forkRunId), undefined);
 	vi.restoreAllMocks();
 	const single = vi.spyOn(sessions, "create").mockImplementationOnce(create).mockRejectedValueOnce(failure);
@@ -620,7 +642,7 @@ test("a failed session copy removes the sessions it created and reports a cleanu
 		sourceSessionStore: sessions,
 	}).catch((problem: Error) => problem);
 	assert.ok(clean instanceof ForkCopyFailedError);
-	assert.equal(clean.cleanupCause, undefined);
+	assert.equal(Object.hasOwn(clean, "cleanupCause"), false);
 	assert.equal(removed.mock.calls.length, 1);
 	assert.equal(await sessions.readHeader(removed.mock.calls[0]![0]), undefined);
 });
@@ -703,7 +725,9 @@ test("the source claim is released after every fork, and a release failure after
 	const forked = await forkDurableRun(backend, request(sourceId));
 	assert.ok(forked.runId);
 	assert.equal(warn.mock.calls.length, 1);
-	assert.ok(warn.mock.calls[0]![0] instanceof ForkSourceBusyError);
+	const warned = warn.mock.calls[0]![0];
+	assert.ok(warned instanceof ForkSourceBusyError);
+	assert.deepEqual([warned.runId, warned.reason], [sourceId, "fork-in-progress"]);
 	assert.equal((warn.mock.calls[0]![1] as Error).message, "release failed");
 	takeover.mockResolvedValueOnce({ status: "held", holderId: null, epoch: 3 });
 	const busy = await forkDurableRun(backend, request(sourceId)).catch((error: Error) => error);
@@ -919,4 +943,5 @@ test("a definition resolver that fails or returns something else is a definition
 	assert.deepEqual(resolved.inputs, {});
 	const none = await forkDurableRun(backend, base).catch((error: Error) => error);
 	assert.ok(none instanceof ForkDefinitionMismatchError, "no definition and no resolver");
+	assert.deepEqual([none.reason, none.cause], ["definition-unavailable", undefined]);
 });
