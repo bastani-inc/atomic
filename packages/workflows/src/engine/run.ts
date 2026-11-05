@@ -175,13 +175,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const journal = backend.snapshotJournal;
 		if (previous !== undefined && journal !== undefined) {
 			const mappings = previous.worktreeRootMappings ?? [];
+			let warningCount = 0;
 			const restored = await resolveWorkflowSnapshotFrontier(journal, runId, {
 				mappings,
 				settings: previous.snapshots ?? opts.snapshots,
 				signal: opts.signal,
 				onRestore: (mapping) =>
 					activeStore.recordNotice({
-						id: `workflow-worktree-restore:${runId}:${mapping.snapshotId}`,
+						id: `workflow-worktree-restore:${runId}:${mapping.snapshotId}:${mapping.restoredAt}`,
 						runId,
 						level: "info",
 						message: formatWorktreeRestoreNotice(mapping),
@@ -189,7 +190,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 					}),
 				onWarning: (warning, mapping) =>
 					activeStore.recordNotice({
-						id: `workflow-worktree-restore-warning:${runId}:${mapping.snapshotId}:${warning.code}`,
+						id: `workflow-worktree-restore-warning:${runId}:${mapping.snapshotId}:${mapping.restoredAt}:${warningCount++}`,
 						runId,
 						level: "warning",
 						message: formatWorktreeRestoreWarning(warning),
