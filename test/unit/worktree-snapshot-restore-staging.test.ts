@@ -35,14 +35,14 @@ test("a malformed stale record is retained, reported once, and cannot delete a u
 		storeDir,
 		onWarning: (warning) => warnings.push(warning),
 	});
-	assert.deepEqual(warnings, [{ code: "stale-restore-retained", path: recordPath }]);
+	assert.deepEqual(warnings, [{ code: "stale-restore-retained", path: recordPath, kind: "record" }]);
 	assert.equal(existsSync(recordPath), true);
 	assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "hello\n");
 	assert.equal(readFileSync(join(restored.path, "untracked.txt"), "utf8"), "recorded\n");
 	assert.deepEqual(readdirSync(join(storeDir, "restores")), [recordPath.split(/[\\/]/).at(-1)]);
 	const removalWarnings: WorktreeRestoreWarning[] = [];
 	await removeRestoredWorktree(restored.path, { storeDir, onWarning: (warning) => removalWarnings.push(warning) });
-	assert.deepEqual(removalWarnings, [{ code: "stale-restore-retained", path: recordPath }]);
+	assert.deepEqual(removalWarnings, [{ code: "stale-restore-retained", path: recordPath, kind: "record" }]);
 	assert.equal(existsSync(restored.path), false);
 	assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "hello\n");
 });
@@ -86,7 +86,7 @@ test("a plausible stale record cannot delete a directory that is not a registere
 	writeFileSync(record, JSON.stringify({ staging, target, store: repo, createdTarget: true }));
 	const warnings: WorktreeRestoreWarning[] = [];
 	await restoreWorktree(capture.snapshot, { blobs, storeDir, onWarning: (warning) => warnings.push(warning) });
-	assert.deepEqual(warnings, [{ code: "stale-restore-retained", path: staging }]);
+	assert.deepEqual(warnings, [{ code: "stale-restore-retained", path: staging, kind: "worktree" }]);
 	assert.equal(readFileSync(join(staging, "keep.txt"), "utf8"), "user data\n");
 	assert.equal(existsSync(record), true);
 });
@@ -113,7 +113,7 @@ test.skipIf(process.platform === "win32")(
 		);
 		const warnings: WorktreeRestoreWarning[] = [];
 		await restoreWorktree(capture.snapshot, { blobs, storeDir, onWarning: (warning) => warnings.push(warning) });
-		assert.deepEqual(warnings, [{ code: "stale-restore-retained", path: staging }]);
+		assert.deepEqual(warnings, [{ code: "stale-restore-retained", path: staging, kind: "worktree" }]);
 		assert.equal(readFileSync(join(previous.path, "untracked.txt"), "utf8"), "recorded\n");
 	},
 );

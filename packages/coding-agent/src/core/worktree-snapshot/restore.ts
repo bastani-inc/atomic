@@ -250,6 +250,10 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 	}
 }
 
+function leftoverKind(path: string, recordPath: string): "worktree" | "record" {
+	return path === recordPath ? "record" : "worktree";
+}
+
 /** Sweep only unlocked or stale records, leaving active processes' staging worktrees alone. */
 async function sweepRestoreRecords(
 	storeDir: string,
@@ -264,7 +268,7 @@ async function sweepRestoreRecords(
 	} catch (error) {
 		signal?.throwIfAborted();
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-		warn({ code: "stale-restore-retained", path: recordsDir });
+		warn({ code: "stale-restore-retained", path: recordsDir, kind: "records-directory" });
 		return;
 	}
 	for (const name of names) {
@@ -295,14 +299,20 @@ async function sweepRestoreRecords(
 			signal?.throwIfAborted();
 			const code = (error as NodeJS.ErrnoException).code;
 			if (!(release === undefined && code === "ELOCKED") && !(warningPath === recordPath && code === "ENOENT")) {
-				warn({ code: "stale-restore-retained", path: warningPath });
+				warn({ code: "stale-restore-retained", path: warningPath, kind: leftoverKind(warningPath, recordPath) });
 			}
 		} finally {
 			if (release) {
 				try {
 					await release();
 				} catch {
-					if (!compromised) warn({ code: "stale-restore-retained", path: warningPath });
+					if (!compromised) {
+						warn({
+							code: "stale-restore-retained",
+							path: warningPath,
+							kind: leftoverKind(warningPath, recordPath),
+						});
+					}
 				}
 			}
 		}
@@ -361,7 +371,7 @@ async function withRestoreRecord(
 		try {
 			await rm(recordPath);
 		} catch {
-			warn({ code: "stale-restore-retained", path: record.staging });
+			warn({ code: "stale-restore-retained", path: record.staging, kind: "worktree" });
 		}
 	} catch (error) {
 		primary = error;
@@ -372,7 +382,7 @@ async function withRestoreRecord(
 			} catch (cleanupCause) {
 				if (error instanceof Error)
 					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-				warn({ code: "stale-restore-retained", path: record.staging });
+				warn({ code: "stale-restore-retained", path: record.staging, kind: "worktree" });
 			}
 		}
 		throw error;
@@ -383,7 +393,7 @@ async function withRestoreRecord(
 			if (primary instanceof Error && !Object.hasOwn(primary, "cleanupCause")) {
 				Object.defineProperty(primary, "cleanupCause", { value: error, configurable: true });
 			} else if (primary === undefined) {
-				warn({ code: "stale-restore-retained", path: record.staging });
+				warn({ code: "stale-restore-retained", path: record.staging, kind: "worktree" });
 			}
 		}
 	}
@@ -789,7 +799,7 @@ export async function restoreWorktree(
 						await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
 					} catch (cleanupCause) {
 						Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-						warn({ code: "stale-restore-retained", path: nested });
+						warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
 					}
 				}
 				throw error;

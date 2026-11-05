@@ -92,7 +92,10 @@ async function registered(store: string): Promise<string[]> {
 		.map((line) => line.slice("worktree ".length));
 }
 
-const warning = (path: string): WorktreeRestoreWarning => ({ code: "stale-restore-retained", path });
+const warning = (
+	path: string,
+	kind: "worktree" | "record" | "records-directory" = "worktree",
+): WorktreeRestoreWarning => ({ code: "stale-restore-retained", path, kind });
 
 function writeRecord(host: Host, id: string, fields: unknown, name = `${id}.json`): string {
 	mkdirSync(join(host.storeDir, "restores"), { recursive: true });
@@ -311,7 +314,7 @@ describe("sweeping the records an interrupted restore left", () => {
 		const restores = join(host.storeDir, "restores");
 		writeFileSync(restores, "a file where the records directory belongs\n");
 
-		assert.deepEqual(await sweep(host), [warning(restores)]);
+		assert.deepEqual(await sweep(host), [warning(restores, "records-directory")]);
 	});
 
 	test("with no callback the leftover is a process warning that names the path and the way out", async () => {
@@ -496,7 +499,7 @@ describe("a record is acted on only when it is exactly what Atomic writes", () =
 		const { fields, staging } = await forge(host, id);
 		const record = writeRecord(host, id, fields);
 
-		assert.deepEqual(await sweep(host), [warning(record)]);
+		assert.deepEqual(await sweep(host), [warning(record, "record")]);
 
 		assert.equal(existsSync(record), true);
 		if (staging !== undefined) assert.equal(existsSync(join(staging, ".git")), true);
