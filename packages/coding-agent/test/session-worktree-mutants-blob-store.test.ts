@@ -98,16 +98,17 @@ describe("the snapshot blob table", () => {
 		assert.equal((await store.listBlobHashes()).length, 3);
 	});
 
-	test("deleting no blobs sends the database nothing, and deleting some uses one transaction", async () => {
+	test("refreshing no blobs sends the database nothing, and refreshing some uses one transaction (#4355)", async () => {
 		const { wrapped, counts } = await countingDatabase(false);
 		const store = await SqlSnapshotBlobStore.open(wrapped);
 		const two = blobs("one", "two");
 		await store.putBlobs(two);
 		const before = counts.transactions;
-		assert.deepEqual(await store.deleteBlobs([], { olderThanSeconds: 0 }), []);
+		assert.equal(await store.refreshBlobs([]), true);
 		assert.equal(counts.transactions, before);
-		assert.deepEqual(await store.deleteBlobs([two[0]!.hash], { olderThanSeconds: 0 }), [two[0]!.hash]);
+		assert.equal(await store.refreshBlobs([two[0]!.hash, two[0]!.hash, two[1]!.hash]), true);
 		assert.equal(counts.transactions, before + 1);
-		assert.deepEqual(await store.listBlobHashes(), [two[1]!.hash]);
+		assert.equal(await store.refreshBlobs([two[0]!.hash, "absent"]), false);
+		assert.deepEqual([...(await store.listBlobHashes())].sort(), two.map((blob) => blob.hash).sort());
 	});
 });

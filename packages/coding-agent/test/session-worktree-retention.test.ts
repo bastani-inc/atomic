@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { listRetainedSessionSnapshots, resumeSessionWorktree } from "../src/core/session-worktree-snapshots.ts";
+import { resumeSessionWorktree } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.ts";
@@ -41,7 +41,7 @@ async function record(
 	return capture.snapshot;
 }
 
-test("retention keeps the latest snapshot of each session and collects blobs nothing retains (#4245)", async () => {
+test("retention keeps the latest snapshot of each session and collects blobs nothing retains (#4245, #4355)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 	const store = await SqlSessionStore.open(database);
@@ -56,21 +56,15 @@ test("retention keeps the latest snapshot of each session and collects blobs not
 	const shared = await record(second, store, clone, "two\n");
 	assert.equal(shared.chain[0]!.patch, newer.chain[0]!.patch, "equal content shares one blob");
 
-	const retained = await listRetainedSessionSnapshots(store);
-	assert.deepEqual(retained.map((snapshot) => snapshot.id).sort(), [newer.id, shared.id].sort());
-	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, retained, { graceSeconds: 0 });
+	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
 	assert.deepEqual(deleted, snapshotBlobHashes(older));
 	assert.deepEqual(await store.snapshotBlobs.listBlobHashes(), snapshotBlobHashes(newer));
 
 	await store.delete(first.getSessionId());
-	const afterDelete = await collectSnapshotGarbage(store.snapshotBlobs, await listRetainedSessionSnapshots(store), {
-		graceSeconds: 0,
-	});
+	const afterDelete = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
 	assert.deepEqual(afterDelete.deleted, [], "the other session still needs the shared blob");
 	await store.delete(second.getSessionId());
-	const afterAll = await collectSnapshotGarbage(store.snapshotBlobs, await listRetainedSessionSnapshots(store), {
-		graceSeconds: 0,
-	});
+	const afterAll = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
 	assert.deepEqual(afterAll.deleted, snapshotBlobHashes(newer));
 	assert.deepEqual(await store.snapshotBlobs.listBlobHashes(), []);
 });
@@ -95,9 +89,12 @@ test("retention keeps each leaf's latest snapshot, so every branch of a session 
 	await manager.appendSessionInfo("a third leaf that recorded nothing new");
 	for (const snapshot of [first, second]) assert.equal(snapshot.chain.length, 1, "each branch has its own full delta");
 
-	const retained = await listRetainedSessionSnapshots(store);
-	assert.deepEqual(retained.map((snapshot) => snapshot.id).sort(), [base.id, first.id, second.id].sort());
-	await collectSnapshotGarbage(store.snapshotBlobs, retained, { graceSeconds: 0 });
+	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
+	assert.deepEqual(deleted, [], "the base and the latest snapshot of each branch are all retained");
+	assert.deepEqual(
+		[...(await store.snapshotBlobs.listBlobHashes())].sort(),
+		[...new Set([base, first, second].flatMap(snapshotBlobHashes))].sort(),
+	);
 
 	for (const [leaf, expected] of [
 		[firstLeaf, "first branch\n"],

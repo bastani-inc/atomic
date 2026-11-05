@@ -15,7 +15,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { closeSnapshotJournals, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 let priorAgentDir: string | undefined;
@@ -210,7 +210,7 @@ test("resume fails with typed drift and the missing blob as cause before callbac
 	assert.equal(first.status, "failed");
 	const snapshot = (await listWorkflowSnapshotBoundaries(journal, first.runId))[0]!.snapshot;
 	const hash = snapshot.chain[0]!.patch!;
-	await journal.snapshotBlobs.deleteBlobs([hash], { olderThanSeconds: 0 });
+	await loseSnapshotBlobs(journal.snapshotBlobs, [hash]);
 	sandbox.write(join(clone, "changed.txt"), "drift\n");
 	await assert.rejects(
 		resumeDurableWorkflow(first.runId, {

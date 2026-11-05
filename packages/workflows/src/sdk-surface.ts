@@ -46,6 +46,8 @@ export {
 	isDecisionTimeoutError,
 	isGitUnavailableError,
 	isRetryableDecisionError,
+	isRetryableWorkspaceError,
+	isWorkspaceCollectionError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,
 	isWorkspaceError,
@@ -62,6 +64,8 @@ export {
 	serializeWorkspaceError,
 	verifyWorktree,
 	type WorkspaceBinding,
+	WorkspaceCollectionError,
+	type WorkspaceCollectionErrorCode,
 	WorkspaceConfigError,
 	type WorkspaceConfigErrorCode,
 	WorkspaceDriftError,
@@ -101,7 +105,6 @@ export { resolveRunJournal } from "./durable/journal/resolution.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
 export {
-	listResumableWorkflowSnapshots,
 	listWorkflowSnapshotBoundaries,
 	type WorkflowSnapshotBoundary,
 	workflowSnapshotFrontier,

@@ -1,6 +1,9 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
-import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
+import {
+	type SnapshotIndexTables,
+	SqlSnapshotBlobStore,
+	snapshotIndexTables,
+} from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
 import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
@@ -90,13 +93,45 @@ function listingVersion(row: ListingRow): string {
 	return `${row.revision}\u0000${row.last_seq}\u0000${row.modified_at}\u0000${row.message_count}\u0000${row.has_name}\u0000${row.name}\u0000${row.summarized_through_id}\u0000${row.summary}\u0000${row.first_message}\u0000${row.header_json}`;
 }
 
+/**
+ * Triggers that keep the snapshot reference index current with every write to `entries`, from any connection: each
+ * `worktree_snapshot` entry adds its root and snapshot id, and the blobs of the record it carries, keyed by the
+ * entry's sequence, and deleting the entry removes exactly those rows.
+ */
+async function indexSnapshotEntries(database: SqliteDatabase, entries: string, t: SnapshotIndexTables): Promise<void> {
+	const insert = `${entries}_snapshot_refs`;
+	if (await database.get("SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name = ?", insert)) return;
+	const json = "NEW.entry_json";
+	await database.transaction((tx) =>
+		tx.exec(`
+			CREATE TRIGGER IF NOT EXISTS ${insert} AFTER INSERT ON ${entries}
+			WHEN instr(${json}, '"worktree_snapshot"') > 0 AND json_extract(${json}, '$.type') = 'worktree_snapshot'
+				AND json_type(${json}, '$.root') = 'text' AND json_type(${json}, '$.snapshotId') = 'text'
+			BEGIN
+				INSERT OR REPLACE INTO ${t.sessionRefs} (session_id, seq, root, snapshot_id)
+				VALUES (NEW.session_id, NEW.seq, json_extract(${json}, '$.root'), json_extract(${json}, '$.snapshotId'));
+				INSERT OR IGNORE INTO ${t.sessionRecords} (session_id, seq, snapshot_id, hash)
+				SELECT NEW.session_id, NEW.seq, json_extract(${json}, '$.snapshotId'), hash FROM (
+					SELECT json_extract(${json}, link.fullkey || '.patch') AS hash FROM json_each(${json}, '$.snapshot.chain') AS link
+					UNION ALL SELECT json_extract(${json}, '$.snapshot.bundle.blob')
+				) WHERE typeof(hash) = 'text';
+			END;
+			CREATE TRIGGER IF NOT EXISTS ${entries}_snapshot_refs_delete AFTER DELETE ON ${entries}
+			BEGIN
+				DELETE FROM ${t.sessionRefs} WHERE session_id = OLD.session_id AND seq = OLD.seq;
+				DELETE FROM ${t.sessionRecords} WHERE session_id = OLD.session_id AND seq = OLD.seq;
+			END;
+		`),
+	);
+}
+
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly prefix: string;
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
-	readonly snapshotBlobs: SnapshotBlobStore;
+	readonly snapshotBlobs: SqlSnapshotBlobStore;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -112,7 +147,7 @@ export class SqlSessionStore implements SessionStore {
 		tables: Tables,
 		prefix: string | undefined,
 		cwdMatcher: SessionCwdMatcher | undefined,
-		snapshotBlobs: SnapshotBlobStore,
+		snapshotBlobs: SqlSnapshotBlobStore,
 	) {
 		this.database = database;
 		this.tables = tables;
@@ -164,6 +199,7 @@ export class SqlSessionStore implements SessionStore {
 			}
 		});
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+		await indexSnapshotEntries(database, tables.entries, snapshotIndexTables(options.prefix));
 		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs);
 	}
 

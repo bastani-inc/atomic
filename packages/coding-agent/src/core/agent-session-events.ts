@@ -708,6 +708,7 @@ export function closeAgentSession(
 			await session.settingsManager.flush();
 			assertSettingsWrites(session);
 		});
+		await attempt("snapshot collection", () => session._worktreeSnapshots.scheduleCollection());
 		if (ownedSettingsManagers.get(session.settingsManager) === session)
 			ownedSettingsManagers.delete(session.settingsManager);
 		if (!handoff) await attempt("host subscriptions", () => beforeInvalidate?.());

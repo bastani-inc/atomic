@@ -57,6 +57,9 @@ Tracked files that are denied or ignored keep their `HEAD` content in the snapsh
 | `snapshots.maxFileBytes` | number | `5242880` | Largest file captured, in bytes |
 | `snapshots.maxSnapshotBytes` | number | `52428800` | Largest total of captured file content, and largest unpushed-commit bundle, in bytes |
 | `snapshots.fullEvery` | number | `10` | Restart the patch chain from `HEAD` after this many snapshots |
+| `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains when a session closes or a workflow run finishes. See [Retention and collection](#retention-and-collection) |
+| `snapshots.collectIntervalSeconds` | number | `3600` | Shortest time between two automatic collections of one database, in seconds |
+| `snapshots.graceSeconds` | number | `3600` | Content stored or reused less than this many seconds ago is never collected; `0` turns this protection off |
 
 The SDK takes the same fields as `createAgentSession({ snapshots })` and workflow `RunOpts.snapshots`; they override settings. Invalid values fail with `WorkspaceConfigError` before anything runs.
 
@@ -92,6 +95,25 @@ Workflow runs follow the same rules at the point where execution resumes: each b
 
 `/export session.jsonl` writes the session with the patch and bundle content of its snapshots inline, each once, and reports how much it includes. `--import session.jsonl` and `/import` check every blob against its hash and store it in the target storage before the session is saved. `/share` leaves snapshot content out of the gist.
 
+## Retention and collection
+
+Snapshot content (patches and bundles of unpushed commits) is stored once per content hash in the database that holds the session or workflow journal. Atomic keeps the content these snapshots need and deletes the rest:
+
+- **Sessions:** the latest snapshot of each checkout in every session, internal workflow-stage sessions included, when that session holds the snapshot's record. Earlier snapshots of a checkout are released once a later one is recorded. Deleting a session releases its snapshots.
+- **Workflow runs:** every snapshot of a root run whose latest status is `running`, `paused`, `failed` or `blocked`, unless the run is marked not resumable. A run in any other state, such as completed, cancelled or killed, releases them. A failed or blocked run keeps them until it is resumed to completion or deleted. Deleting a run from history releases its snapshots. Run records themselves are never deleted by collection.
+
+Sessions and workflow runs that share one database share one blob table, and a collection keeps what either of them needs.
+
+**When collection runs.** With `snapshots.autoCollect` on, Atomic collects in the background when a session closes and when a root workflow run finishes. Closing and finishing never wait for it. Each database is collected at most once per `snapshots.collectIntervalSeconds` across every Atomic process that uses it, measured on the database's clock, and pooled workers' runs never start one. A collection reads only an index of which content snapshots reference, which Atomic keeps up to date as it writes sessions and checkpoints, so its cost depends on how much snapshot content is stored, not on how long sessions or runs are. Collection deletes in small batches; if the process exits or is killed partway, nothing a retained snapshot needs is lost and the next collection deletes the rest.
+
+**Grace window.** Content stored or reused less than `snapshots.graceSeconds` ago (one hour by default) is never deleted, so a capture that has stored its content but not yet recorded the snapshot is safe. A capture that builds on an earlier snapshot restarts that snapshot's age before reusing its content; if the content is already gone, the capture records a full snapshot instead.
+
+**Failures.** A failed collection is reported once per process as a warning (for workflow runs, a notice on the run) with `WorkspaceCollectionError`, recorded in the database, and retried after the interval. It never affects the session or run that started it.
+
+**Disk space.** SQLite reuses the space of deleted content for new content but does not shrink the file. Run `VACUUM` on the database while no Atomic process uses it to return the space to the operating system.
+
+To collect immediately, for example after deleting many sessions, call `collectSnapshotGarbage` from the SDK (see below).
+
 ## SDK
 
 ```typescript
@@ -119,11 +141,12 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 - `isHeadOnlyAdvance(driftError, signal?)` resolves `true` when a `WorkspaceDriftError` from `verifyWorktree` only moved `HEAD` forward over the recorded tree, the case resume continues in place.
 - `canonicalizeWorktreePath(path)` resolves the symbolic links in the existing part of a path and keeps the rest, the form snapshot roots are compared in.
 - `removeRestoredWorktree(path, { storeDir?, onWarning?, signal? })` removes a worktree a restore created, for rolling back a restore of several checkouts. It refuses any other path, including a regular file.
-- `collectSnapshotGarbage(blobs, retained, { graceSeconds? })` deletes blobs that none of the retained snapshots needs, and resolves with the hashes it deleted. Retain the latest snapshot of each checkout on every branch of every session (`listRetainedSessionSnapshots(sessionStore)`) and the snapshots resumable workflow runs reference (`listResumableWorkflowSnapshots(journal)` from `@bastani/atomic/workflows`). When sessions and runs share one database they share one blob table, so pass both sets together. A blob stored or stored again within `graceSeconds` (default `DEFAULT_BLOB_GRACE_SECONDS`, one hour, measured on the database's clock) is never deleted, so a collection can run while captures are in flight. Atomic does not run this collection on its own yet ([#4355](https://github.com/bastani-inc/atomic/issues/4355)).
+- `collectSnapshotGarbage(blobs, { graceSeconds?, signal? })` deletes, from a `SqlSnapshotBlobStore`, every blob no retained snapshot needs (see [Retention and collection](#retention-and-collection)) that was stored or reused at least `graceSeconds` ago (default `DEFAULT_BLOB_GRACE_SECONDS`, one hour, on the database's clock), and resolves with the hashes it deleted. `sqlSessionStore.snapshotBlobs` and `sqlRunJournal.snapshotBlobs` are such stores. An aborted collection rejects with the signal's reason; what it deleted stays deleted.
+- `scheduleSnapshotCollection(blobs, settings, { onFailure? })` starts the automatic collection that sessions and workflow runs use, when `settings.autoCollect` is set and one is due for the database. It resolves with the outcome (`collected`, `skipped` with a reason, `interrupted` when the storage closed first, or `failed` with the error) and never rejects. `onFailure` receives each kind of failure once per process; by default it becomes a process warning.
 
 ## Errors
 
-Every error except `GitUnavailableError` extends `WorkspaceError`; all of them carry a stable `code`, JSON-safe `fields`, a `hint`, and `retryable: false`, and every `WorkspaceError` has a `summary` (its message without the code and hint). Check the class or code, never the message. `findWorkspaceError(error, guard)` finds one in a cause chain (up to 8 levels), and `serializeWorkspaceError` / `rehydrateWorkspaceError` carry them across process boundaries with their class and fields intact.
+Every error except `GitUnavailableError` extends `WorkspaceError`; all of them carry a stable `code`, JSON-safe `fields`, a `hint`, and `retryable`, which is `false` for every error except `WorkspaceCollectionError`. `isRetryableWorkspaceError(error)` finds a retryable one in a cause chain. Every `WorkspaceError` has a `summary` (its message without the code and hint). Check the class or code, never the message. `findWorkspaceError(error, guard)` finds one in a cause chain (up to 8 levels), and `serializeWorkspaceError` / `rehydrateWorkspaceError` carry them across process boundaries with their class and fields intact.
 
 | Class | Code | When | Fields | What to do |
 |-------|------|------|--------|------------|
@@ -144,3 +167,4 @@ Every error except `GitUnavailableError` extends `WorkspaceError`; all of them c
 | `WorkspaceRestoreError` | `unwritable-path` | A restore or `removeRestoredWorktree` could not write a directory or file it needs, for example because the disk is full or the directory is read-only | `target`, `snapshotId`; `cause` holds the filesystem error | Free space on that volume, or make the path and its parent writable, then retry |
 | `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot or binding record has a value Atomic never writes: a remote starting with `-` or holding control characters, or a malformed commit, tree, blob hash, or id | `snapshotId` (when the id itself is valid), `field`, `reason` (`unsafe-remote`, `invalid-object-id`, `invalid-snapshot-id`, `invalid-blob-hash`) | Restore only sessions and runs from storage you trust, or export the session again on the machine that recorded it |
 | `WorkspaceDriftError` | `tree-drift` | A checkout no longer matches the snapshot work would resume from, and it could not be restored | `root`, `expectedHead`, `actualHead`, `expectedTree`, `actualTree`, `snapshotId`; with `reason: "restore-failed"`, `restoreCode` and the failure as `cause` | Follow the hint: after a failed restore it is the failure's own fix |
+| `WorkspaceCollectionError` | `collection-failed` | Collecting unreferenced snapshot content failed in the database; nothing a retained snapshot needs was deleted. `retryable: true` | `table`, `phase` (`claim`, `sweep`, `record`), `deleted` (blobs deleted before the failure); `cause` holds the storage error | Check that the database is writable, has free space and is not locked by a stopped process. Collection retries after `snapshots.collectIntervalSeconds`, or call `collectSnapshotGarbage` |

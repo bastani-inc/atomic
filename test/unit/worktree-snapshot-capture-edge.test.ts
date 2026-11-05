@@ -7,7 +7,6 @@ import { captureWorktreeSnapshot } from "../../packages/coding-agent/src/core/wo
 import { nulFields, redactUrlCredentials, runGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import { loadSnapshotPathPolicy } from "../../packages/coding-agent/src/core/worktree-snapshot/policy.ts";
 import {
-	collectSnapshotGarbage,
 	computeEnvironmentHash,
 	isGitUnavailableError,
 	isWorkspaceConfigError,
@@ -15,7 +14,6 @@ import {
 	isWorkspaceSnapshotError,
 	MemorySnapshotBlobStore,
 	setWorktreeSnapshotGit,
-	snapshotBlob,
 	snapshotBlobHashes,
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
@@ -411,28 +409,8 @@ describe("snapshot blob store contract", () => {
 		assert.deepEqual([...(await store.getBlob("h"))!], [1, 2, 3]);
 		assert.equal(await store.getBlob("absent"), undefined);
 		assert.deepEqual(await store.listBlobHashes(), ["h"]);
-		await store.deleteBlobs(["h", "never-stored"], { olderThanSeconds: 0 });
-		assert.deepEqual(await store.listBlobHashes(), []);
-	});
-
-	test("garbage collection deletes exactly the blobs no retained snapshot needs and says which", async () => {
-		const store = new MemorySnapshotBlobStore();
-		const blobs = [
-			snapshotBlob(new Uint8Array([1])),
-			snapshotBlob(new Uint8Array([2])),
-			snapshotBlob(new Uint8Array([3])),
-		];
-		await store.putBlobs(blobs);
-		const retained = {
-			chain: [{ tree: "t", patch: blobs[0]!.hash, bytes: 1 }],
-			bundle: null,
-		} as unknown as WorktreeSnapshot;
-		const result = await collectSnapshotGarbage(store, [retained], { graceSeconds: 0 });
-		assert.deepEqual([...result.deleted].sort(), [blobs[1]!.hash, blobs[2]!.hash].sort());
-		assert.deepEqual(await store.listBlobHashes(), [blobs[0]!.hash]);
-		assert.deepEqual((await collectSnapshotGarbage(store, [retained], { graceSeconds: 0 })).deleted, []);
-		assert.deepEqual([...(await collectSnapshotGarbage(store, [], { graceSeconds: 0 })).deleted], [blobs[0]!.hash]);
-		assert.deepEqual(await store.listBlobHashes(), []);
+		assert.equal(await store.refreshBlobs(["h"]), true);
+		assert.equal(await store.refreshBlobs(["h", "never-stored"]), false);
 	});
 });
 

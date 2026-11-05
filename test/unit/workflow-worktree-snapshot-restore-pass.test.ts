@@ -21,7 +21,7 @@ import {
 	openSqlSnapshotJournal,
 	type SqlSnapshotJournal,
 } from "../helpers/workflow-snapshot-journal.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 let fixture: SqlSnapshotJournal;
@@ -107,7 +107,7 @@ test("a checkout that is gone and cannot be rebuilt fails with a drift error nam
 	const { clone } = await sandbox.remoteWithClone();
 	const run = await startRun();
 	const snapshot = await run.record(clone, "recorded\n");
-	await fixture.journal.snapshotBlobs.deleteBlobs([snapshot.chain[0]!.patch!], { olderThanSeconds: 0 });
+	await loseSnapshotBlobs(fixture.journal.snapshotBlobs, [snapshot.chain[0]!.patch!]);
 	rmSync(clone, { recursive: true, force: true });
 	await assert.rejects(
 		resolveWorkflowSnapshotFrontier(fixture.journal, "run", { storeDir: sandbox.path("host") }),
@@ -186,9 +186,8 @@ function sabotagingJournal(): Sabotage {
 	const real = fixture.journal.snapshotBlobs;
 	const blobs = {
 		putBlobs: (items: Parameters<typeof real.putBlobs>[0]) => real.putBlobs(items),
+		refreshBlobs: (hashes: readonly string[]) => real.refreshBlobs(hashes),
 		listBlobHashes: () => real.listBlobHashes(),
-		deleteBlobs: (hashes: readonly string[], options: { readonly olderThanSeconds: number }) =>
-			real.deleteBlobs(hashes, options),
 		async getBlob(hash: string) {
 			if (target?.hash !== hash) return real.getBlob(hash);
 			const root = join(target.storeDir, "worktrees");
@@ -223,7 +222,7 @@ test("a failed pass removes the worktrees it created and records no mapping; cal
 	const run = await startRun();
 	const snapshots = [await run.record(clones[0]!.clone, "a\n"), await run.record(clones[1]!.clone, "b\n")];
 	for (const { clone } of clones) sandbox.write(join(clone, "state.txt"), "drift\n");
-	await fixture.journal.snapshotBlobs.deleteBlobs([snapshots[1]!.chain[0]!.patch!], { olderThanSeconds: 0 });
+	await loseSnapshotBlobs(fixture.journal.snapshotBlobs, [snapshots[1]!.chain[0]!.patch!]);
 	const storeDir = sandbox.path("host");
 	const events: string[] = [];
 	await assert.rejects(
@@ -375,9 +374,8 @@ test("an abort while a checkout is being rebuilt surfaces as the abort, not as d
 			if (key === "snapshotBlobs")
 				return {
 					putBlobs: (items: Parameters<typeof real.putBlobs>[0]) => real.putBlobs(items),
+					refreshBlobs: (hashes: readonly string[]) => real.refreshBlobs(hashes),
 					listBlobHashes: () => real.listBlobHashes(),
-					deleteBlobs: (hashes: readonly string[], options: { readonly olderThanSeconds: number }) =>
-						real.deleteBlobs(hashes, options),
 					async getBlob(hash: string) {
 						if (hash === snapshot.chain[0]!.patch) controller.abort(reason);
 						return undefined;

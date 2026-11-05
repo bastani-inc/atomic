@@ -14,7 +14,7 @@ import {
 	resolveWorkflowSnapshotFrontier,
 } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { closeSnapshotJournals, openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -66,7 +66,7 @@ test("resume validates the latest boundary once, fails on drift, and can restore
 	assert.ok(missingBlob);
 	const blobData = await journal.snapshotBlobs.getBlob(missingBlob);
 	assert.ok(blobData);
-	await journal.snapshotBlobs.deleteBlobs([missingBlob], { olderThanSeconds: 0 });
+	await loseSnapshotBlobs(journal.snapshotBlobs, [missingBlob]);
 	await assert.rejects(
 		resolveWorkflowSnapshotFrontier(journal, "run", { storeDir: sandbox.path("other-host") }),
 		(error: unknown) => {
@@ -117,8 +117,7 @@ test("failed multi-root restore removes earlier fresh worktrees and records no m
 			payload: { kind: "tool", checkpointId: `tool-${index}`, worktreeSnapshots: [capture.snapshot] },
 		} as unknown as RunEvent);
 		sandbox.write(join(clone, "change.txt"), `drift ${index}\n`);
-		if (index === 1)
-			await journal.snapshotBlobs.deleteBlobs([capture.snapshot.chain[0]!.patch!], { olderThanSeconds: 0 });
+		if (index === 1) await loseSnapshotBlobs(journal.snapshotBlobs, [capture.snapshot.chain[0]!.patch!]);
 	}
 	const storeDir = sandbox.path("rollback-host");
 	await assert.rejects(resolveWorkflowSnapshotFrontier(journal, "run", { storeDir }), (error: unknown) => {

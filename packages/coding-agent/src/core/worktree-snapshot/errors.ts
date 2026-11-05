@@ -35,12 +35,14 @@ export type WorkspaceRestoreErrorCode =
 	| "unwritable-path"
 	| "invalid-snapshot";
 export type WorkspaceDriftErrorCode = "tree-drift";
+export type WorkspaceCollectionErrorCode = "collection-failed";
 export type WorkspaceErrorCode =
 	| WorkspaceConfigErrorCode
 	| WorkspaceGitErrorCode
 	| WorkspaceSnapshotErrorCode
 	| WorkspaceRestoreErrorCode
-	| WorkspaceDriftErrorCode;
+	| WorkspaceDriftErrorCode
+	| WorkspaceCollectionErrorCode;
 
 export type WorkspaceErrorName =
 	| "WorkspaceError"
@@ -48,7 +50,8 @@ export type WorkspaceErrorName =
 	| "WorkspaceGitError"
 	| "WorkspaceSnapshotError"
 	| "WorkspaceRestoreError"
-	| "WorkspaceDriftError";
+	| "WorkspaceDriftError"
+	| "WorkspaceCollectionError";
 
 const MAX_CAUSE_DEPTH = 8;
 const MAX_SERIALIZED_CAUSE_DEPTH = 4;
@@ -376,6 +379,46 @@ export class WorkspaceDriftError extends WorkspaceError implements WorkspaceDrif
 	}
 }
 
+/** The step a failed snapshot blob collection was in: taking its claim, deleting blobs, or recording its outcome. */
+export type SnapshotCollectionPhase = "claim" | "sweep" | "record";
+
+export interface WorkspaceCollectionErrorFields {
+	/** The blob table being collected, such as `snapshot_blobs`. */
+	readonly table: string;
+	readonly phase: SnapshotCollectionPhase;
+	/** Blobs the collection deleted before it failed. */
+	readonly deleted: number;
+}
+
+const COLLECTION_PHASES: Record<SnapshotCollectionPhase, string> = {
+	claim: "claiming",
+	sweep: "deleting unreferenced blobs from",
+	record: "recording its outcome for",
+};
+
+/**
+ * Collecting unreferenced snapshot blobs failed; the storage failure is the `cause`. No blob a retained snapshot
+ * references was deleted, and running the collection again is safe, so it is retryable.
+ */
+export class WorkspaceCollectionError extends WorkspaceError implements WorkspaceCollectionErrorFields {
+	override readonly name = "WorkspaceCollectionError" as const;
+	declare readonly code: WorkspaceCollectionErrorCode;
+	override readonly retryable = true;
+	declare readonly table: string;
+	declare readonly phase: SnapshotCollectionPhase;
+	declare readonly deleted: number;
+
+	constructor(fields: WorkspaceCollectionErrorFields, cause?: Error) {
+		super(
+			"collection-failed",
+			`Snapshot blob collection failed while ${COLLECTION_PHASES[fields.phase]} ${fields.table}`,
+			"No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+			{ table: fields.table, phase: fields.phase, deleted: fields.deleted },
+			cause,
+		);
+	}
+}
+
 const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>> = {
 	WorkspaceError: [],
 	WorkspaceConfigError: ["invalid-setting"],
@@ -393,6 +436,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 		"invalid-snapshot",
 	],
 	WorkspaceDriftError: ["tree-drift"],
+	WorkspaceCollectionError: ["collection-failed"],
 };
 const ALL_CODES = new Set(Object.values(CODES).flat());
 
@@ -428,6 +472,9 @@ export function isWorkspaceRestoreError(value: unknown): value is WorkspaceResto
 export function isWorkspaceDriftError(value: unknown): value is WorkspaceDriftError {
 	return value instanceof WorkspaceDriftError || structurallyIs(value, "WorkspaceDriftError");
 }
+export function isWorkspaceCollectionError(value: unknown): value is WorkspaceCollectionError {
+	return value instanceof WorkspaceCollectionError || structurallyIs(value, "WorkspaceCollectionError");
+}
 
 /** The first error in `error`'s cause chain that `guard` accepts, searching at most eight levels deep. */
 export function findWorkspaceError<T extends WorkspaceError>(
@@ -440,6 +487,16 @@ export function findWorkspaceError<T extends WorkspaceError>(
 		current = typeof current === "object" ? (current as { readonly cause?: unknown }).cause : undefined;
 	}
 	return undefined;
+}
+
+/** Whether `error` or a cause up to eight levels deep is a workspace error that is safe to retry. */
+export function isRetryableWorkspaceError(error: unknown): boolean {
+	return (
+		findWorkspaceError(
+			error,
+			(value): value is WorkspaceError => isWorkspaceError(value) && (value as WorkspaceError).retryable === true,
+		) !== undefined
+	);
 }
 
 export interface SerializedWorkspaceError {
@@ -487,6 +544,8 @@ const REHYDRATORS: Partial<Record<WorkspaceErrorName | "GitUnavailableError", Re
 		),
 	WorkspaceDriftError: (fields, _code, cause) =>
 		new WorkspaceDriftError(fields as unknown as WorkspaceDriftErrorFields, cause),
+	WorkspaceCollectionError: (fields, _code, cause) =>
+		new WorkspaceCollectionError(fields as unknown as WorkspaceCollectionErrorFields, cause),
 };
 
 /**

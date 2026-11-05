@@ -49,7 +49,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { BELOW_FILE_ERRNO, GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
+import { BELOW_FILE_ERRNO, GitSandbox, lfsPointer, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -171,7 +171,7 @@ describe("finding the head", () => {
 		const snapshot = await capture(clone, blobs);
 		assert.ok(snapshot.bundle);
 		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
-		await blobs.deleteBlobs([snapshot.bundle.blob], { olderThanSeconds: 0 });
+		await loseSnapshotBlobs(blobs, [snapshot.bundle.blob]);
 		const restored = await restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") });
 		assert.equal(readFileSync(join(restored.path, "feature.txt"), "utf8"), "feature\n");
 	});
@@ -511,8 +511,8 @@ describe("one restore at a time per shared store", () => {
 		}
 		const blobs: SnapshotBlobStore = {
 			putBlobs: (entries) => stored.putBlobs(entries),
+			refreshBlobs: (hashes) => stored.refreshBlobs(hashes),
 			listBlobHashes: () => stored.listBlobHashes(),
-			deleteBlobs: (hashes, options) => stored.deleteBlobs(hashes, options),
 			getBlob: async (hash) => {
 				const gate = gates.get(hash);
 				if (gate) {

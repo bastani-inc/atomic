@@ -17,6 +17,8 @@ export {
 	GitUnavailableError,
 	type GitUnavailableErrorCode,
 	isGitUnavailableError,
+	isRetryableWorkspaceError,
+	isWorkspaceCollectionError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,
 	isWorkspaceError,
@@ -29,6 +31,8 @@ export {
 	serializeWorkspaceError,
 	verifyWorktree,
 	type WorkspaceBinding,
+	WorkspaceCollectionError,
+	type WorkspaceCollectionErrorCode,
 	WorkspaceConfigError,
 	type WorkspaceConfigErrorCode,
 	WorkspaceDriftError,
@@ -66,9 +70,6 @@ export declare function listWorkflowSnapshotBoundaries(
 export declare function workflowSnapshotFrontier(
 	boundaries: readonly import("./shared/worktree-snapshot-contract.js").WorkflowSnapshotBoundary[],
 ): readonly import("./shared/worktree-snapshot-contract.js").WorkflowSnapshotBoundary[];
-export declare function listResumableWorkflowSnapshots(
-	journal: import("@bastani/atomic/storage").RunJournal,
-): Promise<readonly import("@bastani/atomic").WorktreeSnapshot[]>;
 
 export type {
 	AgentSessionAdapter,

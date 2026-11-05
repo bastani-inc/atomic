@@ -334,6 +334,25 @@
           "maximum": 9007199254740991,
           "description": "Record a full delta against HEAD after this many incremental snapshots.",
           "default": 10
+        },
+        "autoCollect": {
+          "type": "boolean",
+          "description": "Delete snapshot blobs that no retained snapshot references when a session closes or a workflow run finishes.",
+          "default": true
+        },
+        "collectIntervalSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Shortest time between two automatic snapshot blob collections of one database, in seconds.",
+          "default": 3600
+        },
+        "graceSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Snapshot blobs stored less than this many seconds ago are never collected, which protects captures still being recorded.",
+          "default": 3600
         }
       }
     },

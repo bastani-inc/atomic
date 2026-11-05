@@ -1,4 +1,11 @@
-export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotBlobHashes } from "./blob-store.ts";
+export {
+	MemorySnapshotBlobStore,
+	SNAPSHOT_COLLECTION_BATCH,
+	type SnapshotIndexTables,
+	SqlSnapshotBlobStore,
+	snapshotBlobHashes,
+	snapshotIndexTables,
+} from "./blob-store.ts";
 export {
 	bindingOf,
 	type CaptureWorktreeSnapshotOptions,
@@ -14,6 +21,8 @@ export {
 	gitInstallCommand,
 	type InvalidSnapshotReason,
 	isGitUnavailableError,
+	isRetryableWorkspaceError,
+	isWorkspaceCollectionError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,
 	isWorkspaceError,
@@ -22,7 +31,11 @@ export {
 	isWorkspaceSnapshotError,
 	rehydrateWorkspaceError,
 	type SerializedWorkspaceError,
+	type SnapshotCollectionPhase,
 	serializeWorkspaceError,
+	WorkspaceCollectionError,
+	type WorkspaceCollectionErrorCode,
+	type WorkspaceCollectionErrorFields,
 	WorkspaceConfigError,
 	type WorkspaceConfigErrorCode,
 	type WorkspaceConfigSource,
@@ -42,7 +55,15 @@ export {
 	WorkspaceSnapshotError,
 	type WorkspaceSnapshotErrorCode,
 } from "./errors.ts";
-export { type CollectSnapshotGarbageOptions, collectSnapshotGarbage, DEFAULT_BLOB_GRACE_SECONDS } from "./garbage.ts";
+export {
+	type CollectSnapshotGarbageOptions,
+	collectSnapshotGarbage,
+	DEFAULT_BLOB_GRACE_SECONDS,
+	type ScheduleSnapshotCollectionOptions,
+	type SnapshotCollectionOutcome,
+	type SnapshotCollectionSkipReason,
+	scheduleSnapshotCollection,
+} from "./garbage.ts";
 export { type GitExecutable, type GitExecutableResolver, setWorktreeSnapshotGit } from "./git.ts";
 export { isHeadOnlyAdvance } from "./head-advance.ts";
 export { canonicalizeWorktreePath } from "./paths.ts";
