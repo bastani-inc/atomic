@@ -166,6 +166,11 @@ describe("AgentSession.release (#4326)", () => {
 			assert.deepEqual(error.fields, { sessionId: h.session.sessionId, storage: "memory" });
 			assert.equal(error.retryable, false);
 			assert.equal(error.cause, failure);
+			assert.ok(
+				error.message.startsWith(
+					`Session ${h.session.sessionId} was released, but closing it failed (release-failed). `,
+				),
+			);
 			assert.match(error.hint, /rehydrate\(sessionId\)/);
 			reported = error;
 			return true;
