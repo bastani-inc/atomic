@@ -12,6 +12,19 @@ import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-brok
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { DEBUG_MODE_SOURCES, type DebugLogFixture, withDebugLog } from "../helpers/debug-mode.js";
 
+const discovery = vi.hoisted(() => ({ hold: undefined as Promise<void> | undefined }));
+
+vi.mock("../../packages/workflows/src/extension/discovery.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../packages/workflows/src/extension/discovery.js")>();
+	return {
+		...actual,
+		discoverWorkflows: async (...args: Parameters<typeof actual.discoverWorkflows>) => {
+			await discovery.hold;
+			return actual.discoverWorkflows(...args);
+		},
+	};
+});
+
 type Trigger = () => void | Promise<void>;
 
 interface WorkflowSite {
@@ -82,20 +95,17 @@ function scheduleUnrepresentableHeartbeat(): void {
 
 /** Starts background discovery and waits until it has settled and reported. */
 async function warmUpDiscovery(pi: Partial<ExtensionAPI>, onSettled?: () => void): Promise<void> {
-	const refreshed = vi.fn(pi.refreshWorkflowResources);
-	const state = createWorkflowExtensionRuntimeState(
-		{ ...pi, refreshWorkflowResources: refreshed } as ExtensionAPI,
-		{} as never,
-	);
+	const state = createWorkflowExtensionRuntimeState(pi as ExtensionAPI, {} as never);
 	state.setNotificationsActive(true);
-	let settled = false;
-	state.startWorkflowDiscoveryWarmup(() => {
-		settled = true;
-		onSettled?.();
+	await new Promise<void>((settled) => {
+		state.startWorkflowDiscoveryWarmup(() => {
+			try {
+				onSettled?.();
+			} finally {
+				settled();
+			}
+		});
 	});
-	await vi.waitFor(() => assert.equal(refreshed.mock.settledResults.length, 1));
-	for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-	if (onSettled !== undefined) assert.equal(settled, true);
 }
 
 const SITES: readonly WorkflowSite[] = [
@@ -173,6 +183,35 @@ test("a discovery that failed after the host moved on reports nothing, even in d
 		for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
 	});
 	assert.deepEqual(log, []);
+});
+
+test("a discovery still running after its package resources were refreshed reports before its test reads the log (#4360)", async () => {
+	const SIMULATED_DISCOVERY_SCAN_DELAY_MS = 200;
+	let release!: () => void;
+	discovery.hold = new Promise((resolve) => {
+		release = resolve;
+	});
+	try {
+		const { log } = await capture("setting", false, () =>
+			warmUpDiscovery(
+				{
+					refreshWorkflowResources: async () => {
+						setTimeout(release, SIMULATED_DISCOVERY_SCAN_DELAY_MS);
+						return [];
+					},
+				},
+				() => {
+					throw new Error("callback failed");
+				},
+			),
+		);
+		assert.deepEqual(
+			log.filter((record) => record.area === "workflow").map(({ event, data }) => ({ event, data })),
+			[{ event: "background-discovery-callback-failed", data: { message: "callback failed" } }],
+		);
+	} finally {
+		discovery.hold = undefined;
+	}
 });
 
 async function capture(
