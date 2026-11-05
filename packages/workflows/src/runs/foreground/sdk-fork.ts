@@ -18,6 +18,7 @@ import { currentWorkflowStore } from "../../shared/store-factory.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "../../workers/host-options.js";
+import { resolveWorkerTiming } from "../../workers/worker-timing.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { runEventChannel, type WorkflowRunEvent } from "./run-event-channel.js";
 import { run } from "./sdk-run.js";
@@ -86,9 +87,10 @@ async function sdkDurableBackend(
 /**
  * Fork a durable run from a stage into a new run and execute it. The source run is claimed while it is
  * read and is never written. Every precondition is checked before anything is copied, so a failure
- * leaves no fork behind, except a write on a shared journal that cannot be confirmed, which keeps the copied
- * sessions and names the fork run (`ForkJournalUnavailableError`, `commit`); failures are `ForkError`s. An abort before the fork is written rejects with
- * the signal's reason; after that, it cancels the fork's execution like `run()`.
+ * leaves no fork behind except an unconfirmed shared write, which retains its copied sessions and names the fork
+ * (`ForkJournalUnavailableError`, `commit`). Invalid worker timing raises `LocalWorkerOptionsError`; other fork
+ * failures are `ForkError`s. An abort before the fork is written rejects with the signal's reason; after that,
+ * it cancels the fork's execution like `run()`.
  */
 export async function forkRun<
 	TInputs extends WorkflowInputValues,
@@ -103,6 +105,7 @@ export async function forkRun<
 	const processBound = PROCESS_BOUND_RUN_OPTIONS.filter((key) => options[key] !== undefined);
 	let pooled = options.localWorkers !== undefined && !hostBinds;
 	validateForkOptions("sdk", runId, { ...options, processBound: pooled ? processBound : [] });
+	if (options.localWorkers !== undefined) resolveWorkerTiming(options.localWorkers, "sdk");
 	const {
 		fromStage,
 		inputs,
@@ -138,6 +141,8 @@ export async function forkRun<
 		modelOwner: options.modelOwner,
 		signal: options.signal,
 		validateSource: (handle) => {
+			if (options.localWorkers === undefined && handle.resources?.localWorkers !== undefined)
+				resolveWorkerTiming(handle.resources.localWorkers, "sdk");
 			if (hostBinds || handle.resources?.localWorkers === undefined) return;
 			pooled = true;
 			validateForkOptions("sdk", runId, { processBound });

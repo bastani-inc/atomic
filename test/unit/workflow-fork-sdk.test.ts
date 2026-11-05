@@ -17,6 +17,10 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { hostWorkerBindings } from "../../packages/workflows/src/workers/host-options.js";
+import {
+	isLocalWorkerOptionsError,
+	LocalWorkerOptionsError,
+} from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -329,6 +333,79 @@ test("a pooled fork refuses options bound to this process before writing, and in
 	});
 	await hosted.result;
 	assert.equal(typeof captured?.onStageStart, "function", "a host that binds its workers keeps the stage events");
+});
+
+test("forkRun rejects invalid worker timing before reading or writing its source (#4321)", async () => {
+	for (const options of [{ heartbeatMs: 0 }, { leaseMs: 1 }, { leaseMs: 2_000, heartbeatMs: 1_001 }]) {
+		const backend = await createMemoryTestBackend();
+		const runId = testRunId(`fork-invalid-timing-${JSON.stringify(options)}`);
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: eventsDefinition.name,
+			inputs: {},
+			status: "completed",
+			createdAt: 1,
+		});
+		const read = vi.spyOn(backend.journal, "getRun");
+		const write = vi.spyOn(backend.journal, "createRunWithEvents");
+		const error = await forkRun(runId, {
+			durableBackend: backend,
+			definition: eventsDefinition,
+			localWorkers: { count: 2, definitions: [], ...options },
+		}).then(
+			async (forked) => {
+				await forked.result.catch(() => undefined);
+				return forked;
+			},
+			(failure: Error) => failure,
+		);
+		assert.ok(error instanceof LocalWorkerOptionsError);
+		assert.ok(isLocalWorkerOptionsError(error));
+		const option = options.leaseMs === 1 ? "leaseMs" : "heartbeatMs";
+		assert.equal(error.code, option === "leaseMs" ? "invalid-lease" : "invalid-heartbeat");
+		assert.equal(error.source, "sdk");
+		assert.equal(error.field, `localWorkers.${option}`);
+		assert.equal(error.retryable, false);
+		assert.ok(error.hint.includes(`Set localWorkers.${option}`));
+		assert.equal(read.mock.calls.length, 0);
+		assert.equal(write.mock.calls.length, 0);
+		vi.restoreAllMocks();
+	}
+});
+
+test("forkRun validates inherited worker timing before copying and accepts a valid explicit override (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = testRunId("fork-invalid-saved-timing");
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: eventsDefinition.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		resources: { localWorkers: { count: 2, definitions: [], heartbeatMs: 0 }, definitions: [] },
+	});
+	const write = vi.spyOn(backend.journal, "createRunWithEvents");
+	const request = { durableBackend: backend, definition: eventsDefinition };
+	const error = await forkRun(runId, request).then(
+		async (forked) => {
+			await forked.result.catch(() => undefined);
+			return forked;
+		},
+		(failure: Error) => failure,
+	);
+	assert.ok(error instanceof LocalWorkerOptionsError);
+	assert.ok(isLocalWorkerOptionsError(error));
+	assert.equal(error.code, "invalid-heartbeat");
+	assert.equal(error.field, "localWorkers.heartbeatMs");
+	assert.equal(error.source, "sdk");
+	assert.equal(error.retryable, false);
+	assert.equal(write.mock.calls.length, 0);
+	assert.equal((await backend.journal.listRuns()).length, 1);
+	const localWorkers = { count: 2, definitions: [], leaseMs: 4_000, heartbeatMs: 1_000 };
+	vi.mocked(run).mockImplementationOnce(async () => ({ status: "completed", stages: [] }) as never);
+	const forked = await forkRun(runId, { ...request, localWorkers });
+	assert.equal((await forked.result).status, "completed");
+	assert.equal(write.mock.calls.length, 1);
 });
 
 test("a fork of a source that saved local workers is pooled: it refuses process-bound options before writing and installs no stage callbacks (#4321)", async () => {
