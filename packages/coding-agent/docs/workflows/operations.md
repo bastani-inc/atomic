@@ -1005,7 +1005,7 @@ A worker host serves every running root on that journal that uses shared placeme
 
 `admission.limits` count across every host of the pool. `admission.host` thresholds apply on each host to the workers it runs. While the root's budget blocks further spending, no host starts its children. `admission.userLimits` is not supported with shared placement. Give every machine that runs a shared root or a worker host its own hostname: admission and the cleanup of workers' tool processes tell machines apart by hostname.
 
-To bind children to a repository state, pass `workers.workspace`, a binding with `remotes`, `head`, `tree` and `envHash` (and optional informational `root`, `branch` and `worktree`). A bound child runs only on a host that can run it on that tree, never in another host's copy of the root's directory:
+To bind children to a repository state, pass `workers.workspace`: a binding with `remotes`, `head`, `tree` and `envHash`, a bound workspace, or a `workspace({ … })` value, which the root resolves when it starts. A bound child runs only on a host that can run it on that tree, never in another host's copy of the root's directory:
 
 - A host whose `placement.prefer(binding)` returns the path of a local worktree whose current tree is `binding.tree` takes that work first and runs it there.
 - A host with a `restore(binding)` function and working git takes bound work it does not have and runs it at the verified path `restore` returns. A failed restore puts the work back for another host.

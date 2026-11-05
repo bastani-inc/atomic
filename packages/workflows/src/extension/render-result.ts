@@ -14,8 +14,8 @@
 import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ForkErrorCode } from "../durable/fork-errors.js";
-import type { WorkflowForkedFrom } from "../durable/types.js";
 import type { SharedPoolStats } from "../durable/journal/sql-shared-pool.js";
+import type { WorkflowForkedFrom } from "../durable/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";

@@ -3,6 +3,7 @@ import { test } from "vitest";
 import type { PoolClaimCandidate } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { choosePlacement, sharedSettlement } from "../../packages/workflows/src/workers/placement-choice.js";
 import {
+	bindingIdentity,
 	isWorkspaceBinding,
 	type WorkspaceBinding,
 	workspaceAffinityKey,
@@ -86,11 +87,14 @@ test("the root settles other hosts' work: results, exhausted attempts and an exp
 	);
 });
 
-test("a binding is well formed when its identity fields are strings and its informational ones strings or absent (#4310)", () => {
+test("a binding is well formed when its identity fields are strings; a bound workspace's other fields are its own (#4310)", () => {
 	const valid = { remotes: ["a", "b"], head: "h", tree: "t", envHash: "" };
 	assert.equal(isWorkspaceBinding(valid), true);
 	assert.equal(isWorkspaceBinding({ ...valid, remotes: [] }), true);
-	assert.equal(isWorkspaceBinding({ ...valid, root: "/r", branch: "main", worktree: "/w" }), true);
+	assert.equal(
+		isWorkspaceBinding({ ...valid, repo: "/r", branch: "main", worktree: "/w", kind: "bound-workspace" }),
+		true,
+	);
 	for (const broken of [
 		null,
 		undefined,
@@ -101,11 +105,9 @@ test("a binding is well formed when its identity fields are strings and its info
 		{ ...valid, head: 1 },
 		{ ...valid, tree: undefined },
 		{ ...valid, envHash: null },
-		{ ...valid, root: 1 },
-		{ ...valid, branch: false },
-		{ ...valid, worktree: {} },
 	])
 		assert.equal(isWorkspaceBinding(broken), false, JSON.stringify(broken));
+	assert.deepEqual(bindingIdentity({ ...valid, branch: "main", worktree: "/w" } as never), valid);
 });
 
 test("affinity is the repository's remotes, in any order, and the tree; nothing else (#4310)", () => {

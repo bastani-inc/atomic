@@ -1,20 +1,12 @@
+import type { WorkspaceBinding } from "@bastani/atomic";
 import { WorkspaceRestoreUnavailableError, workspaceBindingIdentity } from "./placement-errors.js";
 
 /**
- * The repository state a pooled child or stage runs against (#4310), shared with #4245 and #3109. `remotes`, `head`,
- * `tree` and `envHash` are its identity; `root`, `branch` and `worktree` are informational and never matched. Affinity
- * matches `tree`, with `remotes` identifying the repository. Shared placement never captures a binding: callers supply
- * one, and work without one has no affinity and no restore requirement.
+ * The repository state a pooled child or stage runs against (#4310): #4245's binding. `remotes`, `head`, `tree` and
+ * `envHash` are its identity. Affinity matches `tree`, with `remotes` identifying the repository. Shared placement
+ * never captures a binding: callers supply one, and work without one has no affinity and no restore requirement.
  */
-export interface WorkspaceBinding {
-	remotes: string[];
-	head: string;
-	tree: string;
-	envHash: string;
-	root?: string;
-	branch?: string;
-	worktree?: string;
-}
+export type { WorkspaceBinding };
 
 /** What a worker host passes its placement hooks: `signal` aborts when the host stops waiting for them. */
 export interface WorkspaceHookOptions {
@@ -47,7 +39,7 @@ export function workspaceAffinityKey(binding: Pick<WorkspaceBinding, "remotes" |
 	return JSON.stringify([[...binding.remotes].sort(), binding.tree]);
 }
 
-/** Whether `value` is a well-formed binding: the four identity fields, and the optional ones as strings. */
+/** Whether `value` is a well-formed binding: the four identity fields. A #3109 bound workspace is one. */
 export function isWorkspaceBinding(value: unknown): value is WorkspaceBinding {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const binding = value as Record<string, unknown>;
@@ -56,7 +48,11 @@ export function isWorkspaceBinding(value: unknown): value is WorkspaceBinding {
 		binding.remotes.every((remote) => typeof remote === "string") &&
 		typeof binding.head === "string" &&
 		typeof binding.tree === "string" &&
-		typeof binding.envHash === "string" &&
-		["root", "branch", "worktree"].every((key) => binding[key] === undefined || typeof binding[key] === "string")
+		typeof binding.envHash === "string"
 	);
+}
+
+/** The binding's identity fields alone, as a root records them: a #3109 bound workspace carries more. */
+export function bindingIdentity(binding: WorkspaceBinding): WorkspaceBinding {
+	return { remotes: [...binding.remotes], head: binding.head, tree: binding.tree, envHash: binding.envHash };
 }

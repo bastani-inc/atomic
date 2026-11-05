@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
@@ -9,6 +10,7 @@ import {
 	SESSION_FORMAT_VERSION,
 	type SessionRecordHeader,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { resolveWorkspace, workspace } from "../../packages/coding-agent/src/core/workspace/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -342,7 +344,7 @@ test("each shared placement option names what is wrong with it (#4310)", async (
 		);
 		assert.equal(
 			await detail({ localWorkers, workers: { placement: "shared", workspace: [] as never } }),
-			"a binding has string remotes, head, tree and envHash",
+			"a binding with string remotes, head, tree and envHash, or a workspace({ … }) value",
 		);
 		for (const claimWindowMs of [0, -5, 1.5, Number.NaN])
 			assert.equal(
@@ -501,6 +503,52 @@ test.skipIf(process.platform === "win32")(
 			}
 			const restored = await restoreWorkerOptions(backend, { runId: "root" });
 			assert.equal(restored.workers, undefined, "a root that saved nothing restores nothing");
+		} finally {
+			await backend.close();
+			await removeLibsqlDirectory(directory);
+		}
+	},
+	SHARED_POOL_ACTIVATION_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"shared placement takes a workspace({ … }) value or a bound workspace, and records the binding's identity (#4310)",
+	async () => {
+		const directory = makeLibsqlDirectory();
+		const repo = join(directory, "repo");
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: repo });
+		mkdirSync(repo);
+		git("init", "-q");
+		writeFileSync(join(repo, "a.txt"), "a\n");
+		git("add", "a.txt");
+		git("commit", "-q", "-m", "a");
+		const journal = await resolveRunJournal({
+			agentDir: join(directory, "agent"),
+			journal: {
+				adapter: libsql,
+				options: { url: pathToFileURL(join(directory, "shared.db")).href },
+				prefix: "acme_",
+			},
+		});
+		const backend = await JournalDurableBackend.open(journal);
+		try {
+			const value = workspace({ repo, branch: "pooled", worktree: join(directory, "worktree") });
+			const bound = await resolveWorkspace(value);
+			const identity = { remotes: bound.remotes, head: bound.head, tree: bound.tree, envHash: bound.envHash };
+			for (const [runId, given] of [
+				["from-value", value],
+				["from-bound", bound],
+			] as const) {
+				const options: RunOpts = {
+					runId,
+					cwd: directory,
+					localWorkers,
+					workers: { placement: "shared", workspace: given },
+				};
+				await (await activatePublicPool(backend, options))?.close();
+				assert.deepEqual(options.effectiveResources?.workers, { placement: "shared", workspace: identity }, runId);
+			}
 		} finally {
 			await backend.close();
 			await removeLibsqlDirectory(directory);

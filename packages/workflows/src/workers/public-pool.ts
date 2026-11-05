@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { isWorkspace, resolveWorkspace } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
@@ -34,11 +35,12 @@ import {
 import {
 	DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
 	DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
+	type RecordedWorkerPlacement,
 	type WorkflowExecutionResources,
 	type WorkflowWorkerPlacementOptions,
 } from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
-import { isWorkspaceBinding, type WorkspaceBinding } from "./workspace-binding.js";
+import { bindingIdentity, isWorkspaceBinding, type WorkspaceBinding } from "./workspace-binding.js";
 
 /**
  * Saved settings a resumed root may run with other values of: they size and pace its pool and bound its own sessions
@@ -294,12 +296,12 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 			"invalid-option",
 			'the only placement is "shared"',
 		);
-	if (workers.workspace !== undefined && !isWorkspaceBinding(workers.workspace))
+	if (workers.workspace !== undefined && !isWorkspace(workers.workspace) && !isWorkspaceBinding(workers.workspace))
 		throw new WorkerPlacementConfigError(
 			"sdk",
 			"workers.workspace",
 			"invalid-option",
-			"a binding has string remotes, head, tree and envHash",
+			"a binding with string remotes, head, tree and envHash, or a workspace({ … }) value",
 		);
 	if (
 		workers.claimWindowMs !== undefined &&
@@ -322,10 +324,26 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 	return workers;
 }
 
+/**
+ * `placement` as the root records it (#4310): a `workspace({ … })` value resolved through `resolveWorkspace`, and a
+ * binding, or a bound workspace, reduced to its identity fields.
+ */
+export async function recordedPlacement(
+	placement: WorkflowWorkerPlacementOptions,
+	signal?: AbortSignal,
+): Promise<RecordedWorkerPlacement> {
+	const workspace = placement.workspace;
+	if (workspace === undefined) return { ...placement, workspace: undefined };
+	const binding = isWorkspace(workspace)
+		? await resolveWorkspace(workspace, signal === undefined ? {} : { signal })
+		: workspace;
+	return { ...placement, workspace: bindingIdentity(binding) };
+}
+
 /** How a root's pool runs with shared placement on this host: its local state, host id, claim window and binding. */
 export function sharedPoolPlacement(
 	shared: PoolDurableJournal,
-	placement: WorkflowWorkerPlacementOptions,
+	placement: RecordedWorkerPlacement,
 ): { readonly shared: SharedPoolCoordination; readonly workspace?: WorkspaceBinding } {
 	return {
 		shared: {
@@ -389,6 +407,7 @@ export async function activatePublicPool(
 	if (!(await processContainmentAvailable()))
 		throw new SharedPoolSetupError("local-pool", [sharedPoolProblems.localContainmentUnavailable()]);
 	if (!(backend instanceof JournalDurableBackend)) throw new Error("Local workers require a journal backend");
+	const recorded = placement === undefined ? undefined : await recordedPlacement(placement, options.signal);
 	// A journal that is a default-prefix SQLite file is shared with the pool as it is; in the journal store that is the
 	// root's own shard, so the pool's processes open only that file. Any other journal, such as a libSQL database or
 	// another storage adapter, stays the root's durable record, and the pool keeps its queue, leases, usage, admission
@@ -431,7 +450,7 @@ export async function activatePublicPool(
 			shared !== undefined || durable === undefined || !options.localWorkers
 				? undefined
 				: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) },
-		...(placement === undefined ? {} : { workers: placement }),
+		...(recorded === undefined ? {} : { workers: recorded }),
 	});
 	const localWorkers = resources.localWorkers;
 	const saved = options.effectiveResources?.coordinator;
@@ -498,7 +517,7 @@ export async function activatePublicPool(
 		journalPath: poolPath,
 		...(journalShard === undefined ? {} : { journalShard }),
 		...(durable === undefined ? {} : { durable }),
-		...(shared === undefined || placement === undefined ? {} : sharedPoolPlacement(shared, placement)),
+		...(shared === undefined || recorded === undefined ? {} : sharedPoolPlacement(shared, recorded)),
 		workers: localWorkers.count,
 		definitions,
 		admission: resources.admission ?? {},

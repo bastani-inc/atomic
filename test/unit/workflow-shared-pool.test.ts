@@ -255,7 +255,7 @@ test("claims place bound work: the root's workers skip it, a host takes exactly 
 		const free = poolWorkFixture("free");
 		await f.queue.enqueue(
 			f.lease,
-			{ ...bound.work, execution: { workspace: JSON.parse(JSON.stringify(binding)) } },
+			{ ...bound.work, execution: { workspaceBinding: JSON.parse(JSON.stringify(binding)) } },
 			bound.boundary,
 		);
 		await f.queue.enqueue(f.lease, free.work, free.boundary);
@@ -287,7 +287,7 @@ test("claims place bound work: the root's workers skip it, a host takes exactly 
 			generation: target.generation,
 		}))!;
 		assert.deepEqual([chosen.id, chosen.worker], [target.id, "host-b/worker"]);
-		assert.deepEqual((chosen.execution as { workspace?: WorkspaceBinding }).workspace, binding);
+		assert.deepEqual((chosen.execution as { workspaceBinding?: WorkspaceBinding }).workspaceBinding, binding);
 	} finally {
 		await f.close();
 	}

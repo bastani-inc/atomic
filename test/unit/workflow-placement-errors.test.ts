@@ -22,7 +22,8 @@ import {
 } from "../../packages/workflows/src/workers/placement-errors.js";
 import { restoreUnavailable, type WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
 
-const binding: WorkspaceBinding = {
+/** A #3109 bound workspace carries more than the binding's identity: its branch, among others. */
+const binding: WorkspaceBinding & { readonly branch: string } = {
 	remotes: ["https://user:s3cret@example.invalid/repo.git", "git@example.invalid:org/repo.git"],
 	head: "abc123",
 	tree: "def456",
@@ -245,22 +246,23 @@ test("guards match structurally, across realms, and stop at a bounded cause dept
 });
 
 test("credentials are stripped from remote URLs, and nothing else about a remote changes (#4310)", () => {
+	const bound: WorkspaceBinding & Record<"root" | "branch" | "worktree", string> = {
+		remotes: [
+			"https://example.invalid",
+			"https://token@example.invalid/r.git",
+			"https://:secret@example.invalid/r.git",
+			"git@example.invalid:org/r.git",
+			"not a url",
+		],
+		head: "h",
+		tree: "t",
+		envHash: "e",
+		root: "/r",
+		branch: "main",
+		worktree: "/w",
+	};
 	assert.deepEqual(
-		workspaceBindingIdentity({
-			remotes: [
-				"https://example.invalid",
-				"https://token@example.invalid/r.git",
-				"https://:secret@example.invalid/r.git",
-				"git@example.invalid:org/r.git",
-				"not a url",
-			],
-			head: "h",
-			tree: "t",
-			envHash: "e",
-			root: "/r",
-			branch: "main",
-			worktree: "/w",
-		}),
+		workspaceBindingIdentity(bound),
 		{
 			remotes: [
 				"https://example.invalid",

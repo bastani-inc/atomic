@@ -320,12 +320,7 @@ export type {
 	WorkflowWorkerHostOptions,
 	WorkflowWorkerHostStats,
 } from "./workers/worker-host-types.js";
-export type {
-	WorkspaceBinding,
-	WorkspaceHookOptions,
-	WorkspacePreference,
-	WorkspaceRestore,
-} from "./workers/workspace-binding.js";
+export type { WorkspaceHookOptions, WorkspacePreference, WorkspaceRestore } from "./workers/workspace-binding.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 export { createRegistry } from "./workflows/registry.js";

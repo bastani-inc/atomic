@@ -1,3 +1,4 @@
+import type { Workspace } from "@bastani/atomic";
 import type { WorkspaceBinding } from "./workspace-binding.js";
 
 export interface WorkflowAdmissionOptions {
@@ -50,11 +51,12 @@ export const DEFAULT_PLACEMENT_CLAIM_WINDOW_MS = 60_000;
 export interface WorkflowWorkerPlacementOptions {
 	readonly placement: "shared";
 	/**
-	 * The repository state the root's pooled children run against. Work with a binding runs only on a host that has its
-	 * tree warm or can restore it, never in the root's directory on another host. Unset: no affinity, and any host runs
-	 * the children in the root's recorded working directory.
+	 * The repository state the root's pooled children run against: a binding, a bound workspace, or a `workspace({ … })`
+	 * value, which the root resolves when it starts and records as its binding. Work with a binding runs only on a host
+	 * that has its tree warm or can restore it, never in the root's directory on another host. Unset: no affinity, and
+	 * any host runs the children in the root's recorded working directory.
 	 */
-	readonly workspace?: WorkspaceBinding;
+	readonly workspace?: WorkspaceBinding | Workspace;
 	/**
 	 * How long, in milliseconds, bound work may wait unclaimed while no live host can restore it, before the child fails
 	 * with `WorkspaceRestoreUnavailableError`. Default {@link DEFAULT_PLACEMENT_CLAIM_WINDOW_MS}.
@@ -62,10 +64,15 @@ export interface WorkflowWorkerPlacementOptions {
 	readonly claimWindowMs?: number;
 }
 
+/** Shared placement as a root records it: its workspace resolved to the binding's identity. */
+export type RecordedWorkerPlacement = Omit<WorkflowWorkerPlacementOptions, "workspace"> & {
+	readonly workspace?: WorkspaceBinding;
+};
+
 export interface WorkflowExecutionResources {
 	readonly localWorkers?: LocalWorkerOptions;
-	/** Shared placement of the root's pooled children (#4310). */
-	readonly workers?: WorkflowWorkerPlacementOptions;
+	/** Shared placement of the root's pooled children, its workspace resolved to a binding (#4310). */
+	readonly workers?: RecordedWorkerPlacement;
 	/**
 	 * Set when the root's journal is in another database than the pool's: the machine whose pool database holds the
 	 * root's work queue and leases, which only that machine's coordinator can see, and the name of that database.

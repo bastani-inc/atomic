@@ -1580,19 +1580,9 @@ Worker recovery replays unfinished child work from committed checkpoints, so ext
 
 #### Shared placement and worker hosts
 
-`RunOpts.workers` is `{ placement: "shared", workspace?: WorkspaceBinding, claimWindowMs?: number }`. With it, the root keeps its pool's work queue, leases, admission state and stage inputs in its own journal, which must be selected through a storage adapter every machine opens, such as libSQL or Turso. Worker hosts started on other machines with `startWorkflowWorkerHost` then run the root's children too, and the root resumes on any machine that opens the journal. It requires `localWorkers`; `admission.limits` count across hosts, and `admission.userLimits` is refused. It is saved with the root: a resume cannot turn it on or off, or change `workspace`, but may change `claimWindowMs`. See [Workers on other hosts](/workflows/operations#workers-on-other-hosts).
+`RunOpts.workers` is `{ placement: "shared", workspace?: WorkspaceBinding | Workspace, claimWindowMs?: number }`. `workspace` takes a [`WorkspaceBinding`](#workspaces), a resolved `BoundWorkspace`, or a `workspace({ … })` value, which the root resolves when it starts; the root records the binding's `remotes`, `head`, `tree` and `envHash`. With it, the root keeps its pool's work queue, leases, admission state and stage inputs in its own journal, which must be selected through a storage adapter every machine opens, such as libSQL or Turso. Worker hosts started on other machines with `startWorkflowWorkerHost` then run the root's children too, and the root resumes on any machine that opens the journal. It requires `localWorkers`; `admission.limits` count across hosts, and `admission.userLimits` is refused. It is saved with the root: a resume cannot turn it on or off, or change `workspace`, but may change `claimWindowMs`. See [Workers on other hosts](/workflows/operations#workers-on-other-hosts).
 
 ```typescript
-interface WorkspaceBinding {
-  remotes: string[];
-  head: string;
-  tree: string;
-  envHash: string;
-  root?: string;
-  branch?: string;
-  worktree?: string;
-}
-
 function startWorkflowWorkerHost(options: {
   journal: { adapter: string; options?: AdapterOptions; secrets?: Record<string, SecretRef>; prefix?: string };
   maxWorkers: number;
@@ -1614,7 +1604,7 @@ interface WorkflowWorkerHost {
 }
 ```
 
-`workspace` binds the root's pooled children to a repository state. `remotes`, `head`, `tree` and `envHash` identify it; `root`, `branch` and `worktree` are informational. A bound child runs only on a host whose `placement.prefer(binding)` returns the path of a worktree with that tree, or on a host with `restore` and working git, at the path `restore` resolves; never elsewhere. If no such host claims it within `claimWindowMs` (default `60000`), it fails with `WorkspaceRestoreUnavailableError`. A child without a binding runs on any host in the root's recorded working directory.
+`workspace` binds the root's pooled children to a repository state, identified by its `remotes`, `head`, `tree` and `envHash`. A bound child runs only on a host whose `placement.prefer(binding)` returns the path of a worktree with that tree, or on a host with `restore` and working git, at the path `restore` resolves; never elsewhere. If no such host claims it within `claimWindowMs` (default `60000`), it fails with `WorkspaceRestoreUnavailableError`. A child without a binding runs on any host in the root's recorded working directory.
 
 `startWorkflowWorkerHost` serves every running root with shared placement on `journal`, with up to `maxWorkers` workers, for the worker definitions it has at the same paths and entry digest. `labels` and `hostId` (default: an id kept in this machine's Atomic state) name it in the pool's host registry. `git` is how it runs git, as `{ path, env }`. By default it runs the git `resolveGit()` from `@bastani/atomic` resolves: a host with `restore` gets a portable git when the machine has none, and a host without `restore` never downloads one. `stop()` stops its workers at once and puts the children they held back in the queue, without waiting for a `prefer` or `restore` call in flight: the host aborts the `signal` it passed them. `drain()` lets running children finish first; a `stop()` during a drain stops at once. `stats()` returns `{ hostId, labels, git, restore, maxWorkers, workers, busy, roots, lastPlacementFailure?, lastDetach?, lastHealth? }`: `git` is `"system"`, `"provisioned"` (a portable git Atomic downloaded) or `"unavailable"`, `restore` says whether the host takes bound work it does not have warm, and `roots` holds each served root's `SharedPoolStats` (`ready`, `leased`, `completed`, `failed`, `pendingStageInputs`, `hosts` with their workers, the roots they serve and their leases, and `leases` with `renewedAgoMs` and `expiresInMs`). `lastPlacementFailure` is the last `prefer` or `restore` that failed, `lastDetach` why the host last stopped serving a root, and `lastHealth` the last health warning of its workers, such as a worker cleanup it could not confirm.
 
