@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 
 const recorded = vi.hoisted(() => ({
@@ -242,7 +242,7 @@ describe("restore operation counts", () => {
 		assert.equal(new Set(expected).size, 2);
 		assert.deepEqual(readdirSync(join(storeDir, "repositories")).sort(), [...expected].sort());
 		const restored = await restoreWorktree(snapshot, { blobs, storeDir });
-		const common = await sandbox.git(restored.path, "rev-parse", "--git-common-dir");
+		const common = resolve(await sandbox.git(restored.path, "rev-parse", "--git-common-dir"));
 		const hostStore = `${createHash("sha256").update(snapshot.remotes.join("\n")).digest("hex").slice(0, 24)}.git`;
 		assert.equal(common, join(storeDir, "repositories", hostStore));
 	});

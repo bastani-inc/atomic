@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { GitSandbox, lfsPointer } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath, lfsPointer } from "../../../test/helpers/worktree-snapshot.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import type { SessionEntry, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -375,7 +375,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		writeFileSync(excludes, "*.log\n");
 		writeFileSync(
 			sandbox.globalConfig,
-			`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\texcludesFile = ${excludes}\n`,
+			`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\texcludesFile = ${gitConfigPath(excludes)}\n`,
 		);
 		const storeDir = sandbox.path("host");
 		const first = await resumeSessionWorktree(manager, { settings, storeDir });

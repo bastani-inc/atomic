@@ -19,7 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath, lfsPointer } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -370,7 +370,7 @@ describe("materializing under the host's configuration", () => {
 		const script = join(sandbox.root, "smudge.sh");
 		writeFileSync(script, `#!/bin/sh\nprintf '%s' "$GIT_LFS_SKIP_SMUDGE" > '${marker}'\ncat\n`);
 		chmodSync(script, 0o755);
-		appendGlobalConfig(`[filter "lfs"]\n\tclean = cat\n\tsmudge = ${script}\n`);
+		appendGlobalConfig(`[filter "lfs"]\n\tclean = cat\n\tsmudge = ${gitConfigPath(script)}\n`);
 		const { clone } = await sandbox.remoteWithClone("repo", {
 			".gitattributes": "*.bin filter=lfs\n",
 			"data.bin": "pointer-ish\n",

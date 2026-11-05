@@ -31,7 +31,7 @@ import {
 	setWorktreeSnapshotGit,
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath } from "../helpers/worktree-snapshot.js";
 
 const REMOTE = "ssh://fake-host.invalid/team/repo.git";
 const MISSING_HEAD = "a".repeat(40);
@@ -113,7 +113,7 @@ describe.skipIf(process.platform === "win32")("a restore fetch over ssh never wa
 	test("a core.sshCommand the user configured is the command that runs, untouched", async () => {
 		const defaultSsh = fakeSsh("default", "default.log");
 		const mine = fakeSsh("mine", "mine.log");
-		appendFileSync(sandbox.globalConfig, `[core]\n\tsshCommand = ${mine.command} -q\n`);
+		appendFileSync(sandbox.globalConfig, `[core]\n\tsshCommand = ${gitConfigPath(mine.command)} -q\n`);
 		useGit({}, [defaultSsh.bin]);
 		const { snapshot, blobs } = await unreachableSnapshot();
 		await restoreFails(snapshot, blobs);

@@ -4,6 +4,7 @@ import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
@@ -11,7 +12,8 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	captureWorktreeSnapshot,
@@ -89,8 +91,19 @@ async function registered(store: string): Promise<string[]> {
 	return listing
 		.split("\n")
 		.filter((line) => line.startsWith("worktree "))
-		.map((line) => line.slice("worktree ".length));
+		.map((line) => resolve(line.slice("worktree ".length)));
 }
+
+/** Whether this file system treats names that differ only in case as one name, as Windows and default macOS volumes do. */
+const CASE_INSENSITIVE_FILE_SYSTEM = (() => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-case-"));
+	try {
+		writeFileSync(join(directory, "a"), "");
+		return existsSync(join(directory, "A"));
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+})();
 
 const warning = (
 	path: string,
@@ -595,21 +608,27 @@ describe("comparing a staging path with the registered worktrees", () => {
 		return { host, staging, lowerCase, record };
 	}
 
-	test("on a case-sensitive platform a worktree under a differently cased name is another worktree", async () => {
-		const { host, lowerCase, record } = await caseVariantFixture();
-		assert.deepEqual(await sweep(host), []);
-		assert.equal(existsSync(record), false);
-		assert.equal(existsSync(lowerCase), true);
-		assert.ok((await registered(host.store)).includes(lowerCase));
-	});
+	test.skipIf(CASE_INSENSITIVE_FILE_SYSTEM)(
+		"on a case-sensitive platform a worktree under a differently cased name is another worktree (needs names that differ only in case)",
+		async () => {
+			const { host, lowerCase, record } = await caseVariantFixture();
+			assert.deepEqual(await sweep(host), []);
+			assert.equal(existsSync(record), false);
+			assert.equal(existsSync(lowerCase), true);
+			assert.ok((await registered(host.store)).includes(lowerCase));
+		},
+	);
 
-	test("on Windows paths that differ only in case are one path, so the staging name still counts as registered", async () => {
-		const { host, lowerCase, record, staging } = await caseVariantFixture();
-		const warnings = await onPlatform("win32", () => sweep(host));
-		assert.deepEqual(warnings, [warning(staging)]);
-		assert.equal(existsSync(record), true);
-		assert.equal(existsSync(lowerCase), true);
-	});
+	test.skipIf(CASE_INSENSITIVE_FILE_SYSTEM)(
+		"on Windows paths that differ only in case are one path, so the staging name still counts as registered (simulated where names that differ only in case can coexist)",
+		async () => {
+			const { host, lowerCase, record, staging } = await caseVariantFixture();
+			const warnings = await onPlatform("win32", () => sweep(host));
+			assert.deepEqual(warnings, [warning(staging)]);
+			assert.equal(existsSync(record), true);
+			assert.equal(existsSync(lowerCase), true);
+		},
+	);
 
 	test("on Windows an interrupted restore is still swept by its exact registered path", async () => {
 		const host = await makeHost();

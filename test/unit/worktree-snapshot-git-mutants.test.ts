@@ -97,7 +97,7 @@ describe("naming a failed Git command", () => {
 			assert.equal(error.operation, "status");
 			assert.equal(error.cwd, file);
 			assert.equal(error.exitCode, null);
-			assert.equal((error.cause as NodeJS.ErrnoException).code, "ENOTDIR");
+			assert.equal((error.cause as NodeJS.ErrnoException).code, process.platform === "win32" ? "ENOENT" : "ENOTDIR");
 			return true;
 		});
 	});

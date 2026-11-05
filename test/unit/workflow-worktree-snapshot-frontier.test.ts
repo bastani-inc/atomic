@@ -13,14 +13,17 @@ import {
 	listWorkflowSnapshotBoundaries,
 	resolveWorkflowSnapshotFrontier,
 } from "../../packages/workflows/src/durable/worktree-snapshots.js";
-import { openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
+import { closeSnapshotJournals, openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(async () => {
+	await closeSnapshotJournals();
+	sandbox.dispose();
+});
 
 test("resume validates the latest boundary once, fails on drift, and can restore it (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
