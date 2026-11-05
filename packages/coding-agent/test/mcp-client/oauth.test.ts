@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { createConnection } from "node:net";
 import { afterEach, describe, it, vi } from "vitest";
 import { McpClient, StreamableHttpTransport } from "../../src/extensions/mcp/client/index.js";
 import {
@@ -691,6 +693,25 @@ describe("OAuthCallbackServer pages", () => {
 			assert.equal((await pending).code, "abc");
 		} finally {
 			await callback.close();
+		}
+	});
+
+	// earendil-works/pi#11311
+	it("closes while the browser keeps an unused connection open", async () => {
+		const callback = await OAuthCallbackServer.listen();
+		const url = new URL(callback.redirectUrl);
+		const spare = createConnection({ host: url.hostname, port: Number(url.port) });
+		try {
+			await once(spare, "connect");
+			const pending = callback.waitForCallback("s1");
+			const response = await fetch(`${callback.redirectUrl}?code=abc&state=s1`);
+			assert.equal(await response.text(), "Authorization complete. You may close this window.");
+			assert.equal((await pending).code, "abc");
+			const closed = callback.close().then(() => "closed");
+			const timeout = new Promise((resolve) => setTimeout(() => resolve("timed out"), 2000));
+			assert.equal(await Promise.race([closed, timeout]), "closed");
+		} finally {
+			spare.destroy();
 		}
 	});
 
