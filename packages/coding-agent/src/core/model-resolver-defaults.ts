@@ -3,8 +3,8 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<string, string> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
-	anthropic: "claude-opus-4-8",
-	"anthropic-api": "claude-opus-4-8",
+	anthropic: "claude-opus-5-5",
+	"anthropic-api": "claude-opus-5-5",
 	openai: "gpt-6.1-sol",
 	"openai-api": "gpt-6.1-sol",
 	azure: "gpt-5.4",

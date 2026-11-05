@@ -27,6 +27,7 @@
 ### Changed
 
 - A node-sqlite writers' queue directory (`<file>-writers`) that exists but cannot be read now fails transactions with `StorageWriterQueueUnusableError`, a `StorageUnavailableError` naming the cause, instead of letting them skip the queue unnoticed. A writer that cannot read the queue when it lets go of the lock still commits and reports a `StorageWriterQueueDegradedError` warning ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
+- The default model for the `anthropic` and `anthropic-api` providers is now Claude Opus 5.5 (`claude-opus-5-5`) instead of Claude Opus 4.8 (upstream b425754a)
 
 ### Fixed
 

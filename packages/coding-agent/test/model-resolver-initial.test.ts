@@ -93,6 +93,10 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.xai).toBe("grok-4.7");
 		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
 	});
+	test("anthropic defaults track current model (pi b425754a)", () => {
+		assert.equal(defaultModelPerProvider.anthropic, "claude-opus-5-5");
+		assert.equal(defaultModelPerProvider["anthropic-api"], "claude-opus-5-5");
+	});
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});
