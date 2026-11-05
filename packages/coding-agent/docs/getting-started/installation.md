@@ -118,7 +118,7 @@ How you install Atomic decides which runtime hosts it: a package-manager install
 
 ### Git
 
-Atomic needs git 2.30.0 or newer for workflow worktrees, git packages, and the footer branch. It uses the first `git` on your `PATH` when that git runs and reports 2.30.0 or newer. Otherwise it downloads a portable git, the build GitHub Desktop ships from [desktop/dugite-native](https://github.com/desktop/dugite-native), the same way it provides `fd` and `rg`:
+Atomic needs git 2.30.0 or newer for workflow worktrees, git packages, and the footer branch. It uses the first `git` in an absolute directory on your `PATH` (never the working directory) when that git runs and reports 2.30.0 or newer. Otherwise it downloads a portable git, the build GitHub Desktop ships from [desktop/dugite-native](https://github.com/desktop/dugite-native), the same way it provides `fd` and `rg`:
 
 - **Where:** `~/.atomic/agent/bin/git/` (under the directory `ATOMIC_CODING_AGENT_DIR` points to, when set).
 - **When:** at interactive startup, before a workflow run starts, and the first time a git package is installed or updated. Run `/tools` to see which git Atomic uses, its version, and why none is available.
