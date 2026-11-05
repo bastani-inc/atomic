@@ -707,6 +707,7 @@ export {
 	isLlamaServerError,
 	isLlamaServerRequestError,
 	isLlamaServerUnreachableError,
+	isRetryableLlamaServerError,
 	LlamaServerError,
 	type LlamaServerErrorCode,
 	LlamaServerRequestError,

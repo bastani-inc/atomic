@@ -183,6 +183,25 @@ describe("redactUrlCredentials", () => {
 		assert.equal(redactUrlCredentials("s3://key:secret@bucket/x"), "s3://bucket/x");
 	});
 
+	it("removes a password that contains a raw @ up to the last @ before the path, query or fragment", () => {
+		assert.equal(redactUrlCredentials("http://user:p@ss@host:8080/x"), "http://host:8080/x");
+		assert.equal(
+			redactUrlCredentials("http://user:p@ss@w@rd@127.0.0.1:1/models?x=a@b"),
+			"http://127.0.0.1:1/models?x=a@b",
+		);
+		assert.equal(redactUrlCredentials("http://u:p@h?q=a@b#c@d"), "http://h?q=a@b#c@d");
+		assert.equal(redactUrlCredentials("http://u:p@h#frag@x"), "http://h#frag@x");
+		assert.equal(redactUrlCredentials("http://@host"), "http://host");
+		assert.equal(
+			redactUrlCredentials("first http://a:1@h1/x then https://b:2@h2/y and see http://host and mail a@b.com"),
+			"first http://h1/x then https://h2/y and see http://host and mail a@b.com",
+		);
+		assert.equal(
+			redactUrlCredentials("http://host/a@b and http://host/@path"),
+			"http://host/a@b and http://host/@path",
+		);
+	});
+
 	it("removes credentials from every serialized cause message", () => {
 		const root = new Error("connect to http://u:p@10.0.0.1:9 refused");
 		const serialized = serializeErrorCause(new TypeError("bad url http://u:p@h:1/x", { cause: root }));

@@ -11,20 +11,33 @@ import {
 /** Stable codes of LlamaServerError. Codes are public API: never rename or reuse one. */
 export type LlamaServerErrorCode = "server-unreachable" | "request-rejected";
 
-const LLAMA_SERVER_ERROR_CODES: ReadonlySet<string> = new Set<LlamaServerErrorCode>([
-	"server-unreachable",
-	"request-rejected",
-]);
+/** Whether a caller may retry a failure with each code; a new code has to decide here. */
+const RETRYABLE_BY_CODE: Readonly<Record<LlamaServerErrorCode, boolean>> = {
+	"server-unreachable": true,
+	"request-rejected": false,
+};
+
+const LLAMA_SERVER_ERROR_CODES: ReadonlySet<string> = new Set(Object.keys(RETRYABLE_BY_CODE));
 const LLAMA_SERVER_ERROR_NAMES: ReadonlySet<string> = new Set([
 	"LlamaServerError",
 	"LlamaServerUnreachableError",
 	"LlamaServerRequestError",
 ]);
+const UNREACHABLE_NAMES: ReadonlySet<string> = new Set(["LlamaServerUnreachableError"]);
+const UNREACHABLE_CODES: ReadonlySet<string> = new Set<LlamaServerErrorCode>(["server-unreachable"]);
+const REQUEST_REJECTED_NAMES: ReadonlySet<string> = new Set(["LlamaServerRequestError"]);
+const REQUEST_REJECTED_CODES: ReadonlySet<string> = new Set<LlamaServerErrorCode>(["request-rejected"]);
 
 const UNREACHABLE_HINT =
 	"Check that llama-server is running, and that the URL, port and http or https scheme in /login llama.cpp or LLAMA_BASE_URL are right.";
 const REQUEST_REJECTED_HINT =
-	"Check the server URL in /login llama.cpp or LLAMA_BASE_URL: use a plain http or https address without a user name or password, and give an API key separately.";
+	"Check the server URL in /login llama.cpp or LLAMA_BASE_URL: use a plain http or https address without a user name or password (give an API key separately), on a port that fetch does not block, such as the default 8080.";
+
+/**
+ * User information of a string known to be one URL, up to the last `@` before its path, query or fragment. Whitespace
+ * may precede the scheme or sit inside the user information, because the string did not parse as a URL.
+ */
+const WHOLE_URL_USER_INFO = /([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/iu;
 
 /** The server URL without user information, so it can go into messages and fields. */
 function displayServerUrl(serverUrl: string): string {
@@ -34,7 +47,7 @@ function displayServerUrl(serverUrl: string): string {
 		url.password = "";
 		return url.toString().replace(/\/$/u, "");
 	} catch {
-		return serverUrl;
+		return serverUrl.replace(WHOLE_URL_USER_INFO, "$1");
 	}
 }
 
@@ -78,8 +91,8 @@ export class LlamaServerError extends Error {
 }
 
 /**
- * `fetch` failed before the server answered: connection refused, wrong port, DNS, or https against a plain-HTTP
- * server. `detail` is the network-level reason from the cause chain, for example `connect ECONNREFUSED ...`.
+ * `fetch` failed before the server answered: connection refused or nothing listening on the port, DNS, or https
+ * against a plain-HTTP server. `detail` is the network-level reason from the cause chain, for example `connect ECONNREFUSED ...`.
  */
 export class LlamaServerUnreachableError extends LlamaServerError {
 	override readonly name = "LlamaServerUnreachableError" as const;
@@ -95,7 +108,7 @@ export class LlamaServerUnreachableError extends LlamaServerError {
 				code: "server-unreachable",
 				serverUrl,
 				hint: UNREACHABLE_HINT,
-				retryable: true,
+				retryable: RETRYABLE_BY_CODE["server-unreachable"],
 				cause: options?.cause,
 			},
 		);
@@ -109,8 +122,8 @@ export class LlamaServerUnreachableError extends LlamaServerError {
 
 /**
  * The runtime refused to send the request, so the server was never contacted: for example Node's fetch rejects a URL
- * that contains a user name or password. Retrying the same request fails the same way. `detail` is the runtime's
- * reason with URL credentials removed.
+ * that contains a user name or password, or a port it blocks such as 6000. Retrying the same request fails the same
+ * way. `detail` is the runtime's reason with URL credentials removed.
  */
 export class LlamaServerRequestError extends LlamaServerError {
 	override readonly name = "LlamaServerRequestError" as const;
@@ -122,7 +135,13 @@ export class LlamaServerRequestError extends LlamaServerError {
 		const safeDetail = redactUrlCredentials(detail);
 		super(
 			`Could not send a request to llama.cpp server at ${displayed}: ${safeDetail} (request-rejected). ${REQUEST_REJECTED_HINT}`,
-			{ code: "request-rejected", serverUrl, hint: REQUEST_REJECTED_HINT, retryable: false, cause: options?.cause },
+			{
+				code: "request-rejected",
+				serverUrl,
+				hint: REQUEST_REJECTED_HINT,
+				retryable: RETRYABLE_BY_CODE["request-rejected"],
+				cause: options?.cause,
+			},
 		);
 		this.detail = safeDetail;
 	}
@@ -141,17 +160,14 @@ export function isLlamaServerError(error: unknown): error is LlamaServerError {
 
 /** Whether `error` is a LlamaServerUnreachableError, also from another realm or a rehydrated relay. */
 export function isLlamaServerUnreachableError(error: unknown): error is LlamaServerUnreachableError {
-	return (
-		error instanceof LlamaServerUnreachableError ||
-		hasErrorIdentity(error, new Set(["LlamaServerUnreachableError"]), LLAMA_SERVER_ERROR_CODES)
-	);
+	return error instanceof LlamaServerUnreachableError || hasErrorIdentity(error, UNREACHABLE_NAMES, UNREACHABLE_CODES);
 }
 
 /** Whether `error` is a LlamaServerRequestError, also from another realm or a rehydrated relay. */
 export function isLlamaServerRequestError(error: unknown): error is LlamaServerRequestError {
 	return (
 		error instanceof LlamaServerRequestError ||
-		hasErrorIdentity(error, new Set(["LlamaServerRequestError"]), LLAMA_SERVER_ERROR_CODES)
+		hasErrorIdentity(error, REQUEST_REJECTED_NAMES, REQUEST_REJECTED_CODES)
 	);
 }
 
@@ -160,15 +176,26 @@ export function findLlamaServerError(error: unknown): LlamaServerError | undefin
 	return findInCauseChain(error, isLlamaServerError);
 }
 
-/** Rebuilds a serialized LlamaServerError; an unknown name becomes the family base with its name and code kept. */
+/**
+ * Whether `error`, or a LlamaServerError in its cause chain, is a failure a caller may retry. Decided by `code`, so a
+ * relayed error without a `retryable` field gets the same answer.
+ */
+export function isRetryableLlamaServerError(error: unknown): boolean {
+	const found = findLlamaServerError(error);
+	return found !== undefined && Object.hasOwn(RETRYABLE_BY_CODE, found.code) && RETRYABLE_BY_CODE[found.code];
+}
+
+/**
+ * Rebuilds a serialized LlamaServerError. The concrete class comes back only when the name and the code agree; any
+ * other pair becomes the family base with the original name and code, and URL credentials are removed from its message.
+ */
 export function rehydrateLlamaServerError(serialized: SerializedTypedError): LlamaServerError {
 	const cause = rehydrateErrorCause(serialized.cause);
 	const serverUrl = typeof serialized.fields.serverUrl === "string" ? serialized.fields.serverUrl : "";
 	const detail = typeof serialized.fields.detail === "string" ? serialized.fields.detail : "";
-	if (serialized.name === "LlamaServerUnreachableError")
-		return new LlamaServerUnreachableError(serverUrl, detail, { cause });
-	if (serialized.name === "LlamaServerRequestError") return new LlamaServerRequestError(serverUrl, detail, { cause });
-	const error = new LlamaServerError(serialized.message, {
+	if (isLlamaServerUnreachableError(serialized)) return new LlamaServerUnreachableError(serverUrl, detail, { cause });
+	if (isLlamaServerRequestError(serialized)) return new LlamaServerRequestError(serverUrl, detail, { cause });
+	const error = new LlamaServerError(redactUrlCredentials(serialized.message), {
 		code: serialized.code as LlamaServerErrorCode,
 		serverUrl,
 		hint: serialized.hint,

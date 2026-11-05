@@ -181,12 +181,12 @@ function hasErrorCode(candidate: unknown): candidate is { code: string } {
 	);
 }
 
-/** A network-level fetch failure carries an error code somewhere in its chain, or is undici's generic `fetch failed`. */
+/**
+ * A network-level fetch failure carries an error code somewhere in its chain on both Node and Bun. A failure without
+ * one, such as Node's fetch refusing a blocked port or a URL with credentials, was never sent.
+ */
 function isNetworkFailure(error: unknown): boolean {
-	return (
-		(error instanceof TypeError && error.message === "fetch failed") ||
-		findInCauseChain(error, hasErrorCode) !== undefined
-	);
+	return findInCauseChain(error, hasErrorCode) !== undefined;
 }
 
 function isAbortOrTimeout(error: unknown): boolean {

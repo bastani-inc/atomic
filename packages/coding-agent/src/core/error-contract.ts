@@ -32,7 +32,8 @@ export const MAX_SERIALIZED_CAUSE_DEPTH = 5;
 /** How many links of a cause chain a guard inspects. */
 export const MAX_GUARDED_CAUSE_DEPTH = 8;
 
-const URL_USER_INFO = /\b([a-z][a-z\d+.-]*:\/\/)[^\s/?#@]+@/giu;
+/** User information of a URL in free text: up to the last `@` before its path, query, fragment or whitespace. */
+const URL_USER_INFO = /\b([a-z][a-z\d+.-]*:\/\/)[^\s/?#]*@/giu;
 
 /** Removes the user name and password from every URL in `text`, so they never reach a message or a relay. */
 export function redactUrlCredentials(text: string): string {
