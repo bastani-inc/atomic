@@ -116,13 +116,12 @@ test("concurrent builds keep the published artifact and return its digest (#4331
 			if (args[0] === "run") return result(`${digest("artifact")}\n`);
 			assert.equal(args[0], "cp");
 			const path = args.at(-1) as string;
-			assert.deepEqual(args, [
-				"cp",
-				"--id",
-				"builder-a",
-				"SANDBOX:/tmp/atomic-distributed-test-build/atomic.tar.zst",
-				path,
-			]);
+			assert.deepEqual(args.slice(0, 3), ["cp", "--id", "builder-a"]);
+			assert.match(
+				args[3] as string,
+				/^SANDBOX:\/tmp\/atomic-distributed-test-build\/[0-9a-f-]{36}\/atomic\.tar\.zst$/,
+			);
+			assert.equal(args.length, 5);
 			assert.equal(options.operation, "copy artifact");
 			assert.equal(options.timeoutMs, 1_800_000);
 			assert.equal(options.signal, input.signal);

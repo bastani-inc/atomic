@@ -204,10 +204,11 @@ export function parseNetemStats(text) {
  * @param {{ name: string, sizeMb: number, user: string }} input
  */
 export function dmVolumeScript({ name, sizeMb, user }) {
+	const image = `/var/lib/adt-disk/${name}.img`;
 	const table = `0 $(sudo blockdev --getsz "$LOOP") linear "$LOOP" 0`;
-	const removal = `if mountpoint -q /mnt/${name}; then sudo umount /mnt/${name} || sudo umount -l /mnt/${name}; fi; if sudo dmsetup info ${name} >/dev/null 2>&1; then sudo dmsetup remove --force ${name}; fi; if [ -f /var/lib/adt-disk/${name}.loop ]; then sudo losetup -d "$(cat /var/lib/adt-disk/${name}.loop)" 2>/dev/null || true; sudo rm -f /var/lib/adt-disk/${name}.loop /var/lib/adt-disk/${name}.img; fi;`;
+	const removal = `if mountpoint -q /mnt/${name}; then sudo umount /mnt/${name} || sudo umount -l /mnt/${name}; fi; if sudo dmsetup info ${name} >/dev/null 2>&1; then sudo dmsetup remove --force ${name}; fi; LOOPS=$(sudo losetup --list --noheadings --output NAME --associated ${image}); if [ -n "$LOOPS" ]; then sudo losetup -d $LOOPS; fi; sudo rm -f /var/lib/adt-disk/${name}.loop ${image}; if [ -e /mnt/${name} ]; then sudo rmdir /mnt/${name}; fi;`;
 	return {
-		create: `${removal} sudo mkdir -p /var/lib/adt-disk /mnt/${name} && sudo truncate -s ${sizeMb}M /var/lib/adt-disk/${name}.img && LOOP=$(sudo losetup -f --show /var/lib/adt-disk/${name}.img) && echo "${table}" | sudo dmsetup create ${name} && sudo mkfs.ext4 -q -F /dev/mapper/${name} && sudo mount -o errors=continue /dev/mapper/${name} /mnt/${name} && sudo chown ${user}:${user} /mnt/${name} && echo "$LOOP" | sudo tee /var/lib/adt-disk/${name}.loop >/dev/null`,
+		create: `${removal} sudo mkdir -p /var/lib/adt-disk /mnt/${name} && sudo truncate -s ${sizeMb}M ${image} && LOOP=$(sudo losetup -f --show ${image}) && echo "$LOOP" | sudo tee /var/lib/adt-disk/${name}.loop >/dev/null && echo "${table}" | sudo dmsetup create ${name} && sudo mkfs.ext4 -q -F /dev/mapper/${name} && sudo mount -o errors=continue /dev/mapper/${name} /mnt/${name} && sudo chown ${user}:${user} /mnt/${name}`,
 		/** @param {"linear" | "delay" | "error"} target @param {number} [delayMs] */
 		swap: (target, delayMs = 0) => {
 			const line =

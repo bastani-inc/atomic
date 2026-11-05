@@ -22,6 +22,61 @@ import { parseSweepArgs, sweep } from "../distributed/sweep.mjs";
 
 const posixOnly = test.skipIf(process.platform === "win32");
 
+type Report = Parameters<typeof renderMarkdown>[0];
+type FaultRecord = NonNullable<Report["suites"][number]["faults"]>[number];
+type SerializedError = NonNullable<Report["error"]>;
+type ReportVm = Report["topology"]["vms"][number];
+
+const report = (overrides: Partial<Report> = {}): Report => ({
+	schemaVersion: 1,
+	runId: "r",
+	startedAt: "2026-11-05T02:30:00.000Z",
+	command: "node test/distributed/run.mjs --suite smoke",
+	replay: {
+		ref: "main",
+		suite: "smoke",
+		chaos: "none",
+		nodes: 3,
+		regions: ["eastus2"],
+		seed: 1,
+		prng: "mulberry32/v1",
+		dbStorage: "premium-ssd",
+		dbRegion: "westus3",
+	},
+	topology: { resourceGroup: "r-rg", expiresAt: "2026-11-05T06:30:00.000Z", vms: [] },
+	suites: [],
+	coverage: [],
+	durations: {},
+	environment: {},
+	...overrides,
+});
+
+const reportVm = (overrides: Pick<ReportVm, "name" | "roles" | "region" | "size"> & Partial<ReportVm>): ReportVm => ({
+	kind: "node",
+	template: "large",
+	hostIndex: 4,
+	secondaryNic: false,
+	dataDisk: false,
+	encryptionAtHost: false,
+	...overrides,
+});
+
+const fault = (overrides: Pick<FaultRecord, "profile" | "target"> & Partial<FaultRecord>): FaultRecord => ({
+	parameters: {},
+	applied: true,
+	effectObserved: false,
+	recovered: false,
+	observed: {},
+	timeline: [],
+	...overrides,
+});
+
+const serialized = (overrides: Pick<SerializedError, "name" | "code" | "message">): SerializedError => ({
+	retryable: false,
+	fields: {},
+	...overrides,
+});
+
 const lifecycle = (overrides: Partial<Parameters<typeof runLifecycle>[0]> & { log?: string[] } = {}) => {
 	const log = overrides.log ?? [];
 	const step = (name: string, fail?: unknown) => ({
@@ -396,7 +451,7 @@ test("run status: cancelled, then failure, then incomplete coverage or teardown"
 test("the report is rendered from one object and never contains a registered secret", () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-report-"));
 	const token = "eyJhbGciOiJFZERTQSJ9.eyJwIjp7fX0.c2lnbmF0dXJlLXZhbHVl";
-	const report = {
+	const fixture = report({
 		runId: "adt2611050230-beef",
 		status: "passed",
 		replay: {
@@ -410,10 +465,13 @@ test("the report is rendered from one object and never contains a registered sec
 			prng: "mulberry32/v1",
 			artifactDigest: "d",
 			dbStorage: "premium-ssd",
+			dbRegion: "westus3",
 		},
-		nvmeSkip: { code: "encryption-at-host-unavailable" },
+		nvmeSkip: { code: "encryption-at-host-unavailable", detail: "EncryptionAtHost is not registered" },
 		topology: {
-			vms: [{ name: "vm|1", kind: "node", roles: ["large"], region: "eastus2", size: "s", privateIp: "10.60.0.20" }],
+			resourceGroup: "adt2611050230-beef-rg",
+			expiresAt: "2026-11-05T06:30:00.000Z",
+			vms: [reportVm({ name: "vm|1", roles: ["large"], region: "eastus2", size: "s", privateIp: "10.60.0.20" })],
 		},
 		security: {
 			passed: true,
@@ -429,22 +487,30 @@ test("the report is rendered from one object and never contains a registered sec
 				status: "passed",
 				invariants: [{ name: "journal-integrity", passed: true, expected: ["ok"], actual: ["ok"] }],
 				faults: [
-					{
+					fault({
 						profile: "partition",
 						target: "n1",
 						effectObserved: true,
 						recovered: true,
 						observed: { secret: "my-shared-secret-value" },
 						timeline: [{ at: 5, event: "applied" }],
-					},
+					}),
 				],
-				metrics: { m: 1 },
+				metrics: {
+					sharedJournal: { entries: 1, epochs: [1], atLeastOnceReplays: 0, writers: 1 },
+					writerErrors: [],
+					appendLatencyMs: { count: 0, median: null, p10: null, p90: null },
+				},
 			},
 			{
 				name: "compaction",
 				issue: "#4330",
 				status: "skipped",
-				reason: { code: "feature-unavailable", message: "m" },
+				reason: serialized({
+					name: "DistributedFeatureUnavailableError",
+					code: "feature-unavailable",
+					message: "m",
+				}),
 			},
 		],
 		coverage: [
@@ -453,15 +519,17 @@ test("the report is rendered from one object and never contains a registered sec
 		],
 		teardown: {
 			ok: true,
+			steps: [],
 			queries: [
-				{ command: "az resource list", ok: true, result: [] },
-				{ command: "az group list", ok: false, result: [] },
+				{ label: "resources", command: "az resource list", ok: true, result: [] },
+				{ label: "groups", command: "az group list", ok: false, result: [] },
 			],
+			remaining: [],
 		},
-		error: { name: "DistributedProvisionError", code: "provision-failed", message: `boom ${token}` },
+		error: serialized({ name: "DistributedProvisionError", code: "provision-failed", message: `boom ${token}` }),
 		durations: { total: 1 },
-	};
-	const paths = writeReport(dir, report, ["my-shared-secret-value"]);
+	});
+	const paths = writeReport(dir, fixture, ["my-shared-secret-value"]);
 	assert.deepEqual(paths, { json: join(dir, "report.json"), markdown: join(dir, "report.md") });
 	const json = readFileSync(paths.json, "utf8");
 	const markdown = readFileSync(paths.markdown, "utf8");
@@ -489,21 +557,38 @@ test("the report is rendered from one object and never contains a registered sec
 	]) {
 		assert.ok(markdown.includes(fragment), fragment);
 	}
-	const minimal = renderMarkdown({ runId: "r", status: "failed" });
+	const minimal = renderMarkdown(report({ status: "failed" }));
 	assert.ok(minimal.includes("Result: **not run**"));
-	assert.ok(minimal.includes("Database storage: undefined"));
+	assert.ok(minimal.includes("Database storage: premium-ssd\n"));
 	assert.ok(
-		renderMarkdown({
-			runId: "r",
-			status: "failed",
-			security: { passed: false, checks: [] },
-			teardown: { ok: false, queries: [] },
-		}).includes("Result: **incomplete**"),
+		renderMarkdown(
+			report({
+				status: "failed",
+				security: { passed: false, checks: [] },
+				teardown: { ok: false, steps: [], queries: [], remaining: [] },
+			}),
+		).includes("Result: **incomplete**"),
 	);
 	assert.ok(
-		renderMarkdown({ runId: "r", status: "failed", security: { passed: false, checks: [] } }).includes(
+		renderMarkdown(report({ status: "failed", security: { passed: false, checks: [] } })).includes(
 			"Result: **failed**",
 		),
+	);
+	const kept = renderMarkdown(
+		report({
+			status: "passed",
+			teardown: {
+				ok: null,
+				kept: true,
+				expiresAt: "2026-11-05T06:30:00.000Z",
+				reuse: "node test/distributed/run.mjs --reuse r",
+				sweep: "node test/distributed/sweep.mjs --run-id r --force",
+			},
+		}),
+	);
+	assert.ok(
+		kept.includes("## Teardown\n\nResult: **incomplete**\n\n\n## Phase durations"),
+		"a kept run lists no queries",
 	);
 });
 
@@ -565,7 +650,7 @@ test("tokens are EdDSA JWTs sqld accepts and scoped to the run's namespaces", as
 
 posixOnly("reports, manifests and run secrets are owner-only files (#4331)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "adt-modes-"));
-	const report = writeReport(root, { runId: "r", status: "passed" }, []);
+	const written = writeReport(root, report({ status: "passed" }), []);
 	const manifest = new Manifest(root, {
 		runId: "r",
 		resourceGroup: "g",
@@ -587,8 +672,8 @@ posixOnly("reports, manifests and run secrets are owner-only files (#4331)", asy
 		},
 	);
 	const mode = (path: string) => statSync(path).mode & 0o777;
-	assert.equal(mode(report.json), 0o600);
-	assert.equal(mode(report.markdown), 0o600);
+	assert.equal(mode(written.json), 0o600);
+	assert.equal(mode(written.markdown), 0o600);
 	assert.equal(mode(join(root, "manifest.json")), 0o600);
 	assert.equal(mode(dir), 0o700);
 	for (const file of ["token", "foreign-token", "jwt.key", "jwt.pub", "ca.key", "decoy-ca.key", "db.key"])
@@ -1003,7 +1088,7 @@ test("run and suite status follow any failed suite, coverage gap, invariant or f
 });
 
 test("the Markdown report renders every section exactly", () => {
-	const fixture = {
+	const fixture = report({
 		runId: "adt2611050230-beef",
 		status: "failed",
 		replay: {
@@ -1017,10 +1102,15 @@ test("the Markdown report renders every section exactly", () => {
 			prng: "mulberry32/v1",
 			artifactDigest: "d",
 			dbStorage: "premium-ssd",
+			dbRegion: "westus3",
 		},
-		paths: { json: "/out/report.json" },
-		error: { name: "DistributedProvisionError", code: "provision-failed", message: "boom" },
-		topology: { vms: [{ name: "n1", kind: "node", roles: ["large"], region: "eastus2", size: "s" }] },
+		paths: { json: "/out/report.json", markdown: "/out/report.md" },
+		error: serialized({ name: "DistributedProvisionError", code: "provision-failed", message: "boom" }),
+		topology: {
+			resourceGroup: "adt2611050230-beef-rg",
+			expiresAt: "2026-11-05T06:30:00.000Z",
+			vms: [reportVm({ name: "n1", roles: ["large"], region: "eastus2", size: "s" })],
+		},
 		security: { passed: true, checks: [{ name: "zero-public-ips", subject: "n1", passed: true, observed: [] }] },
 		suites: [
 			{
@@ -1029,30 +1119,33 @@ test("the Markdown report renders every section exactly", () => {
 				status: "failed",
 				invariants: [{ name: "journal-integrity", passed: false, expected: ["ok"], actual: ["bad"] }],
 				faults: [
-					{
+					fault({
 						profile: "partition",
 						target: "n1",
 						effectObserved: true,
 						recovered: false,
 						observed: { drops: 3 },
 						timeline: [{ at: 5, event: "applied" }],
-					},
-					{
+					}),
+					fault({
 						profile: "sigkill",
 						target: "n2",
 						effectObserved: false,
 						recovered: false,
-						error: { message: "could\nnot" },
-						timeline: [],
-					},
-					{ profile: "loss", target: "n2", effectObserved: false, recovered: false },
+						error: serialized({ name: "DistributedFaultError", code: "fault-failed", message: "could\nnot" }),
+					}),
+					fault({ profile: "loss", target: "n2" }),
 				],
 			},
 			{
 				name: "compaction",
 				issue: "#4330",
 				status: "skipped",
-				reason: { code: "feature-unavailable", message: "missing" },
+				reason: serialized({
+					name: "DistributedFeatureUnavailableError",
+					code: "feature-unavailable",
+					message: "missing",
+				}),
 			},
 		],
 		coverage: [
@@ -1060,9 +1153,14 @@ test("the Markdown report renders every section exactly", () => {
 			{ profile: "sigkill", status: "incomplete" },
 			{ profile: "oom", status: "missing" },
 		],
-		teardown: { ok: true, queries: [{ command: "az group list", ok: true, result: [] }] },
+		teardown: {
+			ok: true,
+			steps: [],
+			queries: [{ label: "groups", command: "az group list", ok: true, result: [] }],
+			remaining: [],
+		},
 		durations: { total: 1 },
-	};
+	});
 
 	assert.deepEqual(renderMarkdown(fixture).split("\n"), [
 		"# Distributed test run adt2611050230-beef",
@@ -1145,19 +1243,22 @@ test("the Markdown report renders every section exactly", () => {
 		"",
 	]);
 	assert.deepEqual(
-		renderMarkdown({ runId: "r", status: "cancelled", nvmeSkip: { code: "encryption-at-host-unavailable" } }).split(
-			"\n",
-		),
+		renderMarkdown(
+			report({
+				status: "cancelled",
+				nvmeSkip: { code: "encryption-at-host-unavailable", detail: "EncryptionAtHost is not registered" },
+			}),
+		).split("\n"),
 		[
 			"# Distributed test run r",
 			"",
 			"Status: **cancelled**",
 			"",
-			"- Ref: `undefined` → `unresolved`",
-			"- Suite: `undefined`, chaos: `undefined`, nodes: undefined, regions: ",
-			"- Seed: undefined (undefined); replay with `node test/distributed/run.mjs --replay report.json`",
+			"- Ref: `main` → `unresolved`",
+			'- Suite: `smoke`, chaos: `none`, nodes: 3, regions: ["eastus2"]',
+			"- Seed: 1 (mulberry32/v1); replay with `node test/distributed/run.mjs --replay report.json`",
 			"- Artifact SHA-256: `none`",
-			"- Database storage: undefined (local NVMe skipped: encryption-at-host-unavailable)",
+			"- Database storage: premium-ssd (local NVMe skipped: encryption-at-host-unavailable)",
 			"",
 			"## Topology",
 			"",
@@ -1211,11 +1312,9 @@ test("the Markdown report renders every section exactly", () => {
 		],
 	);
 	const dir = mkdtempSync(join(tmpdir(), "adt-report-modes-"));
-	const paths = writeReport(dir, { runId: "r", status: "passed" }, []);
-	assert.equal(
-		readFileSync(paths.json, "utf8"),
-		`${JSON.stringify({ runId: "r", status: "passed", paths }, null, "\t")}\n`,
-	);
+	const minimal = report({ status: "passed" });
+	const paths = writeReport(dir, minimal, []);
+	assert.equal(readFileSync(paths.json, "utf8"), `${JSON.stringify({ ...minimal, paths }, null, "\t")}\n`);
 });
 
 test("the sweeper sends exact queries, survives empty listings and hands teardown the run's own peerings", async () => {

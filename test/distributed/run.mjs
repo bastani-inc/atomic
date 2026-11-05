@@ -15,13 +15,19 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARTIFACT_REMOTE_DIR, artifactBuildScript } from "./harness/artifact.mjs";
+import {
+	artifactArchivePath,
+	artifactBuildScript,
+	artifactCleanupScript,
+	artifactRemoteDir,
+} from "./harness/artifact.mjs";
 import { AzureRun, checkPrerequisites, requiredTools } from "./harness/azure.mjs";
 import { cacheFile } from "./harness/cache.mjs";
 import { profileCoverage } from "./harness/chaos.mjs";
 import { azJson, runCommand, settleAll } from "./harness/commands.mjs";
 import {
 	buildPlan,
+	CONTROL_ENV,
 	encryptionAtHostSkip,
 	newRunId,
 	parseControlEnv,
@@ -37,6 +43,7 @@ import {
 import {
 	attachCleanupFailure,
 	attachConcurrentFailures,
+	DistributedConfigError,
 	DistributedProvisionError,
 	DistributedTimeoutError,
 	isCancellation,
@@ -240,8 +247,9 @@ export async function buildArtifact(context, { sha, repository, nodeVersion, bui
 	let failure;
 	/** @type {{ path: string, digest: string, cached: boolean } | undefined} */
 	let built;
+	const remoteDir = artifactRemoteDir();
 	try {
-		const script = artifactBuildScript({ sha, repository, nodeVersion, bunVersion: BUN_VERSION });
+		const script = artifactBuildScript({ sha, repository, nodeVersion, bunVersion: BUN_VERSION, remoteDir });
 		const output = await runCommand(context, "crabbox", ["run", "--id", slug, "--", "bash", "-lc", script], {
 			operation: "build ref artifact",
 			timeoutMs: 3_600_000,
@@ -257,7 +265,7 @@ export async function buildArtifact(context, { sha, repository, nodeVersion, bui
 			await runCommand(
 				context,
 				"crabbox",
-				["cp", "--id", slug, `SANDBOX:${ARTIFACT_REMOTE_DIR}/atomic.tar.zst`, temporary],
+				["cp", "--id", slug, `SANDBOX:${artifactArchivePath(remoteDir)}`, temporary],
 				{ operation: "copy artifact", timeoutMs: 1_800_000, signal, cwd: REPO_ROOT },
 			);
 			if ((await sha256File(temporary)) !== remoteDigest)
@@ -271,7 +279,19 @@ export async function buildArtifact(context, { sha, repository, nodeVersion, bui
 	} catch (error) {
 		failure = error;
 	}
-	if (warmed) {
+	if (!warmed) {
+		try {
+			await runCommand(
+				context,
+				"crabbox",
+				["run", "--id", slug, "--", "bash", "-lc", artifactCleanupScript(remoteDir)],
+				{ operation: "remove artifact build directory", timeoutMs: 600_000, cwd: REPO_ROOT },
+			);
+		} catch (cleanupFailure) {
+			if (failure === undefined) failure = cleanupFailure;
+			else attachCleanupFailure(failure, cleanupFailure);
+		}
+	} else {
 		try {
 			await stopBuilder(context, slug);
 			manifest.setBuilder(undefined);
@@ -405,6 +425,41 @@ function saveState(outDir, state) {
 	writeFileSync(join(outDir, "state.json"), `${JSON.stringify(state, null, "\t")}\n`, { mode: 0o600 });
 }
 
+/** @param {unknown} left @param {unknown} right */
+function sameAzureId(left, right) {
+	return typeof left === "string" && typeof right === "string" && left.toLowerCase() === right.toLowerCase();
+}
+
+/**
+ * Confirms with read-only queries that the current az account and control network are the ones a kept run was
+ * created in, so a reused run never checks, changes or tears down resources in another context.
+ * @param {{ az: (args: readonly string[], operation: string) => Promise<unknown>,
+ *   saved: { subscription?: unknown, controlVnetId?: unknown }, control: { resourceGroup: string, vnet: string } }} input
+ */
+export async function verifyReuseContext({ az, saved, control }) {
+	const subscription = await az(["account", "show", "--query", "id"], "reuse: current subscription");
+	if (!sameAzureId(subscription, saved.subscription))
+		throw new DistributedConfigError({
+			source: "cli",
+			field: "--reuse",
+			reason: "invalid-value",
+			expected: `a run kept in the current Azure subscription; the run was created in ${String(saved.subscription)} (az account set --subscription ${String(saved.subscription)})`,
+			actual: String(subscription),
+		});
+	const controlVnetId = await az(
+		["network", "vnet", "show", "--resource-group", control.resourceGroup, "--name", control.vnet, "--query", "id"],
+		"reuse: current control VNet",
+	);
+	if (!sameAzureId(controlVnetId, saved.controlVnetId))
+		throw new DistributedConfigError({
+			source: "env",
+			field: `${CONTROL_ENV.resourceGroup}/${CONTROL_ENV.vnet}`,
+			reason: "invalid-value",
+			expected: `the control VNet the run was peered to, ${String(saved.controlVnetId)}`,
+			actual: String(controlVnetId),
+		});
+}
+
 async function main() {
 	const started = performance.now();
 	/** @type {Record<string, number>} */
@@ -496,7 +551,20 @@ async function main() {
 	const signal = controller.signal;
 	const log = (/** @type {string} */ line) =>
 		process.stdout.write(`[${((performance.now() - started) / 1000).toFixed(0).padStart(5)}s] ${line}\n`);
-	/** @type {Record<string, any>} */
+	if (reused !== undefined) {
+		try {
+			await verifyReuseContext({
+				az: (azArgs, operation) => azJson(context, azArgs, { operation, timeoutMs: 120_000, signal }),
+				saved: reused,
+				control,
+			});
+		} catch (error) {
+			if (isCancellation(error, signal)) return 130;
+			printError("Reuse rejected", error);
+			return error instanceof DistributedConfigError ? 2 : 1;
+		}
+	}
+	/** @type {import("./harness/report.mjs").Report} */
 	const report = {
 		schemaVersion: 1,
 		runId: plan.runId,
@@ -521,6 +589,7 @@ async function main() {
 		suites: [],
 		coverage: [],
 		durations,
+		environment: {},
 	};
 	log(`run ${plan.runId}${reused === undefined ? "" : " (reused)"}: evidence in ${outDir}`);
 	/** @type {Manifest | undefined} */
@@ -817,11 +886,13 @@ async function main() {
 						gatewayPort: topology.database.gatewayPort,
 						replicationPort: topology.database.replicationPort,
 					};
-					report.environment.databaseVolumes = {};
+					/** @type {NonNullable<import("./harness/report.mjs").ReportEnvironment["databaseVolumes"]>} */
+					const databaseVolumes = {};
+					report.environment.databaseVolumes = databaseVolumes;
 					await timed("sqld", async () => {
-						report.environment.databaseVolumes.primary = await setupSqld(primary, { role: "primary", ...common });
+						databaseVolumes.primary = await setupSqld(primary, { role: "primary", ...common });
 						await createNamespaces(primary, topology.database.namespaces);
-						report.environment.databaseVolumes.replica = await setupSqld(replica, { role: "replica", ...common });
+						databaseVolumes.replica = await setupSqld(replica, { role: "replica", ...common });
 					});
 					run.sqldReady = true;
 					saveState(outDir, run);

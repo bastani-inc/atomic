@@ -206,6 +206,8 @@ timing.
 `--keep` leaves the topology up after the run, unless its security gate failed. `--reuse <run-id>` runs the security
 gate and the suites again on a kept topology, which is the fast way to iterate on a scenario. If the kept run used
 `--out <dir>`, pass the same directory with `--reuse <run-id> --out <dir>`. The report includes that reuse command.
+Before it changes or tears down anything, `--reuse` checks that the current `az` subscription and control VNet are the
+ones the run was created with. On a mismatch it exits with code 2 and leaves the kept topology alone.
 
 ## Evidence
 
@@ -247,8 +249,10 @@ node test/distributed/sweep.mjs --run-id <run-id> --force   # delete one run now
 ```
 
 It re-reads each candidate's tags, never deletes a group with a missing or malformed expiry, removes
-control VNet peerings whose run group is gone or expired, and runs the same absence queries. If one straggler deletion
-fails, it continues with the remaining deletions and expired runs, reports each failure, and exits nonzero.
+control VNet peerings whose run group is gone or expired, and runs the same absence queries. It deletes an expired
+resource outside its run's group on its own, and tears that whole run down only when the group is already gone. If
+one straggler deletion fails, it continues with the remaining deletions and expired runs, reports each failure, and
+exits nonzero.
 
 Cost is bounded by the topology's size, `--ttl-hours` (default 6) and the sweeper; there is no spending limit. A
 smoke run uses five VMs (16 vCPUs) for roughly an hour; `--chaos none` or a short profile list makes it cheaper, and

@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
+import { dmVolumeScript, PROFILE_SPECS } from "../distributed/harness/chaos.mjs";
 import { DistributedCommandError } from "../distributed/harness/errors.mjs";
 import { createRandom } from "../distributed/harness/prng.mjs";
 import { runSmoke } from "../distributed/harness/suites.mjs";
@@ -26,7 +27,7 @@ const answer = (stdout = ""): Result => ({ exitCode: 0, stdout, stderr: "", elap
 
 class Fleet {
 	readonly root = mkdtempSync(join(tmpdir(), "adt-fleet-"));
-	readonly scripts: { host: string; script: string }[] = [];
+	readonly scripts: { host: string; script: string; operation: string }[] = [];
 	readonly writers: Writer[] = [];
 	readonly agentCalls: { host: string; command: string; args: readonly string[] }[] = [];
 	readonly active = new Set<string>();
@@ -131,7 +132,7 @@ class FakeHost {
 	async run(script: string, options: { operation: string; allowExitCodes?: number[] }): Promise<Result> {
 		const fleet = this.fleet;
 		if (this.signal?.aborted) throw this.signal.reason;
-		fleet.scripts.push({ host: this.name, script });
+		fleet.scripts.push({ host: this.name, script, operation: options.operation });
 		fleet.onScript(this.name, script);
 		if (this.signal?.aborted) throw this.signal.reason;
 		if (script.includes("systemd-run")) {
@@ -252,6 +253,36 @@ posixOnly("a NIC-only run stops the writer holding the lease before the node wri
 		assert.equal(nic.recovered, true);
 		assert.equal(nic.effectObserved, true);
 		assert.equal(nic.error, undefined);
+		assert.deepEqual(result.profileSpecs, { "nic-detach": PROFILE_SPECS["nic-detach"] });
+	});
+});
+
+posixOnly("smoke metrics count writer errors by name and summarize timed appends", async () => {
+	await withFleet(async (fleet) => {
+		fleet.onAgent = (command) => {
+			if (command !== "integrity") return;
+			const acks = fleet.local(fleet.writers[0]?.acks ?? "");
+			appendFileSync(
+				acks,
+				[
+					'{"event":"error","at":1,"error":{"name":"StorageUnavailableError"}}',
+					'{"event":"error","at":2}',
+					'{"event":"error","at":3,"error":{"name":"StorageUnavailableError"}}',
+					'{"event":"ack","index":300,"key":"timed-0","ms":12,"at":30}',
+					'{"event":"ack","index":301,"key":"timed-1","ms":4,"at":10}',
+					'{"event":"ack","index":302,"key":"timed-2","ms":8,"at":20}',
+				]
+					.map((line) => `${line}\n`)
+					.join(""),
+			);
+		};
+		const result = await smoke(fleet, []);
+		assert.deepEqual(result.metrics.writerErrors, [
+			{ name: "StorageUnavailableError", count: 2 },
+			{ name: "unknown", count: 1 },
+		]);
+		assert.deepEqual(result.metrics.appendLatencyMs, { count: 3, median: 8, p10: 4, p90: 12 });
+		assert.deepEqual(result.profileSpecs, {});
 	});
 });
 
@@ -491,3 +522,43 @@ posixOnly(
 		});
 	},
 );
+
+const diskFullVolume = dmVolumeScript({ name: "adt-disk-full", sizeMb: 64, user: "adt" });
+const isVolumeCreate = (script: string) => script === diskFullVolume.create;
+const isVolumeRemove = (script: string) => script === diskFullVolume.remove;
+
+posixOnly("a disk volume whose setup failed partway is still removed from its node", async () => {
+	await withFleet(async (fleet) => {
+		fleet.onScript = (_host, script) => {
+			if (isVolumeCreate(script))
+				throw new Error("mkfs.ext4 failed after the loop device and mapper target existed");
+		};
+		const result = await smoke(fleet, ["disk-full"]);
+		const disk = faultOf(result, "disk-full");
+		assert.equal(disk.error?.code, "fault-failed");
+		assert.equal(Reflect.get(disk.error?.fields ?? {}, "stage"), "apply");
+		const created = fleet.scripts.findIndex(({ script }) => isVolumeCreate(script));
+		const removed = fleet.scripts.findIndex(({ script }) => isVolumeRemove(script));
+		assert.ok(created >= 0, "setup was attempted");
+		assert.ok(removed > created, "cleanup removed whatever setup had already created");
+		assert.equal(fleet.scripts[removed]?.host, fleet.scripts[created]?.host);
+		assert.equal(fleet.scripts[removed]?.operation, "remove adt-disk-full");
+	});
+});
+
+posixOnly("cancelling the run during disk volume setup still removes the volume before cancelling", async () => {
+	await withFleet(async (fleet) => {
+		const controller = new AbortController();
+		const reason = new DOMException("cancelled by SIGINT", "AbortError");
+		fleet.onScript = (_host, script) => {
+			if (isVolumeCreate(script)) controller.abort(reason);
+		};
+		await assert.rejects(smoke(fleet, ["disk-full"], { signal: controller.signal }), (error) => error === reason);
+		const created = fleet.scripts.findIndex(({ script }) => isVolumeCreate(script));
+		const removed = fleet.scripts.findIndex(({ script }) => isVolumeRemove(script));
+		assert.ok(created >= 0, "setup was attempted");
+		assert.ok(removed > created, "cleanup removed the partial volume after the run was cancelled");
+		assert.equal(fleet.scripts[removed]?.host, fleet.scripts[created]?.host);
+		assert.equal(fleet.scripts[removed]?.operation, "remove adt-disk-full");
+	});
+});

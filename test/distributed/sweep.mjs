@@ -169,11 +169,15 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 			deleteFailures.push({ id: resource.id, runId: resource.runId, error: serializeDistributedError(error) });
 		}
 	}
+	const observedGroups = new Set(
+		[...existingGroups, ...groups.map((group) => group.name)].map((name) => name.toLowerCase()),
+	);
+	const groupIsGone = (/** @type {string} */ id) => !observedGroups.has(`${id}-rg`.toLowerCase());
 	const runIds = [
 		...new Set([
 			...plan.groups.map((group) => group.runId),
 			...plan.controlPeerings.map((peering) => peering.runId),
-			...plan.resources.map((resource) => resource.runId),
+			...plan.resources.map((resource) => resource.runId).filter(groupIsGone),
 		]),
 	];
 	for (const id of runIds) {

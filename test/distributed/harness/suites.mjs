@@ -162,6 +162,8 @@ export function selectedSuites(selection) {
  * @typedef {{ profile: string, target: string, parameters: Record<string, unknown>, applied: boolean, effectObserved: boolean,
  *   recovered: boolean, observed: Record<string, unknown>, timeline: { at: number, event: string }[], skipped?: { code: string, detail: string },
  *   error?: import("./errors.mjs").SerializedError }} FaultRecord
+ * @typedef {{ sharedJournal: { entries: number, epochs: number[], atLeastOnceReplays: number, writers: number },
+ *   writerErrors: { name: string, count: number }[], appendLatencyMs: ReturnType<typeof latencyStats> }} SmokeMetrics
  * @typedef {{ runId: string, attempt: string, nodes: NodeHost[], primary: Host, replica: Host,
  *   azure: import("./azure.mjs").AzureRun, random: ReturnType<typeof import("./prng.mjs").createRandom>, profiles: readonly string[],
  *   gatewayPort: number, namespace: string, signal?: AbortSignal, log: (line: string) => void, started: number,
@@ -298,8 +300,6 @@ export async function runSmoke(ctx) {
 	const fencing = [];
 	/** @type {Map<string, { host: Host, unit: string, acks: string }>} */
 	const writers = new Map();
-	/** @type {Record<string, unknown>} */
-	const metrics = {};
 	const vmNode = nodes.find((node) => node.roles.includes("vm-faults")) ?? nodes[nodes.length - 1];
 	const others = nodes.filter((node) => node !== vmNode);
 	const first = others.length > 0 ? ctx.random.pick(others) : vmNode;
@@ -960,7 +960,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		});
 	}
 	invariants.push(...disk.invariants);
-	metrics.sharedJournal = {
+	const sharedJournal = {
 		entries: read.entries.length,
 		epochs: [...new Set(read.entries.map((/** @type {{ epoch: number }} */ entry) => entry.epoch))],
 		atLeastOnceReplays: atLeastOnceReplays(allRecords),
@@ -973,14 +973,15 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		const name = record.error?.name ?? "unknown";
 		errorCounts.set(name, (errorCounts.get(name) ?? 0) + 1);
 	}
-	metrics.writerErrors = [...errorCounts].map(([name, count]) => ({ name, count }));
-	metrics.appendLatencyMs = latencyStats(allRecords, { from: 0, to: Number.MAX_SAFE_INTEGER });
-	return {
-		faults,
-		invariants,
-		metrics,
-		profileSpecs: Object.fromEntries(ctx.profiles.map((profile) => [profile, PROFILE_SPECS[profile]])),
+	/** @type {SmokeMetrics} */
+	const metrics = {
+		sharedJournal,
+		writerErrors: [...errorCounts].map(([name, count]) => ({ name, count })),
+		appendLatencyMs: latencyStats(allRecords, { from: 0, to: Number.MAX_SAFE_INTEGER }),
 	};
+	/** @type {Record<string, import("./chaos.mjs").ProfileSpec>} */
+	const profileSpecs = Object.fromEntries(ctx.profiles.map((profile) => [profile, PROFILE_SPECS[profile]]));
+	return { faults, invariants, metrics, profileSpecs };
 }
 
 /**
@@ -1027,14 +1028,12 @@ async function runDiskProfiles(ctx, host, faultRun) {
 		};
 		const stopWriter = () =>
 			host.run(`sudo systemctl stop ${shellQuote(unit)} || true`, { operation: `stop ${unit}`, timeoutMs: 120_000 });
-		let created = false;
 		return exerciseProfile(faultRun, {
 			profile,
 			target: host.name,
 			parameters: { sizeMb },
 			apply: async (fault, mark, injecting) => {
 				await host.run(volume.create, { operation: `create ${name}` });
-				created = true;
 				await startAgentUnit(host, {
 					unit,
 					args: [
@@ -1100,7 +1099,7 @@ async function runDiskProfiles(ctx, host, faultRun) {
 			},
 			cleanup: async () => {
 				await stopWriter();
-				if (created) await host.run(volume.remove, { operation: `remove ${name}` });
+				await host.run(volume.remove, { operation: `remove ${name}` });
 			},
 		});
 	};

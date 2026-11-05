@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
-import { ARTIFACT_REMOTE_DIR, artifactBuildScript } from "../distributed/harness/artifact.mjs";
 import {
 	catalogIsComplete,
 	dmVolumeScript,
@@ -102,20 +105,23 @@ test("netem faults are filtered to the database flow and seeded", () => {
 
 test("device-mapper volumes swap linear, delay and error targets on the run's own device", () => {
 	const volume = dmVolumeScript({ name: "adt-slow-disk", sizeMb: 256, user: "atomic" });
-	const removal =
-		'if mountpoint -q /mnt/adt-slow-disk; then sudo umount /mnt/adt-slow-disk || sudo umount -l /mnt/adt-slow-disk; fi; if sudo dmsetup info adt-slow-disk >/dev/null 2>&1; then sudo dmsetup remove --force adt-slow-disk; fi; if [ -f /var/lib/adt-disk/adt-slow-disk.loop ]; then sudo losetup -d "$(cat /var/lib/adt-disk/adt-slow-disk.loop)" 2>/dev/null || true; sudo rm -f /var/lib/adt-disk/adt-slow-disk.loop /var/lib/adt-disk/adt-slow-disk.img; fi;';
-	assert.equal(volume.remove, removal);
 	assert.ok(
 		volume.create.startsWith(
-			`${removal} sudo mkdir -p /var/lib/adt-disk /mnt/adt-slow-disk && sudo truncate -s 256M /var/lib/adt-disk/adt-slow-disk.img`,
+			`${volume.remove} sudo mkdir -p /var/lib/adt-disk /mnt/adt-slow-disk && sudo truncate -s 256M /var/lib/adt-disk/adt-slow-disk.img`,
 		),
+		"setup first clears anything an earlier attempt left",
 	);
 	assert.ok(
 		volume.create.includes(
+			'LOOP=$(sudo losetup -f --show /var/lib/adt-disk/adt-slow-disk.img) && echo "$LOOP" | sudo tee /var/lib/adt-disk/adt-slow-disk.loop >/dev/null && echo "0 $(sudo blockdev --getsz "$LOOP") linear "$LOOP" 0" | sudo dmsetup create adt-slow-disk',
+		),
+		"the loop device is recorded before anything is built on it",
+	);
+	assert.ok(
+		volume.create.endsWith(
 			"| sudo dmsetup create adt-slow-disk && sudo mkfs.ext4 -q -F /dev/mapper/adt-slow-disk && sudo mount -o errors=continue /dev/mapper/adt-slow-disk /mnt/adt-slow-disk && sudo chown atomic:atomic /mnt/adt-slow-disk",
 		),
 	);
-	assert.ok(volume.create.includes('echo "0 $(sudo blockdev --getsz "$LOOP") linear "$LOOP" 0"'));
 	const prefix =
 		'LOOP=$(cat /var/lib/adt-disk/adt-slow-disk.loop); S=$(sudo blockdev --getsz "$LOOP"); sudo dmsetup suspend --nolockfs --noflush adt-slow-disk && echo "';
 	const suffix =
@@ -129,6 +135,94 @@ test("device-mapper volumes swap linear, delay and error targets on the run's ow
 		'sudo umount /mnt/adt-slow-disk 2>/dev/null || sudo umount -l /mnt/adt-slow-disk || true; E=0; sudo e2fsck -fy /dev/mapper/adt-slow-disk >/dev/null 2>&1 || E=$?; M=false; if sudo mount -o errors=continue /dev/mapper/adt-slow-disk /mnt/adt-slow-disk; then M=true; fi; echo "{\\"fsck\\":$E,\\"mounted\\":$M}"',
 	);
 	assert.ok(volume.probe.includes("dd if=/dev/zero of=/mnt/adt-slow-disk/.probe bs=4k count=8 oflag=direct,dsync"));
+});
+
+type Leftovers = {
+	mounted?: boolean;
+	mapper?: boolean;
+	loops?: string[];
+	failing?: "umount" | "dmsetup remove" | "losetup --list" | "losetup -d";
+};
+
+function removeLeftovers(state: Leftovers) {
+	const root = mkdtempSync(join(tmpdir(), "adt-dm-remove-"));
+	try {
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		const log = join(root, "log");
+		writeFileSync(log, "");
+		const stub = (name: string, body: string) => {
+			writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`);
+			chmodSync(join(bin, name), 0o755);
+		};
+		const record = (name: string) => `echo "${name} $*" >> ${JSON.stringify(log)}`;
+		const outcome = (name: Leftovers["failing"]) => `exit ${state.failing === name ? 1 : 0}`;
+		stub("sudo", 'exec "$@"');
+		stub("mountpoint", `exit ${state.mounted === true ? 0 : 1}`);
+		stub("umount", `${record("umount")}\n${outcome("umount")}`);
+		stub(
+			"dmsetup",
+			`if [ "$1" = info ]; then exit ${state.mapper === true ? 0 : 1}; fi\n${record("dmsetup")}\n${outcome("dmsetup remove")}`,
+		);
+		stub(
+			"losetup",
+			`if [ "$1" = --list ]; then printf '%s\\n' ${(state.loops ?? []).map((loop) => JSON.stringify(loop)).join(" ")}; ${outcome("losetup --list")}; fi\n${record("losetup")}\n${outcome("losetup -d")}`,
+		);
+		stub("rm", record("rm"));
+		stub("rmdir", record("rmdir"));
+		const volume = dmVolumeScript({ name: "adt-slow-disk", sizeMb: 256, user: "atomic" });
+		const result = spawnSync("bash", ["-c", `set -euo pipefail\n${volume.remove}\n`], {
+			encoding: "utf8",
+			env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+		});
+		return { exitCode: result.status, steps: readFileSync(log, "utf8").trim().split("\n").filter(Boolean) };
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+const removedFiles = "rm -f /var/lib/adt-disk/adt-slow-disk.loop /var/lib/adt-disk/adt-slow-disk.img";
+const posixOnly = test.skipIf(process.platform === "win32");
+
+posixOnly("volume removal frees whatever a partial or cancelled setup left, even an unrecorded loop device", () => {
+	assert.deepEqual(removeLeftovers({}), { exitCode: 0, steps: [removedFiles] });
+	assert.deepEqual(removeLeftovers({ loops: ["/dev/loop7"] }), {
+		exitCode: 0,
+		steps: ["losetup -d /dev/loop7", removedFiles],
+	});
+	assert.deepEqual(removeLeftovers({ mapper: true, loops: ["/dev/loop7"] }), {
+		exitCode: 0,
+		steps: ["dmsetup remove --force adt-slow-disk", "losetup -d /dev/loop7", removedFiles],
+	});
+	assert.deepEqual(removeLeftovers({ mounted: true, mapper: true, loops: ["/dev/loop7", "/dev/loop9"] }), {
+		exitCode: 0,
+		steps: [
+			"umount /mnt/adt-slow-disk",
+			"dmsetup remove --force adt-slow-disk",
+			"losetup -d /dev/loop7 /dev/loop9",
+			removedFiles,
+		],
+	});
+});
+
+posixOnly("volume removal fails, and keeps the backing image, when a resource that exists cannot be freed", () => {
+	const all = { mounted: true, mapper: true, loops: ["/dev/loop7"] };
+	assert.deepEqual(removeLeftovers({ ...all, failing: "losetup -d" }), {
+		exitCode: 1,
+		steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk", "losetup -d /dev/loop7"],
+	});
+	assert.deepEqual(removeLeftovers({ ...all, failing: "losetup --list" }), {
+		exitCode: 1,
+		steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk"],
+	});
+	assert.deepEqual(removeLeftovers({ ...all, failing: "dmsetup remove" }), {
+		exitCode: 1,
+		steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk"],
+	});
+	assert.deepEqual(removeLeftovers({ ...all, failing: "umount" }), {
+		exitCode: 1,
+		steps: ["umount /mnt/adt-slow-disk", "umount -l /mnt/adt-slow-disk"],
+	});
 });
 
 test("a profile counts as exercised only with an observed effect and a recovery", () => {
@@ -441,52 +535,4 @@ test("a cancellation still reverts and cleans up, then propagates as the cancell
 		(error) => error === abort,
 	);
 	assert.equal(calls.at(-1), "cleanup after abort");
-});
-
-test("the artifact build fetches exactly the requested commit, builds it and prints the tarball digest last", () => {
-	const sha = "0123456789abcdef0123456789abcdef01234567";
-	assert.equal(ARTIFACT_REMOTE_DIR, "/tmp/atomic-distributed-test-build");
-	const script = artifactBuildScript({
-		sha,
-		repository: "https://github.com/example/atomic.git",
-		nodeVersion: "v24.22.0",
-		bunVersion: "1.4.4",
-	});
-	assert.deepEqual(script.split("\n"), [
-		"set -euo pipefail",
-		"if ! command -v cc >/dev/null || ! command -v zstd >/dev/null; then sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq build-essential pkg-config unzip zstd git >/dev/null; fi",
-		'export PATH="$HOME/.local/node/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"',
-		'if [ "$(node --version 2>/dev/null)" != "v24.22.0" ]; then mkdir -p "$HOME/.local/node" && curl -fsSL https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz | tar -xJ -C "$HOME/.local/node" --strip-components=1; fi',
-		'if [ "$(bun --version 2>/dev/null)" != "1.4.4" ]; then curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4" >/dev/null; fi',
-		"if ! command -v cargo >/dev/null; then curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null; fi",
-		"rm -rf /tmp/atomic-distributed-test-build && mkdir -p /tmp/atomic-distributed-test-build/atomic && cd /tmp/atomic-distributed-test-build/atomic",
-		"git init -q . && git remote add origin https://github.com/example/atomic.git",
-		`git fetch -q --depth 1 origin ${sha} && git checkout -q FETCH_HEAD`,
-		`test "$(git rev-parse HEAD)" = "${sha}"`,
-		"npm ci --ignore-scripts --no-audit --no-fund >/tmp/adt-npm-ci.log 2>&1 || { tail -40 /tmp/adt-npm-ci.log; exit 1; }",
-		"npm run build >/tmp/adt-build.log 2>&1 || { tail -60 /tmp/adt-build.log; exit 1; }",
-		`printf '{"sha":"%s","node":"%s","builtAt":"%s"}\\n' ${sha} "$(node --version)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .atomic-distributed-artifact.json`,
-		"rm -rf .git",
-		"find . -type d -name target -prune -path '*/crates/*' -exec rm -rf {} + 2>/dev/null || true",
-		"rm -rf target packages/natives/target",
-		"cd /tmp/atomic-distributed-test-build && tar -I 'zstd -T0 -6' -cf atomic.tar.zst atomic",
-		"sha256sum /tmp/atomic-distributed-test-build/atomic.tar.zst | cut -d' ' -f1",
-	]);
-	assert.equal(
-		artifactBuildScript({
-			sha,
-			repository: "https://example.com/a b.git; rm -rf ~",
-			nodeVersion: "v24.22.0",
-			bunVersion: "1.4.4",
-		}).split("\n")[7],
-		"git init -q . && git remote add origin 'https://example.com/a b.git; rm -rf ~'",
-	);
-	for (const ref of ["main", sha.toUpperCase(), sha.slice(1), `${sha}0`, `x${sha}`, `${sha}x`, `${sha};rm -rf /`]) {
-		assert.throws(
-			() => artifactBuildScript({ sha: ref, repository: "r", nodeVersion: "v", bunVersion: "b" }),
-			(error) =>
-				error instanceof TypeError && error.message === "artifactBuildScript needs a full lowercase commit SHA",
-			ref,
-		);
-	}
 });
