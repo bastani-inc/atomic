@@ -143,6 +143,24 @@ describe("restoreWorkspace (#3109)", () => {
 		assert.equal(existsSync(binding.worktree), false);
 	});
 
+	test("re-creates a branch that is gone everywhere at the recorded head only when asked (#3109)", async () => {
+		const { repo, binding } = await boundBranch("recreate");
+		git(repo, "worktree", "remove", "--force", binding.worktree);
+		git(repo, "branch", "-D", binding.branch);
+		const refused = await rejection(restoreWorkspace(binding, { recreateMissingBranch: false }));
+		assert.ok(isWorkspaceRestoreError(refused));
+		assert.equal(refused.reason, "branch-missing");
+		assert.equal(await restoreWorkspace(binding, { recreateMissingBranch: true }), realpathSync(binding.worktree));
+		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), binding.head);
+		assert.equal(git(binding.worktree, "symbolic-ref", "--short", "HEAD"), binding.branch);
+		git(repo, "worktree", "remove", "--force", binding.worktree);
+		git(repo, "branch", "-D", binding.branch);
+		const unknownHead = { ...binding, head: "0".repeat(40) };
+		const missingHead = await rejection(restoreWorkspace(unknownHead, { recreateMissingBranch: true }));
+		assert.ok(isWorkspaceRestoreError(missingHead), "a recorded head the repository lacks is not invented");
+		assert.equal(missingHead.reason, "branch-missing");
+	});
+
 	test("reports restore-failed when the local repository is gone, before any git work (#3109)", async () => {
 		const { repo, binding } = await boundBranch("vanished");
 		rmSync(repo, { recursive: true, force: true });

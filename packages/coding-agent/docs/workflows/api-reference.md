@@ -1365,19 +1365,23 @@ type BoundWorkspace = WorktreeBinding & {
 Resuming a run restores each recorded binding instead of resolving the workspace again, so the base commit and `label` stay as recorded. `restoreWorkspace(binding)` does the same for your own records:
 
 ```typescript
-function restoreWorkspace(binding: BoundWorkspace, options?: { signal?: AbortSignal }): Promise<string>;
+function restoreWorkspace(
+	binding: BoundWorkspace,
+	options?: { signal?: AbortSignal; recreateMissingBranch?: boolean },
+): Promise<string>;
 ```
 
 It returns the verified worktree path or rejects with a typed error.
 
 - New commits on the branch and uncommitted changes are the child's own work, not drift.
-- A deleted worktree is added again from its branch. For a remote, the shared store is cloned again when it is gone.
+- A deleted worktree is added again from its branch, or from the remote's copy of the branch. For a remote, the shared store is cloned again when it is gone.
+- When the branch exists nowhere, `recreateMissingBranch: true` creates it again at the recorded `head`. Pass it only when nothing after that head needs keeping. A resumed child does this by itself when its earlier attempt recorded no checkpoint, for example when another machine stopped before the child pushed anything.
 - The resume fails closed when:
   - the path holds another repository (`wrong-repository`);
   - the worktree is on another branch (`wrong-branch`);
   - the branch no longer contains the recorded `head` (`drift`, reason `history-rewritten`);
   - a recorded remote URL is no longer configured (`drift`, reason `remote-changed`);
-  - both the branch and the worktree are gone (`restore-failed`).
+  - both the branch and the worktree are gone, unless the branch is created again as described above (`restore-failed`).
 
 ### Writer lease
 

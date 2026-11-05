@@ -13,6 +13,12 @@ import { classifyRepository } from "./spec.ts";
 
 export interface RestoreWorkspaceOptions {
 	readonly signal?: AbortSignal;
+	/**
+	 * Re-create a branch that is gone both locally and on the remote at the recorded head, instead of failing with
+	 * `branch-missing`. Use it only when no work after the recorded head needs keeping, for example when a resumed
+	 * child recorded no checkpoint before its node stopped. Default false.
+	 */
+	readonly recreateMissingBranch?: boolean;
 }
 
 async function hasCommit(cwd: string, ref: string, signal: AbortSignal | undefined): Promise<boolean> {
@@ -27,7 +33,12 @@ async function hasCommit(cwd: string, ref: string, signal: AbortSignal | undefin
 }
 
 /** Add a deleted worktree back from its branch, or from the remote's copy of the branch. */
-async function readd(binding: BoundWorkspace, root: string, signal: AbortSignal | undefined): Promise<void> {
+async function readd(
+	binding: BoundWorkspace,
+	root: string,
+	signal: AbortSignal | undefined,
+	recreateMissingBranch: boolean,
+): Promise<void> {
 	const run = (args: readonly string[]) => runWorkspaceGit({ cwd: root, args, phase: "worktree-add", signal });
 	if (classifyRepository(binding.repo)?.kind === "remote")
 		await runWorkspaceGit({ cwd: root, args: ["fetch", "origin"], phase: "fetch", signal });
@@ -38,6 +49,10 @@ async function readd(binding: BoundWorkspace, root: string, signal: AbortSignal 
 	}
 	if (await hasCommit(root, `refs/remotes/origin/${binding.branch}`, signal)) {
 		await run(["worktree", "add", "-b", binding.branch, binding.worktree, `origin/${binding.branch}`]);
+		return;
+	}
+	if (recreateMissingBranch && (await hasCommit(root, binding.head, signal))) {
+		await run(["worktree", "add", "-b", binding.branch, binding.worktree, binding.head]);
 		return;
 	}
 	throw new WorkspaceRestoreError({
@@ -90,8 +105,8 @@ async function assertNoDrift(binding: WorktreeBinding, signal: AbortSignal | und
 /**
  * Restore a recorded binding and return its verified worktree path. The repository must still be the recorded one,
  * the worktree must be on the recorded branch, the recorded HEAD must still be in the branch's history and the recorded
- * remotes unchanged; otherwise the call fails closed. A missing worktree is re-added from its branch; new commits and
- * uncommitted changes are expected work, not drift.
+ * remotes unchanged; otherwise the call fails closed. A missing worktree is re-added from its branch, or from the
+ * remote's copy of it; new commits and uncommitted changes are expected work, not drift.
  */
 export async function restoreWorkspace(
 	binding: BoundWorkspace,
@@ -111,7 +126,8 @@ export async function restoreWorkspace(
 			},
 		});
 	const repository = await openWorkspaceRepository(local ? binding.repository : binding.repo, signal);
-	if (!existsSync(binding.worktree)) await readd(binding, repository.root, signal);
+	if (!existsSync(binding.worktree))
+		await readd(binding, repository.root, signal, options.recreateMissingBranch === true);
 	await verifyWorktree(repository, binding.repo, binding.worktree, binding.branch, signal);
 	await assertNoDrift(binding, signal);
 	return realpath(binding.worktree);

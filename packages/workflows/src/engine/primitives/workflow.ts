@@ -286,7 +286,7 @@ async function bindChildWorkspace(
 	let binding: BoundWorkspace;
 	if (recorded === undefined) binding = await resolveWorkspace(workspace, { signal });
 	else {
-		await restoreWorkspace(recorded, { signal });
+		await restoreWorkspace(recorded, { signal, recreateMissingBranch: !invocation.recordedChildProgress() });
 		binding = recorded;
 	}
 	const lease =

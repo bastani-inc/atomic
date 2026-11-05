@@ -47,6 +47,8 @@ export interface DurableChildInvocation {
 	readonly identity: DurableBoundaryRuntimeIdentity;
 	/** Workspace binding an earlier attempt recorded at this boundary; resume restores it instead of resolving again. */
 	readonly recordedWorkspace?: BoundWorkspace;
+	/** Whether an earlier attempt recorded any checkpoint inside the child, so its worktree may hold work to keep. */
+	recordedChildProgress(): boolean;
 	/** Workspace binding of this attempt, recorded with the boundary start. */
 	readonly workspace?: BoundWorkspace;
 	/** Writer lease this attempt holds on the bound worktree, released when the child settles. */
@@ -116,6 +118,8 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		scope: { rootWorkflowId: input.rootWorkflowId, scopePrefix: input.replayKey },
 		identity,
 		recordedWorkspace,
+		recordedChildProgress: () =>
+			hasScopedChildCheckpoints(input.backend.listCheckpoints(input.workflowId), input.replayKey),
 		get workspace() {
 			return workspace;
 		},
@@ -434,6 +438,12 @@ function hasPriorInvocationData(checkpoints: readonly DurableCheckpoint[], repla
 			? checkpoint.replayKey === replayKey || checkpoint.replayKey.startsWith(prefix)
 			: checkpoint.checkpointId.startsWith(prefix),
 	);
+}
+
+/** Checkpoints recorded inside a child carry its scope prefix; the boundary's own start and terminal records do not. */
+function hasScopedChildCheckpoints(checkpoints: readonly DurableCheckpoint[], replayKey: string): boolean {
+	const prefix = `${replayKey}:`;
+	return checkpoints.some((checkpoint) => checkpoint.checkpointId.startsWith(prefix));
 }
 
 function invalid(input: Pick<DurableBoundaryDescriptor, "replayKey">, message: string): DurableNestedTopologyError {

@@ -15,6 +15,7 @@ import {
 	findWorkspaceError,
 	GitUnavailableError,
 	isWorkspaceBindingError,
+	rehydrateWorkspaceError,
 	type Workspace,
 	WorkspaceBindingError,
 	workspace,
@@ -1575,6 +1576,83 @@ describe("unbound children and binding failures (#3109)", () => {
 		assert.equal(replayed.status, "completed", replayed.error);
 		assert.equal(children.length, 2);
 		assert.equal(Object.hasOwn(children[1] as object, "changeSet"), false);
+	});
+
+	test("a resumed child re-creates a vanished branch only when its earlier attempt recorded no checkpoint (#3109)", async () => {
+		const grandchild = workflow({
+			name: "stops-at-once",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async () => {
+				throw new Error("grandchild stopped");
+			},
+		});
+		for (const progressed of [undefined, "tool", "task", "nested"] as const) {
+			const journalPath = join(dirs.root, `vanished-${progressed}.sqlite`);
+			const repo = createRepository(dirs.root, `vanished-${progressed}`);
+			let failFirst = true;
+			const child = workflow({
+				name: "vanishing",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					if (progressed === "tool") await ctx.tool("step", {}, async () => "done once");
+					if (progressed === "task") await ctx.task("step", { prompt: "step" });
+					if (progressed === "nested") await ctx.workflow(grandchild).catch(() => undefined);
+					if (failFirst) throw new Error("node stopped");
+					await ctx.tool("finish", {}, async () => "finished");
+					return {};
+				},
+			});
+			const parent = workflow({
+				name: "vanished-parent",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					await ctx.workflow(child, { workspace: workspace({ repo, branch: "vanished" }) });
+					return {};
+				},
+			});
+			const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+			const failed = await run(
+				parent,
+				{},
+				{ store: createStore(), durableBackend: firstBackend, adapters: recordingAdapter().adapters },
+			);
+			assert.equal(failed.status, "failed");
+			const [start] = boundaryStarts(firstBackend.listCheckpoints(failed.runId));
+			const recorded = start?.topology?.boundary?.workspace as BoundWorkspace;
+			await firstBackend.close();
+			git(repo, "worktree", "remove", "--force", recorded.worktree);
+			git(repo, "branch", "-D", "vanished");
+			failFirst = false;
+			const resumedBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+			const resumed = await run(
+				parent,
+				{},
+				{
+					runId: failed.runId,
+					store: createStore(),
+					durableBackend: resumedBackend,
+					adapters: recordingAdapter().adapters,
+				},
+			);
+			await resumedBackend.close();
+			if (progressed !== undefined) {
+				assert.equal(resumed.status, "failed", `${progressed}: recorded work is never replayed on a new branch`);
+				const restoreError = findWorkspaceError(
+					resumed.workspaceError === undefined ? undefined : rehydrateWorkspaceError(resumed.workspaceError),
+				);
+				assert.equal(restoreError?.name, "WorkspaceRestoreError");
+				assert.equal(restoreError?.reason, "branch-missing");
+			} else {
+				assert.equal(resumed.status, "completed", resumed.error);
+				assert.equal(git(recorded.worktree, "rev-parse", "HEAD"), recorded.head);
+			}
+		}
 	});
 
 	test("replay snapshots copy a child's changeSet only when it has one (#3109)", () => {
