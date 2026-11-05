@@ -168,11 +168,13 @@ InteractiveModeBase.prototype.ensureManagedToolsReady = function (this: Interact
 	const reportStatus = (status: ToolStatus): void => {
 		if (this.managedToolStatusGeneration === statusGeneration) this.showManagedToolStatus(status);
 	};
-	return Promise.all([ensureTool("fd", reportStatus), ensureTool("rg", reportStatus), ensureTool("git", reportStatus)])
-		.then(([fdPath]) => {
-			this.fdPath = fdPath;
-			this.setupAutocompleteProvider();
-		})
+	// Autocomplete needs only fd, so a slow rg or git download never delays it.
+	const fdReady = ensureTool("fd", reportStatus).then((fdPath) => {
+		this.fdPath = fdPath;
+		this.setupAutocompleteProvider();
+	});
+	return Promise.all([fdReady, ensureTool("rg", reportStatus), ensureTool("git", reportStatus)])
+		.then(() => undefined)
 		.catch((error) => {
 			const message = error instanceof Error ? error.message : String(error);
 			reportStatus({ type: "warning", message: `Tool readiness check failed: ${message}` });

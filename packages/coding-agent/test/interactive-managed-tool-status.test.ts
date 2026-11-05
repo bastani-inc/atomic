@@ -218,6 +218,23 @@ test("brings git to readiness with fd and rg and reports its typed reason (#4322
 	expect(mode.fdPath).toBe("/tools/fd");
 });
 
+test("autocomplete is set up as soon as fd is ready, before rg or git settle (#4322)", async () => {
+	const mode = createMode();
+	const slow: Array<(path: string | undefined) => void> = [];
+	toolMocks.ensureTool.mockImplementation((tool) =>
+		tool === "fd" ? Promise.resolve("/tools/fd") : new Promise<string | undefined>((resolve) => slow.push(resolve)),
+	);
+
+	const readiness = prototype.ensureManagedToolsReady.call(mode);
+	await vi.waitFor(() => expect(mode.setupAutocompleteProvider).toHaveBeenCalledTimes(1));
+	expect(mode.fdPath).toBe("/tools/fd");
+	expect(slow).toHaveLength(2);
+
+	for (const resolve of slow) resolve(undefined);
+	await readiness;
+	expect(mode.setupAutocompleteProvider).toHaveBeenCalledTimes(1);
+});
+
 test("a rejected readiness check reports into the transcript instead of console.error", async () => {
 	const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 	const mode = createMode();
