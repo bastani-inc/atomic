@@ -122,6 +122,12 @@ function message(what: string, subject: string, code: string, hint: string): str
 	return `${what}: ${subject} (${code}). ${hint}`;
 }
 
+/** Git's own last words, which name the actual problem, when the failure recorded any. */
+function gitOutput(fields: WorkspaceErrorFields): string {
+	const detail = fields.detail;
+	return typeof detail === "string" && detail !== "" ? `: ${detail}` : "";
+}
+
 function text(fields: WorkspaceErrorFields, key: string): string {
 	return String(fields[key]);
 }
@@ -197,7 +203,7 @@ function describeBinding(
 		case "git-failed":
 			return {
 				what: "Workspace git command failed",
-				subject: `${text(fields, "command")} exited with status ${text(fields, "status")} during ${text(fields, "phase")}`,
+				subject: `${text(fields, "command")} exited with status ${text(fields, "status")} during ${text(fields, "phase")}${gitOutput(fields)}`,
 				hint: "Check the repository, network access and credentials, then retry.",
 			};
 		case "filesystem-failed":

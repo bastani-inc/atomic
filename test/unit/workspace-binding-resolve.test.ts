@@ -13,7 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
 	assertWorkspaceGitAvailable,
@@ -236,7 +236,7 @@ describe("workspace resolution (#3109)", () => {
 		assert.equal(stores.size, 1);
 		const [store] = stores;
 		assert.ok(store?.startsWith(join(dirs.home, "repos")));
-		assert.ok(store?.endsWith("product-service.git"));
+		assert.match(basename(store ?? ""), /^product-service-[0-9a-f]{12}\.git$/);
 		for (const [index, binding] of result.entries()) {
 			assert.equal(binding.branch, branches[index]);
 			assert.equal(git(binding.worktree, "rev-parse", "HEAD"), git(remote.seed, "rev-parse", "HEAD"));
@@ -322,7 +322,9 @@ describe("workspace resolution details (#3109)", () => {
 		const segments = classifyRepository(remote.url)!;
 		assert.ok(segments.kind === "remote");
 		assert.equal(bound.repository, sharedStorePath(segments));
-		assert.equal(bound.worktree, join(dirs.home, "worktrees", "file", ...segments.segments, "main"));
+		const fileKey = `paths-remote-${createHash("sha256").update(segments.segments.join("/")).digest("hex").slice(0, 12)}`;
+		assert.equal(bound.repository, join(dirs.home, "repos", "file", `${fileKey}.git`));
+		assert.equal(bound.worktree, join(dirs.home, "worktrees", "file", fileKey, "main"));
 		assert.equal(bound.branch, "main", "a remote without a branch binds the branch of its default base");
 		assert.equal(bound.base, "origin/main");
 		assert.equal(
@@ -727,7 +729,7 @@ describe("workspace git runner (#3109)", () => {
 			);
 			assert.ok(isWorkspaceBindingError(long));
 			assert.equal(long.code, "git-failed");
-			assert.equal(long.fields.detail, `spawn ${longPath} ENOENT`.slice(0, 400));
+			assert.equal(long.fields.detail, `spawn ${longPath} ENOENT`.slice(-400), "git's last words are kept");
 		} finally {
 			undo();
 		}
@@ -793,13 +795,13 @@ describe("workspace git runner (#3109)", () => {
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 const SHA = /\b[0-9a-f]{40}\b/g;
 
-function transcriptOf(root: string) {
+/** Record git commands with `paths` replaced by their names, longest first, so expectations hold on every platform. */
+function transcriptOf(paths: Readonly<Record<string, string>>) {
+	const named = Object.entries(paths)
+		.sort(([, a], [, b]) => b.length - a.length)
+		.map(([name, path]): [string, string] => [path, `<${name}>`]);
 	return <T>(body: () => Promise<T>) =>
-		gitTranscript(body, [
-			[root, "<root>"],
-			[UUID, "<uuid>"],
-			[SHA, "<sha>"],
-		]).then(({ result, transcript }) => ({
+		gitTranscript(body, [...named, [UUID, "<uuid>"], [SHA, "<sha>"]]).then(({ result, transcript }) => ({
 			result,
 			transcript: transcript.filter((line) => line !== "probe: --version"),
 		}));
@@ -808,10 +810,15 @@ function transcriptOf(root: string) {
 describe("workspace git phases (#3109)", () => {
 	test("runs every git command of a binding in its phase, network ones as clone or fetch (#3109)", async () => {
 		const remote = createRemote(dirs.root, "phases");
-		const record = transcriptOf(dirs.root);
+		const store = sharedStorePath(classifyRepository(remote.url) as never);
+		const worktrees = join(dirs.home, "worktrees", "file", basename(store, ".git"));
+		const record = transcriptOf({
+			url: remote.url,
+			store,
+			"feat/x": join(worktrees, "feat", "x"),
+			main: join(worktrees, "main"),
+		});
 		const fresh = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/x" })));
-		const store = "<root>/atomic-home/repos/file<root>/phases.git";
-		const worktrees = "<root>/atomic-home/worktrees/file<root>/phases";
 		const snapshot = [
 			"probe: rev-parse --show-toplevel --git-common-dir",
 			"probe: symbolic-ref --short HEAD",
@@ -823,7 +830,7 @@ describe("workspace git phases (#3109)", () => {
 			"probe: merge-base <sha> HEAD",
 		];
 		assert.deepEqual(fresh.transcript, [
-			`clone: clone --bare file://<root>/phases.git ${store}.tmp-<uuid>`,
+			"clone: clone --bare <url> <store>.tmp-<uuid>",
 			"clone: config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*",
 			"fetch: fetch origin",
 			"validate: symbolic-ref --short HEAD",
@@ -832,7 +839,7 @@ describe("workspace git phases (#3109)", () => {
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/feat/x^{commit}",
 			"probe: rev-parse --verify refs/remotes/origin/feat/x^{commit}",
-			`worktree-add: worktree add -b feat/x ${worktrees}/feat/x <sha>`,
+			"worktree-add: worktree add -b feat/x <feat/x> <sha>",
 			...snapshot,
 		]);
 		const existing = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "main" })));
@@ -843,7 +850,7 @@ describe("workspace git phases (#3109)", () => {
 			"validate: worktree list --porcelain",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
-			`worktree-add: worktree add ${worktrees}/main main`,
+			"worktree-add: worktree add <main> main",
 			...snapshot,
 		]);
 		const fetched = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/y" })));
@@ -864,12 +871,13 @@ describe("workspace git phases (#3109)", () => {
 		const remote = createRemote(dirs.root, "restore-phases");
 		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
 		rmSync(binding.worktree, { recursive: true, force: true });
-		const { transcript } = await transcriptOf(dirs.root)(() => restoreWorkspace(binding));
+		const record = transcriptOf({ worktree: binding.worktree });
+		const { transcript } = await record(() => restoreWorkspace(binding));
 		assert.deepEqual(transcript, [
 			"fetch: fetch origin",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
-			"worktree-add: worktree add <root>/atomic-home/worktrees/file<root>/restore-phases/main main",
+			"worktree-add: worktree add <worktree> main",
 			"probe: rev-parse --show-toplevel --git-common-dir",
 			"probe: symbolic-ref --short HEAD",
 			"validate: merge-base --is-ancestor <sha> HEAD",
@@ -877,7 +885,7 @@ describe("workspace git phases (#3109)", () => {
 		]);
 		git(binding.worktree, "reset", "-q", "--hard", "HEAD");
 		git(binding.worktree, "commit", "-q", "--amend", "-m", "rewritten");
-		const drift = await transcriptOf(dirs.root)(() => rejection(restoreWorkspace(binding)));
+		const drift = await record(() => rejection(restoreWorkspace(binding)));
 		assert.ok(isWorkspaceBindingError(drift.result));
 		assert.equal(drift.result.code, "drift");
 		assert.deepEqual(drift.transcript.slice(-2), [
@@ -1033,11 +1041,7 @@ describe.skipIf(process.platform === "win32")("workspace resolution under inject
 		const remote = createRemote(dirs.root, "slow-add");
 		await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
 		const store = sharedStorePath(classifyRepository(remote.url) as never);
-		const target = join(
-			dirname(store).replace(join(dirs.home, "repos"), join(dirs.home, "worktrees")),
-			"slow-add",
-			"race",
-		);
+		const target = join(dirs.home, "worktrees", "file", basename(store, ".git"), "race");
 		await withFakeGit("slow-worktree-add", async () => {
 			const first = resolveWorkspace(workspace({ repo: remote.url, branch: "race" }));
 			while (!existsSync(target)) await new Promise((resolve) => setTimeout(resolve, 10));

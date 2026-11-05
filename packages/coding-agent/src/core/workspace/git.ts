@@ -172,7 +172,7 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 							cwd: command.cwd,
 							phase: command.phase,
 							status: null,
-							detail: redactCredentials(error.message).slice(0, MAX_DETAIL_LENGTH),
+							detail: redactCredentials(error.message).slice(-MAX_DETAIL_LENGTH),
 						},
 						cause: error,
 					}),
@@ -198,10 +198,7 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 							cwd: command.cwd,
 							phase: command.phase,
 							status: result.status,
-							detail: redactCredentials(result.stderr.trim() || result.stdout.trim()).slice(
-								0,
-								MAX_DETAIL_LENGTH,
-							),
+							detail: redactCredentials(result.stderr.trim() || result.stdout.trim()).slice(-MAX_DETAIL_LENGTH),
 						},
 					}),
 				);

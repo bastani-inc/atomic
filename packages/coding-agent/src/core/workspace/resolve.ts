@@ -92,16 +92,29 @@ function safeSegment(segment: string): string {
 }
 
 /** Shared object store for a remote: one bare clone per repository per host. */
-export function sharedStorePath(remote: Extract<WorkspaceRepository, { kind: "remote" }>): string {
+function shortDigest(text: string): string {
+	return createHash("sha256").update(text).digest("hex").slice(0, 12);
+}
+
+/**
+ * Where a remote lives under the Atomic home: `<host>/<path segments>`. A `file://` remote is named by its last
+ * segment and a digest of its path instead, so a deeply nested source does not nest the store and its worktrees.
+ */
+function remoteKey(remote: Extract<WorkspaceRepository, { kind: "remote" }>): string[] {
 	const segments = remote.segments.map(safeSegment);
-	const last = segments.pop()!;
-	return join(atomicHome(), "repos", safeSegment(remote.host), ...segments, `${last}.git`);
+	if (remote.host !== "file") return [safeSegment(remote.host), ...segments];
+	return ["file", `${segments.at(-1)}-${shortDigest(remote.segments.join("/"))}`];
+}
+
+export function sharedStorePath(remote: Extract<WorkspaceRepository, { kind: "remote" }>): string {
+	const key = remoteKey(remote);
+	const last = key.pop()!;
+	return join(atomicHome(), "repos", ...key, `${last}.git`);
 }
 
 function repositoryKey(spec: WorkspaceRepository, root: string): string[] {
-	if (spec.kind === "remote") return [safeSegment(spec.host), ...spec.segments.map(safeSegment)];
-	const digest = createHash("sha256").update(root).digest("hex").slice(0, 12);
-	return ["local", `${safeSegment(basename(root))}-${digest}`];
+	if (spec.kind === "remote") return remoteKey(spec);
+	return ["local", `${safeSegment(basename(root))}-${shortDigest(root)}`];
 }
 
 /** Run a filesystem step; a failure with an errno code becomes a typed `filesystem-failed` binding error. */

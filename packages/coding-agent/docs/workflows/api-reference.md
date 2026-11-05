@@ -1325,9 +1325,9 @@ Validates the options and returns a frozen value; nothing touches git or the fil
 Binding resolves the workspace, at most once per workspace value; later bindings re-verify its worktree.
 
 - **Local repository:** `repo` must be the root of a git repository. A subdirectory fails with `invalid-repository`.
-- **Remote repository:** cloned once per host into a shared object store at `<atomic home>/repos/<host>/<owner>/<repo>.git`, and every worktree is added from that store. Later bindings of new branches fetch the store once instead of cloning again.
+- **Remote repository:** cloned once per host into a shared object store at `<atomic home>/repos/<host>/<owner>/<repo>.git` (`<atomic home>/repos/file/<repo>-<hash>.git` for a `file://` remote), and every worktree is added from that store. Later bindings of new branches fetch the store once instead of cloning again.
 - **Branch:** an existing branch is checked out. A missing branch starts from the remote branch of the same name when one exists, otherwise from `base`. A `base` that does not resolve fails with `unknown-base` before anything is created.
-- **`worktree: "auto"`:** reuses the worktree already on the branch, wherever it is, or adds one at `<atomic home>/worktrees/<host>/<owner>/<repo>/<branch>` (`<atomic home>/worktrees/local/<name>-<hash>/<branch>` for a local repository). Binding a local repository without a branch binds its own checkout.
+- **`worktree: "auto"`:** reuses the worktree already on the branch, wherever it is, or adds one at `<atomic home>/worktrees/<host>/<owner>/<repo>/<branch>` (`<atomic home>/worktrees/file/<repo>-<hash>/<branch>` for a `file://` remote, `<atomic home>/worktrees/local/<name>-<hash>/<branch>` for a local repository). Binding a local repository without a branch binds its own checkout.
 - **Explicit worktree:** an existing path must be the root of a worktree of the same repository, compared by its canonical git common directory after resolving symbolic links, and must be on the branch. Worktrees outside the repository root are allowed. A missing path is added from the branch.
 - **Dirty checkouts:** uncommitted and untracked files are accepted as they are and recorded in the binding's `tree`.
 
@@ -1431,7 +1431,7 @@ Every workspace error extends `WorkspaceError` and has a stable `code`, an optio
 | `WorkspaceBindingError` | `unknown-base` | `base` does not resolve to a commit | `repo`, `base` | Pass an existing base |
 | `WorkspaceBindingError` | `cwd-outside-worktree` | A session or stage `cwd` resolves outside the worktree | `worktree`, `cwd` | Use a cwd inside the worktree |
 | `WorkspaceBindingError` | `git-unavailable` | Git could not be started; `cause` is a `GitUnavailableError` | `gitPath`, `installCommand` | Install git with the command in `hint` |
-| `WorkspaceBindingError` | `git-failed` | A git command exited with an error; retryable during `clone`, `fetch` and `push` | `command`, `cwd`, `phase`, `status`, `detail` | Check access to the repository and retry |
+| `WorkspaceBindingError` | `git-failed` | A git command exited with an error; the message ends with git's own last output (`detail`, at most 400 characters). Retryable during `clone`, `fetch` and `push` | `command`, `cwd`, `phase`, `status`, `detail` | Check access to the repository and retry |
 | `WorkspaceBindingError` | `filesystem-failed` | Creating the shared store's directory, or moving a finished clone into place, failed; retryable for `ENOSPC`, `EDQUOT`, `EAGAIN`, `EBUSY`, `EMFILE` and `ENFILE` | `operation`, `path`, `errno` | Free disk space, remove what is in the way, or make the path writable, then retry |
 | `WorkspaceBindingError` | `drift` | On resume, the branch lost the recorded head or a recorded remote URL is gone (`reason` `history-rewritten`, `remote-changed`) | `repo`, `worktree`, `branch`, `expected`, `actual` | Restore the repository state, or start a new run |
 | `WorkspaceBindingError` | `writer-conflict` | Another writer holds the worktree's lease; retryable | `worktree`, `lockFile`, `holder`, `holderPid`, `holderHost` | Wait for the writer, or bind read-only |

@@ -617,6 +617,19 @@ describe("workspace error messages (#3109)", () => {
 			assert.equal(error.message, rendered);
 			assert.ok(rendered.endsWith(error.hint));
 		}
+		assert.equal(
+			new WorkspaceBindingError({
+				code: "git-failed",
+				fields: {
+					command: "git clone x",
+					status: 128,
+					phase: "clone",
+					detail: "fatal: repository 'x' does not exist",
+				},
+			}).message,
+			"Workspace git command failed: git clone x exited with status 128 during clone: fatal: repository 'x' does not exist (git-failed). Check the repository, network access and credentials, then retry.",
+			"git's own output names the problem",
+		);
 		const restoreFields = { repo: "/r", branch: "b", worktree: "/w", repository: "/r" };
 		assert.equal(
 			new WorkspaceRestoreError({ reason: "repository-missing", fields: restoreFields }).message,
