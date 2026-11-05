@@ -73,6 +73,8 @@ export interface RunOpts
 	routeConsoleToLog?: boolean;
 	/** Invocation working directory exposed to workflow definitions as ctx.cwd. */
 	cwd?: string;
+	/** Resolved workspace binding of a child run: its stages inherit it and it replaces input worktree setup. */
+	workspace?: import("@bastani/atomic").BoundWorkspace;
 	/** HIL adapter injected by the pi runtime or test harness. */
 	ui?: WorkflowUIAdapter;
 	/** Runtime execution mode. Controls child session policy metadata. */
@@ -194,6 +196,8 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	 * classifies a failed child from it rather than from the child's error text (#4031).
 	 */
 	readonly failure?: RunFailureClassification;
+	/** The workspace error behind a failure, serialized so it crosses worker processes and rehydrates typed. */
+	readonly workspaceError?: import("@bastani/atomic").SerializedWorkspaceError;
 	readonly stages: StageSnapshot[];
 	readonly toolNodes: ToolNodeSnapshot[];
 }

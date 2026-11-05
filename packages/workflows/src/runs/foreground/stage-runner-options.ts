@@ -1,4 +1,4 @@
-import { type CreateAgentSessionOptions, SessionManager } from "@bastani/atomic";
+import { type CreateAgentSessionOptions, resolveWorkspace, SessionManager, workspaceSessionCwd } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
@@ -71,6 +71,12 @@ export async function stripWorkflowOnlyOptions(
 		group: _group,
 		...sessionOptions
 	} = options;
+	if (sessionOptions.workspace !== undefined) {
+		// Resolved once here so the session store, the session and its tools all use the bound worktree.
+		const binding = await resolveWorkspace(sessionOptions.workspace);
+		sessionOptions.workspace = binding;
+		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
+	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
 	if (resumeFromSessionId !== undefined) {
 		const store = await stageSessionStore(options, defaultSessionDir);

@@ -1265,6 +1265,7 @@ export class LocalWorkerPool {
 				snapshots: options.snapshots,
 				worktreeRootMappings: options.worktreeRootMappings,
 				executionMode: options.executionMode,
+				workspace: options.workspace,
 			}),
 		) as WorkflowSerializableObject;
 		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;

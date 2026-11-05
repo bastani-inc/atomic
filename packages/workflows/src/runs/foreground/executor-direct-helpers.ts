@@ -1,5 +1,5 @@
 import { isAbsolute, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, WorkspaceBindingError } from "@bastani/atomic";
 import type { WorkflowActor } from "../../shared/store-types.js";
 import type { StageOptions, WorkflowArtifact, WorkflowTaskOptions, WorkflowTaskStep } from "../../shared/types.js";
 import { workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
@@ -128,11 +128,29 @@ export async function mapParallelSteps<T>(
 	return results;
 }
 
+/**
+ * A workspace selects the stage's worktree, so a worktree option beside it conflicts: `gitWorktreeDir` on a stage or
+ * task, or a task's `worktree: true`.
+ */
+export function assertWorkspaceCompatible(options: (StageOptions & { readonly worktree?: boolean }) | undefined): void {
+	if (options?.workspace === undefined) return;
+	const input =
+		typeof options.gitWorktreeDir === "string" && options.gitWorktreeDir.trim().length > 0
+			? "gitWorktreeDir"
+			: options.worktree === true
+				? "worktree"
+				: undefined;
+	if (input !== undefined) throw new WorkspaceBindingError({ code: "conflicting-worktree-input", fields: { input } });
+}
+
 export function stageOptionsWithInputDefaults<T extends StageOptions>(
 	options: T | undefined,
 	inputDefaults: Partial<StageOptions>,
 ): T | undefined {
-	const defaults = withoutUndefinedProperties(inputDefaults);
+	const allDefaults = withoutUndefinedProperties(inputDefaults);
+	const { gitWorktreeDir: _gitWorktreeDir, baseBranch: _baseBranch, ...withoutWorktree } = allDefaults;
+	// A stage's own workspace replaces the worktree its run derived from inputs.
+	const defaults = options?.workspace === undefined ? allDefaults : withoutWorktree;
 	if (Object.keys(defaults).length === 0) return options;
 	return {
 		...defaults,
@@ -155,6 +173,7 @@ export function stageOptionsWithGitWorktree<T extends StageOptions>(
 	cache?: GitWorktreeSetupCache,
 ): T | undefined {
 	if (options === undefined) return undefined;
+	assertWorkspaceCompatible(options);
 	if (typeof options.gitWorktreeDir !== "string") return options;
 	if (options.gitWorktreeDir.trim().length === 0) {
 		throw new Error(

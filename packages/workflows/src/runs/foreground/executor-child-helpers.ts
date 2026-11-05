@@ -46,6 +46,7 @@ export function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySn
 		...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
 		outputs: cloneWorkflowChildValue(snapshot.outputs),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
+		...(snapshot.changeSet !== undefined ? { changeSet: snapshot.changeSet } : {}),
 	};
 }
 
@@ -75,5 +76,6 @@ export function workflowChildReplaySnapshot(
 		exited: childResult.exited,
 		outputs,
 		...(exitReason !== undefined ? { exitReason } : {}),
+		...(childResult.changeSet !== undefined ? { changeSet: childResult.changeSet } : {}),
 	};
 }

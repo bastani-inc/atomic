@@ -293,6 +293,8 @@ ctx.workflow<
 interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {
   readonly inputs?: TInputs;
   readonly stageName?: string;
+  readonly budget?: WorkflowBudget;
+  readonly workspace?: Workspace;
 }
 type WorkflowRequiredKeys<T extends object> = {
   [K in keyof T]-?: {} extends Pick<T, K> ? never : K;
@@ -317,6 +319,26 @@ const child = await ctx.workflow(sharedResearch, {
 ```
 
 Pass a definition returned by `workflow({...})`. See [Workflow Composition](/workflows/authoring#workflow-composition) for graph flattening, replay, failure, and parent-exit behavior, and [`WorkflowChildResult`](#workflowchildresult) for the discriminated result.
+
+`workspace` binds the child to a repository, branch and worktree from [`workspace({ … })`](#workspaces). The child's `ctx.cwd` is the bound worktree and every stage it starts runs there, so builtin `goal` and `ralph` work in that checkout instead of creating their own worktree. Leave their `git_worktree_dir` input empty: a child input named `git_worktree_dir`, or the input a child declares in `worktreeFromInputs`, set together with `workspace` fails with `WorkspaceBindingError` code `conflicting-worktree-input` before the boundary starts. The binding is recorded at the boundary and restored on resume, and the result carries a [`changeSet`](#workflowchildresult).
+
+```typescript
+import { goal } from "@bastani/atomic/workflows/builtin";
+import { workspace } from "@bastani/atomic/workflows";
+
+const [bff, service] = await Promise.all([
+  ctx.workflow(goal, {
+    stageName: "implement-app-core-bff",
+    workspace: workspace({ repo: "github.com/acme/app-core-bff", branch: "feat/ticket-123" }),
+    inputs: { objective, create_pr: false },
+  }),
+  ctx.workflow(goal, {
+    stageName: "implement-product-service",
+    workspace: workspace({ repo: "/srv/src/product-service", branch: "feat/ticket-123" }),
+    inputs: { objective, create_pr: false },
+  }),
+]);
+```
 
 ### `ctx.stage(name, options?)`
 
@@ -748,6 +770,20 @@ Selects or creates a reusable Git worktree for `ctx.stage`, `ctx.task`, `ctx.cha
 
 For lower-level integrations, [`setupGitWorktree(options)`](#setupgitworktree-options) returns the validated and remapped setup result.
 
+### `workspace`
+
+```typescript
+readonly workspace?: Workspace | BoundWorkspace;
+```
+
+Runs the stage session in the worktree of a [`workspace({ … })`](#workspaces) value, for `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel`. The workspace resolves when the stage session starts. A `cwd` resolves against the worktree and must stay inside it; `..` or a symbolic link that leaves the worktree fails with `cwd-outside-worktree`. A `"read-only"` workspace removes `write`, `edit` and `todo` from the session and refuses them if they are re-enabled. `ctx.task` results carry a `changeSet`. Combining `workspace` with `gitWorktreeDir` or `worktree: true` fails with `conflicting-worktree-input` before the stage starts. A stage's own `workspace` replaces a worktree its workflow derives from `worktreeFromInputs`.
+
+```typescript
+const api = workspace({ repo: "/srv/src/api", branch: "feat/ticket-123" });
+const change = await ctx.task("implement", { workspace: api, prompt });
+const review = await ctx.task("review", { workspace: api.readOnly(), prompt: reviewPrompt });
+```
+
 ### `sessionDir`
 
 ```typescript
@@ -1051,10 +1087,11 @@ interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
   readonly warnings?: readonly string[];
+  readonly changeSet?: WorkspaceChangeSet;
 }
 ```
 
-`ctx.task` returns this type; `ctx.chain` and `ctx.parallel` return arrays of it. `structured` is present when the item used `schema`.
+`ctx.task` returns this type; `ctx.chain` and `ctx.parallel` return arrays of it. `structured` is present when the item used `schema`. `changeSet` is present when the task was bound to a [workspace](#workspaces).
 
 ```typescript
 interface WorkflowModelUsage extends WorkflowSerializableObject {
@@ -1128,6 +1165,7 @@ interface WorkflowCompletedChildResult<
   readonly status: "completed";
   readonly exited: false;
   readonly outputs: TOutputs;
+  readonly changeSet?: WorkspaceChangeSet;
 }
 interface WorkflowExitedChildResult<
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
@@ -1138,10 +1176,11 @@ interface WorkflowExitedChildResult<
   readonly exited: true;
   readonly outputs: Partial<TOutputs>;
   readonly exitReason?: string;
+  readonly changeSet?: WorkspaceChangeSet;
 }
 ```
 
-Normal completion exposes the full declared output contract. A child that used `ctx.exit(...)`, including `status: "completed"` or `status: "failed"`, exposes only a partial contract and optional exit reason; an unintentional failed or internally cancelled child still rejects the parent call.
+Normal completion exposes the full declared output contract. A child launched with `workspace` carries `changeSet`, its committed changes since the binding's base commit. A child that used `ctx.exit(...)`, including `status: "completed"` or `status: "failed"`, exposes only a partial contract and optional exit reason; an unintentional failed or internally cancelled child still rejects the parent call.
 
 ### `WorkflowStageResult`
 
@@ -1221,6 +1260,183 @@ Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` t
 When a child workflow fails, its parent classifies the failure from the child's `failure`, never from workflow or stage names in the error text. An ordinary child failure fails the parent; a child blocked on a rate limit blocks the parent for resume. A child result without `failure` is classified from the child's own error text.
 
 Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. Selections recorded before `candidates` existed omit it. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
+
+## Workspaces
+
+A workspace names the repository, branch and worktree a session, stage or child workflow works in. Import `workspace` from `@bastani/atomic/workflows` (also exported by `@bastani/atomic`) and pass the same value to [`ctx.workflow`](#ctxworkflowdefinition-options), [stage and task options](#workspace), and [`createAgentSession`](/sdk#workspaces).
+
+```typescript
+import { workspace } from "@bastani/atomic/workflows";
+
+const api = workspace({
+  repo: "github.com/acme/product-service", // or an absolute local repository root
+  base: "origin/main",
+  branch: "feat/ticket-123", // created from base when missing
+  worktree: "auto", // or an absolute path
+  sandbox: "workspace-write", // or "read-only" for reviewers
+  label: "ci",
+});
+
+await ctx.workflow(goal, { workspace: api, inputs: { objective, create_pr: false } });
+await ctx.task("review", { workspace: api.readOnly(), prompt });
+```
+
+### `workspace(options)`
+
+```typescript
+function workspace(options: WorkspaceOptions): Workspace;
+
+interface WorkspaceOptions {
+  readonly repo: string;
+  readonly base?: string;
+  readonly branch?: string;
+  readonly worktree?: string; // "auto" or an absolute path
+  readonly sandbox?: "workspace-write" | "read-only";
+  readonly label?: string;
+}
+
+interface Workspace {
+  readonly kind: "workspace";
+  readonly repo: string;
+  readonly base?: string;
+  readonly branch?: string;
+  readonly worktree?: string;
+  readonly sandbox: "workspace-write" | "read-only";
+  readonly label?: string;
+  readOnly(): Workspace;
+}
+```
+
+Validates the options and returns a frozen value; nothing touches git or the filesystem until a session or child binds to it. Values are kept as written. Malformed options throw `WorkspaceConfigError`.
+
+| Option | Accepted values | Default |
+| --- | --- | --- |
+| `repo` | An absolute repository root, or a remote: `https://…`, `ssh://…`, `git://…`, `file://…`, `git@host:owner/repo`, or `host/owner/repo` | required |
+| `base` | Any commit-ish | the local repository's `HEAD`, or the remote's default branch (`origin/main`) |
+| `branch` | A branch name without empty, `.` or `..` segments | the local repository's current branch, or the branch of `base` |
+| `worktree` | `"auto"` or an absolute path | `"auto"` |
+| `sandbox` | `"workspace-write"`, `"read-only"` | `"workspace-write"` |
+| `label` | Any string | none |
+
+`readOnly()` returns the same workspace with `sandbox: "read-only"`, one value per workspace.
+
+### Resolution
+
+Binding resolves the workspace, at most once per workspace value; later bindings re-verify its worktree.
+
+- **Local repository:** `repo` must be the root of a git repository. A subdirectory fails with `invalid-repository`.
+- **Remote repository:** cloned once per host into a shared object store at `<atomic home>/repos/<host>/<owner>/<repo>.git`, and every worktree is added from that store. Later bindings of new branches fetch the store once instead of cloning again.
+- **Branch:** an existing branch is checked out. A missing branch starts from the remote branch of the same name when one exists, otherwise from `base`. A `base` that does not resolve fails with `unknown-base` before anything is created.
+- **`worktree: "auto"`:** reuses the worktree already on the branch, wherever it is, or adds one at `<atomic home>/worktrees/<host>/<owner>/<repo>/<branch>` (`<atomic home>/worktrees/local/<name>-<hash>/<branch>` for a local repository). Binding a local repository without a branch binds its own checkout.
+- **Explicit worktree:** an existing path must be the root of a worktree of the same repository, compared by its canonical git common directory after resolving symbolic links, and must be on the branch. Worktrees outside the repository root are allowed. A missing path is added from the branch.
+- **Dirty checkouts:** uncommitted and untracked files are accepted as they are and recorded in the binding's `tree`.
+
+### `BoundWorkspace`
+
+```typescript
+interface WorkspaceBinding {
+  remotes: string[]; // remote URLs, credentials removed
+  head: string; // HEAD commit at bind time
+  tree: string; // tree id of the working state at bind time, untracked files included
+  envHash: string; // SHA-256 of the lockfiles present (package-lock.json, Cargo.lock, …)
+}
+
+type WorktreeBinding = WorkspaceBinding & {
+  readonly repo: string;
+  readonly branch: string;
+  readonly worktree: string;
+};
+
+type BoundWorkspace = WorktreeBinding & {
+  readonly kind: "bound-workspace";
+  readonly version: 1;
+  readonly repository: string; // local repository root, or the shared store of a remote
+  readonly base: string;
+  readonly baseCommit: string;
+  readonly sandbox: "workspace-write" | "read-only";
+  readonly label?: string;
+};
+```
+
+`WorkspaceBinding` is the portable workspace identity that worktree snapshots also record. The resolved `BoundWorkspace` is recorded in the workflow journal at the child boundary and in the session of every session bound to it. It contains no credentials. `isBoundWorkspace(value)` checks the shape.
+
+### Resume and drift
+
+Resuming a run restores each recorded binding instead of resolving the workspace again, so the base commit and `label` stay as recorded. `restoreWorkspace(binding)` does the same for your own records:
+
+```typescript
+function restoreWorkspace(binding: BoundWorkspace, options?: { signal?: AbortSignal }): Promise<string>;
+```
+
+It returns the verified worktree path or rejects with a typed error.
+
+- New commits on the branch and uncommitted changes are the child's own work, not drift.
+- A deleted worktree is added again from its branch. For a remote, the shared store is cloned again when it is gone.
+- The resume fails closed when:
+  - the path holds another repository (`wrong-repository`);
+  - the worktree is on another branch (`wrong-branch`);
+  - the branch no longer contains the recorded `head` (`drift`, reason `history-rewritten`);
+  - a recorded remote URL is no longer configured (`drift`, reason `remote-changed`);
+  - both the branch and the worktree are gone (`restore-failed`).
+
+### Writer lease
+
+A child workflow bound to a `"workspace-write"` workspace holds the worktree's writer lease until the child settles. A second writer child on the same worktree, in any process, fails with `writer-conflict`. Read-only children take no lease. The lease is a row in a SQLite database in the worktree's git directory. A lease left by a process that exited on the same host is taken over automatically. A lease held by a live process (including a stopped one) or by another host is kept. Timestamps are never consulted, so clock skew cannot expire a lease. Stage sessions and `ctx.task` do not take leases.
+
+### Read-only sandbox
+
+A `"read-only"` session does not offer `write`, `edit` or `todo`, and refuses them with `WorkspaceSandboxError` (`write-denied`) if an extension re-enables them. This is tool-level, not operating-system sandboxing: shell tools such as `bash` still run, and selecting a repository or worktree does not authorize or confine writes. Use a container or VM for untrusted code.
+
+### Change sets and pull requests
+
+```typescript
+type WorkspaceChangeSet = {
+  readonly repo: string;
+  readonly baseCommit: string;
+  readonly branch: string;
+  readonly headCommit: string;
+  readonly diffStat: { readonly files: number; readonly insertions: number; readonly deletions: number };
+};
+
+function workspaceChangeSet(binding: BoundWorkspace, options?: { signal?: AbortSignal }): Promise<WorkspaceChangeSet>;
+function publishPullRequest(
+  changeSet: WorkspaceChangeSet,
+  options?: { draft?: boolean; signal?: AbortSignal },
+): Promise<{ url: string; draft: boolean; created: boolean }>;
+```
+
+A change set covers commits from `baseCommit` to `headCommit`; uncommitted changes are not part of it. `publishPullRequest` checks git, the `origin` remote and `gh auth status` first, then pushes `headCommit` to `branch` on `origin` and opens a pull request with the GitHub CLI, titled from its commits. An open pull request that already exists for the branch is returned with `created: false`. Call it from the parent's publication step, for example inside `ctx.tool(...)`, so it is not repeated on resume.
+
+```typescript
+const published = await ctx.tool("publish-api", { branch: change.changeSet!.branch }, () =>
+  publishPullRequest(change.changeSet!, { draft: true }),
+);
+```
+
+### Workspace errors
+
+Every workspace error extends `WorkspaceError` and has a stable `code`, an optional `reason`, JSON-safe `fields`, a `hint` with the next step, and `retryable`. Branch on `code` or the class, never on the message. Guards (`isWorkspaceError`, `isWorkspaceBindingError`, `isWorkspaceConfigError`, `isWorkspaceRestoreError`, `isWorkspacePublicationError`, `isWorkspaceTimeoutError`, `isWorkspaceSandboxError`, `isGitUnavailableError`) also match errors from other processes by `name` and `code`. `findWorkspaceError(error, guard?)` searches the cause chain (eight links) and `isRetryableWorkspaceError(error)` reports whether a retryable workspace error is in it. A workspace error that fails a child, including a child in a local worker, reaches the parent typed as the cause of its `ctx.workflow` rejection; `serializeWorkspaceError` and `rehydrateWorkspaceError` convert errors to and from a JSON form for your own process boundaries. Cancellation rejects with the signal's reason, never with a workspace error.
+
+| Class | Code | When it happens | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `WorkspaceConfigError` | `invalid-setting` | An option of `workspace()`, or a `workspace` value passed to a session or child, is missing or malformed | `source`, `field`, `expected`, `received` | Fix the named field. Nothing ran |
+| `WorkspaceBindingError` | `invalid-repository` | `repo` is not a repository, or is a subdirectory of one (`reason` `not-a-repository`, `not-a-repository-root`) | `repo`, `actual` | Pass the repository root or a remote URL |
+| `WorkspaceBindingError` | `wrong-repository` | The worktree is not a worktree, not its root, or belongs to another repository (`reason` `not-a-worktree`, `not-a-worktree-root`, `different-repository`) | `repo`, `worktree`, `expected`, `actual` | Pass a worktree of the repository, or `worktree: "auto"` |
+| `WorkspaceBindingError` | `wrong-branch` | The worktree is on another branch or detached (`reason` `different-branch`, `detached-head`) | `repo`, `worktree`, `expected`, `actual` | Check out the branch, or pass the branch it is on |
+| `WorkspaceBindingError` | `conflicting-worktree-input` | `git_worktree_dir`, a declared `worktreeFromInputs` input, `gitWorktreeDir` or `worktree: true` is set beside `workspace` | `input`, `workflow` | Remove that input |
+| `WorkspaceBindingError` | `unknown-base` | `base` does not resolve to a commit | `repo`, `base` | Pass an existing base |
+| `WorkspaceBindingError` | `cwd-outside-worktree` | A session or stage `cwd` resolves outside the worktree | `worktree`, `cwd` | Use a cwd inside the worktree |
+| `WorkspaceBindingError` | `git-unavailable` | Git could not be started; `cause` is a `GitUnavailableError` | `gitPath`, `installCommand` | Install git with the command in `hint` |
+| `WorkspaceBindingError` | `git-failed` | A git command exited with an error; retryable during `clone`, `fetch` and `push` | `command`, `cwd`, `phase`, `status`, `detail` | Check access to the repository and retry |
+| `WorkspaceBindingError` | `drift` | On resume, the branch lost the recorded head or a recorded remote URL is gone (`reason` `history-rewritten`, `remote-changed`) | `repo`, `worktree`, `branch`, `expected`, `actual` | Restore the repository state, or start a new run |
+| `WorkspaceBindingError` | `writer-conflict` | Another writer holds the worktree's lease; retryable | `worktree`, `lockFile`, `holder`, `holderPid`, `holderHost` | Wait for the writer, or bind read-only |
+| `WorkspaceRestoreError` | `restore-failed` | The recorded repository, or both branch and worktree, are gone (`reason` `repository-missing`, `branch-missing`) | `repo`, `branch`, `worktree`, `repository` | Restore the repository or push the branch, then resume |
+| `WorkspacePublicationError` | `publication-failed` | `publishPullRequest` failed (`reason` `no-remote`, `gh-unavailable`, `gh-unauthenticated`, `push-failed`, `gh-failed`); retryable for `push-failed` and `gh-failed` | `repo`, `branch`, `detail` | Follow `hint`: add `origin`, install gh, run `gh auth login`, or check push access |
+| `WorkspaceTimeoutError` | `timeout` | A git step exceeded its limit (10 minutes for clone, fetch and push, 60 seconds otherwise); retryable | `phase`, `timeoutMs`, `elapsedMs`, `command` | Check network access and retry |
+| `WorkspaceSandboxError` | `write-denied` | A read-only session called `write`, `edit` or `todo`; reported to the model as the tool result | `tool`, `worktree`, `sandbox` | Report the change instead of making it |
+| `GitUnavailableError` | `not-installed` (also `unsupported-platform`, `offline`, `checksum-mismatch` once git provisioning reports them) | The cause of a `git-unavailable` binding error | `gitPath`, `platform`, `installCommand` | Install git with the command in `hint` |
+
+A malformed workspace, a conflicting input or a missing git fails before anything is written: no clone, worktree, boundary or session is left behind. An unresolvable base fails before any branch or worktree is created.
 
 ## Programmatic usage
 

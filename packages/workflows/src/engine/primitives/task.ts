@@ -1,4 +1,6 @@
+import { resolveWorkspace, workspaceChangeSet } from "@bastani/atomic";
 import {
+	assertWorkspaceCompatible,
 	cleanupPreparedWorktrees,
 	collectWorktreeDiffs,
 	inputsSelectGitWorktree,
@@ -51,6 +53,9 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		runtime.exit.throwIfWorkflowExitSelected();
+		// The stage spawns at call time, as without a workspace; its session resolves the workspace when it starts.
+		const workspace = (stageOptionsWithInputDefaults(options, runtime.inputRuntimeDefaults) ?? options).workspace;
+		if (workspace !== undefined) assertWorkspaceCompatible({ ...options, workspace });
 		const runTaskOnce = async (
 			taskOptions: WorkflowTaskOptions,
 			prepareLiveOptions?: () => WorkflowTaskOptions,
@@ -118,7 +123,12 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			};
 		};
 
-		if (options.worktree !== true) return runTaskOnce(options);
+		if (options.worktree !== true) {
+			const result = await runTaskOnce(options);
+			if (workspace === undefined) return result;
+			const binding = await resolveWorkspace(workspace, { signal: runtime.signal });
+			return { ...result, changeSet: await workspaceChangeSet(binding, { signal: runtime.signal }) };
+		}
 		let prepared: ReturnType<typeof prepareTaskWorktrees> | undefined;
 		let collected: readonly WorkflowArtifact[] | undefined;
 		const collect = () => {

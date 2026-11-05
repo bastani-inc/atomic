@@ -65,6 +65,12 @@ import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
+import {
+	bindSessionWorkspace,
+	recordSessionWorkspace,
+	WORKSPACE_WRITE_TOOL_NAMES,
+	workspaceSessionCwd,
+} from "./workspace/session.ts";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export { withResourceAdmission } from "./resource-admission-scope.ts";
@@ -231,7 +237,14 @@ async function constructAgentSession(
 	acquisition: { store?: SessionStore; release?: () => Promise<void> },
 ): Promise<CreateAgentSessionResult> {
 	resolveWorktreeSnapshotSettings(options.snapshots, "sdk", "snapshots");
-	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
+	const workspace =
+		options.workspace === undefined
+			? undefined
+			: await bindSessionWorkspace(options.workspace, options.sessionManager, options.resourceAdmissionSignal);
+	const cwd =
+		workspace === undefined
+			? resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd())
+			: workspaceSessionCwd(workspace, options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	validateProcessStorage(agentDir);
 	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
@@ -269,6 +282,8 @@ async function constructAgentSession(
 		if (store !== options.sessionStore) acquisition.store = store;
 		sessionManager = await SessionManager.create(store, cwd);
 	}
+
+	if (workspace !== undefined && persistInitialState) await recordSessionWorkspace(sessionManager, workspace);
 
 	// Mark workflow-created sessions as internal so they are excluded from the
 	// standard `/resume` history while remaining resumable via `/workflow resume`.
@@ -422,7 +437,8 @@ async function constructAgentSession(
 			: options.subagentPolicy;
 	const isExcludedTool = options.excludedTools ? createToolNameMatcher(options.excludedTools) : undefined;
 	const initialActiveToolNames = (options.noTools === "all" ? [] : (selectedToolNames ?? defaultToolNames)).filter(
-		(name) => !isExcludedTool?.(name),
+		(name) =>
+			!isExcludedTool?.(name) && !(workspace?.sandbox === "read-only" && WORKSPACE_WRITE_TOOL_NAMES.has(name)),
 	);
 	const childBuiltins = { ...options.builtins };
 	const childExcludedTools = [
@@ -757,6 +773,7 @@ async function constructAgentSession(
 						extensionBindings: session.extensionRunner.getChildHostBindings(),
 						parentCommandTaskOwner: childCommandTaskOwner,
 						resourceAdmission: options.resourceAdmission,
+						workspace,
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
@@ -783,6 +800,7 @@ async function constructAgentSession(
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,
+			workspace,
 		});
 	} catch (error) {
 		// The constructor releases its own leases/subscriptions; restore borrowed provider state here.
@@ -844,7 +862,13 @@ async function constructAgentSession(
 				});
 		}
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
-		return { session, extensionsResult, modelFallbackMessage, modelFallbackReason };
+		return {
+			session,
+			extensionsResult,
+			modelFallbackMessage,
+			modelFallbackReason,
+			...(workspace !== undefined ? { workspace } : {}),
+		};
 	} catch (error) {
 		return rollbackStartup(session.extensionRunner, error instanceof Error ? error : new Error(String(error)));
 	}

@@ -1,3 +1,4 @@
+import type { BoundWorkspace } from "@bastani/atomic";
 import type { WorkflowChildResult, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { boundaryTransitionError, resolveBoundaryLifecycle } from "./boundary-lifecycle.js";
@@ -44,6 +45,11 @@ export interface DurableBoundaryRuntimeIdentity {
 export interface DurableChildInvocation {
 	readonly scope: DurableScope;
 	readonly identity: DurableBoundaryRuntimeIdentity;
+	/** Workspace binding an earlier attempt recorded at this boundary; resume restores it instead of resolving again. */
+	readonly recordedWorkspace?: BoundWorkspace;
+	/** Workspace binding of this attempt, recorded with the boundary start. */
+	readonly workspace?: BoundWorkspace;
+	bindWorkspace(binding: BoundWorkspace): void;
 	/** Align a new boundary with an ordinary continuation result before recording its start. */
 	adoptReplayedChildRunId(runId: string): void;
 	recordStart(parentIds: readonly string[], sourceOrder: number): Promise<void>;
@@ -88,6 +94,8 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	const startedAt = start?.startedAt ?? Date.now();
 	let topology = start?.topology;
 	let terminalRecorded = false;
+	const recordedWorkspace = start?.topology?.boundary?.workspace;
+	let workspace: BoundWorkspace | undefined;
 	const identity: DurableBoundaryRuntimeIdentity = {
 		boundaryId,
 		get childRunId() {
@@ -104,6 +112,13 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	return {
 		scope: { rootWorkflowId: input.rootWorkflowId, scopePrefix: input.replayKey },
 		identity,
+		...(recordedWorkspace !== undefined ? { recordedWorkspace } : {}),
+		get workspace() {
+			return workspace;
+		},
+		bindWorkspace(binding): void {
+			workspace = binding;
+		},
 		adoptReplayedChildRunId(runId): void {
 			if (topology !== undefined && childRunId !== runId) {
 				throw invalid(input, "continuation child identity disagrees with durable boundary ownership");
@@ -117,7 +132,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				}
 				return;
 			}
-			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running");
+			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running", workspace);
 			await input.backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: input.workflowId,
@@ -331,6 +346,7 @@ function makeTopology(
 	sourceOrder: number,
 	event: DurableWorkflowBoundaryTopology["event"],
 	status: Extract<DurableStageLifecycleStatus, "running" | "completed" | "failed" | "skipped">,
+	workspace?: BoundWorkspace,
 ): DurableStageTopology {
 	const child = {
 		runId: childRunId,
@@ -346,6 +362,7 @@ function makeTopology(
 		workflow: input.workflow,
 		invocationFingerprint: input.invocationFingerprint,
 		child,
+		...(workspace !== undefined ? { workspace } : {}),
 	};
 	let boundary: DurableWorkflowBoundaryTopology;
 	if (event === "start") {

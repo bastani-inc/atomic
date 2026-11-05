@@ -1,3 +1,4 @@
+import type { BoundWorkspace } from "@bastani/atomic";
 import { type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { schemaFieldKind, schemaIsRequired } from "../../shared/schema-introspection.js";
@@ -58,10 +59,16 @@ export function resolveInputConcurrency(
 	return Math.floor(value);
 }
 
+/**
+ * Stage defaults a run derives from its inputs. A run bound to a workspace hands that binding to every stage instead
+ * of setting up a worktree from its inputs.
+ */
 export function resolveInputRuntimeDefaults(
 	def: Pick<WorkflowDefinition, "inputBindings">,
 	resolvedInputs: ResolvedInputs,
+	workspace?: BoundWorkspace,
 ): Partial<StageOptions> {
+	if (workspace !== undefined) return { workspace };
 	const defaults: Partial<StageOptions> = {};
 	const worktree = def.inputBindings?.worktree;
 	if (worktree !== undefined) {

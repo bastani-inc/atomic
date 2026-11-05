@@ -1,3 +1,4 @@
+import { findWorkspaceError, serializeWorkspaceError } from "@bastani/atomic";
 import {
 	appendRunEndWhenRecorded,
 	reconcileTerminalRunResult,
@@ -24,6 +25,8 @@ export async function finalizeTerminalFailure(input: {
 	/** Source snapshot of a failed tool this run never admitted, such as a rejected resume frontier. */
 	readonly failedToolNode?: ToolNodeSnapshot;
 	readonly onRunEnd: RunOpts["onRunEnd"];
+	/** The thrown error, kept typed when a workspace error is in its cause chain. */
+	readonly error?: unknown;
 }): Promise<RunResult> {
 	const { runId, runSnapshot, store, persistence, metadata, onRunEnd } = input;
 	const failedToolNode =
@@ -52,11 +55,15 @@ export async function finalizeTerminalFailure(input: {
 		...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}),
 		ts: Date.now(),
 	});
-	return reconcileTerminalRunResult(
+	const result = reconcileTerminalRunResult(
 		runId,
 		runSnapshot,
 		store,
 		{ status: "failed", error: metadata.errorMessage, ...failureOf(metadata) },
 		onRunEnd,
 	);
+	const workspaceError = findWorkspaceError(input.error);
+	return workspaceError === undefined
+		? result
+		: { ...result, workspaceError: serializeWorkspaceError(workspaceError) };
 }

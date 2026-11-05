@@ -241,6 +241,7 @@ class AgentSessionBase {
 	protected _baseToolsOverride?: Record<string, AgentTool>;
 	protected _sessionStartEvent: SessionStartEvent;
 	protected _orchestrationContext?: OrchestrationContext;
+	protected _workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	protected _extensionUIContext?: ExtensionUIContext;
 	protected _extensionHumanInput?: import("./extensions/host-input.js").HostInput | null;
 	protected _extensionDiagnosticListener?: (diagnostic: import("./extensions/host-input.js").HostDiagnostic) => void;
@@ -277,6 +278,10 @@ class AgentSessionBase {
 	protected _worktreeSnapshots: SessionWorktreeSnapshotRecorder;
 	get cacheWarmingStatus(): import("./cache-warmer.ts").CacheWarmingStatus | undefined {
 		return this._cacheWarmer?.status;
+	}
+	/** The resolved workspace this session is bound to, when it was created with `workspace`. */
+	get workspace(): import("./workspace/resolve.ts").BoundWorkspace | undefined {
+		return this._workspace;
 	}
 	setCacheWarmingMode(mode: import("./settings-manager.ts").CacheWarmingMode): void {
 		this.settingsManager.setCacheWarmingMode(mode);
@@ -337,6 +342,7 @@ class AgentSessionBase {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
+		this._workspace = config.workspace;
 		this._subagentPolicy = config.subagentPolicy;
 		this._parentCommandTaskOwner = config.parentCommandTaskOwner;
 		this._resourceAdmission = config.resourceAdmission;

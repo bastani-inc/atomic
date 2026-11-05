@@ -233,6 +233,8 @@ export interface AgentSessionConfig {
 	/** Parent-issued shell task owner for an in-process subagent child. */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
 	resourceAdmission?: import("./sdk-types.ts").ResourceAdmission;
+	/** Resolved workspace binding; a read-only binding refuses file-writing tools. */
+	workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	systemPromptTransform?: (prompt: string) => string;
 	/**
 	 * Transform the canonical session projection whenever it becomes the finalized

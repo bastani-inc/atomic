@@ -1,3 +1,4 @@
+import { assertWorkspace, type Workspace, WorkspaceBindingError } from "@bastani/atomic";
 import {
 	isWorkflowDefinition,
 	workflowDefinitionRequirementMessage,
@@ -61,6 +62,7 @@ export function createDurableChildWorkflowPrimitive(input: {
 			| {
 					readonly stageName?: string;
 					readonly inputs?: Readonly<Record<string, unknown>>;
+					readonly workspace?: Workspace;
 			  }
 			| undefined;
 		const boundaryName = options?.stageName ?? `workflow:${child.normalizedName}`;
@@ -69,9 +71,15 @@ export function createDurableChildWorkflowPrimitive(input: {
 			options?.inputs ?? {},
 			`child workflow "${child.normalizedName}" (${child.name})`,
 		);
+		const workspace = options?.workspace;
+		if (workspace !== undefined) {
+			assertWorkspace(workspace, "workspace");
+			assertNoWorktreeInput(child, validatedInputs);
+		}
 		const invocationFingerprint = durableChildInvocationFingerprint(
 			child,
 			validatedInputs as WorkflowSerializableObject,
+			workspace,
 		);
 		const replayKey = input.nextReplayKey(boundaryName, invocationFingerprint);
 		const descriptor: DurableBoundaryDescriptor = {
@@ -108,4 +116,22 @@ export function createDurableChildWorkflowPrimitive(input: {
 			inputs: validatedInputs,
 		} as never)) as WorkflowChildResult<TChildOutputs>;
 	};
+}
+
+/** A declared `worktreeFromInputs` input or a `git_worktree_dir` input selects a worktree the workspace already binds. */
+function assertNoWorktreeInput(
+	child: Pick<WorkflowDefinition, "name" | "inputBindings">,
+	inputs: Readonly<Record<string, unknown>>,
+): void {
+	const names = new Set(["git_worktree_dir"]);
+	const declared = child.inputBindings?.worktree?.gitWorktreeDir;
+	if (declared !== undefined) names.add(declared);
+	for (const name of names) {
+		const value = inputs[name];
+		if (typeof value === "string" && value.trim().length > 0)
+			throw new WorkspaceBindingError({
+				code: "conflicting-worktree-input",
+				fields: { input: name, workflow: child.name },
+			});
+	}
 }

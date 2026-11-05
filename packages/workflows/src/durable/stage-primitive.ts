@@ -815,5 +815,6 @@ function workflowChildSnapshotFromResult(
 		...(result.exited !== undefined ? { exited: result.exited } : {}),
 		outputs: result.outputs,
 		...(typeof result.exitReason === "string" ? { exitReason: result.exitReason } : {}),
+		...(result.changeSet !== undefined ? { changeSet: result.changeSet } : {}),
 	};
 }

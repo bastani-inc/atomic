@@ -655,6 +655,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;
 	_orchestrationContext?: OrchestrationContext;
+	_workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 	_subagentPolicy?: import("./extensions/index.js").SubagentChildPolicy;
 	_subagentMessageAdmission?: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary;
 	_extensionUIContext?: ExtensionUIContext;

@@ -1,3 +1,14 @@
+import {
+	acquireWorkspaceWriterLease,
+	attachCleanupCause,
+	type BoundWorkspace,
+	rehydrateWorkspaceError,
+	resolveWorkspace,
+	restoreWorkspace,
+	type Workspace,
+	type WorkspaceWriterLease,
+	workspaceChangeSet,
+} from "@bastani/atomic";
 import type { DurableChildInvocation } from "../../durable/boundary-topology.js";
 import {
 	findWorkflowExitSignal,
@@ -77,156 +88,225 @@ export function createChildWorkflowRunner(input: {
 		if (boundary.replayedChild !== undefined) {
 			durableInvocation?.adoptReplayedChildRunId(boundary.replayedChild.runId);
 		}
-		await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
-		let childRunId: string | undefined;
-		let detachParentAbort: (() => void) | undefined;
-		let childControllerForCleanup: AbortController | undefined;
-		try {
-			if (boundary.replayedChild !== undefined) {
-				await Promise.resolve();
-				runtime.exit.throwIfWorkflowExitSelected();
-				await boundary.finalizeReplay();
-				await durableInvocation?.recordTerminal("completed", boundary.replayedChild);
-				return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
-			}
+		const workspaceSpec = boundary.replayedChild === undefined ? options.workspace : undefined;
+		if (workspaceSpec === undefined) await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
+		let started = workspaceSpec === undefined;
+		let workspace: BoundWorkspace | undefined;
+		let lease: WorkspaceWriterLease | undefined;
+		const runBoundary = async (): Promise<WorkflowChildResult<TChildOutputs>> => {
+			let childRunId: string | undefined;
+			let detachParentAbort: (() => void) | undefined;
+			let childControllerForCleanup: AbortController | undefined;
+			try {
+				if (workspaceSpec !== undefined) {
+					workspace = await bindChildWorkspace(
+						workspaceSpec,
+						durableInvocation?.recordedWorkspace,
+						runtime.signal,
+					);
+					if (workspace.sandbox === "workspace-write")
+						lease = await acquireWorkspaceWriterLease(workspace, {
+							owner: `${runtime.runId}/${boundaryName}`,
+							signal: runtime.signal,
+						});
+					durableInvocation?.bindWorkspace(workspace);
+					await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
+					started = true;
+				}
+				if (boundary.replayedChild !== undefined) {
+					await Promise.resolve();
+					runtime.exit.throwIfWorkflowExitSelected();
+					await boundary.finalizeReplay();
+					await durableInvocation?.recordTerminal("completed", boundary.replayedChild);
+					return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
+				}
 
-			runtime.assertLiveWorkAllowed?.();
-			const childInputs = resolveAndValidateInputs(
-				child.inputs,
-				options.inputs ?? {},
-				`child workflow "${childName}" (${child.name})`,
-			);
-			runtime.exit.throwIfWorkflowExitSelected();
-
-			childRunId = durableInvocation?.identity.childRunId ?? crypto.randomUUID();
-			const childController = new AbortController();
-			childControllerForCleanup = childController;
-			const childRef: WorkflowChildRunRef = { alias: childName, workflow: child.normalizedName, runId: childRunId };
-			await boundary.linkChildRun(childRef, childController);
-
-			const abortChildFromParent = (): void => {
-				const parentExit = findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
-				childController.abort(
-					parentExit !== undefined ? makeParentWorkflowExitAbortReason(parentExit.reason) : runtime.signal.reason,
+				runtime.assertLiveWorkAllowed?.();
+				const childInputs = resolveAndValidateInputs(
+					child.inputs,
+					options.inputs ?? {},
+					`child workflow "${childName}" (${child.name})`,
 				);
-			};
-			if (runtime.signal.aborted) abortChildFromParent();
-			else {
-				runtime.signal.addEventListener("abort", abortChildFromParent, { once: true });
-				detachParentAbort = () => runtime.signal.removeEventListener("abort", abortChildFromParent);
-			}
-			runtime.exit.throwIfWorkflowExitSelected();
-			runtime.childRunOptions.cancellation?.register(childRunId, childController);
-			runtime.exit.throwIfWorkflowExitSelected();
+				runtime.exit.throwIfWorkflowExitSelected();
 
-			// Ordering is intentional: linkChildRun happens before launch so parent
-			// cleanup can abort the child; observeChildRun happens immediately after
-			// promise creation, with no await in between, so cleanup can await teardown.
-			const dispatcher =
-				runtime.parentRootRunId === undefined && runtime.childRunOptions.durableRootBackend
-					? childWorkerDispatcher(runtime.childRunOptions.durableRootBackend, runtime.runId)
-					: undefined;
-			const runChild = dispatcher === undefined ? input.runWorkflow : dispatcher.run.bind(dispatcher);
-			const childRunPromise = runChild(child, childInputs, {
-				...runtime.childRunOptions,
-				runId: childRunId,
-				cwd: input.resolveWorkflowCwd(),
-				depth: runtime.depth + 1,
-				parentRun: {
-					runId: runtime.runId,
-					stageId: boundary.id,
-					rootRunId: runtime.parentRootRunId ?? runtime.runId,
-				},
-				signal: childController.signal,
-				budget: options.budget,
-				rootBudget: runtime.rootBudget,
-				deferWorkflowStart: false,
-				...(durableInvocation !== undefined ? { durableScope: durableInvocation.scope } : {}),
-			});
-			boundary.observeChildRun(childRunPromise);
-			const childRun = await childRunPromise;
-			if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(boundaryName);
-			runtime.exit.throwIfWorkflowExitSelected();
-
-			// A gracefully quit child is a suspension, not a child failure: carry the
-			// quit up so the parent also suspends without a terminal boundary record.
-			if (
-				childRun.status === "paused" &&
-				childRun.exitReason === WORKFLOW_GRACEFUL_QUIT_EXIT_REASON &&
-				childRunId !== undefined
-			) {
-				throw new WorkflowGracefulQuitError(childRunId, `child workflow "${childName}" (${child.name})`);
-			}
-			const childBudgetExceeded = childRun.result?.status === "budget_exceeded";
-			const childExitStatus = isWorkflowExitStatus(childRun.status) ? childRun.status : "blocked";
-			if (
-				(!isWorkflowExitStatus(childRun.status) && !childBudgetExceeded) ||
-				(childRun.status === "failed" && childRun.exited !== true)
-			) {
-				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
-				const message = childWorkflowFailureMessage(childName, child.name, childRun.status, childRun.error);
-				const cause = {
-					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
-					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
+				childRunId = durableInvocation?.identity.childRunId ?? crypto.randomUUID();
+				const childController = new AbortController();
+				childControllerForCleanup = childController;
+				const childRef: WorkflowChildRunRef = {
+					alias: childName,
+					workflow: child.normalizedName,
+					runId: childRunId,
 				};
-				// #4031: the parent's failure is the child's own failure: the classification the child recorded, else its
-				// failed stage's, else its error text without the wrapper prefixes that name workflows. This message,
-				// which names them, never decides it.
-				const failure = new Error(message, { cause });
-				const recorded =
-					childRun.failure ??
-					(failedChildStage === undefined ? undefined : recordedFailureClassification(failedChildStage));
-				if (recorded !== undefined) throw classifyFailureAsRecorded(failure, recorded);
-				throw classifyFailureFrom(failure, new Error(withoutChildWorkflowFailurePrefixes(childRun.error ?? "")));
-			}
+				await boundary.linkChildRun(childRef, childController);
 
-			const outputs = selectWorkflowOutputs(child, childRun.result);
-			const childExited = childBudgetExceeded || childRun.exited === true || childRun.status !== "completed";
-			const childResult: WorkflowChildResult<TChildOutputs> = childExited
-				? {
-						workflow: child.normalizedName,
-						runId: childRun.runId,
-						status: childBudgetExceeded ? "blocked" : childExitStatus,
-						exited: true,
-						outputs: outputs as Partial<TChildOutputs>,
-						...(childRun.exitReason !== undefined ? { exitReason: childRun.exitReason } : {}),
-					}
-				: {
-						workflow: child.normalizedName,
-						runId: childRun.runId,
-						status: "completed",
-						exited: false,
-						outputs: outputs as TChildOutputs,
+				const abortChildFromParent = (): void => {
+					const parentExit = findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
+					childController.abort(
+						parentExit !== undefined
+							? makeParentWorkflowExitAbortReason(parentExit.reason)
+							: runtime.signal.reason,
+					);
+				};
+				if (runtime.signal.aborted) abortChildFromParent();
+				else {
+					runtime.signal.addEventListener("abort", abortChildFromParent, { once: true });
+					detachParentAbort = () => runtime.signal.removeEventListener("abort", abortChildFromParent);
+				}
+				runtime.exit.throwIfWorkflowExitSelected();
+				runtime.childRunOptions.cancellation?.register(childRunId, childController);
+				runtime.exit.throwIfWorkflowExitSelected();
+
+				// Ordering is intentional: linkChildRun happens before launch so parent
+				// cleanup can abort the child; observeChildRun happens immediately after
+				// promise creation, with no await in between, so cleanup can await teardown.
+				const dispatcher =
+					runtime.parentRootRunId === undefined && runtime.childRunOptions.durableRootBackend
+						? childWorkerDispatcher(runtime.childRunOptions.durableRootBackend, runtime.runId)
+						: undefined;
+				const runChild = dispatcher === undefined ? input.runWorkflow : dispatcher.run.bind(dispatcher);
+				const childRunPromise = runChild(child, childInputs, {
+					...runtime.childRunOptions,
+					runId: childRunId,
+					cwd: workspace?.worktree ?? input.resolveWorkflowCwd(),
+					...(workspace !== undefined ? { workspace } : {}),
+					depth: runtime.depth + 1,
+					parentRun: {
+						runId: runtime.runId,
+						stageId: boundary.id,
+						rootRunId: runtime.parentRootRunId ?? runtime.runId,
+					},
+					signal: childController.signal,
+					budget: options.budget,
+					rootBudget: runtime.rootBudget,
+					deferWorkflowStart: false,
+					...(durableInvocation !== undefined ? { durableScope: durableInvocation.scope } : {}),
+				});
+				boundary.observeChildRun(childRunPromise);
+				const childRun = await childRunPromise;
+				if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(boundaryName);
+				runtime.exit.throwIfWorkflowExitSelected();
+
+				// A gracefully quit child is a suspension, not a child failure: carry the
+				// quit up so the parent also suspends without a terminal boundary record.
+				if (
+					childRun.status === "paused" &&
+					childRun.exitReason === WORKFLOW_GRACEFUL_QUIT_EXIT_REASON &&
+					childRunId !== undefined
+				) {
+					throw new WorkflowGracefulQuitError(childRunId, `child workflow "${childName}" (${child.name})`);
+				}
+				const childBudgetExceeded = childRun.result?.status === "budget_exceeded";
+				const childExitStatus = isWorkflowExitStatus(childRun.status) ? childRun.status : "blocked";
+				if (
+					(!isWorkflowExitStatus(childRun.status) && !childBudgetExceeded) ||
+					(childRun.status === "failed" && childRun.exited !== true)
+				) {
+					const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
+					const message = childWorkflowFailureMessage(childName, child.name, childRun.status, childRun.error);
+					const cause = {
+						...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
+						...(failedChildStage?.failureMessage !== undefined
+							? { message: failedChildStage.failureMessage }
+							: {}),
+						// A workspace error stays typed across the child boundary, including from a pooled worker.
+						...(childRun.workspaceError !== undefined
+							? { cause: rehydrateWorkspaceError(childRun.workspaceError) }
+							: {}),
 					};
-			const workflowChild = workflowChildReplaySnapshot(childName, childResult);
-			const outputKeys = Object.keys(outputs);
-			await boundary.complete(
-				`Workflow "${child.name}" ${childRun.status} (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
-				workflowChild,
-			);
-			await durableInvocation?.recordTerminal("completed", childResult);
-			return childResult;
-		} catch (err) {
-			// Suspension leaves the boundary untouched: quit owns the paused record and
-			// a later resume replays this boundary instead of a failed child.
-			if (findWorkflowGracefulQuit(err) !== undefined) throw err;
-			const exit =
-				findWorkflowExitSignal(err, runtime.exit.exitScope) ??
-				findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
-			if (exit !== undefined) {
-				await boundary.skipForWorkflowExit(exit.reason);
-				await durableInvocation?.recordTerminal("skipped");
-				throw exit;
+					// #4031: the parent's failure is the child's own failure: the classification the child recorded, else its
+					// failed stage's, else its error text without the wrapper prefixes that name workflows. This message,
+					// which names them, never decides it.
+					const failure = new Error(message, { cause });
+					const recorded =
+						childRun.failure ??
+						(failedChildStage === undefined ? undefined : recordedFailureClassification(failedChildStage));
+					if (recorded !== undefined) throw classifyFailureAsRecorded(failure, recorded);
+					throw classifyFailureFrom(failure, new Error(withoutChildWorkflowFailurePrefixes(childRun.error ?? "")));
+				}
+
+				const outputs = selectWorkflowOutputs(child, childRun.result);
+				const childExited = childBudgetExceeded || childRun.exited === true || childRun.status !== "completed";
+				const changeSet =
+					workspace === undefined ? undefined : await workspaceChangeSet(workspace, { signal: runtime.signal });
+				const childResult: WorkflowChildResult<TChildOutputs> = childExited
+					? {
+							workflow: child.normalizedName,
+							runId: childRun.runId,
+							status: childBudgetExceeded ? "blocked" : childExitStatus,
+							exited: true,
+							outputs: outputs as Partial<TChildOutputs>,
+							...(childRun.exitReason !== undefined ? { exitReason: childRun.exitReason } : {}),
+							...(changeSet !== undefined ? { changeSet } : {}),
+						}
+					: {
+							workflow: child.normalizedName,
+							runId: childRun.runId,
+							status: "completed",
+							exited: false,
+							outputs: outputs as TChildOutputs,
+							...(changeSet !== undefined ? { changeSet } : {}),
+						};
+				const workflowChild = workflowChildReplaySnapshot(childName, childResult);
+				const outputKeys = Object.keys(outputs);
+				await boundary.complete(
+					`Workflow "${child.name}" ${childRun.status} (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
+					workflowChild,
+				);
+				await durableInvocation?.recordTerminal("completed", childResult);
+				return childResult;
+			} catch (err) {
+				// Suspension leaves the boundary untouched: quit owns the paused record and
+				// a later resume replays this boundary instead of a failed child.
+				if (findWorkflowGracefulQuit(err) !== undefined) throw err;
+				const exit =
+					findWorkflowExitSignal(err, runtime.exit.exitScope) ??
+					findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
+				if (exit !== undefined) {
+					await boundary.skipForWorkflowExit(exit.reason);
+					if (started) await durableInvocation?.recordTerminal("skipped");
+					throw exit;
+				}
+				await boundary.fail(err);
+				if (started) await durableInvocation?.recordTerminal("failed");
+				throw err;
+			} finally {
+				detachParentAbort?.();
+				// Identity-conditional: a stale child finalizer must not evict a newer
+				// registration that reused this child run id.
+				if (childRunId !== undefined && childControllerForCleanup !== undefined)
+					runtime.childRunOptions.cancellation?.unregister(childRunId, childControllerForCleanup);
 			}
-			await boundary.fail(err);
-			await durableInvocation?.recordTerminal("failed");
-			throw err;
-		} finally {
-			detachParentAbort?.();
-			// Identity-conditional: a stale child finalizer must not evict a newer
-			// registration that reused this child run id.
-			if (childRunId !== undefined && childControllerForCleanup !== undefined)
-				runtime.childRunOptions.cancellation?.unregister(childRunId, childControllerForCleanup);
-		}
+		};
+		if (workspaceSpec === undefined) return runBoundary();
+		return releasingLease(() => lease, runBoundary());
 	};
+}
+
+/** A boundary that recorded a binding restores it on resume; a new boundary resolves the workspace. */
+async function bindChildWorkspace(
+	workspace: Workspace,
+	recorded: BoundWorkspace | undefined,
+	signal: AbortSignal,
+): Promise<BoundWorkspace> {
+	if (recorded === undefined) return resolveWorkspace(workspace, { signal });
+	await restoreWorkspace(recorded, { signal });
+	return recorded;
+}
+
+/** Release the writer lease once the boundary settles; a release failure never replaces the boundary's own failure. */
+async function releasingLease<T>(lease: () => WorkspaceWriterLease | undefined, running: Promise<T>): Promise<T> {
+	let result: T;
+	try {
+		result = await running;
+	} catch (error) {
+		const cleanupCause = await lease()
+			?.release()
+			.then(
+				() => undefined,
+				(cause: unknown) => cause,
+			);
+		throw attachCleanupCause(error, cleanupCause);
+	}
+	await lease()?.release();
+	return result;
 }
