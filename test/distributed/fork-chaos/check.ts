@@ -9,10 +9,11 @@
  * `pass`, its numbers and up to 25 example violations.
  */
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/index.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "../../../packages/workflows/src/durable/run-result.js";
+import { readWorkerLogs } from "./logs.mjs";
 import { type Json, LEDGER_TABLE, loadConfig, NAMED_TOOLS, openSharedStorage } from "./shared.js";
 import {
 	ATTEMPT_TERMINALS,
@@ -141,31 +142,6 @@ interface LogRecord {
 	readonly [key: string]: Json;
 }
 
-function readLogs(dir: string): {
-	readonly records: (LogRecord & { readonly logNode: string })[];
-	readonly files: number;
-} {
-	const records: (LogRecord & { readonly logNode: string })[] = [];
-	let files = 0;
-	for (const node of readdirSync(dir)) {
-		const nodeDir = join(dir, node);
-		if (!statSync(nodeDir).isDirectory()) continue;
-		for (const file of readdirSync(nodeDir)) {
-			if (!file.endsWith(".jsonl")) continue;
-			files++;
-			for (const line of readFileSync(join(nodeDir, file), "utf8").split("\n")) {
-				if (line.length === 0) continue;
-				try {
-					records.push({ ...(JSON.parse(line) as LogRecord), logNode: node });
-				} catch {
-					// A torn final line of a killed process is skipped; every complete line was fsynced.
-				}
-			}
-		}
-	}
-	return { records, files };
-}
-
 class Invariant {
 	pass = true;
 	readonly violations: Json[] = [];
@@ -228,7 +204,12 @@ function comparableOutput(checkpoint: Checkpoint): Json {
 	return output;
 }
 
-async function check(collectedDir: string, beforeFile: string, timelineFile: string, out: string): Promise<boolean> {
+export async function check(
+	collectedDir: string,
+	beforeFile: string,
+	timelineFile: string,
+	out: string,
+): Promise<boolean> {
 	const config = loadConfig();
 	const { database } = await openSharedStorage(config);
 	const started = Date.now();
@@ -260,7 +241,13 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 	const ledger = await database.all<Row>(
 		`SELECT execution_id, ctx_run_id, tool, node, pid, attempt_id, at FROM ${LEDGER_TABLE} ORDER BY at`,
 	);
-	const { records, files } = readLogs(collectedDir);
+	const logs = readWorkerLogs(collectedDir, timeline.expectedWorkers);
+	const records = logs.records as (LogRecord & { readonly logNode: string })[];
+
+	const workerLogs = new Invariant();
+	for (const problem of logs.problems) workerLogs.fail(problem);
+	workerLogs.numbers.expectedWorkers = timeline.expectedWorkers ?? null;
+	workerLogs.numbers.logsByNode = logs.logsByNode;
 
 	// --- Sources untouched -------------------------------------------------------------------------------
 	const sourcesUntouched = new Invariant();
@@ -864,7 +851,7 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 	const result = {
 		checkedAt: new Date().toISOString(),
 		checkMs: Date.now() - started,
-		logFiles: files,
+		logFiles: logs.files,
 		invariants: {
 			sourcesUntouched: sourcesUntouched.toJSON(),
 			noCorruption: noCorruption.toJSON(),
@@ -874,6 +861,7 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 			fencing: fencing.toJSON(),
 			typedErrors: typed.toJSON(),
 			recovery: recovery.toJSON(),
+			workerLogsComplete: workerLogs.toJSON(),
 		},
 		numbers: {
 			forkAttempts: forkAttempts.length,
@@ -924,15 +912,17 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 	}
 }
 
-let passed = true;
-switch (process.argv[2]) {
-	case "snapshot":
-		await snapshot(process.argv[3]!, process.argv[4]!);
-		break;
-	case "check":
-		passed = await check(process.argv[3]!, process.argv[4]!, process.argv[5]!, process.argv[6]!);
-		break;
-	default:
-		throw new Error(`unknown mode ${process.argv[2]}`);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+	let passed = true;
+	switch (process.argv[2]) {
+		case "snapshot":
+			await snapshot(process.argv[3]!, process.argv[4]!);
+			break;
+		case "check":
+			passed = await check(process.argv[3]!, process.argv[4]!, process.argv[5]!, process.argv[6]!);
+			break;
+		default:
+			throw new Error(`unknown mode ${process.argv[2]}`);
+	}
+	process.exit(passed ? 0 : 1);
 }
-process.exit(passed ? 0 : 1);

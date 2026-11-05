@@ -14,6 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectLogsAndCheck } from "./logs.mjs";
 import { assertChaosInvariants, assertLocalSqliteReport, findChaosInvariantError } from "./verdict.mjs";
 
 const runId = process.env.RUN_ID;
@@ -47,7 +48,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const seconds = (value) => Math.round(value * 1000 * scale);
 const random = (low, high) => low + Math.random() * (high - low);
 
-const timeline = { runId, startedAt: Date.now(), events: [], stops: [], phases: [] };
+const timeline = { runId, startedAt: Date.now(), expectedWorkers: workers, events: [], stops: [], phases: [] };
 function record(action, details = {}) {
 	const event = { at: Date.now(), iso: new Date().toISOString(), action, ...details };
 	timeline.events.push(event);
@@ -444,25 +445,29 @@ async function main() {
 
 	await phase("check", async () => {
 		writeFileSync(join(artifactDir, "timeline.json"), JSON.stringify(timeline, null, 2));
-		await sshOk("a", "mkdir -p /opt/fork-chaos/collected");
-		for (const node of workers) {
-			const tar = await exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, `tar -C ${state} -czf - $(cd ${state} && ls *.jsonl *.log sources.json 2>/dev/null)`], { binary: true });
-			writeFileSync(join(artifactDir, "raw", `${node}-state.tgz`), tar.stdout);
-			await exec("ssh", [...sshOptions, `azureuser@${nodes.a.ip}`, `mkdir -p /opt/fork-chaos/collected/${node} && tar -xzf - -C /opt/fork-chaos/collected/${node} --wildcards '*.jsonl'`], { input: tar.stdout });
-		}
-		await sshOk("a", `cat > /opt/fork-chaos/collected/timeline.json <<'JSON'\n${JSON.stringify(timeline)}\nJSON`);
-		const checked = await ssh(
-			"a",
-			`${env}\nbun run test/distributed/fork-chaos/check.ts check /opt/fork-chaos/collected ${state}/before.json /opt/fork-chaos/collected/timeline.json ${state}/check.json >${state}/check-stdout.log 2>${state}/check-stderr.log; status=$?; tail -1 ${state}/check-stdout.log; tail -20 ${state}/check-stderr.log; exit $status`,
-			{ timeoutMs: 1_800_000 },
-		);
-		record("checker", { exit: checked.code, summary: checked.stdout.trim() });
-		const report = await ssh("a", `cat ${state}/check.json`);
-		if (report.code === 0) writeFileSync(join(artifactDir, "check.json"), report.stdout);
-		const sqldState = await ssh("sqld", "systemctl show sqld -p NRestarts -p ActiveState; df -B1 --output=size,used,avail /data | tail -1; sudo du -sb /data/sqld");
-		record("sqld-state", { state: sqldState.stdout.trim().split("\n") });
-		// A missing, unreadable, incomplete or failing report fails the round; main's catch records it and exits 1.
-		assertChaosInvariants(report.code === 0 ? report.stdout : undefined, { checkerExitCode: checked.code });
+		await sshOk("a", "rm -rf /opt/fork-chaos/collected && mkdir -p /opt/fork-chaos/collected");
+		await collectLogsAndCheck(workers, {
+			archive: (node) =>
+				exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, `tar -C ${state} -czf - $(cd ${state} && ls *.jsonl *.log sources.json 2>/dev/null)`], { binary: true }),
+			save: (node, archive) => writeFileSync(join(artifactDir, "raw", `${node}-state.tgz`), archive),
+			extract: (node, archive) =>
+				exec("ssh", [...sshOptions, `azureuser@${nodes.a.ip}`, `mkdir -p /opt/fork-chaos/collected/${node} && tar -xzf - -C /opt/fork-chaos/collected/${node} --wildcards '*.jsonl'`], { input: archive }),
+			check: async () => {
+				await sshOk("a", `cat > /opt/fork-chaos/collected/timeline.json <<'JSON'\n${JSON.stringify(timeline)}\nJSON`);
+				const checked = await ssh(
+					"a",
+					`${env}\nbun run test/distributed/fork-chaos/check.ts check /opt/fork-chaos/collected ${state}/before.json /opt/fork-chaos/collected/timeline.json ${state}/check.json >${state}/check-stdout.log 2>${state}/check-stderr.log; status=$?; tail -1 ${state}/check-stdout.log; tail -20 ${state}/check-stderr.log; exit $status`,
+					{ timeoutMs: 1_800_000 },
+				);
+				record("checker", { exit: checked.code, summary: checked.stdout.trim() });
+				const report = await ssh("a", `cat ${state}/check.json`);
+				if (report.code === 0) writeFileSync(join(artifactDir, "check.json"), report.stdout);
+				const sqldState = await ssh("sqld", "systemctl show sqld -p NRestarts -p ActiveState; df -B1 --output=size,used,avail /data | tail -1; sudo du -sb /data/sqld");
+				record("sqld-state", { state: sqldState.stdout.trim().split("\n") });
+				// A missing, unreadable, incomplete or failing report fails the round; main's catch records it and exits 1.
+				assertChaosInvariants(report.code === 0 ? report.stdout : undefined, { checkerExitCode: checked.code });
+			},
+		});
 	});
 	// The shared checker does not cover the node-local scenario; its failure fails the round once the check ran.
 	if (localFailure !== undefined) throw localFailure;
@@ -477,6 +482,9 @@ main().catch((error) => {
 				failedInvariants: failure.failedInvariants,
 				missingInvariants: failure.missingInvariants,
 				localFailures: failure.localFailures,
+				node: failure.node,
+				transfer: failure.transfer,
+				transferExitCode: failure.transferExitCode,
 				hint: failure.hint,
 			}
 		: {};

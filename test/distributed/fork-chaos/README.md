@@ -87,9 +87,13 @@ checks the invariants: untouched sources (hash of every event and the run row), 
 integrity_check`, contiguous sequences, no events without a run), atomic fork runs (complete seed, exact copied
 prefix), no lost or duplicated work (ledger vs. checkpoints, one fork per attempt, no orphan fork), no wrong-tree
 replay, fencing (no takeover of a fresh claim inside 120 s on the journal's clock), typed errors (every fork-path
-failure is a `ForkError` with the documented `retryable` flag, or the caller's abort reason), and recovery.
+failure is a `ForkError` with the documented `retryable` flag, or the caller's abort reason), recovery, and complete
+worker logs (every worker the manifest lists, which the controller records as `expectedWorkers` in the timeline,
+contributed readable logs with at least one record; only a log's final line may be torn by a killed process).
 
-The round fails unless every one of those invariants passed. `check.ts` writes `check.json` and then exits 1 if any
+The round fails unless every one of those invariants passed. The controller collects each worker's logs onto node a
+before the checker runs, and the round fails with `logs-not-collected` when archiving a worker's state or extracting
+it exits nonzero or is ended by a signal; the checker then does not run. `check.ts` writes `check.json` and then exits 1 if any
 invariant failed. The controller copies the report and exits 1 if the report is missing or unreadable, lacks an
 invariant, holds a failed one, or the checker exited nonzero. The shared checker does not cover the node-local
 SQLite scenario, so it has its own expectations. `workload.ts local` exits 1, and the round fails with
@@ -97,8 +101,8 @@ SQLite scenario, so it has its own expectations. `workload.ts local` exits 1, an
 completes from `child.c2` replaying the tools before it; a shared-only run is `source-not-found` on local-only storage
 with the join hint; the fork on a full disk fails with a typed error and writes no run; the fork after freeing the
 disk completes; and no partial run is left. The `controller-error` timeline event carries the code (`report-missing`,
-`report-invalid`, `checker-failed`, `invariants-failed` or `local-sqlite-failed`) and what missed. To re-check a
-stored round, run `node test/distributed/fork-chaos/verdict.mjs <check.json>` or
+`report-invalid`, `checker-failed`, `invariants-failed`, `local-sqlite-failed` or `logs-not-collected`) and what
+missed. To re-check a stored round, run `node test/distributed/fork-chaos/verdict.mjs <check.json>` or
 `node test/distributed/fork-chaos/verdict.mjs --local <node-local-sqlite.json>`.
 
 `verify-security.sh` fails when any `az` query fails, and when the VMs or NICs it finds do not match the manifest.

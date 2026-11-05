@@ -129,10 +129,11 @@ export const CHAOS_INVARIANTS = Object.freeze([
 	"fencing",
 	"typedErrors",
 	"recovery",
+	"workerLogsComplete",
 ]);
 
 /**
- * @typedef {"report-missing" | "report-invalid" | "checker-failed" | "invariants-failed" | "local-sqlite-failed"} ChaosInvariantErrorCode
+ * @typedef {"report-missing" | "report-invalid" | "checker-failed" | "invariants-failed" | "local-sqlite-failed" | "logs-not-collected"} ChaosInvariantErrorCode
  */
 
 /** Every {@link ChaosInvariantErrorCode}. Codes are stable: never rename or reuse one. */
@@ -143,6 +144,7 @@ export const CHAOS_INVARIANT_ERROR_CODES = Object.freeze(
 		"checker-failed",
 		"invariants-failed",
 		"local-sqlite-failed",
+		"logs-not-collected",
 	]),
 );
 
@@ -156,6 +158,8 @@ const HINTS = {
 	"invariants-failed": "Open check.json and read the failed invariants' example violations before changing the fork code",
 	"local-sqlite-failed":
 		"Open node-local-sqlite.json and local-stderr.log on node b; each listed expectation names the report field that missed",
+	"logs-not-collected":
+		"Read the controller output for the failed transfer, fix SSH to the node or its state directory, and run the controller again",
 };
 
 const SUBJECTS = {
@@ -164,6 +168,7 @@ const SUBJECTS = {
 	"checker-failed": "invariant checker exited nonzero",
 	"invariants-failed": "invariants failed",
 	"local-sqlite-failed": "node-local SQLite scenario failed",
+	"logs-not-collected": "worker logs not collected",
 };
 
 /**
@@ -178,9 +183,12 @@ export class ChaosInvariantError extends Error {
 
 	/**
 	 * @param {ChaosInvariantErrorCode} code
-	 * @param {{ failedInvariants?: readonly string[], missingInvariants?: readonly string[], localFailures?: readonly string[], checkerExitCode?: number | null, cause?: unknown }} [context]
+	 * @param {{ failedInvariants?: readonly string[], missingInvariants?: readonly string[], localFailures?: readonly string[], checkerExitCode?: number | null, node?: string, transfer?: "archive" | "extract", transferExitCode?: number | null, cause?: unknown }} [context]
 	 */
-	constructor(code, { failedInvariants = [], missingInvariants = [], localFailures = [], checkerExitCode, cause } = {}) {
+	constructor(
+		code,
+		{ failedInvariants = [], missingInvariants = [], localFailures = [], checkerExitCode, node, transfer, transferExitCode, cause } = {},
+	) {
 		const details = [
 			failedInvariants.length > 0 ? `failed: ${failedInvariants.join(", ")}` : undefined,
 			missingInvariants.length > 0 ? `missing: ${missingInvariants.join(", ")}` : undefined,
@@ -190,7 +198,13 @@ export class ChaosInvariantError extends Error {
 				: checkerExitCode === null
 					? "checker ended by a signal"
 					: `checker exit ${checkerExitCode}`,
-		].filter((detail) => detail !== undefined);
+			node === undefined ? undefined : `node ${node}`,
+			transfer === undefined
+				? undefined
+				: transferExitCode === null
+					? `${transfer} ended by a signal`
+					: `${transfer} exit ${transferExitCode}`,
+		].filter((part) => part !== undefined);
 		const subject = details.length > 0 ? `${SUBJECTS[code]} (${details.join("; ")})` : SUBJECTS[code];
 		super(`Fork chaos round did not pass: ${subject} (${code}). ${HINTS[code]}.`, cause === undefined ? {} : { cause });
 		/** @readonly Why the round did not pass. */
@@ -205,6 +219,12 @@ export class ChaosInvariantError extends Error {
 		this.localFailures = Object.freeze([...localFailures]);
 		/** @readonly The checker's exit status when known; `null` when a signal ended it. */
 		this.checkerExitCode = checkerExitCode;
+		/** @readonly The worker whose logs were not collected. */
+		this.node = node;
+		/** @readonly The log transfer that failed: archiving the worker's state or extracting it on node a. */
+		this.transfer = transfer;
+		/** @readonly The failed transfer's exit status; `null` when a signal ended it. */
+		this.transferExitCode = transferExitCode;
 	}
 }
 

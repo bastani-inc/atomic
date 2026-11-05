@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
+import { check } from "../distributed/fork-chaos/check.js";
+import { collectLogsAndCheck, readWorkerLogs } from "../distributed/fork-chaos/logs.mjs";
+import { ensureLedger, loadConfig, openSharedStorage } from "../distributed/fork-chaos/shared.js";
 import {
 	ATTEMPT_TERMINALS,
 	abortDisposition,
@@ -19,12 +22,19 @@ import {
 	redriveDecision,
 	unexplainedAbortForks,
 } from "../distributed/fork-chaos/verdict.mjs";
-import { makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	makeTempDirectory,
+	readJson,
+	removeTempDirectory,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 const harness = fileURLToPath(new URL("../distributed/fork-chaos/", import.meta.url));
 const unixTest = process.platform === "win32" ? test.skip : test;
 const temporary: string[] = [];
 afterEach(() => {
+	vi.unstubAllEnvs();
 	for (const directory of temporary.splice(0)) removeTempDirectory(directory);
 });
 
@@ -532,6 +542,363 @@ describe("fork chaos verdict (#4321)", () => {
 			);
 		}
 	});
+});
+
+describe("fork chaos log collection (#4321)", () => {
+	type Transfer = "archive" | "extract";
+	function transfers(failure?: { readonly node: string; readonly transfer: Transfer; readonly code: number | null }) {
+		const calls: string[] = [];
+		const result = (node: string, transfer: Transfer) =>
+			failure?.node === node && failure.transfer === transfer
+				? {
+						code: failure.code,
+						stdout: Buffer.from("partial"),
+						stderr: "tar: Unexpected EOF; authToken=SECRET-VALUE\n",
+					}
+				: { code: 0, stdout: Buffer.from(`${node}.tgz`), stderr: "" };
+		const transfer = {
+			archive: async (node: string) => {
+				calls.push(`archive ${node}`);
+				return result(node, "archive");
+			},
+			save: (node: string, archive: Buffer) => {
+				calls.push(`save ${node} ${archive.toString()}`);
+			},
+			extract: async (node: string, archive: Buffer) => {
+				calls.push(`extract ${node} ${archive.toString()}`);
+				return result(node, "extract");
+			},
+			check: async () => {
+				calls.push("check");
+			},
+		};
+		return { calls, transfer };
+	}
+
+	async function collectionError(collection: Promise<void>): Promise<ChaosInvariantError> {
+		try {
+			await collection;
+		} catch (error) {
+			assert.ok(error instanceof ChaosInvariantError);
+			assert.ok(isChaosInvariantError(error));
+			return error;
+		}
+		assert.fail("expected log collection to fail");
+	}
+
+	test("runs the checker once, after every worker's archive was saved and extracted", async () => {
+		const { calls, transfer } = transfers();
+		await collectLogsAndCheck(["a", "b"], transfer);
+		assert.deepEqual(calls, [
+			"archive a",
+			"save a a.tgz",
+			"extract a a.tgz",
+			"archive b",
+			"save b b.tgz",
+			"extract b b.tgz",
+			"check",
+		]);
+	});
+
+	test("a failed or killed archive is neither saved nor extracted, and the checker never runs", async () => {
+		for (const code of [255, null]) {
+			const { calls, transfer } = transfers({ node: "b", transfer: "archive", code });
+			const error = await collectionError(collectLogsAndCheck(["a", "b", "c"], transfer));
+			assert.equal(error.code, "logs-not-collected");
+			assert.equal(error.node, "b");
+			assert.equal(error.transfer, "archive");
+			assert.equal(error.transferExitCode, code);
+			assert.ok(!("detail" in error));
+			assert.doesNotMatch(`${error.message} ${JSON.stringify({ ...error })}`, /SECRET-VALUE|Unexpected EOF/);
+			assert.deepEqual(calls, ["archive a", "save a a.tgz", "extract a a.tgz", "archive b"]);
+		}
+	});
+
+	test("a failed extraction stops the round before the checker", async () => {
+		const { calls, transfer } = transfers({ node: "a", transfer: "extract", code: 2 });
+		const error = await collectionError(collectLogsAndCheck(["a", "b"], transfer));
+		assert.equal(error.code, "logs-not-collected");
+		assert.equal(error.node, "a");
+		assert.equal(error.transfer, "extract");
+		assert.equal(error.transferExitCode, 2);
+		assert.equal(error.retryable, false);
+		assert.deepEqual(calls, ["archive a", "save a a.tgz", "extract a a.tgz"]);
+		assert.equal(
+			error.message,
+			"Fork chaos round did not pass: worker logs not collected (node a; extract exit 2) (logs-not-collected). " +
+				"Read the controller output for the failed transfer, fix SSH to the node or its state directory, and run the controller again.",
+		);
+	});
+
+	const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
+	const rejectedAttempt = [
+		line({ t: "intent", id: "d-1", pid: 7, localNow: 1, plan: { source: "s-1" } }),
+		line({
+			t: "error",
+			id: "d-1",
+			pid: 7,
+			localNow: 2,
+			phase: "fork",
+			error: { fork: true, code: "invalid-option" },
+		}),
+		line({ t: "failed-nonretryable", id: "d-1", pid: 7, localNow: 3 }),
+	].join("");
+
+	function collected(logs: Record<string, Record<string, string>>): string {
+		const root = makeTempDirectory("fork-chaos-logs-");
+		temporary.push(root);
+		writeFileSync(join(root, "timeline.json"), "{}");
+		for (const [node, files] of Object.entries(logs)) {
+			mkdirSync(join(root, node), { recursive: true });
+			for (const [file, text] of Object.entries(files)) writeFileSync(join(root, node, file), text);
+		}
+		return root;
+	}
+
+	test("reads every expected worker's logs and skips only a torn final line", () => {
+		const root = collected({
+			a: {
+				"attempts-a-1-1.jsonl":
+					line({ t: "start", pid: 1, localNow: 1 }) + line({ t: "drained", pid: 1, localNow: 2 }),
+			},
+			b: {
+				"attempts-b-2-1.jsonl": `${line({ t: "start", pid: 2, localNow: 1 })}{"t":"try","id":"b-1","n`,
+				"attempts-b-3-1.jsonl": "",
+			},
+		});
+		const logs = readWorkerLogs(root, ["a", "b"]);
+		assert.deepEqual(logs.problems, []);
+		assert.equal(logs.files, 3);
+		assert.deepEqual(
+			logs.records.map((record) => `${record.logNode}:${record.t}`),
+			["a:start", "a:drained", "b:start"],
+		);
+		assert.deepEqual(logs.logsByNode, {
+			a: { files: 1, records: 2, emptyFiles: 0, tornFinalLines: 0 },
+			b: { files: 2, records: 1, emptyFiles: 1, tornFinalLines: 1 },
+		});
+	});
+
+	test("a worker whose logs never arrived fails coverage, even when it logged only rejected attempts", () => {
+		const root = collected({ a: { "attempts-a-1-1.jsonl": line({ t: "start", pid: 1, localNow: 1 }) } });
+		const missing = readWorkerLogs(root, ["a", "d"]);
+		assert.deepEqual(missing.problems, [{ node: "d", problem: "no log directory" }]);
+		assert.ok(missing.records.every((record) => record.logNode === "a"));
+
+		mkdirSync(join(root, "d"));
+		writeFileSync(join(root, "d", "attempts-d-7-1.jsonl"), rejectedAttempt);
+		const present = readWorkerLogs(root, ["a", "d"]);
+		assert.deepEqual(present.problems, []);
+		assert.deepEqual(
+			present.records.filter((record) => record.logNode === "d").map((record) => record.t),
+			["intent", "error", "failed-nonretryable"],
+		);
+	});
+
+	test("empty, unreadable or corrupt worker logs and logs of an unlisted node fail coverage", () => {
+		const root = collected({
+			a: { "attempts-a-1-1.jsonl": rejectedAttempt },
+			b: {},
+			c: { "attempts-c-1-1.jsonl": "" },
+			e: {
+				"attempts-e-1-1.jsonl": `${line({ t: "start", pid: 1, localNow: 1 })}not json\n{"id":"e-1"}\n[1]\n${line({ t: "drained", pid: 1, localNow: 2 })}`,
+			},
+			z: { "attempts-z-1-1.jsonl": line({ t: "start", pid: 1, localNow: 1 }) },
+		});
+		mkdirSync(join(root, "d", "attempts-d-1-1.jsonl"), { recursive: true });
+		const logs = readWorkerLogs(root, ["a", "b", "c", "d", "e"]);
+		assert.deepEqual(logs.problems, [
+			{ node: "b", problem: "no attempt logs" },
+			{ node: "c", problem: "no log records" },
+			{ node: "d", problem: "log unreadable", file: "attempts-d-1-1.jsonl", errno: "EISDIR" },
+			{ node: "d", problem: "no log records" },
+			{ node: "e", problem: "corrupt record", file: "attempts-e-1-1.jsonl", line: 2 },
+			{ node: "e", problem: "corrupt record", file: "attempts-e-1-1.jsonl", line: 3 },
+			{ node: "e", problem: "corrupt record", file: "attempts-e-1-1.jsonl", line: 4 },
+			{ node: "z", problem: "log directory of a node the timeline does not list" },
+		]);
+		assert.deepEqual(
+			logs.records.filter((record) => record.logNode === "e").map((record) => record.t),
+			["start", "drained"],
+		);
+	});
+
+	test("a timeline without its expected workers fails coverage instead of trusting the files present", () => {
+		const root = collected({ a: { "attempts-a-1-1.jsonl": rejectedAttempt } });
+		for (const expectedWorkers of [undefined, [], ["a", "a"], ["../a"], [""], "a"])
+			assert.deepEqual(
+				readWorkerLogs(root, expectedWorkers).problems,
+				[{ node: null, problem: "timeline does not list the expected workers" }],
+				JSON.stringify(expectedWorkers),
+			);
+	});
+
+	test("a report without worker log coverage fails the round", () => {
+		const withoutCoverage = Object.fromEntries(
+			[
+				"sourcesUntouched",
+				"noCorruption",
+				"atomicForkRuns",
+				"noLostOrDuplicatedWork",
+				"noWrongTreeReplay",
+				"fencing",
+				"typedErrors",
+				"recovery",
+			].map((name) => [name, { pass: true, violations: [] }]),
+		);
+		const error = verdictOf(JSON.stringify({ invariants: withoutCoverage }), 0);
+		assert.equal(error.code, "report-invalid");
+		assert.deepEqual(error.missingInvariants, ["workerLogsComplete"]);
+	});
+});
+
+describe("fork chaos checker over collected worker logs (#4321)", () => {
+	const WORKERS = ["a", "b", "c", "d"];
+	const CHECKER_CLI_TIMEOUT_MS = 60_000;
+	const jsonl = (...records: Record<string, unknown>[]) =>
+		records.map((record) => `${JSON.stringify(record)}\n`).join("");
+	const probeLog = (node: string) =>
+		jsonl(
+			{ t: "start", pid: 1, localNow: 1, node },
+			{ t: "intent", id: `${node}-1`, pid: 1, localNow: 2, plan: { source: "s-1", probe: "invalid-option" } },
+			{ t: "probe-ok", id: `${node}-1`, pid: 1, localNow: 3, probe: "invalid-option", code: "invalid-option" },
+		);
+
+	type CheckReport = {
+		readonly logFiles: number;
+		readonly invariants: Record<
+			string,
+			{
+				readonly pass: boolean;
+				readonly violations: unknown[];
+				readonly expectedWorkers?: unknown;
+				readonly logsByNode?: Record<string, { readonly records: number; readonly tornFinalLines: number }>;
+			}
+		>;
+	};
+
+	/** An empty journal in a temporary libSQL file, and the checker's inputs for the logs collected per worker. */
+	async function round(collected: Record<string, string>, expectedWorkers: readonly string[] | undefined) {
+		const root = makeTempDirectory("fork-chaos-check-");
+		temporary.push(root);
+		const tokenFile = join(root, "token");
+		writeFileSync(tokenFile, "unused-by-a-file-database", { mode: 0o600 });
+		const configFile = join(root, "config.json");
+		writeFileSync(
+			configFile,
+			JSON.stringify({
+				node: "a",
+				region: "local",
+				url: `file:${join(root, "journal.db")}`,
+				tokenFile,
+				stateDir: root,
+				altCwd: root,
+				toolMs: 0,
+			}),
+		);
+		vi.stubEnv("FC_CONFIG", configFile);
+		const { database } = await openSharedStorage(loadConfig());
+		await ensureLedger(database);
+		await database.close();
+		const dir = join(root, "collected");
+		for (const [node, text] of Object.entries(collected)) {
+			mkdirSync(join(dir, node), { recursive: true });
+			writeFileSync(join(dir, node, `attempts-${node}-1-1.jsonl`), text);
+		}
+		const before = join(root, "before.json");
+		writeFileSync(before, JSON.stringify({ takenAtSqld: 0, sources: {} }));
+		const timeline = join(dir, "timeline.json");
+		writeFileSync(
+			timeline,
+			JSON.stringify({ runId: "check-test", expectedWorkers, events: [], stops: [], phases: [] }),
+		);
+		const out = join(root, "check.json");
+		return { configFile, args: [dir, before, timeline, out] as const, report: () => readJson<CheckReport>(out) };
+	}
+
+	const allLogs = () => Object.fromEntries(WORKERS.map((node) => [node, probeLog(node)]));
+	const rejectedLog = jsonl(
+		{ t: "start", pid: 4, localNow: 1, node: "d" },
+		{ t: "intent", id: "d-1", pid: 4, localNow: 2, plan: { source: "s-1" } },
+		{
+			t: "error",
+			id: "d-1",
+			pid: 4,
+			localNow: 3,
+			phase: "fork",
+			error: { fork: true, name: "ForkInvalidOptionError", code: "invalid-option", retryable: false, message: "-" },
+		},
+		{ t: "failed-nonretryable", id: "d-1", pid: 4, localNow: 4 },
+	);
+
+	test("every invariant passes when every expected worker's logs were collected", async () => {
+		const logs = allLogs();
+		logs.d += '{"t":"try","id":"d-2"';
+		const { args, report } = await round(logs, WORKERS);
+		assert.equal(await check(...args), true);
+		const result = await report();
+		assert.deepEqual(Object.keys(result.invariants), [...CHAOS_INVARIANTS]);
+		for (const name of CHAOS_INVARIANTS) assert.equal(result.invariants[name]?.pass, true, name);
+		assert.equal(result.logFiles, WORKERS.length);
+		assert.deepEqual(result.invariants.workerLogsComplete?.expectedWorkers, WORKERS);
+		assert.deepEqual(result.invariants.workerLogsComplete?.logsByNode?.d, {
+			files: 1,
+			records: 3,
+			emptyFiles: 0,
+			tornFinalLines: 1,
+		});
+		assertChaosInvariants(JSON.stringify(result), { checkerExitCode: 0 });
+	});
+
+	test("a worker whose rejected-only logs were not collected fails worker log coverage", async () => {
+		const seen = await round({ ...allLogs(), d: rejectedLog }, WORKERS);
+		assert.equal(await check(...seen.args), false);
+		const seenReport = await seen.report();
+		assert.equal(seenReport.invariants.noLostOrDuplicatedWork?.pass, false);
+		assert.equal(seenReport.invariants.workerLogsComplete?.pass, true);
+
+		const { d: _rejectedOnly, ...collected } = allLogs();
+		const { args, report } = await round(collected, WORKERS);
+		assert.equal(await check(...args), false);
+		const result = await report();
+		assert.deepEqual(result.invariants.workerLogsComplete?.violations, [{ node: "d", problem: "no log directory" }]);
+		for (const name of CHAOS_INVARIANTS.filter((name) => name !== "workerLogsComplete"))
+			assert.equal(result.invariants[name]?.pass, true, name);
+		const error = verdictOf(JSON.stringify(result), 1);
+		assert.equal(error.code, "invariants-failed");
+		assert.deepEqual(error.failedInvariants, ["workerLogsComplete"]);
+	});
+
+	test("a timeline without expected workers fails coverage instead of trusting the logs present", async () => {
+		const { args, report } = await round(allLogs(), undefined);
+		assert.equal(await check(...args), false);
+		const coverage = (await report()).invariants.workerLogsComplete;
+		assert.deepEqual(coverage?.violations, [{ node: null, problem: "timeline does not list the expected workers" }]);
+		assert.equal(coverage?.expectedWorkers, null);
+	});
+
+	test(
+		"the checker command exits by the worker log verdict",
+		async () => {
+			const cli = async (collected: Record<string, string>) => {
+				const { configFile, args, report } = await round(collected, WORKERS);
+				const result = spawnSyncCollect([bunExecutable(), join(harness, "check.ts"), "check", ...args], {
+					env: { ...process.env, FC_CONFIG: configFile },
+				});
+				return { exitCode: result.exitCode, stderr: result.stderr.toString(), report: await report() };
+			};
+			const passing = await cli(allLogs());
+			assert.equal(passing.exitCode, 0, passing.stderr);
+			assert.equal(passing.report.invariants.workerLogsComplete?.pass, true);
+
+			const { d: _rejectedOnly, ...collected } = allLogs();
+			const failing = await cli(collected);
+			assert.equal(failing.exitCode, 1, failing.stderr);
+			assert.equal(failing.report.invariants.workerLogsComplete?.pass, false);
+			assert.match(failing.stderr, /\(failed: workerLogsComplete\) \(invariants-failed\)/);
+		},
+		CHECKER_CLI_TIMEOUT_MS,
+	);
 });
 
 /**
