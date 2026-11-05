@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ENV_OFFLINE } from "../src/config.ts";
 import { createBashTool } from "../src/core/tools/bash.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
+import { getToolPath } from "../src/utils/tools-manager.ts";
+
+// CI installs a pinned ripgrep before the suite and sets this; the ripgrep cases then never download one (#4389).
+const requireProvisionedRipgrep = process.env.ATOMIC_REQUIRE_PROVISIONED_RIPGREP === "1";
 
 const _readTool = createReadTool(process.cwd());
 const _writeTool = createWriteTool(process.cwd());
@@ -44,6 +49,22 @@ describe("Coding Agent Tools", () => {
 	});
 
 	describe("grep tool", () => {
+		beforeAll(() => {
+			if (requireProvisionedRipgrep) vi.stubEnv(ENV_OFFLINE, "1");
+		});
+
+		afterAll(() => {
+			vi.unstubAllEnvs();
+		});
+
+		it.skipIf(!requireProvisionedRipgrep)("finds the ripgrep installed before the suite (#4389)", () => {
+			assert.notEqual(
+				getToolPath("rg"),
+				null,
+				"ATOMIC_REQUIRE_PROVISIONED_RIPGREP=1 needs ripgrep on PATH or in Atomic's bin directory before the suite starts",
+			);
+		});
+
 		it("should include filename when searching a single file", async () => {
 			const testFile = join(testDir, "example.txt");
 			writeFileSync(testFile, "first line\nmatch line\nlast line");

@@ -325,6 +325,17 @@ try {
 }
 ```
 
+#### fd and ripgrep download errors
+
+When `fd` or `ripgrep` is neither in `getBinDir()` nor on `PATH`, the `find`, `grep` and `search` tools download the latest release from GitHub. If a request fails, the tool call rejects with a `ManagedToolError` whose `message` names the request, and interactive startup shows the same text as a warning. Nothing is installed. Offline mode, unsupported platforms and an archive that cannot be unpacked still reject with a plain error.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `ManagedToolDownloadError` | `download-failed` | The release lookup (`phase: "resolve-version"`) or archive download (`phase: "download"`) failed, or the response was not usable. `cause` is the underlying error | `tool` (`"fd"` or `"rg"`), `phase`, `url`, `httpStatus?`, `detail?` | Check access to github.com and retry, or install the tool with your package manager. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
+| `ManagedToolTimeoutError` | `download-timeout` | The request did not finish in time: 10 s for the release lookup, 120 s for the archive | `tool`, `phase`, `url`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
+
+`isManagedToolError`, `isManagedToolDownloadError` and `isManagedToolTimeoutError` also accept errors from another realm by `name` and `code`; `isRetryableManagedToolError(error)` asks whether anything in the cause chain is retryable, to a bounded depth. Branch on `code` or the class, never on `message`.
+
 #### Bash tool behavior
 
 Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
@@ -1088,6 +1099,11 @@ GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionCo
 isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
 findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError
 type ResolvedGit, type ResolveGitOptions, type GitToolStatus, type GitUnavailableCode, type GitUnavailableFields
+
+// fd and ripgrep download errors (see "fd and ripgrep download errors")
+ManagedToolError, ManagedToolDownloadError, ManagedToolTimeoutError
+isManagedToolError, isManagedToolDownloadError, isManagedToolTimeoutError, isRetryableManagedToolError
+type ManagedToolName, type ManagedToolRequestPhase, type ManagedToolErrorCode, type ManagedToolDownloadFields, type ManagedToolTimeoutFields
 
 // Debug output
 isDebugEnabled
