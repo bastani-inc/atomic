@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/index.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "../../../packages/workflows/src/durable/run-result.js";
 import { type Json, LEDGER_TABLE, loadConfig, NAMED_TOOLS, openSharedStorage } from "./shared.js";
+import { assertChaosInvariants, ChaosInvariantError } from "./verdict.mjs";
 
 type Row = Record<string, string | number | bigint | null | Uint8Array>;
 
@@ -223,7 +224,7 @@ function comparableOutput(checkpoint: Checkpoint): Json {
 	return output;
 }
 
-async function check(collectedDir: string, beforeFile: string, timelineFile: string, out: string): Promise<void> {
+async function check(collectedDir: string, beforeFile: string, timelineFile: string, out: string): Promise<boolean> {
 	const config = loadConfig();
 	const { database } = await openSharedStorage(config);
 	const started = Date.now();
@@ -900,16 +901,26 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 		),
 	);
 	await database.close();
+	// The report is written either way; the exit status says whether every invariant passed.
+	try {
+		assertChaosInvariants(JSON.stringify(result));
+		return true;
+	} catch (error) {
+		if (!(error instanceof ChaosInvariantError)) throw error;
+		console.error(error.message);
+		return false;
+	}
 }
 
+let passed = true;
 switch (process.argv[2]) {
 	case "snapshot":
 		await snapshot(process.argv[3]!, process.argv[4]!);
 		break;
 	case "check":
-		await check(process.argv[3]!, process.argv[4]!, process.argv[5]!, process.argv[6]!);
+		passed = await check(process.argv[3]!, process.argv[4]!, process.argv[5]!, process.argv[6]!);
 		break;
 	default:
 		throw new Error(`unknown mode ${process.argv[2]}`);
 }
-process.exit(0);
+process.exit(passed ? 0 : 1);

@@ -89,8 +89,23 @@ prefix), no lost or duplicated work (ledger vs. checkpoints, one fork per attemp
 replay, fencing (no takeover of a fresh claim inside 120 s on the journal's clock), typed errors (every fork-path
 failure is a `ForkError` with the documented `retryable` flag, or the caller's abort reason), and recovery.
 
+The round fails unless every one of those invariants passed. `check.ts` writes `check.json` and then exits 1 if any
+invariant failed. The controller copies the report and exits 1 if the report is missing or unreadable, lacks an
+invariant, holds a failed one, or the checker exited nonzero. Its `controller-error` timeline event carries the code
+(`report-missing`, `report-invalid`, `checker-failed` or `invariants-failed`) and the invariants involved. To
+re-check a stored round, run `node test/distributed/fork-chaos/verdict.mjs <check.json>`.
+
 ## Teardown
 
-`teardown.sh` deletes the control VNet's side of each peering whose name carries the run id, then the run's resource
-groups (VMs, disks, NICs, NSGs, VNets and their peerings), and records the `az` queries proving that nothing tagged
-with the run remains. Run it even after a failed bring-up.
+`teardown.sh` deletes only what `provision.sh` created for the run. It never deletes a resource just because the name
+contains the run id:
+
+- control VNet peerings named exactly `atomic-dt-<run>-<region>` that point at the run's VNet in that region;
+- resource groups tagged `atomic-run=<run>` and `atomic-distributed-test=<branch tag>`, which contain the VMs,
+  disks, NICs, NSGs, VNets and their peerings;
+- VNet flow logs whose target is one of the run's VNets.
+
+Azure region names contain no hyphens. So a name like `atomic-dt-demo-production-westus3` belongs to run
+`demo-production`, not `demo`, and teardown leaves it alone. Teardown then records the `az` queries, with the same
+selectors, that prove nothing of the run remains. It exits 1 when that proof is not clean: something of the run is
+left, or a query failed. Run it again until it exits 0. Run it even after a failed bring-up.

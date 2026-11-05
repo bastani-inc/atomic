@@ -14,6 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertChaosInvariants, findChaosInvariantError } from "./verdict.mjs";
 
 const runId = process.env.RUN_ID;
 if (!runId) throw new Error("set RUN_ID");
@@ -111,11 +112,6 @@ async function pushScenarioFiles() {
 async function startForker(node) {
 	await sshOk(node, `setsid nohup bash /opt/fork-chaos/repo/test/distributed/fork-chaos/supervise.sh >/dev/null 2>&1 < /dev/null &\nsleep 0.2`);
 	record("forker-start", { node });
-}
-
-async function supervisorRunning(node) {
-	const result = await ssh(node, "pgrep -f 'fork-chaos/supervise[.]sh' >/dev/null && echo yes || echo no");
-	return result.stdout.trim() === "yes";
 }
 
 async function waitForExit(node, pattern, limitMs) {
@@ -442,16 +438,27 @@ async function main() {
 			await exec("ssh", [...sshOptions, `azureuser@${nodes.a.ip}`, `mkdir -p /opt/fork-chaos/collected/${node} && tar -xzf - -C /opt/fork-chaos/collected/${node} --wildcards '*.jsonl'`], { input: tar.stdout });
 		}
 		await sshOk("a", `cat > /opt/fork-chaos/collected/timeline.json <<'JSON'\n${JSON.stringify(timeline)}\nJSON`);
-		const checked = await ssh("a", `${env}\nbun run test/distributed/fork-chaos/check.ts check /opt/fork-chaos/collected ${state}/before.json /opt/fork-chaos/collected/timeline.json ${state}/check.json 2>${state}/check-stderr.log | tail -1; cat ${state}/check-stderr.log | tail -20`, { timeoutMs: 1_800_000 });
-		record("checker", { summary: checked.stdout.trim() });
-		writeFileSync(join(artifactDir, "check.json"), await sshOk("a", `cat ${state}/check.json`));
+		const checked = await ssh(
+			"a",
+			`${env}\nbun run test/distributed/fork-chaos/check.ts check /opt/fork-chaos/collected ${state}/before.json /opt/fork-chaos/collected/timeline.json ${state}/check.json >${state}/check-stdout.log 2>${state}/check-stderr.log; status=$?; tail -1 ${state}/check-stdout.log; tail -20 ${state}/check-stderr.log; exit $status`,
+			{ timeoutMs: 1_800_000 },
+		);
+		record("checker", { exit: checked.code, summary: checked.stdout.trim() });
+		const report = await ssh("a", `cat ${state}/check.json`);
+		if (report.code === 0) writeFileSync(join(artifactDir, "check.json"), report.stdout);
 		const sqldState = await ssh("sqld", "systemctl show sqld -p NRestarts -p ActiveState; df -B1 --output=size,used,avail /data | tail -1; sudo du -sb /data/sqld");
 		record("sqld-state", { state: sqldState.stdout.trim().split("\n") });
+		// A missing, unreadable, incomplete or failing report fails the round; main's catch records it and exits 1.
+		assertChaosInvariants(report.code === 0 ? report.stdout : undefined, { checkerExitCode: checked.code });
 	});
 	record("controller-done");
 }
 
 main().catch((error) => {
-	record("controller-error", { message: String(error?.stack ?? error).slice(0, 2000) });
+	const failure = findChaosInvariantError(error);
+	const verdict = failure
+		? { code: failure.code, failedInvariants: failure.failedInvariants, missingInvariants: failure.missingInvariants, hint: failure.hint }
+		: {};
+	record("controller-error", { ...verdict, message: String(error?.stack ?? error).slice(0, 2000) });
 	process.exitCode = 1;
 });
