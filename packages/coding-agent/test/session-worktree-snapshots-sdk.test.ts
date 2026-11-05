@@ -151,7 +151,14 @@ describe("turn boundaries", () => {
 			fauxAssistantMessage("carried on"),
 		]);
 		await harness.session.prompt("call something that does not exist");
-		assert.equal(harness.session.messages.at(-1)?.role, "assistant");
+		const last = harness.session.messages.at(-1);
+		assert.equal(last?.role, "assistant");
+		assert.equal(
+			last?.role === "assistant" && last.stopReason,
+			"stop",
+			"the turn after the unknown call ran to its end",
+		);
+		assert.deepEqual(last?.role === "assistant" && last.content, [{ type: "text", text: "carried on" }]);
 		assert.deepEqual(harness.eventsOfType("worktree_snapshot_unavailable"), []);
 	});
 
