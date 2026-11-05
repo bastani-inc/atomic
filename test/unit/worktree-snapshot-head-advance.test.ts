@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import {
 	captureWorktreeSnapshot,
 	isHeadOnlyAdvance,
@@ -69,9 +70,15 @@ describe("a drift that only moved HEAD forward over the recorded tree (#4245)", 
 			snapshotId: snapshot.id,
 		});
 		assert.equal(await isHeadOnlyAdvance(foreign), false);
+		let gitCalls = 0;
+		setWorktreeSnapshotGit(async () => {
+			gitCalls++;
+			return sandbox.executable;
+		});
 		assert.equal(
 			await isHeadOnlyAdvance(new WorkspaceDriftError({ ...foreign.fields, actualHead: null } as never)),
 			false,
 		);
+		assert.equal(gitCalls, 0, "a checkout without a HEAD has no ancestry to ask Git about");
 	});
 });

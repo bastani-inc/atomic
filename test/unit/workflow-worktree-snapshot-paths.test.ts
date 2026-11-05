@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "@bastani/atomic";
 import { test } from "vitest";
@@ -62,6 +64,20 @@ test("only paths inside a replaced root move: relative paths, parents, siblings 
 		"a relative path is never read against the process's working directory",
 	);
 });
+
+test.skipIf(process.platform === "win32")(
+	"without restores an absolute path comes back as given, even one whose links cannot be resolved (#4245)",
+	() => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-workflow-paths-"));
+		try {
+			symlinkSync(join(directory, "loop"), join(directory, "loop"));
+			const path = join(directory, "loop", "repo");
+			assert.equal(mapWorkflowWorktreePath(path, []), path);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
 
 test("the most specific replaced root wins, whatever order the restores were recorded in (#4245)", () => {
 	const outer = mapping(at("a"), at("x"));

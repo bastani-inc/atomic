@@ -93,6 +93,25 @@ describe("WorkspaceError rendering", () => {
 		);
 	});
 
+	test("the Git install hint is the platform's command, with the package-manager alternative only on Linux", () => {
+		const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+		const hintOn = (platform: NodeJS.Platform) => {
+			Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: platform });
+			const error = new GitUnavailableError("not-installed", "git");
+			assert.equal(error.platform, platform);
+			return error.hint;
+		};
+		try {
+			assert.equal(hintOn("darwin"), "Install Git with `xcode-select --install` or put it on PATH, then retry.");
+			assert.equal(
+				hintOn("linux"),
+				"Install Git with `sudo apt-get install git` (or your distribution's package manager) or put it on PATH, then retry.",
+			);
+		} finally {
+			Object.defineProperty(process, "platform", original);
+		}
+	});
+
 	test("every error keeps hint and fields separately for UIs and logs", () => {
 		const error = new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target: "/x", reason: "not-empty" });
 		assert.equal(error.name, "WorkspaceRestoreError");
