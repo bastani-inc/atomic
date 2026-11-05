@@ -89,7 +89,12 @@ function openLeaseDatabase(lockFile: string, lockWaitMs: number) {
 	return openNodeSqliteDatabase(lockFile, { busyTimeoutMs: lockWaitMs, lockWaitMs });
 }
 
-function conflict(worktree: string, lockFile: string, holder: HolderRow | undefined, cause?: unknown) {
+function conflict(
+	worktree: string,
+	lockFile: string,
+	holder: Pick<HolderRow, "owner" | "pid" | "host"> | undefined,
+	cause?: unknown,
+) {
 	return new WorkspaceBindingError({
 		code: "writer-conflict",
 		fields: {
@@ -186,8 +191,14 @@ export async function acquireWorkspaceWriterLease(
 				return undefined;
 			});
 		} catch (error) {
-			if (isSqliteBusy(error)) throw conflict(binding.worktree, lockFile, undefined, error);
-			throw error;
+			// A writer queued behind another process gives up with a typed timeout that may carry no SQLite cause.
+			const timeout = findStorageWriteLockTimeoutError(error);
+			if (timeout === undefined && !isSqliteBusy(error)) throw error;
+			const inFlight =
+				timeout?.holderPid === undefined
+					? undefined
+					: { owner: "an in-flight lease transaction", pid: timeout.holderPid, host: hostname() };
+			throw conflict(binding.worktree, lockFile, inFlight, error);
 		}
 	});
 	if (current !== undefined) throw conflict(binding.worktree, lockFile, current);

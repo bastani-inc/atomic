@@ -216,7 +216,7 @@ describe("workspace writer lease (#3109)", () => {
 			assert.equal(error.fields.holder, "an in-flight lease transaction");
 			assert.equal(error.fields.holderPid, null);
 			assert.equal(error.fields.holderHost, null);
-			assert.equal((error.cause as { name?: string }).name, "StorageUnavailableError");
+			assert.ok(error.cause instanceof StorageUnavailableError, "the storage failure is kept as the cause");
 			const waited = Number(/gave up after (\d+) ms/.exec(String((error.cause as Error).message))?.[1]);
 			assert.ok(
 				waited >= 200 && waited < DEFAULT_LOCK_WAIT_MS,

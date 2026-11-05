@@ -4,10 +4,11 @@
  */
 import { acquireWorkspaceWriterLease } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 
-const [worktree, owner] = process.argv.slice(2);
-if (worktree === undefined || owner === undefined) throw new Error("usage: workspace-lease-worker <worktree> <owner>");
+const [worktree, owner, lockWait] = process.argv.slice(2);
+if (worktree === undefined || owner === undefined)
+	throw new Error("usage: workspace-lease-worker <worktree> <owner> [lock wait ms]");
 try {
-	const lease = await acquireWorkspaceWriterLease({ worktree }, { owner, lockWaitMs: 60_000 });
+	const lease = await acquireWorkspaceWriterLease({ worktree }, { owner, lockWaitMs: Number(lockWait ?? 60_000) });
 	process.stdout.write(`${JSON.stringify({ outcome: "acquired", owner, pid: process.pid })}\n`);
 	process.stdin.setEncoding("utf-8");
 	for await (const chunk of process.stdin) {

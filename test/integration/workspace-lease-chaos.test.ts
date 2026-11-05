@@ -56,8 +56,12 @@ afterEach(() => {
 	dirs.cleanup();
 });
 
-function contend(worktree: string, owner: string): Contender {
-	const child = spawn(bunExecutable(), [WORKER, worktree, owner], { stdio: ["pipe", "pipe", "pipe"] });
+function contend(worktree: string, owner: string, lockWaitMs?: number): Contender {
+	const child = spawn(
+		bunExecutable(),
+		[WORKER, worktree, owner, ...(lockWaitMs === undefined ? [] : [String(lockWaitMs)])],
+		{ stdio: ["pipe", "pipe", "pipe"] },
+	);
 	running.add(child);
 	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
 	void exited.then(() => running.delete(child));
@@ -96,6 +100,34 @@ function assertLeaseStore(worktree: string): readonly { readonly owner: string; 
 }
 
 describe.skipIf(process.platform === "win32")("workspace writer lease under process chaos (#3109)", () => {
+	test(
+		"every writer queued behind a held lease transaction is refused with writer-conflict (#3109)",
+		async () => {
+			const worktree = await boundWorktree("queued-lease");
+			const lockFile = join(git(worktree, "rev-parse", "--absolute-git-dir"), "atomic-writer-lease.sqlite");
+			const seed = contend(worktree, "seed");
+			assert.equal((await seed.first)?.outcome, "acquired");
+			seed.child.stdin.write("release\n");
+			await seed.exited;
+			const holder = new DatabaseSync(lockFile);
+			holder.exec("BEGIN IMMEDIATE");
+			try {
+				const first = contend(worktree, "queued-first", 1500).first;
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				const later = Array.from({ length: 2 }, (_, index) => contend(worktree, `queued-${index}`, 500).first);
+				const outcomes = await Promise.all([first, ...later]);
+				for (const outcome of outcomes) {
+					assert.equal(outcome?.outcome, "refused", JSON.stringify(outcome));
+					assert.equal(outcome?.code, "writer-conflict", JSON.stringify(outcome));
+				}
+			} finally {
+				holder.exec("ROLLBACK");
+				holder.close();
+			}
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
 	test(
 		"many concurrent writers see exactly one winner; a SIGKILLed holder is taken over (#3109)",
 		async () => {
@@ -187,7 +219,10 @@ interface BinderOutcome {
 	readonly head?: string;
 	readonly tree?: string;
 	readonly code?: string;
+	readonly name?: string;
 	readonly message?: string;
+	readonly fields?: Readonly<Record<string, unknown>>;
+	readonly causeName?: string;
 }
 
 /** Start the binding fixture; `first` resolves with its first JSON line. */
@@ -425,6 +460,46 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 			assert.equal(early, "all waiting", "nobody binds a worktree whose addition has not finished");
 			first.child.kill("SIGCONT");
 			assertOneCompleteWorktree([await first.first, ...(await Promise.all(others))]);
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
+	test(
+		"every process queued behind a stopped repository-lock holder times out typed, naming the holder (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "queued-lock");
+			const commonDir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+			const holder = binder(["hold-lock", commonDir]);
+			assert.equal((await holder.first).outcome, "locked");
+			holder.child.kill("SIGSTOP");
+			try {
+				// The first waiter queues for the lock; the later ones find it waiting and queue behind it without a try.
+				const first = binder(["wait-lock", commonDir, "1500"]).first;
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				const later = Array.from({ length: 2 }, () => binder(["wait-lock", commonDir, "500"]).first);
+				const waiters = await Promise.all([first, ...later]);
+				for (const waiter of waiters) {
+					assert.equal(waiter.outcome, "failed", JSON.stringify(waiter));
+					assert.equal(waiter.name, "WorkspaceTimeoutError", JSON.stringify(waiter));
+					assert.equal(waiter.code, "timeout");
+					assert.equal(waiter.fields?.phase, "repository-lock");
+					assert.ok(waiter.fields?.timeoutMs === 500 || waiter.fields?.timeoutMs === 1500);
+					assert.equal(waiter.fields?.holderPid, holder.child.pid);
+					assert.equal(waiter.causeName, "StorageWriteLockTimeoutError");
+				}
+			} finally {
+				holder.child.kill("SIGCONT");
+			}
+			assert.ok(
+				existsSync(join(commonDir, "atomic-repository-lock.sqlite-writers")),
+				"the writers' queue lives in .git",
+			);
+			git(repo, "fsck", "--no-progress");
+			assert.equal(
+				git(repo, "worktree", "list", "--porcelain").split("\n\n").length,
+				1,
+				"git sees no extra worktree",
+			);
 		},
 		CHAOS_TIMEOUT_MS,
 	);
