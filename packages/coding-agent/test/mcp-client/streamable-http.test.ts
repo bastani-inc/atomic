@@ -105,6 +105,45 @@ describe("consumeSseStream", () => {
 		assert.deepEqual(events, [{ id: "7", data: '{"one":\n1}' }]);
 	});
 
+	it("recognizes CR, LF, and CRLF line endings, including CRLF split across chunks (pi #11775)", async () => {
+		const encoder = new TextEncoder();
+		const parse = async (chunks: string[]) => {
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+					controller.close();
+				},
+			});
+			const events: SseEvent[] = [];
+			await consumeSseStream(stream, { onEvent: (event) => events.push(event) });
+			return events;
+		};
+		const expected = [{ id: "1", data: "a\nb" }, { data: "c" }];
+		for (const separator of ["\n", "\r\n", "\r"]) {
+			const text = ["id: 1", "data: a", "data: b", "", "data: c", "", ""].join(separator);
+			assert.deepEqual(await parse([text]), expected);
+			// One character per chunk splits every CRLF between chunks.
+			assert.deepEqual(await parse([...text]), expected);
+		}
+		assert.deepEqual(await parse(["id: 1\rdata: a\r\ndata: b\n\r", "\ndata: c\r\r"]), expected);
+	});
+
+	it("dispatches CR-terminated events while the stream stays open (pi #11775)", async () => {
+		const encoder = new TextEncoder();
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				controller = c;
+			},
+		});
+		const received = new Promise<SseEvent>((resolve) => {
+			void consumeSseStream(stream, { onEvent: resolve }).catch(() => {});
+		});
+		controller.enqueue(encoder.encode("data: first\r\r"));
+		assert.deepEqual(await received, { data: "first" });
+		controller.close();
+	});
+
 	it("rejects events whose data lines exceed the limit without a blank line", async () => {
 		const encoder = new TextEncoder();
 		let sent = 0;
@@ -139,6 +178,48 @@ describe("consumeSseStream", () => {
 			/MCP SSE event exceeds 128 bytes/,
 		);
 		assert.equal(cancelled, true);
+	});
+});
+
+describe("consumeSseStream byte chunking", () => {
+	const encoder = new TextEncoder();
+	const parseBytes = async (chunks: Uint8Array[]) => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const chunk of chunks) controller.enqueue(chunk);
+				controller.close();
+			},
+		});
+		const events: SseEvent[] = [];
+		await consumeSseStream(stream, { onEvent: (event) => events.push(event) });
+		return events;
+	};
+	const parse = (chunks: string[]) => parseBytes(chunks.map((chunk) => encoder.encode(chunk)));
+
+	it("decodes multi-byte characters split across chunks", async () => {
+		const bytes = encoder.encode("data: é€🌍\n\n");
+		const events = await parseBytes([...bytes].map((byte) => new Uint8Array([byte])));
+		assert.deepEqual(events, [{ data: "é€🌍" }]);
+	});
+
+	it("drops the LF of a CRLF split across chunks even when more text follows it", async () => {
+		assert.deepEqual(await parse(["data: a\r", "\ndata: b\r\r"]), [{ data: "a\nb" }]);
+	});
+
+	it("keeps dropping the LF of a split CRLF across an empty chunk", async () => {
+		assert.deepEqual(
+			await parseBytes([encoder.encode("data: a\r"), new Uint8Array(0), encoder.encode("\ndata: b\r\r")]),
+			[{ data: "a\nb" }],
+		);
+	});
+
+	it("treats a blank line after a dropped LF as ending the event", async () => {
+		assert.deepEqual(await parse(["data: a\r", "\ndata: b\n", "\ndata: c\n\n"]), [{ data: "a\nb" }, { data: "c" }]);
+	});
+
+	it("keeps the replacement character of a character cut off at the end of the stream", async () => {
+		const events = await parseBytes([encoder.encode("data: x"), new Uint8Array([0xc3])]);
+		assert.deepEqual(events, [{ data: "x\uFFFD" }]);
 	});
 });
 
