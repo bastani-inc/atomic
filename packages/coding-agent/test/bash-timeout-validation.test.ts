@@ -57,4 +57,42 @@ describe("bash timeout validation", () => {
 			).rejects.toThrow(/timeout/i);
 		},
 	);
+
+	test("reports a custom backend's timeout:<seconds> error as a timed-out command with the error as cause", async () => {
+		const thrown = new Error("timeout:5");
+		const bash = createBashToolDefinition(process.cwd(), {
+			operations: {
+				exec: async () => {
+					throw thrown;
+				},
+			},
+		});
+
+		const error = await bash.execute("custom", { command: "true" }, undefined, undefined, context).then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toBe("Command timed out after 5 seconds");
+		expect((error as Error).cause).toBe(thrown);
+	});
+
+	test("rethrows a custom backend's unrelated failure unchanged", async () => {
+		const thrown = new Error("spawn failed");
+		const bash = createBashToolDefinition(process.cwd(), {
+			operations: {
+				exec: async () => {
+					throw thrown;
+				},
+			},
+		});
+
+		const error = await bash.execute("custom", { command: "true" }, undefined, undefined, context).then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+
+		expect(error).toBe(thrown);
+	});
 });

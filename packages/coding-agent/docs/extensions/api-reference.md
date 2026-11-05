@@ -1122,8 +1122,9 @@ Registered servers are the lowest-precedence MCP layer. They replace a same-name
 
 ### Typed errors from built-in tools and providers
 
-These classes are exported from `@bastani/atomic`. Branch on the class, its guard, or `code`, not on `message`. Each has `hint` (what to do next), `retryable`, and `toJSON()`, which gives `{ name, code, message, hint, retryable, fields, cause }` for relaying across a process boundary; `rehydrateLlamaServerError()` rebuilds the same class on the other side. The guards (`isLlamaServerError()`, ...) also accept such a relayed error.
+These classes are exported from `@bastani/atomic`. Branch on the class, its guard, or `code`, not on `message`. Each has `hint` (what to do next), `retryable`, and `toJSON()`, which gives `{ name, code, message, hint, retryable, fields, cause }` for relaying across a process boundary; `rehydrateShellToolError()` and `rehydrateLlamaServerError()` rebuild the same class on the other side. The guards (`isShellTimeoutError()`, `isLlamaServerError()`, ...) also accept such a relayed error.
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
+| `ShellTimeoutError` (family `ShellToolError`) | `shell-timeout` | The local shell backend of `createLocalBashOperations()` hit the command's timeout. `phase` is `draining-output` when the shell had already exited and background processes it started kept its output open; `shellExit` then holds the shell's exit code. | `timeoutMs`, `elapsedMs`, `phase`, `shellExit` | Redirect background output or raise `timeout`. Its `message` stays `timeout:<seconds>`, the value custom `BashOperations` throw. |
 | `LlamaServerUnreachableError` (family `LlamaServerError`) | `server-unreachable` | A llama.cpp router request failed before the server answered: connection refused, wrong port, DNS, or `https` against a plain-HTTP server. Cancellation is rethrown unchanged. | `serverUrl` (without user information), `detail` (the network-level reason) | Start `llama serve`, or fix the URL with `/login llama.cpp` or `LLAMA_BASE_URL`. `retryable` is `true`. |

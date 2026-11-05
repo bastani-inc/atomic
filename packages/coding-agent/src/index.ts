@@ -278,6 +278,11 @@ export {
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
 } from "./core/compaction/index.ts";
+export type {
+	ErrorFieldValue,
+	SerializedErrorCause,
+	SerializedTypedError,
+} from "./core/error-contract.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
 export {
 	AutoRoutingInferenceError,
@@ -678,6 +683,16 @@ export {
 	writeToolSystemPromptContribution,
 } from "./core/tools/index.js";
 export {
+	isShellTimeoutError,
+	isShellToolError,
+	rehydrateShellToolError,
+	type ShellExitBeforeTimeout,
+	ShellTimeoutError,
+	type ShellTimeoutPhase,
+	ShellToolError,
+	type ShellToolErrorCode,
+} from "./core/tools/shell-errors.ts";
+export {
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,
@@ -686,11 +701,6 @@ export {
 	type ProjectTrustUpdate,
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
-export {
-	type ErrorFieldValue,
-	type SerializedErrorCause,
-	type SerializedTypedError,
-} from "./core/error-contract.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
 export {
 	findLlamaServerError,

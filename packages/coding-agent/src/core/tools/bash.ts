@@ -47,6 +47,7 @@ import {
 } from "./render-utils.ts";
 import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
 import { invalidateNativeSearchCache } from "./search-native.ts";
+import { ShellTimeoutError } from "./shell-errors.ts";
 import { addShellOutputPreview, formatTruncationNotice, rebuildShellWaitResult } from "./shell-task-render.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult } from "./truncate.ts";
@@ -250,7 +251,13 @@ export function createLocalBashOperations(options?: {
 				child.stdin?.end(command);
 			}
 			if (child.pid) trackDetachedChildPid(child.pid);
-			let timedOut = false;
+			const startedAt = performance.now();
+			let shellExitedAfterMs: number | undefined;
+			child.once("exit", () => {
+				shellExitedAfterMs = performance.now() - startedAt;
+			});
+			// Set when the deadline fires, with the shell's exit time if it had already exited.
+			let deadline: { timeoutSeconds: number; elapsedMs: number; shellExitedAfterMs?: number } | undefined;
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			const onAbort = () => {
 				if (child.pid) killProcessTree(child.pid);
@@ -258,7 +265,13 @@ export function createLocalBashOperations(options?: {
 			try {
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
-						timedOut = true;
+						deadline = {
+							timeoutSeconds: timeout,
+							elapsedMs: Math.round(performance.now() - startedAt),
+							shellExitedAfterMs,
+						};
+						// Also when the shell already exited: on Unix the group kill still reaches background
+						// processes holding the pipes. Windows cannot find them once the shell pid is gone.
 						if (child.pid) killProcessTree(child.pid);
 					}, timeout * 1000);
 				}
@@ -270,11 +283,26 @@ export function createLocalBashOperations(options?: {
 				}
 				const exitCode = await waitForChildProcess(child);
 				if (signal?.aborted) throw new Error("aborted");
-				if (timedOut) {
-					throw new Error(`timeout:${timeout}`);
-				}
+				// A signal-killed shell has no exit code. Use the standard shell convention so
+				// callers do not mistake the termination for a successful command.
 				const signalCode = child.signalCode;
-				return { exitCode: exitCode ?? (signalCode ? 128 + (osConstants.signals[signalCode] ?? 0) : 1) };
+				const resolvedExitCode = exitCode ?? (signalCode ? 128 + (osConstants.signals[signalCode] ?? 0) : 1);
+				if (deadline) {
+					const { timeoutSeconds, elapsedMs, shellExitedAfterMs: exitedAfterMs } = deadline;
+					throw new ShellTimeoutError({
+						timeoutSeconds,
+						elapsedMs,
+						...(exitedAfterMs === undefined
+							? {}
+							: {
+									shellExit: {
+										exitCode: resolvedExitCode,
+										afterSeconds: Math.round(exitedAfterMs / 100) / 10,
+									},
+								}),
+					});
+				}
+				return { exitCode: resolvedExitCode };
 			} finally {
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -670,9 +698,13 @@ export function createBashToolDefinition(
 					if (err instanceof Error && err.message === "aborted") {
 						throw new Error(appendStatus(text, "Command aborted"));
 					}
+					if (err instanceof ShellTimeoutError) {
+						throw new Error(appendStatus(text, err.describe()), { cause: err });
+					}
+					// Custom BashOperations, the PTY and the PowerShell backends report a timeout as `timeout:<seconds>`.
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
+						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`), { cause: err });
 					}
 					throw err;
 				}
