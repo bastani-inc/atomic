@@ -132,7 +132,6 @@ export class QuestionnaireSession {
 			itemsByTab: this.itemsByTab,
 			isMulti: this.isMulti,
 			initialState: this.state,
-			getCurrentTab: () => this.state.currentTab,
 			...(this.chatAsOption ? { chatAsOption: true } : {}),
 		});
 

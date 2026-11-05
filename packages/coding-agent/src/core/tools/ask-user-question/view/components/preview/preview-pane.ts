@@ -65,9 +65,9 @@ export interface PreviewPaneConfig {
  * rendering to `PreviewBlockRenderer` (which owns the markdown cache and
  * bordered-box composition).
  *
- * `naturalHeight` and `maxNaturalHeight` query both children's heights; `render`
- * combines them via `decideLayout` (mode threaded into both calls — never
- * re-derived).
+ * `maxNaturalHeight` reads both children's heights from their cached layouts;
+ * `render` combines them via `decideLayout` (mode threaded into both calls —
+ * never re-derived).
  */
 export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 	private readonly question: QuestionData;
@@ -133,25 +133,13 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		];
 	}
 
-	naturalHeight(width: number): number {
-		if (this.question.multiSelect === true) return this.optionListView.render(width).length;
-		if (!this.previewBlock.hasAnyPreview()) return this.optionListView.render(width).length;
-		const mode = decideLayout(this.getTerminalWidth(), width);
-		const adaptiveLeft = this.getAdaptiveLeft(width);
-		const { optionsWidth, previewWidth } = bodyWidths(width, mode, adaptiveLeft);
-		const optionsHeight = this.optionListView.render(optionsWidth).length;
-		const previewBlockHeight = this.previewBlock.blockHeight(previewWidth, this.props.selectedIndex, mode);
-		if (mode === "side-by-side") return Math.max(optionsHeight, previewBlockHeight);
-		return optionsHeight + STACKED_GAP_ROWS + previewBlockHeight;
-	}
-
 	maxNaturalHeight(width: number): number {
-		if (this.question.multiSelect === true) return this.optionListView.render(width).length;
-		if (!this.previewBlock.hasAnyPreview()) return this.optionListView.render(width).length;
+		if (this.question.multiSelect === true) return this.optionListView.height(width);
+		if (!this.previewBlock.hasAnyPreview()) return this.optionListView.height(width);
 		const mode = decideLayout(this.getTerminalWidth(), width);
 		const adaptiveLeft = this.getAdaptiveLeft(width);
 		const { optionsWidth, previewWidth } = bodyWidths(width, mode, adaptiveLeft);
-		const optionsHeight = this.optionListView.render(optionsWidth).length;
+		const optionsHeight = this.optionListView.height(optionsWidth);
 		let maxPreviewBlock = 0;
 		for (let i = 0; i < this.question.options.length; i++) {
 			const h = this.previewBlock.blockHeight(previewWidth, i, mode);

@@ -8,13 +8,14 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.js";
-import { runCallback } from "../../core/callback-activity.ts";
+import { runCallback, runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
 import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
+import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
 import {
 	type EngineBlockedStatus,
 	type EngineTerminalControl,
@@ -151,6 +152,8 @@ export class EngineCustomUiService {
 	private readonly keybindings: KeybindingsManager;
 	private readonly stateListeners = new Set<HostCustomUiStateListener>();
 	private readonly widgetReleaseListeners = new Map<string, Set<() => void>>();
+	/** Widget renders and repaint checks; keyboard input and custom UI frames never wait in it. */
+	private readonly backgroundRenders = new BackgroundRenderLane();
 
 	setWidget(
 		key: string,
@@ -167,7 +170,7 @@ export class EngineCustomUiService {
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
-		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+		const tui = new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`);
 		ensurePngTranscoder(() => {
 			tui.invalidate();
 			tui.requestRender();
@@ -337,31 +340,23 @@ export class EngineCustomUiService {
 			case "engine_custom_scroll":
 				(record.component as ScrollableWidgetComponent).onScroll?.(command.state);
 				break;
-			case "engine_custom_render":
+			case "engine_custom_render": {
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
-				void runCallback({ kind: "renderer", name: command.componentId }, () =>
+				const { componentId, requestId } = command;
+				if (record.widgetKey !== undefined) {
+					this.backgroundRenders.schedule(`frame:${componentId}`, () =>
+						this.renderWidgetFrame(componentId, requestId, record),
+					);
+					break;
+				}
+				void runCallback({ kind: "renderer", name: componentId }, () =>
 					record.component.render(record.terminal.columns),
 				)
-					.then((lines) => {
-						const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
-						this.send({
-							type: "engine_custom_frame",
-							componentId: command.componentId,
-							requestId: command.requestId,
-							lines,
-							...(scrollRequest ? { scrollRequest } : {}),
-						});
-					})
-					.catch((error: Error) =>
-						this.send({
-							type: "engine_custom_frame",
-							componentId: command.componentId,
-							requestId: command.requestId,
-							lines: [`Remote component render failed: ${error.message}`],
-						}),
-					);
+					.then((lines) => this.sendFrame(componentId, requestId, record, lines))
+					.catch((error: Error) => this.sendRenderFailure(componentId, requestId, error));
 				break;
+			}
 			case "engine_custom_input":
 				void runCallback({ kind: "renderer", name: command.componentId }, () => {
 					if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
@@ -413,6 +408,39 @@ export class EngineCustomUiService {
 			if (notifyWidgetRelease) this.notifyWidgetRelease(record.widgetKey);
 		}
 		this.notifyState();
+	}
+
+	/** Renders a widget frame on the background lane. A widget closed while the render waited gets none. */
+	private renderWidgetFrame(componentId: string, requestId: number, record: ActiveComponent): void {
+		if (this.active.get(componentId) !== record) return;
+		try {
+			const lines = runSynchronousCallback({ kind: "renderer", name: componentId }, () =>
+				record.component.render(record.terminal.columns),
+			);
+			this.sendFrame(componentId, requestId, record, lines);
+		} catch (error) {
+			this.sendRenderFailure(componentId, requestId, error instanceof Error ? error : new Error(String(error)));
+		}
+	}
+
+	private sendFrame(componentId: string, requestId: number, record: ActiveComponent, lines: string[]): void {
+		const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
+		this.send({
+			type: "engine_custom_frame",
+			componentId,
+			requestId,
+			lines,
+			...(scrollRequest ? { scrollRequest } : {}),
+		});
+	}
+
+	private sendRenderFailure(componentId: string, requestId: number, error: Error): void {
+		this.send({
+			type: "engine_custom_frame",
+			componentId,
+			requestId,
+			lines: [`Remote component render failed: ${error.message}`],
+		});
 	}
 	private notifyWidgetRelease(key: string): void {
 		for (const listener of this.widgetReleaseListeners.get(key) ?? []) {

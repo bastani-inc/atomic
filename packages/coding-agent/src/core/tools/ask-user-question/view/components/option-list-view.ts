@@ -33,9 +33,13 @@ export interface OptionListViewProps {
  * `WrappingSelect`. Implements `StatefulView<OptionListViewProps>`:
  * `setProps` is the only mutator; render output reflects the last props
  * received.
+ *
+ * The layout is built once per (props, width) and shared by `height()` and
+ * `render()`, so measuring the list never renders it a second time.
  */
 export class OptionListView implements StatefulView<OptionListViewProps> {
 	private readonly select: WrappingSelect;
+	private layout: { readonly width: number; readonly lines: string[] } | undefined;
 
 	constructor(config: OptionListViewConfig) {
 		// Reserve a slot for the chat row in the WrappingSelect's number-padding so
@@ -53,15 +57,23 @@ export class OptionListView implements StatefulView<OptionListViewProps> {
 		this.select.setConfirmedIndex(props.confirmed?.index, props.confirmed?.labelOverride);
 		this.select.setInputBuffer(props.inputBuffer);
 		this.select.setInputCursor(props.inputCaret);
+		this.layout = undefined;
 	}
 
 	handleInput(_data: string): void {}
 
 	invalidate(): void {
 		this.select.invalidate();
+		this.layout = undefined;
 	}
 
 	render(width: number): string[] {
-		return this.select.render(width);
+		if (this.layout?.width !== width) this.layout = { width, lines: this.select.render(width) };
+		return this.layout.lines;
+	}
+
+	/** Rows `render(width)` produces, read from the same cached layout. */
+	height(width: number): number {
+		return this.render(width).length;
 	}
 }

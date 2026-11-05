@@ -24,7 +24,8 @@ const NOTES_HEADER = "Notes:";
 /**
  * Per-tab content provider. Pure functional — closes over construction-time
  * config; per-tick state threads through method args. The chrome wrapper
- * enforces height equality across tabs via `bodyHeight + footerRowCount`.
+ * enforces height equality across tabs from the rendered body's row count
+ * plus `footerRowCount`.
  */
 export interface TabContentStrategy {
 	/** Total RENDERED footer rows — MUST equal what `footerRows()` actually emits. Drives residual math. */
@@ -35,9 +36,6 @@ export interface TabContentStrategy {
 
 	/** Body Component placed at the body slot. */
 	bodyComponent(state: DialogState): Component;
-
-	/** Natural rendered height of `bodyComponent(state)` at given width. */
-	bodyHeight(width: number, state: DialogState): number;
 
 	/** Optional rows between body's trailing Spacer and the bottom border. */
 	midRows(state: DialogState): Component[];
@@ -54,7 +52,6 @@ export interface QuestionTabStrategyConfig {
 	notesInput: Input;
 	chatRow: ChatRowView;
 	isMulti: boolean;
-	getCurrentBodyHeight: (width: number) => number;
 }
 
 export class QuestionTabStrategy implements TabContentStrategy {
@@ -87,10 +84,6 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		const mso = this.config.tabsByIndex[state.currentTab]?.multiSelect;
 		if (question?.multiSelect === true && mso) return mso;
 		return this.config.getPreviewPane();
-	}
-
-	bodyHeight(width: number, _state: DialogState): number {
-		return this.config.getCurrentBodyHeight(width);
 	}
 
 	midRows(state: DialogState): Component[] {
@@ -146,10 +139,6 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			}
 		}
 		return c;
-	}
-
-	bodyHeight(width: number, state: DialogState): number {
-		return this.bodyComponent(state).render(width).length;
 	}
 
 	midRows(_state: DialogState): Component[] {

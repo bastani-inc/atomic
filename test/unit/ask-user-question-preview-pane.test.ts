@@ -245,3 +245,19 @@ test("a question with no previews renders the option list untouched", () => {
 		true,
 	);
 });
+
+test("a multi-select pane measures its option list alone, as it renders (#4333)", () => {
+	const question: QuestionData = { ...previewQuestion(), multiSelect: true };
+	const { pane, render } = makePane(question, SIDE_BY_SIDE_TERMINAL_WIDTH);
+	const rows = render(1, SIDE_BY_SIDE_PANE_WIDTH);
+	assert.equal(pane.maxNaturalHeight(SIDE_BY_SIDE_PANE_WIDTH), rows.length);
+});
+
+test("a preview pane's measured height covers its tallest preview at the rendered width (#4333)", () => {
+	for (const terminalWidth of [SIDE_BY_SIDE_TERMINAL_WIDTH, STACKED_TERMINAL_WIDTH]) {
+		const paneWidth = terminalWidth === SIDE_BY_SIDE_TERMINAL_WIDTH ? SIDE_BY_SIDE_PANE_WIDTH : STACKED_PANE_WIDTH;
+		const { pane, render } = makePane(previewQuestion(), terminalWidth);
+		const tallest = Math.max(render(0, paneWidth).length, render(1, paneWidth).length);
+		assert.equal(pane.maxNaturalHeight(paneWidth), tallest);
+	}
+});
