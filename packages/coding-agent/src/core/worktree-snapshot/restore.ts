@@ -38,6 +38,14 @@ export interface RestoredWorktree {
 	readonly warnings: readonly WorktreeRestoreWarning[];
 }
 
+/** The warnings a restore of `snapshot` reports from its record: omitted content and source conversion settings. */
+export function snapshotRestoreWarnings(snapshot: WorktreeSnapshot): WorktreeRestoreWarning[] {
+	return [
+		...(snapshot.omitted.length > 0 ? [{ code: "omitted-content" as const, omitted: snapshot.omitted }] : []),
+		...(snapshot.filters ? [{ code: "filters" as const, filters: snapshot.filters }] : []),
+	];
+}
+
 export function defaultWorktreeSnapshotStoreDir(): string {
 	return join(getAgentDir(), "worktree-snapshots");
 }
@@ -180,11 +188,24 @@ async function ensureHead(
 							head,
 							commits: denied.commits,
 							paths: denied.paths,
+							remotes: snapshot.remotes,
 							reason: "denied-history",
 						}
 					: overCap
-						? { snapshotId: snapshot.id, head, commits: overCap.commits, reason: "bundle-over-cap" }
-						: { snapshotId: snapshot.id, head, commits: [head], reason: "not-fetched" },
+						? {
+								snapshotId: snapshot.id,
+								head,
+								commits: overCap.commits,
+								remotes: snapshot.remotes,
+								reason: "bundle-over-cap",
+							}
+						: {
+								snapshotId: snapshot.id,
+								head,
+								commits: [head],
+								remotes: snapshot.remotes,
+								reason: "not-fetched",
+							},
 				failure,
 			);
 		}
@@ -376,8 +397,7 @@ export async function restoreWorktree(
 			}
 			throw failure;
 		}
-		if (snapshot && snapshot.omitted.length > 0) warn({ code: "omitted-content", omitted: snapshot.omitted });
-		if (snapshot?.filters) warn({ code: "filters", filters: snapshot.filters });
+		if (snapshot) for (const warning of snapshotRestoreWarnings(snapshot)) warn(warning);
 		return {
 			path,
 			snapshot,

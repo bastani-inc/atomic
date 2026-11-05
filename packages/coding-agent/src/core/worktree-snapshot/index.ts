@@ -1,9 +1,7 @@
 export {
 	collectSnapshotGarbage,
-	FileSnapshotBlobStore,
 	MemorySnapshotBlobStore,
 	SqlSnapshotBlobStore,
-	snapshotBlob,
 	snapshotBlobHashes,
 } from "./blob-store.ts";
 export {
@@ -13,7 +11,7 @@ export {
 	type WorktreeSnapshotCapture,
 	type WorktreeSnapshotUnavailableReason,
 } from "./capture.ts";
-export { computeEnvironmentHash, ENVIRONMENT_INPUT_FILES } from "./env-hash.ts";
+export { computeEnvironmentHash, ENVIRONMENT_INPUT_FILES, snapshotBlob } from "./env-hash.ts";
 export {
 	findWorkspaceError,
 	GitUnavailableError,
@@ -68,6 +66,7 @@ export type {
 	SnapshotBlobStore,
 	WorkspaceBinding,
 	WorktreeRestoreWarning,
+	WorktreeRootMapping,
 	WorktreeSnapshot,
 	WorktreeSnapshotBundle,
 	WorktreeSnapshotChainLink,

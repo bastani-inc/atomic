@@ -48,6 +48,9 @@ export function getSearchableText(node: SessionTreeNode): string {
 		case "session_summary":
 			parts.push("session summary", entry.summary);
 			break;
+		case "worktree_snapshot":
+			parts.push("snapshot", entry.root);
+			break;
 		case "model_change":
 			parts.push("model", entry.modelId);
 			break;
@@ -154,6 +157,9 @@ export function getEntryDisplayText(
 			break;
 		case "session_summary":
 			result = theme.fg("dim", `[session summary]: `) + normalizeText(entry.summary);
+			break;
+		case "worktree_snapshot":
+			result = theme.fg("dim", `[snapshot: ${entry.root} ${entry.snapshotId.slice(0, 12)}]`);
 			break;
 		default:
 			result = "";

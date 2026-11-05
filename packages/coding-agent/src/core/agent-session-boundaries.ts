@@ -118,6 +118,8 @@ export function _installAgentBoundaryHooks(this: AgentSession): void {
 	this.agent.finishTurn = async (turn, signal) => {
 		this._boundaryDispatchedMessages.add(turn.message);
 		const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults, true);
+		await this._agentEventQueue.catch(() => {});
+		if (this._persistenceFailure === undefined) await this._worktreeSnapshots.recordTurn(turn.message);
 		const previousDecision = await previousFinishTurn?.(turn, signal);
 		// #4226: end before steering is polled once a message of this run is known to be unsaved.
 		if (this._persistenceFailure !== undefined) return { action: "end" };

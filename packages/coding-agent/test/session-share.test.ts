@@ -22,7 +22,7 @@ type ShareProcess = EventEmitter & {
 };
 
 type ShareContext = {
-	session: { exportToJsonl: (path: string) => void };
+	session: { exportToJsonl: (path: string) => Promise<string> };
 	ui: { setFocus: () => void; requestRender: () => void };
 	editorContainer: Container;
 	editor: Container;
@@ -49,7 +49,12 @@ describe("InteractiveMode /share", () => {
 
 		const errors: string[] = [];
 		const context = (name: "A" | "B"): ShareContext => ({
-			session: { exportToJsonl: (path) => writeFileSync(path, name) },
+			session: {
+				exportToJsonl: async (path) => {
+					writeFileSync(path, name);
+					return path;
+				},
+			},
 			ui: { setFocus() {}, requestRender() {} },
 			editorContainer: new Container(),
 			editor: new Container(),
@@ -63,7 +68,7 @@ describe("InteractiveMode /share", () => {
 		const shareA = handleShareCommand.call(context("A"));
 		const shareB = handleShareCommand.call(context("B"));
 
-		assert.equal(uploadPaths.length, 2);
+		await vi.waitFor(() => assert.equal(uploadPaths.length, 2));
 		assert.notEqual(uploadPaths[0], uploadPaths[1]);
 		assert.equal(readFileSync(uploadPaths[0]!, "utf8"), "A");
 		assert.equal(readFileSync(uploadPaths[1]!, "utf8"), "B");

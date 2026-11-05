@@ -71,6 +71,28 @@ function validPayload(entry: SessionEntry): boolean {
 			return entry.name === undefined || typeof entry.name === "string";
 		case "session_summary":
 			return typeof entry.summary === "string" && typeof entry.summarizedThroughId === "string";
+		case "worktree_snapshot":
+			return (
+				typeof entry.root === "string" &&
+				typeof entry.snapshotId === "string" &&
+				(entry.snapshot === undefined ||
+					(entry.snapshot !== null &&
+						typeof entry.snapshot === "object" &&
+						entry.snapshot.id === entry.snapshotId &&
+						typeof entry.snapshot.tree === "string" &&
+						Array.isArray(entry.snapshot.chain))) &&
+				(entry.restore === undefined ||
+					(entry.restore !== null &&
+						typeof entry.restore === "object" &&
+						typeof entry.restore.from === "string" &&
+						entry.restore.to === entry.root &&
+						entry.restore.snapshotId === entry.snapshotId)) &&
+				(entry.blobs === undefined ||
+					(entry.blobs !== null &&
+						typeof entry.blobs === "object" &&
+						!Array.isArray(entry.blobs) &&
+						Object.values(entry.blobs).every((value) => typeof value === "string")))
+			);
 		default:
 			return false;
 	}

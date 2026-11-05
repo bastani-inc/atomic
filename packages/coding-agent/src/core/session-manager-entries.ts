@@ -23,8 +23,10 @@ import {
 	type SessionSummaryEntry,
 	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
+	type WorktreeSnapshotEntry,
 } from "./session-manager-types.ts";
 import { generateId } from "./session-manager-validation.ts";
+import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
 function entryBase(
 	byId: { has(id: string): boolean },
@@ -162,6 +164,24 @@ export function createSessionInfoEntry(
 		type: "session_info",
 		...entryBase(byId, parentId),
 		name: name.trim(),
+	};
+}
+
+export function createWorktreeSnapshotEntry(
+	root: string,
+	snapshotId: string,
+	snapshot: WorktreeSnapshot | undefined,
+	restore: WorktreeRootMapping | undefined,
+	byId: { has(id: string): boolean },
+	parentId: string | null,
+): WorktreeSnapshotEntry {
+	return {
+		type: "worktree_snapshot",
+		...entryBase(byId, parentId),
+		root,
+		snapshotId,
+		...(snapshot === undefined ? {} : { snapshot }),
+		...(restore === undefined ? {} : { restore }),
 	};
 }
 

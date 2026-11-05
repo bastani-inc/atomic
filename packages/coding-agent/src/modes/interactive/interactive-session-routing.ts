@@ -1,4 +1,6 @@
 import { dirname } from "node:path";
+import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
+import { isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -328,6 +330,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 	await this.ensureDeferredStartupComplete();
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+	const resumeStartedAt = new Date().toISOString();
 	try {
 		const result = await this.runtimeHost.switchSession(sessionId, {
 			withSession: options?.withSession,
@@ -342,9 +345,17 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus("Resumed session");
+		for (const line of worktreeRestoreNotices(this.sessionManager, resumeStartedAt)) {
+			if (line.type === "info") this.showStatus(line.message);
+			else this.showWarning(line.message);
+		}
 		this.startSessionRecovery("resume");
 		return result;
 	} catch (error: unknown) {
+		if (isWorkspaceError(error)) {
+			this.showError(error.message);
+			return { cancelled: true };
+		}
 		if (error instanceof MissingSessionCwdError) {
 			const selectedCwd = await this.promptForMissingSessionCwd(error);
 			if (!selectedCwd) {

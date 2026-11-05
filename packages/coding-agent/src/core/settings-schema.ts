@@ -104,6 +104,43 @@ const SessionSummarySettingsSchema = Type.Object({
 	),
 });
 
+function positiveSafeInteger(options: { default: number; description: string }) {
+	return Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, ...options });
+}
+
+const SnapshotSettingsSchema = Type.Object({
+	enabled: Type.Optional(
+		Type.Boolean({
+			description: "Record worktree snapshots so sessions and workflow runs can resume with their repository state.",
+			default: SETTINGS_DEFAULTS.snapshots.enabled,
+		}),
+	),
+	includeUntracked: Type.Optional(
+		Type.Boolean({
+			description: "Capture untracked files that no ignore rule or deny pattern excludes.",
+			default: SETTINGS_DEFAULTS.snapshots.includeUntracked,
+		}),
+	),
+	maxFileBytes: Type.Optional(
+		positiveSafeInteger({
+			description: "Largest file a snapshot captures, in bytes; larger files are listed as omitted.",
+			default: SETTINGS_DEFAULTS.snapshots.maxFileBytes,
+		}),
+	),
+	maxSnapshotBytes: Type.Optional(
+		positiveSafeInteger({
+			description: "Largest total of captured file content, and largest unpushed-commit bundle, in bytes.",
+			default: SETTINGS_DEFAULTS.snapshots.maxSnapshotBytes,
+		}),
+	),
+	fullEvery: Type.Optional(
+		positiveSafeInteger({
+			description: "Record a full delta against HEAD after this many incremental snapshots.",
+			default: SETTINGS_DEFAULTS.snapshots.fullEvery,
+		}),
+	),
+});
+
 const ProviderRetrySettingsSchema = Type.Object({
 	timeoutMs: Type.Optional(Type.Number({ description: "SDK or provider request timeout in milliseconds." })),
 	maxRetries: Type.Optional(Type.Number({ description: "SDK or provider retry attempts." })),
@@ -599,6 +636,7 @@ export const SettingsSchema = Type.Object(
 		compaction: Type.Optional(CompactionSettingsSchema),
 		branchSummary: Type.Optional(BranchSummarySettingsSchema),
 		sessionSummary: Type.Optional(SessionSummarySettingsSchema),
+		snapshots: Type.Optional(SnapshotSettingsSchema),
 		retry: Type.Optional(RetrySettingsSchema),
 		hideThinkingBlock: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.hideThinkingBlock })),
 		externalEditor: Type.Optional(
@@ -819,6 +857,7 @@ export interface CompactionModelOverride extends Static<typeof CompactionModelOv
 export interface CompactionSettings extends Static<typeof CompactionSettingsSchema> {}
 export interface BranchSummarySettings extends Static<typeof BranchSummarySettingsSchema> {}
 export interface SessionSummarySettings extends Static<typeof SessionSummarySettingsSchema> {}
+export interface SnapshotSettings extends Static<typeof SnapshotSettingsSchema> {}
 export interface ProviderRetrySettings extends Static<typeof ProviderRetrySettingsSchema> {}
 export interface RetrySettings extends Omit<Static<typeof RetrySettingsSchema>, "maxDelayMs"> {}
 export interface TerminalSettings extends Static<typeof TerminalSettingsSchema> {}

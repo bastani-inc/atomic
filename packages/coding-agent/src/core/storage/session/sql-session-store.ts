@@ -1,4 +1,6 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
+import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
 import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
@@ -94,6 +96,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly prefix: string;
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
+	readonly snapshotBlobs: SnapshotBlobStore;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -104,11 +107,18 @@ export class SqlSessionStore implements SessionStore {
 	 */
 	private listing: Promise<void> = Promise.resolve();
 
-	private constructor(database: SqliteDatabase, tables: Tables, prefix = "", cwdMatcher?: SessionCwdMatcher) {
+	private constructor(
+		database: SqliteDatabase,
+		tables: Tables,
+		prefix: string | undefined,
+		cwdMatcher: SessionCwdMatcher | undefined,
+		snapshotBlobs: SnapshotBlobStore,
+	) {
 		this.database = database;
 		this.tables = tables;
-		this.prefix = prefix;
+		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
+		this.snapshotBlobs = snapshotBlobs;
 	}
 
 	static async open(
@@ -153,7 +163,8 @@ export class SqlSessionStore implements SessionStore {
 				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision TEXT NOT NULL DEFAULT ''`);
 			}
 		});
-		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher);
+		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs);
 	}
 
 	get descriptor(): StorageDescriptor {

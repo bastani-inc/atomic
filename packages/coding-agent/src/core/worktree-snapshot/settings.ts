@@ -1,12 +1,9 @@
+import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { WorkspaceConfigError, type WorkspaceConfigSource } from "./errors.ts";
 import type { WorktreeSnapshotSettings } from "./types.ts";
 
 export const DEFAULT_WORKTREE_SNAPSHOT_SETTINGS: WorktreeSnapshotSettings = Object.freeze({
-	enabled: true,
-	includeUntracked: true,
-	maxFileBytes: 5 * 1024 * 1024,
-	maxSnapshotBytes: 50 * 1024 * 1024,
-	fullEvery: 10,
+	...SETTINGS_DEFAULTS.snapshots,
 });
 
 export type WorktreeSnapshotSettingsInput = Partial<WorktreeSnapshotSettings>;

@@ -126,6 +126,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	exposure?: ToolExposure;
 	namespace?: ToolNamespace;
 	annotations?: ToolAnnotations;
+	/** The tool can change files, so a turn that calls it records a worktree snapshot, as bash, edit and write do. */
+	writesFiles?: boolean;
 	defaultActive?: boolean;
 	prepareLoadout?: (loadout: ToolLoadout) => ToolLoadoutChanges | undefined;
 
