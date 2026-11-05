@@ -826,7 +826,6 @@ export {
 	withFileMutationQueue,
 	writeToolSystemPromptContribution,
 } from "./core/tools/index.js";
-export { getReleasedStageBlobDir } from "./core/tools/tool-output-blobs.ts";
 export {
 	isShellTimeoutError,
 	isShellToolError,
@@ -837,6 +836,7 @@ export {
 	ShellToolError,
 	type ShellToolErrorCode,
 } from "./core/tools/shell-errors.ts";
+export { getReleasedStageBlobDir } from "./core/tools/tool-output-blobs.ts";
 export {
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
