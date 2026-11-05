@@ -262,6 +262,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			values: ["default", "no-tools", "user-only", "labeled-only", "all"],
 		},
 		{
+			id: "debug",
+			label: "Debug mode",
+			description: "Turn on every debug output and write it to the debug log that /debug shows",
+			currentValue: config.debug ? "true" : "false",
+			values: ["true", "false"],
+		},
+		{
 			id: "warnings",
 			label: "Warnings",
 			description: "Enable or disable individual warnings",

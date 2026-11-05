@@ -4,6 +4,7 @@ import { createWriteStream } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { setDebugSetting } from "@bastani/atomic";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
@@ -48,7 +49,7 @@ import type {
 import { POOL_COORDINATION_STATS_INTERVAL_MS, POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
-import { openDurableJournal, POOL_DURABLE_JOURNAL_ENV } from "./pool-journal.js";
+import { openDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import type {
 	DistributiveOmit,
@@ -621,6 +622,7 @@ export class PoolCoordinator {
 		else if (notice.kind === "budget") this.budgetBlocked = notice.blocked;
 		else if (notice.kind === "root") this.routes?.updateRoot(notice.rootRun);
 		else if (notice.kind === "rate-limits") this.observeRateLimits(notice.observations);
+		else if (notice.kind === "debug") setDebugSetting(notice.enabled);
 		else {
 			const batch = this.batches.get(notice.batch);
 			this.batches.delete(notice.batch);
@@ -1344,9 +1346,7 @@ export class PoolCoordinator {
 				stdio: ["ignore", "ignore", "pipe", "ipc"],
 				execArgv: [],
 				// The durable journal's selection goes through the environment: argv is readable by every process on the host.
-				...(options.durable === undefined
-					? {}
-					: { env: { ...process.env, [POOL_DURABLE_JOURNAL_ENV]: JSON.stringify(options.durable) } }),
+				env: poolWorkerEnvironment(options.durable),
 			},
 		);
 		const disconnected = new Promise<void>((resolve) => child.once("disconnect", () => resolve()));

@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
+import { rehydrateDebugError } from "../../core/debug-errors.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
@@ -655,6 +656,7 @@ export class RpcClient extends RpcClientApi {
 	}
 	private assertSuccess(response: RpcResponse): void {
 		if (response.success) return;
+		if (response.errorCode === "debug_error") throw rehydrateDebugError(response.errorDetails);
 		if (response.errorCode === "credential_synchronization" && response.errorDetails) {
 			throw new CredentialSynchronizationError(
 				response.errorDetails.providerId,

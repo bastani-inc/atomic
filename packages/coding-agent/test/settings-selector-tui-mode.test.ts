@@ -24,6 +24,7 @@ function createSettingsConfig(): SettingsConfig {
 		availableThemes: ["dark"],
 		hideThinkingBlock: false,
 		collapseChangelog: false,
+		debug: false,
 		enableInstallTelemetry: true,
 		doubleEscapeAction: "tree",
 		mermaidRenderingMode: "streaming",

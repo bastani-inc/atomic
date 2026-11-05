@@ -12,6 +12,7 @@ import type { PoolCoordinationStats, RunSnapshot } from "../../packages/workflow
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { PoolCoordinationCounters } from "../../packages/workflows/src/workers/pool-coordination-stats.js";
+import { withDebugLog } from "../helpers/debug-mode.js";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -115,7 +116,7 @@ function rootRun(): RunSnapshot {
 	};
 }
 
-test("the root run's pool snapshot reaches the store and the status list (#4313)", () => {
+test("the root run's pool snapshot reaches the store, and the status list in debug mode (#4313, #4360)", async () => {
 	const store = createStore();
 	store.recordRunStart(rootRun());
 	const changes: unknown[] = [];
@@ -128,6 +129,12 @@ test("the root run's pool snapshot reaches the store and the status list (#4313)
 	assert.deepEqual(changes, [[{ runId: "root" }]], "only a run the store holds changes, and only that run");
 	assert.deepEqual(store.run("root")?.pool, { coordination: stats });
 	assert.deepEqual(store.graphSnapshot().runs[0]?.pool, { coordination: stats }, "status views read it");
+	const hidden = renderStatusList(store.graphSnapshot().runs, { width: 200, now: 0 });
+	assert.ok(!hidden.includes("pool:"), "the pool line is a debug surface, hidden by default");
+	await withDebugLog("setting", () => assertPoolLines(store));
+});
+
+function assertPoolLines(store: ReturnType<typeof createStore>): void {
 	const listed = renderStatusList(store.graphSnapshot().runs, { width: 200, now: 0 });
 	assert.ok(listed.includes("pool: requests 12/s (commit 8.1, activity 3.0, heartbeat 0.40, …)"), listed);
 	const plain = renderStatusList([rootRun()], { width: 200, now: 0 });
@@ -146,9 +153,9 @@ test("the root run's pool snapshot reaches the store and the status list (#4313)
 		/… +│$/,
 		"the pool line is cut to the card's width, inside its margin",
 	);
-});
+}
 
-test("the workflow tool's status action shows one pool line for a root with a local pool (#4313)", () => {
+test("the workflow tool's status action shows one pool line for a root with a local pool in debug mode (#4313, #4360)", async () => {
 	const pooled: RunSnapshot = { ...rootRun(), pool: { coordination: stats } };
 	const plain: RunSnapshot = { ...rootRun(), id: "plain", name: "plain-root" };
 	const listing = buildWorkflowStatusListing([pooled, plain], "all", 10);
@@ -157,9 +164,18 @@ test("the workflow tool's status action shows one pool line for a root with a lo
 		[{ coordination: stats }, undefined],
 	);
 	assert.equal("pool" in listing.runs[1]!, false, "a root without a pool has no pool field");
-	const content = renderWorkflowToolContent({ action: "status", ...listing }, { action: "status" });
-	const lines = content.split("\n").filter((line) => line.trimStart().startsWith("pool:"));
-	assert.deepEqual(lines, [
-		"    pool: requests 12/s (commit 8.1, activity 3.0, heartbeat 0.40, …) · writes 3.1/s (commit 2.7, heartbeat 0.40)",
-	]);
+	const content = () => renderWorkflowToolContent({ action: "status", ...listing }, { action: "status" });
+	const poolLines = () =>
+		content()
+			.split("\n")
+			.filter((line) => line.trimStart().startsWith("pool:"));
+	const hidden = content();
+	assert.deepEqual(poolLines(), [], "hidden by default");
+	assert.equal(hidden.includes("undefined"), false, "and leaves no empty line behind");
+	await withDebugLog("ATOMIC_DEBUG", () => {
+		assert.deepEqual(poolLines(), [
+			"    pool: requests 12/s (commit 8.1, activity 3.0, heartbeat 0.40, …) · writes 3.1/s (commit 2.7, heartbeat 0.40)",
+		]);
+		assert.equal(content().split("\n").length, hidden.split("\n").length + 1, "one line, for the root with a pool");
+	});
 });

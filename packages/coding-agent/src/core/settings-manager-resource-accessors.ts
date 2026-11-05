@@ -23,6 +23,8 @@ interface SettingsManagerResourceAccessors {
 	setNpmCommand(command: string[] | undefined): void;
 	getCollapseChangelog(): boolean;
 	setCollapseChangelog(collapse: boolean): void;
+	getDebug(): boolean;
+	setDebug(enabled: boolean): void;
 	getEnableInstallTelemetry(): boolean;
 	setEnableInstallTelemetry(enabled: boolean): void;
 	getPackages(): PackageSource[];
@@ -157,6 +159,17 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.collapseChangelog = collapse;
 		state.markModified("collapseChangelog");
+		state.save();
+	},
+
+	getDebug() {
+		return settingsInternals(this).globalSettings.debug === true;
+	},
+
+	setDebug(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.debug = enabled;
+		state.markModified("debug");
 		state.save();
 	},
 

@@ -1,3 +1,4 @@
+import { DebugError, serializeDebugError } from "../../core/debug-errors.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types.ts";
 
@@ -30,6 +31,17 @@ export function createRpcErrorResponse(
 			error: message,
 			errorCode: "credential_synchronization",
 			errorDetails: { providerId: cause.providerId, operation: cause.operation },
+		};
+	}
+	if (cause instanceof DebugError) {
+		return {
+			id,
+			type: "response",
+			command,
+			success: false,
+			error: message,
+			errorCode: "debug_error",
+			errorDetails: serializeDebugError(cause),
 		};
 	}
 	return { id, type: "response", command, success: false, error: message };

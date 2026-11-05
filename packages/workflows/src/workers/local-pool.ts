@@ -5,10 +5,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
 	applyProviderRateLimitObservation,
+	createChildProcessEnvironment,
 	isBunBinary,
 	observeProviderRateLimits,
+	onDebugSettingChange,
 	providerRateLimitObservations,
 	type QuestionnaireResult,
+	reportDebug,
 } from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
@@ -33,6 +36,7 @@ import {
 	type ExternalRunRouteOwner,
 	pendingStageMessageRouter,
 } from "../shared/external-run-routes.js";
+import { formatPoolCoordination } from "../shared/pool-coordination.js";
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
@@ -157,6 +161,7 @@ function launchCoordinatorProcess(): Coordinator {
 	const child: ChildProcess = fork(defaultWorkerEntry(), [JSON.stringify({ role: POOL_COORDINATOR_ROLE })], {
 		stdio: ["ignore", "ignore", "pipe", "ipc"],
 		execArgv: [],
+		env: createChildProcessEnvironment(),
 	});
 	let stderr = "";
 	child.stderr?.on("data", (chunk: Buffer) => {
@@ -348,6 +353,8 @@ export class LocalWorkerPool {
 	private readonly disposal = new AbortController();
 	/** Stops sending this process's provider and model limits to the pool (#4023). */
 	private stopSharingRateLimits?: () => void;
+	/** Stops sending this process's debug setting to the pool's coordinator. */
+	private stopSharingDebugSetting?: () => void;
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
 	private registrations?: Promise<PooledStageRegistrations>;
 	constructor(
@@ -1382,6 +1389,10 @@ export class LocalWorkerPool {
 		};
 		const current = providerRateLimitObservations();
 		if (current.length > 0) coordinator.port.send({ kind: "rate-limits", observations: current });
+		// The coordinator started with this process's debug setting; later changes reach the workers it starts next.
+		this.stopSharingDebugSetting = onDebugSettingChange((enabled) =>
+			coordinator.port.send({ kind: "debug", enabled }),
+		);
 		coordinator.port.onMessage((event) => {
 			if (event.kind === "rate-limits") {
 				// Applied at once: a model request or a fallback walk reads them, not the root's store.
@@ -1399,6 +1410,7 @@ export class LocalWorkerPool {
 	}
 	private lost(reason: Error): void {
 		this.stopSharingRateLimits?.();
+		this.stopSharingDebugSetting?.();
 		this.pids.clear();
 		if (!this.closed) this.failure ??= reason;
 		for (const pending of this.commands.values()) pending.reject(reason);
@@ -1468,6 +1480,7 @@ export class LocalWorkerPool {
 				// A coordinator runs only for a prepared root.
 				this.store?.recordRunPool?.(this.root!, { coordination: event.stats });
 				this.coordination = event.stats;
+				reportDebug("pool", "coordination", { root: this.root, summary: formatPoolCoordination(event.stats) });
 				return;
 			case "stage-events":
 				this.stageWatches.get(event.watch)?.({ kind: "events", events: event.events });
@@ -1621,6 +1634,7 @@ export class LocalWorkerPool {
 		this.heldAnswers.clear();
 		this.routedPromptAnswers.clear();
 		this.stopSharingRateLimits?.();
+		this.stopSharingDebugSetting?.();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();

@@ -29,6 +29,7 @@ function settingsConfig(overrides: Partial<SettingsConfig> = {}): SettingsConfig
 		availableThemes: ["dark"],
 		hideThinkingBlock: false,
 		collapseChangelog: false,
+		debug: false,
 		enableInstallTelemetry: true,
 		doubleEscapeAction: "tree",
 		mermaidRenderingMode: "streaming",

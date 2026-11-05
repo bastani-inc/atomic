@@ -78,6 +78,8 @@ vitest runs test files concurrently and this repository sets no pool or worker l
 
 Every test run strips ambient provider credentials and endpoints (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COPILOT_GITHUB_TOKEN`, AWS, Azure and Vertex variables) before any test worker starts. This covers the unit, integration and ci projects and the `packages/coding-agent` and `packages/ai` suites. A key in your shell would otherwise make its provider available to tests that expect only their fixtures' providers. The full list is `test/helpers/provider-credential-env.ts`, and `test/global-setup-provider-credential-isolation.ts` applies it. A test that needs a credential sets it itself.
 
+Debug output is cleared the same way: `test/global-setup-debug-isolation.ts` removes the variables listed in `test/helpers/debug-env.ts` (`ATOMIC_DEBUG`, the per-area debug variables, and the `ATOMIC_DEBUG_SETTING` that an Atomic session passes to its child processes), so a suite started from Atomic or with debug mode on starts with it off. A test that needs debug mode turns it on itself, for example with `withDebugLog` from `test/helpers/debug-mode.ts`.
+
 Live provider tests, which skip when their key is unset, therefore skip in a default run even if you exported the key. To run them against real providers, opt back in to your shell's credentials:
 
 ```bash

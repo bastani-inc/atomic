@@ -935,6 +935,29 @@ if (startError && isRetryableSessionStartError(startError)) {
 }
 ```
 
+## Debug output
+
+These helpers let extensions and SDK code follow [debug mode](/development#debugging):
+
+- `isDebugEnabled(area?, env?)` returns whether debug output is on: in debug mode for every area, and for `area` also while its own variable is set. Without `area`, only debug mode counts. `env` defaults to `process.env`.
+- `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. While the area's own variable is set, `ownOutput` is called with the variable's value to write the event where that variable always has.
+- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file.
+- `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `model-routing`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`.
+- `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
+- `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
+- `onDebugSettingChange(listener)` calls `listener` with each change of that value and returns a function that unsubscribes.
+
+### Debug errors
+
+| Class | `code` | When | Fields | What to do |
+|-------|--------|------|--------|------------|
+| `DebugLogUnwritableError` | `debug-log-unwritable` | The debug log or a trace file cannot be created or appended to. It is not thrown: it is recorded once per process, shown as one warning, and returned by `getDebugLogFailure()`. | `path`, `hint`, `retryable: false`, `cause` | Make the directory writable, or turn debug mode off. |
+| `DebugConfigError` | `invalid-setting` | `setDebugSetting()` or the RPC `set_debug` command received something other than `true` or `false`. It is thrown before anything changes. | `source` (`"sdk"` or `"rpc"`), `field` (`"enabled"`), `received` (the value's type, never the value), `hint`, `retryable: false` | Pass `true` or `false`. |
+
+Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()` returns the fields above. Branch on the class or `code`, not the message. `isDebugError`, `isDebugLogUnwritableError` and `isDebugConfigError` recognize them, including an error that crossed a process boundary as a plain object with the same `name` and `code`.
+
+To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when the engine refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
+
 ## Exports
 
 The main entry point exports:
@@ -1034,6 +1057,31 @@ GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionCo
 isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
 findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError
 type ResolvedGit, type ResolveGitOptions, type GitToolStatus, type GitUnavailableCode, type GitUnavailableFields
+
+// Debug output
+isDebugEnabled
+reportDebug
+appendDebugRecord
+DEBUG_AREA_VARIABLES
+getDebugLogFailure
+setDebugSetting
+onDebugSettingChange
+DebugError
+DebugLogUnwritableError
+DebugConfigError
+isDebugError
+isDebugLogUnwritableError
+isDebugConfigError
+serializeDebugError
+rehydrateDebugError
+type SerializedDebugError
+type SerializedErrorCause
+type DebugConfigErrorFields
+type DebugArea
+type DebugFields
+type DebugValue
+type DebugErrorCode
+type DebugSettingSource
 
 // Tool factories
 createCodingTools

@@ -102,7 +102,7 @@ test("npm registry retries declare integer timeouts and ordered backoffs", async
 	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
 });
 
-test("global setups isolate Herdr and provider credentials, then prepare artifacts and natives", async () => {
+test("global setups isolate Herdr, provider credentials and debug output, then prepare artifacts and natives", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -113,6 +113,7 @@ test("global setups isolate Herdr and provider credentials, then prepare artifac
 	const projects = config.default.test?.projects ?? [];
 	const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 	const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
+	const debugSetup = "./test/global-setup-debug-isolation.ts";
 	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
 	for (const name of ["unit", "integration", "ci"]) {
@@ -120,8 +121,8 @@ test("global setups isolate Herdr and provider credentials, then prepare artifac
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
 			project.test?.globalSetup,
-			[herdrSetup, providerCredentialSetup, artifactSetup, nativeSetup],
-			`${name} must isolate inherited Herdr and provider credentials before preparing artifacts and natives`,
+			[herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
+			`${name} must isolate inherited Herdr, provider credentials and debug output before preparing artifacts and natives`,
 		);
 	}
 });

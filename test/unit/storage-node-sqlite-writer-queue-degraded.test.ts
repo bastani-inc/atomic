@@ -9,6 +9,7 @@ import {
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -29,6 +30,12 @@ vi.resetModules();
 const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, wrapNodeSqliteDatabase } = await import(
 	"../../packages/coding-agent/src/core/storage/node-sqlite.js"
 );
+// The adapter loads debug output at its first degradation. Load it now, in the same module graph, so each test's
+// degradations are reported while that test runs rather than when a slow first load finishes.
+await import("../../packages/coding-agent/src/core/debug.js");
+
+/** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
+const DEBUG_RECORD_WAIT_MS = 10_000;
 const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
 const watch = vi.mocked(fs.watch);
 const utimesSync = vi.mocked(fs.utimesSync);
@@ -773,4 +780,102 @@ test("an uncontended transaction does not list a queue directory that does not e
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));
 	assert.equal(fs.existsSync(writers), false);
 	assert.deepEqual(listed, [], "no listing, not even a failed one");
+});
+
+test("in debug mode each writers'-queue degradation reaches the debug log once, without its message (#4360)", async () => {
+	await withDebugLog("ATOMIC_DEBUG", async (log) => {
+		const { database, path, writers } = await fixture();
+		suppressWarnings();
+		for (const code of ["EMFILE", "EACCES"]) {
+			await database.transaction(async (tx) => {
+				await tx.run("INSERT INTO items VALUES (?)", code);
+				fs.mkdirSync(writers, { recursive: true });
+				failListing(writers, code);
+			});
+			readdirSync.mockImplementation(actual.readdirSync);
+		}
+		abandonedTicket(writers, 999_999_963);
+		unlinkSync.mockImplementation(((target: fs.PathLike) => {
+			if (dirname(String(target)) === writers)
+				throw Object.assign(new Error("removal refused for a secret reason"), { code: 13 });
+			actual.unlinkSync(target);
+		}) as typeof fs.unlinkSync);
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('kept')"));
+		await vi.waitFor(() => assert.equal(areaRecords(log, "storage").length, 2), { timeout: DEBUG_RECORD_WAIT_MS });
+		assert.deepEqual(areaRecords(log, "storage"), [
+			{
+				event: "writer-queue-degraded",
+				data: {
+					code: "writer-queue-degraded",
+					reason: "wake-failed",
+					adapter: "node-sqlite",
+					location: path,
+					errno: "EMFILE",
+				},
+			},
+			{
+				event: "writer-queue-degraded",
+				data: {
+					code: "writer-queue-degraded",
+					reason: "stale-ticket-kept",
+					adapter: "node-sqlite",
+					location: path,
+				},
+			},
+		]);
+		assert.equal(JSON.stringify(log.records()).includes("secret reason"), false, "the cause's message stays out");
+	});
+});
+
+test("with debug mode off a writers'-queue degradation writes no debug log (#4360)", async () => {
+	await withDebugLog("off", async (log) => {
+		const { database, writers } = await fixture();
+		suppressWarnings();
+		await database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('off')");
+			fs.mkdirSync(writers, { recursive: true });
+			failListing(writers, "EMFILE");
+		});
+		assert.equal(getWriterQueueDegradation(database).length, 1);
+		for (let index = 0; index < 10; index++) await turn();
+		assert.equal(log.exists(), false);
+	});
+});
+
+test("debug output that cannot load is reported as a process warning, and the degradation is still recorded (#4360)", async () => {
+	vi.resetModules();
+	vi.doMock("../../packages/coding-agent/src/core/debug.js", () => {
+		throw new Error("debug output unavailable");
+	});
+	try {
+		const isolated = await import("../../packages/coding-agent/src/core/storage/node-sqlite.js");
+		const directory = makeTempDirectory("atomic-writer-queue-debug-unavailable-");
+		const path = join(directory, "queue.sqlite");
+		const database = await isolated.openNodeSqliteDatabase(path);
+		cleanups.push(async () => {
+			await database.close();
+			removeTempDirectory(directory);
+		});
+		const warnings: unknown[] = [];
+		const spy = vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
+			warnings.push(warning);
+		});
+		cleanups.push(() => spy.mockRestore());
+		await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+		await database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('unavailable')");
+			fs.mkdirSync(`${path}-writers`, { recursive: true });
+			failListing(`${path}-writers`, "EMFILE");
+		});
+		readdirSync.mockImplementation(actual.readdirSync);
+		await vi.waitFor(() => assert.equal(warnings.length, 2), { timeout: DEBUG_RECORD_WAIT_MS });
+		assert.ok(isStorageWriterQueueDegradedError(warnings[0]), "the degradation itself, as before");
+		assert.ok(
+			warnings[1] instanceof Error && !isStorageWriterQueueDegradedError(warnings[1]),
+			"then the load failure",
+		);
+		assert.equal(isolated.getWriterQueueDegradation(database).length, 1);
+	} finally {
+		vi.doUnmock("../../packages/coding-agent/src/core/debug.js");
+	}
 });

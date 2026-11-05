@@ -1,3 +1,4 @@
+import { reportDebug } from "@bastani/atomic";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
@@ -531,9 +532,10 @@ function restingStage(run: RunSnapshot): StageSnapshot | undefined {
 }
 
 function warnLifecycleSendFailure(error: unknown): void {
-	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
 	const message = error instanceof Error ? error.message : String(error);
-	console.warn("[workflows] workflow lifecycle notice send failed", message);
+	reportDebug("workflow", "lifecycle-notice-send-failed", { message }, () =>
+		console.warn("[workflows] workflow lifecycle notice send failed", message),
+	);
 }
 
 function escapeQuotedText(value: string): string {

@@ -4,6 +4,8 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
+import { isDebugEnabled } from "../../packages/coding-agent/src/core/debug.js";
+import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	openSqlPoolQueue,
@@ -23,6 +25,7 @@ import {
 	POOL_COORDINATION_STATS_INTERVAL_MS,
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
+import { POOL_DURABLE_JOURNAL_ENV } from "../../packages/workflows/src/workers/pool-journal.js";
 import type {
 	DistributiveOmit,
 	WorkerInbound,
@@ -37,6 +40,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 class FakeWorker extends EventEmitter {
 	readonly pid: number;
 	readonly start: WorkerStart;
+	readonly options: ForkOptions;
 	connected = true;
 	exitCode: number | null = null;
 	signalCode: NodeJS.Signals | null = null;
@@ -49,10 +53,11 @@ class FakeWorker extends EventEmitter {
 	private sequence = 0;
 	private readonly replies = new Map<number, (reply: WorkerReply) => void>();
 
-	constructor(pid: number, args: readonly string[]) {
+	constructor(pid: number, args: readonly string[], options: ForkOptions) {
 		super();
 		this.pid = pid;
 		this.start = JSON.parse(args[0]!) as WorkerStart;
+		this.options = options;
 	}
 
 	send(message: WorkerInbound, callback?: (error: Error | null) => void): boolean {
@@ -103,8 +108,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return {
 		...actual,
-		fork(_modulePath: string, args: readonly string[], _options: ForkOptions) {
-			const worker = new FakeWorker(4_000_000 + forked.length, args);
+		fork(_modulePath: string, args: readonly string[], options: ForkOptions) {
+			const worker = new FakeWorker(4_000_000 + forked.length, args, options);
 			forked.push(worker);
 			return worker;
 		},
@@ -445,6 +450,33 @@ test("a coordinator reports its counts only while they change, and once more as 
 		vi.advanceTimersByTime(3 * POOL_COORDINATION_STATS_INTERVAL_MS);
 		assert.equal(f.reports().at(-1), closing, "a closed coordinator reports nothing more");
 	} finally {
+		await f.close();
+	}
+});
+
+test("workers start with the root's debug setting, and a change reaches the workers started after it (#4360)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		const [first] = f.workers as [FakeWorker];
+		assert.equal(first.options.env?.ATOMIC_DEBUG_SETTING, "0", "debug mode was off when it started");
+		assert.equal(first.options.env?.AI_AGENT, "atomic", "a worker gets Atomic's child environment");
+		assert.equal(
+			POOL_DURABLE_JOURNAL_ENV in (first.options.env ?? {}),
+			false,
+			"and no durable journal it does not use",
+		);
+		f.notice({ kind: "debug", enabled: true });
+		assert.equal(isDebugEnabled(), true, "the coordinator takes the root's setting");
+		assert.equal(first.options.env?.ATOMIC_DEBUG_SETTING, "0", "a running worker keeps what it started with");
+		first.kill("SIGKILL");
+		while (forked.length < 2) await delay(5);
+		assert.equal(forked[1]!.options.env?.ATOMIC_DEBUG_SETTING, "1", "its replacement starts in debug mode");
+		f.notice({ kind: "published", batch: 0, rejected: [] });
+		assert.equal(isDebugEnabled(), true, "other notices leave the setting alone");
+		f.notice({ kind: "debug", enabled: false });
+		assert.equal(isDebugEnabled(), false);
+	} finally {
+		setDebugSetting(false);
 		await f.close();
 	}
 });

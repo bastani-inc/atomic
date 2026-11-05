@@ -1,3 +1,4 @@
+import { reportDebug } from "@bastani/atomic";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -321,9 +322,10 @@ function answerNoticeKey(
 }
 
 function warnHilAnswerSendFailure(error: unknown): void {
-	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
 	const message = error instanceof Error ? error.message : String(error);
-	console.warn("[workflows] workflow HiL answer notice send failed", message);
+	reportDebug("workflow", "hil-answer-notice-send-failed", { message }, () =>
+		console.warn("[workflows] workflow HiL answer notice send failed", message),
+	);
 }
 
 function escapeQuotedText(value: string): string {

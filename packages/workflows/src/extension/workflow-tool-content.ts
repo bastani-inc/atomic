@@ -1,4 +1,4 @@
-import { formatPoolCoordination } from "../shared/pool-coordination.js";
+import { poolCoordinationLine } from "../shared/pool-coordination.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
 import { pooledStageStartingText, stageDisplayStatus } from "../shared/stage-display-status.js";
@@ -132,7 +132,8 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		].join("  ");
 		lines.push(summaryLine);
 		lines.push(`    runId: ${run.runId}`);
-		if (run.pool !== undefined) lines.push(`    ${formatPoolCoordination(run.pool.coordination)}`);
+		const poolLine = poolCoordinationLine(run.pool);
+		if (poolLine !== undefined) lines.push(`    ${poolLine}`);
 		if (run.phase !== undefined) {
 			lines.push(`    phase: ${run.phase}, age: ${run.phaseAgeMs ?? 0}ms, last progress: ${run.lastProgressAt}`);
 		}

@@ -600,6 +600,13 @@ export const SettingsSchema = Type.Object(
 				default: SETTINGS_DEFAULTS.collapseChangelog,
 			}),
 		),
+		debug: Type.Optional(
+			Type.Boolean({
+				description:
+					"Debug mode: turn on every debug output and write it to the debug log that /debug shows. Global setting only.",
+				default: SETTINGS_DEFAULTS.debug,
+			}),
+		),
 		enableInstallTelemetry: Type.Optional(
 			Type.Boolean({
 				description: "Send an anonymous version-adoption ping on eligible interactive launches.",

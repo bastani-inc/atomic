@@ -18,6 +18,7 @@ import {
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { isRouterSelection } from "../../packages/workflows/src/shared/model-checkpoint-validation.js";
+import { areaRecords, DEBUG_MODE_SOURCES, withDebugLog } from "../helpers/debug-mode.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { chatPayload, chatRouter, defaultClassifierChoice } from "../helpers/model-routing.js";
 import {
@@ -314,6 +315,48 @@ test("an auto stage records its routing fallback only when routing debugging is 
 	}
 	vi.unstubAllEnvs();
 });
+
+test.each(DEBUG_MODE_SOURCES)(
+	"in debug mode from %s an auto stage's routing fallback goes to the debug log, not the host warnings (#4360)",
+	async (source) => {
+		const def = workflow({
+			name: "debug-degraded-auto",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.stage("task", { model: "auto" }).prompt("Solve task");
+				return {};
+			},
+		});
+		await withDebugLog(source, async (log) => {
+			const f = await fixture();
+			f.infer.mockImplementation(() => {
+				throw new Error("mock router outage");
+			});
+			const warnings: string[] = [];
+			const models = f.models && { ...f.models, recordWarning: (warning: string) => warnings.push(warning) };
+			const result = await run(def, {}, { ...f, models });
+			assert.equal(result.status, "completed");
+			assert.deepEqual(
+				warnings.filter((warning) => warning.includes("stage auto routing failed")),
+				[],
+			);
+			assert.deepEqual(
+				areaRecords(log, "model-routing").filter((record) => record.event === "stage-routing-fallback"),
+				[
+					{
+						event: "stage-routing-fallback",
+						data: {
+							message:
+								'workflows: stage auto routing failed; running "task" on the current chat model decision-test/chat.',
+						},
+					},
+				],
+			);
+		});
+	},
+);
 
 for (const [allowed, status, admissions] of [
 	["decision-test/chat", "completed", ["decision-test/chat"]],

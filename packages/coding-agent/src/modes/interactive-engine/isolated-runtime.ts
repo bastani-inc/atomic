@@ -10,6 +10,7 @@ import type {
 	PromptOptions,
 	SessionRecoveryReport,
 } from "../../core/agent-session-types.js";
+import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
@@ -142,6 +143,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private engineRecoveryFailure: Error | undefined;
 	private promptCancellationEpoch = 0;
 	private hostExtensionUIReset: (() => void) | undefined;
+	private readonly stopSharingDebugSetting: () => void;
 
 	constructor(localRuntime: AgentSessionRuntime, createRuntime: CreateAgentSessionRuntimeFactory, client: RpcClient) {
 		super(
@@ -186,6 +188,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 		});
 		this.client.onEvent((event) => this.observeEvent(event));
+		this.stopSharingDebugSetting = onDebugSettingChange((enabled) =>
+			this.dispatchBestEffort("set debug", this.client.setDebug(enabled)),
+		);
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) this.updateResourceExtensions([]);
@@ -653,6 +658,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.disposePromise) return this.disposePromise;
 		this.disposed = true;
+		this.stopSharingDebugSetting();
 		this.disposePromise = (async () => {
 			// A quit the user asked for must reach the engine before it is stopped: the stop
 			// is a SIGTERM, which the engine cannot tell from this process being signalled.

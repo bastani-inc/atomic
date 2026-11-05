@@ -4,6 +4,7 @@ import {
 	configureHttpDispatcher,
 	getAvailableThemes,
 	SettingsSelectorComponent,
+	setDebugSetting,
 	ToolExecutionComponent,
 } from "./interactive-mode-deps.ts";
 
@@ -80,6 +81,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				mermaidRenderingMode: this.settingsManager.getMermaidRenderingMode(),
 				latexRenderingEnabled: this.settingsManager.getLatexRenderingEnabled(),
 				collapseChangelog: this.settingsManager.getCollapseChangelog(),
+				debug: this.settingsManager.getDebug(),
 				enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
 				doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 				treeFilterMode: this.settingsManager.getTreeFilterMode(),
@@ -184,6 +186,11 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 				onCollapseChangelogChange: (collapsed) => {
 					this.settingsManager.setCollapseChangelog(collapsed);
+				},
+				onDebugChange: (enabled) => {
+					this.settingsManager.setDebug(enabled);
+					setDebugSetting(enabled);
+					this.ui.requestRender();
 				},
 				onEnableInstallTelemetryChange: (enabled) => {
 					this.settingsManager.setEnableInstallTelemetry(enabled);

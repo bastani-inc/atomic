@@ -60,6 +60,9 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "collapse-changelog":
 				callbacks.onCollapseChangelogChange(newValue === "true");
 				break;
+			case "debug":
+				callbacks.onDebugChange(newValue === "true");
+				break;
 			case "quiet-startup":
 				callbacks.onQuietStartupChange(newValue === "header" ? "header" : newValue === "true");
 				break;

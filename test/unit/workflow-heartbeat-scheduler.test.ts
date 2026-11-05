@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { DurableBackendNotInitializedError } from "../../packages/workflows/src/durable/store-backend.js";
@@ -35,6 +35,7 @@ import {
 	type WorkflowHeartbeatEventDetails,
 	type WorkflowHeartbeatIdentity,
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
+import { areaRecords, DEBUG_MODE_SOURCES, withDebugLog } from "../helpers/debug-mode.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -674,6 +675,49 @@ describe("workflow heartbeat cadence", () => {
 		);
 		harness.scheduler.dispose();
 	});
+
+	test.each([...DEBUG_MODE_SOURCES, "ATOMIC_WORKFLOW_DEBUG"] as const)(
+		"every failed heartbeat delivery is reported from %s (#4360)",
+		async (source) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				await withDebugLog(source === "ATOMIC_WORKFLOW_DEBUG" ? "off" : source, async (log) => {
+					if (source === "ATOMIC_WORKFLOW_DEBUG") vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
+					const runId = testRunId("heartbeat-delivery-debug");
+					const store = createStore();
+					startRun(store, runId);
+					const harness = installHarness({
+						store,
+						defaultInterval: 1,
+						send: () => Promise.reject(new Error("send failed")),
+					});
+					harness.clock.advanceTo(STARTED_AT + MINUTE_MS);
+					for (let attempt = 0; attempt < WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+						await flushMicrotasks();
+						harness.clock.advanceBy(1_000);
+					}
+					await flushMicrotasks();
+					harness.scheduler.dispose();
+					const expected = Array.from({ length: WORKFLOW_HEARTBEAT_MAX_DELIVERY_ATTEMPTS }, () => ({
+						event: "heartbeat-send-failed",
+						data: { message: "send failed" },
+					}));
+					if (source === "ATOMIC_WORKFLOW_DEBUG") {
+						assert.equal(log.exists(), false);
+						assert.deepEqual(
+							warn.mock.calls,
+							expected.map(() => ["[workflows] workflow heartbeat send failed", "send failed"]),
+						);
+					} else {
+						assert.deepEqual(areaRecords(log, "workflow"), expected);
+						assert.equal(warn.mock.calls.length, 0);
+					}
+				});
+			} finally {
+				warn.mockRestore();
+			}
+		},
+	);
 
 	test("a restarted process rebuilds the identical cadence from the restored run alone", async () => {
 		const runId = testRunId("heartbeat-restart-durability");

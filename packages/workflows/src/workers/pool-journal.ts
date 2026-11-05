@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 import { type AdapterOptions, type StorageSelection, storageSelectionKey } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import "../durable/journal/workflows-host-module.js";
@@ -22,6 +23,13 @@ export interface PoolDurableJournal {
 
 /** A {@link PoolDurableJournal} the pool's processes get through the environment, never through argv. */
 export const POOL_DURABLE_JOURNAL_ENV = "ATOMIC_POOL_DURABLE_JOURNAL";
+
+/** A pool worker's environment: Atomic's child environment, with the durable journal when the pool has one. */
+export function poolWorkerEnvironment(durable: PoolDurableJournal | undefined): NodeJS.ProcessEnv {
+	return createChildProcessEnvironment(
+		durable === undefined ? undefined : { [POOL_DURABLE_JOURNAL_ENV]: JSON.stringify(durable) },
+	);
+}
 
 type DurableSelection = Extract<StorageSelection, { kind: "sqlite" | "adapter" }>;
 type EncodedValue = string | number | boolean | null | { readonly $bigint: string } | { readonly $bytes: string };

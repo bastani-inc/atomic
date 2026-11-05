@@ -1,37 +1,46 @@
-import { appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { appendDebugRecord, type DebugFields, isDebugEnabled, reportDebug } from "@bastani/atomic";
 
 /**
  * Diagnostic trace of the pooled stage watch path (#3996), off by default.
  *
- * With `ATOMIC_DEBUG_POOLED_WATCH=1`, the root, the pool coordinator and every local worker append
- * one JSON line per step to `pooled-watch-trace.jsonl` next to the pool journal: watch opens and
- * ends, reconnect decisions, rebinds, outbox sends and their outcomes, airlock admissions and
- * refusals, and the signals that release redelivery. Set it to a file path to choose the file.
+ * In debug mode, or with `ATOMIC_DEBUG_POOLED_WATCH=1`, the root, the pool coordinator and every local worker record
+ * one line per step: watch opens and ends, reconnect decisions, rebinds, outbox sends and their outcomes, airlock
+ * admissions and refusals, and the signals that release redelivery. Debug mode writes them to the debug log.
+ * `ATOMIC_DEBUG_POOLED_WATCH=1` writes them to `pooled-watch-trace.jsonl` next to the pool journal; set it to a file
+ * path to choose the file.
  */
-const setting = process.env.ATOMIC_DEBUG_POOLED_WATCH;
-let file: string | undefined;
+let journalPath: string | undefined;
 let role = "root";
 
 /** Names this process in the trace and places the trace next to the pool journal. */
-export function configurePooledWatchTrace(journalPath: string, processRole: string): void {
-	if (setting === undefined || setting === "" || setting === "0") return;
+export function configurePooledWatchTrace(journal: string, processRole: string): void {
+	journalPath = journal;
 	role = processRole;
-	file = setting === "1" ? join(dirname(resolve(journalPath)), "pooled-watch-trace.jsonl") : resolve(setting);
 }
 
-/** Appends one step of the watch path when tracing is on; nothing otherwise. */
-export function tracePooledWatch(
-	step: string,
-	detail: Record<string, string | number | boolean | undefined | null | readonly (string | number)[]>,
-): void {
-	if (file === undefined) return;
-	try {
-		appendFileSync(
-			file,
-			`${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, role, step, ...detail })}\n`,
-		);
-	} catch {
-		// Tracing never changes what the pool does.
-	}
+function ownTraceFile(journal: string, setting: string): string {
+	return setting === "1" ? join(dirname(resolve(journal)), "pooled-watch-trace.jsonl") : resolve(setting);
+}
+
+/** Records one step of the watch path when tracing is on; nothing otherwise. */
+export function tracePooledWatch(step: string, detail: DebugFields): void {
+	if (!isDebugEnabled("pooled-watch")) return;
+	const journal = journalPath;
+	const traceRole = role;
+	reportDebug(
+		"pooled-watch",
+		step,
+		{ role: traceRole, ...detail },
+		journal === undefined
+			? undefined
+			: (setting) =>
+					appendDebugRecord(ownTraceFile(journal, setting), {
+						at: new Date().toISOString(),
+						pid: process.pid,
+						role: traceRole,
+						step,
+						...detail,
+					}),
+	);
 }

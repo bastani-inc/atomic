@@ -43,6 +43,7 @@ const packagedWorkerSetup = "./test/setup-packaged-local-worker.ts";
  */
 const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
+const debugSetup = "./test/global-setup-debug-isolation.ts";
 const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 const nativeSetup = "./test/global-setup-natives.ts";
 
@@ -65,7 +66,7 @@ const project = (
 		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
 		sequence: { groupOrder: options.groupOrder ?? 0 },
 		setupFiles: [...setupFiles, ...(options.extraSetupFiles ?? [])],
-		globalSetup: [herdrSetup, providerCredentialSetup, artifactSetup, nativeSetup],
+		globalSetup: [herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},

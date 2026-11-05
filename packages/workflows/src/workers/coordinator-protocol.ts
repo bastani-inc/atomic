@@ -147,6 +147,8 @@ export type CoordinatorNotice =
 	| { readonly kind: "stage-events-applied"; readonly watch: WatchId }
 	/** Provider and model limits the root process recorded, for the pool's workers (#4023). */
 	| { readonly kind: "rate-limits"; readonly observations: readonly ProviderRateLimitObservation[] }
+	/** The root process's `debug` setting changed; workers started afterwards inherit it. */
+	| { readonly kind: "debug"; readonly enabled: boolean }
 	| {
 			readonly kind: "published";
 			readonly batch: number;

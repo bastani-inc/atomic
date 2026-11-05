@@ -25,6 +25,7 @@ import type {
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { SessionRecoveryReason } from "../../core/extensions/index.js";
 import type {
@@ -132,6 +133,9 @@ export type RpcCommand =
 
 	// Extension UI
 	| { id?: string; type: "set_extension_ui_capabilities"; questionnaire?: boolean }
+
+	// Debug
+	| { id?: string; type: "set_debug"; enabled: boolean }
 
 	// Retry
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
@@ -372,6 +376,9 @@ export type RpcResponse =
 	// Extension UI
 	| { id?: string; type: "response"; command: "set_extension_ui_capabilities"; success: true }
 
+	// Debug
+	| { id?: string; type: "response"; command: "set_debug"; success: true }
+
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }
 	| { id?: string; type: "response"; command: "abort_retry"; success: true }
@@ -466,18 +473,22 @@ export type RpcResponse =
 	  }
 
 	// Error response (any command can fail)
-	| {
+	| ({
 			id?: string;
 			type: "response";
 			command: string;
 			success: false;
 			error: string;
-			errorCode?: "credential_synchronization";
-			errorDetails?: {
-				providerId: string;
-				operation: CredentialSynchronizationOperation;
-			};
-	  };
+	  } & RpcErrorDetails);
+
+/** Typed failure details an error response may carry, rehydrated by the RPC client. */
+export type RpcErrorDetails =
+	| { errorCode?: undefined; errorDetails?: undefined }
+	| {
+			errorCode: "credential_synchronization";
+			errorDetails: { providerId: string; operation: CredentialSynchronizationOperation };
+	  }
+	| { errorCode: "debug_error"; errorDetails: SerializedDebugError };
 
 // ============================================================================
 // RPC Events (stdout)

@@ -29,6 +29,7 @@ import {
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
 import {
+	ENV_DEBUG,
 	ENV_OFFLINE,
 	ENV_SESSION_DIR,
 	ENV_SKIP_VERSION_CHECK,
@@ -47,6 +48,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
+import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
@@ -243,6 +245,7 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 	takeOverStdout();
 	try {
 		const parsed = parseArgs(command.args);
+		if (parsed.debug) setEnvValue(ENV_DEBUG, "1");
 		if (command.kind === "check") {
 			if (parsed.unknownFlags.size > 0) {
 				const option = parsed.unknownFlags.keys().next().value;
@@ -344,6 +347,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	if (!inheritsDebugSetting()) setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 	if (await handlePackageCommand(args, { extensionFactories })) {
@@ -377,6 +381,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		return;
 	}
 	const parsed = parseArgs(args);
+	if (parsed.debug) setEnvValue(ENV_DEBUG, "1");
 	if (engineEnv.child === "1" && engineEnv.apiKey) parsed.apiKey = engineEnv.apiKey;
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {

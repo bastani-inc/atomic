@@ -239,6 +239,7 @@ atomic --no-extensions -e ./my-extension.ts
 | `--append-system-prompt <text>` | Append to system prompt |
 | `--use-theme <name[/name]>` | Set the interactive theme for this run without saving it; see [Themes](/themes#initial-theme) |
 | `--offline` | Disable automatic network activity, including update checks, package updates, telemetry, and model catalog refreshes |
+| `--debug` | Turn on [debug mode](/development#debugging) for this run, the same as `ATOMIC_DEBUG=1` |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
@@ -294,6 +295,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |
+| `ATOMIC_DEBUG` | Set to `1` to turn on [debug mode](/development#debugging), the same as `--debug` (`PI_DEBUG` is a legacy alias) |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
 | `ATOMIC_STDIN_TIMEOUT_MS` | How long a print-mode run waits, in milliseconds, for anything on a piped stdin before a run with a prompt argument starts without it; default `2000`, at most `2147483647`, `0` waits for the end of piped input (`PI_STDIN_TIMEOUT_MS` is a legacy alias) |
 | `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks (`PI_TELEMETRY` is a legacy alias) |

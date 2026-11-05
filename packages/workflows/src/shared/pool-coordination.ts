@@ -1,4 +1,5 @@
-import type { PoolCoordinationCount, PoolCoordinationStats } from "./store-types.js";
+import { isDebugEnabled } from "@bastani/atomic";
+import type { PoolCoordinationCount, PoolCoordinationStats, RunPoolSnapshot } from "./store-types.js";
 
 /** Kinds a pool line names, busiest first; the rest are summed into the total only. */
 const NAMED_KINDS = 3;
@@ -22,4 +23,9 @@ function rates(counts: Readonly<Record<string, PoolCoordinationCount>>): string 
  */
 export function formatPoolCoordination(stats: PoolCoordinationStats): string {
 	return `pool: requests ${rates(stats.requests)} · writes ${rates(stats.writes)}`;
+}
+
+/** A run's pool line for status views, shown only while pool debugging is on. */
+export function poolCoordinationLine(pool: RunPoolSnapshot | undefined): string | undefined {
+	return pool !== undefined && isDebugEnabled("pool") ? formatPoolCoordination(pool.coordination) : undefined;
 }

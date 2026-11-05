@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.js";
+import { setDebugSetting } from "../src/core/debug-setting.js";
+import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.js";
 import {
 	FooterComponent,
 	formatCwdForFooter,
 	UsageMeterComponent,
-} from "../src/modes/interactive/components/footer.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+} from "../src/modes/interactive/components/footer.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 type AssistantUsage = {
 	input: number;
@@ -302,3 +303,33 @@ describe("FooterComponent width handling", () => {
 		expect(usageMeter.render(120).map(stripAnsi).join("\n")).toContain("$1.234 (sub)");
 	});
 });
+
+describe("FooterComponent debug indicator (#4360)", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+	afterEach(() => {
+		setDebugSetting(false);
+		vi.unstubAllEnvs();
+	});
+
+	const render = (): string =>
+		new FooterComponent(createSession({ sessionName: "" }), createFooterData(1)).render(200)[0] ?? "";
+
+	it("shows a debug badge only while debug mode is on", () => {
+		vi.stubEnv("ATOMIC_DEBUG", undefined);
+		vi.stubEnv("ATOMIC_EXPERIMENTAL", undefined);
+		vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
+		assert.doesNotMatch(stripAnsi(render()), /debug/, "an area variable alone is not debug mode");
+		setDebugSetting(true);
+		assert.match(render(), new RegExp(`${escapeRegExp(theme.fg("warning", "debug"))}$`));
+		setDebugSetting(false);
+		assert.doesNotMatch(stripAnsi(render()), /debug/);
+		vi.stubEnv("ATOMIC_DEBUG", "1");
+		assert.match(stripAnsi(render()), / debug$/);
+	});
+});
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

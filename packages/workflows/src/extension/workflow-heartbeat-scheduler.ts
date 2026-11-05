@@ -1,3 +1,4 @@
+import { reportDebug } from "@bastani/atomic";
 import { InvalidWorkflowHeartbeatAnchorError } from "../durable/workflow-heartbeat-anchor.js";
 import type { SessionEntry } from "../shared/persistence-restore.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
@@ -257,7 +258,7 @@ export const MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES = Number.MAX_
  * (~`3e303` minutes), where `intervalMs` is already `Infinity` and every
  * `startedAt + n × I` is `Infinity` too. Authoring accepts those values, so no
  * schedulable boundary is the narrow, non-throwing answer — but it is warned
- * about under `ATOMIC_WORKFLOW_DEBUG` rather than being silent.
+ * about in workflow debug output rather than being silent.
  */
 export function nextWorkflowHeartbeatBoundary(
 	startedAt: number,
@@ -830,9 +831,10 @@ function findRun(snapshot: StoreSnapshot, runId: string): RunSnapshot | undefine
 }
 
 function warnWorkflowHeartbeatSendFailure(error: unknown): void {
-	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
 	const message = error instanceof Error ? error.message : String(error);
-	console.warn("[workflows] workflow heartbeat send failed", message);
+	reportDebug("workflow", "heartbeat-send-failed", { message }, () =>
+		console.warn("[workflows] workflow heartbeat send failed", message),
+	);
 }
 
 /**
@@ -842,10 +844,15 @@ function warnWorkflowHeartbeatSendFailure(error: unknown): void {
  * heartbeats.
  */
 function warnWorkflowHeartbeatUnschedulableInterval(intervalMinutes: number): void {
-	if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
-	console.warn(
-		`[workflows] heartbeatIntervalMinutes ${intervalMinutes} exceeds the largest representable cadence ` +
-			`(${MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES} minutes); no boundary can be scheduled for it`,
+	reportDebug(
+		"workflow",
+		"heartbeat-interval-unschedulable",
+		{ intervalMinutes, maximumMinutes: MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES },
+		() =>
+			console.warn(
+				`[workflows] heartbeatIntervalMinutes ${intervalMinutes} exceeds the largest representable cadence ` +
+					`(${MAX_REPRESENTABLE_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES} minutes); no boundary can be scheduled for it`,
+			),
 	);
 }
 

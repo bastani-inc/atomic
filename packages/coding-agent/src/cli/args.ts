@@ -8,6 +8,7 @@ import {
 	APP_NAME,
 	CONFIG_DIR_NAME,
 	ENV_AGENT_DIR,
+	ENV_DEBUG,
 	ENV_OFFLINE,
 	ENV_PACKAGE_DIR,
 	ENV_SELF_UPDATE_COMMAND,
@@ -69,6 +70,7 @@ export interface Args {
 	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
+	debug?: boolean;
 	verbose?: boolean;
 	projectTrustOverride?: boolean;
 	messages: string[];
@@ -284,6 +286,8 @@ export function parseArgs(args: string[]): Args {
 			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--debug") {
+			result.debug = true;
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -405,6 +409,7 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as ${ENV_OFFLINE}=1)
+  --debug                        Turn on debug mode for this run (same as ${ENV_DEBUG}=1)
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number
@@ -524,6 +529,7 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_SESSION_DIR.padEnd(32)} - Select JSONL session directory (overridden by --session-dir)
   ${ENV_PACKAGE_DIR.padEnd(32)} - Override package directory (for Nix/Guix store paths)
   ${ENV_OFFLINE.padEnd(32)} - Disable startup network operations when set to 1/true/yes
+  ${ENV_DEBUG.padEnd(32)} - Turn on debug mode when set to 1 (writes debug output to the /debug log)
   ${ENV_SELF_UPDATE_COMMAND.padEnd(32)} - Command ${APP_NAME} update runs to update ${APP_NAME} itself ({packageName}, {version}, {installSpec})
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no
   ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://pi.dev/session/)

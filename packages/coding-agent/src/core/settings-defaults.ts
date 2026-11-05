@@ -40,6 +40,7 @@ export const SETTINGS_DEFAULTS = {
 		contextAfter: 3,
 	},
 	collapseChangelog: false,
+	debug: false,
 	enableInstallTelemetry: true,
 	enableSkillCommands: true,
 	herdr: {
