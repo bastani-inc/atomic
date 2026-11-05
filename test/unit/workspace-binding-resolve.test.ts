@@ -968,6 +968,8 @@ describe("shared stores follow the remote (#3109)", () => {
 		assert.deepEqual(b.remotes, [underscore.url]);
 		const scp = sharedStorePath({ kind: "remote", url: "x", host: "host", segments: ["..", "..", "escape"] });
 		assert.ok(scp.startsWith(join(dirs.home, "repos", "host")), "dot segments never climb out of the store root");
+		const dot = sharedStorePath({ kind: "remote", url: "x", host: "host", segments: [".", "repo"] });
+		assert.match(dot, /[\\/]host[\\/]\.-[0-9a-f]{12}[\\/]repo\.git$/, "a . segment keeps its place in the path");
 	});
 
 	test("a remote whose HEAD names no branch still binds explicit refs and names the missing default (#3109)", async () => {

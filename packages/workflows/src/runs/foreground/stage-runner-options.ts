@@ -36,16 +36,6 @@ function workflowOrchestrationContext(
 	return pendingStageDelivery === undefined ? context : { ...context, pendingStageDelivery };
 }
 
-/** The saved session a stage resumes, opened to read the workspace binding it recorded. */
-async function openResumedStageSession(
-	options: StageOptions,
-	defaultSessionDir: string | undefined,
-): Promise<SessionManager> {
-	const store = await stageSessionStore(options, defaultSessionDir);
-	await migrateLegacyStageSession(store, options.resumeFromSessionId!, options.resumeFromLegacySessionFile);
-	return SessionManager.open(store, options.resumeFromSessionId!);
-}
-
 export async function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
@@ -89,24 +79,24 @@ export async function stripWorkflowOnlyOptions(
 	} = options;
 	// Bound here, before the session opens, so the session store, the session and its tools all use the bound worktree.
 	// A resumed session restores the binding its session recorded instead of resolving the workspace again.
-	const resumed =
-		resumeFromSessionId === undefined || sessionOptions.workspace === undefined
-			? undefined
-			: await openResumedStageSession(options, defaultSessionDir);
+	const resumeStore =
+		resumeFromSessionId === undefined ? undefined : await stageSessionStore(options, defaultSessionDir);
+	if (resumeStore !== undefined)
+		await migrateLegacyStageSession(resumeStore, resumeFromSessionId!, resumeFromLegacySessionFile);
 	if (sessionOptions.workspace !== undefined) {
 		const binding =
-			resumed === undefined
+			resumeStore === undefined
 				? await resolveWorkspace(sessionOptions.workspace)
-				: await bindSessionWorkspace(sessionOptions.workspace, resumed);
+				: await bindSessionWorkspace(
+						sessionOptions.workspace,
+						await SessionManager.open(resumeStore, resumeFromSessionId!),
+					);
 		sessionOptions.workspace = binding;
 		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
 	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
-	if (resumeFromSessionId !== undefined) {
-		const store = await stageSessionStore(options, defaultSessionDir);
-		if (resumed === undefined)
-			await migrateLegacyStageSession(store, resumeFromSessionId, resumeFromLegacySessionFile);
-		sessionOptions.sessionManager = await SessionManager.open(store, resumeFromSessionId, cwd);
+	if (resumeStore !== undefined) {
+		sessionOptions.sessionManager = await SessionManager.open(resumeStore, resumeFromSessionId!, cwd);
 	} else if (context === "fork" && forkFromSessionId !== undefined) {
 		sessionOptions.sessionManager = await forkStageSession(
 			await stageSessionStore(options, defaultSessionDir),
