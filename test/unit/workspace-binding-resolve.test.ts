@@ -972,8 +972,7 @@ describe("shared stores follow the remote (#3109)", () => {
 
 	test("a remote whose HEAD names no branch still binds explicit refs and names the missing default (#3109)", async () => {
 		const remote = createRemote(dirs.root, "dangling-head");
-		const bare = remote.url.replace(/^file:\/\//, "");
-		git(bare, "symbolic-ref", "HEAD", "refs/heads/master");
+		git(join(dirs.root, "dangling-head.git"), "symbolic-ref", "HEAD", "refs/heads/master");
 		const explicit = await resolveWorkspace(workspace({ repo: remote.url, base: "origin/main", branch: "explicit" }));
 		assert.equal(explicit.baseCommit, git(remote.seed, "rev-parse", "HEAD"));
 		const missing = await rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "needs-default" })));
