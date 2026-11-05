@@ -440,7 +440,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
 	exportToHtml(outputPath?: string, options?: { themeName?: string }): Promise<string>;
-	exportToJsonl(outputPath?: string, options?: { includeShareContext?: boolean }): string;
+	/** `snapshotContent: false` leaves worktree snapshot patch and bundle content out of the file. */
+	exportToJsonl(
+		outputPath?: string,
+		options?: { includeShareContext?: boolean; snapshotContent?: boolean },
+	): Promise<string>;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
 	sealWorkflowStageGeneration(): void;
@@ -622,6 +626,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	readonly _messagesAwaitingPersistence: WeakMap<object, Promise<void>>;
 	readonly _messagesWithFailedPersistence: WeakSet<object>;
 	_persistenceFailure: string | undefined;
+	_worktreeSnapshots: import("./session-worktree-snapshots.ts").SessionWorktreeSnapshotRecorder;
 	readonly _reissuedToolCallIds: Set<string>;
 	_lastAssistantToolResults: AgentMessage[];
 	_lastActivityOutcome: AgentActivityOutcome;

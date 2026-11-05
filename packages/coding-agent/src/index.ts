@@ -600,6 +600,7 @@ export {
 	type SessionWorkflowMetadata,
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
+	type WorktreeSnapshotEntry,
 } from "./core/session-manager.ts";
 export {
 	WORKFLOW_SESSION_METADATA_ENV,
@@ -632,6 +633,11 @@ export {
 	SessionStartTimeoutError,
 	serializeSessionStartError,
 } from "./core/session-start-errors.ts";
+export {
+	type ResumeSessionWorktreeOptions,
+	resumeSessionWorktree,
+	type SessionWorktreeResume,
+} from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {
 	type CompactionModelOverride,

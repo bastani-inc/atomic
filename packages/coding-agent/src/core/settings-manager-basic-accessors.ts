@@ -17,6 +17,8 @@ import type {
 	TransportSetting,
 } from "./settings-types.ts";
 import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts";
+import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
+import type { WorktreeSnapshotSettings } from "./worktree-snapshot/types.ts";
 
 type CompactionModel = Pick<Model<string>, "provider" | "id">;
 
@@ -141,6 +143,8 @@ interface SettingsManagerBasicAccessors {
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean };
 	getBranchSummarySkipPrompt(): boolean;
 	getSessionSummarySettings(): { enabled: boolean };
+	/** Merged `snapshots.*` settings; throws WorkspaceConfigError (source "settings") for an invalid value. */
+	getWorktreeSnapshotSettings(): WorktreeSnapshotSettings;
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): {
@@ -574,6 +578,10 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return {
 			enabled: settingsInternals(this).settings.sessionSummary?.enabled ?? SETTINGS_DEFAULTS.sessionSummary.enabled,
 		};
+	},
+
+	getWorktreeSnapshotSettings() {
+		return resolveWorktreeSnapshotSettings(settingsInternals(this).settings.snapshots, "settings", "snapshots");
 	},
 
 	getRetryEnabled() {

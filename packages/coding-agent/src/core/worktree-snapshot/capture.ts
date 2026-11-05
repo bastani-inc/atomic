@@ -1,8 +1,7 @@
 import { copyFile, lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { snapshotBlob } from "./blob-store.ts";
-import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
+import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
 import {
 	type GitUnavailableError,
 	isGitUnavailableError,

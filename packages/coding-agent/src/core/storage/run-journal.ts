@@ -1,3 +1,4 @@
+import type { SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 import type { StorageDescriptor } from "./database.js";
 
 export const RUN_EVENT_TYPES = {
@@ -125,6 +126,11 @@ export interface RunJournal {
 	runVersions?(): Promise<ReadonlyMap<string, RunVersion>>;
 	/** Undefined for a run with no snapshot event. */
 	snapshotTail?(runId: string): Promise<RunSnapshotTail | undefined>;
+	/**
+	 * Content-addressed blobs for worktree snapshots recorded on checkpoints, in the journal's own storage. Absent when
+	 * the journal cannot hold them; snapshots are then not recorded.
+	 */
+	readonly snapshotBlobs?: SnapshotBlobStore;
 	/** Optional batched appends to one run in one transaction; each append is settled on its own, in order. */
 	appendMany?(
 		lease: Lease,

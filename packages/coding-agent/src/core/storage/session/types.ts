@@ -1,4 +1,5 @@
 import type { SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
+import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
 
@@ -59,6 +60,11 @@ export interface SessionWriteOptions {
 
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/**
+	 * Content-addressed blobs for `worktree_snapshot` entries, in the store's own storage. Absent when the store cannot
+	 * hold them; snapshots are then not recorded.
+	 */
+	readonly snapshotBlobs?: SnapshotBlobStore;
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }>;
 	append(
 		sessionId: string,

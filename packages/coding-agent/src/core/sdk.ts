@@ -62,6 +62,7 @@ import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
+import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export { withResourceAdmission } from "./resource-admission-scope.ts";
@@ -226,6 +227,7 @@ async function constructAgentSession(
 	persistInitialState: boolean,
 	acquisition: { store?: SessionStore; release?: () => Promise<void> },
 ): Promise<CreateAgentSessionResult> {
+	resolveWorktreeSnapshotSettings(options.snapshots, "sdk", "snapshots");
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	validateProcessStorage(agentDir);
@@ -714,6 +716,15 @@ async function constructAgentSession(
 			cwd,
 			workflowJournal: options.journal,
 			storageAgentDir: agentDir,
+			worktreeSnapshots:
+				options.snapshots === undefined
+					? undefined
+					: resolveWorktreeSnapshotSettings(
+							options.snapshots,
+							"sdk",
+							"snapshots",
+							settingsManager.getWorktreeSnapshotSettings(),
+						),
 			childSessionOptions: (child) =>
 				inheritChildSessionOptions(
 					{

@@ -1,4 +1,9 @@
 import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
+import {
+	compareWorktreeSnapshot,
+	describeSnapshotExport,
+	describeWorktreeSnapshot,
+} from "../../core/session-worktree-snapshots.ts";
 import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
@@ -108,8 +113,13 @@ InteractiveModeBase.prototype.handleExportCommand = async function (
 
 	try {
 		if (outputPath?.endsWith(".jsonl")) {
-			const filePath = this.session.exportToJsonl(outputPath);
+			const filePath = await this.session.exportToJsonl(outputPath);
 			this.showStatus(`Session exported to: ${filePath}`);
+			const contents = describeSnapshotExport(
+				this.sessionManager.getBranch(),
+				this.sessionManager.getWorktreeSnapshotRecords(),
+			);
+			if (contents) this.showStatus(contents);
 		} else {
 			const filePath = await this.session.exportToHtml(outputPath, { themeName: theme.name });
 			this.showStatus(`Session exported to: ${filePath}`);
@@ -228,7 +238,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-share-"));
 	const tmpFile = path.join(tempDir, "session.jsonl");
 	try {
-		this.session.exportToJsonl(tmpFile, { includeShareContext: true });
+		await this.session.exportToJsonl(tmpFile, { includeShareContext: true, snapshotContent: false });
 	} catch (error: unknown) {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -367,6 +377,34 @@ InteractiveModeBase.prototype.handleToolsCommand = async function (this: Interac
 	});
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(new Text(`${theme.bold("Tools")}\n\n${text}`, 1, 0));
+	this.ui.requestRender();
+};
+
+InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (this: InteractiveModeBase): Promise<void> {
+	const latest = this.sessionManager.getLatestWorktreeSnapshots();
+	if (latest.size === 0) {
+		this.showStatus("No worktree snapshots recorded in this session");
+		return;
+	}
+	const settings = this.settingsManager.getWorktreeSnapshotSettings();
+	const lines = [theme.bold("Worktree Snapshots"), ""];
+	for (const [root, snapshot] of latest) {
+		lines.push(...describeWorktreeSnapshot(root, snapshot));
+		const comparison = await compareWorktreeSnapshot(snapshot, root, settings);
+		if (comparison.status === "match") lines.push(theme.fg("success", "  matches the current tree"));
+		else if (comparison.status === "missing") lines.push(theme.fg("warning", `  ${comparison.reason.message}`));
+		else {
+			lines.push(
+				theme.fg(
+					"warning",
+					`  differs from the current tree ${comparison.tree.slice(0, 12)} at ${comparison.head.slice(0, 12)}`,
+				),
+			);
+			if (comparison.stat) lines.push(...comparison.stat.split("\n").map((line) => `  ${line}`));
+		}
+		lines.push("");
+	}
+	this.chatContainer.addChild(new Text(lines.join("\n").trimEnd(), 1, 0));
 	this.ui.requestRender();
 };
 

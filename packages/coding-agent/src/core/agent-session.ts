@@ -60,6 +60,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
+import { SessionWorktreeSnapshotRecorder } from "./session-worktree-snapshots.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers } from "./settings-merge.js";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
@@ -272,6 +273,7 @@ class AgentSessionBase {
 	protected _taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
 	protected _taskAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
+	protected _worktreeSnapshots: SessionWorktreeSnapshotRecorder;
 	get cacheWarmingStatus(): import("./cache-warmer.ts").CacheWarmingStatus | undefined {
 		return this._cacheWarmer?.status;
 	}
@@ -291,6 +293,18 @@ class AgentSessionBase {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		const snapshotSettings = config.worktreeSnapshots;
+		this._worktreeSnapshots = new SessionWorktreeSnapshotRecorder({
+			sessionManager: this.sessionManager,
+			cwd: () => this._cwd,
+			settings: () => snapshotSettings ?? this.settingsManager.getWorktreeSnapshotSettings(),
+			declaresWrites: (name) => this._toolDefinitions.get(name)?.definition.writesFiles === true,
+			onUnavailable: (reason) =>
+				(this as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
+					type: "worktree_snapshot_unavailable",
+					reason,
+				}),
+		});
 		this._cacheWarmer = config.cacheWarmer;
 		this._backgroundCompaction = new BackgroundCompactionRuntime(config.compactionWake);
 		if (this._cacheWarmer)

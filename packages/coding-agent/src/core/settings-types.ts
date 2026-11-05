@@ -22,6 +22,7 @@ export type {
 	SearchSettings,
 	SessionSummarySettings,
 	Settings,
+	SnapshotSettings,
 	TaskSettings,
 	TerminalSettings,
 	ThinkingBudgetsSettings,

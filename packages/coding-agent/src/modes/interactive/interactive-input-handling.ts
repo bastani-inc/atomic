@@ -302,6 +302,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/session snapshot") {
+				this.editor.setText("");
+				await this.handleSessionSnapshotCommand();
+				return;
+			}
 			if (text === "/tools") {
 				this.editor.setText("");
 				await this.handleToolsCommand();

@@ -81,18 +81,34 @@ export class WorkspaceConfigError extends WorkspaceError {
 	}
 }
 
-/** Git could not be started. Capture degrades with this as its reason; restore and verification throw it. */
+const GIT_INSTALL_COMMANDS: Readonly<Partial<Record<NodeJS.Platform, string>>> = {
+	darwin: "xcode-select --install",
+	win32: "winget install --id Git.Git -e",
+	linux: "sudo apt-get install git (or your distribution's package manager)",
+};
+
+/** The command that installs Git on `platform`. */
+export function gitInstallCommand(platform: NodeJS.Platform = process.platform): string {
+	return GIT_INSTALL_COMMANDS[platform] ?? "install Git from https://git-scm.com/downloads";
+}
+
+/**
+ * Git could not be started, so worktree snapshots cannot be read or restored. Capture degrades with this as its
+ * reason; restore and verification throw it before any other work.
+ */
 export class GitUnavailableError extends WorkspaceError {
 	override readonly name = "GitUnavailableError" as const;
 	declare readonly code: GitUnavailableErrorCode;
 	declare readonly executable: string;
+	declare readonly installCommand: string;
 
 	constructor(executable: string, cause?: Error) {
+		const installCommand = gitInstallCommand();
 		super(
 			"git-unavailable",
-			`Git is unavailable: ${executable} could not be started`,
-			"Install Git or put it on PATH, then retry.",
-			{ executable },
+			`Git is unavailable: ${executable} could not be started, and worktree snapshots need it to read and rebuild repository state`,
+			`Install Git with \`${installCommand}\` or put it on PATH, then retry.`,
+			{ executable, installCommand },
 			cause,
 		);
 	}
@@ -156,7 +172,8 @@ export interface WorkspaceRestoreErrorFields {
 	readonly actualTree?: string | null;
 	readonly commits?: readonly string[];
 	readonly paths?: readonly string[];
-	readonly reason?: "denied-history" | "bundle-over-cap" | "not-fetched" | "not-empty" | "inside-checkout";
+	readonly reason?: "denied-history" | "bundle-over-cap" | "not-fetched" | "not-empty";
+	readonly remotes?: readonly string[];
 	readonly target?: string;
 	readonly detail?: string;
 }
@@ -175,24 +192,32 @@ function restoreMessage(
 		case "blob-missing":
 			return [
 				`Cannot restore snapshot ${snapshot}: ${fields.role} blob ${fields.blob} is missing from storage`,
-				"Import the session with its blobs, or use the storage the snapshot was recorded in.",
+				"Use the storage the snapshot was recorded in, or import a session file exported with `atomic --export <session> <file>`, which carries its blobs.",
 			];
 		case "blob-corrupt":
 			return [
 				`Cannot restore snapshot ${snapshot}: ${fields.role} blob ${fields.blob} does not match its hash`,
 				"The stored snapshot is damaged; restore an earlier snapshot or re-import the session.",
 			];
-		case "commits-unavailable":
+		case "commits-unavailable": {
+			const remotes = fields.remotes?.length ? fields.remotes.join(", ") : "no recorded remote";
+			if (fields.reason === "not-fetched") {
+				return [
+					`Cannot restore snapshot ${snapshot}: commit ${fields.head} could not be fetched from ${remotes}`,
+					fields.remotes?.length
+						? `Check access with \`git ls-remote ${fields.remotes[0]}\` and that ${fields.head} is pushed, then retry.`
+						: `Push ${fields.head} to a remote and record it, then retry.`,
+				];
+			}
 			return [
-				`Cannot restore snapshot ${snapshot}: commit ${fields.head} is not available from its remotes${
+				`Cannot restore snapshot ${snapshot}: commit ${fields.head} is not on ${remotes} and its unpushed history ${
 					fields.reason === "denied-history"
-						? " and its unpushed history touches denied paths"
-						: fields.reason === "bundle-over-cap"
-							? " and its unpushed history exceeded the snapshot size cap"
-							: ""
+						? `touches denied paths ${fields.paths?.join(", ")}`
+						: "exceeded the snapshot size cap"
 				}`,
-				`Push ${fields.commits?.length ? `commits ${fields.commits.join(", ")}` : "the commit"} to a recorded remote, then retry.`,
+				`Push commits ${fields.commits?.join(", ")} to a recorded remote, then retry.`,
 			];
+		}
 		case "delta-failed":
 			return [
 				`Cannot restore snapshot ${snapshot}: delta ${fields.deltaIndex} (patch ${fields.blob ?? "none"}) did not produce tree ${fields.expectedTree}`,
@@ -205,8 +230,8 @@ function restoreMessage(
 			];
 		case "unsafe-target":
 			return [
-				`Cannot restore into ${fields.target}: ${fields.reason === "inside-checkout" ? "it is inside an existing Git checkout" : "it is not an empty directory"}`,
-				"Choose a new or empty directory outside any checkout.",
+				`Cannot restore into ${fields.target}: it is not an empty directory`,
+				"Choose a new or empty directory, or omit `into` to restore under Atomic home.",
 			];
 	}
 }
@@ -226,6 +251,7 @@ export class WorkspaceRestoreError extends WorkspaceError implements WorkspaceRe
 	declare readonly commits?: readonly string[];
 	declare readonly paths?: readonly string[];
 	declare readonly reason?: WorkspaceRestoreErrorFields["reason"];
+	declare readonly remotes?: readonly string[];
 	declare readonly target?: string;
 	declare readonly detail?: string;
 

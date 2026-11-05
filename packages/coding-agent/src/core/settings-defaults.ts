@@ -24,6 +24,13 @@ export const SETTINGS_DEFAULTS = {
 	sessionSummary: {
 		enabled: true,
 	},
+	snapshots: {
+		enabled: true,
+		includeUntracked: true,
+		maxFileBytes: 5 * 1024 * 1024,
+		maxSnapshotBytes: 50 * 1024 * 1024,
+		fullEvery: 10,
+	},
 	retry: {
 		enabled: true,
 		maxRetries: 3,

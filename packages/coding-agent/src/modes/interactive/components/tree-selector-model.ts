@@ -220,7 +220,8 @@ export function applyTreeFilter(state: TreeListState): void {
 			entry.type === "custom" ||
 			entry.type === "model_change" ||
 			entry.type === "thinking_level_change" ||
-			entry.type === "session_info";
+			entry.type === "session_info" ||
+			entry.type === "worktree_snapshot";
 
 		switch (state.filterMode) {
 			case "user-only":

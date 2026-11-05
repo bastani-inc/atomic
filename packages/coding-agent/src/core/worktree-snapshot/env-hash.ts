@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { SnapshotBlob } from "./types.ts";
 
 /** Root-relative files whose content decides a checkout's installed dependencies and toolchain. */
 export const ENVIRONMENT_INPUT_FILES: readonly string[] = Object.freeze(
@@ -35,6 +36,10 @@ export const ENVIRONMENT_INPUT_FILES: readonly string[] = Object.freeze(
 
 export function sha256Hex(data: Uint8Array | string): string {
 	return createHash("sha256").update(data).digest("hex");
+}
+
+export function snapshotBlob(data: Uint8Array): SnapshotBlob {
+	return { hash: sha256Hex(data), data };
 }
 
 /** SHA-256 over each present input's path and content hash, so equal dependency inputs give equal hashes anywhere. */

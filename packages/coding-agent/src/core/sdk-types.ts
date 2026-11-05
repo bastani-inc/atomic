@@ -95,6 +95,12 @@ export interface CreateAgentSessionOptions {
 	sessionManager?: SessionManager;
 	/** Session storage. Defaults to the resolved settings or the shared local SQLite database. */
 	sessionStore?: SessionStore | StorageSelection;
+	/**
+	 * Worktree snapshot settings for this session, overriding `snapshots.*` in settings.json. A turn that calls a
+	 * file-writing tool records a `worktree_snapshot` entry per checkout it touched. Invalid values throw
+	 * WorkspaceConfigError before the session is created.
+	 */
+	snapshots?: import("./worktree-snapshot/settings.ts").WorktreeSnapshotSettingsInput;
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;

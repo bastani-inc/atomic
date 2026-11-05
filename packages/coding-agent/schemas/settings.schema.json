@@ -287,6 +287,42 @@
         }
       }
     },
+    "snapshots": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Record worktree snapshots so sessions and workflow runs can resume with their repository state.",
+          "default": true
+        },
+        "includeUntracked": {
+          "type": "boolean",
+          "description": "Capture untracked files that no ignore rule or deny pattern excludes.",
+          "default": true
+        },
+        "maxFileBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Largest file a snapshot captures, in bytes; larger files are listed as omitted.",
+          "default": 5242880
+        },
+        "maxSnapshotBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Largest total of captured file content, and largest unpushed-commit bundle, in bytes.",
+          "default": 52428800
+        },
+        "fullEvery": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Record a full delta against HEAD after this many incremental snapshots.",
+          "default": 10
+        }
+      }
+    },
     "retry": {
       "type": "object",
       "properties": {
