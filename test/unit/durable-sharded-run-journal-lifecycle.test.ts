@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -27,6 +27,7 @@ import {
 	type Lease,
 	type RunJournal,
 	RunNotFoundError,
+	StaleLeaseError,
 	StorageUnavailableError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -989,6 +990,7 @@ async function adoptedFinishedRun(name: string): Promise<string> {
 	mkdirSync(join(legacy, ".."), { recursive: true });
 	const seed = await openSqlRunJournal(legacy);
 	const lease = await start(seed, "r");
+	await seed.append(lease, { type: "RunStarted", payload: { snapshot: 1 } }, { key: "start" });
 	await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
 	await seed.release(lease);
 	await seed.close();
@@ -1106,4 +1108,89 @@ test("deleting a run that vanishes while it is followed through three moves ends
 	});
 	Reflect.set(catalog, "removeFrom", async () => false);
 	await journal.deleteRun("vanishing");
+});
+
+test("a lease operation on a run no shard holds is a stale lease, with nothing written and no shard made (#4325)", async () => {
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const writes = countCalls(catalog, ["place", "homeShard", "index", "setStatus", "remove", "removeFrom", "moveRun"]);
+	const ghost: Lease = { runId: "ghost", holderId: "nobody", epoch: 3 };
+	const event = { type: "StatusChanged", payload: { status: "completed" } } as const;
+	const operations: Record<string, () => Promise<unknown>> = {
+		renew: () => journal.renew(ghost),
+		release: () => journal.release(ghost),
+		append: () => journal.append(ghost, event),
+		appendMany: () => journal.appendMany(ghost, [{ event, context: (action) => action() }]),
+		deleteOwnedRun: () => journal.deleteOwnedRun(ghost),
+	};
+	for (const [name, operation] of Object.entries(operations))
+		await assert.rejects(operation(), (error: Error) => {
+			assert.ok(error instanceof StaleLeaseError, `${name}: ${error}`);
+			assert.deepEqual([error.runId, error.heldEpoch, error.currentEpoch], ["ghost", 3, 0], name);
+			return true;
+		});
+	assert.deepEqual(Object.values(writes), [0, 0, 0, 0, 0, 0, 0], "the catalog was not written");
+	assert.deepEqual(
+		readdirSync(store).filter((file) => file.startsWith("shard-")),
+		[],
+		"no shard file was made",
+	);
+	await assert.rejects(journal.acquire("ghost", "h"), (error: Error) => error instanceof RunNotFoundError);
+});
+
+test("a key or lease read on a cached native copy a move's undo deleted finds the run where the catalog now names it (#4325)", async () => {
+	const legacy = await adoptedFinishedRun("undone-reads");
+	const backup = join(root, "undone-reads.backup");
+	copyFileSync(legacy, backup);
+	const journal = await open();
+	assert.equal((await consolidateJournalStore(store)).moved, 1);
+	assert.equal((await journal.getRun("r"))?.runId, "r");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const native = (await catalog.locate("r"))!.shard;
+	const nativeFile = new DatabaseSync(native.path);
+	for (const table of ["wf_events", "wf_leases", "wf_runs"])
+		nativeFile.exec(`DELETE FROM ${table} WHERE run_id = 'r'`);
+	nativeFile.close();
+	for (const suffix of ["", "-wal", "-shm"]) rmSync(`${legacy}${suffix}`, { force: true });
+	copyFileSync(backup, legacy);
+	const adopted = (await catalog.shards()).find((shard) => shard.kind === "adopted")!;
+	assert.equal(await catalog.moveRun("r", native.id, adopted.id), true);
+	const locates = countCalls(catalog, ["locate"]);
+	assert.equal((await journal.readKey("r", "start"))?.event.type, "RunStarted");
+	assert.ok(locates.locate! <= 2, `the catalog was asked ${locates.locate} times`);
+	assert.equal(journal.shardOf("r")?.kind, "adopted");
+	assert.equal((await journal.leaseState("r"))?.runId, "r");
+});
+
+test("a key miss on a run its shard holds asks nothing of the catalog (#4325)", async () => {
+	const journal = await open();
+	await start(journal, "present");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const locates = countCalls(catalog, ["locate", "shards"]);
+	assert.equal(await journal.readKey("present", "never-written"), undefined);
+	assert.equal((await journal.leaseState("present"))?.holderId, "owner");
+	assert.deepEqual([locates.locate, locates.shards], [0, 0]);
+});
+
+test("reopening the store reconciles a root the catalog still counts as running with the status its shard saved (#4325)", async () => {
+	const first = await open();
+	const finished = await start(first, "finished");
+	await first.append(finished, { type: "StatusChanged", payload: { status: "completed" } });
+	await first.release(finished);
+	await start(first, "crashed");
+	await first.close();
+	const catalogFile = new DatabaseSync(join(store, "catalog.sqlite"));
+	catalogFile.exec("UPDATE catalog_runs SET status = 'running' WHERE run_id = 'finished'");
+	catalogFile.close();
+	const reopened = await open();
+	const catalog = Reflect.get(reopened, "catalog") as JournalCatalog;
+	assert.equal((await catalog.locate("finished"))?.run.status, "completed", "the saved status reaches the catalog");
+	assert.equal((await catalog.locate("crashed"))?.run.status, "running", "a root that is still running is unchanged");
+	const shardsBefore = (await catalog.shards()).length;
+	assert.equal(
+		await reopened.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 3, status: "running" }),
+		"created",
+	);
+	assert.equal((await catalog.shards()).length, shardsBefore, "the idle shard takes the new root, no shard is added");
+	assert.equal(reopened.shardOf("next")?.id, reopened.shardOf("finished")?.id);
 });

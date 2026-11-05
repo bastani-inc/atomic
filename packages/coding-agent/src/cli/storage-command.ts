@@ -242,7 +242,7 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			);
 			for (const shard of store.unavailable)
 				lines.push(
-					`  unavailable: ${shard.path} (${shard.kind}, ${shard.code === "shard-missing" ? "no longer exists" : "cannot be opened"}: ${shard.code})`,
+					`  unavailable: ${shard.path} (${shard.kind}, ${shard.code === "shard-missing" ? "no longer exists" : "cannot be opened"}: ${shard.code}${shard.detail === undefined ? "" : `, ${shard.detail}`})`,
 				);
 			for (const skipped of store.skipped) lines.push(`  skipped:     ${skipped.path} (${skipped.reason})`);
 		}
@@ -512,9 +512,11 @@ async function consolidate(options: StorageCommandOptions, log: (line: string) =
 	for (const run of report.runs)
 		if (run.outcome === "skipped") reasons.set(run.reason, (reasons.get(run.reason) ?? 0) + 1);
 	for (const [reason, count] of reasons) log(`Left ${count} run${count === 1 ? "" : "s"} in place: ${reason}.`);
-	const failed = report.runs.find((run) => run.error !== undefined)?.error;
-	if (failed !== undefined) log(`${failed.message} ${failed.hint}`);
+	const failures = new Map<string, string>();
+	for (const run of report.runs)
+		if (run.error !== undefined) failures.set(run.error.message, `${run.error.message} ${run.error.hint}`);
+	for (const failure of failures.values()) log(failure);
 	const note = storeSelectionNote(options, directory);
 	if (note !== undefined) log(note);
-	return 0;
+	return failures.size === 0 ? 0 : 1;
 }

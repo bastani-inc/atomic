@@ -5,7 +5,7 @@
  * waits until every process of the benchmark is ready, and appends checkpoints back to back, timing each append from
  * the call to its commit. That time is the wait for the database's write lock plus one commit. The wait for the lock
  * alone is read from the database handle's own writer-queue statistics once the appends are done, so the report
- * separates it from the commit (and its fsync) that follows.
+ * separates it from the commit (and its fsync) that follows, and the database files whose write lock it took are listed.
  *
  *   bun run scripts/perf/journal-store/writer.ts <store|file> <path> <root> <worker> <appends> <payloadBytes> <ready> <peers>
  */
@@ -53,4 +53,13 @@ await journal.release(held.lease);
 if (owner === undefined) await journal.close();
 else await owner.close();
 const lockWait = { p50: queue.p50WaitMs, p95: queue.p95WaitMs };
-process.stdout.write(`${JSON.stringify({ root, worker, waits, elapsedMs, lockWait })}\n`);
+// The database files of the store this process took the write lock on, read from the records each connection keeps
+// next to a database while it holds that database's lock; a store writer holds its root's shard and no other.
+const holders =
+	mode === "store"
+		? readdirSync(path)
+				.filter((name) => name.endsWith("-holders"))
+				.filter((name) => readdirSync(join(path, name)).some((record) => record.startsWith(`${process.pid}-`)))
+				.map((name) => name.slice(0, -"-holders".length))
+		: [];
+process.stdout.write(`${JSON.stringify({ root, worker, pid: process.pid, waits, elapsedMs, lockWait, holders })}\n`);

@@ -176,7 +176,7 @@ test("atomic storage consolidate moves finished runs and says why others stay (#
 	]);
 	rmSync(join(root, "old"), { recursive: true, force: true });
 	const gone = await storage(["consolidate"]);
-	assert.equal(gone.code, 0);
+	assert.equal(gone.code, 1, "a run skipped with a typed failure fails the command");
 	assert.deepEqual(gone.out.slice(0, 2), [
 		"Moved 0 finished runs into the journal store's shards.",
 		"Left 1 run in place: shard-unavailable.",
@@ -215,14 +215,20 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 	const after = await collectStorageStatus({ cwd: project, agentDir, probe: true });
 	const status = after.domains.find((entry) => entry.domain === "journal")!;
 	assert.equal(status.probe?.connection.status, "ok");
-	assert.deepEqual(status.journalStore, {
+	const { unavailable, ...counts } = status.journalStore!;
+	assert.deepEqual(counts, {
 		catalog: join(store, "catalog.sqlite"),
 		shards: 0,
 		adopted: 2,
 		runs: 2,
-		unavailable: [{ path: lost, kind: "adopted", code: "shard-missing" }],
 		skipped: [{ path: join(root, "workflows", "journal.sqlite"), reason: "not-a-journal" }],
 	});
+	assert.equal(unavailable.length, 1);
+	assert.deepEqual(
+		[unavailable[0]?.path, unavailable[0]?.kind, unavailable[0]?.code],
+		[lost, "adopted", "shard-missing"],
+	);
+	assert.ok(unavailable[0]?.message.includes(lost) && unavailable[0].hint.length > 0);
 	const lines = formatStorageStatus(after);
 	const at = lines.indexOf(`Workflow runs: journal store ${store}`);
 	assert.ok(at >= 0, lines.join("\n"));
@@ -367,13 +373,22 @@ test("atomic storage status lists a native shard whose file was deleted or canno
 	writeFileSync(second, "not a database, but long enough to be read as a file header of some kind");
 	const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
 	const journal = status.domains.find((entry) => entry.domain === "journal")!;
-	assert.deepEqual(journal.journalStore?.unavailable, [
-		{ path: first, kind: "native", code: "shard-missing" },
-		{ path: second, kind: "native", code: "shard-open-failed" },
-	]);
+	const unavailable = journal.journalStore?.unavailable ?? [];
+	assert.deepEqual(
+		unavailable.map((shard) => [shard.path, shard.kind, shard.code]),
+		[
+			[first, "native", "shard-missing"],
+			[second, "native", "shard-open-failed"],
+		],
+	);
+	assert.ok(unavailable.every((shard) => shard.message.includes(shard.path) && shard.hint.length > 0));
+	assert.equal(unavailable[0]?.detail, undefined);
+	assert.equal(typeof unavailable[1]?.detail, "string", "a file that cannot be opened carries the driver's reason");
 	const lines = formatStorageStatus(status);
 	assert.ok(lines.includes(`  unavailable: ${first} (native, no longer exists: shard-missing)`));
-	assert.ok(lines.includes(`  unavailable: ${second} (native, cannot be opened: shard-open-failed)`));
+	assert.ok(
+		lines.some((line) => line.startsWith(`  unavailable: ${second} (native, cannot be opened: shard-open-failed, `)),
+	);
 	assert.equal((await storage(["status"])).code, 1);
 });
 
@@ -399,4 +414,23 @@ test("atomic storage status opens shard files read-only and closes every one (#4
 			assert.equal(target.startsWith(shard), false, `status left ${target} open`);
 		}
 	if (process.platform !== "win32") chmodSync(shard, 0o644);
+});
+
+test("atomic storage consolidate reports each distinct failure once and exits 1, while policy skips exit 0 (#4325)", async () => {
+	const first = join(root, "a", "journal.sqlite");
+	const second = join(root, "b", "journal.sqlite");
+	await journalFile(first, [{ id: "11111111-1111-4111-8111-111111111111", status: "failed" }]);
+	await journalFile(second, [{ id: "22222222-2222-4222-8222-222222222222", status: "failed" }]);
+	await storage(["adopt", first, second]);
+	rmSync(join(root, "a"), { recursive: true, force: true });
+	rmSync(join(root, "b"), { recursive: true, force: true });
+	const failed = await storage(["consolidate"]);
+	assert.equal(failed.code, 1);
+	assert.equal(
+		failed.out.filter((line) => line.startsWith("Journal shard unavailable: ")).length,
+		2,
+		"one line per file",
+	);
+	const again = await storage(["consolidate"]);
+	assert.equal(again.out.filter((line) => line.startsWith("Journal shard unavailable: ")).length, 2);
 });

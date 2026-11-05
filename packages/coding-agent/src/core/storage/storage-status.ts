@@ -9,7 +9,12 @@ import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
 import type { SqliteDatabase, SqliteRow } from "./database.js";
-import { describeStorageError, type JournalShardUnavailableErrorCode, StorageAdapterLoadError } from "./errors.js";
+import {
+	describeStorageError,
+	JournalShardUnavailableError,
+	type JournalShardUnavailableErrorCode,
+	StorageAdapterLoadError,
+} from "./errors.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { JOURNAL_CATALOG_FILE } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -32,14 +37,36 @@ import { type StorageSettingsSelection, selectStorage, selectsDefaultJournalStor
 
 /** A shard file the catalog registers that cannot be used: it is gone, or it exists and does not open as a database. */
 async function unavailableShardFiles(
-	shards: readonly { readonly path: string; readonly kind: "native" | "adopted" }[],
+	shards: readonly { readonly id: number; readonly path: string; readonly kind: "native" | "adopted" }[],
 	directory: string,
 ): Promise<JournalStoreStatus["unavailable"]> {
-	const unavailable: { path: string; kind: "native" | "adopted"; code: JournalShardUnavailableErrorCode }[] = [];
+	const unavailable: JournalStoreStatus["unavailable"][number][] = [];
+	const refused = (
+		shard: { readonly id: number; readonly kind: "native" | "adopted" },
+		path: string,
+		code: JournalShardUnavailableErrorCode,
+		cause?: Error,
+	) => {
+		const error = new JournalShardUnavailableError({
+			code,
+			shardId: shard.id,
+			shardPath: path,
+			...(cause ? { cause } : {}),
+		});
+		const detail = error.fields.detail;
+		unavailable.push({
+			path,
+			kind: shard.kind,
+			code,
+			message: error.message,
+			hint: error.hint,
+			...(typeof detail === "string" ? { detail } : {}),
+		});
+	};
 	for (const shard of shards) {
 		const path = resolve(directory, shard.path);
 		if (!existsSync(path)) {
-			unavailable.push({ path, kind: shard.kind, code: "shard-missing" });
+			refused(shard, path, "shard-missing");
 			continue;
 		}
 		try {
@@ -49,8 +76,8 @@ async function unavailableShardFiles(
 			} finally {
 				await database.close();
 			}
-		} catch {
-			unavailable.push({ path, kind: shard.kind, code: "shard-open-failed" });
+		} catch (cause) {
+			refused(shard, path, "shard-open-failed", cause as Error);
 		}
 	}
 	return unavailable;
@@ -58,8 +85,8 @@ async function unavailableShardFiles(
 
 /** What the journal store's catalog lists, read without changing it. */
 async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string): Promise<JournalStoreStatus> {
-	const shards = await catalog.all<SqliteRow & { path: string; kind: "native" | "adopted" }>(
-		"SELECT path, kind FROM catalog_shards",
+	const shards = await catalog.all<SqliteRow & { id: number; path: string; kind: "native" | "adopted" }>(
+		"SELECT id, path, kind FROM catalog_shards ORDER BY id",
 	);
 	const runs = await catalog.get<SqliteRow & { count: number }>("SELECT count(*) AS count FROM catalog_runs");
 	const skipped = await catalog.all<SqliteRow & { path: string; reason: string }>(
@@ -121,6 +148,11 @@ export interface JournalStoreStatus {
 		readonly path: string;
 		readonly kind: "native" | "adopted";
 		readonly code: JournalShardUnavailableErrorCode;
+		/** The typed error's message and hint, as the runtime reports them. */
+		readonly message: string;
+		readonly hint: string;
+		/** The driver's reason, for a file that cannot be opened. */
+		readonly detail?: string;
 	}[];
 	/** Journals the store considered adopting and skipped, with the `JournalAdoptError` code. */
 	readonly skipped: readonly { readonly path: string; readonly reason: string }[];

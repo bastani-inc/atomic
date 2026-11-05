@@ -699,11 +699,24 @@ function hasCode<Code extends string>(value: unknown, name: string, codes: reado
 	return candidate.name === name && codes.includes(candidate.code as Code);
 }
 
+const JOURNAL_STORE_ERROR_NAMES: ReadonlySet<unknown> = new Set([
+	"JournalStoreError",
+	"JournalCatalogError",
+	"JournalShardUnavailableError",
+	"JournalAdoptError",
+]);
+
+/**
+ * A journal store error: an instance of `JournalStoreError`, or a copy from another module instance or a process
+ * boundary, recognized by the name of one of its classes and the shape every one of them has. An error of another
+ * family that happens to carry a `code`, `fields` and `retryable` is not one.
+ */
 export function isJournalStoreError(value: unknown): value is JournalStoreError {
+	if (value instanceof JournalStoreError) return true;
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as { name?: unknown; code?: unknown; fields?: unknown; retryable?: unknown };
 	return (
-		typeof candidate.name === "string" &&
+		JOURNAL_STORE_ERROR_NAMES.has(candidate.name) &&
 		typeof candidate.code === "string" &&
 		typeof candidate.retryable === "boolean" &&
 		typeof candidate.fields === "object" &&

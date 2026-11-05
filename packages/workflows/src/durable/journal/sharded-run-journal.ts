@@ -13,6 +13,7 @@ import {
 import { journalKeyRangeRead } from "./internal.js";
 import {
 	type AppendOutcome,
+	JOURNAL_LEASE,
 	JournalClosedError,
 	type JournalEntry,
 	type Lease,
@@ -27,6 +28,7 @@ import {
 	type RunSnapshotTail,
 	type RunSummary,
 	type RunVersion,
+	StaleLeaseError,
 	StorageUnavailableError,
 } from "./types.js";
 import { serializeJson, validateText } from "./values.js";
@@ -127,7 +129,37 @@ export class ShardedRunJournal implements RunJournal {
 			});
 			throw error;
 		}
-		return new ShardedRunJournal(catalog.directory, catalog, options.openShard);
+		const journal = new ShardedRunJournal(catalog.directory, catalog, options.openShard);
+		try {
+			await journal.reconcileStatuses();
+		} catch (error) {
+			await journal.close().catch((cleanupCause: unknown) => {
+				Object.defineProperty(error as object, "cleanupCause", { value: cleanupCause, configurable: true });
+			});
+			throw error;
+		}
+		return journal;
+	}
+
+	/**
+	 * Brings the catalog's status of each root it counts as running up to the status its own shard saved. A status the
+	 * catalog could not record before its process ended is lost from memory, and left alone it would keep an idle shard
+	 * busy for placement; a root that is still running, or crashed while running, is unchanged.
+	 */
+	private async reconcileStatuses(): Promise<void> {
+		for (const run of await this.catalog.busyRuns()) {
+			const record = await this.catalog.shard(run.shard);
+			const journal = record === undefined ? undefined : await this.listable(record);
+			const saved = (await journal?.getRun(run.runId))?.status;
+			if (saved === undefined || saved === run.status) continue;
+			try {
+				await this.catalog.setStatus(run.runId, saved);
+			} catch (error) {
+				if (!isJournalCatalogError(error)) throw error;
+				this.statusFailure = error;
+				return;
+			}
+		}
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -219,13 +251,27 @@ export class ShardedRunJournal implements RunJournal {
 		return undefined;
 	}
 
-	/** The shard a lease operation on an unknown run goes to, which rejects it exactly as a single-file journal would. */
-	private async fallback(runId: string): Promise<RunJournal> {
-		return this.shardJournal(await this.catalog.homeShard(runId), runId);
+	/**
+	 * The shard holding a lease's run. A run no shard holds rejects as a single-file journal does, with a stale lease
+	 * and no lease epoch, before anything is written: no catalog entry and no shard file are made for it.
+	 */
+	private async route(lease: Lease): Promise<RunJournal> {
+		const located = await this.locate(lease.runId);
+		if (located === undefined) throw new StaleLeaseError(lease.runId, lease.epoch, JOURNAL_LEASE.absentEpoch);
+		return located.journal;
 	}
 
-	private async route(runId: string): Promise<RunJournal> {
-		return (await this.locate(runId))?.journal ?? (await this.fallback(runId));
+	/**
+	 * Where to ask again after a miss on a run's cached native shard: a move that was undone since deleted the native
+	 * copy, so a shard that no longer holds the run at all is replaced by the catalog's current one. A shard that holds
+	 * the run and only lacks the key or the lease costs one lookup of the run on that shard, and no catalog read.
+	 */
+	private async afterMiss(
+		runId: string,
+		located: { record: JournalShardRecord; journal: RunJournal },
+	): Promise<{ record: JournalShardRecord; journal: RunJournal } | undefined> {
+		if (located.record.kind !== "native" || (await located.journal.getRun(runId)) !== undefined) return undefined;
+		return this.relocated(runId, located.record);
 	}
 
 	/** A cached location can go stale when a consolidation moved a finished run: look it up again, once. */
@@ -467,7 +513,12 @@ export class ShardedRunJournal implements RunJournal {
 	async leaseState(runId: string): Promise<LeaseState | undefined> {
 		this.assertOpen();
 		validateText("runId", runId);
-		return this.operation(async () => (await this.locate(runId))?.journal.leaseState(runId));
+		return this.operation(async () => {
+			const located = await this.locate(runId);
+			const state = await located?.journal.leaseState(runId);
+			if (located === undefined || state !== undefined) return state;
+			return (await this.afterMiss(runId, located))?.journal.leaseState(runId);
+		});
 	}
 
 	async renew(lease: Lease): Promise<void> {
@@ -475,7 +526,7 @@ export class ShardedRunJournal implements RunJournal {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
-		return this.operation(async () => (await this.route(owned.runId)).renew(owned));
+		return this.operation(async () => (await this.route(owned)).renew(owned));
 	}
 
 	async release(lease: Lease): Promise<void> {
@@ -483,7 +534,7 @@ export class ShardedRunJournal implements RunJournal {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
-		return this.operation(async () => (await this.route(owned.runId)).release(owned));
+		return this.operation(async () => (await this.route(owned)).release(owned));
 	}
 
 	async append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome> {
@@ -494,7 +545,7 @@ export class ShardedRunJournal implements RunJournal {
 		const recorded = { type: event.type, payload: recordedPayload(event.payload) } as RunEvent;
 		const settings = { ...options };
 		return this.operation(async () => {
-			const outcome = await (await this.route(owned.runId)).append(owned, recorded, settings);
+			const outcome = await (await this.route(owned)).append(owned, recorded, settings);
 			const status = this.statusOf(recorded);
 			if (outcome.status === "appended" && status !== undefined) await this.recordStatus(owned.runId, status);
 			return outcome;
@@ -514,7 +565,7 @@ export class ShardedRunJournal implements RunJournal {
 			event: { type: append.event.type, payload: recordedPayload(append.event.payload) } as RunEvent,
 		}));
 		return this.operation(async () => {
-			const journal = await this.route(owned.runId);
+			const journal = await this.route(owned);
 			const results = journal.appendMany
 				? await journal.appendMany(owned, recorded)
 				: await Promise.allSettled(
@@ -601,7 +652,12 @@ export class ShardedRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		validateText("key", key);
-		return this.operation(async () => (await this.locate(runId))?.journal.readKey(runId, key));
+		return this.operation(async () => {
+			const located = await this.locate(runId);
+			const entry = await located?.journal.readKey(runId, key);
+			if (located === undefined || entry !== undefined) return entry;
+			return (await this.afterMiss(runId, located))?.journal.readKey(runId, key);
+		});
 	}
 
 	async deleteRun(runId: string): Promise<void> {
@@ -628,7 +684,7 @@ export class ShardedRunJournal implements RunJournal {
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
 		return this.operation(async () => {
-			await (await this.route(owned.runId)).deleteOwnedRun(owned, expectSeq);
+			await (await this.route(owned)).deleteOwnedRun(owned, expectSeq);
 			await this.catalog.remove(owned.runId);
 			this.located.delete(owned.runId);
 		});

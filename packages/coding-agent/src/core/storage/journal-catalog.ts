@@ -298,6 +298,17 @@ export class JournalCatalog {
 		};
 	}
 
+	/** The roots the catalog counts as running, which keep their shard busy. */
+	async busyRuns(): Promise<readonly JournalCatalogRun[]> {
+		const rows = await this.read((db) =>
+			db.all<RunRow>(
+				`SELECT * FROM catalog_runs WHERE status IN (${JOURNAL_BUSY_STATUSES.map(() => "?").join(", ")}) ORDER BY run_id`,
+				...JOURNAL_BUSY_STATUSES,
+			),
+		);
+		return rows.map((row) => this.runRecord(row));
+	}
+
 	async runs(filter: { readonly shard?: number } = {}): Promise<readonly JournalCatalogRun[]> {
 		const rows = await this.read((db) =>
 			filter.shard === undefined

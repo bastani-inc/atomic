@@ -235,10 +235,13 @@ test("the family base keeps a given name and defaults to JournalStoreError; guar
 		{ name: "x", code: "c", fields: {} },
 		{ name: 1, code: "c", fields: {}, retryable: true },
 		{ name: "x", code: 1, fields: {}, retryable: true },
-		{ name: "x", code: "c", fields: null, retryable: true },
+		{ name: "JournalCatalogError", code: "c", fields: null, retryable: true },
+		{ name: "x", code: "c", fields: {}, retryable: false },
+		{ name: "Whatever", code: "x", fields: {}, retryable: true },
 	])
 		assert.equal(isJournalStoreError(value), false, JSON.stringify(value));
-	assert.ok(isJournalStoreError({ name: "x", code: "c", fields: {}, retryable: false }));
+	for (const name of ["JournalStoreError", "JournalCatalogError", "JournalShardUnavailableError", "JournalAdoptError"])
+		assert.ok(isJournalStoreError({ name, code: "c", fields: {}, retryable: false }), name);
 	for (const guard of [isJournalCatalogError, isJournalShardUnavailableError, isJournalAdoptError]) {
 		assert.equal(guard(undefined), false);
 		assert.equal(guard(null), false);
@@ -438,4 +441,31 @@ test("a retryable journal store error makes a storage failure retryable, a perma
 	assert.equal(isRetryableStorageError(new Error("plain")), false);
 	assert.equal(isStorageError(permanent), true);
 	assert.equal(isStorageError({ name: "JournalCatalogError", code: "corrupt", fields: {}, retryable: false }), true);
+});
+
+test("an error of another family is not a journal store error, a storage error or a retryable one, whatever shape it has (#4325)", () => {
+	class Foreign extends Error {
+		override readonly name = "SessionStartTimeoutError";
+		readonly code = "session-start-timeout";
+		readonly fields = { timeoutMs: 1 };
+		readonly retryable = true;
+	}
+	const foreign = new Foreign("slow");
+	const shaped = { name: "Whatever", code: "x", retryable: true, fields: {} };
+	for (const value of [foreign, shaped, new Error("wrapped", { cause: foreign })]) {
+		assert.equal(isJournalStoreError(value), false);
+		assert.equal(isStorageError(value), false);
+		assert.equal(isRetryableStorageError(value), false);
+		assert.equal(findJournalStoreError(new Error("outer", { cause: value })), undefined);
+	}
+	const real = new JournalCatalogError({ code: "run-moved", catalogPath, runId: "r1", shardId: 2 });
+	assert.equal(findJournalStoreError(new Error("outer", { cause: new Error("mid", { cause: real }) })), real);
+	const copy = { name: "JournalShardUnavailableError", code: "shard-missing", fields: {}, retryable: false };
+	assert.equal(isJournalStoreError(copy) && isStorageError(copy), true);
+	assert.equal(
+		isJournalStoreError(
+			rehydrateJournalStoreError({ name: "Unknown", code: "x", message: "m", fields: {}, retryable: false }),
+		),
+		true,
+	);
 });
