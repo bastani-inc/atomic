@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import type { Api, Model } from "@bastani/pi-ai";
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
+import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
@@ -10,7 +11,7 @@ import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.ts"
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 
 type ProviderCase = {
-	provider: string;
+	provider: "baseten" | "qwen-token-plan-individual";
 	envVar: "BASETEN_API_KEY" | "QWEN_TOKEN_PLAN_API_KEY";
 	defaultModel: string;
 	modelIds: readonly string[];
@@ -102,10 +103,12 @@ describe("Baseten and Qwen Token Plan Individual providers", () => {
 			const model = getProviderModel(runtime, provider);
 			const models = runtime.getModels().filter((candidate) => candidate.provider === provider.provider);
 
-			assert.deepEqual(
-				models.map((candidate) => candidate.id),
-				provider.modelIds,
-			);
+			const runtimeIds = models.map((candidate) => candidate.id);
+			const builtinIds = getBuiltinModels(provider.provider).map((candidate) => candidate.id);
+			assert.deepEqual([...runtimeIds].sort(), [...builtinIds].sort());
+			for (const pinnedId of provider.modelIds) {
+				assert.ok(runtimeIds.includes(pinnedId), `${provider.provider} should include ${pinnedId}`);
+			}
 			assert.equal(defaultModelPerProvider[provider.provider], provider.defaultModel);
 			assert.ok(models.some((candidate) => isDeepStrictEqual(candidate, model)));
 			assert.deepEqual(getSupportedThinkingLevels(model), provider.thinkingLevels);
