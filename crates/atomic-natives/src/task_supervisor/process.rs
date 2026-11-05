@@ -139,6 +139,12 @@ pub(super) struct CommandTask {
 	/// Keep the exited leader unreaped, as a host too starved to observe its exit within the drain window would.
 	#[cfg(all(test, unix))]
 	reap_delayed: AtomicBool,
+	/// Another group now holds this command's group number: nonzero answers group probes as alive (-1) or with that
+	/// errno, and records signals without sending them.
+	#[cfg(all(test, unix))]
+	reused_group: std::sync::atomic::AtomicI32,
+	#[cfg(all(test, unix))]
+	loop_iterations: std::sync::atomic::AtomicUsize,
 }
 impl CommandTask {
 	#[cfg(unix)]
@@ -155,6 +161,16 @@ impl CommandTask {
 			return Ok(None);
 		}
 		child.try_wait()
+	}
+	#[cfg(unix)]
+	fn probe_group(&self, group: &ProcessGroup) -> io::Result<bool> {
+		#[cfg(test)]
+		match self.reused_group.load(Ordering::Acquire) {
+			0 => {},
+			-1 => return Ok(false),
+			errno => return Err(io::Error::from_raw_os_error(errno)),
+		}
+		group.gone()
 	}
 	fn file_spool(&self) -> bool {
 		matches!(self.intent.terminal, CommandTerminal::Pipe {})
@@ -184,6 +200,10 @@ impl CommandTask {
 	fn signal_group(&self, group: &ProcessGroup, signal: libc::c_int) -> io::Result<()> {
 		#[cfg(test)]
 		self.signals.lock().unwrap().push((group.pid, signal));
+		#[cfg(test)]
+		if self.reused_group.load(Ordering::Acquire) != 0 {
+			return Ok(());
+		}
 		#[cfg(test)]
 		if signal == libc::SIGKILL && self.kill_error.load(Ordering::Acquire) != 0 {
 			return Err(io::Error::from_raw_os_error(self.kill_error.load(Ordering::Acquire)));
@@ -328,6 +348,10 @@ impl Actor {
 			quarantine_grace: TEST_QUARANTINE_GRACE.get(),
 			#[cfg(all(test, unix))]
 			reap_delayed: AtomicBool::new(false),
+			#[cfg(all(test, unix))]
+			reused_group: std::sync::atomic::AtomicI32::new(0),
+			#[cfg(all(test, unix))]
+			loop_iterations: std::sync::atomic::AtomicUsize::new(0),
 		});
 		let record = TaskRecord {
 			reference: reference.clone(),
@@ -539,7 +563,10 @@ impl Actor {
 		let mut quarantined = false;
 		// Quarantine has no deadline until the owner closes or the task is stopped (#4338).
 		let mut expires: Option<Instant> = None;
+		let mut group_gone = false;
 		loop {
+			#[cfg(test)]
+			command.loop_iterations.fetch_add(1, Ordering::AcqRel);
 			if setup_failure.is_none() {
 				command.input.lock().unwrap().drain(&mut stdin);
 			}
@@ -635,9 +662,11 @@ impl Actor {
 					}
 					group.reaped = status.is_some();
 				}
-				// Probe the group once the leader is reaped, independently of EOF.
-				let gone = if status.is_some() {
-					match group.gone() {
+				// Probe the group once the leader is reaped, independently of EOF. A group found gone stays gone: no
+				// process can join an empty group, so a later "alive" could only be another group given its number,
+				// which an open-ended quarantine must never probe or signal (#4338).
+				if status.is_some() && !group_gone {
+					group_gone = match command.probe_group(&group) {
 						Ok(gone) => gone,
 						Err(error) => {
 							// Darwin also returns EPERM for zombie-only groups after the
@@ -654,10 +683,9 @@ impl Actor {
 							cleanup_failure = Some(error.to_string());
 							break;
 						},
-					}
-				} else {
-					false
-				};
+					};
+				}
+				let gone = group_gone;
 				if gone && ((stdout_eof && stderr_eof) || setup_failure.is_some()) {
 					// Confirmed gone: an earlier refused TERM left nothing behind to clean up.
 					cleanup_failure = None;
@@ -851,15 +879,18 @@ fn process_group_gone(pid: libc::pid_t) -> io::Result<bool> {
 /// output-limit stop), so that a group with nobody left shows as gone (ESRCH) at once instead of after
 /// the TERM grace (#4268). From then on only the group's members hold the ID, and POSIX forbids reusing a
 /// process group ID while the group exists. A group signal after the reap (the KILL for members that
-/// outlived the grace) is therefore sent only straight after a probe found the group alive.
+/// outlived the grace) is therefore sent only straight after a probe found the group alive. Once a probe after
+/// the reap finds the group gone, it is never probed or signalled again: no process can join an empty group, so a
+/// later "alive" could only be another group given the same number, and a quarantine (#4338) may keep the command's
+/// loop running long after its group emptied.
 ///
-/// That leaves one window: the group's last member is reaped, the kernel hands the freed ID to a new
-/// process, and that process makes itself a group leader, all between two probes (one [`PROCESS_POLL`]),
-/// and its group is still alive when the grace ends. It would then be probed as alive and receive the
-/// KILL. Linux and macOS hand out PIDs cyclically, so this needs the allocator to come all the way round
-/// to this ID within that poll. On Linux 6.9 and later the window does not exist: signals and probes go
-/// through a pidfd of the leader with `PIDFD_SIGNAL_PROCESS_GROUP`, which addresses the group by the
-/// kernel's own object for it, never by its number, so a reused number cannot be reached.
+/// That leaves one window, inside the grace: the group's last member is reaped, the kernel hands the freed ID to a
+/// new process, and that process makes itself a group leader, all between two probes (one [`PROCESS_POLL`]), and its
+/// group is still alive when the grace ends. It would then be probed as alive and receive the KILL. Linux and macOS
+/// hand out PIDs cyclically, so this needs the allocator to come all the way round to this ID within that poll. On
+/// Linux 6.9 and later the window does not exist: signals and probes go through a pidfd of the leader with
+/// `PIDFD_SIGNAL_PROCESS_GROUP`, which addresses the group by the kernel's own object for it, never by its number,
+/// so a reused number cannot be reached.
 #[cfg(unix)]
 struct ProcessGroup {
 	/// The leader's PID, which is also the group's ID.
@@ -2389,6 +2420,50 @@ mod tests {
 			Cleanup::Failed { resources: unconfirmed_drain(group, "CleanupFailed") }
 		);
 		assert_group_gone(group);
+	}
+	// #4338: once a quarantined command has seen its group gone, it never probes or signals that group number again,
+	// so a group that later gets the number is neither killed nor mistaken for the command's own.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn quarantine_never_signals_a_reused_group_number_4338() {
+		for reuse in [-1, libc::EPERM] {
+			let (actor, owner) = command_owner();
+			let dir = std::env::temp_dir().join(format!(
+				"atomic-reused-group-{}-{}",
+				std::process::id(),
+				actor.id
+			));
+			TEST_GROUP_BY_NUMBER.set(true);
+			let (_task, command, holder, group) =
+				start_escaped(&actor, &owner, &dir, "printf done; exit 7", PROCESS_QUARANTINE_GRACE);
+			TEST_GROUP_BY_NUMBER.set(false);
+			let settled = settled_record(&actor, &owner);
+			command.reused_group.store(reuse, Ordering::Release);
+			let seen = command.loop_iterations.load(Ordering::Acquire);
+			let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
+			while command.loop_iterations.load(Ordering::Acquire) < seen + 3 {
+				assert!(Instant::now() < deadline, "the quarantine stopped looping");
+				std::thread::sleep(PROCESS_POLL);
+			}
+			std::fs::write(dir.join("release"), b"").unwrap();
+			let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+			let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+			actor.begin_close(&owner).unwrap();
+			let closed = actor.close_receipt(&owner);
+			actor.shutdown();
+			drop(holder);
+			std::fs::remove_dir_all(&dir).unwrap();
+			assert_eq!(
+				*command.signals.lock().unwrap(),
+				vec![(group, libc::SIGTERM)],
+				"reuse {reuse}"
+			);
+			assert!(finished, "reuse {reuse}: cleanup was not confirmed");
+			assert_eq!(confirmed.cleanup, Cleanup::Reaped {}, "reuse {reuse}");
+			assert_eq!(confirmed.execution, settled.execution, "reuse {reuse}");
+			assert!(closed.unwrap().is_some(), "reuse {reuse}");
+			assert_group_gone(group);
+		}
 	}
 	// #4338: output written after the result settled ahead of cleanup is drained, never added to the settled output.
 	#[cfg(target_os = "linux")]
