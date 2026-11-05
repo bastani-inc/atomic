@@ -307,7 +307,10 @@ describe("atomic team output (#4320)", () => {
 				/^Could not restart the Intercom broker: <root>\/agent \(broker-restart-failed\): socket refused\./,
 			);
 			assert.match(left.out, /^Deleted the token file <root>\/agent\/storage-token\.<id>\.$/m);
-			assert.match(left.out, /^Profile: individual /m);
+			assert.match(
+				left.out,
+				/^Profile: individual \(sessions and workflow runs on this machine; Intercom on this machine only\)$/m,
+			);
 			assert.deepEqual(
 				readdirSync(agentDir).filter((name) => name.startsWith("storage-token.")),
 				[],
