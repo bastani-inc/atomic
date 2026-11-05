@@ -47,10 +47,11 @@ export type ResumeDurableResult =
 				| "fork_failed"
 				| "startup_failed";
 			message: string;
-			/** Set when this machine's storage does not hold the run: `run-not-found`, naming the storage searched. */
-			error?: JournalCatalogError;
-			/** The typed failure of a cross-project fork (`reason: "fork_failed"`). */
-			error?: ForkError;
+			/**
+			 * The typed failure: `run-not-found` naming the storage searched, when this machine's storage does not hold the
+			 * run, or the cross-project fork's failure (`reason: "fork_failed"`).
+			 */
+			error?: JournalCatalogError | ForkError;
 	  };
 
 export interface ResumeDurableDeps {

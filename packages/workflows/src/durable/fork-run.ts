@@ -360,6 +360,8 @@ interface SourceSessions {
 	readonly store: SessionStore;
 	readonly owned: boolean;
 	readonly backend: JournalDurableBackend;
+	/** The source's root run, whose shard of the journal store holds its pool's sessions (#4325). */
+	readonly rootRunId: string;
 	pool?: { readonly store: SessionStore | undefined };
 }
 
@@ -369,13 +371,15 @@ async function sourceSessionStoreFor(
 	options: ForkSourceOptions,
 	cwd: string,
 ): Promise<SourceSessions> {
+	const rootRunId = handle.rootWorkflowId ?? handle.workflowId;
 	return options.sourceSessionStore === undefined
 		? {
 				store: await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd ?? cwd }),
 				owned: true,
 				backend,
+				rootRunId,
 			}
-		: { store: options.sourceSessionStore, owned: false, backend };
+		: { store: options.sourceSessionStore, owned: false, backend, rootRunId };
 }
 
 async function closeSourceSessions(sessions: SourceSessions | undefined, cleanup: ForkCleanup): Promise<void> {
@@ -414,7 +418,7 @@ async function loadSession(sessions: SourceSessions, sessionId: string, context:
 async function loadPoolSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	const storage = journalStorage(sessions.backend.journal);
 	try {
-		sessions.pool ??= { store: await poolSessionStore(sessions.backend) };
+		sessions.pool ??= { store: await poolSessionStore(sessions.backend, sessions.rootRunId) };
 		return await sessions.pool.store?.load(sessionId);
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
@@ -1307,7 +1311,7 @@ async function copySessions(
 	const destinationFor = async (pooled: boolean): Promise<CopiedSessions> => {
 		if (pooled) {
 			if (pool === undefined) {
-				const store = await poolSessionStore(source.backend);
+				const store = await poolSessionStore(source.backend, ids.forkRunId);
 				if (store === undefined) throw new Error("The journal has no pool session tables for the fork's workers");
 				pool = { store, copies: [], owned: true };
 				copied.push(pool);

@@ -62,7 +62,8 @@ for (const journalKind of ["shared", "coordination"] as const) {
 			const pool = async <T>(
 				read: (sessions: NonNullable<Awaited<ReturnType<typeof poolSessionStore>>>) => Promise<T>,
 			) => {
-				const sessions = await poolSessionStore(backend);
+				// One SQL pool database holds the sessions of the source root and of its fork.
+				const sessions = await poolSessionStore(backend, root);
 				assert.ok(sessions !== undefined, "the pool keeps its sessions in the journal's pool tables");
 				try {
 					return await read(sessions);

@@ -48,9 +48,9 @@ async function pooledSource(seed: string, stages: readonly string[] = ["implemen
 	);
 	cleanups.push(() => backend.close());
 	await openSqlPoolQueue(backend.journal);
-	const pool = await poolSessionStore(backend);
-	assert.ok(pool !== undefined, "the journal has pool session tables");
 	const runId = testRunId(seed);
+	const pool = await poolSessionStore(backend, runId);
+	assert.ok(pool !== undefined, "the journal has pool session tables");
 	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: definition.name,
@@ -278,10 +278,10 @@ async function pausedWorkerSource(seed: string) {
 	);
 	cleanups.push(() => backend.close());
 	await openSqlPoolQueue(backend.journal);
-	const pool = await poolSessionStore(backend);
+	const runId = testRunId(seed);
+	const pool = await poolSessionStore(backend, runId);
 	assert.ok(pool !== undefined);
 	const host = new MemorySessionStore();
-	const runId = testRunId(seed);
 	const childId = testRunId(`${seed}-child`);
 	const scope = "workflow:impl:fp:1";
 	const plan = await SessionManager.create(host, directory);
@@ -328,8 +328,8 @@ async function pausedWorkerSource(seed: string) {
 	return { backend, runId, childId, host, workerSession: worker.getSessionId(), workerEntries, directory };
 }
 
-async function poolSession(backend: JournalDurableBackend, id: string) {
-	const pool = await poolSessionStore(backend);
+async function poolSession(source: { readonly backend: JournalDurableBackend; readonly runId: string }, id: string) {
+	const pool = await poolSessionStore(source.backend, source.runId);
 	assert.ok(pool !== undefined);
 	try {
 		return await pool.readHeader(id);
@@ -353,7 +353,7 @@ test("a fork of a run with local workers copies a child stage's session into the
 		.filter((entry) => entry.kind === "stage" && entry.sessionId === resumed.sessionId);
 	const forkedChild = checkpoint?.kind === "stage" ? checkpoint.topology?.run?.runId : undefined;
 	assert.ok(forkedChild !== undefined && forkedChild !== source.childId && forkedChild !== fork.runId);
-	const header = await poolSession(source.backend, resumed.sessionId);
+	const header = await poolSession(source, resumed.sessionId);
 	assert.deepEqual(
 		header && {
 			parentSessionId: header.parentSessionId,
@@ -366,7 +366,7 @@ test("a fork of a run with local workers copies a child stage's session into the
 			workflow: { runId: forkedChild, stageId: "implement-id", stageName: "implement" },
 		},
 	);
-	const pool = await poolSessionStore(source.backend);
+	const pool = await poolSessionStore(source.backend, source.runId);
 	assert.deepEqual((await pool!.load(resumed.sessionId)).entries, source.workerEntries);
 	await pool!.close();
 	const copies = await sessionIds(destination);
@@ -394,8 +394,8 @@ test("a fork whose journal write fails removes its copies from the pool tables a
 		(error: unknown) => error instanceof ForkCopyFailedError && error.cleanupCause === undefined,
 	);
 	assert.equal(created.length, 1, "the child stage's session was copied into the pool tables");
-	assert.equal(await poolSession(source.backend, created[0]!), undefined, "and removed again");
-	assert.ok((await poolSession(source.backend, source.workerSession)) !== undefined, "the source's session stays");
+	assert.equal(await poolSession(source, created[0]!), undefined, "and removed again");
+	assert.ok((await poolSession(source, source.workerSession)) !== undefined, "the source's session stays");
 	assert.deepEqual(await sessionIds(destination), []);
 });
 
@@ -419,9 +419,9 @@ async function stagedSource(
 	);
 	cleanups.push(() => backend.close());
 	if (options.poolTables) await openSqlPoolQueue(backend.journal);
-	const pool = options.poolTables ? await poolSessionStore(backend) : undefined;
-	const host = new MemorySessionStore();
 	const runId = testRunId(seed);
+	const pool = options.poolTables ? await poolSessionStore(backend, runId) : undefined;
+	const host = new MemorySessionStore();
 	const childId = testRunId(`${seed}-child`);
 	await backend.commitWorkflowRegistration({
 		workflowId: runId,
@@ -486,7 +486,7 @@ test("a fork copies every child stage session into one pool session store, which
 	for (const name of ["first", "second"]) {
 		const copy = source.backend.getStageSession(fork.runId, `workflow:impl:fp:1:stage:${name}:1`)?.sessionId;
 		assert.ok(copy !== undefined);
-		assert.equal((await poolSession(source.backend, copy))?.parentSessionId, source.sessions.get(name));
+		assert.equal((await poolSession(source, copy))?.parentSessionId, source.sessions.get(name));
 	}
 });
 
