@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { beforeAll, describe, it, vi } from "vitest";
 import type { HostCustomUiStateListener } from "../src/core/extensions/types.js";
-import type { EditorFactory } from "../src/core/extensions/ui-types.ts";
+import type { EditorFactory } from "../src/core/extensions/ui-types.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 

@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { FileAuthStorageBackend } from "../src/core/auth-storage-backends.ts";
+import { FileAuthStorageBackend } from "../src/core/auth-storage-backends.js";
 
 type RealpathOverride = (path: string, call: number) => string;
 

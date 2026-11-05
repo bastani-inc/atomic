@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
-import { createHarness, type Harness } from "../harness.ts";
+import { createHarness, type Harness } from "../harness.js";
 
 describe("issue #8409 aborted tool auth setup", () => {
 	let harness: Harness | undefined;

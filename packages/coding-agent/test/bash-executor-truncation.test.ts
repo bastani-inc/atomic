@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile, rm } from "node:fs/promises";
 import { afterEach, describe, it, vi } from "vitest";
-import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import { bashExecutionToText } from "../src/core/messages.ts";
+import { executeBashWithOperations } from "../src/core/bash-executor.js";
+import { bashExecutionToText } from "../src/core/messages.js";
 
 describe("user bash output truncation (pi #10164)", () => {
 	const tempFiles: string[] = [];

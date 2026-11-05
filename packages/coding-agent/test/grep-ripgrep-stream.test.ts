@@ -2,21 +2,21 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { ChildProcess, spawn } from "child_process";
 import { beforeEach, describe, it, vi } from "vitest";
-import { createGrepTool, type GrepToolInput } from "../src/core/tools/grep.ts";
-import { DEFAULT_MAX_BYTES, truncateHead } from "../src/core/tools/truncate.ts";
+import { createGrepTool, type GrepToolInput } from "../src/core/tools/grep.js";
+import { DEFAULT_MAX_BYTES, truncateHead } from "../src/core/tools/truncate.js";
 
 vi.mock("child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof import("child_process")>()),
 	spawn: vi.fn(),
 }));
 
-vi.mock("../src/utils/tools-manager.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../src/utils/tools-manager.ts")>()),
+vi.mock("../src/utils/tools-manager.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/utils/tools-manager.js")>()),
 	ensureTool: vi.fn(async () => "rg"),
 }));
 
-vi.mock("../src/core/tools/truncate.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/core/tools/truncate.ts")>();
+vi.mock("../src/core/tools/truncate.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/tools/truncate.js")>();
 	return { ...actual, truncateHead: vi.fn(actual.truncateHead) };
 });
 

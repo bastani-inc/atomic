@@ -8,7 +8,7 @@ import {
 	rehydrateErrorCause,
 	type SerializedErrorCause,
 	serializeErrorCause,
-} from "../src/core/error-contract.ts";
+} from "../src/core/error-contract.js";
 
 function chainOf(length: number): Error {
 	let current = new Error(`level ${length - 1}`);

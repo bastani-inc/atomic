@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { sliceHead, sliceTail, truncateLine } from "../src/core/tools/truncate.ts";
+import { sliceHead, sliceTail, truncateLine } from "../src/core/tools/truncate.js";
 
 const EMOJI = "\u{1F600}"; // two UTF-16 code units: \uD83D\uDE00
 

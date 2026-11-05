@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
-import type { AgentSessionInternalSurface } from "../../../src/core/agent-session-methods.ts";
-import { assistantMsg, userMsg } from "../../utilities.ts";
-import { createHarness, getMessageText, getUserTexts, type Harness } from "../harness.ts";
+import { afterEach, describe, it } from "vitest";
+import type { AgentSessionInternalSurface } from "../../../src/core/agent-session-methods.js";
+import { assistantMsg, userMsg } from "../../utilities.js";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "../harness.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve!: () => void;
@@ -70,14 +71,14 @@ describe("pi #9154: prompt during tree navigation", () => {
 			treeReleased.resolve();
 		}
 		const navigationError = await navigation;
-		expect(navigationError).toEqual(
-			expect.objectContaining({
-				message: "Wait for the current response to finish before navigating the session tree.",
-			}),
+		assert.ok(navigationError instanceof Error);
+		assert.equal(
+			navigationError.message,
+			"Wait for the current response to finish before navigating the session tree.",
 		);
-		expect(getUserTexts(harness)).toContain("racing prompt");
-		expect(harness.session.messages.map(getMessageText)).toContain("response to racing prompt");
-		await expect(harness.session.navigateTree(targetId)).resolves.toMatchObject({ cancelled: false });
+		assert.ok(getUserTexts(harness).includes("racing prompt"));
+		assert.ok(harness.session.messages.map(getMessageText).includes("response to racing prompt"));
+		assert.equal((await harness.session.navigateTree(targetId)).cancelled, false);
 	});
 
 	it.each(["handled", "rejected"] as const)(
@@ -95,8 +96,8 @@ describe("pi #9154: prompt during tree navigation", () => {
 			const targetId = await seedHistory(harness);
 			const prompt = harness.session.prompt("not sent to the model");
 			if (outcome === "handled") await prompt;
-			else await expect(prompt).rejects.toThrow("No API key");
-			await expect(harness.session.navigateTree(targetId)).resolves.toMatchObject({ cancelled: false });
+			else await assert.rejects(prompt, /No API key/);
+			assert.equal((await harness.session.navigateTree(targetId)).cancelled, false);
 		},
 	);
 
@@ -122,14 +123,15 @@ describe("pi #9154: prompt during tree navigation", () => {
 		await started.promise;
 		try {
 			await harness.session.prompt("handled immediately");
-			await expect(harness.session.navigateTree(targetId)).rejects.toThrow(
-				"Wait for the current response to finish before navigating the session tree.",
+			await assert.rejects(
+				harness.session.navigateTree(targetId),
+				/Wait for the current response to finish before navigating the session tree\./,
 			);
 		} finally {
 			released.resolve();
 			await waiting;
 		}
-		await expect(harness.session.navigateTree(targetId)).resolves.toMatchObject({ cancelled: false });
+		assert.equal((await harness.session.navigateTree(targetId)).cancelled, false);
 	});
 
 	it.each(["completed prompt", "extension command"] as const)(
@@ -157,14 +159,15 @@ describe("pi #9154: prompt during tree navigation", () => {
 			const waiting = harness.session.prompt("waiting prompt");
 			await started.promise;
 			try {
-				await expect(harness.session.navigateTree(targetId)).rejects.toThrow(
-					"Wait for the current response to finish before navigating the session tree.",
+				await assert.rejects(
+					harness.session.navigateTree(targetId),
+					/Wait for the current response to finish before navigating the session tree\./,
 				);
 			} finally {
 				released.resolve();
 				await waiting;
 			}
-			await expect(harness.session.navigateTree(targetId)).resolves.toMatchObject({ cancelled: false });
+			assert.equal((await harness.session.navigateTree(targetId)).cancelled, false);
 		},
 	);
 
@@ -184,9 +187,9 @@ describe("pi #9154: prompt during tree navigation", () => {
 		const targetId = await seedHistory(harness);
 		harness.setResponses([fauxAssistantMessage("continued")]);
 		await harness.session.navigateTree(targetId);
-		expect(errors).toEqual([]);
-		expect(getUserTexts(harness)).toEqual(["first prompt", "continue on the selected branch"]);
-		expect(harness.session.getLastAssistantText()).toBe("continued");
+		assert.deepEqual(errors, []);
+		assert.deepEqual(getUserTexts(harness), ["first prompt", "continue on the selected branch"]);
+		assert.equal(harness.session.getLastAssistantText(), "continued");
 	});
 
 	it("does not clear a new navigation started from session_tree", async () => {
@@ -217,18 +220,18 @@ describe("pi #9154: prompt during tree navigation", () => {
 		nextTargetId = harness.sessionManager.getLeafId()!;
 		try {
 			await harness.session.navigateTree(targetId);
-			expect(continuation).toBeDefined();
+			assert.notEqual(continuation, undefined);
 			await Promise.race([started.promise, continuation]);
-			expect(harness.session.isCompacting).toBe(true);
-			expect(harness.session.compactionReason).toBe("branchSummary");
+			assert.equal(harness.session.isCompacting, true);
+			assert.equal(harness.session.compactionReason, "branchSummary");
 		} finally {
 			released.resolve();
 			await continuation;
 		}
-		expect(await continuation).toBeUndefined();
-		expect(harness.sessionManager.getLeafId()).toBe(nextTargetId);
-		expect(harness.session.isCompacting).toBe(false);
-		expect(harness.session.compactionReason).toBeUndefined();
+		assert.equal(await continuation, undefined);
+		assert.equal(harness.sessionManager.getLeafId(), nextTargetId);
+		assert.equal(harness.session.isCompacting, false);
+		assert.equal(harness.session.compactionReason, undefined);
 	});
 
 	it("settles its compaction state when an extension cancels the navigation", async () => {
@@ -245,10 +248,10 @@ describe("pi #9154: prompt during tree navigation", () => {
 		});
 		harnesses.push(harness);
 		const targetId = await seedHistory(harness);
-		await expect(harness.session.navigateTree(targetId)).resolves.toEqual({ cancelled: true });
-		expect(reasonsDuringNavigation).toEqual(["branchSummary"]);
-		expect(harness.session.isCompacting).toBe(false);
-		expect(harness.session.compactionReason).toBeUndefined();
+		assert.equal((await harness.session.navigateTree(targetId)).cancelled, true);
+		assert.deepEqual(reasonsDuringNavigation, ["branchSummary"]);
+		assert.equal(harness.session.isCompacting, false);
+		assert.equal(harness.session.compactionReason, undefined);
 	});
 
 	it("leaves a compaction reason set by another operation alone", async () => {
@@ -256,8 +259,8 @@ describe("pi #9154: prompt during tree navigation", () => {
 		harnesses.push(harness);
 		const targetId = await seedHistory(harness);
 		(harness.session as AgentSessionInternalSurface)._compactionReason = "threshold";
-		await expect(harness.session.navigateTree(targetId)).resolves.toMatchObject({ cancelled: false });
-		expect(harness.session.compactionReason).toBe("threshold");
+		assert.equal((await harness.session.navigateTree(targetId)).cancelled, false);
+		assert.equal(harness.session.compactionReason, "threshold");
 	});
 
 	it.each(["command", "agent_settled"] as const)("allows navigation from an extension %s", async (event) => {
@@ -279,7 +282,7 @@ describe("pi #9154: prompt during tree navigation", () => {
 		targetId = await seedHistory(harness);
 		harness.setResponses([fauxAssistantMessage("done")]);
 		await harness.session.prompt(event === "command" ? "/rewind" : "finish then rewind");
-		expect(navigated).toBe(true);
-		expect(harness.sessionManager.getLeafId()).toBe(targetId);
+		assert.equal(navigated, true);
+		assert.equal(harness.sessionManager.getLeafId(), targetId);
 	});
 });

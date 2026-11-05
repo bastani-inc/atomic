@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, describe, test } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SessionEntry, SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.ts";
-import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector.ts";
-import { SearchLine } from "../src/modes/interactive/components/tree-selector-help.ts";
-import type { TreeList } from "../src/modes/interactive/components/tree-selector-list.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import type { SessionEntry, SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.js";
+import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector.js";
+import { SearchLine } from "../src/modes/interactive/components/tree-selector-help.js";
+import type { TreeList } from "../src/modes/interactive/components/tree-selector-list.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => {
 	initTheme("dark");

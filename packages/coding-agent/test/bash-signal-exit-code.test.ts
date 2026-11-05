@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { constants as osConstants, tmpdir } from "node:os";
 import { describe, it, vi } from "vitest";
-import { createLocalBashOperations } from "../src/core/tools/bash.ts";
+import { createLocalBashOperations } from "../src/core/tools/bash.js";
 
-vi.mock("../src/utils/child-process.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/utils/child-process.ts")>();
+vi.mock("../src/utils/child-process.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/child-process.js")>();
 	return {
 		...actual,
 		waitForChildProcess: async (...args: Parameters<typeof actual.waitForChildProcess>) => {

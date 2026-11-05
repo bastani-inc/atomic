@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
-import { clearExtensionCache, loadExtensions } from "../../../src/core/extensions/loader.ts";
+import { clearExtensionCache, loadExtensions } from "../../../src/core/extensions/loader.js";
 
 interface TestState {
 	depValue?: unknown;

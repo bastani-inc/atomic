@@ -3,9 +3,9 @@ import { deflateSync } from "node:zlib";
 import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, it } from "vitest";
-import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
-import { markQueuedMessageImages, normalizeQueuedMessageImages } from "../src/core/agent-session-prompt.ts";
-import { createHarness, type Harness } from "./test-harness.ts";
+import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
+import { markQueuedMessageImages, normalizeQueuedMessageImages } from "../src/core/agent-session-prompt.js";
+import { createHarness, type Harness } from "./test-harness.js";
 
 const OMITTED_IMAGE_HINT = "[Image omitted: could not be converted to a supported inline image format.]";
 const UNSUPPORTED_IMAGE: ImageContent = { type: "image", data: "AAAA", mimeType: "image/x-unsupported" };

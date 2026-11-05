@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { type Component, setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, it, vi } from "vitest";
-import type { ExtensionCommandContext } from "../src/core/extensions/types.ts";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { HuggingFaceModel } from "../src/extensions/llama/huggingface.ts";
-import { type LlamaUi, showLlamaUi } from "../src/extensions/llama/ui.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import type { ExtensionCommandContext } from "../src/core/extensions/types.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import type { HuggingFaceModel } from "../src/extensions/llama/huggingface.js";
+import { type LlamaUi, showLlamaUi } from "../src/extensions/llama/ui.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";

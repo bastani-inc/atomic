@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import { bunExecutable, readStreamText, type SpawnedProcess, spawnProcess } from "../../../test/helpers/runtime.ts";
-import { FileAuthStorageBackend } from "../src/core/auth-storage.ts";
+import { bunExecutable, readStreamText, type SpawnedProcess, spawnProcess } from "../../../test/helpers/runtime.js";
+import { FileAuthStorageBackend } from "../src/core/auth-storage.js";
 
 /**
  * Chaos coverage for the auth.json lock shared across symlinked paths (pi #11655): writer processes contend

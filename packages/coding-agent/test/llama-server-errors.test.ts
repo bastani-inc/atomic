@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, it, vi } from "vitest";
-import { LlamaClient } from "../src/extensions/llama/client.ts";
+import { LlamaClient } from "../src/extensions/llama/client.js";
 import {
 	findLlamaServerError,
 	isLlamaServerError,
@@ -11,7 +11,7 @@ import {
 	LlamaServerError,
 	LlamaServerUnreachableError,
 	rehydrateLlamaServerError,
-} from "../src/extensions/llama/errors.ts";
+} from "../src/extensions/llama/errors.js";
 
 async function closedPort(): Promise<number> {
 	const server = createServer();

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, describe, it } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { ExtensionSelectorComponent } from "../src/modes/interactive/components/extension-selector.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { ExtensionSelectorComponent } from "../src/modes/interactive/components/extension-selector.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 function render(selector: ExtensionSelectorComponent): string {
 	return stripAnsi(selector.render(80).join("\n"));

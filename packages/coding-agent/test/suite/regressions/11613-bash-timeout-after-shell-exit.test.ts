@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { describe, it, vi } from "vitest";
-import { createBashTool, createLocalBashOperations } from "../../../src/core/tools/bash.ts";
+import { createBashTool, createLocalBashOperations } from "../../../src/core/tools/bash.js";
 import {
 	isShellTimeoutError,
 	isShellToolError,
 	rehydrateShellToolError,
 	ShellTimeoutError,
 	ShellToolError,
-} from "../../../src/core/tools/shell-errors.ts";
+} from "../../../src/core/tools/shell-errors.js";
 
 /**
  * The bash tool waits for stdout/stderr to close, not only for the shell to exit (#5303). A background

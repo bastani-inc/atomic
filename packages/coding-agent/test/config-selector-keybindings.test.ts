@@ -18,7 +18,7 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
 	return { ...actual, ProcessTerminal: class {}, TuiMainScreen: FakeTui };
 });
 
-vi.mock("../src/modes/interactive/components/config-selector.ts", () => ({
+vi.mock("../src/modes/interactive/components/config-selector.js", () => ({
 	ConfigSelectorComponent: class {
 		constructor(...args: unknown[]) {
 			const onClose = args[4] as () => void;
@@ -35,9 +35,9 @@ vi.mock("../src/modes/interactive/theme/theme.js", () => ({
 	stopThemeWatcher: () => {},
 }));
 
-import { selectConfig } from "../src/cli/config-selector.ts";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SettingsManager } from "../src/core/settings-manager.ts";
+import { selectConfig } from "../src/cli/config-selector.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import type { SettingsManager } from "../src/core/settings-manager.js";
 
 describe("selectConfig keybindings", () => {
 	let agentDir: string | undefined;
