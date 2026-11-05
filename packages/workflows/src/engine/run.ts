@@ -187,9 +187,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						message: formatWorktreeRestoreNotice(mapping),
 						createdAt: Date.now(),
 					}),
-				onWarning: (warning) =>
+				onWarning: (warning, mapping) =>
 					activeStore.recordNotice({
-						id: `workflow-worktree-restore-warning:${runId}:${warning.code}`,
+						id: `workflow-worktree-restore-warning:${runId}:${mapping.snapshotId}:${warning.code}`,
 						runId,
 						level: "warning",
 						message: formatWorktreeRestoreWarning(warning),
