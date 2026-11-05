@@ -254,7 +254,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 					? { output: "waiting", promptGate: neverReleased.promise, abortResolvesPrompt: true }
 					: { output: "waiting", ...(state.originalGate ? { promptGate: state.originalGate.promise } : {}) },
 		});
-		return { ...waiting, status: "interrupted", interrupted: true, released: { waitingOn: [WAIT_CALL] } };
+		return { ...waiting, status: "interrupted", interrupted: true, released: { waitingOn: [WAIT_CALL], calls: [] } };
 	};
 	const deps: ExecutorDeps = {
 		pi,
@@ -430,8 +430,10 @@ const stoppedAfterRelease = [
 		name: "paused holding the result of its call",
 		expected: [waitResult("held green")],
 		prepare: async (h: Harness, record: SubagentChildRecord) => {
-			const paused: SubagentChildRecord = { ...record, waitingOn: [], terminalStatus: "paused" };
-			await recordSubagentChildHeldToolResults(h.deps.pi, paused, [waitResult("held green")]);
+			await recordSubagentChildStatus(h.deps.pi, record, "paused");
+			await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [
+				waitResult("held green"),
+			]);
 		},
 	},
 ] as const;
@@ -477,7 +479,7 @@ test("a child restored after a restart reads the results held for it as messages
 		(candidate) => candidate.state === "running" && candidate.childSessionFile !== undefined,
 	);
 	const held = waitResult("finished while Atomic was closed");
-	await recordSubagentChildHeldToolResults(h.deps.pi, running, [held]);
+	await recordSubagentChildHeldToolResults(h.deps.pi, running.owner.sessionId, running.childId, [held]);
 
 	const outcomes: SubagentChildRestoreOutcome[] = await restoreSubagentChildren(h.deps, h.ctx);
 
@@ -499,13 +501,12 @@ test("a background child with an owner is released while it waits, after the def
 	await h.waitForLatest("policy-default:0", (record) => record.launchLeafId !== undefined);
 
 	const policy = h.runs[0]?.options.releaseWhenWaiting;
-	assert.equal(policy?.afterMs, SUBAGENT_RELEASE_AFTER_MS);
-	assert.equal(typeof policy?.onReleased, "function");
+	assert.deepEqual(policy, { afterMs: SUBAGENT_RELEASE_AFTER_MS });
 });
 
 test("a release policy its launch gave is kept (#4326)", async () => {
 	const h = harness();
-	const own = { afterMs: 5, onReleased: () => {} };
+	const own = { afterMs: 5 };
 
 	await h.admit("policy-own", { releaseWhenWaiting: own });
 	await h.waitForLatest("policy-own:0", (record) => record.launchLeafId !== undefined);

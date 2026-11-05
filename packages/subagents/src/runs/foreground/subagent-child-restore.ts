@@ -34,6 +34,7 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
+import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
@@ -679,10 +680,10 @@ export async function restoreSubagentChild(
 	resume?: SubagentChildResumeRequest,
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
-	const record = findSubagentChildRecord(
-		readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId),
-		id,
-	);
+	indexSubagentChildOwner(ctx);
+	const record =
+		subagentChildRecordOf(ownerSessionId, id) ??
+		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };
 	const key = childHoldKey(ownerSessionId, record.childId);

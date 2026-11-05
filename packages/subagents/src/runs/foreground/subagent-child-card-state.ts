@@ -28,6 +28,7 @@ const latest = new Map<string, SubagentChildRecord>();
 /** Children whose state came from their owner: written live, or read from the owner's own session. */
 const fromOwner = new Set<string>();
 const childIdsByTaskId = new Map<string, string>();
+const childIdsByIntercomTarget = new Map<string, string>();
 const watchers = new Map<string, Set<WeakRef<object>>>();
 const invalidators = new WeakMap<object, () => void>();
 const transcripts = new Map<string, { readonly key: string; lines?: readonly string[] }>();
@@ -55,6 +56,7 @@ export function observeSubagentChildRecord(record: SubagentChildRecord, copied =
 	if (!copied) fromOwner.add(record.childId);
 	const previous = latest.get(record.childId);
 	latest.set(record.childId, previous ? { ...previous, ...record } : record);
+	if (record.intercomTarget !== undefined) childIdsByIntercomTarget.set(record.intercomTarget, record.childId);
 	notify(record.childId);
 	if (record.taskId === undefined) return;
 	if (!childIdsByTaskId.has(record.taskId)) childIdsByTaskId.set(record.taskId, record.childId);
@@ -75,6 +77,37 @@ export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManag
 	source = ctx;
 	loadedOwners.add(ctx.sessionManager.getSessionId());
 	observeEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());
+}
+
+/**
+ * Index `ctx`'s session once, if it was not read yet: the wake path then finds a child without scanning the owner's
+ * whole history, however many children it launched.
+ */
+export function indexSubagentChildOwner(ctx: Pick<ExtensionContext, "sessionManager">): void {
+	const ownerSessionId = ctx.sessionManager.getSessionId();
+	if (loadedOwners.has(ownerSessionId)) return;
+	loadedOwners.add(ownerSessionId);
+	observeEntries(ctx.sessionManager.getEntries(), ownerSessionId);
+}
+
+/** The latest record of one of `ownerSessionId`'s children, from the index. */
+export function subagentChildRecordOf(ownerSessionId: string, childId: string): SubagentChildRecord | undefined {
+	const record = latest.get(childId);
+	return record?.owner?.sessionId === ownerSessionId ? record : undefined;
+}
+
+/** The child of `ownerSessionId` that was launched with this Intercom name, from the index. */
+export function subagentChildRecordForTarget(
+	ownerSessionId: string,
+	intercomTarget: string,
+): SubagentChildRecord | undefined {
+	const childId = childIdsByIntercomTarget.get(intercomTarget);
+	return childId === undefined ? undefined : subagentChildRecordOf(ownerSessionId, childId);
+}
+
+/** How many children the index holds; counted by tests and the benchmark. */
+export function subagentChildIndexSize(): number {
+	return latest.size;
 }
 
 /** The latest record of the child a launch card shows, by its child id or any task id it ran as. */

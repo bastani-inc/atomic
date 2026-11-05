@@ -7,13 +7,15 @@ import {
 	type TaskId,
 } from "@bastani/atomic";
 import type { IntercomEventBus } from "../../shared/types.js";
+import { ReleasedChildError } from "./released-child-errors.js";
 import {
 	handleReleasedChildWakes,
 	holdToolResultsInRecord,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	subagentWakeKey,
 } from "./released-children.js";
-import { readSubagentChildRecords, subagentChildOwner } from "./subagent-child-records.js";
+import { indexSubagentChildOwner, subagentChildRecordForTarget } from "./subagent-child-card-state.js";
+import { subagentChildOwner } from "./subagent-child-records.js";
 import { restoreSubagentChild, type SubagentChildRestoreDeps } from "./subagent-child-restore.js";
 
 /** Intercom → Subagents: a send or ask waits at the broker for a released child of this session (#4326). */
@@ -47,7 +49,8 @@ export function bindReleasedChildWakes(
 				toolResults: decision.toolResults,
 				...(decision.prompt ? {} : { promptless: true }),
 			});
-			if (outcome.kind === "unrestorable") throw new Error(outcome.reason);
+			if (outcome.kind === "unrestorable")
+				throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 			const host = ctx.getAgentTaskHost?.();
 			if (outcome.kind === "restored" && host !== undefined) await awaitTaskSettlement(host, outcome.taskId);
 		},
@@ -57,9 +60,8 @@ export function bindReleasedChildWakes(
 	const unsubscribe = events.on(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, (payload) => {
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;
-		const record = [...readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId).values()].find(
-			(candidate) => candidate.intercomTarget === childName,
-		);
+		indexSubagentChildOwner(ctx);
+		const record = subagentChildRecordForTarget(ownerSessionId, childName);
 		if (record === undefined) return;
 		void dispatcher
 			.deliver(subagentWakeKey(ownerSessionId, record.childId), { id: `intercom:${randomUUID()}`, kind: "intercom" })

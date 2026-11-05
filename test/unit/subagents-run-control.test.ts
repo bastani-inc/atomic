@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentSession, ExtensionContext } from "@bastani/atomic";
+import type { AgentSession, DetachedToolCall, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -16,6 +16,7 @@ import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/in
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
+import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
 	lateToolResultMessage,
@@ -132,6 +133,11 @@ interface Harness {
 	resumedRunsWait: boolean;
 	/** Whether the original launch ends released, waiting on a detached `wait_for_ci` call (#4326). */
 	releaseOriginal: boolean;
+	/** The still-running calls a stubbed released outcome hands back, and the dispatcher their results wake through. */
+	releasedCalls: DetachedToolCall[];
+	wakeDispatcher?: AgentWakeDispatcher;
+	/** When set, a stubbed released outcome is returned only once this settles. */
+	releaseGate?: PromiseWithResolvers<void>;
 	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
@@ -271,6 +277,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		completesWhenStopped: false,
 		resumedRunsWait: false,
 		releaseOriginal: false,
+		releasedCalls: [],
 		agentDefined: true,
 		agents: [agent],
 		finishOn: new Map(),
@@ -300,6 +307,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(pi, state.ctx),
 				runtime: { runSync: runtime },
+				...(state.wakeDispatcher ? { wakeDispatcher: state.wakeDispatcher } : {}),
 				...(schedule ? { schedule } : {}),
 			});
 			assert.equal(response.kind, "admitted");
@@ -328,7 +336,13 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 				...options,
 				testSession: { output: "waiting" },
 			});
-			return { ...waiting, status: "interrupted", interrupted: true, released: { waitingOn: [RELEASED_CALL] } };
+			await state.releaseGate?.promise;
+			return {
+				...waiting,
+				status: "interrupted",
+				interrupted: true,
+				released: { waitingOn: [RELEASED_CALL], calls: state.releasedCalls },
+			};
 		}
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
@@ -3157,7 +3171,9 @@ test("a released child that can no longer be restored fails its wake with the re
 		}),
 		(error: Error & { code?: string; cause?: Error }) => {
 			assert.equal(error.code, "wake-failed");
-			assert.match(error.cause?.message ?? "", /worker/);
+			assert.ok(isReleasedChildError(error.cause));
+			assert.deepEqual([error.cause.code, error.cause.fields.childId], ["child-unrestorable", "release9:0"]);
+			assert.match(error.cause.fields.reason ?? "", /worker/);
 			return true;
 		},
 	);
@@ -3178,4 +3194,63 @@ test("pause with all: true pauses released children and leaves one already pause
 		["release12:0"],
 	);
 	assert.doesNotMatch(text(paused), /already paused/);
+});
+
+function settledCall(result: ReturnType<typeof waitResult>): DetachedToolCall {
+	return { toolCallId: result.toolCallId, toolName: result.toolName, result: Promise.resolve(result), abort() {} };
+}
+
+test("a result already settled when its child is released wakes it once, after the released record, with nothing left held (#4326)", async () => {
+	const h = harness();
+	const dispatcher = new AgentWakeDispatcher();
+	h.wakeDispatcher = dispatcher;
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	const green = waitResult("CI green");
+	h.releaseOriginal = true;
+	h.releasedCalls = [settledCall(green)];
+
+	await settled(h, await h.admit("handoff1"));
+	h.releaseOriginal = false;
+	const woken = await h.waitForLatest(
+		"handoff1:0",
+		(record) => record.state === "terminal" && record.terminalStatus === "ok",
+	);
+
+	const wakeRuns = h.runs.filter((run) => run.task !== ORIGINAL_TASK);
+	assert.equal(wakeRuns.length, 1, "one wake, not stranded and not repeated");
+	assert.equal(wakeRuns[0]?.task, lateToolResultMessage(green), "the wake brought the result");
+	assert.deepEqual(woken.heldToolResults ?? [], [], "nothing is left held once the wake took the result");
+	assert.equal(dispatcher.stats().keys, 0);
+});
+
+test("a result held while its child still ran wakes the child once it is released, and is then no longer held (#4326)", async () => {
+	const h = harness();
+	const dispatcher = new AgentWakeDispatcher();
+	h.wakeDispatcher = dispatcher;
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.releaseOriginal = true;
+	h.releaseGate = Promise.withResolvers<void>();
+	const taskId = await h.admit("drain1");
+	await h.waitForLatest("drain1:0", (record) => record.state === "running" && record.launchLeafId !== undefined);
+	const green = waitResult("CI green");
+
+	await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "drain1:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: green,
+	});
+	assert.deepEqual(h.latest("drain1:0")?.heldToolResults, [green], "a running child keeps the result for later");
+	assert.equal(h.latest("drain1:0")?.state, "running");
+
+	h.releaseOriginal = false;
+	h.releaseGate.resolve();
+	await settled(h, taskId);
+	const woken = await h.waitForLatest(
+		"drain1:0",
+		(record) => record.state === "terminal" && record.terminalStatus === "ok",
+	);
+	assert.deepEqual(woken.heldToolResults ?? [], [], "the wake took what was held");
+	assert.equal(h.runs.filter((run) => run.task !== ORIGINAL_TASK).length, 1, "woken once");
 });

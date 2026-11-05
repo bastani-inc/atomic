@@ -10,12 +10,14 @@ import type { AgentSource } from "../../agents/agent-types.js";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
+import { ReleasedChildError } from "./released-child-errors.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	isSubagentChildRecord,
 	observeSubagentChildRecord,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	subagentChildCardRecord,
+	subagentChildRecordOf,
 } from "./subagent-child-card-state.js";
 
 export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE };
@@ -338,18 +340,41 @@ export function subagentChildOwner(
 
 const appendChains = new Map<string, Promise<void>>();
 
-/** Append records of one owner in order, across every sink of that owner. */
+/** Failed appends of child records, counted so a record that could not be saved is not lost silently. */
+export const subagentChildRecordFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
+
+/** Run `step` after every earlier step of this owner. The result rejects when `step` does; later steps still run. */
+function inOrder(ownerSessionId: string, step: () => Promise<void>): Promise<void> {
+	const run = (appendChains.get(ownerSessionId) ?? Promise.resolve()).then(step);
+	const settled = run.catch(() => undefined);
+	appendChains.set(ownerSessionId, settled);
+	void settled.then(() => {
+		if (appendChains.get(ownerSessionId) === settled) appendChains.delete(ownerSessionId);
+	});
+	return run;
+}
+
+function recordAppendFailure(record: SubagentChildRecord, error: Error): ReleasedChildError {
+	return new ReleasedChildError(
+		"record-append-failed",
+		{
+			childId: record.childId,
+			state: record.state,
+			...(record.terminalStatus === undefined ? {} : { terminalStatus: record.terminalStatus }),
+		},
+		{ cause: error },
+	);
+}
+
+/** Append records of one owner in order, across every sink of that owner. A failed append is counted, not lost. */
 function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
 	observeSubagentChildRecord(record);
-	const key = record.owner.sessionId;
-	const appended = (appendChains.get(key) ?? Promise.resolve())
-		.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record))
-		.catch(() => undefined);
-	appendChains.set(key, appended);
-	void appended.then(() => {
-		if (appendChains.get(key) === appended) appendChains.delete(key);
-	});
-	return appended;
+	return inOrder(record.owner.sessionId, () => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(
+		(error: Error) => {
+			subagentChildRecordFailures.count += 1;
+			subagentChildRecordFailures.last = recordAppendFailure(record, error);
+		},
+	);
 }
 
 /** Settles once every record of this owner handed to a sink so far has been appended. */
@@ -516,18 +541,32 @@ export async function recordSubagentChildStatus(
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
 }
 
-/** Append a new latest observation of a child that changes only the tool results it holds for its next wake. */
+/**
+ * Append a new latest observation of a child that changes only the tool results it holds for its next wake. The
+ * record is taken from the index when this step's turn comes in the owner's order, never from an earlier snapshot:
+ * one made before a later record was written would write that record's state over again. Failing loudly: a result
+ * that is not saved must not be dropped.
+ */
 export async function recordSubagentChildHeldToolResults(
 	pi: Pick<ExtensionAPI, "appendEntry">,
-	record: SubagentChildRecord,
+	ownerSessionId: string,
+	childId: string,
 	heldToolResults: readonly DetachedToolResult[],
 ): Promise<SubagentChildRecord> {
-	const next: SubagentChildRecord = { ...record, heldToolResults };
-	// After every record already handed to a sink, and failing loudly: a result that is not saved must not be dropped.
-	await subagentChildRecordsAppended(record.owner.sessionId);
-	observeSubagentChildRecord(next);
-	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
-	return next;
+	let next: SubagentChildRecord | undefined;
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
+		const record: SubagentChildRecord = { ...latest, heldToolResults };
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		next = record;
+	});
+	return next as SubagentChildRecord;
 }
 
 /**

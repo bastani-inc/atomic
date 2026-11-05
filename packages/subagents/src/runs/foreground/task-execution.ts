@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { type AgentTaskHost, type OperationId, ranOnModelLine, type WaitPolicy } from "@bastani/atomic";
+import {
+	type AgentTaskHost,
+	type AgentWakeDispatcher,
+	agentWakeDispatcher,
+	type OperationId,
+	ranOnModelLine,
+	type WaitPolicy,
+} from "@bastani/atomic";
 import type {
 	Cleanup,
 	ModelParallelResponse,
@@ -18,7 +25,13 @@ import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
-import { holdReleasedChildTargets, subagentReleasePolicy } from "./released-children.js";
+import {
+	forwardDetachedResults,
+	holdReleasedChildTargets,
+	subagentReleasePolicy,
+	subagentWakeKey,
+	wakeReleasedChildWithHeldResults,
+} from "./released-children.js";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -26,6 +39,7 @@ import {
 	runWorktreeRecord,
 	unparkRunWorktree,
 } from "./run-worktrees.js";
+import { subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
 	pendingMessagesOfResult,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -342,6 +356,8 @@ export async function runAgentTask(input: {
 	operation?: string;
 	/** Task heartbeat cadence the caller chose; omitted uses the owner default. */
 	heartbeatMs?: number;
+	/** The dispatcher a released child's results wake it through; by default the process's one dispatcher. */
+	wakeDispatcher?: AgentWakeDispatcher;
 }): Promise<ModelSingleResponse> {
 	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
 	let pendingYield = false;
@@ -513,7 +529,7 @@ export async function runAgentTask(input: {
 						...input.options,
 						// A background child is released while it waits, and its owner wakes it (#4326).
 						...(input.options.releaseWhenWaiting === undefined && ownerSessionId !== undefined
-							? { releaseWhenWaiting: subagentReleasePolicy(ownerSessionId, subagentChildId(runId, index)) }
+							? { releaseWhenWaiting: subagentReleasePolicy() }
 							: {}),
 						signal: context.signal,
 						taskExecution: {
@@ -579,7 +595,20 @@ export async function runAgentTask(input: {
 					if (released || stoppedByStagePause || (ownerClosed() && !endedForGood)) parkRunWorktree(runId, index);
 					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
 					if (released && child.released) {
+						// The record goes first: a result forwarded before it would find the child still recorded running.
 						recordChild("terminal", SUBAGENT_CHILD_RELEASED_STATUS, undefined, child.released.waitingOn);
+						if (ownerSessionId !== undefined)
+							forwardDetachedResults(
+								input.wakeDispatcher ?? agentWakeDispatcher(),
+								subagentWakeKey(ownerSessionId, subagentChildId(runId, index)),
+								child.released.calls,
+							);
+						if (ownerSessionId !== undefined)
+							wakeReleasedChildWithHeldResults(
+								input.wakeDispatcher ?? agentWakeDispatcher(),
+								subagentWakeKey(ownerSessionId, subagentChildId(runId, index)),
+								subagentChildRecordOf(ownerSessionId, subagentChildId(runId, index))?.heldToolResults,
+							);
 						holdReleasedChildTargets(input.options, childSession.childSessionId);
 					} else if (!ownerClosed())
 						recordChild(

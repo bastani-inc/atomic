@@ -10,9 +10,10 @@ import {
 } from "@bastani/atomic";
 import type { RunSyncOptions } from "../../shared/types.js";
 import type { SubagentReleasePolicy } from "../inprocess/runner.js";
+import { ReleasedChildError } from "./released-child-errors.js";
+import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { holdChildTargets } from "./subagent-child-hold.js";
 import {
-	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -55,9 +56,10 @@ function deliverToolResult(
 	dispatcher: AgentWakeDispatcher,
 	wakeKey: string,
 	toolResult: DetachedToolResult,
+	origin: "call" | "held" = "call",
 ): Promise<void> {
 	return dispatcher.deliver(wakeKey, {
-		id: `tool-result:${toolResult.toolCallId}`,
+		id: origin === "held" ? `held-result:${toolResult.toolCallId}` : `tool-result:${toolResult.toolCallId}`,
 		kind: "tool-result",
 		toolResult,
 	});
@@ -81,19 +83,32 @@ export function forwardDetachedResults(
 	for (const call of calls) outsideAnyTask(forwardDetachedResult, dispatcher, wakeKey, call);
 }
 
-/** The release policy of one background child: release after `afterMs`, and wake it with its calls' results. */
-export function subagentReleasePolicy(
-	ownerSessionId: string,
-	childId: string,
-	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
-	afterMs: number = SUBAGENT_RELEASE_AFTER_MS,
-): SubagentReleasePolicy {
-	const wakeKey = subagentWakeKey(ownerSessionId, childId);
-	return { afterMs, onReleased: (calls) => forwardDetachedResults(dispatcher, wakeKey, calls) };
+function wakeWithHeldResult(dispatcher: AgentWakeDispatcher, wakeKey: string, held: DetachedToolResult): void {
+	void deliverToolResult(dispatcher, wakeKey, held, "held").catch((error) =>
+		dispatcher.reportUnobservedFailure(error),
+	);
+}
+
+/**
+ * Results that arrived while the child still ran are held in its record. Once the child is released they have nobody
+ * waiting for them, so one wake hands them over: the handler takes every result the record holds.
+ */
+export function wakeReleasedChildWithHeldResults(
+	dispatcher: AgentWakeDispatcher,
+	wakeKey: string,
+	held: readonly DetachedToolResult[] | undefined,
+): void {
+	const [first] = held ?? [];
+	if (first !== undefined) outsideAnyTask(wakeWithHeldResult, dispatcher, wakeKey, first);
+}
+
+/** The release policy of one background child: release after `afterMs` of waiting on a detachable call. */
+export function subagentReleasePolicy(afterMs: number = SUBAGENT_RELEASE_AFTER_MS): SubagentReleasePolicy {
+	return { afterMs };
 }
 
 /** Failures to keep a released child addressable, counted so they are not lost; see {@link holdReleasedChildTargets}. */
-export const releasedChildHoldFailures: { count: number; last?: Error } = { count: 0 };
+export const releasedChildHoldFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
 
 /**
  * Keep a released child addressable while it holds no session: the broker holds sends and asks to its name and session
@@ -105,6 +120,7 @@ export function holdReleasedChildTargets(
 ): void {
 	const events = options.intercomEvents;
 	if (events === undefined) return;
+	const childName = options.intercomSessionName;
 	void holdChildTargets(
 		events,
 		{ intercomTarget: options.intercomSessionName, childSessionId },
@@ -112,7 +128,11 @@ export function holdReleasedChildTargets(
 		{ dormant: true, wake: true },
 	).catch((error: Error) => {
 		releasedChildHoldFailures.count += 1;
-		releasedChildHoldFailures.last = error;
+		releasedChildHoldFailures.last = new ReleasedChildError(
+			"hold-failed",
+			childName === undefined ? {} : { childName },
+			{ cause: error },
+		);
 	});
 }
 
@@ -236,8 +256,9 @@ export function handleReleasedChildWakes(
 		async (wakeKey, wakes) => {
 			const childId = wakeKey.slice(namespace.length + 1);
 			await subagentChildRecordsAppended(ownerSessionId);
-			const record = readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId).get(childId);
-			if (record === undefined) throw new Error(`this session has no record of subagent ${childId}`);
+			indexSubagentChildOwner(ctx);
+			const record = subagentChildRecordOf(ownerSessionId, childId);
+			if (record === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
 			const decision = decideReleasedChildWake(record, wakes);
 			if (decision.kind === "hold") await hold(record, decision.heldToolResults);
 			else if (decision.kind === "wake") await wake(record, decision);
@@ -251,6 +272,6 @@ export function holdToolResultsInRecord(
 	pi: Parameters<typeof recordSubagentChildHeldToolResults>[0],
 ): (record: SubagentChildRecord, heldToolResults: readonly DetachedToolResult[]) => Promise<void> {
 	return async (record, heldToolResults) => {
-		await recordSubagentChildHeldToolResults(pi, record, heldToolResults);
+		await recordSubagentChildHeldToolResults(pi, record.owner.sessionId, record.childId, heldToolResults);
 	};
 }

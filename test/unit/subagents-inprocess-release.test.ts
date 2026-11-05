@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DetachedToolCall, DetachedToolResult } from "@bastani/atomic";
+import type { DetachedToolResult } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -46,7 +46,6 @@ test(
 	"a live child whose detachable call outlasts the policy is released, its calls handed over, and a wake finishes its turn (#4326)",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
-		const released: DetachedToolCall[][] = [];
 		const store = new MemorySessionStore();
 		const childSession = await SessionManager.create(store, env.root);
 		env.faux.setResponses([waitCall()]);
@@ -55,17 +54,18 @@ test(
 			...env.options("release-live", {
 				sessionManager: childSession,
 				resumeSession: true,
-				releaseWhenWaiting: { afterMs: 0, onReleased: (calls) => released.push([...calls]) },
+				releaseWhenWaiting: { afterMs: 0 },
 			}),
 		});
 
 		assert.equal(result.status, "interrupted");
 		assert.equal(result.interrupted, true);
-		assert.deepEqual(result.released, { waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }] });
+		assert.deepEqual(result.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
 		assert.equal(result.envelope, releasedEnvelope([{ toolCallId: "ci-1", toolName: "wait_for_ci" }]));
 		assert.deepEqual(
-			released.map((calls) => calls.map((call) => [call.toolCallId, call.toolName])),
-			[[["ci-1", "wait_for_ci"]]],
+			result.released?.calls.map((call) => [call.toolCallId, call.toolName]),
+			[["ci-1", "wait_for_ci"]],
+			"the calls come back with the outcome, still running",
 		);
 		assert.deepEqual(env.aborts, [], "a released child's waits keep running");
 
@@ -120,11 +120,10 @@ test(
 			),
 		]);
 		const controller = new AbortController();
-		const released: DetachedToolCall[][] = [];
 		const run = runSingleInProcess(env.root, agent, "watch CI", {
 			...env.options("release-stopped", {
 				signal: controller.signal,
-				releaseWhenWaiting: { afterMs: 0, onReleased: (calls) => released.push([...calls]) },
+				releaseWhenWaiting: { afterMs: 0 },
 			}),
 		});
 		while (!env.blockStarted()) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -133,8 +132,7 @@ test(
 		controller.abort("user");
 		const stopped = await run;
 		assert.notEqual(stopped.status, "ok");
-		assert.equal(stopped.released, undefined);
-		assert.deepEqual(released, [], "a stopped child hands nothing over to wake it");
+		assert.equal(stopped.released, undefined, "a stopped child hands nothing over to wake it");
 		assert.deepEqual(env.aborts, ["abort"], "the detached call ends with the child");
 	},
 	LIVE_CHILD_TIMEOUT_MS,
@@ -157,7 +155,7 @@ test(
 		env.faux.setResponses([waitCall()]);
 
 		const result = await runSingleInProcess(env.root, { ...agent, thinking: "low" }, "watch CI", {
-			...env.options("release-model", { releaseWhenWaiting: { afterMs: 0, onReleased: () => {} } }),
+			...env.options("release-model", { releaseWhenWaiting: { afterMs: 0 } }),
 		});
 
 		assert.equal(result.status, "interrupted");
@@ -187,11 +185,11 @@ test(
 		]);
 
 		const result = await runSingleInProcess(env.root, { ...agent, thinking: "low" }, "watch CI", {
-			...env.options("release-fallback", { releaseWhenWaiting: { afterMs: 0, onReleased: () => {} } }),
+			...env.options("release-fallback", { releaseWhenWaiting: { afterMs: 0 } }),
 		});
 
 		assert.equal(result.status, "interrupted");
-		assert.deepEqual(result.released, { waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }] });
+		assert.deepEqual(result.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
 		assert.equal(result.model, "faux/faux-2");
 		assert.equal(result.thinking, "low");
 		assert.deepEqual(result.attemptedModels, ["faux/faux-1", "faux/faux-2"]);

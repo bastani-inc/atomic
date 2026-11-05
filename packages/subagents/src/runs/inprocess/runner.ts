@@ -190,8 +190,8 @@ export interface ChildSpec {
 	readonly resolveCandidateModel?: CandidateModelResolver;
 	/**
 	 * Release the child when it waits (#4326): a call of a `detachable` tool still running after `afterMs` goes on
-	 * without the child's run, the run ends, the attempt ends as released, and `onReleased` is given the calls so their
-	 * results can wake the child later. Without it detachable calls run inline.
+	 * without the child's run, the run ends, and the attempt ends as released, handing back the calls so their results
+	 * can wake the child later. Without it detachable calls run inline.
 	 */
 	readonly releaseWhenWaiting?: SubagentReleasePolicy;
 	/**
@@ -203,16 +203,21 @@ export interface ChildSpec {
 	readonly skipTaskPrompt?: boolean;
 }
 
-/** How a released child's wait is handed back: see {@link ChildSpec.releaseWhenWaiting}. */
+/** When a child is released: see {@link ChildSpec.releaseWhenWaiting}. */
 export interface SubagentReleasePolicy {
 	readonly afterMs: number;
-	readonly onReleased: (calls: readonly DetachedToolCall[]) => void;
 }
 
 /** A detached call a released child waits on. */
 export interface SubagentWaitingCall {
 	readonly toolCallId: string;
 	readonly toolName: string;
+}
+
+/** What a released attempt hands back: the calls the child waits on, still running, and how to name them. */
+export interface SubagentReleased {
+	readonly waitingOn: readonly SubagentWaitingCall[];
+	readonly calls: readonly DetachedToolCall[];
 }
 
 /** The envelope a released child's attempt reports: what it waits on, and what wakes it. */
@@ -359,7 +364,7 @@ export type AttemptOutcome = (
 			readonly status: "interrupted" | "killed";
 			readonly cause?: string;
 			/** The child was released while waiting on these detached calls, not stopped (#4326). */
-			readonly released?: { readonly waitingOn: readonly SubagentWaitingCall[] };
+			readonly released?: SubagentReleased;
 			/** Steering then follow-up messages the child had queued but not read when its parent stopped it, in order. */
 			readonly pendingMessages?: readonly string[];
 			/** The first pending message is the child's original task it never read, prompted as a fresh launch prompts it. */
@@ -1725,15 +1730,14 @@ export class SubagentControlRuntime {
 			const detached = release === undefined ? [] : session.takeDetachedToolCalls();
 			// A stopped child is not waiting on anything: what it detached ends with it.
 			if (termination !== undefined) for (const call of detached) call.abort(termination);
-			else if (detached.length > 0 && release !== undefined) {
+			else if (detached.length > 0) {
 				releasedAttempt = true;
-				release.onReleased(detached);
 				const waitingOn = detached.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName }));
 				this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
 				this.native.finishChildAttempt(token, nativeStatus("interrupted"));
 				return {
 					status: "interrupted",
-					released: { waitingOn },
+					released: { waitingOn, calls: detached },
 					stats,
 					path: admitted.identity.path,
 					envelope: releasedEnvelope(waitingOn),

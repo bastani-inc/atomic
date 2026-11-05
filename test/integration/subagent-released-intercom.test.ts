@@ -211,7 +211,7 @@ test(
 							...result,
 							status: "interrupted",
 							interrupted: true,
-							released: { waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }] },
+							released: { waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }], calls: [] },
 						}
 					: result;
 			},

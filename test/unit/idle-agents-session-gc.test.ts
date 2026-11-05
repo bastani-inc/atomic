@@ -13,7 +13,9 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
+	forwardDetachedResults,
 	subagentReleasePolicy,
+	subagentWakeKey,
 	subagentWakeNamespace,
 } from "../../packages/subagents/src/runs/foreground/released-children.ts";
 import {
@@ -74,11 +76,12 @@ test(
 				...env.options(`gc-${index}`, {
 					sessionManager: await SessionManager.create(store, env.root),
 					resumeSession: true,
-					releaseWhenWaiting: subagentReleasePolicy(OWNER_SESSION_ID, `gc-${index}:0`, dispatcher, 0),
+					releaseWhenWaiting: subagentReleasePolicy(0),
 				}),
 			});
 			assert.equal(result.status, "interrupted");
 			assert.ok(result.released, "the child was released while its call is still running");
+			forwardDetachedResults(dispatcher, subagentWakeKey(OWNER_SESSION_ID, `gc-${index}:0`), result.released.calls);
 		}
 		assert.equal(env.answers.length, CHILDREN, "every call is still a live operation");
 		await collectGarbage();
@@ -146,7 +149,7 @@ async function launchReleasedTask(
 	env: Awaited<ReturnType<typeof liveChildEnvironment>>,
 	host: AgentTaskHost,
 	owner: SessionManager,
-	policy: ReturnType<typeof subagentReleasePolicy>,
+	dispatcher: AgentWakeDispatcher,
 ): Promise<void> {
 	env.faux.setResponses([
 		{
@@ -165,10 +168,11 @@ async function launchReleasedTask(
 			...env.options(`gct-${index}`, {
 				sessionManager: await SessionManager.create(new MemorySessionStore(), env.root),
 				resumeSession: true,
-				releaseWhenWaiting: policy,
+				releaseWhenWaiting: subagentReleasePolicy(0),
 			}),
 			index: 0,
 		},
+		wakeDispatcher: dispatcher,
 		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(
 			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
@@ -199,14 +203,7 @@ test(
 			authorizeLaunch() {},
 		});
 		cleanups.push(() => void host.close("session-close"));
-		for (let index = 0; index < CHILDREN; index++)
-			await launchReleasedTask(
-				index,
-				env,
-				host,
-				owner,
-				subagentReleasePolicy(OWNER_SESSION_ID, `gct-${index}:0`, dispatcher, 0),
-			);
+		for (let index = 0; index < CHILDREN; index++) await launchReleasedTask(index, env, host, owner, dispatcher);
 		assert.equal(env.answers.length, CHILDREN, "every call is still a live operation");
 		await collectGarbage();
 		assert.deepEqual(

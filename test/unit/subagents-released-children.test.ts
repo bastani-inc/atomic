@@ -10,6 +10,7 @@ import { test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
+import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
 	bindReleasedChildWakes,
 	SUBAGENT_RELEASED_CHILD_WAKE_EVENT,
@@ -247,10 +248,9 @@ test("an ended child takes nothing, and a settled one is woken only by a new res
 test("wake keys name the owner and the child; namespaces are per owner (#4326)", () => {
 	assert.equal(subagentWakeNamespace("owner-1"), "subagents/owner-1");
 	assert.equal(subagentWakeKey("owner-1", "run:0"), "subagents/owner-1:run:0");
-	const policy = subagentReleasePolicy("owner-1", "run:0");
-	assert.equal(policy.afterMs, SUBAGENT_RELEASE_AFTER_MS);
+	assert.deepEqual(subagentReleasePolicy(), { afterMs: SUBAGENT_RELEASE_AFTER_MS });
 	assert.equal(SUBAGENT_RELEASE_AFTER_MS, 60_000);
-	assert.equal(subagentReleasePolicy("o", "c", new AgentWakeDispatcher(), 5).afterMs, 5);
+	assert.equal(subagentReleasePolicy(5).afterMs, 5);
 });
 
 function detachedCall(toolResult: DetachedToolResult): DetachedToolCall {
@@ -268,7 +268,7 @@ test("each detached call's result is delivered once as a tool-result wake; a fai
 	dispatcher.handle(subagentWakeNamespace("owner"), async (key, wakes) => {
 		delivered.push([key, ...wakes.map((wake) => `${wake.kind}:${wake.id}:${wake.toolResult?.toolCallId}`)]);
 	});
-	subagentReleasePolicy("owner", "run:0", dispatcher).onReleased([detachedCall(result("ci-1"))]);
+	forwardDetachedResults(dispatcher, subagentWakeKey("owner", "run:0"), [detachedCall(result("ci-1"))]);
 	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(delivered, [["subagents/owner:run:0", "tool-result:tool-result:ci-1:ci-1"]]);
 
@@ -351,7 +351,10 @@ test("a failure to keep a released child addressable is counted, not swallowed (
 	holdReleasedChildTargets({ intercomEvents: events, intercomSessionName: "child-3" });
 	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(releasedChildHoldFailures.count, before + 1);
-	assert.equal(releasedChildHoldFailures.last?.message, "broker gone");
+	const failure = releasedChildHoldFailures.last;
+	assert.ok(failure && isReleasedChildError(failure));
+	assert.deepEqual([failure.code, failure.fields, failure.retryable], ["hold-failed", { childName: "child-3" }, true]);
+	assert.equal((failure.cause as Error).message, "broker gone");
 });
 
 function owner() {
@@ -406,7 +409,9 @@ test("the owner's handler wakes, holds or ignores by the child's latest record, 
 		dispatcher.deliver(subagentWakeKey(ownerSessionId, "run:9"), intercomWake),
 		(error: AgentRehydrateError) => {
 			assert.equal(error.code, "wake-failed");
-			assert.match((error.cause as Error).message, /no record of subagent run:9/);
+			const cause = error.cause as Error;
+			assert.ok(isReleasedChildError(cause));
+			assert.deepEqual([cause.code, cause.fields], ["child-record-missing", { ownerSessionId, childId: "run:9" }]);
 			return true;
 		},
 	);
