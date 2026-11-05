@@ -14,12 +14,13 @@ import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/s
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import type { PoolCoordinationStats } from "../../packages/workflows/src/shared/store-types.js";
-import type {
-	CoordinatorCommandBody,
-	CoordinatorEvent,
-	CoordinatorInbound,
-	CoordinatorNotice,
-	CoordinatorPort,
+import {
+	type CoordinatorCommandBody,
+	type CoordinatorEvent,
+	type CoordinatorInbound,
+	type CoordinatorNotice,
+	type CoordinatorPort,
+	POOL_COORDINATION_STATS_INTERVAL_MS,
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import type {
@@ -110,7 +111,23 @@ vi.mock("node:child_process", async (importOriginal) => {
 	};
 });
 
+/**
+ * Every SQLite connection in this file, the coordinator's own included, reads its clock from `Date`, so a test that fakes
+ * `Date` sets the journal's time and the coordinator's together.
+ */
+vi.mock("node:sqlite", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:sqlite")>();
+	class DateClockedDatabase extends actual.DatabaseSync {
+		constructor(...args: ConstructorParameters<typeof actual.DatabaseSync>) {
+			super(...args);
+			this.function("unixepoch", { varargs: true }, () => Date.now() / 1_000);
+		}
+	}
+	return { ...actual, DatabaseSync: DateClockedDatabase };
+});
+
 afterEach(() => {
+	vi.useRealTimers();
 	forked.length = 0;
 });
 
@@ -344,9 +361,6 @@ test("a worker that is not ready yet is not pushed control, and a pause committe
 	}
 });
 
-/** Long enough after a claim that renewing the lease would visibly move its expiry. */
-const FRESH_LEASE_AGE_MS = 100;
-
 test("a budget notice holds claims until the root lifts it (#4313)", async () => {
 	const f = await coordinatorFixture({ workers: 1 });
 	try {
@@ -360,27 +374,52 @@ test("a budget notice holds claims until the root lifts it (#4313)", async () =>
 	}
 });
 
-test("a request of an attempt whose lease is half spent renews it on the way (#4313)", async () => {
+/** A whole second, which SQLite's `unixepoch('subsec')` reads back exactly, for tests that fake `Date`. */
+const CLOCK_START_MS = Date.UTC(2026, 0, 1);
+
+test("a request of an attempt renews its lease once half of it is spent, and not before (#4313)", async () => {
 	const leaseMs = 2_000;
+	vi.useFakeTimers({ toFake: ["Date"], now: CLOCK_START_MS });
 	const f = await coordinatorFixture({ workers: 1, leaseMs });
 	try {
 		const [holder] = f.workers as [FakeWorker];
 		const claimed = (await holder.request({ kind: "claim" })).value as PoolWork;
-		await delay(FRESH_LEASE_AGE_MS);
-		await holder.request({ kind: "activity", runs: [] });
-		assert.equal((await f.queue.inspect("root"))[0]!.expiresAt, claimed.expiresAt, "a fresh lease is left as it is");
-		await delay(leaseMs / 2 + 200);
-		await holder.request({ kind: "activity", runs: [] });
-		assert.ok((await f.queue.inspect("root"))[0]!.expiresAt > claimed.expiresAt, "a half-spent lease is renewed");
+		assert.deepEqual(
+			{ renewedAt: claimed.renewedAt, expiresAt: claimed.expiresAt },
+			{ renewedAt: CLOCK_START_MS, expiresAt: CLOCK_START_MS + leaseMs },
+			"the claim's lease runs on the test's clock",
+		);
+		const activityAt = async (now: number) => {
+			vi.setSystemTime(now);
+			assert.equal((await holder.request({ kind: "activity", runs: [] })).error, undefined);
+			const { renewedAt, expiresAt } = (await f.queue.inspect("root"))[0]!;
+			return { renewedAt, expiresAt };
+		};
+		const halfSpentAt = (expiresAt: number) => expiresAt - leaseMs / 2;
+		assert.deepEqual(
+			await activityAt(halfSpentAt(claimed.expiresAt) - 1),
+			{ renewedAt: claimed.renewedAt, expiresAt: claimed.expiresAt },
+			"a lease 1 ms short of half spent is left as it is",
+		);
+		const atHalf = halfSpentAt(claimed.expiresAt);
+		assert.deepEqual(
+			await activityAt(atHalf),
+			{ renewedAt: atHalf, expiresAt: atHalf + leaseMs },
+			"a lease exactly half spent is renewed",
+		);
+		const pastHalf = halfSpentAt(atHalf + leaseMs) + 1;
+		assert.deepEqual(
+			await activityAt(pastHalf),
+			{ renewedAt: pastHalf, expiresAt: pastHalf + leaseMs },
+			"and so is a lease more than half spent",
+		);
 	} finally {
 		await f.close();
 	}
 });
 
-/** Longer than the coordinator's interval for reporting its counts. */
-const STATS_QUIET_MS = 2_500;
-
 test("a coordinator reports its counts only while they change, and once more as it closes (#4313)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 	const f = await coordinatorFixture({ workers: 1, start: false });
 	try {
 		const { work, boundary } = poolWorkFixture();
@@ -389,11 +428,10 @@ test("a coordinator reports its counts only while they change, and once more as 
 			Error,
 			"a refused command is answered with its error",
 		);
-		while (f.reports().length === 0) await delay(20);
-		await delay(STATS_QUIET_MS);
-		const quiet = f.reports().length;
-		await delay(STATS_QUIET_MS);
-		assert.equal(f.reports().length, quiet, "unchanged counts are not sent again");
+		vi.advanceTimersByTime(POOL_COORDINATION_STATS_INTERVAL_MS);
+		assert.equal(f.reports().length, 1, "changed counts are sent at the next interval");
+		vi.advanceTimersByTime(3 * POOL_COORDINATION_STATS_INTERVAL_MS);
+		assert.equal(f.reports().length, 1, "unchanged counts are not sent again");
 		f.notice({ kind: "budget", blocked: true });
 		await f.command({ kind: "close" });
 		const closing = f.reports().at(-1)!;
@@ -404,7 +442,7 @@ test("a coordinator reports its counts only while they change, and once more as 
 		);
 		assert.equal(closing.requests["root-close"]?.count, 1);
 		f.notice({ kind: "budget", blocked: false });
-		await delay(STATS_QUIET_MS);
+		vi.advanceTimersByTime(3 * POOL_COORDINATION_STATS_INTERVAL_MS);
 		assert.equal(f.reports().at(-1), closing, "a closed coordinator reports nothing more");
 	} finally {
 		await f.close();

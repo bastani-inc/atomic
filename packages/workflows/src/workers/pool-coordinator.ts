@@ -1666,7 +1666,7 @@ export class PoolCoordinator {
 					}
 					// Any other request of a worker whose heartbeat is overdue renews its attempt on the way.
 					const work =
-						held.expiresAt - Date.now() < options.leaseMs / 2
+						held.expiresAt - Date.now() <= options.leaseMs / 2
 							? await leased(() => queue.extend(lease, held, options.leaseMs))
 							: held;
 					slot.work = work;

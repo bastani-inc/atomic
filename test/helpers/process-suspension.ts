@@ -1,13 +1,16 @@
 import assert, { AssertionError } from "node:assert/strict";
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 
 const CONTROLLER_START_TIMEOUT_MS = 30_000;
 
 export interface ProcessSuspender {
 	suspend(pid: number): Promise<void>;
 	resume(pid: number): Promise<void>;
+	/** Whether the operating system reports the process stopped: every thread of it, on Windows. */
+	isSuspended(pid: number): Promise<boolean>;
 	close(): Promise<void>;
 }
 
@@ -20,6 +23,12 @@ Add-Type -Namespace Atomic -Name ProcessSuspension -MemberDefinition @'
 [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr handle);
 '@
 function Invoke-Operation([string]$operation, [uint32]$processId) {
+  if ($operation -eq 'state') {
+    $threads = @([Diagnostics.Process]::GetProcessById($processId).Threads)
+    $suspended = @($threads | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' })
+    if ($threads.Count -gt 0 -and $suspended.Count -eq $threads.Count) { return 'suspended' }
+    return 'active'
+  }
   $handle = [Atomic.ProcessSuspension]::OpenProcess(0x0800, $false, $processId)
   if ($handle -eq [IntPtr]::Zero) {
     throw "OpenProcess failed for pid $processId (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
@@ -35,8 +44,7 @@ function Invoke-Operation([string]$operation, [uint32]$processId) {
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   try {
     $parts = $line.Split(' ')
-    Invoke-Operation $parts[0] ([uint32]$parts[1])
-    [Console]::Out.WriteLine('ok')
+    [Console]::Out.WriteLine(('ok ' + (Invoke-Operation $parts[0] ([uint32]$parts[1]))).TrimEnd())
   } catch {
     [Console]::Out.WriteLine('error ' + ($_.Exception.Message -replace '[\\r\\n]+', ' '))
   }
@@ -56,6 +64,11 @@ const posixSuspender: ProcessSuspender = {
 		assertPid(pid);
 		process.kill(pid, "SIGCONT");
 	},
+	async isSuspended(pid) {
+		assertPid(pid);
+		const { stdout } = await promisify(execFile)("ps", ["-o", "stat=", "-p", String(pid)]);
+		return stdout.trim().startsWith("T");
+	},
 	async close() {},
 };
 
@@ -63,7 +76,7 @@ class WindowsProcessSuspender implements ProcessSuspender {
 	private readonly replies: string[] = [];
 	private waiter: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
 	private failure: Error | undefined;
-	private queue: Promise<void> = Promise.resolve();
+	private queue: Promise<unknown> = Promise.resolve();
 
 	private constructor(private readonly controller: ChildProcessWithoutNullStreams) {
 		createInterface({ input: controller.stdout }).on("line", (line) => {
@@ -133,25 +146,31 @@ class WindowsProcessSuspender implements ProcessSuspender {
 		});
 	}
 
-	private request(operation: "suspend" | "resume", pid: number): Promise<void> {
+	private request(operation: "suspend" | "resume" | "state", pid: number): Promise<string> {
 		assertPid(pid);
 		const run = async () => {
 			if (this.failure) throw this.failure;
 			this.controller.stdin.write(`${operation} ${pid}\n`);
 			const reply = await this.nextReply();
-			assert.equal(reply, "ok", `Cannot ${operation} pid ${pid}: ${reply}`);
+			const [status, ...result] = reply.split(" ");
+			assert.equal(status, "ok", `Cannot ${operation} pid ${pid}: ${reply}`);
+			return result.join(" ");
 		};
 		const result = this.queue.then(run, run);
 		this.queue = result.catch(() => undefined);
 		return result;
 	}
 
-	suspend(pid: number): Promise<void> {
-		return this.request("suspend", pid);
+	async suspend(pid: number): Promise<void> {
+		await this.request("suspend", pid);
 	}
 
-	resume(pid: number): Promise<void> {
-		return this.request("resume", pid);
+	async resume(pid: number): Promise<void> {
+		await this.request("resume", pid);
+	}
+
+	async isSuspended(pid: number): Promise<boolean> {
+		return (await this.request("state", pid)) === "suspended";
 	}
 
 	async close(): Promise<void> {
