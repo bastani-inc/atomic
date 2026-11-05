@@ -3,13 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { EngineDialogHostController } from "../src/modes/interactive-engine/engine-dialog-host.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import type { ExtensionUIContext } from "../src/core/extensions/index.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { EngineDialogHostController } from "../src/modes/interactive-engine/engine-dialog-host.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 const tempDirs: string[] = [];
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -44,6 +44,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 			respond({
 				thinkingLevel: "off", isStreaming: false, isCompacting: false, steeringMode: "all", followUpMode: "all",
 				sessionLocation: ${JSON.stringify(sessionFile)}, sessionId: ${JSON.stringify(sessionId)}, autoCompactionEnabled: true,
+				compaction: { state: "idle" }, backgroundCompactionEnabled: true, backgroundCompactionThresholdPercent: 75,
 				messageCount: 0, pendingMessageCount: 0, queuedMessagesPaused: false,
 			});
 			break;

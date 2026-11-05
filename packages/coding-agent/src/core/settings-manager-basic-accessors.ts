@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { type Model, normalizeProviderId } from "@bastani/pi-ai";
+import {
+	resolveBackgroundCompactionEnabled,
+	resolveBackgroundCompactionThresholdPercent,
+} from "./compaction/background-compaction.ts";
 import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
@@ -121,6 +125,12 @@ interface SettingsManagerBasicAccessors {
 	getCompactionQuery(): string | undefined;
 	/** Wall-clock limit on automatic compaction's model planning; `undefined` when disabled. */
 	getCompactionPlanningTimeoutMs(): number | undefined;
+	/** Whether automatic compaction starts in the background at the soft threshold (#4330). */
+	getCompactionBackground(): boolean;
+	setCompactionBackground(enabled: boolean): void;
+	/** Percentage of the context window at which background compaction starts. */
+	getCompactionBackgroundThresholdPercent(): number;
+	setCompactionBackgroundThresholdPercent(percent: number): void;
 	getCompactionSettings(model?: CompactionModel): {
 		enabled: boolean;
 		reserveTokens: number;
@@ -504,6 +514,35 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const configured = typeof raw === "number" && raw > 0 && raw < 1 ? 1 : parseHttpIdleTimeoutMs(raw);
 		const timeoutMs = configured ?? SETTINGS_DEFAULTS.compaction.planningTimeoutMs;
 		return timeoutMs > 0 ? timeoutMs : undefined;
+	},
+
+	getCompactionBackground() {
+		return resolveBackgroundCompactionEnabled(settingsInternals(this).settings.compaction?.background, "settings");
+	},
+
+	setCompactionBackground(enabled) {
+		const value = resolveBackgroundCompactionEnabled(enabled, "sdk");
+		const state = settingsInternals(this);
+		if (!state.globalSettings.compaction) state.globalSettings.compaction = {};
+		state.globalSettings.compaction.background = value;
+		state.markModified("compaction", "background");
+		state.save();
+	},
+
+	getCompactionBackgroundThresholdPercent() {
+		return resolveBackgroundCompactionThresholdPercent(
+			settingsInternals(this).settings.compaction?.backgroundThresholdPercent,
+			"settings",
+		);
+	},
+
+	setCompactionBackgroundThresholdPercent(percent) {
+		const value = resolveBackgroundCompactionThresholdPercent(percent, "sdk");
+		const state = settingsInternals(this);
+		if (!state.globalSettings.compaction) state.globalSettings.compaction = {};
+		state.globalSettings.compaction.backgroundThresholdPercent = value;
+		state.markModified("compaction", "backgroundThresholdPercent");
+		state.save();
 	},
 
 	getCompactionSettings(model) {

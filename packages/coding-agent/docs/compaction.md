@@ -20,6 +20,7 @@ This page covers the concepts and normal use of compaction and branch summarizat
 | Mechanism | Trigger | Model output | Durable result |
 |---|---|---|---|
 | Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Per-message `id:start,end` deletion records | Retained transcript text reconstructed from the originals |
+| Background compaction | Context passes `compaction.backgroundThresholdPercent` (75% by default) | The same verbatim compaction, run while the agent keeps working | The same boundary, committed at the next turn boundary |
 | Planner fallback borrowing | A failed selected compaction model | Same deletion records, from a configured `fallbackModels` entry | Retained text with the borrowed model recorded |
 | Policy-refusal summary fallback | A chat provider refuses compaction under its policy | Pi's summary compaction on the same model | A summary boundary labeled `summary (pi fallback)` |
 | Fresh context window | Load-bearing compaction after every configured model failed | *(none — no model call)* | A `CompactionEntry` with `details.rung: "fresh"` |
@@ -129,7 +130,8 @@ Moved to [Compaction reference](/compaction/reference#per-model-budgets).
 ## When compaction runs
 
 - **Manual:** `/compact`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
-- **Threshold:** automatic compaction starts when estimated context usage exceeds the effective input budget minus `reserveTokens`. Atomic checks both completed responses and the prospective next-turn context after tool results have been appended. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check. A post-tool crossing is compacted before the active Pi tool loop sends its follow-up provider request.
+- **Background:** when context usage passes `compaction.backgroundThresholdPercent` of the context window, compaction runs in the background while turns continue. See [Background compaction](#background-compaction).
+- **Threshold:** blocking compaction starts when estimated context usage exceeds the effective input budget minus `reserveTokens` and no background result is ready. Atomic checks both completed responses and the prospective next-turn context after tool results have been appended. When a provider reports all-zero usage, Atomic estimates the visible message size instead of skipping the check. A post-tool crossing is compacted before the active Pi tool loop sends its follow-up provider request.
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 - **Truncated response:** a `length` stop before the original requested output cap gets one compact-and-retry attempt, independent of reported context-window metadata. If no compactable region exists, Atomic makes at most one direct continuation under that same recovery budget; a later actual context overflow remains eligible for load-bearing recovery. A response that reached the cap keeps Atomic's bounded direct-continuation behavior.
 
@@ -140,6 +142,26 @@ Automatic continuations belong to the original prompt, including repeated output
 Concurrent manual SDK requests share one run and result; `abortCompaction()` cancels it for all waiters. A manual request during automatic compaction cancels unfinished automatic work and its pending continuation, then runs after the active work settles. If the automatic boundary already committed, the manual run follows it. In the TUI, `/compact` can take over automatic compaction but refuses a second manual compaction or branch summary. Ordinary text, prompt templates and skills remain queued until non-mid-turn compaction finishes, fails, or is cancelled. Commands that do not send a prompt, such as `/settings`, `/tasks` and `/workflow connect`, run at once. A session command such as `/new` also runs at once and cancels the compaction. A user message that reaches the session while it compacts, whether from an SDK `prompt()`, an RPC `prompt` or an extension's `sendUserMessage()`, waits until compaction ends, then goes out once, in arrival order. If an earlier waiting message has started a turn by then, a message sent without `streamingBehavior` or `deliverAs` is queued behind it as steering. Waiting messages appear in `getSteeringMessages()`/`getFollowUpMessages()` and `queue_update`, and `clearQueue()` returns them without sending them. Before the TUI runs an extension command during compaction, it hands the messages already typed to the session, so a message the command sends goes out after them.
 
 SDK `prepareNextTurn` and `prepareNextTurnWithContext` callbacks receive rebuilt context after post-tool compaction. A `finishTurn` decision of `{ action: "end" }` leaves queued input pending until an explicit prompt or continuation. Mid-turn compaction resumes streaming without another user action.
+
+## Background compaction
+
+Background compaction is on by default. When context usage passes `compaction.backgroundThresholdPercent` of the context window (75% by default), Atomic compacts the older part of the conversation while the agent keeps taking turns. This applies to interactive sessions, SDK and RPC sessions, workflow stages and subagents.
+
+1. **It compacts a frozen copy of history.** The background task covers history up to the last saved entry, leaving out trailing tool calls that have no result yet. Messages added while it runs are not part of it. It uses the same compaction model, fallback models and policy-refusal summary fallback as any other compaction.
+2. **The result waits for a turn boundary.** When the task finishes, Atomic saves the result in the session and applies it before the next model request, or before the next prompt when the agent is idle. It is applied once. Messages added after the frozen copy stay exactly as they were and follow the compacted text.
+3. **Blocking compaction is only the fallback.** If the context reaches the `reserveTokens` threshold, or a request overflows, Atomic first applies a ready background result. It compacts in the foreground only when no result is ready, or the ready one does not free enough space. A foreground compaction cancels a background task that is still running.
+
+If the background task fails, or applying its saved result fails, history stays unchanged and the turn continues. `session.compaction` reports `failed` with a typed error, and Atomic tries again at a later turn with an increasing delay (15 seconds after the first failure, doubling up to 15 minutes). Overflow and the `reserveTokens` threshold still compact in the foreground in the meantime.
+
+Applying a result changes the start of the prompt, so the next request misses the provider's prompt cache. With **Cache miss notices** on in `/settings`, the chat shows the expected miss when the result is applied.
+
+A fork or `/tree` branch taken before a result was applied keeps its full history. A fork taken after the result was saved but before it was applied can apply it at its own next turn. If a newer compaction already covers the same history, or an earlier message in that history was edited after the result was made, Atomic discards the result and reports why in the `background_compaction` event.
+
+Background compaction can only start before the blocking `reserveTokens` threshold: the background threshold, `backgroundThresholdPercent` of the context window, must be lower than the context window minus `reserveTokens`. With the default 16,384-token reserve and 75% that holds for windows above 65,536 tokens. On smaller windows every automatic compaction stays blocking, as before; a smaller `reserveTokens` or a lower percentage widens the range.
+
+To turn it off, set **Background compaction** to `false` in `/settings` or `compaction.background: false` in settings. Atomic then compacts in the foreground at the `reserveTokens` threshold, as before. A result saved before you turned it off is kept but not applied, and `session.compaction` reads `idle` until you turn it back on. Only a boundary write that had already started finishes. **Background compaction threshold** in `/settings` sets the percentage.
+
+SDK sessions expose the state as `session.compaction`, `{ state: "idle" | "running" | "ready" | "failed", upToEntryId, startedAt, error }`, together with `session.onCompactionReady(listener)` and `await session.awaitBackgroundCompaction()`. RPC `get_state` returns the same state as `compaction`. Workflow stage status, including `workflow stages` and `workflow stage`, shows it as `compaction`. See the [Compaction reference](/compaction/reference#background-compaction-state) for the fields and error codes.
 
 ### Recovery omissions
 
@@ -157,6 +179,7 @@ When every configured model is exhausted, what happens depends on how much the c
 |---|---|---|---|
 | `/compact`, `ctx.compact()`, `session.compact()`, RPC `compact` | recoverable | yes | no |
 | Threshold auto-compaction | recoverable | yes | no |
+| Background compaction | recoverable | yes | no |
 | Overflow recovery | load-bearing | yes | yes |
 | Post-tool preflight | load-bearing | yes | yes |
 

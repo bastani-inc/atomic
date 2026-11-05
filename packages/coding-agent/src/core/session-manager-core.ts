@@ -420,10 +420,15 @@ export class SessionManager {
 		tokensBefore: number,
 		details: VerbatimCompactionDetails,
 		usage?: Usage,
+		coveredThroughEntryId?: string,
+		precondition?: () => void,
 	): Promise<string> {
 		return this.runMutation(async () => {
+			precondition?.();
 			if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
 				throw new SessionEntryError(firstKeptEntryId, "missing");
+			if (coveredThroughEntryId !== undefined && !this.byId.has(coveredThroughEntryId))
+				throw new SessionEntryError(coveredThroughEntryId, "missing");
 			const entry = createCompactionEntry(
 				compactedText,
 				firstKeptEntryId,
@@ -432,6 +437,7 @@ export class SessionManager {
 				usage,
 				this.byId,
 				this.leafId,
+				coveredThroughEntryId,
 			);
 			const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
 			if (systemMessage) entry.systemMessage = { ...systemMessage, timestamp: new Date(entry.timestamp).getTime() };

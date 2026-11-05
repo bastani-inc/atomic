@@ -138,7 +138,9 @@ export async function _checkCompaction(
 	const assistantIsFromBeforeCompactionBoundary =
 		compactionBoundaryEntry !== null &&
 		assistantMessage.timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime();
+	const backgroundBoundary = () => this._runBackgroundCompactionBoundary(!isLiveTurnCompletion);
 	if (assistantIsFromBeforeCompactionBoundary) {
+		await backgroundBoundary();
 		return;
 	}
 
@@ -240,6 +242,7 @@ export async function _checkCompaction(
 				usageMsg.role === "assistant" &&
 				(usageMsg as AssistantMessage).timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime()
 			) {
+				await backgroundBoundary();
 				return;
 			}
 		}
@@ -273,6 +276,7 @@ export async function _checkCompaction(
 		await this._runAutoCompaction("threshold", willRetry);
 		return;
 	}
+	if (!(await backgroundBoundary())) this._maybeStartBackgroundCompaction(contextTokens);
 
 	// A length stop that reached its requested output cap is not the
 	// context-limited truncation recovered above. Preserve Atomic's bounded
@@ -560,26 +564,31 @@ export async function _runAutoCompaction(
 			return manualTakeoverPending ? "deferred" : "failed";
 		}
 
+		const ready = await this._useReadyBackgroundCompaction(this.model);
 		// Resolve auth only after extension hooks have had an opportunity to cancel
 		// compaction or provide compacted text, so local extension compaction does not
 		// require provider credentials. Missing auth then fails model-driven compaction
 		// before persistence or continuation, matching other provider-call failures.
-		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: async (candidate, signal) => {
-				const authResult = await this._getRequiredRequestAuth(candidate, signal ?? controller.signal);
-				return authResult.apiKey || authResult.headers ? authForStream(this, authResult) : undefined;
-			},
-			abortController: controller,
-			backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
-			reason,
-			urgency,
-			onCompactionSource: (value) => {
-				fromExtension = value;
-			},
-			// Only an actual context overflow proved the context cannot fit. A
-			// recoverable length stop must never reach the fresh-context fallback.
-			...(urgency === "load_bearing" ? { allowSmallRegion: true } : {}),
-		});
+		const result =
+			ready?.sufficient === true
+				? ready.result
+				: ((await this._applyVerbatimCompaction({
+						resolvePlannerAuth: async (candidate, signal) => {
+							const authResult = await this._getRequiredRequestAuth(candidate, signal ?? controller.signal);
+							return authResult.apiKey || authResult.headers ? authForStream(this, authResult) : undefined;
+						},
+						abortController: controller,
+						backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
+						reason,
+						urgency,
+						onCompactionSource: (value) => {
+							fromExtension = value;
+						},
+						// Only an actual context overflow proved the context cannot fit. A
+						// recoverable length stop must never reach the fresh-context fallback.
+						...(urgency === "load_bearing" ? { allowSmallRegion: true } : {}),
+					})) ?? ready?.result);
+		const fromBackground = ready !== undefined && result === ready.result;
 		if (!result) {
 			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
 			this._emit({
@@ -611,6 +620,8 @@ export async function _runAutoCompaction(
 			aborted: false,
 			willRetry,
 			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
+			...(fromBackground ? { background: true as const } : {}),
+			...(fromBackground && ready.cacheMiss ? { cacheMiss: ready.cacheMiss } : {}),
 		});
 		if (!hasPendingManualCompactionTakeover.call(this)) {
 			this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);

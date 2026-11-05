@@ -16,6 +16,12 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "autocompact":
 				callbacks.onAutoCompactChange(newValue === "true");
 				break;
+			case "background-compaction":
+				callbacks.onBackgroundCompactionChange(newValue === "true");
+				break;
+			case "background-compaction-threshold":
+				callbacks.onBackgroundCompactionThresholdChange(Number(newValue));
+				break;
 			case "show-images":
 				callbacks.onShowImagesChange(newValue === "true");
 				break;

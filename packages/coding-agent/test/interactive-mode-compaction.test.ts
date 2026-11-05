@@ -91,6 +91,8 @@ type CompactionEndEvent = {
 	errorMessage?: string;
 	midTurn?: boolean;
 	manualTakeoverPending?: boolean;
+	background?: true;
+	cacheMiss?: { expectedMissedTokens: number; expectedMissedCost: number };
 };
 type AgentEndEvent = { type: "agent_end" };
 type AgentContinueErrorEvent = {
@@ -385,6 +387,42 @@ describe("InteractiveMode compaction events", () => {
 		const text = renderedText(chatContainer);
 		expect(text).toContain("Compaction: 1,234 tokens billed (~$0.02)");
 		expect(text.indexOf("✻ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
+	});
+
+	for (const showCacheMissNotices of [true, false]) {
+		it(`${showCacheMissNotices ? "shows" : "hides"} the expected cache miss of an applied background compaction with notices ${showCacheMissNotices ? "on" : "off"} (#4330)`, async () => {
+			const { mode, chatContainer } = makeMode(persistedContextMessages, showCacheMissNotices);
+
+			await emit(mode, {
+				type: "compaction_end",
+				reason: "threshold",
+				result,
+				aborted: false,
+				willRetry: false,
+				background: true,
+				cacheMiss: { expectedMissedTokens: 41_000, expectedMissedCost: 0.1234 },
+			});
+
+			const text = renderedText(chatContainer);
+			const notice = "Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.123)";
+			if (showCacheMissNotices) {
+				assert.ok(text.includes(notice));
+				assert.ok(text.indexOf("✻ Context compacted") < text.indexOf(notice));
+			} else assert.ok(!text.includes("Prompt cache miss"));
+		});
+	}
+
+	it("shows no cache-miss notice for a commit without cache data (#4330)", async () => {
+		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: false,
+			willRetry: false,
+			background: true,
+		});
+		assert.ok(!renderedText(chatContainer).includes("Prompt cache miss"));
 	});
 
 	// The completed boundary is persisted with its usage *and* re-announced live.

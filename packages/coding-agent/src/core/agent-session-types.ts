@@ -53,6 +53,16 @@ export type AgentSessionEvent =
 			midTurn?: boolean;
 			/** A manual request has claimed ownership and will emit its own completion. */
 			manualTakeoverPending?: boolean;
+			/** The boundary is a background compaction result committed at this turn boundary (#4330). */
+			background?: true;
+			/** Expected prompt-cache miss of the next request, when the last request was cached. */
+			cacheMiss?: import("./cache-stats.ts").CompactionCacheMiss;
+	  }
+	| {
+			/** Background compaction changed state; `discarded` names a stored result dropped without a commit. */
+			type: "background_compaction";
+			compaction: import("./compaction/background-compaction.ts").SerializedBackgroundCompactionState;
+			discarded?: import("./compaction/background-compaction-errors.ts").SerializedBackgroundCompactionError;
 	  }
 	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
@@ -197,6 +207,8 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	modelRuntime: ModelRuntime;
 	cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
+	/** Delivers "compaction ready" wakes; without one the session notifies its own listeners (#4330). */
+	compactionWake?: import("./compaction/background-compaction.ts").CompactionWakeDispatcher;
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	/** The agent directory the session store resolved its storage against; the workflow journal uses the same base. */

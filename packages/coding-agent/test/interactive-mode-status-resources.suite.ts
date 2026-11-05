@@ -3,21 +3,21 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.ts";
-import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { attachInteractiveEngineResourceExtensionRefresh } from "../src/modes/interactive/interactive-startup.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcResourceExtension } from "../src/modes/rpc/rpc-types.ts";
-import { type ExtensionFixture, normalizeRenderedOutput, renderAll } from "./interactive-mode-status-helpers.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.js";
+import { getBuiltinPackageLocations } from "../src/core/builtin-packages.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { attachInteractiveEngineResourceExtensionRefresh } from "../src/modes/interactive/interactive-startup.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import type { RpcResourceExtension } from "../src/modes/rpc/rpc-types.js";
+import { type ExtensionFixture, normalizeRenderedOutput, renderAll } from "./interactive-mode-status-helpers.js";
 import {
 	createExtensionFixtures,
 	createShowLoadedResourcesThis,
 	createSourceInfo,
-} from "./interactive-mode-status-resources-helpers.ts";
-import { createHarness } from "./suite/harness.ts";
+} from "./interactive-mode-status-resources-helpers.js";
+import { createHarness } from "./suite/harness.js";
 
 function createBuiltinExtensionFixtures(entryKind: "source" | "installed" = "source"): ExtensionFixture[] {
 	const entries = entryKind === "source" ? SOURCE_EXTENSION_ENTRIES : INSTALLED_EXTENSION_ENTRIES;
@@ -84,6 +84,9 @@ async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]
 				followUpMode: "all",
 				sessionId: "engine",
 				autoCompactionEnabled: true,
+				compaction: { state: "idle" },
+				backgroundCompactionEnabled: true,
+				backgroundCompactionThresholdPercent: 75,
 				messageCount: 0,
 				pendingMessageCount: 0,
 				queuedMessagesPaused: false,

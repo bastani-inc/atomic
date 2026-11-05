@@ -37,6 +37,7 @@ function validPayload(entry: SessionEntry): boolean {
 			return (
 				typeof entry.summary === "string" &&
 				(entry.firstKeptEntryId === null || typeof entry.firstKeptEntryId === "string") &&
+				(entry.coveredThroughEntryId === undefined || typeof entry.coveredThroughEntryId === "string") &&
 				typeof entry.tokensBefore === "number"
 			);
 		case "context_compaction":

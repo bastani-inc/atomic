@@ -300,6 +300,8 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 | `compaction.query` | string | last user message | Optional relevance focus for selecting older lines to retain |
 | `compaction.planningTimeoutMs` | number or string | `300000` | Wall-clock limit on model planning in automatic compaction, covering every planner request, retry, overflow trim and borrowed fallback model and the credential lookups in between. When it runs out, post-tool and overflow compaction start a fresh context window so the turn continues, and threshold compaction fails without changing context. Accepts milliseconds, duration strings such as `5m`, or `"disabled"`/`0` to disable. See [Compaction](/compaction#planning-time-limit) |
 | `compaction.modelOverrides` | object | `{}` | Exact `"provider/modelId"` keys with optional `reserveTokens` and `preserve_recent` overrides |
+| `compaction.background` | boolean | `true` | Compact older context in the background while the agent keeps working; blocking compaction only on overflow or at the `reserveTokens` threshold when no background result is ready. `/settings`: **Background compaction**. See [Background compaction](/compaction#background-compaction) |
+| `compaction.backgroundThresholdPercent` | number | `75` | Percentage of the context window at which background compaction starts; above 0 and below 100. `/settings`: **Background compaction threshold** (50, 60, 70, 75, 80 or 90). While either background setting holds an invalid value, Atomic reports a settings warning on load or `/reload` and runs with background compaction off and the 75% default, and `/settings` shows those values until you pick valid ones |
 
 ```json
 {

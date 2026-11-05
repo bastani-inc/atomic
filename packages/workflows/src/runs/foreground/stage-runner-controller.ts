@@ -55,6 +55,7 @@ import {
 } from "../shared/provider-rate-limits.js";
 import { nextRetryDecision, sleepOrAbort } from "../shared/retry.js";
 import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.js";
+import { stageSessionCompaction } from "./stage-background-compaction.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { routeStageModel } from "./stage-routing.js";
@@ -2104,6 +2105,12 @@ export class StageSessionController {
 		const missedQueueUpdate = stageSessionQueueUpdateEvent(result.session);
 		if (missedQueueUpdate !== undefined) {
 			for (const listener of this.pendingListeners) listener(missedQueueUpdate);
+		}
+		// Likewise its background compaction state: a replacement or reopened session may already hold a
+		// saved result, and a stage must not keep showing the state of the session it replaced.
+		const compaction = stageSessionCompaction(result.session);
+		if (compaction !== undefined) {
+			for (const listener of this.pendingListeners) listener({ type: "background_compaction", compaction });
 		}
 		this.unsubscribeTerminateWatcher?.();
 		let applyingFallback = false;

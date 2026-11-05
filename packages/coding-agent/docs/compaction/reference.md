@@ -102,7 +102,35 @@ The entry's `tokensBefore` is the provider-aware whole-context count used for bu
 
 A `"fresh"` boundary that drops the recent tail records `firstKeptEntryId: null`. Only entries with `details.strategy === "verbatim-lines"` affect active context.
 
+A background compaction is saved in two steps. When its task finishes, Atomic appends one `custom` entry with `customType: "atomic:background-compaction-result"` whose `data` holds the compacted text and `upToEntryId`, the last entry of the frozen history it covers. At the next turn boundary it appends the ordinary `compaction` entry with `coveredThroughEntryId` set to that entry. Entries after `coveredThroughEntryId` and before the boundary replay unchanged after the compacted text. A process killed in between leaves either nothing or a complete saved result, which the next start applies once without planning again. Atomic picks the saved result that covers the latest position on the current branch and ignores results a newer boundary already covers.
+
 Resume uses the saved compacted text without rerunning planning. The TUI shows a collapsible compaction card; new messages after it remain ordinary messages. Old inactive formats do not reapply their historical omissions, so content they once hid can return on resume.
+
+## Background compaction state
+
+`session.compaction`, RPC `get_state.compaction`, the `background_compaction` event and workflow stage status carry the same state:
+
+| Field | Present | Meaning |
+|---|---|---|
+| `state` | always | `idle`, `running` (a task is compacting), `ready` (a saved result waits for the next turn boundary) or `failed` (the last task failed, or applying the saved result failed and waits for its retry). While background compaction is off it reads `idle`, or `failed` when an invalid setting turned it off; a saved result reads `ready` again once it is turned back on |
+| `upToEntryId` | except `idle` | Last session entry of the history the task compacts |
+| `startedAt` | except `idle` | ISO time the task started |
+| `error` | `failed` | The typed error; serialized as `{ name, code, message, hint, retryable, phase, fields, cause }` over RPC and in workflow status |
+
+`session.onCompactionReady(listener)` runs when a result is saved, or when background compaction is turned back on with a saved result that was not announced yet, and returns an unsubscribe function. A session reopened with a saved result does not announce it again; it applies the result at its next turn boundary. `session.awaitBackgroundCompaction()` resolves with the state once no task is running, and never rejects. SDK callers can pass `compactionWake: { compactionReady({ sessionId, resultEntryId, upToEntryId }) }` to `createAgentSession` to receive the same "compaction ready" notice. The `background_compaction` event fires on every state change, including turning background compaction on or off; its `discarded` field names a saved result that was dropped. A settings file reload is the exception: it emits nothing, but `session.compaction` and `get_state` already reflect the reloaded settings. A committed result emits `compaction_end` with `background: true` and, when the last request used the prompt cache, `cacheMiss: { expectedMissedTokens, expectedMissedCost }`.
+
+### Errors
+
+All background compaction errors extend `BackgroundCompactionError`, exported from `@bastani/atomic` with an `is…` guard for each class, `isRetryableBackgroundCompactionError`, `serializeBackgroundCompactionError`/`rehydrateBackgroundCompactionError`, and `isSerializedBackgroundCompactionError` to validate an envelope from another process. An RPC command rejected with one of these errors carries the same envelope (see [RPC error handling](/rpc/protocol#error-handling)); settings commands report `source: "sdk"`. Cancellation (session disposal, `/compact`, a foreground compaction, an extension cancelling `session_before_compact`) is not an error: the state returns to `idle`.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `BackgroundCompactionPlanningError` | `planner-failed` | Every planner and fallback model failed, or a `session_before_compact` handler returned empty text; `cause` holds the underlying error | `upToEntryId`, `attempt` | Nothing; Atomic retries with backoff. Check the compaction model and its credentials if it repeats |
+| `BackgroundCompactionNotCompactableError` | `not-compactable` | The frozen history had too few compactable lines | `upToEntryId` | Nothing; a later turn tries again |
+| `BackgroundCompactionPersistError` | `result-persist-failed` | Saving the result to session storage failed; `cause` holds the storage error | `upToEntryId` | Check that session storage is writable; Atomic retries with backoff |
+| `BackgroundCompactionCommitError` | `commit-failed` | Applying a saved result as a boundary failed (the backup or the boundary write); `cause` holds the storage error. The turn continues without it | `upToEntryId`, `resultEntryId`, `attempt` | Check that session storage is writable; Atomic retries applying the same result with backoff, and a foreground compaction at the `reserveTokens` threshold or on overflow does not wait for the backoff. If the store reported an unknown outcome and the boundary was in fact written, the result counts as applied when the session is reopened |
+| `BackgroundCompactionDiscardedError` | `result-discarded` | A saved result no longer fits the branch | `upToEntryId`, `reason`: `superseded`, `off-branch`, `context-edited` or `malformed` | Nothing; history is unchanged and a later turn compacts again if needed |
+| `BackgroundCompactionConfigError` | `invalid-setting` | `compaction.background` is not a boolean, or `compaction.backgroundThresholdPercent` is not a number above 0 and below 100 | `source` (`settings` or `sdk`), `field`, `reason` | Fix the named setting, for example in `/settings`. Until then background compaction is off; the session still starts and runs |
 
 ## Extension hooks
 
@@ -123,6 +151,8 @@ pi.on("session_before_compact", async (event) => {
 ```
 
 `preparation` is a deep-frozen clone. An override changes only the compacted region text; Atomic retains the prepared boundary and persists the supplied text verbatim. Empty/whitespace text is rejected. The override path does not require provider credentials.
+
+For background compaction the hook runs when the task starts, with `reason: "threshold"` and `branchEntries` set to the frozen history the task compacts, not the whole branch. `session_compact` runs when the result is applied at a turn boundary.
 
 ### `session_compact`
 
@@ -259,6 +289,10 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 |---------|---------|-------------|
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
 | `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. It is an **input-side** reserve only and never caps planner output. |
+| `background` | `true` | Compact older context in the background once usage passes `backgroundThresholdPercent`, and apply the result at the next turn boundary. `false` restores blocking compaction at the `reserveTokens` threshold. Requires `enabled`. |
+| `backgroundThresholdPercent` | `75` | Percentage of the context window at which background compaction starts. Must be above 0 and below 100; another value is a `BackgroundCompactionConfigError`. It only takes effect while it is below the `reserveTokens` threshold (context window minus `reserveTokens`); with the default reserve that means windows above 65,536 tokens, and smaller windows compact in the foreground only. |
+
+An invalid `background` or `backgroundThresholdPercent` in a settings file is reported as a settings warning when settings load or reload; the session still starts. Until it is fixed, background compaction stays off: `session.compaction` and RPC `get_state` report `failed` with the `invalid-setting` error, and `session.backgroundCompactionEnabled` and `session.backgroundCompactionThresholdPercent` read `false` and `75`. Writing a valid value through `/settings` or the SDK setters clears the failure.
 
 The top-level `compactionModel` setting defaults to `"auto"`, using the session model. An exact registered chat-model, classifier, or compactor ID selects a separate compactor. See [Compaction model](/compaction#compaction-model).
 

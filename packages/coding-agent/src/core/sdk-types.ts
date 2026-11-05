@@ -117,6 +117,11 @@ export interface CreateAgentSessionOptions {
 	 * options from `getChildSessionOptions()` carry the parent's admission, or `null` when the parent holds none.
 	 */
 	resourceAdmission?: ResourceAdmission | null;
+	/**
+	 * Receives "compaction ready" wakes when a background compaction result is stored (#4330). Omitted,
+	 * the session notifies its own `onCompactionReady` listeners and applies the result at its next turn.
+	 */
+	compactionWake?: import("./compaction/background-compaction.ts").CompactionWakeDispatcher;
 	resourceAdmissionSignal?: AbortSignal;
 	resourceAdmissionDelegated?: boolean;
 	/**

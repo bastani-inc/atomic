@@ -38,6 +38,7 @@ import type {
 } from "./executor-stage-types.js";
 import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
+import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 import {
 	createStageContext as createInnerStageContext,
@@ -311,7 +312,10 @@ export function createWorkflowStageFactory(input: {
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 			input.stageUiBroker.clearStagePrompt(input.runId, stageId);
+			const session = innerCtx.__agentSession();
 			await innerCtx.__dispose();
+			// Disposal settles a background task after every stage listener is gone, so record where it ended.
+			recordStageSessionCompaction(input.activeStore, input.runId, stageId, session);
 		};
 
 		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {

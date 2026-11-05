@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
+import type { CommittedBackgroundCompaction } from "./agent-session-background-compaction.ts";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
@@ -66,23 +67,27 @@ export async function _preflightPostToolContext(
 		this._compactionReason = "threshold";
 		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
-		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: async (candidate, signal) => {
-				const auth = await this._getRequiredRequestAuth(candidate, signal ?? abortController.signal);
-				return auth.apiKey || auth.headers ? authForStream(this, auth) : undefined;
-			},
-			abortController,
-			backupLabel: "auto-compact",
-			reason: "threshold",
-			onCompactionSource: (value) => {
-				fromExtension = value;
-			},
-			// A mid-turn planner failure must reach the fresh rung so the active
-			// turn can continue. `_applyVerbatimCompaction` still treats a fitting
-			// no-preparation threshold crossing as a safe no-op.
-			urgency: "load_bearing",
-			...(overHardLimit ? { allowSmallRegion: true } : {}),
-		});
+		const ready = await this._useReadyBackgroundCompaction(model);
+		const result =
+			ready?.sufficient === true
+				? ready.result
+				: ((await this._applyVerbatimCompaction({
+						resolvePlannerAuth: async (candidate, signal) => {
+							const auth = await this._getRequiredRequestAuth(candidate, signal ?? abortController.signal);
+							return auth.apiKey || auth.headers ? authForStream(this, auth) : undefined;
+						},
+						abortController,
+						backupLabel: "auto-compact",
+						reason: "threshold",
+						onCompactionSource: (value) => {
+							fromExtension = value;
+						},
+						// A mid-turn planner failure must reach the fresh rung so the active
+						// turn can continue. `_applyVerbatimCompaction` still treats a fitting
+						// no-preparation threshold crossing as a safe no-op.
+						urgency: "load_bearing",
+						...(overHardLimit ? { allowSmallRegion: true } : {}),
+					})) ?? ready?.result);
 		if (!result) {
 			// Nothing was compactable and the projected context still fits, so the
 			// follow-up request can be sent unchanged. That is a successful no-op,
@@ -99,7 +104,11 @@ export async function _preflightPostToolContext(
 			return messages;
 		}
 
-		this._pendingPostToolCompactionGuard = { hardInputLimit, result };
+		this._pendingPostToolCompactionGuard = {
+			hardInputLimit,
+			result,
+			...(ready !== undefined && result === ready.result ? { background: ready } : {}),
+		};
 		// `AgentState.messages` has an asymmetric accessor pair: the setter copies,
 		// while the getter returns the live internal array. Return a separate array
 		// so the loop and reducer cannot append the next message twice.
@@ -190,6 +199,8 @@ export function _finishPostToolCompactionPreflight(this: AgentSession, messages:
 		willRetry: false,
 		midTurn: true,
 		...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
+		...(pending.background ? { background: true as const } : {}),
+		...(pending.background?.cacheMiss ? { cacheMiss: pending.background.cacheMiss } : {}),
 	});
 	return providerBoundMessages;
 }
@@ -197,6 +208,8 @@ export function _finishPostToolCompactionPreflight(this: AgentSession, messages:
 export interface PendingPostToolCompactionGuard {
 	hardInputLimit: number;
 	result: VerbatimCompactionResult;
+	/** Set when a stored background result supplied the boundary. */
+	background?: CommittedBackgroundCompaction;
 }
 
 export const agentSessionPostToolCompactionMethods = {

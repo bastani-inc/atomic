@@ -17,6 +17,7 @@ export type WorkflowStageSummary = {
 	promptFootprint?: StageSnapshot["promptFootprint"];
 	startup?: StageSnapshot["startup"];
 	workerExecution?: StageSnapshot["workerExecution"];
+	compaction?: StageSnapshot["compaction"];
 };
 
 export type WorkflowTranscriptEntry = {
@@ -60,6 +61,7 @@ export function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
 		pendingPrompt: stage.pendingPrompt === undefined ? undefined : structuredClone(stage.pendingPrompt),
 		inputRequest: stage.inputRequest === undefined ? undefined : structuredClone(stage.inputRequest),
 		promptFootprint: stage.promptFootprint === undefined ? undefined : structuredClone(stage.promptFootprint),
+		...(stage.compaction === undefined ? {} : { compaction: structuredClone(stage.compaction) }),
 	};
 }
 

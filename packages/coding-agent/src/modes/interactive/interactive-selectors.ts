@@ -53,6 +53,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 		const component = new SettingsSelectorComponent(
 			{
 				autoCompact: this.session.autoCompactionEnabled,
+				backgroundCompaction: this.session.backgroundCompactionEnabled,
+				backgroundCompactionThresholdPercent: this.session.backgroundCompactionThresholdPercent,
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
@@ -104,6 +106,12 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				onAutoCompactChange: (enabled) => {
 					this.session.setAutoCompactionEnabled(enabled);
 					this.usageMeter.setAutoCompactEnabled(enabled);
+				},
+				onBackgroundCompactionChange: (enabled) => {
+					this.session.setBackgroundCompactionEnabled(enabled);
+				},
+				onBackgroundCompactionThresholdChange: (percent) => {
+					this.session.setBackgroundCompactionThresholdPercent(percent);
 				},
 				onShowImagesChange: (enabled) => {
 					this.settingsManager.setShowImages(enabled);

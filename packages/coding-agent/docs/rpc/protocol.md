@@ -228,11 +228,16 @@ Response:
     "sessionId": "abc123",
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
+    "compaction": {"state": "running", "upToEntryId": "m41", "startedAt": "2026-11-05T10:00:00.000Z"},
+    "backgroundCompactionEnabled": true,
+    "backgroundCompactionThresholdPercent": 75,
     "messageCount": 5,
     "pendingMessageCount": 0
   }
 }
 ```
+
+`compaction` is the [background compaction state](/compaction/reference#background-compaction-state): `state` is `idle`, `running`, `ready` or `failed`, and a failed state carries the serialized typed `error`.
 
 The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the model's token budget. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
 
@@ -520,6 +525,32 @@ Enable or disable automatic compaction when context is nearly full.
 Response:
 ```json
 {"type": "response", "command": "set_auto_compaction", "success": true}
+```
+
+#### set_background_compaction
+
+Turn [background compaction](/compaction#background-compaction) on or off. The setting is saved like `/settings` does; turning it off cancels a running background task.
+
+```json
+{"type": "set_background_compaction", "enabled": false}
+```
+
+Response:
+```json
+{"type": "response", "command": "set_background_compaction", "success": true}
+```
+
+#### set_background_compaction_threshold
+
+Set the percentage of the context window at which background compaction starts. A value that is not above 0 and below 100 fails with a `BackgroundCompactionConfigError` message.
+
+```json
+{"type": "set_background_compaction_threshold", "percent": 60}
+```
+
+Response:
+```json
+{"type": "response", "command": "set_background_compaction_threshold", "success": true}
 ```
 
 ### Extension UI
@@ -1097,7 +1128,8 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `bash_execution_update` | Correlated direct-bash stdout/stderr delta |
 | `queue_update` | Pending steering/follow-up queue changed |
 | `compaction_start` | Verbatim line compaction begins |
-| `compaction_end` | Verbatim line compaction completes |
+| `compaction_end` | Verbatim line compaction completes, including a background result applied at a turn boundary |
+| `background_compaction` | Background compaction state changed |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
 | `summarization_retry_scheduled` | Retry scheduled for a transient compaction or branch-summary provider error |
@@ -1312,7 +1344,19 @@ If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` i
 
 If overflow recovery exhausts the same-model compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
 
-There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`. Only `compaction_start` and `compaction_end` events are emitted.
+A background compaction result applied at a turn boundary emits `compaction_end` with `"background": true` and no preceding `compaction_start`. When the last request used the prompt cache it also carries `"cacheMiss": {"expectedMissedTokens": 41000, "expectedMissedCost": 0.11}`, the cached prompt the next request re-bills.
+
+There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`.
+
+### background_compaction
+
+Emitted whenever the [background compaction state](/compaction/reference#background-compaction-state) changes: a task starts, a result is saved and ready, the result is applied, a task fails, or a task is cancelled.
+
+```json
+{"type": "background_compaction", "compaction": {"state": "ready", "upToEntryId": "m41", "startedAt": "2026-11-05T10:00:00.000Z"}}
+```
+
+`discarded` is present when a saved result was dropped instead of applied, for example `{"name": "BackgroundCompactionDiscardedError", "code": "result-discarded", "fields": {"upToEntryId": "m41", "reason": "context-edited"}, ...}`.
 
 ### auto_retry_start / auto_retry_end
 
@@ -1408,6 +1452,27 @@ Parse errors:
   "command": "parse",
   "success": false,
   "error": "Failed to parse command: Unexpected token..."
+}
+```
+
+A command rejected with a background compaction error, such as `set_background_compaction_threshold` with a value outside 0–100, also carries `errorCode: "background_compaction"` and the serialized error in `errorDetails`. Branch on `errorDetails.code`, not on the message. `RpcClient` rethrows it as the same class, for example `BackgroundCompactionConfigError` with `source: "sdk"`:
+
+```json
+{
+  "type": "response",
+  "command": "set_background_compaction_threshold",
+  "success": false,
+  "error": "Background compaction failed: compaction.backgroundThresholdPercent from sdk is not above 0 and below 100 (invalid-setting). Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
+  "errorCode": "background_compaction",
+  "errorDetails": {
+    "name": "BackgroundCompactionConfigError",
+    "code": "invalid-setting",
+    "message": "Background compaction failed: …",
+    "hint": "Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
+    "retryable": false,
+    "phase": "config",
+    "fields": { "source": "sdk", "field": "compaction.backgroundThresholdPercent", "reason": "out-of-range" }
+  }
 }
 ```
 

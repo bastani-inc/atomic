@@ -62,6 +62,22 @@ const CompactionSettingsSchema = Type.Object({
 			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',
 		}),
 	),
+	background: Type.Optional(
+		Type.Boolean({
+			description:
+				"Compact older context in the background while the agent keeps working; blocking compaction only on overflow. False restores foreground compaction at the reserveTokens threshold.",
+			default: SETTINGS_DEFAULTS.compaction.background,
+		}),
+	),
+	backgroundThresholdPercent: Type.Optional(
+		Type.Number({
+			exclusiveMinimum: 0,
+			exclusiveMaximum: 100,
+			description:
+				"Percentage of the context window at which background compaction starts. The reserveTokens threshold still compacts in the foreground when no background result is ready.",
+			default: SETTINGS_DEFAULTS.compaction.backgroundThresholdPercent,
+		}),
+	),
 });
 
 const BranchSummarySettingsSchema = Type.Object({

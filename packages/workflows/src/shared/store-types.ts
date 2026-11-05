@@ -3,6 +3,7 @@
  * cross-ref: spec §5.5
  */
 
+import type { SerializedBackgroundCompactionState } from "@bastani/atomic";
 import type { BudgetDimension, BudgetReport, DurationBudgetReport, UsageBudgetReport } from "./budget.js";
 import type { RunMeterCounters } from "./budget-meter.js";
 import type { RunExecutionState } from "./run-execution-state.js";
@@ -385,6 +386,8 @@ export interface StageSnapshot {
 	 * activity so the graph can show them without a live view of the stage (#3996).
 	 */
 	queuedUserMessageCount?: number;
+	/** Background compaction state of the stage's session (#4330), the same shape RPC `get_state` reports. */
+	compaction?: SerializedBackgroundCompactionState;
 	/**
 	 * Parent stage ids. Treat as immutable from consumer code; the executor may
 	 * replace the frozen array before a stage starts when late topology inference

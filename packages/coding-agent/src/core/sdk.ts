@@ -745,6 +745,7 @@ async function constructAgentSession(
 			customTools: options.customTools,
 			modelRuntime,
 			cacheWarmer,
+			...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 			initialActiveToolNames,
 			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
 			defaultToolModifiers: toolModifiers,

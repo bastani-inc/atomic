@@ -16,6 +16,12 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
+import type {
+	BackgroundCompactionRuntime,
+	CommitReadyOptions,
+	CommittedBackgroundCompaction,
+	ForegroundBackgroundCompaction,
+} from "./agent-session-background-compaction.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { RecordedToolLoadout } from "./agent-session-state.ts";
 import type {
@@ -37,6 +43,7 @@ import type {
 	ToolDefinitionEntry,
 } from "./agent-session-types.js";
 import type { BashResult } from "./bash-executor.ts";
+import type { BackgroundCompactionState } from "./compaction/background-compaction.ts";
 import type {
 	CompactionUrgency,
 	PlannerAuth,
@@ -160,6 +167,10 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly pendingMessageCount: number;
 	readonly resourceLoader: ResourceLoader;
 	readonly autoCompactionEnabled: boolean;
+	/** Background compaction state (#4330): idle, running, ready to commit, or failed with a typed error. */
+	readonly compaction: BackgroundCompactionState;
+	readonly backgroundCompactionEnabled: boolean;
+	readonly backgroundCompactionThresholdPercent: number;
 	readonly isRetrying: boolean;
 	readonly autoRetryEnabled: boolean;
 	readonly isBashRunning: boolean;
@@ -347,6 +358,18 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
 	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
+	/** Resolves once no background compaction is running, with the state at that point. Never rejects. */
+	awaitBackgroundCompaction(): Promise<BackgroundCompactionState>;
+	/** Called each time a background result is stored and waits for the next turn boundary. */
+	onCompactionReady(listener: (state: BackgroundCompactionState) => void): () => void;
+	setBackgroundCompactionEnabled(enabled: boolean): void;
+	setBackgroundCompactionThresholdPercent(percent: number): void;
+	_writeBackgroundCompactionSetting(write: () => void): void;
+	_maybeStartBackgroundCompaction(contextTokens: number): void;
+	_commitReadyBackgroundCompaction(options?: CommitReadyOptions): Promise<CommittedBackgroundCompaction | undefined>;
+	_runBackgroundCompactionBoundary(midTurn: boolean, awaitPersistence?: boolean): Promise<boolean>;
+	_useReadyBackgroundCompaction(model: Model<Api>): Promise<ForegroundBackgroundCompaction | undefined>;
+	_abortBackgroundCompaction(): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
 	startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
@@ -453,6 +476,9 @@ export interface AgentSessionPublicSurface
 		| "pendingMessageCount"
 		| "resourceLoader"
 		| "autoCompactionEnabled"
+		| "compaction"
+		| "backgroundCompactionEnabled"
+		| "backgroundCompactionThresholdPercent"
 		| "isRetrying"
 		| "autoRetryEnabled"
 		| "abortSessionSummary"
@@ -493,6 +519,10 @@ export interface AgentSessionPublicSurface
 		| "abortCompaction"
 		| "abortBranchSummary"
 		| "setAutoCompactionEnabled"
+		| "awaitBackgroundCompaction"
+		| "onCompactionReady"
+		| "setBackgroundCompactionEnabled"
+		| "setBackgroundCompactionThresholdPercent"
 		| "bindExtensions"
 		| "startPendingRecovery"
 		| "refreshCurrentModelFromRegistry"
@@ -544,6 +574,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_outputBudgetErrorContinuationAttempts: number;
 	_postToolCompactionPreflightError: string | undefined;
 	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
+	_backgroundCompaction: BackgroundCompactionRuntime;
 	_terminatingToolCallIds: Set<string>;
 	_stopAfterTurnBlockedContinuation: boolean;
 	_pendingInterruptDeliveries: number;

@@ -167,6 +167,17 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	return [];
 }
 
+/**
+ * Path index of the last entry `boundary` covers: its `coveredThroughEntryId` when that entry precedes
+ * it on the path, otherwise every entry before the boundary.
+ */
+function boundaryCoveredIndex(path: SessionEntry[], boundary: CompactionEntry, boundaryIndex: number): number {
+	const covered = path.findIndex(
+		(entry, index) => index < boundaryIndex && entry.id === boundary.coveredThroughEntryId,
+	);
+	return covered >= 0 ? covered : boundaryIndex - 1;
+}
+
 /** Return the active branch entries after applying the latest compaction boundary. */
 export function buildContextEntries(
 	entries: SessionEntry[],
@@ -183,11 +194,8 @@ export function buildContextEntries(
 	const firstKeptIndex = path.findIndex(
 		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
 	);
-	return [
-		boundary,
-		...(firstKeptIndex >= 0 ? path.slice(firstKeptIndex, boundaryIndex) : []),
-		...path.slice(boundaryIndex + 1),
-	];
+	const retainedStart = firstKeptIndex >= 0 ? firstKeptIndex : boundaryCoveredIndex(path, boundary, boundaryIndex) + 1;
+	return [boundary, ...path.slice(retainedStart, boundaryIndex), ...path.slice(boundaryIndex + 1)];
 }
 
 /**
@@ -198,7 +206,9 @@ export function buildContextEntries(
  * boundary is emitted as one custom-role text message: the compacted string with the
  * kept tail (edits applied) serialized and appended to its end, rather than the tail
  * being replayed as separate structured messages. Kept-tail entries therefore project
- * to no standalone messages of their own.
+ * to no standalone messages of their own. Entries a background boundary does not cover
+ * (after its `coveredThroughEntryId`) replay unchanged, and older boundaries among them
+ * contribute nothing.
  */
 export function buildSessionProjection(
 	entries: SessionEntry[],
@@ -255,7 +265,8 @@ export function buildSessionProjection(
 	const firstKeptIndex = path.findIndex(
 		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
 	);
-	const keptTailEntries = firstKeptIndex >= 0 ? path.slice(firstKeptIndex, boundaryIndex) : [];
+	const coveredIndex = boundaryCoveredIndex(path, boundary, boundaryIndex);
+	const keptTailEntries = firstKeptIndex >= 0 ? path.slice(firstKeptIndex, coveredIndex + 1) : [];
 	const keptTailIds = new Set(keptTailEntries.map((entry) => entry.id));
 	const keptTail = serializeKeptTail(keptTailEntries, edits);
 	const separator: TranscriptChunk[] =
@@ -273,7 +284,7 @@ export function buildSessionProjection(
 			messages:
 				sourceEntry.id === boundary.id
 					? boundaryMessages
-					: keptTailIds.has(sourceEntry.id)
+					: keptTailIds.has(sourceEntry.id) || sourceEntry.type === "compaction"
 						? []
 						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id)),
 		}),

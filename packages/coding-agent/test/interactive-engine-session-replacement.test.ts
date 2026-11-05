@@ -3,14 +3,14 @@ import { mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 const UNRESPONSIVE_REPLACEMENT_GUARD_MS = 1_000;
 
@@ -39,6 +39,9 @@ function createState(): RpcSessionState {
 		followUpMode: "all",
 		sessionId: "engine-session",
 		autoCompactionEnabled: true,
+		compaction: { state: "idle" },
+		backgroundCompactionEnabled: true,
+		backgroundCompactionThresholdPercent: 75,
 		messageCount: 0,
 		pendingMessageCount: 0,
 		queuedMessagesPaused: false,
