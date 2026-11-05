@@ -2313,6 +2313,62 @@ test("a large batch yields the event loop between slices, so a due lease-renewal
 	}
 });
 
+for (const kind of ["full", "renewal"] as const) {
+	test(`an oversized ${kind} publication is visible atomically and yields before the next publication (#4317)`, async () => {
+		const f = await fixture();
+		try {
+			const size = PUBLICATION_TURN_WRITES * 4;
+			const stages = Array.from({ length: size }, (_, index) => stage(`stage-${index}`));
+			const child = childRun([
+				stage("host", { workflowChildRun: { alias: "nested", workflow: "nested", runId: "nested" } }),
+				...stages,
+			]);
+			const nested = snapshot("nested", {
+				parentRunId: child.id,
+				parentStageId: "host",
+				rootRunId: ROOT,
+				stages: [stage("nested-stage")],
+			});
+			await f.handoff.publish(f.first, [child, nested]);
+			const renewed = {
+				...f.first,
+				renewedAt: f.first.renewedAt + 1_000,
+				expiresAt: f.first.expiresAt + 1_000,
+			};
+			const unchanged: RunChanges = { kind: "changes", id: child.id, stages: [], toolNodes: [] };
+			const observe = () => ({
+				name: f.store.run(child.id)!.name,
+				renewedStages: f.store
+					.run(child.id)!
+					.stages.filter((stage) => stage.workerExecution?.renewedAt === renewed.renewedAt).length,
+				nestedRenewedAt: f.store.run(nested.id)!.stages[0]!.workerExecution?.renewedAt,
+			});
+			const invalidations: ReturnType<typeof observe>[] = [];
+			const betweenTurns: ReturnType<typeof observe>[] = [];
+			const unsubscribe = f.store.subscribeInvalidation(() => {
+				invalidations.push(observe());
+				if (invalidations.length === 1) setImmediate(() => betweenTurns.push(observe()));
+			});
+			try {
+				assert.deepEqual(
+					await f.handoff.publishBatch([
+						{ work: renewed, runs: kind === "full" ? [child, nested] : [unchanged] },
+						{ work: renewed, runs: [{ ...unchanged, header: { ...header(child)!, name: "following" } }] },
+					]),
+					[undefined, undefined],
+				);
+			} finally {
+				unsubscribe();
+			}
+			const published = { name: child.name, renewedStages: size + 1, nestedRenewedAt: renewed.renewedAt };
+			assert.deepEqual(invalidations, [published, { ...published, name: "following" }]);
+			assert.deepEqual(betweenTurns, [published]);
+		} finally {
+			await f.close();
+		}
+	});
+}
+
 test("after one refused publication an attempt's later changes are refused with the same reason (#4317)", async () => {
 	const f = await fixture();
 	try {
