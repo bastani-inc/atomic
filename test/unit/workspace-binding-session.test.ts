@@ -5,7 +5,7 @@ import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@basta
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { inheritChildSessionOptions } from "../../packages/coding-agent/src/core/child-session-options.ts";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.ts";
-import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
+import { createAgentSession, createUnstartedAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
 import { setWorkspaceGitExecutableResolver } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	isBoundWorkspace,
@@ -410,5 +410,61 @@ describe("workspace session helpers (#3109)", () => {
 			customType: WORKSPACE_BINDING_ENTRY_TYPE,
 			data: { ...binding, sandbox: "read-only" },
 		});
+	});
+});
+
+describe("sessions without a workspace (#3109)", () => {
+	test("keep their cwd precedence and record no binding (#3109)", async () => {
+		const cwd = join(dirs.root, "explicit");
+		mkdirSync(cwd);
+		const explicit = await createAgentSession(
+			sessionOptions({ cwd, sessionManager: SessionManager.inMemory(dirs.root) }),
+		);
+		assert.equal((explicit.session as unknown as { _cwd: string })._cwd, cwd);
+		assert.equal("workspace" in explicit, false);
+		assert.equal(explicit.session.workspace, undefined);
+		assert.equal(
+			explicit.session.sessionManager
+				.getEntries()
+				.some((entry) => entry.type === "custom" && entry.customType === WORKSPACE_BINDING_ENTRY_TYPE),
+			false,
+		);
+		explicit.session.dispose();
+		const fromManager = await createAgentSession(
+			sessionOptions({ sessionManager: SessionManager.inMemory(dirs.root) }),
+		);
+		assert.equal((fromManager.session as unknown as { _cwd: string })._cwd, dirs.root);
+		fromManager.session.dispose();
+		const fallback = await createAgentSession(sessionOptions({}));
+		assert.equal((fallback.session as unknown as { _cwd: string })._cwd, process.cwd());
+		fallback.session.dispose();
+	});
+
+	test("an unstarted host mirror does not write the binding entry (#3109)", async () => {
+		const repo = createRepository(dirs.root, "mirror");
+		const sessionManager = SessionManager.inMemory(dirs.root);
+		const mirror = await createUnstartedAgentSession(
+			sessionOptions({ workspace: workspace({ repo }), sessionManager }),
+			false,
+		);
+		assert.ok(mirror.workspace !== undefined);
+		assert.equal(
+			sessionManager
+				.getEntries()
+				.some((entry) => entry.type === "custom" && entry.customType === WORKSPACE_BINDING_ENTRY_TYPE),
+			false,
+		);
+		mirror.session.dispose();
+	});
+
+	test("child sessions without workspaces resolve cwd as before (#3109)", () => {
+		const parent = { cwd: "/parent" };
+		assert.equal(inheritChildSessionOptions(parent, {}).cwd, "/parent");
+		assert.equal(inheritChildSessionOptions(parent, { cwd: "sub" }).cwd, join("/parent", "sub"));
+		assert.equal(
+			inheritChildSessionOptions(parent, { sessionManager: SessionManager.inMemory("/elsewhere") }).cwd,
+			"/elsewhere",
+		);
+		assert.equal(inheritChildSessionOptions(parent, { workspace: workspace({ repo: "/r" }), cwd: "pkg" }).cwd, "pkg");
 	});
 });

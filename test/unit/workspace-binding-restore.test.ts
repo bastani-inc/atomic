@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
 	isWorkspaceBindingError,
@@ -150,5 +151,35 @@ describe("restoreWorkspace (#3109)", () => {
 		assert.equal(result.reason, "repository-missing");
 		assert.equal(result.fields.repository, binding.repository);
 		assert.ok(commands.length <= 1, "at most the git availability probe ran");
+	});
+
+	test("re-adds a deleted worktree from the remote's copy of a branch the store no longer has (#3109)", async () => {
+		const remote = createRemote(dirs.root, "refetch");
+		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "refetched" }));
+		const head = commitFile(binding.worktree, "pushed.txt", "pushed\n");
+		git(binding.worktree, "push", "-q", "origin", "refetched");
+		git(binding.repository, "worktree", "remove", "--force", binding.worktree);
+		git(binding.repository, "branch", "-D", "refetched");
+		git(binding.repository, "update-ref", "-d", "refs/remotes/origin/refetched");
+		const { result, commands } = await countGitCommands(() => restoreWorkspace(binding));
+		assert.equal(result, binding.worktree);
+		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), head);
+		assert.equal(commands.filter((args) => args[0] === "fetch").length, 1);
+	});
+
+	test("re-adds a local binding from its origin's copy of the branch (#3109)", async () => {
+		const remote = createRemote(dirs.root, "local-origin");
+		const clone = join(dirs.root, "local-origin-clone");
+		git(dirs.root, "clone", "-q", remote.url.replace(/^file:\/\//, ""), clone);
+		const binding = await resolveWorkspace(workspace({ repo: clone, branch: "topic" }));
+		const head = commitFile(binding.worktree, "topic.txt", "topic\n");
+		git(binding.worktree, "push", "-q", "origin", "topic");
+		git(clone, "fetch", "-q", "origin");
+		git(clone, "worktree", "remove", "--force", binding.worktree);
+		git(clone, "branch", "-D", "topic");
+		const { result, commands } = await countGitCommands(() => restoreWorkspace(binding));
+		assert.equal(result, binding.worktree);
+		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), head);
+		assert.equal(commands.filter((args) => args[0] === "fetch").length, 0, "a local repository is not fetched");
 	});
 });

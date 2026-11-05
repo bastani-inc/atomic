@@ -140,4 +140,42 @@ describe("workspace writer lease (#3109)", () => {
 			reason,
 		);
 	});
+
+	// POSIX: pid 1 belongs to root, so signalling it reports EPERM rather than ESRCH.
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"treats a holder this user may not signal as alive (#3109)",
+		async () => {
+			const worktree = await boundWorktree("eperm");
+			plantHolder(worktree, { pid: 1, host: hostname() });
+			const error = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "eperm" }));
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "writer-conflict");
+			assert.equal(error.fields.holderPid, 1);
+		},
+	);
+
+	test("reports a lease store held mid-transaction by another writer as a typed conflict within the wait (#3109)", async () => {
+		const worktree = await boundWorktree("busy");
+		const first = await acquireWorkspaceWriterLease({ worktree }, { owner: "first" });
+		await first.release();
+		const blocker = new DatabaseSync(leaseFile(worktree));
+		blocker.exec("BEGIN IMMEDIATE");
+		const started = Date.now();
+		try {
+			const error = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "second", lockWaitMs: 200 }));
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "writer-conflict");
+			assert.equal(error.fields.holder, "an in-flight lease transaction");
+			assert.equal(error.fields.holderPid, null);
+			assert.equal(error.fields.holderHost, null);
+			assert.equal((error.cause as { name?: string }).name, "StorageUnavailableError");
+			assert.ok(Date.now() - started < 20_000, "gave up within its lock wait instead of the default");
+		} finally {
+			blocker.exec("ROLLBACK");
+			blocker.close();
+		}
+		const after = await acquireWorkspaceWriterLease({ worktree }, { owner: "after" });
+		assert.equal(after.holder.owner, "after");
+		await after.release();
+	});
 });
