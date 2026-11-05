@@ -142,7 +142,7 @@ export class ShardedRunJournal implements RunJournal {
 	private shardJournal(record: JournalShardRecord, runId?: string): Promise<RunJournal> {
 		let opened = this.shardJournals.get(record.id);
 		if (opened !== undefined) return opened;
-		if (record.kind === "adopted" && !existsSync(record.path))
+		if (!existsSync(record.path))
 			return Promise.reject(
 				new JournalShardUnavailableError({
 					code: "shard-missing",
@@ -180,12 +180,13 @@ export class ShardedRunJournal implements RunJournal {
 	}
 
 	/**
-	 * The shard holding `runId`: the one this process last saw it on, else the catalog's, else an adopted journal that
-	 * holds it although the catalog does not list it yet (another process wrote it there), which is then indexed.
+	 * The shard holding `runId`: the native shard this process last saw it on, else the catalog's, else an adopted
+	 * journal that holds it although the catalog does not list it yet (another process wrote it there), which is then
+	 * indexed. A run seen in an adopted journal is looked up again, since a consolidation may have moved it since.
 	 */
 	private async locate(runId: string): Promise<{ record: JournalShardRecord; journal: RunJournal } | undefined> {
 		const cached = this.located.get(runId);
-		if (cached !== undefined) return { record: cached, journal: await this.shardJournal(cached, runId) };
+		if (cached?.kind === "native") return { record: cached, journal: await this.shardJournal(cached, runId) };
 		const found = await this.catalog.locate(runId);
 		if (found !== undefined) {
 			const journal = await this.shardJournal(found.shard, runId);

@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
@@ -41,6 +41,12 @@ export interface JournalShardRecord {
 	readonly createdAt: number;
 	/** Native shards take new roots; an adopted journal only keeps the runs it already had. */
 	readonly acceptsNewRoots: boolean;
+}
+
+/** A journal file registered as an adopted shard, or found already registered. */
+export interface JournalShardRegistration {
+	readonly shard: JournalShardRecord;
+	readonly status: "adopted" | "already-registered";
 }
 
 export interface JournalCatalogRun {
@@ -372,8 +378,10 @@ export class JournalCatalog {
 		return pick(accepting.filter((shard) => load(shard) === least));
 	}
 
+	/** Registers a native shard with its file created first, so a native shard whose file is missing was lost. */
 	private async addNativeShard(tx: SqliteExecutor, id: number): Promise<JournalShardRecord> {
 		const file = nativeShardFile(id);
+		await appendFile(join(this.directory, file), "");
 		await tx.run(
 			`INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (?, ?, 'native', ${STORE_NOW}, 1)`,
 			id,
@@ -463,53 +471,66 @@ export class JournalCatalog {
 	 * the shard and every run are registered, or nothing is. A run the store already has elsewhere fails the whole
 	 * adoption with `run-conflict`. A path already registered is left as it is.
 	 */
-	async registerAdopted(
-		path: string,
-		runs: readonly JournalCatalogRunHeader[],
-	): Promise<{ readonly shard: JournalShardRecord; readonly status: "adopted" | "already-registered" }> {
-		const absolute = resolve(path);
+	async registerAdopted(path: string, runs: readonly JournalCatalogRunHeader[]): Promise<JournalShardRegistration> {
+		return (await this.registerAdoptedAll([{ path, runs }]))[0]!;
+	}
+
+	/** Registers several journal files as `registerAdopted` does, all in one transaction: every file, or none. */
+	async registerAdoptedAll(
+		files: readonly { readonly path: string; readonly runs: readonly JournalCatalogRunHeader[] }[],
+	): Promise<JournalShardRegistration[]> {
 		return this.write("registering-shard", async (tx) => {
-			const registered = (await tx.all<ShardRow>("SELECT * FROM catalog_shards"))
-				.map((row) => this.shardRecord(row))
-				.find((shard) => shard.path === absolute);
-			if (registered !== undefined) return { shard: registered, status: "already-registered" as const };
-			for (const run of runs) {
-				const existing = await tx.get<RunRow & { shard_path: string }>(
-					"SELECT runs.*, shards.path AS shard_path FROM catalog_runs AS runs JOIN catalog_shards AS shards ON shards.id = runs.shard WHERE runs.run_id = ?",
-					run.runId,
-				);
-				if (existing !== undefined)
-					throw new JournalAdoptError({
-						code: "run-conflict",
-						path: absolute,
-						runId: run.runId,
-						existingPath: isAbsolute(existing.shard_path)
-							? existing.shard_path
-							: join(this.directory, existing.shard_path),
-					});
-			}
-			const next = await tx.get<SqliteRow & { next: number }>(
-				"SELECT COALESCE(MAX(id), 0) + 1 AS next FROM catalog_shards",
-			);
-			const id = Number(next!.next);
-			await tx.run(
-				`INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (?, ?, 'adopted', ${STORE_NOW}, 0)`,
-				id,
-				absolute,
-			);
-			for (const run of runs)
-				await tx.run(
-					`INSERT INTO catalog_runs(run_id, shard, root_run_id, cwd, workflow, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
-					run.runId,
-					id,
-					run.runId,
-					run.cwd ?? null,
-					run.name ?? null,
-					run.status ?? null,
-				);
-			const row = await tx.get<ShardRow>("SELECT * FROM catalog_shards WHERE id = ?", id);
-			return { shard: this.shardRecord(row!), status: "adopted" as const };
+			const registrations: JournalShardRegistration[] = [];
+			for (const file of files) registrations.push(await this.registerIn(tx, resolve(file.path), file.runs));
+			return registrations;
 		});
+	}
+
+	private async registerIn(
+		tx: SqliteExecutor,
+		absolute: string,
+		runs: readonly JournalCatalogRunHeader[],
+	): Promise<JournalShardRegistration> {
+		const registered = (await tx.all<ShardRow>("SELECT * FROM catalog_shards"))
+			.map((row) => this.shardRecord(row))
+			.find((shard) => shard.path === absolute);
+		if (registered !== undefined) return { shard: registered, status: "already-registered" };
+		for (const run of runs) {
+			const existing = await tx.get<RunRow & { shard_path: string }>(
+				"SELECT runs.*, shards.path AS shard_path FROM catalog_runs AS runs JOIN catalog_shards AS shards ON shards.id = runs.shard WHERE runs.run_id = ?",
+				run.runId,
+			);
+			if (existing !== undefined)
+				throw new JournalAdoptError({
+					code: "run-conflict",
+					path: absolute,
+					runId: run.runId,
+					existingPath: isAbsolute(existing.shard_path)
+						? existing.shard_path
+						: join(this.directory, existing.shard_path),
+				});
+		}
+		const next = await tx.get<SqliteRow & { next: number }>(
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next FROM catalog_shards",
+		);
+		const id = Number(next!.next);
+		await tx.run(
+			`INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (?, ?, 'adopted', ${STORE_NOW}, 0)`,
+			id,
+			absolute,
+		);
+		for (const run of runs)
+			await tx.run(
+				`INSERT INTO catalog_runs(run_id, shard, root_run_id, cwd, workflow, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
+				run.runId,
+				id,
+				run.runId,
+				run.cwd ?? null,
+				run.name ?? null,
+				run.status ?? null,
+			);
+		const row = await tx.get<ShardRow>("SELECT * FROM catalog_shards WHERE id = ?", id);
+		return { shard: this.shardRecord(row!), status: "adopted" };
 	}
 
 	async recordDiscovery(record: Omit<JournalDiscoveryRecord, "checkedAt">): Promise<void> {

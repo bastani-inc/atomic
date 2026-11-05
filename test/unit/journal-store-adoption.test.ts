@@ -125,7 +125,8 @@ test("inspection refuses a short file, an unreadable one and a corrupt one as no
 	assert.ok(isJournalAdoptError(broken));
 	assert.deepEqual([broken.code, broken.reason], ["not-a-journal", "not-sqlite"]);
 	assert.ok(broken.cause instanceof Error);
-	if (process.getuid?.() !== 0) {
+	const modeBlocksReads = process.platform !== "win32" && process.getuid?.() !== 0;
+	if (modeBlocksReads) {
 		const locked = await journal(join(root, "locked", "journal.sqlite"), []);
 		chmodSync(locked, 0o000);
 		const unreadable = await inspectJournalFile(locked).catch((error: Error) => error);
@@ -351,7 +352,8 @@ test("consolidation leaves a run in place when the catalog moved it meanwhile or
 	const catalog = await JournalCatalog.open(fresh);
 	const destination = await catalog.homeShard("stuck");
 	await catalog.close();
-	mkdirSync(destination.path, { recursive: true });
+	rmSync(destination.path);
+	mkdirSync(destination.path);
 	const report = await consolidateJournalStore(fresh);
 	assert.deepEqual([report.runs[0]?.outcome, report.runs[0]?.reason], ["skipped", "shard-unavailable"]);
 	assert.ok(isJournalShardUnavailableError(report.runs[0]?.error));
@@ -720,3 +722,92 @@ test.skipIf(process.platform === "win32")(
 		assert.equal(descriptors(), before);
 	},
 );
+
+test("a run another consolidation moved to the same shard first keeps that copy, and loses its old one (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "raced" }]);
+	await adoptJournals(store, [path]);
+	await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			await moveRun(runId, from, to);
+			return false;
+		});
+		const report = await consolidateJournalStore(catalog);
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["raced", "skipped", "changed"]],
+		);
+		const located = await catalog.locate("raced");
+		assert.equal(located?.shard.kind, "native");
+		const destination = new DatabaseSync(located!.shard.path, { readOnly: true });
+		try {
+			assert.equal(destination.prepare("SELECT count(*) AS n FROM wf_events WHERE run_id = 'raced'").get()?.n, 1);
+			assert.equal(
+				destination.prepare("SELECT holder_id FROM wf_leases WHERE run_id = 'raced'").get()?.holder_id,
+				null,
+			);
+		} finally {
+			destination.close();
+		}
+	});
+	const source = new DatabaseSync(path, { readOnly: true });
+	try {
+		assert.equal(source.prepare("SELECT count(*) AS n FROM wf_runs").get()?.n, 0, "the old copy is gone");
+	} finally {
+		source.close();
+	}
+});
+
+test("consolidation leaves the runs of a journal with only the pre-0.9.38 tables where they are, and moves the rest (#4325)", async () => {
+	const legacy = join(root, "legacy.sqlite");
+	raw(legacy, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
+	raw(legacy, "CREATE TABLE runs(run_id TEXT)");
+	raw(legacy, "CREATE TABLE events(run_id TEXT)");
+	raw(legacy, "INSERT INTO meta VALUES (1)");
+	const current = await journal(join(root, "current", "journal.sqlite"), [{ runId: "current" }]);
+	await adoptJournals(store, [legacy, current]);
+	await withCatalog(async (catalog) => {
+		const shard = (await catalog.shards()).find((record) => record.path === legacy)!;
+		await catalog.index(shard.id, { runId: "old" });
+	});
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason ?? null]),
+		[
+			["old", "skipped", "legacy-format"],
+			["current", "moved", null],
+		],
+	);
+	const untouched = new DatabaseSync(legacy, { readOnly: true });
+	try {
+		assert.deepEqual(
+			untouched
+				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+				.all()
+				.map((row) => row.name),
+			["events", "meta", "runs"],
+		);
+	} finally {
+		untouched.close();
+	}
+});
+
+test("adopting several files registers none of them when one has a run the store already holds (#4325)", async () => {
+	const first = await journal(join(root, "first", "journal.sqlite"), [{ runId: "shared" }]);
+	await adoptJournals(store, [first]);
+	const fresh = await journal(join(root, "fresh", "journal.sqlite"), [{ runId: "fresh" }]);
+	const copy = await journal(join(root, "copy", "journal.sqlite"), [{ runId: "shared" }]);
+	const refused = await adoptJournals(store, [fresh, copy]).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(refused));
+	assert.deepEqual(
+		[refused.code, refused.fields.runId, refused.fields.existingPath],
+		["run-conflict", "shared", first],
+	);
+	await withCatalog(async (catalog) => {
+		assert.deepEqual(
+			(await catalog.shards()).map((shard) => shard.path),
+			[first],
+		);
+		assert.equal(await catalog.locate("fresh"), undefined);
+	});
+});

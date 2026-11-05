@@ -17,6 +17,7 @@ import {
 	JournalCatalog,
 	type JournalCatalogRunHeader,
 	type JournalShardRecord,
+	type JournalShardRegistration,
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { renderStorageIdentifiers } from "./prefix.js";
@@ -226,9 +227,15 @@ async function withCatalog<T>(store: string | JournalCatalog, body: (catalog: Jo
 	);
 }
 
-async function register(catalog: JournalCatalog, inspection: JournalFileInspection): Promise<JournalAdoptionOutcome> {
-	const { shard, status } = await catalog.registerAdopted(inspection.path, inspection.runs);
+function adoptionOutcome(
+	inspection: JournalFileInspection,
+	{ shard, status }: JournalShardRegistration,
+): JournalAdoptionOutcome {
 	return { path: inspection.path, status, shardId: shard.id, runs: status === "adopted" ? inspection.runs.length : 0 };
+}
+
+async function register(catalog: JournalCatalog, inspection: JournalFileInspection): Promise<JournalAdoptionOutcome> {
+	return adoptionOutcome(inspection, await catalog.registerAdopted(inspection.path, inspection.runs));
 }
 
 /** Follows run references breadth first from `start`, adopting what can be and recording what cannot. */
@@ -266,7 +273,7 @@ async function discover(
 /**
  * Registers existing journal files in the journal store in place: nothing is copied, each file becomes a shard that
  * keeps the runs it has and takes no new roots, and every run in it resolves through the catalog. Every path is
- * checked before the first is registered; each is then registered in one catalog transaction. Unless
+ * checked first, and all of them are then registered in one catalog transaction: a conflict registers none. Unless
  * `discover: false`, the journals the adopted runs reference are adopted too, and those that cannot be are recorded
  * with the reason.
  */
@@ -294,12 +301,9 @@ export async function adoptJournals(
 			}
 			inspections.push(inspection);
 		}
-		const adopted: JournalAdoptionOutcome[] = [];
-		for (const inspection of inspections) {
-			const outcome = await register(catalog, inspection);
-			await catalog.recordDiscovery({ path: inspection.path, outcome: outcome.status });
-			adopted.push(outcome);
-		}
+		const registrations = await catalog.registerAdoptedAll(inspections);
+		const adopted = inspections.map((inspection, index) => adoptionOutcome(inspection, registrations[index]!));
+		for (const outcome of adopted) await catalog.recordDiscovery({ path: outcome.path, outcome: outcome.status });
 		const discovered = options.discover === false ? [] : await discover(catalog, inspections);
 		return { adopted, discovered };
 	});
@@ -394,7 +398,7 @@ interface FencedRun {
 const CONSOLIDATION_TRANSACTION = { lockWaitMs: 10 * 60_000 } as const;
 
 async function openShardFile(record: JournalShardRecord, runId?: string): Promise<SqliteDatabase> {
-	if (record.kind === "adopted" && !existsSync(record.path))
+	if (!existsSync(record.path))
 		throw new JournalShardUnavailableError({
 			code: "shard-missing",
 			shardId: record.id,
@@ -412,6 +416,12 @@ async function openShardFile(record: JournalShardRecord, runId?: string): Promis
 			cause: cause as StorageFailureCause,
 		});
 	}
+}
+
+/** Whether a journal file has the current journal tables, which a file of only the pre-0.9.38 format does not. */
+async function hasJournalTables(database: SqliteExecutor): Promise<boolean> {
+	const names = await tableNames(database);
+	return [TABLES.runs, TABLES.events, TABLES.leases].every((table) => names.has(table));
 }
 
 async function ensureJournalTables(source: SqliteExecutor, target: SqliteExecutor): Promise<void> {
@@ -584,9 +594,14 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 					}
 					await withCleanup(
 						async () => {
-							await finishInterruptedMoves(catalog, source, owners, shard.id, target);
+							const legacyOnly = !(await hasJournalTables(source));
+							if (!legacyOnly) await finishInterruptedMoves(catalog, source, owners, shard.id, target);
 							for (const run of await catalog.runs({ shard: shard.id }))
-								results.push(await moveOne(catalog, source, shard, run.runId, holder, target));
+								results.push(
+									legacyOnly
+										? { runId: run.runId, from: shard.id, outcome: "skipped", reason: "legacy-format" }
+										: await moveOne(catalog, source, shard, run.runId, holder, target),
+								);
 						},
 						() => source.close(),
 					);
@@ -660,12 +675,18 @@ async function moveOne(
 		};
 	}
 	if (!(await catalog.moveRun(runId, shard.id, destination.id))) {
-		await database.transaction(async (tx) => {
-			await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
-			await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
-			await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ? AND holder_id = ?`, runId, holder);
-		}, CONSOLIDATION_TRANSACTION);
-		await unfence(source, runId, holder);
+		// Another consolidation may have moved the same run to this destination meanwhile: its copy then stays.
+		if ((await catalog.locate(runId))?.shard.id === destination.id) {
+			await removeSource(source, runId, holder);
+			await unfence(database, runId, holder);
+		} else {
+			await database.transaction(async (tx) => {
+				await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
+				await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
+				await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ? AND holder_id = ?`, runId, holder);
+			}, CONSOLIDATION_TRANSACTION);
+			await unfence(source, runId, holder);
+		}
 		return { runId, from: shard.id, outcome: "skipped", reason: "changed" };
 	}
 	await removeSource(source, runId, holder);

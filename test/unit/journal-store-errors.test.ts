@@ -102,7 +102,7 @@ test("JournalShardUnavailableError and JournalAdoptError render each code's mess
 		[
 			new JournalShardUnavailableError({ code: "shard-missing", shardId: 1, shardPath: shard, runId: "r" }),
 			`Journal shard unavailable: ${shard} for run r (shard-missing).`,
-			"Restore the file; if it is an adopted journal that moved, adopt it again at its new path with `atomic storage adopt <path>`.",
+			"Restore the file at this path: the catalog keeps its runs registered there.",
 		],
 		[
 			new JournalShardUnavailableError({

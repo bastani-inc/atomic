@@ -588,7 +588,7 @@ export class JournalShardUnavailableError extends JournalStoreError {
 			code: init.code,
 			message: `Journal shard unavailable: ${subject}${detail === null ? "" : ` (${detail})`} (${init.code}).`,
 			hint: missing
-				? "Restore the file; if it is an adopted journal that moved, adopt it again at its new path with `atomic storage adopt <path>`."
+				? "Restore the file at this path: the catalog keeps its runs registered there."
 				: "Check the file's permissions and the disk's free space, then retry.",
 			fields: compact({
 				shardId: init.shardId,

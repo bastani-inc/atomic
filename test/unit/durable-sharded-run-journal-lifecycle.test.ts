@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
 	adoptJournals,
 	consolidateJournalStore,
 	isJournalCatalogError,
+	isJournalShardUnavailableError,
 	JournalCatalog,
 	JournalCatalogError,
 	openNodeSqliteDatabase,
@@ -350,7 +351,9 @@ test("a journal store is recognized from another loaded copy of the workflows ru
 	assert.ok(isShardedRunJournal(journal));
 	const brand = Symbol.for("@bastani/workflows/sharded-run-journal");
 	assert.ok(isShardedRunJournal({ [brand]: true } as unknown as RunJournal));
-	assert.equal(isShardedRunJournal(await openSqlRunJournal(join(root, "plain.sqlite"))), false);
+	const plain = await openSqlRunJournal(join(root, "plain.sqlite"));
+	closing.push(() => plain.close());
+	assert.equal(isShardedRunJournal(plain), false);
 });
 
 test("looking up a run the catalog does not list opens no native shard (#4325)", async () => {
@@ -488,3 +491,64 @@ test("a failed open keeps its error and attaches the catalog's failed close; sev
 		return true;
 	});
 });
+
+test("a native shard whose file was deleted fails its runs with shard-missing instead of reading as an empty journal (#4325)", async () => {
+	const first = await open();
+	await start(first, "lost");
+	const shard = first.shardOf("lost")!;
+	await first.close();
+	rmSync(shard.path);
+	const reopened = await open();
+	for (const operation of [
+		() => reopened.getRun("lost"),
+		() => reopened.createRun({ runId: "lost", name: "wf", cwd: "/p", createdAt: 1, status: "running" }),
+	])
+		await assert.rejects(operation(), (error: Error) => {
+			assert.ok(isJournalShardUnavailableError(error));
+			assert.deepEqual([error.code, error.shardId, error.shardPath], ["shard-missing", shard.id, shard.path]);
+			return true;
+		});
+	assert.equal(existsSync(shard.path), false, "the store did not create an empty shard in its place");
+	assert.deepEqual(await reopened.listRuns(), []);
+	assert.deepEqual(
+		reopened.unavailableShards().map((error) => [error.code, error.shardId]),
+		[["shard-missing", shard.id]],
+	);
+});
+
+test("a run seen in an adopted journal that another process consolidated is read, leased and deleted where it moved (#4325)", async () => {
+	const legacy = join(root, "old", "journal.sqlite");
+	mkdirSync(join(legacy, ".."), { recursive: true });
+	const seed = await openSqlRunJournal(legacy);
+	const lease = await start(seed, "moved");
+	await seed.append(lease, { type: "RunStarted", payload: { snapshot: 1 } }, { key: "start" });
+	await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	await seed.release(lease);
+	await seed.close();
+	await adoptJournals(store, [legacy]);
+	const journal = await open();
+	assert.equal((await journal.getRun("moved"))?.status, "completed");
+	assert.equal(journal.shardOf("moved")?.kind, "adopted");
+	assert.equal((await consolidateJournalStore(store)).moved, 1);
+	assert.equal((await journal.readKey("moved", "start"))?.event.type, "RunStarted");
+	const resumed = await journal.acquire("moved", "resumer");
+	assert.equal(resumed.status, "acquired");
+	assert.equal(journal.shardOf("moved")?.kind, "native");
+	await journal.deleteRun("moved");
+	const native = new DatabaseSync(await nativeShardOf(store), { readOnly: true });
+	try {
+		assert.equal(native.prepare("SELECT count(*) AS n FROM wf_events WHERE run_id = 'moved'").get()?.n, 0);
+	} finally {
+		native.close();
+	}
+	assert.equal(await (await open()).getRun("moved"), undefined);
+});
+
+async function nativeShardOf(directory: string): Promise<string> {
+	const catalog = await JournalCatalog.open(directory);
+	try {
+		return (await catalog.shards()).find((shard) => shard.kind === "native")!.path;
+	} finally {
+		await catalog.close();
+	}
+}
