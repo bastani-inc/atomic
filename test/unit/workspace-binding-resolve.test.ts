@@ -33,6 +33,7 @@ import {
 	workspace,
 	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import { withWorktreeLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import { sharedStorePath } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
@@ -395,6 +396,32 @@ describe("workspace resolution details (#3109)", () => {
 		const binding = await resolveWorkspace(workspace({ repo, base: "main", branch: "unrelated" }));
 		assert.equal(binding.baseCommit, git(repo, "rev-parse", "main"));
 		assert.equal(binding.head, git(repo, "rev-parse", "unrelated"));
+	});
+
+	test("waits for the repository's worktree lock instead of racing another adder (#3109)", async () => {
+		const repo = createRepository(dirs.root, "locked");
+		let release: () => void = () => {};
+		let entered: () => void = () => {};
+		const inside = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const holder = withWorktreeLock(realpathSync(join(repo, ".git")), async () => {
+			entered();
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		});
+		await inside;
+		let settled = false;
+		const binding = resolveWorkspace(workspace({ repo, branch: "after-the-lock" })).finally(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.equal(settled, false, "the binding waits while another holder adds worktrees");
+		assert.equal(existsSync(join(dirs.home, "worktrees")), false);
+		release();
+		await holder;
+		assert.equal((await binding).branch, "after-the-lock");
 	});
 
 	test("redacts credentials after any run of scheme characters (#3109)", () => {
