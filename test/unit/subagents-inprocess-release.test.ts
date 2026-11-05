@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DetachedToolCall, DetachedToolResult, ToolDefinition } from "@bastani/atomic";
-import { getEnvNames } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { Type } from "typebox";
+import type { DetachedToolCall, DetachedToolResult } from "@bastani/atomic";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
-import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
-import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
-import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
@@ -22,6 +17,7 @@ import {
 	terminate_child_attempt,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
+import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 
 /** A live child loads its real resources; that load is the structural cost of these tests. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
@@ -43,97 +39,13 @@ const agent: AgentConfig = {
 	filePath: "/tmp/waiter.md",
 };
 
-interface LiveChildOptions {
-	readonly models?: ReadonlyArray<{ readonly id: string; readonly reasoning?: boolean }>;
-	readonly fallbackModels?: readonly string[];
-}
-
-async function liveChildEnvironment(liveOptions: LiveChildOptions = {}) {
-	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-release-"));
-	const agentDir = join(root, "agent");
-	mkdirSync(agentDir, { recursive: true });
-	const names = getEnvNames(ENV_AGENT_DIR);
-	const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-	for (const name of names) process.env[name] = agentDir;
-	const faux = registerFauxProvider(
-		liveOptions.models ? { models: liveOptions.models.map((definition) => ({ ...definition })) } : undefined,
-	);
-	const model = faux.getModel();
-	const authStorage = AuthStorage.inMemory();
-	await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
-	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(root, "models.json") });
-	modelRuntime.registerProvider(model.provider, {
-		baseUrl: model.baseUrl,
-		api: model.api,
-		models: faux.models.map((registered) => ({
-			id: registered.id,
-			name: registered.name,
-			api: registered.api,
-			reasoning: registered.reasoning,
-			input: registered.input,
-			cost: registered.cost,
-			contextWindow: registered.contextWindow,
-			maxTokens: registered.maxTokens,
-			baseUrl: registered.baseUrl,
-		})),
-	});
-	const aborts: string[] = [];
-	const waitTool: ToolDefinition = {
-		name: "wait_for_ci",
-		label: "Wait for CI",
-		description: "Waits for CI",
-		parameters: Type.Object({ run: Type.String() }),
-		detachable: true,
-		execute: (_id, _params, signal) =>
-			new Promise(() => {
-				signal?.addEventListener("abort", () => aborts.push(String(signal.reason)), { once: true });
-			}),
-	};
-	let blockStarted = false;
-	const blockTool: ToolDefinition = {
-		name: "block",
-		label: "Block",
-		description: "Runs until stopped",
-		parameters: Type.Object({}),
-		execute: (_id, _params, signal) =>
-			new Promise((_resolve, reject) => {
-				blockStarted = true;
-				signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
-			}),
-	};
-	cleanups.push(() => {
-		faux.unregister();
-		for (const name of names) {
-			if (previous[name] === undefined) delete process.env[name];
-			else process.env[name] = previous[name];
-		}
-		rmSync(root, { recursive: true, force: true });
-	});
-	const options = (runId: string, extra: Partial<RunSyncOptions> = {}): RunSyncOptions => ({
-		cwd: root,
-		runId,
-		sessionDir: join(root, "sessions", runId),
-		testSession: false,
-		getChildSessionOptions: (childOptions) => ({
-			...childOptions,
-			model,
-			modelRuntime,
-			...(liveOptions.fallbackModels ? { fallbackModels: [...liveOptions.fallbackModels] } : {}),
-			customTools: [waitTool, blockTool],
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
-		}),
-		...extra,
-	});
-	return { root, faux, options, aborts, blockStarted: () => blockStarted };
-}
-
 const waitCall = () =>
 	fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "7" }, { id: "ci-1" })], { stopReason: "toolUse" });
 
 test(
 	"a live child whose detachable call outlasts the policy is released, its calls handed over, and a wake finishes its turn (#4326)",
 	async () => {
-		const env = await liveChildEnvironment();
+		const env = await liveChildEnvironment(cleanups);
 		const released: DetachedToolCall[][] = [];
 		const store = new MemorySessionStore();
 		const childSession = await SessionManager.create(store, env.root);
@@ -200,7 +112,7 @@ test(
 test(
 	"a child stopped while a call it detached still runs aborts that call and is not released (#4326)",
 	async () => {
-		const env = await liveChildEnvironment();
+		const env = await liveChildEnvironment(cleanups);
 		env.faux.setResponses([
 			fauxAssistantMessage(
 				[fauxToolCall("wait_for_ci", { run: "7" }, { id: "ci-1" }), fauxToolCall("block", {}, { id: "block-1" })],
@@ -241,7 +153,7 @@ test("a released envelope names every call the child waits on and what wakes it 
 test(
 	"a released child reports the model and thinking level it ran on, and no models tried when it ran on one (#4326)",
 	async () => {
-		const env = await liveChildEnvironment({ models: [{ id: "faux-1", reasoning: true }] });
+		const env = await liveChildEnvironment(cleanups, { models: [{ id: "faux-1", reasoning: true }] });
 		env.faux.setResponses([waitCall()]);
 
 		const result = await runSingleInProcess(env.root, { ...agent, thinking: "low" }, "watch CI", {
@@ -259,7 +171,7 @@ test(
 test(
 	"a released child that fell back to another model reports every model it tried and the one it waits on (#4326)",
 	async () => {
-		const env = await liveChildEnvironment({
+		const env = await liveChildEnvironment(cleanups, {
 			models: [
 				{ id: "faux-1", reasoning: true },
 				{ id: "faux-2", reasoning: true },
