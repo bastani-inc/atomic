@@ -98,8 +98,54 @@ export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
 } from "./modes/interactive/streaming-assistant-message.ts";
+
 // Core session management
 
+// GitHub Copilot request failures, typed at the provider; see docs/providers.md.
+export {
+	classifyGitHubCopilotFailure,
+	describeGitHubCopilotModel,
+	deserializeGitHubCopilotError,
+	findGitHubCopilotError,
+	GITHUB_COPILOT_ERROR_DIAGNOSTIC,
+	GitHubCopilotAuthenticationError,
+	GitHubCopilotContentFilterError,
+	GitHubCopilotEmptyResponseError,
+	GitHubCopilotError,
+	type GitHubCopilotErrorCode,
+	type GitHubCopilotErrorContext,
+	type GitHubCopilotErrorFields,
+	type GitHubCopilotErrorName,
+	type GitHubCopilotFailureContext,
+	GitHubCopilotInvalidRequestError,
+	type GitHubCopilotInvalidRequestReason,
+	type GitHubCopilotModelCapabilities,
+	GitHubCopilotModelUnavailableError,
+	type GitHubCopilotModelUnavailableReason,
+	GitHubCopilotPromptTooLargeError,
+	GitHubCopilotQuotaExhaustedError,
+	GitHubCopilotRateLimitError,
+	GitHubCopilotServiceUnavailableError,
+	GitHubCopilotStreamEndedEarlyError,
+	type GitHubCopilotUnrecognizedReason,
+	GitHubCopilotUnrecognizedResponseError,
+	getGitHubCopilotError,
+	isGitHubCopilotAuthenticationError,
+	isGitHubCopilotContentFilterError,
+	isGitHubCopilotEmptyResponseError,
+	isGitHubCopilotError,
+	isGitHubCopilotInvalidRequestError,
+	isGitHubCopilotModelUnavailableError,
+	isGitHubCopilotPromptTooLargeError,
+	isGitHubCopilotQuotaExhaustedError,
+	isGitHubCopilotRateLimitError,
+	isGitHubCopilotServiceUnavailableError,
+	isGitHubCopilotStreamEndedEarlyError,
+	isGitHubCopilotUnrecognizedResponseError,
+	isRetryableGitHubCopilotError,
+	type SerializedGitHubCopilotError,
+	serializeGitHubCopilotError,
+} from "@bastani/pi-ai";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {

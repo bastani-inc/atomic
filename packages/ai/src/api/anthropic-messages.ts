@@ -7,6 +7,7 @@ import type {
 	BetaMessageParam as MessageParam,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import type { RawMessageStreamEvent, RefusalStopDetails } from "@anthropic-ai/sdk/resources/messages.js";
+import type { ErrorType } from "@anthropic-ai/sdk/resources/shared.js";
 import {
 	ANTHROPIC_FEDERATION_RULE_ID_ENV,
 	ANTHROPIC_IDENTITY_TOKEN_FILE_ENV,
@@ -15,6 +16,7 @@ import {
 	ANTHROPIC_WORKSPACE_ID_ENV,
 } from "../env-api-keys.ts";
 import { calculateCost } from "../models.ts";
+import { recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -1042,6 +1044,20 @@ async function* iterateSseMessages(
 	}
 }
 
+function parseStreamedErrorBody(data: string): NonNullable<unknown> {
+	try {
+		return JSON.parse(data) ?? data;
+	} catch {
+		return data;
+	}
+}
+
+function streamedErrorType(body: NonNullable<unknown>): ErrorType | undefined {
+	const error = (body as { error?: unknown }).error;
+	const type = typeof error === "object" && error !== null ? (error as { type?: unknown }).type : undefined;
+	return typeof type === "string" ? (type as ErrorType) : undefined;
+}
+
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
@@ -1055,7 +1071,8 @@ async function* iterateAnthropicEvents(
 
 	for await (const sse of iterateSseMessages(response.body, signal)) {
 		if (sse.event === "error") {
-			throw new Error(sse.data);
+			const body = parseStreamedErrorBody(sse.data);
+			throw new Anthropic.APIError(undefined, body, sse.data, response.headers, streamedErrorType(body));
 		}
 
 		if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {
@@ -1113,6 +1130,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		let streamStarted = false;
 
 		let inputTransformations: AnthropicInputTransformation[] | undefined;
 
@@ -1235,6 +1253,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			}
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
+			streamStarted = true;
 
 			// Stream state per Anthropic block index, kept off the content blocks so it never reaches partials.
 			const openBlocks = new Map<number, { contentIndex: number; arguments?: ToolCallArgumentsStream }>();
@@ -1497,6 +1516,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
+			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamStarted);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {

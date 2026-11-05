@@ -20,14 +20,15 @@ import {
 	GITHUB_COPILOT_INDIVIDUAL_BASE_URL as GITHUB_COPILOT_BASE_URL,
 	parseGitHubCopilotAccountModelLists,
 } from "./github-copilot-account.ts";
+import type { GitHubCopilotApi } from "./github-copilot-capabilities.ts";
 import { THINKING_LEVELS, type ThinkingLevelMap } from "./model-schema.ts";
 
 const GITHUB_COPILOT_MODELS_TIMEOUT_MS = 15_000;
 const GITHUB_COPILOT_FAST_ID_SUFFIX = "-fast";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 8_192;
-
-type GitHubCopilotApi = "anthropic-messages" | "openai-completions" | "openai-responses";
+/** Atomic's default cap on a resized image's base64 payload, which an account's own image limit may lower. */
+const DEFAULT_MAX_IMAGE_BASE64_BYTES = 4.5 * 1024 * 1024;
 
 /** Copilot advertises entitlements as string ID arrays on the OAuth credential; ignore any other shape. */
 function advertisedModelIds(value: unknown): ReadonlySet<string> | undefined {
@@ -105,26 +106,46 @@ function accountModelEntries(raw: unknown): AccountModelEntry[] {
 
 /**
  * The account's list does not say which models accept a 24-hour prompt cache, and some models reject
- * the request, so a discovered OpenAI-style model never asks for one. A Messages model the list marks
- * as adaptive receives the selected effort instead of a thinking budget.
+ * the request, so a discovered OpenAI-style model never asks for one. Its tool schemas are strict only
+ * when the entry lists `structured_outputs`. A Messages model the list marks as adaptive receives the
+ * selected effort instead of a thinking budget.
  */
 function discoveredCompat(
 	api: GitHubCopilotApi,
 	reasoning: boolean,
 	supports: Record<string, unknown> | undefined,
 ): Model<Api>["compat"] {
+	const supportsStrictMode = supports?.structured_outputs === true;
 	if (api === "openai-completions") {
 		return {
 			supportsStore: false,
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: reasoning,
 			supportsLongCacheRetention: false,
+			supportsStrictMode,
 		};
 	}
 	if (api === "anthropic-messages") {
 		return supports?.adaptive_thinking === true ? { forceAdaptiveThinking: true } : undefined;
 	}
-	return { supportsLongCacheRetention: false };
+	return { supportsLongCacheRetention: false, supportsStrictMode };
+}
+
+/** Image limits from the entry's `limits.vision`: images per request, and a resize cap from the per-image byte limit. */
+function discoveredImageLimits(limits: Record<string, unknown> | undefined): Model<Api>["inputLimits"] {
+	const vision = asRecord(limits?.vision);
+	const maxPerRequest = positiveInteger(vision?.max_prompt_images);
+	const maxImageBytes = positiveInteger(vision?.max_prompt_image_size);
+	if (maxPerRequest === undefined && maxImageBytes === undefined) return undefined;
+	const base64Bytes = maxImageBytes === undefined ? undefined : Math.ceil(maxImageBytes / 3) * 4;
+	return {
+		images: {
+			...(maxPerRequest === undefined ? {} : { maxPerRequest }),
+			...(base64Bytes === undefined
+				? {}
+				: { resize: { maxBytes: Math.min(base64Bytes, DEFAULT_MAX_IMAGE_BASE64_BYTES) } }),
+		},
+	};
 }
 
 /** The display name the account's entry advertises, or its ID when the entry has no usable one. */
@@ -143,6 +164,8 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
 		: [];
 	const reasoning = efforts.length > 0;
 	const compat = discoveredCompat(api, reasoning, entry.supports);
+	const vision = entry.supports?.vision === true;
+	const inputLimits = vision ? discoveredImageLimits(limits) : undefined;
 	return {
 		id: entry.id,
 		name: discoveredName(entry),
@@ -151,7 +174,8 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
 		baseUrl: GITHUB_COPILOT_BASE_URL,
 		reasoning,
 		...(reasoning ? { thinkingLevelMap: thinkingLevelMap(efforts) } : {}),
-		input: entry.supports?.vision === true ? ["text", "image"] : ["text"],
+		input: vision ? ["text", "image"] : ["text"],
+		...(inputLimits ? { inputLimits } : {}),
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow:
 			positiveInteger(limits?.max_context_window_tokens) ??

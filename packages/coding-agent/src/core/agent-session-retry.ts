@@ -101,17 +101,17 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 
 /**
  * Detect a degenerate empty completion: the provider ended the stream with no
- * usable content and zero output tokens. Seen with github-copilot Gemini models
- * that emit finish_reason "stop" (or a tool-use stop) with an empty content array
- * and 0 output tokens, leaving the turn dead instead of producing the next step.
+ * usable content and zero output tokens, leaving the turn dead instead of
+ * producing the next step. GitHub Copilot reports its empty turns as a typed
+ * `empty-response` error instead, which `_isRetryableError` retries.
  *
  * These are treated as retryable so the harness re-issues the request rather than
  * silently stopping mid-task. Guarded tightly (no text, no tool call, no thinking,
  * and output === 0) so legitimate non-empty turns are never matched.
  *
- * Intentionally provider-agnostic (not gated to Copilot Gemini): a degenerate
- * empty turn is a transient failure for any provider. It is bounded by
- * `maxRetries` and falls through to normal handling on exhaustion.
+ * Intentionally provider-agnostic: a degenerate empty turn is a transient failure
+ * for any provider. It is bounded by `maxRetries` and falls through to normal
+ * handling on exhaustion.
  */
 
 export function _isEmptyCompletion(this: AgentSession, message: AssistantMessage): boolean {

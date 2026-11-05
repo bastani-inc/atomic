@@ -12,6 +12,7 @@ import type {
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { githubCopilotEmptyResponse, recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -310,9 +311,27 @@ function isOpenAICompletionsReasoningField(field: string): field is OpenAIComple
 	return OPENAI_COMPLETIONS_REASONING_FIELDS.includes(field as OpenAICompletionsReasoningField);
 }
 
+/**
+ * GitHub Copilot's Gemini models stream their reasoning as an opaque `reasoning_opaque` value that must be sent back
+ * unchanged on the same assistant message. Atomic keeps it as the signature of a redacted thinking block.
+ */
+const OPAQUE_REASONING_SIGNATURE_PREFIX = "reasoning_opaque:";
+
+function encodeOpaqueReasoning(data: string): string {
+	return `${OPAQUE_REASONING_SIGNATURE_PREFIX}${data}`;
+}
+
+function decodeOpaqueReasoning(block: ThinkingContent): string | undefined {
+	const signature = block.thinkingSignature;
+	return signature?.startsWith(OPAQUE_REASONING_SIGNATURE_PREFIX)
+		? signature.slice(OPAQUE_REASONING_SIGNATURE_PREFIX.length)
+		: undefined;
+}
+
 type ChatCompletionAssistantMessageParamWithReasoning = ChatCompletionAssistantMessageParam &
 	Partial<Record<OpenAICompletionsReasoningField, string>> & {
 		reasoning_details?: JsonValue[];
+		reasoning_opaque?: string;
 	};
 
 type ChatCompletionTextPartWithCacheControl = ChatCompletionContentPartText & {
@@ -362,14 +381,16 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 
 		// `reasoning_details` are replay metadata, not user-visible stream deltas.
 		// Keep them in memory during streaming and serialize once when the block is finalized.
+		// An opaque reasoning block keeps its own signature.
 		let streamedReasoningDetails: OpenAIReasoningDetail[] | undefined;
 		const applyStreamedReasoningDetails = (block: ThinkingContent): void => {
-			if (streamedReasoningDetails !== undefined) {
+			if (streamedReasoningDetails !== undefined && block.redacted !== true) {
 				block.thinkingSignature = JSON.stringify(streamedReasoningDetails);
 			}
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		let streamStarted = false;
 
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
@@ -418,6 +439,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
+			streamStarted = true;
 
 			// Stream state of a tool call, kept off the content block so it never reaches partials: JSON arguments, or
 			// the input of a grammar (custom) tool.
@@ -436,6 +458,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 
 			let textBlock: TextContent | null = null;
 			let thinkingBlock: ThinkingContent | null = null;
+			let opaqueReasoning: { block: ThinkingContent; data: string } | null = null;
 			let hasFinishReason = false;
 			const toolCallBlocksByIndex = new Map<number, ToolCall>();
 			const toolCallBlocksById = new Map<string, ToolCall>();
@@ -510,6 +533,19 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					stream.push({ type: "thinking_start", contentIndex: getContentIndex(thinkingBlock), partial: output });
 				}
 				return thinkingBlock;
+			};
+			const appendOpaqueReasoning = (delta: string) => {
+				if (!opaqueReasoning) {
+					opaqueReasoning = { block: { type: "thinking", thinking: "", redacted: true }, data: "" };
+					blocks.push(opaqueReasoning.block);
+					stream.push({
+						type: "thinking_start",
+						contentIndex: getContentIndex(opaqueReasoning.block),
+						partial: output,
+					});
+				}
+				opaqueReasoning.data += delta;
+				opaqueReasoning.block.thinkingSignature = encodeOpaqueReasoning(opaqueReasoning.data);
 			};
 			const ensureToolCallBlock = (toolCall: StreamingToolCallDelta) => {
 				const streamIndex = typeof toolCall.index === "number" ? toolCall.index : undefined;
@@ -635,6 +671,11 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						}
 					}
 
+					const opaqueReasoningDelta = deltaFields.reasoning_opaque;
+					if (typeof opaqueReasoningDelta === "string" && opaqueReasoningDelta.length > 0) {
+						appendOpaqueReasoning(opaqueReasoningDelta);
+					}
+
 					const reasoningDetails = (choice.delta as { reasoning_details?: unknown }).reasoning_details;
 					if (Array.isArray(reasoningDetails)) {
 						for (const detail of reasoningDetails) {
@@ -716,6 +757,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				throw new Error("Stream ended without finish_reason");
 			}
 
+			const emptyResponse = githubCopilotEmptyResponse(output);
+			if (emptyResponse) throw emptyResponse;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -735,6 +778,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (rawMetadata && !output.errorMessage.includes(String(rawMetadata))) {
 				output.errorMessage += `\n${rawMetadata}`;
 			}
+			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamStarted);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {
@@ -1466,6 +1510,10 @@ export function convertMessages(
 			if (preservedReasoningDetails) {
 				assistantMsg.reasoning_details = preservedReasoningDetails;
 			}
+			const opaqueReasoning = thinkingBlocks.map(decodeOpaqueReasoning).find((data) => data !== undefined);
+			if (opaqueReasoning !== undefined) {
+				assistantMsg.reasoning_opaque = opaqueReasoning;
+			}
 			if (
 				compat.requiresReasoningContentOnAssistantMessages &&
 				model.reasoning &&
@@ -1609,6 +1657,8 @@ function parseChunkUsage(
 		prompt_cache_hit_tokens?: number;
 		prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
 		completion_tokens_details?: { reasoning_tokens?: number };
+		reasoning_tokens?: number;
+		total_tokens?: number;
 	},
 	model: Model<"openai-completions">,
 ): AssistantMessage["usage"] {
@@ -1629,14 +1679,24 @@ function parseChunkUsage(
 	// providers are under-reported. DS4 mirrors this contract too:
 	// https://github.com/antirez/ds4/pull/29
 	const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
-	// OpenAI completion_tokens already includes reasoning_tokens.
-	const outputTokens = rawUsage.completion_tokens || 0;
+	// OpenAI completion_tokens already includes reasoning_tokens. GitHub Copilot's Gemini models report reasoning
+	// only as a top-level reasoning_tokens outside completion_tokens, so their total_tokens adds all three; those
+	// tokens are counted as output here, which `Usage.reasoning` documents as a subset of it.
+	const completionTokens = rawUsage.completion_tokens || 0;
+	const nestedReasoningTokens = rawUsage.completion_tokens_details?.reasoning_tokens;
+	const topLevelReasoningTokens = rawUsage.reasoning_tokens || 0;
+	const separateReasoningTokens =
+		nestedReasoningTokens === undefined &&
+		(rawUsage.total_tokens ?? 0) >= promptTokens + completionTokens + topLevelReasoningTokens
+			? topLevelReasoningTokens
+			: 0;
+	const outputTokens = completionTokens + separateReasoningTokens;
 	const usage: AssistantMessage["usage"] = {
 		input,
 		output: outputTokens,
 		cacheRead: cacheReadTokens,
 		cacheWrite: cacheWriteTokens,
-		reasoning: rawUsage.completion_tokens_details?.reasoning_tokens || 0,
+		reasoning: nestedReasoningTokens || topLevelReasoningTokens,
 		totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};

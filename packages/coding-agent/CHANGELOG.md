@@ -17,6 +17,8 @@
 - Image generation failures carry a typed `error` next to `errorMessage`, for example `invalid-option` for a request that cannot succeed and `moderation-blocked` for a blocked prompt, so scripts and extensions can branch on `code` and `retryable` ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
 - Providers registered with image models can declare `capabilities` to enable the optional GPT Image request features.
 - Codemode saves SVG images from `models.generateImages()` to `.svg` files and names their paths in the result, because `image()` cannot show SVG. Generated SVGs no longer trigger the note asking the script to show them with `image()` ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+- GitHub Copilot failures are typed, so retries and model fallback follow the failure's code instead of the wording of Copilot's message, in the main chat, subagents and workflow stages alike: an unavailable model, used-up quota or sign-in failure moves to the next fallback model without retrying; a rate limit, outage, cut-off stream, empty turn or unrecognized response is retried on the same model first; a content-filter refusal follows `retry.fallbackOnContentFilter`; and a prompt over the model's prompt-token limit compacts. The error classes, their codes and guards are exported from `@bastani/atomic`; see [Providers](docs/providers.md#errors) ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
+- The providers guide documents which API, thinking levels, reasoning replay, tool-call behaviour, usage, images and limits each Copilot model family has ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 
 ### Changed
 
@@ -29,6 +31,9 @@
 - Subagents start promptly in a process whose main thread is busy, such as one hosting busy pooled workflow roots. A JSONL session read its header one byte per file read on every write, so a child took about 750 event-loop turns to reach its provider; it now reads the header in one read, writes a new session's model and thinking level together, and opens its session while its resources load, so a child reaches its provider in under 100 turns ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
 - Concurrent sessions on Windows no longer sporadically fail with `StorageUnavailableError` while another process releases their JSONL directory lock. Temporary `EPERM` acquisition failures now retry within a bounded budget; persistent failures retain their cause, and cancellation preserves the caller's reason ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
 - The `ask_user_question` dialog stays responsive while workflows, pooled children and subagents update the screen. Keystrokes are handled ahead of background widget and transcript repaints, and the dialog redraws only when its own state or the terminal size changes ([#4333](https://github.com/bastani-inc/atomic/issues/4333))
+- GitHub Copilot Gemini models keep their reasoning across tool-loop turns, and their reasoning tokens now count toward output tokens and cost ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
+- A GitHub Copilot turn that ends with no text and no tool call, as Gemini sometimes returns, is retried as a failure instead of ending the turn ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
+- Discovered GitHub Copilot models send strict tool schemas only when the account's list says they support them, and resize images to the per-image size the list gives ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 
 ## [0.9.71] - 2026-11-03
 

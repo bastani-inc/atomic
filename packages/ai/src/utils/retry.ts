@@ -1,3 +1,4 @@
+import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage } from "../types.ts";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
@@ -159,7 +160,7 @@ export function retryDelayMs(policy: Pick<RetryPolicy, "baseDelayMs" | "maxAgent
 	return Math.min(safeDelay, policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
 }
 
-type RetryFailure = Pick<AssistantMessage, "stopReason" | "errorMessage" | "retryAfterMs">;
+type RetryFailure = Pick<AssistantMessage, "stopReason" | "errorMessage" | "retryAfterMs" | "diagnostics">;
 
 /**
  * Wait before retry `attempt` (1-indexed): the server retry hint when the failure
@@ -299,12 +300,16 @@ export async function retryAssistantCall(
  * or transport error, so callers can decide if the last assistant turn should be
  * restarted.
  *
+ * A GitHub Copilot failure carries its typed error, whose `retryable` decides.
+ *
  * This does not implement retry policy. Callers should first handle context
  * overflow separately, then apply their own retry budget, backoff, and reporting
  * before restarting the assistant turn.
  */
 export function isRetryableAssistantError(message: RetryFailure): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
+	const copilotError = getGitHubCopilotError(message);
+	if (copilotError !== undefined) return copilotError.retryable;
 	const errorMessage = message.errorMessage;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);

@@ -1,3 +1,4 @@
+import { type GitHubCopilotErrorCode, getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage } from "../types.ts";
 
 /**
@@ -22,8 +23,6 @@ import type { AssistantMessage } from "../types.ts";
  * - Together AI: "The input (X tokens) is longer than the model's context length (Y tokens)."
  * - llama.cpp: "the request exceeds the available context size, try increasing it"
  * - LM Studio: "tokens to keep from the initial prompt is greater than the context length"
- * - GitHub Copilot: "prompt token count of X exceeds the limit of Y"
- * - GitHub Copilot: 'github-copilot API error (413): {"message":"failed to parse request","code":""}'
  * - MiniMax: "invalid params, context window exceeds limit"
  * - Kimi For Coding: "Your request exceeded model token limit: X (requested: Y)"
  * - DS4: "Prompt has X tokens, but the configured context size is Y tokens"
@@ -50,7 +49,6 @@ const OVERFLOW_PATTERNS = [
 	/maximum context length is \d+ tokens/i, // OpenRouter (most backends)
 	/exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?/i, // OpenRouter/Poolside
 	/input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)/i, // Together AI
-	/exceeds the limit of \d+/i, // GitHub Copilot
 	/exceeds the available context size/i, // llama.cpp server
 	/greater than the context length/i, // LM Studio
 	/context window exceeds limit/i, // MiniMax
@@ -67,6 +65,12 @@ const OVERFLOW_PATTERNS = [
 	// Match raw SDK errors and formatProviderError's prefix, not a status mentioned in the body.
 	/^(?:[\w .-]+ API error \(413\):|413(?:\s|:|$))/i,
 ];
+
+/** Typed GitHub Copilot rejections too general to rule overflow out; their provider text is checked instead. */
+const TEXT_CHECKED_COPILOT_CODES: ReadonlySet<GitHubCopilotErrorCode> = new Set<GitHubCopilotErrorCode>([
+	"invalid-request",
+	"unrecognized-response",
+]);
 
 function isCerebrasBodylessOverflow(errorMessage: string): boolean {
 	const normalized = errorMessage.trim().toLowerCase();
@@ -105,6 +109,10 @@ const NON_OVERFLOW_PATTERNS = [
  *    the input fills the context window.
  *
  * ## Reliability by Provider
+ *
+ * **Typed detection:** a GitHub Copilot failure is an overflow when its typed error (see
+ * `getGitHubCopilotError`) has the code `prompt-too-large`, and never for another specific code. A typed
+ * `invalid-request` or `unrecognized-response` falls through to the text patterns below.
  *
  * **Reliable detection (returns error with detectable message):**
  * - Anthropic: "prompt is too long: X tokens > Y maximum" or "request_too_large"
@@ -149,6 +157,13 @@ const NON_OVERFLOW_PATTERNS = [
  * @returns true if the message indicates a context overflow
  */
 export function isContextOverflow(message: AssistantMessage, contextWindow?: number): boolean {
+	// A GitHub Copilot failure carries its typed error, whose code decides, except for a rejection Atomic could not
+	// name more precisely: its provider text is checked like any provider's.
+	const copilotError = message.stopReason === "error" ? getGitHubCopilotError(message) : undefined;
+	if (copilotError !== undefined && !TEXT_CHECKED_COPILOT_CODES.has(copilotError.code)) {
+		return copilotError.code === "prompt-too-large";
+	}
+
 	// Case 1: Check error message patterns
 	if (message.stopReason === "error" && message.errorMessage) {
 		// Skip messages matching known non-overflow patterns (e.g. throttling / rate-limit)

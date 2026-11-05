@@ -66,6 +66,7 @@ const CATALOG = {
 			"claude-fable-5-1": { ...FABLE_5_1_MODELS_DEV, id: "claude-fable-5-1", cost: FABLE_COST },
 			"claude-fable-5": {
 				...FABLE_5_1_MODELS_DEV,
+				provider: { npm: "@ai-sdk/anthropic" },
 				id: "claude-fable-5",
 				name: "Claude Fable 5",
 				cost: { ...FABLE_COST, cache_read: 1 },
@@ -94,6 +95,7 @@ const CATALOG = {
 		models: {
 			"claude-fable-5": {
 				...FABLE_5_1_MODELS_DEV,
+				provider: { npm: "@ai-sdk/anthropic" },
 				id: "claude-fable-5",
 				name: "Claude Fable 5",
 				cost: { ...FABLE_COST, cache_read: 1 },

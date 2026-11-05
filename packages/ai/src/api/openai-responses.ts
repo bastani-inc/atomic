@@ -1,5 +1,6 @@
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
+import { githubCopilotEmptyResponse, recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -202,6 +203,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		let startEmitted = false;
 
 		try {
 			// Create OpenAI client
@@ -247,7 +249,6 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
 				});
-			let startEmitted = false;
 			// Every attempt reports its HTTP response before its body is consumed, and the message stream starts
 			// once. A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
 			// response preamble is read before the request counts as accepted.
@@ -293,6 +294,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
+			const emptyResponse = githubCopilotEmptyResponse(output);
+			if (emptyResponse) throw emptyResponse;
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
@@ -311,6 +314,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			} else {
 				output.errorMessage = errorMessage;
 			}
+			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, startEmitted);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {

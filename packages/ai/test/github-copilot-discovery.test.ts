@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, it, vi } from "vitest";
-import { streamSimple } from "../src/compat.ts";
 import type { Credential, OAuthCredential } from "../src/auth/types.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { Provider, RefreshModelsContext } from "../src/models.ts";
 import {
 	discoverGitHubCopilotModels,
@@ -159,8 +159,82 @@ describe("GitHub Copilot account model discovery", () => {
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: true,
 			supportsLongCacheRetention: false,
+			supportsStrictMode: false,
 		});
-		assert.deepEqual(discovered("example-model").compat, { supportsLongCacheRetention: false });
+		assert.deepEqual(discovered("example-model").compat, {
+			supportsLongCacheRetention: false,
+			supportsStrictMode: true,
+		});
+	});
+
+	it("sends strict tool schemas only to a model whose entry lists structured outputs (#4324)", () => {
+		const entry = (supports: Record<string, unknown>, endpoints: string[]) => ({
+			data: [{ id: "probe-model", supported_endpoints: endpoints, capabilities: { type: "chat", supports } }],
+		});
+		for (const endpoints of [["/chat/completions"], ["/responses"]]) {
+			const [withStrict] = parseGitHubCopilotDiscoveredModels(
+				entry({ tool_calls: true, structured_outputs: true }, endpoints),
+				[],
+			);
+			const [withoutStrict] = parseGitHubCopilotDiscoveredModels(
+				entry({ tool_calls: true, structured_outputs: false }, endpoints),
+				[],
+			);
+			assert.equal((withStrict?.compat as { supportsStrictMode?: boolean } | undefined)?.supportsStrictMode, true);
+			assert.equal(
+				(withoutStrict?.compat as { supportsStrictMode?: boolean } | undefined)?.supportsStrictMode,
+				false,
+			);
+		}
+	});
+
+	it("reads image limits from the entry's vision limits (#4324)", () => {
+		assert.deepEqual(discovered("example-chat-model").inputLimits, {
+			images: { maxPerRequest: 10, resize: { maxBytes: 4_194_304 } },
+		});
+		const parse = (supports: Record<string, unknown>, vision: Record<string, unknown> | undefined) =>
+			parseGitHubCopilotDiscoveredModels(
+				{
+					data: [
+						{
+							id: "probe-model",
+							supported_endpoints: ["/chat/completions"],
+							capabilities: { type: "chat", supports, limits: { vision } },
+						},
+					],
+				},
+				[],
+			)[0];
+		// A larger per-image limit never raises Atomic's default resize cap.
+		assert.deepEqual(parse({ tool_calls: true, vision: true }, { max_prompt_image_size: 30_000_000 })?.inputLimits, {
+			images: { resize: { maxBytes: 4.5 * 1024 * 1024 } },
+		});
+		// 3 raw bytes encode to 4 base64 bytes; a partial group still takes 4.
+		assert.deepEqual(parse({ tool_calls: true, vision: true }, { max_prompt_image_size: 4 })?.inputLimits, {
+			images: { resize: { maxBytes: 8 } },
+		});
+		assert.deepEqual(parse({ tool_calls: true, vision: true }, { max_prompt_images: 2 })?.inputLimits, {
+			images: { maxPerRequest: 2 },
+		});
+		assert.equal(parse({ tool_calls: true, vision: true }, {})?.inputLimits, undefined);
+		const noLimits = parseGitHubCopilotDiscoveredModels(
+			{
+				data: [
+					{
+						id: "probe-model",
+						supported_endpoints: ["/chat/completions"],
+						capabilities: { type: "chat", supports: { tool_calls: true, vision: true } },
+					},
+				],
+			},
+			[],
+		)[0];
+		assert.deepEqual(noLimits?.input, ["text", "image"]);
+		assert.equal(noLimits?.inputLimits, undefined);
+		assert.equal(parse({ tool_calls: true, vision: true }, undefined)?.inputLimits, undefined);
+		const textOnly = parse({ tool_calls: true }, { max_prompt_images: 2 });
+		assert.deepEqual(textOnly?.input, ["text"]);
+		assert.equal(textOnly?.inputLimits, undefined);
 	});
 
 	it("sends the selected effort to a Messages model the list marks as adaptive", async () => {
@@ -173,7 +247,10 @@ describe("GitHub Copilot account model discovery", () => {
 				reasoning: "medium",
 				fetch: async (input, init) => {
 					request = input instanceof Request ? input : new Request(input, init);
-					return Response.json({ type: "error", error: { type: "invalid_request_error", message: "stop" } }, { status: 400 });
+					return Response.json(
+						{ type: "error", error: { type: "invalid_request_error", message: "stop" } },
+						{ status: 400 },
+					);
 				},
 			},
 		).result();
@@ -263,7 +340,11 @@ describe("GitHub Copilot account model discovery", () => {
 	});
 
 	it("sends a discovered fast model upstream under its exact ID without a 24-hour cache request", async () => {
-		for (const model of [discovered("example-static-model-fast"), discovered("example-model-fast"), linkedToCatalog()]) {
+		for (const model of [
+			discovered("example-static-model-fast"),
+			discovered("example-model-fast"),
+			linkedToCatalog(),
+		]) {
 			let request: Request | undefined;
 			await streamSimple(
 				model,
@@ -378,11 +459,14 @@ describe("discoverGitHubCopilotModels", () => {
 		assert.equal(saved && updates[0]?.(saved), undefined);
 	});
 
-	it.each([400, 401, 403, 404])("reports no list, not an empty one, when the host refuses the token (%i)", async (status) => {
-		stubModelList(() => new Response("refused", { status }));
-		const models = await discoverGitHubCopilotModels([staticModel], refreshContext({ type: "api_key", key: "k" }));
-		assert.equal(models, undefined);
-	});
+	it.each([400, 401, 403, 404])(
+		"reports no list, not an empty one, when the host refuses the token (%i)",
+		async (status) => {
+			stubModelList(() => new Response("refused", { status }));
+			const models = await discoverGitHubCopilotModels([staticModel], refreshContext({ type: "api_key", key: "k" }));
+			assert.equal(models, undefined);
+		},
+	);
 
 	it("fails on other errors so the cached list is kept", async () => {
 		stubModelList(() => new Response("unavailable", { status: 503 }));
@@ -432,7 +516,9 @@ describe("GitHub Copilot availability of discovered models", () => {
 			["example-model", "example-model-fast", "example-static-model-fast"],
 		);
 		assert.deepEqual(
-			provider.filterModels?.([ordinary, fast, unlinkedFast], { ...login, fastModelIds: [] })?.map((model) => model.id),
+			provider
+				.filterModels?.([ordinary, fast, unlinkedFast], { ...login, fastModelIds: [] })
+				?.map((model) => model.id),
 			["example-model"],
 		);
 	});

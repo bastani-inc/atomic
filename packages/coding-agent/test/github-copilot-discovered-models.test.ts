@@ -278,7 +278,7 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 		const model = (await modelRuntime.getAvailable(PROVIDER)).find((entry) => entry.id === "example-model");
 		assert.equal(model?.contextWindow, 12_345);
 		assert.equal(model?.maxTokens, 2_048);
-		assert.deepEqual(model?.compat, { supportsLongCacheRetention: true });
+		assert.deepEqual(model?.compat, { supportsLongCacheRetention: true, supportsStrictMode: false });
 		assert.equal(model?.discovered, true);
 	});
 });
