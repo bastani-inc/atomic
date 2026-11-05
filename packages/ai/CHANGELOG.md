@@ -32,6 +32,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed Azure GPT-6 Luna, Sol, GPT-6.1 Sol and GPT-6.1 Terra using a 272K context window instead of the 1,050,000 tokens Azure Foundry deploys them with, which made sessions compact far earlier than needed (upstream [#11781](https://github.com/earendil-works/pi/pull/11781))
 - Fixed `qwen-token-plan-individual` missing `glm-5.3`, which `qwen-token-plan` and `qwen-token-plan-cn` already list (upstream [#11785](https://github.com/earendil-works/pi/pull/11785))
 - Fixed Claude Sonnet 5 requests failing with a 400 when a temperature was set: Sonnet 5 rejects non-default `temperature`, like Sonnet 5.5, so it is no longer sent (upstream [#7961](https://github.com/earendil-works/pi/pull/7961))
+- Connection errors keep their underlying cause: a request that fails before the provider answers (connection refused or reset, DNS, TLS or certificate, proxy) now reports, for example, `Connection error.: connect ECONNREFUSED 127.0.0.1:8080` instead of only `Connection error.`. The message gets the deepest error of the `cause` chain (up to 5 levels deep) and its code (upstream [#11783](https://github.com/earendil-works/pi/pull/11783))
 
 ## [0.9.71] - 2026-11-03
 
