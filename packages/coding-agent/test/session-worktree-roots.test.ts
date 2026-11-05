@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
@@ -247,6 +247,27 @@ test("an identical tree on an unrelated HEAD restores the recorded history inste
 	if (result.status !== "restored") return;
 	assert.equal(await sandbox.git(result.cwd, "rev-parse", "HEAD"), snapshot.head);
 });
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+	"a recorded checkout this process cannot read is restored like a drifted one (#4245)",
+	async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "file.txt"), "recorded\n");
+		const manager = await SessionManager.create(store, clone);
+		await record(manager, clone);
+		chmodSync(clone, 0o000);
+		try {
+			const result = await resumeSessionWorktree(manager, options());
+			assert.equal(result.status, "restored");
+			if (result.status !== "restored") return;
+			assert.equal(result.mappings[0]!.from, clone);
+			assert.equal(result.cwd, result.mappings[0]!.to);
+			assert.equal(readFileSync(join(result.cwd, "file.txt"), "utf8"), "recorded\n");
+		} finally {
+			chmodSync(clone, 0o755);
+		}
+	},
+);
 
 test("a recorded repository replaced by an unborn checkout restores its snapshot (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();

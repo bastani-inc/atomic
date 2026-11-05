@@ -1,8 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
-import { GitUnavailableError, WorkspaceGitError } from "./errors.ts";
+import { GitUnavailableError, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
 
 /** The Git executable snapshot operations run, with the environment it needs (a provisioned Git may need some). */
 export interface GitExecutable {
@@ -122,6 +122,19 @@ function killChild(child: ChildProcessWithoutNullStreams, detached: boolean): vo
 	child.kill("SIGKILL");
 }
 
+/**
+ * The `unreadable-path` error for a working directory the process cannot list or enter. Spawning in one fails with the
+ * same `ENOENT` or `EACCES` as a missing or non-executable Git, so only the directory itself tells them apart.
+ */
+function unreadableDirectory(directory: string): WorkspaceSnapshotError | undefined {
+	try {
+		accessSync(directory, constants.R_OK | constants.X_OK);
+		return undefined;
+	} catch (error) {
+		return new WorkspaceSnapshotError("unreadable-path", directory, error as Error);
+	}
+}
+
 /** Runs one Git command through the injected executable. Rejects with the signal's reason when aborted. */
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
@@ -140,7 +153,8 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	const argv = [...BASE_CONFIG, ...(options.neutral ? NEUTRAL_CONVERSION_CONFIG : []), ...args];
 	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
 		(error.code === "ENOENT" || error.code === "EACCES") && existsSync(options.cwd)
-			? new GitUnavailableError("not-installed", executable.path, { cause: error })
+			? (unreadableDirectory(options.cwd) ??
+				new GitUnavailableError("not-installed", executable.path, { cause: error }))
 			: new WorkspaceGitError(
 					{
 						operation: gitOperation(args),
