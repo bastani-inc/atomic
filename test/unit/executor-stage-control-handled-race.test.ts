@@ -60,6 +60,7 @@ test("stage-control resume rechecks admission after awaited __resume setup", asy
 		innerCtx: {
 			__sessionMeta: () => ({ sessionId: "session-resume-race", sessionFile: undefined }),
 			__isPaused: () => true,
+			__isReleased: () => false,
 			subscribe: () => () => {},
 			async __resume(
 				_message: string | undefined,
