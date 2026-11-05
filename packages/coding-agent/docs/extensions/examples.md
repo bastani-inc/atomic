@@ -91,7 +91,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 
 ## Plan-mode completion
 
-In `plan-mode/`, use `[DONE:1]` to mark an individual step complete. To finish the whole plan without per-step markers, use a standalone final message such as `All steps are complete.` or `The plan is done.`. Negated summaries, questions, conditional statements, and completion phrases embedded in longer prose leave unfinished steps active.
+In `plan-mode/`, use `[DONE:1]` to mark an individual step complete, including in thinking blocks. To finish the whole plan without per-step markers, use a standalone final visible reply such as `All steps are complete.` or `The plan is done.`. Hidden thinking does not count toward that whole-plan reply. Negated summaries, questions, conditional statements, and completion phrases embedded in longer visible prose leave unfinished steps active.
 
 ## Next steps
 

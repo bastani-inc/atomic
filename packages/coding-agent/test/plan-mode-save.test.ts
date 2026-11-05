@@ -260,6 +260,37 @@ test("plan-mode agent_end only completes the plan from the last assistant messag
 	assert.match(send.mock.calls[0]![0].content, /~~Ship~~/);
 });
 
+test("plan-mode agent_end judges whole-plan completion by visible text only (#4361)", async () => {
+	const thinking = (text: string) => ({ type: "thinking", thinking: text });
+	const visible = (text: string) => ({ type: "text", text });
+
+	for (const content of [
+		[thinking("Checking the remaining work."), visible("The plan is done.")],
+		[visible("The plan"), thinking("The internal check is finished."), visible("is done.")],
+	]) {
+		const completed = await startExecution([{ step: 1, text: "Ship", completed: false }]);
+		await completed.extension.handlers.get("agent_end")![0](
+			{ type: "agent_end", messages: [messageWithContent(content)] },
+			completed.ctx,
+		);
+		assert.equal(completed.send.mock.calls.length, 1);
+		assert.equal(completed.append.mock.calls.length, 1);
+	}
+
+	for (const content of [
+		[thinking("The plan is done."), visible("Not all steps complete")],
+		[{ type: "thinking", thinking: "Still checking the work.", text: "The plan is done." }],
+	]) {
+		const active = await startExecution([{ step: 1, text: "Ship", completed: false }]);
+		await active.extension.handlers.get("agent_end")![0](
+			{ type: "agent_end", messages: [messageWithContent(content)] },
+			active.ctx,
+		);
+		assert.equal(active.send.mock.calls.length, 0);
+		assert.equal(active.append.mock.calls.length, 0);
+	}
+});
+
 test("plan-mode agent_end keeps executing when steps remain and the model does not claim completion", async () => {
 	const { extension, ctx, send, append } = await startExecution([
 		{ step: 1, text: "Ship", completed: true },

@@ -417,11 +417,23 @@ export function createGrepToolDefinition(
 
 						let lastShown: { filePath: string; lineNumber: number } | undefined;
 						let pendingContext: Array<{ filePath: string; lineNumber: number; lineText: string }> = [];
+						let pendingContextStart = 0;
 						const bufferContext = (filePath: string, lineNumber: number, lineText: string) => {
+							if (pendingContext.at(-1)?.filePath !== filePath) {
+								pendingContext = [];
+								pendingContextStart = 0;
+							}
 							pendingContext.push({ filePath, lineNumber, lineText });
-							pendingContext = pendingContext.filter(
-								(entry) => entry.filePath === filePath && entry.lineNumber > lineNumber - contextBeforeValue,
-							);
+							while (
+								pendingContextStart < pendingContext.length &&
+								pendingContext[pendingContextStart].lineNumber <= lineNumber - contextBeforeValue
+							) {
+								pendingContextStart++;
+							}
+							if (pendingContextStart * 2 >= pendingContext.length) {
+								pendingContext = pendingContext.slice(pendingContextStart);
+								pendingContextStart = 0;
+							}
 						};
 						// Set at the last allowed match. rg still sends that match's trailing context, which is kept,
 						// and the limit notice waits for proof of one more match.
@@ -456,11 +468,14 @@ export function createGrepToolDefinition(
 								bufferContext(filePath, lineNumber, lineText);
 								return;
 							}
-							const leading = pendingContext.filter(
-								(entry) => entry.filePath === filePath && entry.lineNumber >= lineNumber - contextBeforeValue,
-							);
+							for (let index = pendingContextStart; index < pendingContext.length; index++) {
+								const entry = pendingContext[index];
+								if (entry.filePath === filePath && entry.lineNumber >= lineNumber - contextBeforeValue) {
+									pushLine(entry.filePath, entry.lineNumber, entry.lineText, false);
+								}
+							}
 							pendingContext = [];
-							for (const entry of leading) pushLine(entry.filePath, entry.lineNumber, entry.lineText, false);
+							pendingContextStart = 0;
 							pushLine(filePath, lineNumber, lineText, true);
 							lastShown = { filePath, lineNumber };
 							matchCount++;

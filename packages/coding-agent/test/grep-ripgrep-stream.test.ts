@@ -94,6 +94,42 @@ function flagValue(args: string[], flag: string): string | undefined {
 	return index === -1 ? undefined : args[index + 1];
 }
 
+async function measureContextWork(events: RgEvent[], input: Omit<GrepToolInput, "pattern">) {
+	let lineNumberReads = 0;
+	let largestBuffer = 0;
+	let copiedContextLines = 0;
+	const originalSlice = Array.prototype.slice;
+	const originalPush = Array.prototype.push;
+	Array.prototype.push = function (this: object[], ...items: Array<{ lineText?: string; lineNumber?: number }>) {
+		for (const item of items) {
+			if (!item?.lineText?.startsWith("retained ") || typeof item.lineNumber !== "number") continue;
+			largestBuffer = Math.max(largestBuffer, this.length + items.length);
+			const lineNumber = item.lineNumber;
+			Object.defineProperty(item, "lineNumber", {
+				get() {
+					lineNumberReads++;
+					return lineNumber;
+				},
+				enumerable: true,
+				configurable: true,
+			});
+		}
+		return originalPush.apply(this, items);
+	};
+	Array.prototype.slice = function (this: Array<{ lineText?: string }>, start?: number, end?: number) {
+		const result = originalSlice.call(this, start, end);
+		if (this[0]?.lineText?.startsWith("retained ")) copiedContextLines += result.length;
+		return result;
+	};
+	try {
+		const result = await runRipgrep(events, input);
+		return { ...result, lineNumberReads, copiedContextLines, largestBuffer };
+	} finally {
+		Array.prototype.push = originalPush;
+		Array.prototype.slice = originalSlice;
+	}
+}
+
 describe("grep ripgrep JSON stream handling", () => {
 	beforeEach(() => {
 		vi.mocked(spawn).mockReset();
@@ -319,44 +355,64 @@ describe("grep ripgrep JSON stream handling", () => {
 		});
 	}
 
+	it("does linear work when a large leading-context window fills before a match (#4361)", async () => {
+		const contextLines = 256;
+		const events = Array.from({ length: contextLines }, (_, index) =>
+			contextEvent("a.txt", index + 1, `retained context ${index}`),
+		);
+		events.push(matchEvent("a.txt", contextLines + 1, "selected needle"));
+		const { output, lineNumberReads, copiedContextLines } = await measureContextWork(events, {
+			literal: true,
+			contextBefore: contextLines,
+		});
+		assert.equal(output.split("\n").length, contextLines + 1);
+		const contextWork = lineNumberReads + copiedContextLines;
+		assert.ok(contextWork <= contextLines * 4, `performed ${contextWork} context operations`);
+	});
+
+	it("does amortized linear work while a large leading-context window rolls forward (#4361)", async () => {
+		const contextLines = 1024;
+		const contextBefore = 128;
+		const events = Array.from({ length: contextLines }, (_, index) =>
+			contextEvent("a.txt", index + 1, `retained context ${index}`),
+		);
+		events.push(matchEvent("a.txt", contextLines + 1, "selected needle"));
+		const { output, lineNumberReads, copiedContextLines, largestBuffer } = await measureContextWork(events, {
+			literal: true,
+			contextBefore,
+		});
+		const lines = output.split("\n");
+		assert.equal(lines.length, contextBefore + 1);
+		assert.equal(lines[0], "a.txt-897- retained context 896");
+		assert.equal(lines.at(-1), "a.txt:1025: selected needle");
+		assert.ok(largestBuffer <= contextBefore * 2, `buffer retained ${largestBuffer} lines`);
+		const contextWork = lineNumberReads + copiedContextLines;
+		assert.ok(contextWork <= contextLines * 4, `performed ${contextWork} context operations`);
+	});
+
 	for (const sameFile of [true, false]) {
 		it(`bounds leading-context work across skipped matches (same file: ${sameFile}) (#4361)`, async () => {
 			const contextBefore = 3;
 			const skippedMatches = 100;
-			let largestContextFilter = 0;
-			const originalFilter = Array.prototype.filter;
-			const filter = vi.spyOn(Array.prototype, "filter").mockImplementation(function (
-				this: Array<{ lineText?: string }>,
-				predicate,
-				thisArg,
-			) {
-				if (this[0]?.lineText?.startsWith("retained needle")) {
-					largestContextFilter = Math.max(largestContextFilter, this.length);
-				}
-				return originalFilter.call(this, predicate, thisArg);
+			const fileAt = (index: number) => (sameFile ? "a.txt" : `file${index}.txt`);
+			const lineAt = (index: number) => (sameFile ? index + 1 : skippedMatches);
+			const events = Array.from({ length: skippedMatches }, (_, index) =>
+				matchEvent(fileAt(index), lineAt(index), `retained needle ${index}`),
+			);
+			const lastFile = fileAt(skippedMatches - 1);
+			events.push(matchEvent(lastFile, skippedMatches + 1, "selected needle"));
+			const { output, lineNumberReads, copiedContextLines, largestBuffer } = await measureContextWork(events, {
+				literal: true,
+				offset: skippedMatches,
+				contextBefore,
 			});
-			try {
-				const fileAt = (index: number) => (sameFile ? "a.txt" : `file${index}.txt`);
-				const lineAt = (index: number) => (sameFile ? index + 1 : skippedMatches);
-				const events = Array.from({ length: skippedMatches }, (_, index) =>
-					matchEvent(fileAt(index), lineAt(index), `retained needle ${index}`),
-				);
-				const lastFile = fileAt(skippedMatches - 1);
-				events.push(matchEvent(lastFile, skippedMatches + 1, "selected needle"));
-				const { output } = await runRipgrep(events, { literal: true, offset: skippedMatches, contextBefore });
-				const contextIndices = sameFile ? [97, 98, 99] : [99];
-				const expected = contextIndices.map(
-					(index) => `${fileAt(index)}-${lineAt(index)}- retained needle ${index}`,
-				);
-				expected.push(`${lastFile}:101: selected needle`);
-				assert.equal(output, expected.join("\n"));
-				assert.ok(
-					largestContextFilter <= contextBefore + 1,
-					`context filter visited ${largestContextFilter} lines`,
-				);
-			} finally {
-				filter.mockRestore();
-			}
+			const contextIndices = sameFile ? [97, 98, 99] : [99];
+			const expected = contextIndices.map((index) => `${fileAt(index)}-${lineAt(index)}- retained needle ${index}`);
+			expected.push(`${lastFile}:101: selected needle`);
+			assert.equal(output, expected.join("\n"));
+			assert.ok(largestBuffer <= contextBefore * 2, `buffer retained ${largestBuffer} lines`);
+			const contextWork = lineNumberReads + copiedContextLines;
+			assert.ok(contextWork <= skippedMatches * 4, `performed ${contextWork} context operations`);
 		});
 	}
 
