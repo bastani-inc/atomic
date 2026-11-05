@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	type AssistantMessage,
 	AssistantMessageEventStream,
+	type DeferredHandle,
 	InMemoryCredentialStore,
 	normalizeContext,
 	type Provider,
@@ -155,5 +156,80 @@ test("aliases retain results from providers that end without terminal events", a
 	const result = await alias.streamSimple(alias.getModels()[0], normalizeContext({ messages: [] })).result();
 	assert.equal(result.provider, "account");
 	assert.deepEqual(result.content, completion.content);
+	assert.equal(completion.provider, "openai");
+});
+
+function completedStream(completion: AssistantMessage): AssistantMessageEventStream {
+	const stream = new AssistantMessageEventStream();
+	stream.push({ type: "done", reason: "stop", message: completion });
+	stream.end(completion);
+	return stream;
+}
+
+for (const method of ["stream", "streamSimple"] as const) {
+	test(`alias ${method} streams without request options`, async () => {
+		const completion = message("openai");
+		const implementation: Provider["streamSimple"] = () => completedStream(completion);
+		const source: Provider = { ...openaiProvider(), stream: implementation, streamSimple: implementation };
+		const alias = createProviderAlias({ id: "account", provider: "openai" }, () => source);
+
+		const result = await alias[method](alias.getModels()[0], normalizeContext({ messages: [] })).result();
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(result.provider, "account");
+	});
+}
+
+test("alias stream reports a source error under the alias provider", async () => {
+	const failure: AssistantMessage = {
+		...message("openai"),
+		content: [],
+		stopReason: "error",
+		errorMessage: "source failed",
+	};
+	const source: Provider = {
+		...openaiProvider(),
+		streamSimple: () => {
+			const stream = new AssistantMessageEventStream();
+			stream.push({ type: "error", reason: "error", error: failure });
+			stream.end(failure);
+			return stream;
+		},
+	};
+	const alias = createProviderAlias({ id: "account", provider: "openai" }, () => source);
+	const stream = alias.streamSimple(alias.getModels()[0], normalizeContext({ messages: [] }));
+
+	const events = [];
+	for await (const event of stream) events.push(event);
+
+	assert.equal(events.length, 1);
+	const [event] = events;
+	assert.ok(event.type === "error");
+	assert.equal(event.reason, "error");
+	assert.equal(event.error.provider, "account");
+	assert.equal(event.error.errorMessage, "source failed");
+	assert.equal(failure.provider, "openai");
+	assert.equal((await stream.result()).provider, "account");
+});
+
+test("alias fetchDeferred resumes the source response under the alias provider", async () => {
+	const completion = message("openai");
+	const requests: Array<{ provider: string; handleId: string }> = [];
+	const source: Provider = {
+		...openaiProvider(),
+		fetchDeferred: (model, handle) => {
+			requests.push({ provider: model.provider, handleId: handle.id });
+			return completedStream(completion);
+		},
+	};
+	const alias = createProviderAlias({ id: "account", provider: "openai" }, () => source);
+	const model = alias.getModels()[0];
+	const handle: DeferredHandle = { provider: "account", modelId: model.id, api: model.api, id: "response-1" };
+
+	const result = await alias.fetchDeferred!(model, handle).result();
+
+	assert.deepEqual(requests, [{ provider: "openai", handleId: "response-1" }]);
+	assert.equal(result.stopReason, "stop");
+	assert.equal(result.provider, "account");
 	assert.equal(completion.provider, "openai");
 });

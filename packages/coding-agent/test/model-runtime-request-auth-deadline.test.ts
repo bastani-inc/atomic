@@ -1,4 +1,13 @@
-import { AssistantMessageEventStream } from "@bastani/pi-ai";
+import {
+	type Api,
+	type AssistantMessage,
+	AssistantMessageEventStream,
+	createProvider,
+	type DeferredFetchOptions,
+	type DeferredHandle,
+	type Model,
+	type ProviderStreams,
+} from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -113,7 +122,7 @@ describe("ModelRuntime request-auth deadline", () => {
 		controller.abort();
 		const result = await pending;
 
-		expect(result.stopReason).toBe("error");
+		expect(result.stopReason).toBe("aborted");
 		expect(providerCalls).toBe(0);
 	});
 
@@ -168,7 +177,7 @@ describe("ModelRuntime request-auth deadline", () => {
 				signal: controller.signal,
 			},
 		);
-		expect(result.stopReason).toBe("error");
+		expect(result.stopReason).toBe("aborted");
 		expect(resolveCalls).toBe(0);
 		expect(providerCalls).toBe(0);
 	});
@@ -243,5 +252,109 @@ describe("ModelRuntime request-auth deadline", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(resolveCalls).toBe(0);
 		expect(providerCalls).toBe(1);
+	});
+});
+
+describe("ModelRuntime deferred responses", () => {
+	const DEFERRED_API = "deferred-test-api";
+
+	function deferredModel(provider: string): Model<typeof DEFERRED_API> {
+		return {
+			id: "deferred-model",
+			name: "Deferred Model",
+			api: DEFERRED_API,
+			provider,
+			baseUrl: "https://deferred.test/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+	}
+
+	function completedStream(model: Model<Api>, text: string): AssistantMessageEventStream {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		const stream = new AssistantMessageEventStream();
+		stream.push({ type: "done", reason: "stop", message });
+		stream.end(message);
+		return stream;
+	}
+
+	async function runtimeWith(providerId: string, fetchDeferred?: ProviderStreams["fetchDeferred"]) {
+		const unused = (): never => {
+			throw new Error("unused");
+		};
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			refreshOnCreate: false,
+		});
+		runtime.registerNativeProvider(
+			createProvider({
+				id: providerId,
+				auth: {
+					apiKey: {
+						name: providerId,
+						resolve: async ({ credential }) =>
+							credential?.key ? { auth: { apiKey: credential.key }, source: "stored" } : undefined,
+					},
+				},
+				models: [deferredModel(providerId)],
+				api: { stream: unused, streamSimple: unused, ...(fetchDeferred ? { fetchDeferred } : {}) },
+			}),
+		);
+		await runtime.setRuntimeApiKey(providerId, "sk-deferred", {});
+		return runtime;
+	}
+
+	function handleFor(providerId: string): DeferredHandle {
+		return { provider: providerId, modelId: "deferred-model", api: DEFERRED_API, id: "response-1" };
+	}
+
+	it("resumes a deferred response through the provider with the resolved credentials", async () => {
+		const requests: Array<{ model: string; handleId: string; apiKey: string | undefined }> = [];
+		const runtime = await runtimeWith(
+			"deferred-capable",
+			(model: Model<Api>, handle: DeferredHandle, options?: DeferredFetchOptions) => {
+				requests.push({ model: model.id, handleId: handle.id, apiKey: options?.apiKey });
+				return completedStream(model, "resumed");
+			},
+		);
+		const model = runtime.getModel("deferred-capable", "deferred-model");
+		expect(model).toBeDefined();
+
+		const result = await runtime.fetchDeferred(model!, handleFor("deferred-capable"));
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.content).toEqual([{ type: "text", text: "resumed" }]);
+		expect(requests).toEqual([{ model: "deferred-model", handleId: "response-1", apiKey: "sk-deferred" }]);
+	});
+
+	it("reports a provider without deferred responses as an error result", async () => {
+		const runtime = await runtimeWith("deferred-missing");
+		const model = runtime.getModel("deferred-missing", "deferred-model");
+		expect(model).toBeDefined();
+
+		const result = await runtime.fetchDeferred(model!, handleFor("deferred-missing"));
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Provider deferred-missing does not support deferred responses");
 	});
 });

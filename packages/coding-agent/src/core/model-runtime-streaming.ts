@@ -355,20 +355,24 @@ export class ModelRuntimeStreaming {
 				prepared = next;
 			}
 		};
-		return lazyStream(model, async () => iterate());
+		return lazyStream(model, async () => iterate(), options?.signal);
 	}
 	async fetchDeferred(
 		model: Model<Api>,
 		handle: DeferredHandle,
 		options?: ModelsDeferredFetchOptions,
 	): Promise<AssistantMessage> {
-		return lazyStream(model, async () => {
-			const prepared = await this.prepareRequest(model, options);
-			if (!prepared.provider.fetchDeferred) {
-				throw new ModelsError("provider", `Provider ${model.provider} does not support deferred responses`);
-			}
-			return prepared.provider.fetchDeferred(prepared.model, handle, prepared.options as DeferredFetchOptions);
-		}).result();
+		return lazyStream(
+			model,
+			async () => {
+				const prepared = await this.prepareRequest(model, options);
+				if (!prepared.provider.fetchDeferred) {
+					throw new ModelsError("provider", `Provider ${model.provider} does not support deferred responses`);
+				}
+				return prepared.provider.fetchDeferred(prepared.model, handle, prepared.options as DeferredFetchOptions);
+			},
+			options?.signal,
+		).result();
 	}
 
 	async cancelDeferred(

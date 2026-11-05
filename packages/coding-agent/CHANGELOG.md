@@ -38,6 +38,7 @@
 - A GitHub Copilot turn that ends with no text and no tool call, as Gemini sometimes returns, is retried as a failure instead of ending the turn ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Discovered GitHub Copilot models send strict tool schemas only when the account's list says they support them, and resize images to the per-image size the list gives ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - A bash call whose command leaves a process holding its output open, or (on Linux) whose process group is slow to exit on a busy machine, no longer fails with `CleanupFailed: Process-group exit or reader drain was not confirmed`. The tool returns the command's output and exit code, and the task's cleanup shows as `quarantined` while it is confirmed in the background until the session or stage closes; its process permit stays held until then. On macOS, a process group the system still refuses to probe after the drain window fails as before ([#4338](https://github.com/bastani-inc/atomic/issues/4338)).
+- Aborting while a tool runs no longer ends the turn with an error when the next request's credential setup sees the aborted signal; the turn ends as aborted (upstream [#8635](https://github.com/earendil-works/pi/pull/8635))
 
 ## [0.9.71] - 2026-11-03
 

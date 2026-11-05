@@ -79,25 +79,33 @@ function aliasChatOptions<T extends StreamOptions>(options: T | undefined, model
 	};
 }
 
-function aliasStream(model: Model<Api>, start: () => AssistantMessageEventStream): AssistantMessageEventStream {
-	return lazyStream(model, async () => {
-		const source = start();
-		async function* events(): AsyncGenerator<AssistantMessageEvent> {
-			for await (const event of source) {
-				if (event.type === "done") {
-					yield { ...event, message: withProvider(event.message, model.provider) };
-				} else if (event.type === "error") {
-					yield { ...event, error: withProvider(event.error, model.provider) };
-				} else {
-					yield { ...event, partial: withProvider(event.partial, model.provider) };
+function aliasStream(
+	model: Model<Api>,
+	start: () => AssistantMessageEventStream,
+	signal: AbortSignal | undefined,
+): AssistantMessageEventStream {
+	return lazyStream(
+		model,
+		async () => {
+			const source = start();
+			async function* events(): AsyncGenerator<AssistantMessageEvent> {
+				for await (const event of source) {
+					if (event.type === "done") {
+						yield { ...event, message: withProvider(event.message, model.provider) };
+					} else if (event.type === "error") {
+						yield { ...event, error: withProvider(event.error, model.provider) };
+					} else {
+						yield { ...event, partial: withProvider(event.partial, model.provider) };
+					}
 				}
 			}
-		}
-		return {
-			[Symbol.asyncIterator]: events,
-			result: async () => withProvider(await source.result(), model.provider),
-		};
-	});
+			return {
+				[Symbol.asyncIterator]: events,
+				result: async () => withProvider(await source.result(), model.provider),
+			};
+		},
+		signal,
+	);
 }
 
 export function createProviderAlias(config: ProviderAliasConfig, resolve: () => Provider): Provider {
@@ -128,26 +136,34 @@ export function createProviderAlias(config: ProviderAliasConfig, resolve: () => 
 			? (models, credential) => resolve().filterAllModels!(models.map(sourceModel), credential).map(aliasModel)
 			: undefined,
 		stream: (model, context, options) =>
-			aliasStream(model, () =>
-				resolve().stream(
-					sourceModel(model),
-					sourceContext(context, config.id, config.provider),
-					aliasChatOptions(options, model),
-				),
+			aliasStream(
+				model,
+				() =>
+					resolve().stream(
+						sourceModel(model),
+						sourceContext(context, config.id, config.provider),
+						aliasChatOptions(options, model),
+					),
+				options?.signal,
 			),
 		streamSimple: (model, context, options) =>
-			aliasStream(model, () =>
-				resolve().streamSimple(
-					sourceModel(model),
-					sourceContext(context, config.id, config.provider),
-					aliasChatOptions(options, model),
-				),
+			aliasStream(
+				model,
+				() =>
+					resolve().streamSimple(
+						sourceModel(model),
+						sourceContext(context, config.id, config.provider),
+						aliasChatOptions(options, model),
+					),
+				options?.signal,
 			),
 	};
 	if (source.fetchDeferred) {
 		alias.fetchDeferred = (model, handle, options) =>
-			aliasStream(model, () =>
-				resolve().fetchDeferred!(sourceModel(model), handle, aliasChatOptions(options, model)),
+			aliasStream(
+				model,
+				() => resolve().fetchDeferred!(sourceModel(model), handle, aliasChatOptions(options, model)),
+				options?.signal,
 			);
 	}
 	if (source.cancelDeferred) {

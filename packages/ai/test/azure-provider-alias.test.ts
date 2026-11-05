@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
-import { getModel, getModels } from "../src/compat.ts";
+import { getModel, getModels, normalizeContext } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
 import { createModels } from "../src/models.ts";
 import { builtinModels } from "../src/providers/all.ts";
 import { azureProvider } from "../src/providers/azure.ts";
 import { AZURE_OPENAI_RESPONSES_MODELS } from "../src/providers/azure-openai-responses.models.ts";
 import { azureOpenAIResponsesProvider } from "../src/providers/azure-openai-responses.ts";
-import type { StreamOptions } from "../src/types.ts";
+import type { Model, StreamOptions } from "../src/types.ts";
 
 test("legacy Azure provider references resolve to the canonical catalog and credentials", async () => {
 	const model = getModel("azure-openai-responses", "gpt-4o-mini");
@@ -159,4 +159,29 @@ test("legacy native Azure registrations share canonical lookup, auth and removal
 	assert.equal(models.getProviders().length, 1);
 	models.deleteProvider("azure-openai-responses");
 	assert.equal(models.getProviders().length, 0);
+});
+
+test("Azure chat completions streams run without request options", async () => {
+	const azure = azureProvider();
+	const model: Model<"openai-completions"> = {
+		id: "test-deployment",
+		name: "Test Deployment",
+		api: "openai-completions",
+		provider: "azure",
+		baseUrl: "https://example.openai.azure.com/openai/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 4096,
+	};
+	const transcript = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 1 }] });
+
+	for (const result of [
+		await azure.stream(model, transcript).result(),
+		await azure.streamSimple(model, transcript).result(),
+	]) {
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.errorMessage, "No API key for provider: azure");
+	}
 });
