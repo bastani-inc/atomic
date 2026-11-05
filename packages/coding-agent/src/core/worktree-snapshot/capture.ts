@@ -124,15 +124,20 @@ export interface WorkingTreeState {
 }
 
 /**
- * Writes the policy-filtered working tree of `root` as a Git tree through a private index seeded from HEAD, leaving
- * the user's index, refs and files untouched. Denied and ignored tracked paths keep their HEAD content.
+ * Writes the policy-filtered working tree through a private index seeded from `seedTree` (HEAD by default), leaving
+ * the user's index, refs and files untouched. Denied and ignored tracked paths keep their seeded content.
  */
 export async function writeWorkingTree(
 	checkout: Checkout,
 	settings: WorktreeSnapshotSettings,
 	policy: SnapshotPathPolicy,
 	scratch: string,
-	options: { readonly signal?: AbortSignal; readonly neutral?: boolean },
+	options: {
+		readonly signal?: AbortSignal;
+		readonly neutral?: boolean;
+		readonly seedTree?: string;
+		readonly attributesFile?: string;
+	},
 ): Promise<WorkingTreeState> {
 	const { root } = checkout;
 	const index = join(scratch, "index");
@@ -153,8 +158,11 @@ export async function writeWorkingTree(
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
 	}
-	await runGit(["read-tree", "--reset", checkout.head], git);
-	const changed = nulFields((await runGit(["diff-files", "-z", "--name-only", "--no-renames"], git)).stdout);
+	const config = options.attributesFile === undefined ? [] : ["-c", `core.attributesFile=${options.attributesFile}`];
+	await runGit([...config, "read-tree", "--reset", options.seedTree ?? checkout.head], git);
+	const changed = nulFields(
+		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
+	);
 	const untracked = nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
 		(path) => !path.endsWith("/"),
 	);
@@ -188,7 +196,7 @@ export async function writeWorkingTree(
 		admitted.push(path);
 	}
 	if (admitted.length > 0) {
-		await runGit(["update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
+		await runGit([...config, "update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
 			...git,
 			input: `${admitted.join("\0")}\0`,
 		});
