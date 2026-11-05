@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../../src/core/agent-session-methods.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
+// Image processing omits images it cannot decode, so the fixture must be a real PNG.
+const TINY_PNG_BASE64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 const PAUSED_QUEUE_SETTLE_MS = 50;
 const IDLE_DELIVERY_SETTLE_TIMEOUT_MS = 10_000;
 const LIFECYCLE_EVENT_TYPES = new Set(["agent_start", "agent_end", "agent_settled"]);
@@ -440,6 +443,154 @@ describe("AgentSession queue characterization", () => {
 
 		expect(countsAtQueuedMessageStart).toEqual([0]);
 		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
+	it.each(["steer", "followUp"] as const)(
+		"announces the emptied %s queue before the queued message starts",
+		async (lane) => {
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = await createWaitingHarness();
+			harnesses.push(harness);
+			const sequence: string[] = [];
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("second reply"),
+				fauxAssistantMessage("third reply"),
+			]);
+			harness.session.subscribe((event) => {
+				if (event.type === "queue_update") {
+					sequence.push(`queue:${event.steering.join(",")}/${event.followUp.join(",")}`);
+				} else if (
+					event.type === "message_start" &&
+					event.message.role === "user" &&
+					getMessageText(event.message) === "queued"
+				) {
+					sequence.push("start");
+				}
+			});
+
+			await waitForToolStart;
+			if (lane === "steer") await harness.session.steer("queued");
+			else await harness.session.followUp("queued");
+			releaseToolExecution();
+			await promptPromise;
+
+			expect(sequence).toEqual([lane === "steer" ? "queue:queued/" : "queue:/queued", "queue:/", "start"]);
+		},
+	);
+
+	it.each(["steer", "followUp"] as const)(
+		"delivers a %s queued without images with its content untouched",
+		async (lane) => {
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = await createWaitingHarness();
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("second reply"),
+				fauxAssistantMessage("third reply"),
+			]);
+			const agent = harness.session.agent;
+			const messages: Extract<AgentMessage, { role: "user" }>[] = [];
+			const contentWhenQueued: Extract<AgentMessage, { role: "user" }>["content"][] = [];
+			const record = (message: AgentMessage): void => {
+				if (message.role !== "user") return;
+				messages.push(message);
+				contentWhenQueued.push(message.content);
+			};
+			const queueSteer = agent.steer.bind(agent);
+			const queueFollowUp = agent.followUp.bind(agent);
+			agent.steer = (message) => {
+				record(message);
+				queueSteer(message);
+			};
+			agent.followUp = (message) => {
+				record(message);
+				queueFollowUp(message);
+			};
+
+			await waitForToolStart;
+			if (lane === "steer") await harness.session.steer("plain");
+			else await harness.session.followUp("plain", []);
+			releaseToolExecution();
+			await promptPromise;
+
+			expect(getUserTexts(harness)).toEqual(["start", "plain"]);
+			expect(messages).toHaveLength(1);
+			expect(messages[0].content).toBe(contentWhenQueued[0]);
+		},
+	);
+
+	it.each(["steer", "followUp"] as const)(
+		"gives back a %s message as typed after an earlier message rewritten to the same text was delivered",
+		async (lane) => {
+			const deliveredTurnStarted = Promise.withResolvers<void>();
+			const releaseDeliveredTurn = Promise.withResolvers<void>();
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = await createWaitingHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("input", (event) =>
+							event.text.startsWith("typed")
+								? { action: "transform", text: "expanded" }
+								: { action: "continue" },
+						);
+					},
+				],
+			});
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				...(lane === "followUp" ? [fauxAssistantMessage("second reply")] : []),
+				async () => {
+					deliveredTurnStarted.resolve();
+					await releaseDeliveredTurn.promise;
+					return fauxAssistantMessage("reply to the delivered message");
+				},
+			]);
+
+			await waitForToolStart;
+			await harness.session.prompt("typed one", { streamingBehavior: lane });
+			releaseToolExecution();
+			await deliveredTurnStarted.promise;
+			await harness.session.prompt("typed two", { streamingBehavior: lane });
+			const cleared = harness.session.clearQueue();
+			releaseDeliveredTurn.resolve();
+			await promptPromise;
+
+			expect(getUserTexts(harness)).toEqual(["start", "expanded"]);
+			expect(cleared).toEqual(
+				lane === "steer"
+					? { steering: ["expanded"], followUp: [], typed: { steering: ["typed two"], followUp: [] } }
+					: { steering: [], followUp: ["expanded"], typed: { steering: [], followUp: ["typed two"] } },
+			);
+		},
+	);
+
+	it("removes an image-only steering message after delivery (pi #8612)", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		let sawImage = false;
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			(context) => {
+				const user = [...context.messages].reverse().find((message) => message.role === "user");
+				sawImage =
+					user?.role === "user" &&
+					typeof user.content !== "string" &&
+					user.content.some((part) => part.type === "image");
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await waitForToolStart;
+		await harness.session.steer("", [{ type: "image", mimeType: "image/png", data: TINY_PNG_BASE64 }]);
+		assert.equal(harness.session.pendingMessageCount, 1);
+		releaseToolExecution();
+		await promptPromise;
+
+		assert.equal(sawImage, true);
+		assert.equal(harness.session.agent.hasQueuedMessages(), false);
+		assert.equal(harness.session.pendingMessageCount, 0);
 	});
 
 	it("throws when queueing an extension command with steer", async () => {

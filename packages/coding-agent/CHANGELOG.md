@@ -56,6 +56,7 @@
 - Extensions installed through a symlink, such as a pnpm package whose dependencies exist only next to the real file in the store, now load: the entry is imported by its real path, so its imports resolve from there (upstream [#8112](https://github.com/earendil-works/pi/pull/8112))
 - The plan-mode example extension tracks progress more reliably: it reads `[DONE:n]` markers from thinking blocks too, accepts variants such as `[DONE: 1]`, `Done: 2` and "Step 3 is complete", marks every step done when the final message says all steps are complete, keeps whole step text (the widget shortens it for display), keeps steps that start with a backtick, uses only the last `Plan:` section, and delivers the completion card with the next prompt instead of starting another turn (upstream [#7950](https://github.com/earendil-works/pi/pull/7950))
 - Images in steering and follow-up messages, including a prompt sent while the agent is working, are now resized like images in idle prompts instead of being sent and saved at full size (upstream [#11782](https://github.com/earendil-works/pi/pull/11782))
+- An image-only steering or follow-up message leaves the queue once it is delivered, so the pending count and queued-message display no longer keep a stale entry (upstream [#8612](https://github.com/earendil-works/pi/pull/8612))
 
 ## [0.9.71] - 2026-11-03
 
