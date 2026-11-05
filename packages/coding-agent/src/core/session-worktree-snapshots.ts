@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { SessionManager } from "./session-manager.ts";
+import { getBranchPath } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import type { SessionStore } from "./storage/session/types.js";
 import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
@@ -674,9 +675,9 @@ export async function sessionContinuesIn(store: SessionStore, sessionId: string,
 }
 
 /**
- * The snapshots retention keeps for sessions: the latest snapshot of each checkout in every session of `store`,
- * internal workflow-stage sessions included. Pass them, with the snapshots resumable workflow runs reference, to
- * `collectSnapshotGarbage`.
+ * The snapshots retention keeps for sessions: the latest snapshot of each checkout on the branch every session of
+ * `store` reopens on, the one resume checks, internal workflow-stage sessions included. Pass them, with the snapshots
+ * resumable workflow runs reference, to `collectSnapshotGarbage`.
  */
 export async function listRetainedSessionSnapshots(
 	store: SessionStore,
@@ -685,17 +686,18 @@ export async function listRetainedSessionSnapshots(
 	const retained: WorktreeSnapshot[] = [];
 	for await (const summary of store.list({ includeInternal: true, signal })) {
 		const { entries } = await store.load(summary.id);
+		const branch = getBranchPath(entries.at(-1)?.id, new Map(entries.map((entry) => [entry.id, entry])));
 		const records = new Map<string, WorktreeSnapshot>();
-		const latest = new Map<string, string>();
 		for (const entry of entries) {
-			if (entry.type !== "worktree_snapshot") continue;
-			if (entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
-			latest.set(entry.root, entry.snapshotId);
+			if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
 		}
-		for (const snapshotId of new Set(latest.values())) {
-			const snapshot = records.get(snapshotId);
-			if (snapshot) retained.push(snapshot);
-		}
+		const current = currentWorktreeSnapshots({
+			getBranch: () => branch,
+			getWorktreeRootMappings: () =>
+				branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [])),
+			getWorktreeSnapshotRecords: () => records,
+		});
+		retained.push(...new Set(current.values()));
 	}
 	return retained;
 }
