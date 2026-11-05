@@ -108,6 +108,32 @@ async function _normalizePromptImages(
 	return { images: normalizedImages, hints };
 }
 
+/** Queued user messages whose images are normalized when they are delivered. */
+const queuedMessagesWithImages = new WeakSet<AgentMessage>();
+
+/** Marks a queued steering or follow-up message whose images are normalized when it is delivered. */
+export function markQueuedMessageImages(message: AgentMessage): void {
+	queuedMessagesWithImages.add(message);
+}
+
+/**
+ * Normalizes a delivered queued message's images in place, with the same resize as idle prompts and the current
+ * model's limits, before events and persistence see the message (pi #11738). Hints go after its text.
+ */
+export async function normalizeQueuedMessageImages(session: AgentSession, message: AgentMessage): Promise<void> {
+	if (!queuedMessagesWithImages.delete(message) || message.role !== "user" || typeof message.content === "string")
+		return;
+	const [first, ...rest] = message.content;
+	if (first?.type !== "text") return;
+	const images = rest.filter((block): block is ImageContent => block.type === "image");
+	const normalized = await _normalizePromptImages.call(session, images);
+	const text = normalized.hints.length > 0 ? `${first.text}\n\n${normalized.hints.join("\n")}` : first.text;
+	// The admitted message is matched by its text when its reply is recovered.
+	if (session._admittedQueuedMessageAwaitingReply === session._getUserMessageText(message))
+		session._admittedQueuedMessageAwaitingReply = text;
+	message.content = [{ type: "text", text }, ...rest.filter((block) => block.type !== "image"), ...normalized.images];
+}
+
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	if (this._disposed || sessionGenerationClosing.has(this))
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });

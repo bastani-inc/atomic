@@ -14,6 +14,7 @@ import {
 	prepareProtectedStreamingCustomMessagesForDisposal,
 	retryConsumedProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import { normalizeQueuedMessageImages } from "./agent-session-prompt.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
 import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
@@ -244,6 +245,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
 		if (consumedQueuedMessageEvents.delete(event)) this._emitQueueUpdate();
+		await normalizeQueuedMessageImages(this, event.message);
 	}
 
 	this._applyInterruptAbortMessage(event);
