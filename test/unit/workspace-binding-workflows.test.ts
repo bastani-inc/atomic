@@ -895,6 +895,27 @@ describe("workspace bindings across resume (#3109)", () => {
 		assert.deepEqual(sessions, []);
 	});
 
+	test("a local repository whose step commit was pruned fails closed naming it, without fetching (#3109)", async () => {
+		const repo = createRepository(dirs.root, "pruned-step");
+		const { binding, stepHead, resume } = await interruptedAfterStep(
+			workspace({ repo, branch: "feat/step" }),
+			join(dirs.root, "journal.sqlite"),
+		);
+		git(binding.worktree, "reset", "-q", "--hard", binding.head);
+		git(repo, "reflog", "expire", "--expire=now", "--all");
+		git(repo, "gc", "-q", "--prune=now");
+		const { resumed, transcript } = await resume();
+		assert.equal(resumed.status, "failed");
+		assert.equal(resumed.workspaceError?.name, "WorkspaceRestoreError");
+		assert.equal(resumed.workspaceError?.reason, "commits-unavailable");
+		assert.deepEqual(resumed.workspaceError?.fields.missingCommits, [stepHead]);
+		assert.equal(
+			transcript.some((line) => line.startsWith("fetch: ")),
+			false,
+			"a local repository has no store to fetch",
+		);
+	});
+
 	test("a resume fetches a step commit pushed from elsewhere and fails closed on a worktree that lacks it (#3109)", async () => {
 		const remote = createRemote(dirs.root, "pushed-elsewhere");
 		const origin = remote.url.replace(/^file:\/\//, "");
