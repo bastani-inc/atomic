@@ -210,8 +210,9 @@ describe("the debug setting (#4360)", () => {
 		assert.equal(getBrokerSpawnOptions("/extension").env.ATOMIC_DEBUG_SETTING, "1");
 	});
 
+	const REAL_BUN_CHILD_PROBES_TIMEOUT_MS = 60_000;
 	test("a child process started with that environment is in debug mode, and one started after it is off is not", {
-		timeout: 60_000,
+		timeout: REAL_BUN_CHILD_PROBES_TIMEOUT_MS,
 	}, () => {
 		const script = `import { isDebugEnabled } from ${JSON.stringify(join(process.cwd(), "packages/coding-agent/src/core/debug.ts"))};
 process.stdout.write(String(isDebugEnabled("workflow")) + "|" + String(isDebugEnabled()));`;
