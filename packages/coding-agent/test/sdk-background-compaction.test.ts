@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
@@ -8,7 +8,6 @@ import { BackgroundCompactionConfigError } from "../src/core/compaction/backgrou
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -28,32 +27,40 @@ for (const [compaction, reason] of [
 	[{ backgroundThresholdPercent: "75" }, "not-a-number"],
 	[{ background: "yes" }, "not-a-boolean"],
 ] as const) {
-	test(`createAgentSession rejects ${JSON.stringify(compaction)} before opening session storage (#4330)`, async () => {
+	test(`createAgentSession opens with ${JSON.stringify(compaction)} and runs with background compaction off (#4330)`, async () => {
 		const cwd = tempDir();
-		const store = new MemorySessionStore();
-		let opened = 0;
-		const created = store.create.bind(store);
-		store.create = (...args: Parameters<MemorySessionStore["create"]>) => {
-			opened += 1;
-			return created(...args);
-		};
-		await assert.rejects(
-			createAgentSession({
-				cwd,
-				agentDir: join(cwd, "agent"),
-				builtins,
-				settingsManager: SettingsManager.inMemory({ compaction: compaction as never }),
-				sessionStore: store,
-			}),
-			(error: unknown) =>
-				error instanceof BackgroundCompactionConfigError &&
-				error.source === "settings" &&
-				error.reason === reason &&
-				error.code === "invalid-setting",
-		);
-		assert.equal(opened, 0, "no session was created");
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			builtins,
+			settingsManager: SettingsManager.inMemory({ compaction: compaction as never }),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+		try {
+			assert.equal(session.backgroundCompactionEnabled, false);
+			assert.equal(session.backgroundCompactionThresholdPercent, 75);
+			const state = session.compaction;
+			assert.equal(state.state, "failed");
+			assert.ok(state.error instanceof BackgroundCompactionConfigError);
+			assert.equal(state.error.source, "settings");
+			assert.equal(state.error.reason, reason);
+		} finally {
+			await session.dispose();
+		}
 	});
 }
+
+test("a settings file with an invalid background value is reported as a settings error when it loads (#4330)", () => {
+	const cwd = tempDir();
+	const agentDir = join(cwd, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ compaction: { backgroundThresholdPercent: 0 } }));
+	const errors = SettingsManager.create(cwd, agentDir).drainErrors();
+	assert.equal(errors.length, 1);
+	assert.equal(errors[0].scope, "global");
+	assert.ok(errors[0].error instanceof BackgroundCompactionConfigError);
+	assert.equal(errors[0].error.reason, "out-of-range");
+});
 
 test("createAgentSession hands the compaction wake dispatcher to the session (#4330)", async () => {
 	const cwd = tempDir();
