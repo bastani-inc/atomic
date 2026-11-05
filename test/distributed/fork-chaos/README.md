@@ -104,6 +104,24 @@ stored round, run `node test/distributed/fork-chaos/verdict.mjs <check.json>` or
 `verify-security.sh` fails when any `az` query fails, and when the VMs or NICs it finds do not match the manifest.
 So a query that returns nothing cannot pass the security gate.
 
+## Source snapshot coordination
+
+Forks use the source's journal lease, renewing it every 30 seconds against the journal clock and epoch. The
+takeover window is 120 seconds. A lease already owned by the backend is renewed but left to its existing holder
+when the fork finishes; a temporary fork lease is released after renewal work has stopped and drained.
+
+Journal events and all source session entries are materialized before the destination is committed. Ownership
+checks surround the session reads and run again immediately before the atomic seed write. A successful renewal
+checks the original holder and epoch, proving no takeover occurred while that snapshot was read. The caller's
+abort signal is checked after the final asynchronous renewal, before the write starts. Known lease loss stops
+source reads and destination creates early and reports `source-busy` with reason `lease-lost` and its cause.
+
+No source data is read after the snapshot is sealed. A takeover after that point cannot change the in-memory
+payload; an in-flight write's confirmed or uncertain outcome remains authoritative and its session copies are
+never deleted merely because ownership changed later. This guarantee assumes workflow writers follow the
+journal lease protocol. A stale writer's journal mutations are fenced, but arbitrary direct writes to a session
+store are outside that protocol.
+
 ## Teardown
 
 `teardown.sh` deletes only what `provision.sh` created for the run. It never deletes a resource just because the name
