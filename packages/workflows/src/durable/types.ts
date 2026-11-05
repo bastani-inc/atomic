@@ -205,6 +205,8 @@ interface DurableWorkflowBoundaryIdentity {
 	/** Definition + exact validated inputs. */
 	readonly invocationFingerprint: string;
 	readonly child: DurableBoundaryChildTopology;
+	/** Workspace binding of the child, recorded with the boundary start and restored on resume. */
+	readonly workspace?: import("@bastani/atomic").BoundWorkspace;
 }
 
 /** Additive identity record written before a nested workflow can execute. */

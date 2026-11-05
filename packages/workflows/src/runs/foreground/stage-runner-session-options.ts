@@ -37,7 +37,8 @@ export async function buildStageSessionOptions(input: StageSessionOptionsInput):
 						? { thinkingLevel: input.candidate.reasoningLevel }
 						: {}),
 				};
-	if (options.cwd === undefined && input.defaultCwd !== undefined) options.cwd = input.defaultCwd;
+	if (options.cwd === undefined && options.workspace === undefined && input.defaultCwd !== undefined)
+		options.cwd = input.defaultCwd;
 	if (input.scopedModels !== undefined) options.scopedModels = [...input.scopedModels];
 	if (input.ownsFallbackChain) {
 		options.fallbackModels = [];

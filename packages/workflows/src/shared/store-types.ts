@@ -222,6 +222,7 @@ export interface WorkflowChildReplaySnapshot {
 	/** Payload-free output count used by compact graph projections. */
 	readonly outputCount?: number;
 	readonly exitReason?: string;
+	readonly changeSet?: import("@bastani/atomic").WorkspaceChangeSet;
 }
 
 /** Serializable attachment retained verbatim from an ordinary intercom message. */

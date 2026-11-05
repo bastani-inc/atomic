@@ -151,7 +151,7 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 
 ## Errors
 
-Every error except `GitUnavailableError` extends `WorkspaceError`; all of them carry a stable `code`, JSON-safe `fields`, a `hint`, and `retryable`, which is `false` for every error except `WorkspaceCollectionError`. `isRetryableWorkspaceError(error)` finds a retryable one in a cause chain. Every `WorkspaceError` has a `summary` (its message without the code and hint). Check the class or code, never the message. `findWorkspaceError(error, guard)` finds one in a cause chain (up to 8 levels), and `serializeWorkspaceError` / `rehydrateWorkspaceError` carry them across process boundaries with their class and fields intact.
+Every error except `GitUnavailableError` extends `WorkspaceError`, the family the [workspace binding errors](/workflows/api-reference#workspace-errors) belong to; all of them carry a stable `code`, JSON-safe `fields`, a `hint`, and `retryable`, which is `false` for every error except `WorkspaceCollectionError`. `isRetryableWorkspaceError(error)` finds a retryable one in a cause chain. Every `WorkspaceError` has a `summary` (its message without the code and hint). Check the class or code, never the message. `findWorkspaceError(error, guard)` finds one in a cause chain (up to 8 levels), and `serializeWorkspaceError` / `rehydrateWorkspaceError` carry them across process boundaries with their class and fields intact.
 
 | Class | Code | When | Fields | What to do |
 |-------|------|------|--------|------------|

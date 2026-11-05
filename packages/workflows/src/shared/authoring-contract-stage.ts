@@ -3,6 +3,7 @@
 import type {
 	AgentSession,
 	AgentSessionEvent,
+	BoundWorkspace,
 	DecisionQuestions,
 	DecisionRequest,
 	DecisionResult,
@@ -11,6 +12,8 @@ import type {
 	ModelRouterOutput,
 	RoutingInferenceBounds,
 	TaskNeeds,
+	Workspace,
+	WorkspaceChangeSet,
 } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 
@@ -222,6 +225,12 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	readonly forkFromSessionId?: string;
 	readonly gitWorktreeDir?: string;
 	readonly baseBranch?: string;
+	/**
+	 * Repository binding from `workspace({ … })`. The stage session runs in the bound worktree (a `cwd` must lie inside
+	 * it), and a read-only workspace removes and refuses file-writing tools. Cannot be combined with `gitWorktreeDir`
+	 * or a task's `worktree: true`.
+	 */
+	readonly workspace?: Workspace | BoundWorkspace;
 	readonly sessionDir?: string;
 	/**
 	 * Intercom home group for this stage session. A named string joins that group;
@@ -458,6 +467,8 @@ export interface WorkflowTaskResult extends WorkflowTaskContext {
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly rateLimits?: readonly WorkflowProviderRateLimit[];
 	readonly warnings?: readonly string[];
+	/** Committed changes of a task bound to a `workspace`, from the binding's base commit to its branch head. */
+	readonly changeSet?: WorkspaceChangeSet;
 }
 
 export interface WorkflowTaskSessionFields {
@@ -508,6 +519,7 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 	readonly inputs?: TInputs;
 	readonly stageName?: string;
 	readonly budget?: import("./budget.js").WorkflowBudget;
+	readonly workspace?: Workspace;
 }
 
 type WorkflowRequiredKeys<T extends object> = {
@@ -533,6 +545,8 @@ export interface WorkflowCompletedChildResult<TOutputs extends WorkflowOutputVal
 	readonly status: "completed";
 	readonly exited: false;
 	readonly outputs: TOutputs;
+	/** Committed changes of a child bound to a `workspace`. */
+	readonly changeSet?: WorkspaceChangeSet;
 }
 
 export interface WorkflowExitedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues>
@@ -543,6 +557,8 @@ export interface WorkflowExitedChildResult<TOutputs extends WorkflowOutputValues
 	readonly exited: true;
 	readonly outputs: Partial<TOutputs>;
 	readonly exitReason?: string;
+	/** Committed changes of a child bound to a `workspace`. */
+	readonly changeSet?: WorkspaceChangeSet;
 }
 
 export type WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> =

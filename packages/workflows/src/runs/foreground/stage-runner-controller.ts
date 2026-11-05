@@ -2008,6 +2008,7 @@ export class StageSessionController {
 				this.opts.defaultSessionDir,
 				this.meta,
 				this.opts.pendingStageDelivery,
+				this.startupWait.signal,
 			)) as StageSessionCreateOptions;
 			this.callerSessionManager = createOptions.sessionManager;
 			created = await adapter.create(createOptions, {

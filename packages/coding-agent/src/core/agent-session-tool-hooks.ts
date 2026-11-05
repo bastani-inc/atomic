@@ -9,6 +9,7 @@ import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
+import { workspaceSandboxDenial } from "./workspace/session.ts";
 
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args }) => {
@@ -18,6 +19,8 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		// may wait for this tool to start.
 		await this._messagesAwaitingPersistence.get(assistantMessage)?.catch(() => {});
 		if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
+		const sandboxDenial = workspaceSandboxDenial(this._workspace, toolCall.name);
+		if (sandboxDenial !== undefined) return { block: true, reason: sandboxDenial.message };
 		if (!runner.hasHandlers("tool_call")) {
 			return undefined;
 		}

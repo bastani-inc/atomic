@@ -455,6 +455,7 @@ function completeTaskResult(
 		...(base.warnings !== undefined || checkpoint.warnings !== undefined
 			? { warnings: [...(base.warnings ?? checkpoint.warnings ?? [])] }
 			: {}),
+		...(base.changeSet !== undefined ? { changeSet: base.changeSet } : {}),
 	};
 }
 
@@ -815,5 +816,6 @@ function workflowChildSnapshotFromResult(
 		...(result.exited !== undefined ? { exited: result.exited } : {}),
 		outputs: result.outputs,
 		...(typeof result.exitReason === "string" ? { exitReason: result.exitReason } : {}),
+		...(result.changeSet !== undefined ? { changeSet: result.changeSet } : {}),
 	};
 }

@@ -26,8 +26,14 @@ export type AtomicBuiltin = "workflows" | "subagents" | "mcp" | "web-access" | "
 export interface CreateAgentSessionOptions {
 	/** Shipped packages are enabled unless explicitly false. Independent of tool selection. */
 	builtins?: Partial<Record<AtomicBuiltin, boolean>>;
-	/** Working directory for project-local discovery. Default: process.cwd() */
+	/** Working directory for project-local discovery. Default: process.cwd(), or the workspace worktree. */
 	cwd?: string;
+	/**
+	 * Repository binding from `workspace({ … })`, or an already resolved binding. The session runs in the bound worktree
+	 * (an explicit `cwd` must lie inside it), records the binding in the session, and a `"read-only"` workspace removes
+	 * and refuses the file-writing tools (`write`, `edit`, `todo`).
+	 */
+	workspace?: import("./workspace/spec.ts").Workspace | import("./workspace/resolve.ts").BoundWorkspace;
 	/** Global config directory. Default: ~/.atomic/agent */
 	agentDir?: string;
 	/**
@@ -182,4 +188,6 @@ export interface CreateAgentSessionResult {
 	modelFallbackMessage?: string;
 	/** Semantic reason for modelFallbackMessage; suitable for mode control flow. */
 	modelFallbackReason?: ModelFallbackReason;
+	/** The resolved workspace binding, when the session was created with `workspace`. */
+	workspace?: import("./workspace/resolve.ts").BoundWorkspace;
 }

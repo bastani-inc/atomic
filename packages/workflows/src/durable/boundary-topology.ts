@@ -1,3 +1,4 @@
+import type { BoundWorkspace, WorkspaceWriterLease } from "@bastani/atomic";
 import type { WorkflowChildResult, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { boundaryTransitionError, resolveBoundaryLifecycle } from "./boundary-lifecycle.js";
@@ -44,6 +45,17 @@ export interface DurableBoundaryRuntimeIdentity {
 export interface DurableChildInvocation {
 	readonly scope: DurableScope;
 	readonly identity: DurableBoundaryRuntimeIdentity;
+	/** Workspace binding an earlier attempt recorded at this boundary; resume restores it instead of resolving again. */
+	readonly recordedWorkspace?: BoundWorkspace;
+	/** Whether an earlier attempt recorded any checkpoint inside the child, so its worktree may hold work to keep. */
+	recordedChildProgress(): boolean;
+	/** Heads of the changes that steps completed inside the child recorded on `binding`'s branch; resume needs them. */
+	recordedChildHeads(binding: Pick<BoundWorkspace, "repo" | "branch">): readonly string[];
+	/** Workspace binding of this attempt, recorded with the boundary start. */
+	readonly workspace?: BoundWorkspace;
+	/** Writer lease this attempt holds on the bound worktree, released when the child settles. */
+	readonly workspaceLease?: WorkspaceWriterLease;
+	bindWorkspace(binding: BoundWorkspace, lease: WorkspaceWriterLease | undefined): void;
 	/** Align a new boundary with an ordinary continuation result before recording its start. */
 	adoptReplayedChildRunId(runId: string): void;
 	recordStart(parentIds: readonly string[], sourceOrder: number): Promise<void>;
@@ -88,6 +100,14 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	const startedAt = start?.startedAt ?? Date.now();
 	let topology = start?.topology;
 	let terminalRecorded = false;
+	const recordedWorkspace = start?.topology?.boundary?.workspace;
+	// Read now: a pooled root lets go of a resumed child's checkpoints once its boundary is prepared (#4318).
+	const childCheckpoints =
+		recordedWorkspace === undefined
+			? []
+			: scopedChildCheckpoints(input.backend.listCheckpoints(input.workflowId), input.replayKey);
+	let workspace: BoundWorkspace | undefined;
+	let workspaceLease: WorkspaceWriterLease | undefined;
 	const identity: DurableBoundaryRuntimeIdentity = {
 		boundaryId,
 		get childRunId() {
@@ -104,6 +124,19 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	return {
 		scope: { rootWorkflowId: input.rootWorkflowId, scopePrefix: input.replayKey },
 		identity,
+		recordedWorkspace,
+		recordedChildProgress: () => childCheckpoints.length > 0,
+		recordedChildHeads: (binding) => childHeads(childCheckpoints, binding),
+		get workspace() {
+			return workspace;
+		},
+		get workspaceLease() {
+			return workspaceLease;
+		},
+		bindWorkspace(binding, lease): void {
+			workspace = binding;
+			workspaceLease = lease;
+		},
 		adoptReplayedChildRunId(runId): void {
 			if (topology !== undefined && childRunId !== runId) {
 				throw invalid(input, "continuation child identity disagrees with durable boundary ownership");
@@ -117,7 +150,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				}
 				return;
 			}
-			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running");
+			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running", workspace);
 			await input.backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: input.workflowId,
@@ -331,6 +364,7 @@ function makeTopology(
 	sourceOrder: number,
 	event: DurableWorkflowBoundaryTopology["event"],
 	status: Extract<DurableStageLifecycleStatus, "running" | "completed" | "failed" | "skipped">,
+	workspace?: BoundWorkspace,
 ): DurableStageTopology {
 	const child = {
 		runId: childRunId,
@@ -346,6 +380,7 @@ function makeTopology(
 		workflow: input.workflow,
 		invocationFingerprint: input.invocationFingerprint,
 		child,
+		...(workspace !== undefined ? { workspace } : {}),
 	};
 	let boundary: DurableWorkflowBoundaryTopology;
 	if (event === "start") {
@@ -410,6 +445,38 @@ function hasPriorInvocationData(checkpoints: readonly DurableCheckpoint[], repla
 			? checkpoint.replayKey === replayKey || checkpoint.replayKey.startsWith(prefix)
 			: checkpoint.checkpointId.startsWith(prefix),
 	);
+}
+
+/** Checkpoints recorded inside a child carry its scope prefix; the boundary's own start and terminal records do not. */
+function scopedChildCheckpoints(checkpoints: readonly DurableCheckpoint[], replayKey: string): DurableCheckpoint[] {
+	const prefix = `${replayKey}:`;
+	return checkpoints.filter((checkpoint) => checkpoint.checkpointId.startsWith(prefix));
+}
+
+function changeSetOf(
+	output: WorkflowSerializableValue | undefined,
+): { readonly repo: string; readonly branch: string; readonly headCommit: string } | undefined {
+	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
+	const changeSet = (output as { readonly changeSet?: WorkflowSerializableValue }).changeSet;
+	if (typeof changeSet !== "object" || changeSet === null || Array.isArray(changeSet)) return undefined;
+	const { repo, branch, headCommit } = changeSet as Readonly<Record<string, WorkflowSerializableValue>>;
+	return typeof repo === "string" && typeof branch === "string" && typeof headCommit === "string"
+		? { repo, branch, headCommit }
+		: undefined;
+}
+
+/** The `changeSet` heads that completed steps inside a child recorded on one repository's branch. */
+function childHeads(
+	childCheckpoints: readonly DurableCheckpoint[],
+	binding: Pick<BoundWorkspace, "repo" | "branch">,
+): string[] {
+	const heads = new Set<string>();
+	for (const checkpoint of childCheckpoints) {
+		if (checkpoint.kind !== "stage") continue;
+		const changeSet = changeSetOf(checkpoint.output);
+		if (changeSet?.repo === binding.repo && changeSet.branch === binding.branch) heads.add(changeSet.headCommit);
+	}
+	return [...heads];
 }
 
 function invalid(input: Pick<DurableBoundaryDescriptor, "replayKey">, message: string): DurableNestedTopologyError {

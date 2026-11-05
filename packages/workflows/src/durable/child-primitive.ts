@@ -1,3 +1,4 @@
+import { assertWorkspace, attachCleanupCause, type Workspace, WorkspaceBindingError } from "@bastani/atomic";
 import {
 	isWorkflowDefinition,
 	workflowDefinitionRequirementMessage,
@@ -61,6 +62,7 @@ export function createDurableChildWorkflowPrimitive(input: {
 			| {
 					readonly stageName?: string;
 					readonly inputs?: Readonly<Record<string, unknown>>;
+					readonly workspace?: Workspace;
 			  }
 			| undefined;
 		const boundaryName = options?.stageName ?? `workflow:${child.normalizedName}`;
@@ -69,9 +71,15 @@ export function createDurableChildWorkflowPrimitive(input: {
 			options?.inputs ?? {},
 			`child workflow "${child.normalizedName}" (${child.name})`,
 		);
+		const workspace = options?.workspace;
+		if (workspace !== undefined) {
+			assertWorkspace(workspace, "workspace");
+			assertNoWorktreeInput(child, validatedInputs);
+		}
 		const invocationFingerprint = durableChildInvocationFingerprint(
 			child,
 			validatedInputs as WorkflowSerializableObject,
+			workspace,
 		);
 		const replayKey = input.nextReplayKey(boundaryName, invocationFingerprint);
 		const descriptor: DurableBoundaryDescriptor = {
@@ -101,11 +109,48 @@ export function createDurableChildWorkflowPrimitive(input: {
 		// Resolve durable ownership before either UUID can be allocated. A new
 		// invocation publishes an identity whose start record is awaited by the
 		// inner runner before child code is dispatched.
-		input.setChildDurableInvocation(prepareDurableChildInvocation(descriptor));
+		const invocation = prepareDurableChildInvocation(descriptor);
+		input.setChildDurableInvocation(invocation);
 		input.backend.releaseCheckpointScope?.(input.workflowId, replayKey);
-		return (await input.workflow(child, {
+		const running = input.workflow(child, {
 			...(options ?? {}),
 			inputs: validatedInputs,
-		} as never)) as WorkflowChildResult<TChildOutputs>;
+		} as never) as Promise<WorkflowChildResult<TChildOutputs>>;
+		// An unbound child settles exactly as before, without the lease wrapper's extra turns.
+		return workspace === undefined ? await running : releasingWorkspaceLease(invocation, running);
 	};
+}
+
+/** Release a bound child's writer lease once it settles; a release failure never replaces the child's own failure. */
+async function releasingWorkspaceLease<T>(invocation: DurableChildInvocation, running: Promise<T>): Promise<T> {
+	let result: T;
+	try {
+		result = await running;
+	} catch (error) {
+		const cleanupCause = await invocation.workspaceLease?.release().then(
+			() => undefined,
+			(cause: unknown) => cause,
+		);
+		throw attachCleanupCause(error, cleanupCause);
+	}
+	await invocation.workspaceLease?.release();
+	return result;
+}
+
+/** A declared `worktreeFromInputs` input or a `git_worktree_dir` input selects a worktree the workspace already binds. */
+function assertNoWorktreeInput(
+	child: Pick<WorkflowDefinition, "name" | "inputBindings">,
+	inputs: Readonly<Record<string, unknown>>,
+): void {
+	for (const name of new Set([
+		"git_worktree_dir",
+		child.inputBindings?.worktree?.gitWorktreeDir ?? "git_worktree_dir",
+	])) {
+		const value = inputs[name];
+		if (typeof value === "string" && value.trim().length > 0)
+			throw new WorkspaceBindingError({
+				code: "conflicting-worktree-input",
+				fields: { input: name, workflow: child.name },
+			});
+	}
 }

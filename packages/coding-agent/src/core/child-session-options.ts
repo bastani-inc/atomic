@@ -3,6 +3,7 @@ import type { CreateAgentSessionOptions } from "./sdk-types.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { createToolNameMatcher, isMcpToolName } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
+import { inheritWorkspace } from "./workspace/session.ts";
 
 /** Internal owner-bound adapter seam. Does not admit work or transfer parent authority. */
 export type ChildSessionOptionsResolver = (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
@@ -62,10 +63,14 @@ export function inheritChildSessionOptions(
 		resourceAdmission: parent.resourceAdmission ?? child.resourceAdmission ?? null,
 		resourceAdmissionSignal: child.resourceAdmissionSignal,
 		resourceAdmissionDelegated: parent.resourceAdmission ? true : child.resourceAdmissionDelegated,
-		cwd: resolve(parent.cwd!, child.cwd ?? child.sessionManager?.getCwd() ?? "."),
+		cwd:
+			child.workspace === undefined
+				? resolve(parent.cwd!, child.cwd ?? child.sessionManager?.getCwd() ?? ".")
+				: child.cwd,
 		builtins,
 		tools,
 		excludedTools: [...(parent.excludedTools ?? []), ...(child.excludedTools ?? [])],
+		workspace: inheritWorkspace(parent.workspace, child.workspace),
 		noTools: parent.noTools === "all" ? "all" : (child.noTools ?? parent.noTools),
 		extensionBindings: { ...parent.extensionBindings, ...definedOptions(child.extensionBindings) },
 		isFallbackModelAllowed:

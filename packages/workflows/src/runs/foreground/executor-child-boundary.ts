@@ -48,6 +48,7 @@ function workflowChildResultFromReplay(snapshot: WorkflowChildReplaySnapshot): W
 		...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
 		outputs: cloneWorkflowChildValue(snapshot.outputs),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
+		...(snapshot.changeSet !== undefined ? { changeSet: snapshot.changeSet } : {}),
 	};
 	const parsed = parseWorkflowChildResult(candidate);
 	if (parsed === undefined) {

@@ -162,6 +162,28 @@ const { session } = await createAgentSession({
 });
 ```
 
+### Workspaces
+
+Pass `workspace` to bind a session to a repository, branch and worktree. The value comes from `workspace({ … })`, the same one workflows use with `ctx.workflow` and `ctx.task`.
+
+```typescript
+import { createAgentSession, workspace } from "@bastani/atomic";
+
+const api = workspace({ repo: "github.com/acme/product-service", base: "origin/main", branch: "feat/ticket-123" });
+
+const { session, workspace: binding } = await createAgentSession({ workspace: api });
+const reviewer = await createAgentSession({ workspace: api.readOnly() });
+```
+
+- **Resolution:** a local `repo` must be a repository root. A remote is cloned once per host into a shared store under `~/.atomic/repos/` and worktrees are added from it after a fetch, so they start from the remote as it is now. A missing branch is created from `base`. An existing worktree must belong to the repository and be on the branch. A worktree whose checkout was interrupted, for example by a crash, is added again on the next bind. Workspaces need git 2.33 or later. A `sessionManager` passed together with a workspace must already work inside its worktree, since shell commands run in its directory; one elsewhere fails with `WorkspaceConfigError` (field `sessionManager`). The check runs once the workspace is bound, because an `"auto"` worktree's path is known only then.
+- **Working directory:** the session runs in the bound worktree. An explicit `cwd` resolves against it and must stay inside it.
+- **Read-only:** a `"read-only"` workspace does not offer `write`, `edit` or `todo`, also when an explicit `tools` list names them, and refuses them if one is active anyway. Shell tools still run. This is not operating-system sandboxing.
+- **Recording and resume:** the resolved binding is stored in the session as a `workspace_binding` entry and returned as `result.workspace` and `session.workspace`. Reopening that session with the same workspace restores the recorded binding: it verifies the repository and branch, re-adds a deleted worktree, and keeps the recorded base commit and label. To know the worktree before creating the session, for example to pass its directory as `cwd`, call `bindSessionWorkspace(workspace, sessionManager)` on the reopened session manager; it restores the recorded binding, or resolves the workspace when the session has none, and `createAgentSession` then reuses that binding.
+- **Children:** subagent children inherit the workspace. A child of a read-only session stays read-only even when it passes its own workspace.
+- **Changes:** `workspaceChangeSet(binding)` returns the committed changes since the base commit, and `publishPullRequest(changeSet, { draft: true })` pushes them and opens a pull request with the GitHub CLI.
+
+Invalid options throw `WorkspaceConfigError`; binding failures reject with `WorkspaceBindingError` (for example `wrong-branch`, `cwd-outside-worktree`, or `git-unavailable` when git cannot be started). Both are checked before the session is created. See [Workspaces](/workflows/api-reference#workspaces) for the resolution rules, the binding record and the full error table.
+
 ### Shared resource admission
 
 SDK hosts can pass `resourceAdmission` to `createAgentSession()` to share their own capacity policy across sessions and managed shell commands:
@@ -484,9 +506,10 @@ Workflow stages also inherit extensions supplied to the parent's `DefaultResourc
 
 The child working directory resolves in this order:
 
-1. Explicit child `cwd`.
-2. A supplied child `sessionManager.getCwd()`.
-3. The invoking session's directory.
+1. The child's own `workspace`, with its explicit `cwd` resolved inside the worktree.
+2. Explicit child `cwd`.
+3. A supplied child `sessionManager.getCwd()`.
+4. The invoking session's directory, which is the parent's worktree when the parent has a workspace.
 
 Child-relative paths, including workflow report outputs, use the resolved child directory without changing the process working directory.
 

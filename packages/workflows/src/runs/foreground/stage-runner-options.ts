@@ -1,4 +1,11 @@
-import { type CreateAgentSessionOptions, SessionManager } from "@bastani/atomic";
+import {
+	bindSessionWorkspace,
+	type CreateAgentSessionOptions,
+	resolveWorkspace,
+	SessionManager,
+	type SessionStore,
+	workspaceSessionCwd,
+} from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
@@ -30,11 +37,24 @@ function workflowOrchestrationContext(
 	return pendingStageDelivery === undefined ? context : { ...context, pendingStageDelivery };
 }
 
+/** The session store a stage resumes from, with a legacy session file migrated into it. */
+async function stageResumeStore(
+	options: StageOptions,
+	defaultSessionDir: string | undefined,
+	sessionId: string,
+	legacySessionFile: string | undefined,
+): Promise<SessionStore> {
+	const store = await stageSessionStore(options, defaultSessionDir);
+	await migrateLegacyStageSession(store, sessionId, legacySessionFile);
+	return store;
+}
+
 export async function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
 	meta: StageExecutionMeta,
 	pendingStageDelivery?: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"],
+	signal?: AbortSignal,
 ): Promise<CreateAgentSessionOptions> {
 	const classification = workflowSessionOptions(meta);
 	const orchestrationContext = workflowOrchestrationContext(meta, options, pendingStageDelivery);
@@ -71,11 +91,27 @@ export async function stripWorkflowOnlyOptions(
 		group: _group,
 		...sessionOptions
 	} = options;
+	// Bound here, before the session opens, so the session store, the session and its tools all use the bound worktree.
+	// A resumed session restores the binding its session recorded instead of resolving the workspace again.
+	const resumeStore =
+		resumeFromSessionId === undefined
+			? undefined
+			: await stageResumeStore(options, defaultSessionDir, resumeFromSessionId, resumeFromLegacySessionFile);
+	if (sessionOptions.workspace !== undefined) {
+		const binding =
+			resumeStore === undefined
+				? await resolveWorkspace(sessionOptions.workspace, { signal })
+				: await bindSessionWorkspace(
+						sessionOptions.workspace,
+						await SessionManager.open(resumeStore, resumeFromSessionId!),
+						signal,
+					);
+		sessionOptions.workspace = binding;
+		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
+	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
-	if (resumeFromSessionId !== undefined) {
-		const store = await stageSessionStore(options, defaultSessionDir);
-		await migrateLegacyStageSession(store, resumeFromSessionId, resumeFromLegacySessionFile);
-		sessionOptions.sessionManager = await SessionManager.open(store, resumeFromSessionId, cwd);
+	if (resumeStore !== undefined) {
+		sessionOptions.sessionManager = await SessionManager.open(resumeStore, resumeFromSessionId!, cwd);
 	} else if (context === "fork" && forkFromSessionId !== undefined) {
 		sessionOptions.sessionManager = await forkStageSession(
 			await stageSessionStore(options, defaultSessionDir),

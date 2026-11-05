@@ -457,7 +457,7 @@ async function executeRun(
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-	const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs),
+	const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
 		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();
@@ -1406,6 +1406,7 @@ async function executeRun(
 			metadata,
 			...(rejectedToolFrontier === undefined ? {} : { failedToolNode: rejectedToolFrontier }),
 			onRunEnd: opts.onRunEnd,
+			error: err,
 		});
 		return failed;
 	} finally {

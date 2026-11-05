@@ -114,6 +114,12 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 	readonly stageName?: string;
 	/** Additional subtree-scoped duration budget; parent run overrides do not flow here. */
 	readonly budget?: import("./budget.js").WorkflowBudget;
+	/**
+	 * Repository binding from `workspace({ … })`. The child's `ctx.cwd` and stages run in the bound worktree; a
+	 * builtin's `git_worktree_dir` input cannot be combined with it. Recorded at the child boundary and restored on
+	 * resume.
+	 */
+	readonly workspace?: import("@bastani/atomic").Workspace;
 }
 
 type WorkflowRequiredKeys<T extends object> = {

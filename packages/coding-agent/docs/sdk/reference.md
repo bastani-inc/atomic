@@ -45,6 +45,19 @@ Atomic reads primary `.atomic` locations first and legacy `.pi` locations for co
 
 When you pass a custom `ResourceLoader`, `cwd` and `agentDir` no longer control resource discovery. They still influence session naming and tool path resolution.
 
+### Workspace
+
+```typescript
+import { createAgentSession, workspace } from "@bastani/atomic";
+
+const { session, workspace: binding } = await createAgentSession({
+  workspace: workspace({ repo: "/srv/src/api", branch: "feat/ticket-123", sandbox: "read-only" }),
+  cwd: "packages/server", // optional; resolved inside the worktree
+});
+```
+
+`workspace` accepts a `workspace({ … })` value or an already resolved `BoundWorkspace`. The session's `cwd` becomes the bound worktree, an explicit `cwd` must stay inside it, and a read-only workspace removes and refuses `write`, `edit` and `todo`. `result.workspace` and `session.workspace` hold the resolved binding. See [Workspaces](/sdk#workspaces).
+
 ### Model
 
 ```typescript
@@ -791,6 +804,9 @@ interface CreateAgentSessionResult {
   
   // Warning if session model couldn't be restored
   modelFallbackMessage?: string;
+
+  // The resolved binding when the session was created with `workspace`
+  workspace?: BoundWorkspace;
 }
 
 interface LoadExtensionsResult {

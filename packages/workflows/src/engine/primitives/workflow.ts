@@ -1,3 +1,13 @@
+import {
+	acquireWorkspaceWriterLease,
+	type BoundWorkspace,
+	isBoundWorkspace,
+	rehydrateWorkspaceError,
+	resolveWorkspace,
+	restoreWorkspace,
+	type Workspace,
+	workspaceChangeSet,
+} from "@bastani/atomic";
 import type { DurableChildInvocation } from "../../durable/boundary-topology.js";
 import {
 	findWorkflowExitSignal,
@@ -77,6 +87,32 @@ export function createChildWorkflowRunner(input: {
 		if (boundary.replayedChild !== undefined) {
 			durableInvocation?.adoptReplayedChildRunId(boundary.replayedChild.runId);
 		}
+		// A run bound read-only is a ceiling for everything nested in it.
+		const inherited = runtime.inputRuntimeDefaults.workspace;
+		const readOnlyCeiling = isBoundWorkspace(inherited) && inherited.sandbox === "read-only" ? inherited : undefined;
+		if (options.workspace !== undefined && boundary.replayedChild === undefined && durableInvocation !== undefined) {
+			try {
+				await bindChildWorkspace(
+					readOnlyCeiling === undefined ? options.workspace : options.workspace.readOnly(),
+					durableInvocation,
+					runtime.signal,
+					`${runtime.runId}/${boundaryName}`,
+				);
+			} catch (err) {
+				// The boundary has no durable start yet: settle it in memory only, as the catch below does once started.
+				if (findWorkflowGracefulQuit(err) !== undefined) throw err;
+				const exit =
+					findWorkflowExitSignal(err, runtime.exit.exitScope) ??
+					findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
+				if (exit !== undefined) {
+					await boundary.skipForWorkflowExit(exit.reason);
+					throw exit;
+				}
+				await boundary.fail(err);
+				throw err;
+			}
+		}
+		const workspace = durableInvocation?.workspace;
 		await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
 		let childRunId: string | undefined;
 		let detachParentAbort: (() => void) | undefined;
@@ -130,7 +166,8 @@ export function createChildWorkflowRunner(input: {
 			const childRunPromise = runChild(child, childInputs, {
 				...runtime.childRunOptions,
 				runId: childRunId,
-				cwd: input.resolveWorkflowCwd(),
+				cwd: workspace?.worktree ?? input.resolveWorkflowCwd(),
+				workspace: workspace ?? readOnlyCeiling,
 				depth: runtime.depth + 1,
 				parentRun: {
 					runId: runtime.runId,
@@ -168,6 +205,10 @@ export function createChildWorkflowRunner(input: {
 				const cause = {
 					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
 					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
+					// A workspace error stays typed across the child boundary, including from a pooled worker.
+					...(childRun.workspaceError !== undefined
+						? { cause: rehydrateWorkspaceError(childRun.workspaceError) }
+						: {}),
 				};
 				// #4031: the parent's failure is the child's own failure: the classification the child recorded, else its
 				// failed stage's, else its error text without the wrapper prefixes that name workflows. This message,
@@ -182,6 +223,8 @@ export function createChildWorkflowRunner(input: {
 
 			const outputs = selectWorkflowOutputs(child, childRun.result);
 			const childExited = childBudgetExceeded || childRun.exited === true || childRun.status !== "completed";
+			const changeSet =
+				workspace === undefined ? undefined : await workspaceChangeSet(workspace, { signal: runtime.signal });
 			const childResult: WorkflowChildResult<TChildOutputs> = childExited
 				? {
 						workflow: child.normalizedName,
@@ -190,6 +233,7 @@ export function createChildWorkflowRunner(input: {
 						exited: true,
 						outputs: outputs as Partial<TChildOutputs>,
 						...(childRun.exitReason !== undefined ? { exitReason: childRun.exitReason } : {}),
+						...(changeSet !== undefined ? { changeSet } : {}),
 					}
 				: {
 						workflow: child.normalizedName,
@@ -197,6 +241,7 @@ export function createChildWorkflowRunner(input: {
 						status: "completed",
 						exited: false,
 						outputs: outputs as TChildOutputs,
+						...(changeSet !== undefined ? { changeSet } : {}),
 					};
 			const workflowChild = workflowChildReplaySnapshot(childName, childResult);
 			const outputKeys = Object.keys(outputs);
@@ -229,4 +274,30 @@ export function createChildWorkflowRunner(input: {
 				runtime.childRunOptions.cancellation?.unregister(childRunId, childControllerForCleanup);
 		}
 	};
+}
+
+/**
+ * Bind a boundary's workspace before its durable start: restore the binding an earlier attempt recorded, or resolve
+ * the workspace, then take the writer lease for a writable one. The parent releases the lease when the child settles.
+ */
+async function bindChildWorkspace(
+	workspace: Workspace,
+	invocation: DurableChildInvocation,
+	signal: AbortSignal,
+	owner: string,
+): Promise<void> {
+	const recorded = invocation.recordedWorkspace;
+	let binding: BoundWorkspace;
+	if (recorded === undefined) binding = await resolveWorkspace(workspace, { signal });
+	else {
+		await restoreWorkspace(recorded, {
+			signal,
+			recreateMissingBranch: !invocation.recordedChildProgress(),
+			recordedHeads: invocation.recordedChildHeads(recorded),
+		});
+		binding = recorded;
+	}
+	const lease =
+		binding.sandbox === "workspace-write" ? await acquireWorkspaceWriterLease(binding, { owner, signal }) : undefined;
+	invocation.bindWorkspace(binding, lease);
 }
