@@ -26,6 +26,7 @@ import {
 	withGitRunnerForTest,
 } from "../../packages/workflows/src/runs/shared/worktree-git-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures-classifier.js";
 import {
@@ -287,7 +288,7 @@ describe("workflow runs without git (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 3);
 	});
 
-	test("a resumed run replays saved worktree tasks without resolving git, then provisions for the task it runs (#4322)", async () => {
+	function gitRepo(): string {
 		const repo = join(root, "repo");
 		mkdirSync(repo);
 		vi.stubEnv("PATH", hostPath);
@@ -297,7 +298,78 @@ describe("workflow runs without git (#4322)", () => {
 		writeFileSync(join(repo, "tracked.txt"), "base\n");
 		runGitChecked(repo, ["add", "."]);
 		runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+		return repo;
+	}
 
+	/** Run on a node with git, failing the prompt that contains `failOn`, and return the failed run to resume. */
+	async function failedSourceRun(def: WorkflowDefinition, repo: string, failOn: string): Promise<RunSnapshot> {
+		const sourceStore = createStore();
+		const first = await runWorkflow(
+			def,
+			{},
+			{
+				store: sourceStore,
+				cwd: repo,
+				adapters: {
+					prompt: {
+						prompt: async (text: string) => {
+							if (text.includes(failOn)) throw new Error(`${failOn} failed`);
+							return "done";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(first.status, "failed");
+		const source = sourceStore.runs().find((snapshot) => snapshot.id === first.runId);
+		assert.ok(source?.failedStageId);
+		return source;
+	}
+
+	/** Move to a node with no git, where a download already failed in a retryable way and fails again. */
+	async function withoutGitAfterRetryableFailure() {
+		resetGitProvisionStateForTest();
+		vi.stubEnv("PATH", join(root, "empty-path"));
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = failingFetch();
+		const earlier = await resolveGit().catch((error: Error) => error);
+		assert.ok(isGitUnavailableError(earlier) && earlier.code === "download-failed" && earlier.retryable);
+		fetchMock.mockClear();
+		gitResolution.resolveGit = 0;
+		gitResolution.resolveGitSync = 0;
+		return fetchMock;
+	}
+
+	function resumeRun(def: WorkflowDefinition, repo: string, source: RunSnapshot, onPrompt: (text: string) => void) {
+		return runWorkflow(
+			def,
+			{},
+			{
+				store: createStore(),
+				cwd: repo,
+				continuation: { source, resumeFromStageId: source.failedStageId },
+				adapters: {
+					prompt: {
+						prompt: async (text: string) => {
+							onPrompt(text);
+							return "done";
+						},
+					},
+				},
+			},
+		);
+	}
+
+	function assertTaskNeedsGit(error: unknown, workflowName: string, runId: string, task: string) {
+		assert.ok(isWorkflowGitRequiredError(error));
+		assert.equal(error.code, "git-required");
+		assert.deepEqual(error.fields, { workflow: workflowName, runId, source: "task-option", field: task });
+		assert.equal(error.cause.code, "download-failed");
+		assert.equal(error.retryable, true);
+	}
+
+	test("a resumed run replays saved worktree tasks without resolving git, then provisions for the task it runs (#4322)", async () => {
+		const repo = gitRepo();
 		let shipError: unknown;
 		const def = workflow({
 			name: "saved-worktree-tasks",
@@ -317,62 +389,19 @@ describe("workflow runs without git (#4322)", () => {
 				return { ok: true };
 			},
 		}) as unknown as WorkflowDefinition;
-
-		const sourceStore = createStore();
-		const first = await runWorkflow(
-			def,
-			{},
-			{
-				store: sourceStore,
-				cwd: repo,
-				adapters: {
-					prompt: {
-						prompt: async (text: string) => {
-							if (text.includes("GATE")) throw new Error("gate failed");
-							return "done";
-						},
-					},
-				},
-			},
-		);
-		assert.equal(first.status, "failed");
-		const source = sourceStore.runs().find((snapshot) => snapshot.id === first.runId);
-		assert.ok(source?.failedStageId);
+		const source = await failedSourceRun(def, repo, "GATE");
 		assert.deepEqual(
 			source.stages.filter((stage) => stage.status === "completed").map((stage) => stage.name),
 			["edit", "review"],
 		);
 
-		// Resume on a node with no git, where a download already failed in a retryable way and fails again.
-		resetGitProvisionStateForTest();
-		vi.stubEnv("PATH", join(root, "empty-path"));
-		vi.stubEnv("ATOMIC_OFFLINE", "");
-		const fetchMock = failingFetch();
-		const earlier = await resolveGit().catch((error: Error) => error);
-		assert.ok(isGitUnavailableError(earlier) && earlier.code === "download-failed" && earlier.retryable);
-		fetchMock.mockClear();
-		gitResolution.resolveGit = 0;
-		gitResolution.resolveGitSync = 0;
+		const fetchMock = await withoutGitAfterRetryableFailure();
 		const livePrompts: string[] = [];
 		let beforeLiveWork: { fetches: number; resolveGit: number; resolveGitSync: number } | undefined;
-		const resumed = await runWorkflow(
-			def,
-			{},
-			{
-				store: createStore(),
-				cwd: repo,
-				continuation: { source, resumeFromStageId: source.failedStageId },
-				adapters: {
-					prompt: {
-						prompt: async (text: string) => {
-							livePrompts.push(text);
-							beforeLiveWork ??= { fetches: fetchMock.mock.calls.length, ...gitResolution };
-							return "done";
-						},
-					},
-				},
-			},
-		);
+		const resumed = await resumeRun(def, repo, source, (text) => {
+			livePrompts.push(text);
+			beforeLiveWork ??= { fetches: fetchMock.mock.calls.length, ...gitResolution };
+		});
 
 		assert.equal(resumed.status, "failed");
 		assert.deepEqual(
@@ -384,16 +413,42 @@ describe("workflow runs without git (#4322)", () => {
 		assert.deepEqual(beforeLiveWork, { fetches: 0, resolveGit: 0, resolveGitSync: 0 });
 		assert.equal(gitResolution.resolveGit, 1);
 		assert.equal(fetchMock.mock.calls.length, 3);
-		assert.ok(isWorkflowGitRequiredError(shipError));
-		assert.equal(shipError.code, "git-required");
-		assert.deepEqual(shipError.fields, {
-			workflow: "saved-worktree-tasks",
-			runId: resumed.runId,
-			source: "task-option",
-			field: "ship",
-		});
-		assert.equal(shipError.cause.code, "download-failed");
-		assert.equal(shipError.retryable, true);
+		assertTaskNeedsGit(shipError, "saved-worktree-tasks", resumed.runId, "ship");
+	});
+
+	test("a resumed run provisions git for a worktree task whose saved attempt failed (#4322)", async () => {
+		const repo = gitRepo();
+		let editError: unknown;
+		const def = workflow({
+			name: "failed-worktree-task",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Optional(Type.Boolean()) },
+			run: async (ctx) => {
+				try {
+					await ctx.task("edit", { prompt: "TASK_EDIT", worktree: true });
+				} catch (error) {
+					editError = error;
+					throw error;
+				}
+				return { ok: true };
+			},
+		}) as unknown as WorkflowDefinition;
+		const source = await failedSourceRun(def, repo, "TASK_EDIT");
+		assert.deepEqual(
+			source.stages.map((stage) => [stage.name, stage.status]),
+			[["edit", "failed"]],
+		);
+
+		const fetchMock = await withoutGitAfterRetryableFailure();
+		const livePrompts: string[] = [];
+		const resumed = await resumeRun(def, repo, source, (text) => livePrompts.push(text));
+
+		assert.equal(resumed.status, "failed");
+		assert.deepEqual(livePrompts, []);
+		assert.equal(gitResolution.resolveGit, 1);
+		assert.equal(fetchMock.mock.calls.length, 3);
+		assertTaskNeedsGit(editError, "failed-worktree-task", resumed.runId, "edit");
 	});
 
 	test("prepareTaskGit attempts a download when git is missing and downloadable, and again after a retryable failure", async () => {

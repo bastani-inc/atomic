@@ -53,35 +53,25 @@ function sortedIdentity(values: readonly string[]): string {
 	return [...values].sort().join("\u0000");
 }
 
+const EXECUTE_EVERY_STAGE: ContinuationReplayIndex = {
+	decide: (input) => ({ kind: "execute", parentIds: input.parentIds, answerReplay: "unavailable" }),
+	replaysCompletedStage: () => false,
+	markPromptAnswerReplayed: () => {},
+};
+
 export function createContinuationReplayIndex(
 	continuation: RunContinuationOpts | undefined,
 	sourceToContinuationNodeIds: Map<string, string>,
 ): ContinuationReplayIndex {
 	if (continuation === undefined) {
-		return {
-			decide: (input) => ({
-				kind: "execute",
-				parentIds: input.parentIds,
-				answerReplay: "unavailable",
-			}),
-			replaysCompletedStage: () => false,
-			markPromptAnswerReplayed: () => {},
-		};
+		return EXECUTE_EVERY_STAGE;
 	}
 	if (continuation.resumeFromStageId === undefined && continuation.resumeFromToolNodeId === undefined) {
 		if (continuation.source.stages.length > 0)
 			throw new Error(
 				`atomic-workflows: insufficient_state: continuation has no resume stage in source run ${continuation.source.id}`,
 			);
-		return {
-			decide: (input) => ({
-				kind: "execute",
-				parentIds: input.parentIds,
-				answerReplay: "unavailable",
-			}),
-			replaysCompletedStage: () => false,
-			markPromptAnswerReplayed: () => {},
-		};
+		return EXECUTE_EVERY_STAGE;
 	}
 	const resumeNode =
 		continuation.resumeFromToolNodeId === undefined

@@ -1542,6 +1542,10 @@ describe("git resolution details (#4322)", () => {
 			() => fresh.getGitStatus(),
 			(error) => error === bug,
 		);
+		assert.throws(
+			() => fresh.getGitShellEnvironment(process.env),
+			(error) => error === bug,
+		);
 	});
 
 	it("reports an unavailable git from ensureTool without a status sink", async () => {
@@ -2305,6 +2309,67 @@ describe("git install command on this machine (#4322)", () => {
 			assert.deepEqual(readdirSync(join(installDir, "releases")).sort(), retainedBefore);
 			assert.deepEqual(leftovers(), []);
 		});
+
+		it.each(["ENOTDIR", "EACCES"])(
+			"handles retained release directory read failure %s without masking its cause",
+			async (code) => {
+				const first = releaseFor(bytes(), undefined, "v2.56.0-2");
+				const fetchMock = serveArchive(first.bytes);
+				const base = await installAs(first);
+				const newer = releaseFor(first.bytes, undefined, "v2.56.0-3");
+				const problem = Object.assign(new Error("retained directory read failed"), { code });
+				const actualRead = mocks.actualFs!.readdirSync;
+				mocks.readdirSync.mockImplementation((path: string, options?: object) => {
+					if (String(path) === join(installDir, "releases")) throw problem;
+					return actualRead(path, options as never);
+				});
+				const result = await installAs(newer);
+				if (code === "ENOTDIR") {
+					assert.notEqual(result.path, base.path);
+					assert.equal(fetchMock.mock.calls.length, 2);
+				} else {
+					assert.equal(result.path, base.path);
+					assert.equal(fetchMock.mock.calls.length, 1);
+					const status = await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () =>
+						tools.getGitStatus(),
+					);
+					assert.equal(status.source, "provisioned");
+					assert.ok(status.source === "provisioned" && status.update?.reason);
+					if (status.source === "provisioned" && status.update?.reason) {
+						const error = rehydrateGitProvisionError(status.update.reason);
+						assert.ok(error instanceof GitUnavailableError);
+						assert.equal(error.code, "install-failed");
+						if (error.fields.code === "install-failed") {
+							assert.equal(error.fields.phase, "verify");
+							assert.equal(error.fields.detail, "the retained Git releases directory must be readable");
+						}
+						assert.equal((error.cause as NodeJS.ErrnoException).code, code);
+					}
+				}
+			},
+		);
+
+		it.each([
+			["unmanaged", 0],
+			["00000000-0000-0000-0000-000000000001", 1],
+		] as const)(
+			"ignores retained candidate %s with probe status %s instead of selecting it",
+			async (name, status) => {
+				const first = releaseFor(bytes(), undefined, "v2.56.0-2");
+				const fetchMock = serveArchive(first.bytes);
+				await installAs(first);
+				const newer = releaseFor(first.bytes, undefined, "v2.56.0-3");
+				const candidateRoot = join(installDir, "releases", name);
+				const candidate = provisionedExecutable(candidateRoot);
+				writeGit(dirname(candidate), basename(candidate), 0o755, "2.56.0");
+				mocks.probes.set(candidate, { status, stdout: "git version 2.56.0\n" });
+				writeFileSync(join(candidateRoot, ".atomic-git-release.json"), JSON.stringify(marked(newer)));
+				const result = await installAs(newer);
+				assert.notEqual(result.path, candidate);
+				assert.equal(result.version, "2.56.0");
+				assert.equal(fetchMock.mock.calls.length, 2);
+			},
+		);
 
 		it("keeps using the older install offline, and from resolveGitSync, without a request", async () => {
 			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
