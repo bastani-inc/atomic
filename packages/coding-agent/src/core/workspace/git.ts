@@ -74,7 +74,7 @@ const LOCAL_TIMEOUT_MS = 60_000;
 /** Network transfers and checkouts can take minutes on a large repository; other steps are local and quick. */
 const LONG_PHASES: ReadonlySet<WorkspaceGitPhase> = new Set(["clone", "fetch", "push", "worktree-add"]);
 /** How long a stopped git gets to remove what it created before its process group is killed. */
-const STOP_GRACE_MS = 5_000;
+export const WORKSPACE_GIT_STOP_GRACE_MS = 5_000;
 /** On POSIX git runs in its own process group, so stopping it also stops the checkout it spawned. */
 const OWN_PROCESS_GROUP = process.platform !== "win32";
 const DISABLED_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -171,9 +171,9 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 			stopped = failure;
 			terminate(child);
 			escalation = setTimeout(() => {
-				if (child.pid !== undefined) killProcessTree(child.pid);
+				killProcessTree(child.pid!);
 				settle(failure);
-			}, STOP_GRACE_MS);
+			}, WORKSPACE_GIT_STOP_GRACE_MS);
 		};
 		const onAbort = (): void => stop(() => reject(command.signal!.reason));
 		const timer = setTimeout(() => {

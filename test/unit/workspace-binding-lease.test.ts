@@ -311,5 +311,16 @@ describe("repository lock wait (#3109)", () => {
 			}),
 		);
 		assert.equal((failing as Error).message, "the body's own failure", "other failures pass through unchanged");
+		const busyCause = Object.assign(new Error("database is locked"), { errcode: 5 });
+		const wrapped = await rejection(
+			withRepositoryLock(dirname(lockFile), async () => {
+				throw new Error("a step of the body hit a busy database", { cause: busyCause });
+			}),
+		);
+		assert.equal(
+			(wrapped as Error).message,
+			"a step of the body hit a busy database",
+			"only the lock's own wait times out",
+		);
 	});
 });

@@ -22,6 +22,7 @@ import {
 	observeWorkspaceGitCommands,
 	runWorkspaceGit,
 	setWorkspaceGitExecutableResolver,
+	WORKSPACE_GIT_STOP_GRACE_MS,
 } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	GitUnavailableError,
@@ -878,7 +879,10 @@ describe("workspace git runner (#3109)", () => {
 					{ ...error.fields, installCommand: typeof error.fields.installCommand },
 					{ gitPath: old, version: "2.32.7", minimumVersion: "2.33", installCommand: "string" },
 				);
-				assert.match(error.message, /is git 2\.32\.7, and workspaces need git 2\.33 or later/);
+				assert.equal(
+					error.message,
+					`Git is too old: ${old} is git 2.32.7, and workspaces need git 2.33 or later to lock worktrees while adding them (git-unavailable). Install a newer git (${error.fields.installCommand}) and make sure it is first on PATH.`,
+				);
 				assert.equal(commands.length, 1, "only the version probe ran");
 				assert.equal(existsSync(join(dirs.home, "repos")), false, "nothing was created");
 			} finally {
@@ -915,6 +919,24 @@ describe("workspace git runner (#3109)", () => {
 			);
 			assert.ok(isWorkspaceTimeoutError(error));
 			assert.equal(processAlive(Number(readFileSync(pidFile, "utf-8"))), false);
+
+			// git stops the command it ran itself, but not one that command left running in the background.
+			const backgroundFile = join(dirs.root, "background.pid");
+			const startedAt = Date.now();
+			const background = await rejection(
+				runWorkspaceGit({
+					cwd: tmpdir(),
+					args: ["-c", `alias.spawner=!sleep 30 & echo $! > '${backgroundFile}'; wait`, "spawner"],
+					phase: "fetch",
+					timeoutMs: 300,
+				}),
+			);
+			assert.ok(isWorkspaceTimeoutError(background));
+			assert.ok(
+				Date.now() - startedAt < WORKSPACE_GIT_STOP_GRACE_MS,
+				"the whole group stopped at once, without waiting out the grace",
+			);
+			assert.equal(processAlive(Number(readFileSync(backgroundFile, "utf-8"))), false);
 		},
 	);
 
@@ -1265,13 +1287,23 @@ describe("interrupted worktree additions (#3109)", () => {
 		assert.match(error.hint, new RegExp(`worktree remove --force --force ${callers.replaceAll("\\", "\\\\")}`));
 		assert.equal(existsSync(join(callers, "leftover.txt")), true, "a caller's directory is never deleted");
 
-		const besideWorktrees = join(dirs.home, "kept");
-		orphan(besideWorktrees);
-		const outside = await rejection(
-			resolveWorkspace(workspace({ repo, branch: "feat/kept", worktree: besideWorktrees })),
-		);
-		assert.ok(isWorkspaceBindingError(outside));
-		assert.equal(outside.reason, "orphaned-directory", "only Atomic's worktree directory is Atomic's");
+		for (const [name, notInside] of [
+			["kept", join(dirs.home, "kept")],
+			["home", dirs.home],
+			["root", join(dirs.home, "worktrees")],
+		] as const) {
+			orphan(notInside);
+			const outside = await rejection(
+				resolveWorkspace(workspace({ repo, branch: `feat/${name}`, worktree: notInside })),
+			);
+			assert.ok(isWorkspaceBindingError(outside), `${name}: ${String(outside)}`);
+			assert.equal(
+				outside.reason,
+				"orphaned-directory",
+				"only paths inside Atomic's worktree directory are Atomic's",
+			);
+			assert.equal(existsSync(join(notInside, "leftover.txt")), true);
+		}
 	});
 
 	test("never treats another repository's worktree as an interrupted addition (#3109)", async () => {
