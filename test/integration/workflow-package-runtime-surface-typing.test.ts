@@ -69,7 +69,7 @@ const leaseLookup: Promise<LeaseState | undefined> = journal.leaseState("run");
 const takeover: ReturnType<RunJournal["acquire"]> = journal.takeoverExpired("run", "holder", 100);
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
-type OptionalJournalMembers = "changeToken" | "runVersions" | "snapshotTail" | "appendMany";
+type OptionalJournalMembers = "changeToken" | "runVersions" | "snapshotTail" | "appendMany" | "snapshotBlobs";
 const memoryShape: Equal<keyof MemoryRunJournal, Exclude<keyof RunJournal, OptionalJournalMembers>> = true;
 const sqliteShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
 const sqliteOptionalMembers: Equal<Extract<keyof SqlRunJournal, OptionalJournalMembers>, OptionalJournalMembers> = true;
