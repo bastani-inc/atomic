@@ -288,4 +288,8 @@ sort -n "$ARTIFACTS/latencies-ms.txt" | awk -v missed="$missed" -v streams_start
 
 # 5. Leave the dialog: Escape cancels the questionnaire.
 tmux send-keys -t "$SESSION" Escape
+if ((missed > 0)); then
+	echo "aq-load evidence: $missed keys produced no paint within 5 s; see $ARTIFACTS/summary.txt and missed-key snapshots" >&2
+	exit 1
+fi
 echo "aq-load evidence: scenario complete; artifacts in $ARTIFACTS"
