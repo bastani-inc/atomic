@@ -864,9 +864,48 @@ export {
 	watchWithErrorHandler,
 } from "./utils/fs-watch.ts";
 export { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "./utils/git-env.ts";
+export {
+	findGitProvisionError,
+	GIT_MINIMUM_VERSION,
+	type GitInstallPhase,
+	type GitProvisionConfigCode,
+	GitProvisionConfigError,
+	type GitProvisionConfigFields,
+	GitProvisionError,
+	type GitProvisionErrorCode,
+	type GitProvisionFields,
+	type GitProvisionJsonValue,
+	type GitProvisionPhase,
+	type GitProvisionTimeoutCode,
+	GitProvisionTimeoutError,
+	type GitProvisionTimeoutFields,
+	type GitRejectedSystemGit,
+	type GitUnavailableCode,
+	GitUnavailableError,
+	type GitUnavailableFields,
+	type GitUnsupportedPlatformReason,
+	isGitProvisionConfigError,
+	isGitProvisionError,
+	isGitProvisionTimeoutError,
+	isGitUnavailableError,
+	isRetryableGitProvisionError,
+	rehydrateGitProvisionError,
+	type SerializedGitProvisionError,
+} from "./utils/git-errors.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 export { INTERACTIVE_ENGINE_ENV_VARS, scrubInteractiveEngineEnv } from "./utils/interactive-engine-env.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 // Shell utilities
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
+export {
+	type GitToolStatus,
+	type GitUpdateStatus,
+	getGitStatus,
+	type ResolvedGit,
+	type ResolvedGitSource,
+	type ResolveGitOptions,
+	resolveGit,
+	resolveGitSync,
+	type ToolStatus as ManagedToolStatus,
+} from "./utils/tools-manager.ts";

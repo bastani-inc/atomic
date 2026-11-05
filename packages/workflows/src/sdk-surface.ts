@@ -62,6 +62,16 @@ export type {
 export type * from "./shared/types.js";
 export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
 export type {
+	SerializedWorkflowGitRequiredError,
+	WorkflowGitRequiredFields,
+	WorkflowGitRequiredSource,
+} from "./shared/workflow-git-required-error.js";
+export {
+	isWorkflowGitRequiredError,
+	rehydrateWorkflowGitRequiredError,
+	WorkflowGitRequiredError,
+} from "./shared/workflow-git-required-error.js";
+export type {
 	WorkflowHeartbeatEvent,
 	WorkflowHeartbeatEventDetails,
 	WorkflowHeartbeatIdentity,

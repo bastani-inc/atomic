@@ -232,6 +232,16 @@ export declare function run<
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
 export type {
+	SerializedWorkflowGitRequiredError,
+	WorkflowGitRequiredFields,
+	WorkflowGitRequiredSource,
+} from "./shared/workflow-git-required-error.js";
+export {
+	isWorkflowGitRequiredError,
+	rehydrateWorkflowGitRequiredError,
+	WorkflowGitRequiredError,
+} from "./shared/workflow-git-required-error.js";
+export type {
 	ProcessCleanupResource,
 	SerializedWorkflowInfrastructureError,
 	WorkflowInfrastructureFault,

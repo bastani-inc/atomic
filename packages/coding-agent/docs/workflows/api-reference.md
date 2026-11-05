@@ -1640,7 +1640,17 @@ function setupGitWorktree(options: {
 };
 ```
 
-Synchronously creates or validates a reusable worktree and remaps the cwd. It applies the same validation, symlink-preserving path handling, and cwd-preservation behavior as workflow stages. `worktreeRoot` is the checkout in use, which is the allocated `<gitWorktreeDir>/<bucket>/<repository-name>` checkout when `gitWorktreeDir` is a non-empty non-Git directory. Outside a workflow run each such call allocates a new checkout. `repositoryRoot` is the invoking checkout when the worktree belongs to the same repository, and the worktree root otherwise.
+Synchronously creates or validates a reusable worktree and remaps the cwd. It runs the git that `resolveGit()` from `@bastani/atomic` selects and never downloads one: on a machine without git 2.30.0 or newer, `await resolveGit()` first, or it throws `GitUnavailableError`. A run whose inputs bind a worktree (`worktreeFromInputs`, as in the builtin goal and ralph workflows) does this before its body starts and fails there with `WorkflowGitRequiredError` when git cannot be provided; a task with `worktree: true` or a `gitWorktreeDir` option tries to download git before its stage and fails with `WorkflowGitRequiredError` (`source: "task-option"`) when its live setup cannot get it; a stage created directly with `ctx.stage(name, { gitWorktreeDir })` uses git that is already installed; every other run never downloads git. It applies the same validation, symlink-preserving path handling, and cwd-preservation behavior as workflow stages. `worktreeRoot` is the checkout in use, which is the allocated `<gitWorktreeDir>/<bucket>/<repository-name>` checkout when `gitWorktreeDir` is a non-empty non-Git directory. Outside a workflow run each such call allocates a new checkout. `repositoryRoot` is the invoking checkout when the worktree belongs to the same repository, and the worktree root otherwise.
+
+### `WorkflowGitRequiredError`
+
+Thrown, before the run's body, when a run's inputs bind a worktree and git is neither installed nor downloadable. It carries the git error as `cause`, so `findGitProvisionError(error)` reaches the underlying `GitUnavailableError` and its code, and it copies that error's `hint` (which ends with the install command for the system) and `retryable`.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `WorkflowGitRequiredError` | `git-required` | The run asked for a worktree through an input and git cannot be provided | `workflow`, `runId`, `source` (`"input"` or `"task-option"`), `field` (the input bound to `gitWorktreeDir`, or the task name), `gitWorktreeDir` (absent for a task that asks for a temporary worktree) | Follow `hint`; retry only when `retryable` is true |
+
+`isWorkflowGitRequiredError(value)` matches by class, or by `name` and `code` for an error from another process. `JSON.stringify(error)` gives `{ name, code, message, hint, retryable, fields, cause }`, and `rehydrateWorkflowGitRequiredError(payload)` restores the same class with its git cause. A pooled worker's failed run reaches its parent as text, the message, which carries the code and the hint.
 
 ### `normalizeWorkflowName(name)` / `workflowNamesEqual(a, b)`
 

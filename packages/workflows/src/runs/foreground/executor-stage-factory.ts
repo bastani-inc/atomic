@@ -47,6 +47,10 @@ import {
 import { stageError } from "./stage-runner-session.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
 
+export function agentStageReplayKey(name: string, options: StageOptions | undefined): string {
+	return options?.durableReplayKey ?? `stage:${name}`;
+}
+
 export function createWorkflowStageFactory(input: {
 	readonly runId: string;
 	readonly workflowIntercomGroup: string;
@@ -88,7 +92,7 @@ export function createWorkflowStageFactory(input: {
 			input.tracker.replaceParents(stageId, scopedParentIds);
 		}
 
-		const replayKey = options?.durableReplayKey ?? `stage:${name}`;
+		const replayKey = agentStageReplayKey(name, options);
 		const replayDecision = input.replayIndex.decide({
 			displayName: name,
 			replayKey,

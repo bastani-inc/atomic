@@ -25,6 +25,13 @@ import { createHarness } from "./suite/harness.ts";
 import "../src/modes/interactive/interactive-editor-actions.ts";
 import "../src/modes/interactive/interactive-session-runtime.ts";
 
+vi.mock("../src/utils/tools-manager.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/tools-manager.ts")>();
+	const getToolPath = ((tool: "fd" | "rg" | "git") =>
+		tool === "git" ? Promise.resolve("git") : actual.getToolPath(tool)) as typeof actual.getToolPath;
+	return { ...actual, getToolPath, getToolEnv: async () => ({}) };
+});
+
 const tempDirs: string[] = [];
 afterEach(() => {
 	vi.restoreAllMocks();

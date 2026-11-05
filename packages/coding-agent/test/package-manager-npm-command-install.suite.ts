@@ -8,6 +8,13 @@ import { APP_NAME } from "../src/config.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
+vi.mock("../src/utils/tools-manager.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/tools-manager.ts")>();
+	const getToolPath = ((tool: "fd" | "rg" | "git") =>
+		tool === "git" ? Promise.resolve("git") : actual.getToolPath(tool)) as typeof actual.getToolPath;
+	return { ...actual, getToolPath, getToolEnv: async () => ({}) };
+});
+
 function normalizeForMatch(value: string): string {
 	return value.replace(/\\/g, "/");
 }

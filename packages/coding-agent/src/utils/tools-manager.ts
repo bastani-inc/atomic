@@ -1,10 +1,42 @@
-import { type SpawnSyncReturns, spawnSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
+import { execFile, type SpawnSyncReturns, spawnSync } from "child_process";
+import { createHash, randomUUID } from "crypto";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
 import { writeFile } from "fs/promises";
-import { arch, platform } from "os";
-import { join } from "path";
+import { arch, hostname, platform } from "os";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import lockfile from "proper-lockfile";
+import { setTimeout as delay } from "timers/promises";
 import { ENV_OFFLINE, getBinDir, getEnvValue, VERSION } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
+import { createGitEnvironment } from "./git-env.ts";
+import {
+	attachGitCleanupFailure,
+	GIT_MINIMUM_VERSION,
+	type GitInstallPhase,
+	GitProvisionConfigError,
+	type GitProvisionError,
+	type GitProvisionPhase,
+	GitProvisionTimeoutError,
+	type GitRejectedSystemGit,
+	GitUnavailableError,
+	type GitUnavailableFields,
+	isGitProvisionError,
+	type SerializedGitProvisionError,
+} from "./git-errors.ts";
+import { gitInstallCommand, type OsRelease, readOsRelease } from "./git-install-command.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
@@ -69,7 +101,10 @@ function commandExists(cmd: string): boolean {
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
-export function getToolPath(tool: "fd" | "rg"): string | null {
+export function getToolPath(tool: "fd" | "rg"): string | null;
+export function getToolPath(tool: "git", options?: ResolveGitOptions): Promise<string>;
+export function getToolPath(tool: "fd" | "rg" | "git", options?: ResolveGitOptions): string | null | Promise<string> {
+	if (tool === "git") return resolveGit(options).then((git) => git.path);
 	const config = TOOLS[tool];
 	if (!config) return null;
 
@@ -326,9 +361,11 @@ export interface ToolStatus {
  * Returns the tool path, or undefined if unavailable.
  */
 export async function ensureTool(
-	tool: "fd" | "rg",
+	tool: "fd" | "rg" | "git",
 	onStatus?: (status: ToolStatus) => void,
 ): Promise<string | undefined> {
+	if (tool === "git") return ensureGit(onStatus);
+
 	const existingPath = getToolPath(tool);
 	if (existingPath) {
 		return existingPath;
@@ -384,5 +421,1364 @@ export async function ensureTool(
 			message: `Failed to download ${config.name}: ${messages.length > 0 ? messages.join(": ") : String(e)}`,
 		});
 		return undefined;
+	}
+}
+
+// Git is provisioned as a complete distribution (helpers, templates, CA bundle), not a single binary, so it has its
+// own pinned release table, layout, and environment.
+
+export type GitTargetKey =
+	| "darwin-x64"
+	| "darwin-arm64"
+	| "linux-x64"
+	| "linux-arm64"
+	| "linux-arm"
+	| "win32-x64"
+	| "win32-arm64"
+	| "win32-ia32";
+
+export interface GitRelease {
+	readonly repo: string;
+	readonly tag: string;
+	readonly version: string;
+	readonly assets: Readonly<Record<GitTargetKey, { readonly name: string; readonly sha256: string }>>;
+}
+
+/** The pinned desktop/dugite-native release Atomic provisions; every archive is verified against its SHA-256 here. */
+export const GIT_RELEASE: GitRelease = {
+	repo: "desktop/dugite-native",
+	tag: "v2.56.0-2",
+	version: "2.56.0",
+	assets: {
+		"darwin-x64": {
+			name: "dugite-native-v2.56.0-a44aeca-macOS-x64.tar.gz",
+			sha256: "52cc663281e1ec2f1d76ba781193ca4847e62dbbf767f6c99ec9ec5b978a7659",
+		},
+		"darwin-arm64": {
+			name: "dugite-native-v2.56.0-a44aeca-macOS-arm64.tar.gz",
+			sha256: "1110de343de11cc6f469b782b60f36217b9199b5e06875dd65baa26dd60563c7",
+		},
+		"linux-x64": {
+			name: "dugite-native-v2.56.0-a44aeca-ubuntu-x64.tar.gz",
+			sha256: "1efd8ce0516b670b6b6d0f49ecaf395ceb8cf7fff3f5857259763d97a1238df9",
+		},
+		"linux-arm64": {
+			name: "dugite-native-v2.56.0-a44aeca-ubuntu-arm64.tar.gz",
+			sha256: "d5ce120515bf3013a014e6a918aa87ec0f7a6f5f9687c48d50127e637cb9b6c2",
+		},
+		"linux-arm": {
+			name: "dugite-native-v2.56.0-a44aeca-ubuntu-arm.tar.gz",
+			sha256: "7a14edae189f791e64f8d037c8e3830acd648cd1ad891db40c8d6469d33b36cd",
+		},
+		"win32-x64": {
+			name: "dugite-native-v2.56.0-a44aeca-windows-x64.tar.gz",
+			sha256: "f1e17876337d7be143e5d51976da36643d65528125cfbc14d57f171de0fd5f14",
+		},
+		"win32-arm64": {
+			name: "dugite-native-v2.56.0-a44aeca-windows-arm64.tar.gz",
+			sha256: "1834e7817589f25f97ae0f309ef4733578a6b8dbd438ed29f898d075e6ead4c2",
+		},
+		"win32-ia32": {
+			name: "dugite-native-v2.56.0-a44aeca-windows-x86.tar.gz",
+			sha256: "ef98c4e84c916e95ee1b3c894240f37db264b06265999e841a6eb54822899da4",
+		},
+	},
+};
+
+/** The Linux builds link against glibc 2.34. */
+const GIT_GLIBC_MINIMUM = "2.34";
+const GIT_PROBE_TIMEOUT_MS = 10_000;
+const GIT_STAGING_PREFIX = ".git-staging-";
+const GIT_RELEASES_DIR = "releases";
+const GIT_SELECTED_RELEASE = "selected";
+const GIT_RELEASE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+interface GitProvisionSettings {
+	readonly release: GitRelease;
+	readonly downloadTimeoutMs: number;
+	readonly extractTimeoutMs: number;
+	readonly verifyTimeoutMs: number;
+	readonly lockWaitTimeoutMs: number;
+	readonly lockStaleMs: number;
+	readonly lockUpdateMs: number;
+	readonly lockPollMs: number;
+}
+
+const DEFAULT_GIT_PROVISION_SETTINGS: GitProvisionSettings = {
+	release: GIT_RELEASE,
+	downloadTimeoutMs: 600_000,
+	extractTimeoutMs: 300_000,
+	verifyTimeoutMs: 30_000,
+	lockWaitTimeoutMs: 900_000,
+	lockStaleMs: 20_000,
+	lockUpdateMs: 5_000,
+	lockPollMs: 250,
+};
+
+let gitProvisionSettings = DEFAULT_GIT_PROVISION_SETTINGS;
+
+/** Provision from a test release with short limits while `callback` runs. Not part of the public API. */
+export async function withGitProvisionSettingsForTest<T>(
+	overrides: Partial<GitProvisionSettings>,
+	callback: () => Promise<T>,
+): Promise<T> {
+	const previous = gitProvisionSettings;
+	gitProvisionSettings = { ...previous, ...overrides };
+	try {
+		return await callback();
+	} finally {
+		gitProvisionSettings = previous;
+	}
+}
+
+export type GitLibc = { readonly family: "glibc"; readonly version?: string } | { readonly family: "musl" };
+
+export interface GitDistributionTarget {
+	readonly key: GitTargetKey;
+	readonly asset: string;
+	readonly sha256: string;
+	readonly url: string;
+}
+
+type UnsupportedPlatformFields = Extract<GitUnavailableFields, { readonly code: "unsupported-platform" }>;
+export type GitTargetResolution =
+	| { readonly supported: true; readonly target: GitDistributionTarget }
+	| { readonly supported: false; readonly fields: UnsupportedPlatformFields };
+
+/** Where the portable git lives once installed: `<getBinDir()>/git`. */
+export function getGitInstallDir(): string {
+	return join(TOOLS_DIR, "git");
+}
+
+/** Compare major.minor.patch versions; a missing component counts as 0. */
+function compareVersions(left: string, right: string): number {
+	const leftParts = left.split(".").map(Number);
+	const rightParts = right.split(".").map(Number);
+	for (const index of [0, 1, 2]) {
+		const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+		if (difference !== 0) return difference;
+	}
+	return 0;
+}
+
+/** `git version 2.39.5 (Apple Git-154)` → `2.39.5`; undefined when the output is not a git version line. */
+export function parseGitVersion(output: string): string | undefined {
+	const match = /^git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(output.trim());
+	return match === null ? undefined : `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+}
+
+function supportedArchitecture(plat: string, architecture: string): boolean {
+	if (plat === "darwin") return architecture === "x64" || architecture === "arm64";
+	if (plat === "linux") return architecture === "x64" || architecture === "arm64" || architecture === "arm";
+	return architecture === "x64" || architecture === "arm64" || architecture === "ia32";
+}
+
+/** Map a platform, architecture, and (on Linux) libc to the pinned asset, or say why there is none. */
+export function getGitDistributionTarget(
+	plat: string,
+	architecture: string,
+	libc: GitLibc | undefined,
+	release: GitRelease = GIT_RELEASE,
+	osRelease?: OsRelease,
+): GitTargetResolution {
+	const unsupported = (
+		reason: UnsupportedPlatformFields["reason"],
+		extra: { readonly libc?: string } = {},
+	): GitTargetResolution => {
+		const installCommand = gitInstallCommand(plat, osRelease, libc?.family === "musl");
+		return {
+			supported: false,
+			fields: {
+				code: "unsupported-platform",
+				reason,
+				platform: plat,
+				arch: architecture,
+				...extra,
+				...(installCommand === undefined ? {} : { installCommand }),
+			},
+		};
+	};
+	if (plat !== "darwin" && plat !== "linux" && plat !== "win32") return unsupported("platform");
+	if (libc?.family === "musl") return unsupported("musl", { libc: "musl" });
+	if (libc?.version !== undefined && compareVersions(libc.version, GIT_GLIBC_MINIMUM) < 0)
+		return unsupported("glibc-too-old", { libc: `glibc ${libc.version}` });
+	if (!supportedArchitecture(plat, architecture)) return unsupported("architecture");
+	const key = `${plat}-${architecture}` as GitTargetKey;
+	const asset = release.assets[key];
+	return {
+		supported: true,
+		target: {
+			key,
+			asset: asset.name,
+			sha256: asset.sha256,
+			url: `https://github.com/${release.repo}/releases/download/${release.tag}/${asset.name}`,
+		},
+	};
+}
+
+let detectedLibc: GitLibc | undefined;
+
+function muslLoaderPresent(): boolean {
+	return ["/lib", "/usr/lib"].some(
+		(directory) => existsSync(directory) && readdirSync(directory).some((name) => name.startsWith("ld-musl-")),
+	);
+}
+
+/** glibc from the runtime report; otherwise musl when its loader exists. */
+export function detectLinuxLibc(): GitLibc {
+	if (detectedLibc !== undefined) return detectedLibc;
+	const report = process.report?.getReport() as { readonly header?: { readonly glibcVersionRuntime?: string } };
+	const glibcVersion = report?.header?.glibcVersionRuntime;
+	detectedLibc =
+		typeof glibcVersion === "string"
+			? { family: "glibc", version: glibcVersion }
+			: muslLoaderPresent()
+				? { family: "musl" }
+				: { family: "glibc" };
+	return detectedLibc;
+}
+
+/** The command that installs git on this machine, as an error field (os-release is read once per process). */
+function installCommandField(): { readonly installCommand?: string } {
+	const plat = platform();
+	const installCommand = gitInstallCommand(plat, plat === "linux" ? readOsRelease() : undefined);
+	return installCommand === undefined ? {} : { installCommand };
+}
+
+/** Where this error happened, and the command that installs git here. */
+function hostPlatform(): { readonly platform: string; readonly arch: string; readonly installCommand?: string } {
+	return { platform: platform(), arch: arch(), ...installCommandField() };
+}
+
+function currentGitTarget(): GitTargetResolution {
+	const plat = platform();
+	return getGitDistributionTarget(
+		plat,
+		arch(),
+		plat === "linux" ? detectLinuxLibc() : undefined,
+		gitProvisionSettings.release,
+		plat === "linux" ? readOsRelease() : undefined,
+	);
+}
+
+interface GitDistributionLayout {
+	readonly root: string;
+	readonly executable: string;
+	readonly execPath: string;
+	readonly templateDir: string;
+	readonly systemConfig?: string;
+	readonly caBundle?: string;
+	readonly shellPathEntry: string;
+}
+
+function windowsGitSubfolder(architecture: string): string {
+	if (architecture === "arm64") return "clangarm64";
+	return architecture === "ia32" ? "mingw32" : "ucrt64";
+}
+
+function gitLayout(root: string, plat: string, architecture: string): GitDistributionLayout {
+	if (plat === "win32") {
+		const subfolder = join(root, windowsGitSubfolder(architecture));
+		return {
+			root,
+			executable: join(root, "cmd", "git.exe"),
+			execPath: join(subfolder, "libexec", "git-core"),
+			templateDir: join(subfolder, "share", "git-core", "templates"),
+			caBundle: join(subfolder, "etc", "ssl", "certs", "ca-bundle.crt"),
+			shellPathEntry: join(root, "cmd"),
+		};
+	}
+	return {
+		root,
+		executable: join(root, "bin", "git"),
+		execPath: join(root, "libexec", "git-core"),
+		templateDir: join(root, "share", "git-core", "templates"),
+		systemConfig: join(root, "etc", "gitconfig"),
+		...(plat === "linux" ? { caBundle: join(root, "ssl", "cacert.pem") } : {}),
+		shellPathEntry: join(root, "bin"),
+	};
+}
+
+function currentGitLayout(root = getGitInstallDir()): GitDistributionLayout {
+	return gitLayout(root, platform(), arch());
+}
+
+/**
+ * The variables a portable git needs. Caller-provided `GIT_CONFIG_SYSTEM` and `GIT_SSL_CAINFO` win; a defaulted
+ * `GIT_SSL_CAINFO` takes precedence over `http.sslCAInfo` in git configuration.
+ */
+function portableGitEnv(layout: GitDistributionLayout, baseEnv: NodeJS.ProcessEnv): Record<string, string> {
+	const env: Record<string, string> = { GIT_EXEC_PATH: layout.execPath, GIT_TEMPLATE_DIR: layout.templateDir };
+	if (layout.systemConfig !== undefined && !baseEnv.GIT_CONFIG_SYSTEM) env.GIT_CONFIG_SYSTEM = layout.systemConfig;
+	if (layout.caBundle !== undefined && !baseEnv.GIT_SSL_CAINFO) env.GIT_SSL_CAINFO = layout.caBundle;
+	return env;
+}
+
+function pathValueOf(env: NodeJS.ProcessEnv): string {
+	const key = Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "PATH";
+	return env[key] ?? "";
+}
+
+function isWithin(child: string, parent: string): boolean {
+	const fromParent = relative(parent, child);
+	return fromParent !== ".." && !fromParent.startsWith(`..${sep}`) && !isAbsolute(fromParent);
+}
+
+interface SystemGitCandidate {
+	readonly path: string;
+	readonly signature: string;
+}
+
+function inspectSystemGitCandidate(candidate: string, plat: string): SystemGitCandidate | undefined {
+	try {
+		const stats = statSync(candidate, { throwIfNoEntry: false });
+		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111) === 0)) return undefined;
+		return {
+			path: candidate,
+			signature: JSON.stringify([
+				candidate,
+				stats.dev,
+				stats.ino,
+				stats.size,
+				stats.mtimeMs,
+				stats.ctimeMs,
+				stats.mode,
+			]),
+		};
+	} catch (error) {
+		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * The first git in an absolute PATH directory, ignoring Atomic's own portable copy. Empty and relative entries name
+ * the working directory, which may be an untrusted repository, so they are never searched.
+ */
+function findSystemGit(pathValue: string, portableRoot: string, plat: string): SystemGitCandidate | undefined {
+	const executable = plat === "win32" ? "git.exe" : "git";
+	for (const entry of pathValue.split(delimiter)) {
+		if (!isAbsolute(entry)) continue;
+		const directory = resolve(entry);
+		if (isWithin(directory, portableRoot)) continue;
+		const candidate = inspectSystemGitCandidate(join(directory, executable), plat);
+		if (candidate !== undefined) return candidate;
+	}
+	return undefined;
+}
+
+function probeGitVersion(executable: string, overrides: Record<string, string> | undefined): string | undefined {
+	const result = spawnSync(executable, ["--version"], {
+		timeout: GIT_PROBE_TIMEOUT_MS,
+		env: createGitEnvironment(overrides, createChildProcessEnvironment()),
+	});
+	return result.status === 0 ? parseGitVersion(String(result.stdout)) : undefined;
+}
+
+/** Undefined when no git is on PATH. */
+type SystemGitProbe =
+	| undefined
+	| { readonly kind: "usable"; readonly path: string; readonly version: string }
+	| { readonly kind: "rejected"; readonly rejected: GitRejectedSystemGit };
+
+interface CachedSystemGitProbe {
+	readonly probe: Exclude<SystemGitProbe, undefined>;
+	readonly signature: string;
+}
+
+const systemGitProbes = new Map<string, CachedSystemGitProbe>();
+const provisionedGitVersions = new Map<string, string>();
+let lastProvisionFailure: GitProvisionError | undefined;
+
+/** Forget probes and the last provisioning failure, as a new process would. Not part of the public API. */
+export function resetGitProvisionStateForTest(): void {
+	sweptAbandonedInstalls = false;
+	staleRefresh = undefined;
+	systemGitProbes.clear();
+	provisionedGitVersions.clear();
+	lastProvisionFailure = undefined;
+}
+
+function probeSystemGit(): SystemGitProbe {
+	const pathValue = pathValueOf(process.env);
+	const root = getGitInstallDir();
+	const key = `${root}\0${pathValue}`;
+	const cached = systemGitProbes.get(key);
+	const candidate = findSystemGit(pathValue, root, platform());
+	if (candidate === undefined) return undefined;
+	if (cached?.signature === candidate.signature) return cached.probe;
+	const { path, signature } = candidate;
+	const version = probeGitVersion(path, undefined);
+	const probe: Exclude<SystemGitProbe, undefined> =
+		version === undefined
+			? { kind: "rejected", rejected: { path, problem: "probe-failed" } }
+			: compareVersions(version, GIT_MINIMUM_VERSION) < 0
+				? { kind: "rejected", rejected: { path, problem: "below-minimum", version } }
+				: { kind: "usable", path, version };
+	systemGitProbes.set(key, { probe, signature });
+	return probe;
+}
+
+const GIT_RELEASE_MARKER = ".atomic-git-release.json";
+
+/** What an installed distribution records about the pinned release it came from. */
+export interface GitReleaseMarker {
+	readonly tag: string;
+	readonly asset: string;
+	readonly sha256: string;
+}
+
+function markerOf(target: GitDistributionTarget): GitReleaseMarker {
+	return { tag: gitProvisionSettings.release.tag, asset: target.asset, sha256: target.sha256 };
+}
+
+/**
+ * The marker a current install of this machine's build carries, or undefined where no build exists. A pin bump
+ * changes it even when the git version is the same, because dugite-native republishes builds under new tags.
+ */
+export function getGitReleaseMarker(): GitReleaseMarker | undefined {
+	const target = currentGitTarget();
+	return target.supported ? markerOf(target.target) : undefined;
+}
+
+/** The recorded marker; a missing, unreadable or corrupt one counts as an older release, so the install is redone. */
+function readReleaseMarker(layout: GitDistributionLayout): GitReleaseMarker | undefined {
+	try {
+		return JSON.parse(readFileSync(join(layout.root, GIT_RELEASE_MARKER), "utf-8")) as GitReleaseMarker;
+	} catch {
+		return undefined;
+	}
+}
+
+function isCurrentRelease(layout: GitDistributionLayout, target: GitDistributionTarget): boolean {
+	const expected = markerOf(target);
+	const recorded = readReleaseMarker(layout);
+	return recorded?.tag === expected.tag && recorded.asset === expected.asset && recorded.sha256 === expected.sha256;
+}
+
+function probeProvisionedGit(layout: GitDistributionLayout): string | undefined {
+	if (!existsSync(layout.executable)) {
+		provisionedGitVersions.delete(layout.executable);
+		return undefined;
+	}
+	const cached = provisionedGitVersions.get(layout.executable);
+	if (cached !== undefined) return cached;
+	const version = probeGitVersion(layout.executable, portableGitEnv(layout, process.env));
+	if (version !== undefined) provisionedGitVersions.set(layout.executable, version);
+	return version;
+}
+
+function gitReleasesDir(): string {
+	return join(getGitInstallDir(), GIT_RELEASES_DIR);
+}
+
+/** The release the last upgrade selected; a missing or malformed selection means none. */
+function selectedReleaseLayout(): GitDistributionLayout | undefined {
+	let name: string;
+	try {
+		name = readFileSync(join(gitReleasesDir(), GIT_SELECTED_RELEASE), "utf-8").trim();
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
+		throw new GitUnavailableError(
+			{
+				code: "install-failed",
+				phase: "verify",
+				asset: join(GIT_RELEASES_DIR, GIT_SELECTED_RELEASE),
+				installDir: getGitInstallDir(),
+				detail: "the selected Git release marker must be a readable file",
+				...hostPlatform(),
+			},
+			{ cause: error },
+		);
+	}
+	return GIT_RELEASE_NAME.test(name) ? currentGitLayout(join(gitReleasesDir(), name)) : undefined;
+}
+
+/** Provisioned releases, newest publication first. Published releases are never moved or removed. */
+function provisionedGitLayouts(): readonly GitDistributionLayout[] {
+	const selected = selectedReleaseLayout();
+	return selected === undefined ? [currentGitLayout()] : [selected, currentGitLayout()];
+}
+
+interface ProvisionedGit {
+	readonly layout: GitDistributionLayout;
+	readonly version: string;
+}
+
+/** A working install of the pinned release; an install of another release does not count. */
+function findCurrentGit(target: GitDistributionTarget): ProvisionedGit | undefined {
+	for (const layout of provisionedGitLayouts()) {
+		if (!isCurrentRelease(layout, target)) continue;
+		const version = probeProvisionedGit(layout);
+		if (version !== undefined) return { layout, version };
+	}
+	return undefined;
+}
+
+function findRetainedGit(target: GitDistributionTarget): ProvisionedGit | undefined {
+	let names: string[];
+	try {
+		names = readdirSync(gitReleasesDir());
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
+		throw installFailed(
+			"verify",
+			target,
+			currentGitLayout(),
+			error,
+			"the retained Git releases directory must be readable",
+		);
+	}
+	for (const name of names) {
+		if (!GIT_RELEASE_NAME.test(name)) continue;
+		const layout = currentGitLayout(join(gitReleasesDir(), name));
+		if (!isCurrentRelease(layout, target)) continue;
+		const version = probeProvisionedGit(layout);
+		if (version !== undefined) return { layout, version };
+	}
+	return undefined;
+}
+
+/** The working install of the pinned release, else the newest working install of another release. */
+function findProvisionedGit(target: GitTargetResolution): ProvisionedGit | undefined {
+	if (!target.supported) return undefined;
+	const current = findCurrentGit(target.target);
+	if (current !== undefined) return current;
+	for (const layout of provisionedGitLayouts()) {
+		const version = probeProvisionedGit(layout);
+		if (version !== undefined) return { layout, version };
+	}
+	return undefined;
+}
+
+export type ResolvedGitSource = "system" | "provisioned";
+
+/** A git executable Atomic can run, and the complete environment to run it with. */
+export interface ResolvedGit {
+	/** Absolute path of the executable. */
+	readonly path: string;
+	/** `process.env` plus, for a provisioned git, the portable variables it needs. Pass it as the child's `env`. */
+	readonly env: NodeJS.ProcessEnv;
+	readonly source: ResolvedGitSource;
+	readonly version: string;
+}
+
+export interface ResolveGitOptions {
+	/** Cancels a download in progress; the promise rejects with `signal.reason`. */
+	readonly signal?: AbortSignal;
+	/** Receives download progress and non-fatal warnings. */
+	readonly onStatus?: (status: ToolStatus) => void;
+}
+
+interface GitSelection {
+	readonly path: string;
+	readonly source: ResolvedGitSource;
+	readonly version: string;
+	readonly layout?: GitDistributionLayout;
+}
+
+type GitLocation =
+	| { readonly found: true; readonly selection: GitSelection }
+	| { readonly found: false; readonly system: SystemGitProbe; readonly target: GitTargetResolution };
+
+function provisionedSelection(provisioned: ProvisionedGit): GitSelection {
+	const { layout, version } = provisioned;
+	return { path: layout.executable, source: "provisioned", version, layout };
+}
+
+function locateGit(): GitLocation {
+	const system = probeSystemGit();
+	if (system?.kind === "usable")
+		return { found: true, selection: { path: system.path, source: "system", version: system.version } };
+	const target = currentGitTarget();
+	const provisioned = findProvisionedGit(target);
+	if (provisioned !== undefined) return { found: true, selection: provisionedSelection(provisioned) };
+	return { found: false, system, target };
+}
+
+function withRejectedSystemGit(fields: GitUnavailableFields, system: SystemGitProbe): GitUnavailableFields {
+	return system?.kind === "rejected" ? { ...fields, systemGit: system.rejected } : fields;
+}
+
+/** The reason no git is available without downloading, or undefined when a download may proceed. */
+function blockedProvisionFields(location: Extract<GitLocation, { found: false }>): GitUnavailableFields | undefined {
+	if (!location.target.supported) return withRejectedSystemGit(location.target.fields, location.system);
+	if (isOfflineModeEnabled())
+		return withRejectedSystemGit(
+			{ code: "offline", offlineVariable: ENV_OFFLINE, ...hostPlatform() },
+			location.system,
+		);
+	return undefined;
+}
+
+function toResolvedGit(selection: GitSelection): ResolvedGit {
+	const env: NodeJS.ProcessEnv = { ...process.env };
+	if (selection.layout !== undefined) Object.assign(env, portableGitEnv(selection.layout, process.env));
+	return { path: selection.path, env, source: selection.source, version: selection.version };
+}
+
+function selectGitSync(): GitSelection {
+	const location = locateGit();
+	if (location.found) return location.selection;
+	const blocked = blockedProvisionFields(location);
+	if (blocked !== undefined) throw new GitUnavailableError(blocked);
+	throw (
+		lastProvisionFailure ??
+		new GitUnavailableError(
+			withRejectedSystemGit(
+				{ code: "not-installed", installDir: getGitInstallDir(), ...hostPlatform() },
+				location.system,
+			),
+		)
+	);
+}
+
+/**
+ * Resolve git without downloading: a system git at or above {@link GIT_MINIMUM_VERSION}, else the provisioned copy.
+ * When neither exists it throws, in this order: the {@link GitUnavailableError} for a platform or offline mode that
+ * rules out provisioning; else the error the last {@link resolveGit} failed with in this process, which can be a
+ * {@link GitUnavailableError} such as `download-failed` or a {@link GitProvisionTimeoutError}; else
+ * {@link GitUnavailableError} `not-installed`. Call {@link resolveGit} first to provision one, and
+ * {@link isRetryableGitProvisionError} to tell whether trying again can help.
+ */
+export function resolveGitSync(): ResolvedGit {
+	return toResolvedGit(selectGitSync());
+}
+
+function validateResolveGitOptions(options: ResolveGitOptions): void {
+	if (typeof options !== "object" || options === null)
+		throw new GitProvisionConfigError({ source: "sdk", field: "options", expected: "an options object" });
+	if (options.signal !== undefined && !(options.signal instanceof AbortSignal))
+		throw new GitProvisionConfigError({ source: "sdk", field: "signal", expected: "an AbortSignal" });
+	if (options.onStatus !== undefined && typeof options.onStatus !== "function")
+		throw new GitProvisionConfigError({ source: "sdk", field: "onStatus", expected: "a function" });
+}
+
+let sweptAbandonedInstalls = false;
+
+/** Once per process, remove the staging directories that exited installers left behind. */
+function sweepAbandonedInstallsOnce(options: ResolveGitOptions): void {
+	if (sweptAbandonedInstalls) return;
+	sweptAbandonedInstalls = true;
+	const binDir = dirname(getGitInstallDir());
+	if (!existsSync(binDir)) return;
+	try {
+		removeAbandonedStagingDirectories(binDir);
+	} catch (error) {
+		options.onStatus?.({
+			type: "warning",
+			message: `Could not remove abandoned git installs from ${binDir}: ${firstLine(String(error))}`,
+		});
+	}
+}
+
+async function selectGit(options: ResolveGitOptions): Promise<GitSelection> {
+	validateResolveGitOptions(options);
+	options.signal?.throwIfAborted();
+	sweepAbandonedInstallsOnce(options);
+	const location = locateGit();
+	if (location.found)
+		return location.selection.layout === undefined
+			? location.selection
+			: refreshStaleInstall(location.selection, options);
+	const blocked = blockedProvisionFields(location);
+	if (blocked !== undefined) throw new GitUnavailableError(blocked);
+	const target = (location.target as Extract<GitTargetResolution, { supported: true }>).target;
+	return provisionedSelection(await joinGitProvision(target, location.system, options));
+}
+
+/** Why the install of an older pinned release was not updated in this process, once it was tried. */
+let staleRefresh: { readonly tag: string; readonly error: GitProvisionError } | undefined;
+
+function keepStaleInstall(selection: GitSelection, error: GitProvisionError, options: ResolveGitOptions): GitSelection {
+	staleRefresh = { tag: gitProvisionSettings.release.tag, error };
+	options.onStatus?.({
+		type: "warning",
+		message: `Could not update the portable git to ${gitProvisionSettings.release.version}; using git ${selection.version}. ${error.message}`,
+	});
+	return selection;
+}
+
+/**
+ * Publish the pinned release beside a provisioned install of an older one when a download is possible. The older
+ * install is never moved or removed, so paths and environments resolved from it keep working. An install that cannot
+ * be updated keeps working, and the typed reason is recorded and reported once per process and pinned release: a
+ * failed download is not retried by every later resolution, and the status surface shows the reason.
+ */
+async function refreshStaleInstall(selection: GitSelection, options: ResolveGitOptions): Promise<GitSelection> {
+	const layout = selection.layout!;
+	const target = currentGitTarget();
+	if (!target.supported || isCurrentRelease(layout, target.target)) return selection;
+	const tag = gitProvisionSettings.release.tag;
+	if (isOfflineModeEnabled()) {
+		if (staleRefresh?.tag === tag && staleRefresh.error.code === "offline") return selection;
+		return keepStaleInstall(
+			selection,
+			new GitUnavailableError({ code: "offline", offlineVariable: ENV_OFFLINE, ...hostPlatform() }),
+			options,
+		);
+	}
+	if (staleRefresh?.tag === tag && staleRefresh.error.code !== "offline") return selection;
+	try {
+		const provisioned = await joinGitProvision(target.target, probeSystemGit(), options);
+		staleRefresh = undefined;
+		return provisionedSelection(provisioned);
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		return keepStaleInstall(selection, error, options);
+	}
+}
+
+/**
+ * Resolve the git Atomic runs: a working system git at or above {@link GIT_MINIMUM_VERSION}, else the provisioned
+ * copy under `getBinDir()/git`, else a verified download of the pinned portable git. A provisioned path and its
+ * environment stay usable after later updates, which publish new releases beside it. Rejects with a
+ * {@link GitProvisionError} when none is possible, and with `signal.reason` when cancelled.
+ */
+export async function resolveGit(options: ResolveGitOptions = {}): Promise<ResolvedGit> {
+	return toResolvedGit(await selectGit(options));
+}
+
+/** The portable environment the resolved git needs: `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, and the CA bundle. Empty for a system git. */
+export async function getToolEnv(
+	tool: "fd" | "rg" | "git",
+	options: ResolveGitOptions = {},
+): Promise<Record<string, string>> {
+	if (tool !== "git") return {};
+	const selection = await selectGit(options);
+	return selection.layout === undefined ? {} : portableGitEnv(selection.layout, process.env);
+}
+
+async function ensureGit(onStatus: ((status: ToolStatus) => void) | undefined): Promise<string | undefined> {
+	try {
+		return (await resolveGit({ onStatus })).path;
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		onStatus?.({ type: "warning", message: error.message });
+		return undefined;
+	}
+}
+
+/** A provisioned install older than the pinned release, and why it was not updated when that was tried. */
+export interface GitUpdateStatus {
+	readonly pinnedTag: string;
+	/** The release the install recorded; absent when it recorded none or its record is unreadable. */
+	readonly installedTag?: string;
+	/** Present once a replacement was tried in this process and could not be made. */
+	readonly reason?: SerializedGitProvisionError;
+}
+
+/** Git as the tools status surface shows it; resolving never downloads. */
+export type GitToolStatus =
+	| {
+			readonly source: ResolvedGitSource;
+			readonly version: string;
+			readonly path: string;
+			readonly update?: GitUpdateStatus;
+	  }
+	| { readonly source: "unavailable"; readonly error: SerializedGitProvisionError };
+
+function pendingUpdate(selection: GitSelection): GitUpdateStatus | undefined {
+	const target = currentGitTarget();
+	if (selection.layout === undefined || !target.supported || isCurrentRelease(selection.layout, target.target))
+		return undefined;
+	const tag = gitProvisionSettings.release.tag;
+	const installedTag = readReleaseMarker(selection.layout)?.tag;
+	return {
+		pinnedTag: tag,
+		...(typeof installedTag === "string" ? { installedTag } : {}),
+		...(staleRefresh?.tag === tag ? { reason: staleRefresh.error.toJSON() } : {}),
+	};
+}
+
+export function getGitStatus(): GitToolStatus {
+	try {
+		const selection = selectGitSync();
+		const update = pendingUpdate(selection);
+		return {
+			source: selection.source,
+			version: selection.version,
+			path: selection.path,
+			...(update === undefined ? {} : { update }),
+		};
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		return { source: "unavailable", error: error.toJSON() };
+	}
+}
+
+/**
+ * The PATH entry and variables that expose the provisioned git to agent shells: the same release
+ * {@link resolveGitSync} selects. Undefined whenever a git is on PATH (even one below the minimum), so a shell never
+ * shadows the user's own git.
+ */
+export function getGitShellEnvironment(
+	baseEnv: NodeJS.ProcessEnv,
+): { readonly pathEntry: string; readonly env: Record<string, string> } | undefined {
+	if (findSystemGit(pathValueOf(baseEnv), getGitInstallDir(), platform()) !== undefined) return undefined;
+	try {
+		const provisioned = findProvisionedGit(currentGitTarget());
+		if (provisioned === undefined) return undefined;
+		const { layout } = provisioned;
+		return { pathEntry: layout.shellPathEntry, env: portableGitEnv(layout, baseEnv) };
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		lastProvisionFailure = error;
+		return undefined;
+	}
+}
+
+interface SharedGitProvision {
+	readonly promise: Promise<ProvisionedGit>;
+	readonly controller: AbortController;
+	readonly listeners: Map<(status: ToolStatus) => void, number>;
+	waiters: number;
+}
+
+let sharedGitProvision: SharedGitProvision | undefined;
+
+function startGitProvision(target: GitDistributionTarget, system: SystemGitProbe) {
+	const controller = new AbortController();
+	const listeners = new Map<(status: ToolStatus) => void, number>();
+	const emit = (status: ToolStatus): void => {
+		for (const listener of listeners.keys()) listener(status);
+	};
+	const shared: SharedGitProvision = {
+		controller,
+		listeners,
+		waiters: 0,
+		promise: installGitDistribution(target, system, controller.signal, emit).then(
+			(provisioned) => {
+				lastProvisionFailure = undefined;
+				return provisioned;
+			},
+			(error) => {
+				if (isGitProvisionError(error)) lastProvisionFailure = error;
+				throw error;
+			},
+		),
+	};
+	void shared.promise.then(
+		() => clearSharedGitProvision(shared),
+		() => clearSharedGitProvision(shared),
+	);
+	return shared;
+}
+
+function clearSharedGitProvision(shared: SharedGitProvision): void {
+	if (sharedGitProvision === shared) sharedGitProvision = undefined;
+}
+
+/** Join the in-process download, or start it. The download stops only when every waiter has cancelled. */
+function joinGitProvision(
+	target: GitDistributionTarget,
+	system: SystemGitProbe,
+	options: ResolveGitOptions,
+): Promise<ProvisionedGit> {
+	if (sharedGitProvision === undefined || sharedGitProvision.controller.signal.aborted)
+		sharedGitProvision = startGitProvision(target, system);
+	const shared = sharedGitProvision;
+	const { signal, onStatus } = options;
+	if (onStatus !== undefined) shared.listeners.set(onStatus, (shared.listeners.get(onStatus) ?? 0) + 1);
+	shared.waiters += 1;
+	return new Promise<ProvisionedGit>((resolvePromise, rejectPromise) => {
+		let joined = true;
+		const leave = (): void => {
+			if (!joined) return;
+			joined = false;
+			shared.waiters -= 1;
+			if (onStatus !== undefined) {
+				const remaining = shared.listeners.get(onStatus)! - 1;
+				if (remaining === 0) shared.listeners.delete(onStatus);
+				else shared.listeners.set(onStatus, remaining);
+			}
+			signal?.removeEventListener("abort", onAbort);
+		};
+		function onAbort(this: AbortSignal): void {
+			leave();
+			if (shared.waiters === 0) shared.controller.abort(this.reason);
+			rejectPromise(this.reason);
+		}
+		signal?.addEventListener("abort", onAbort);
+		shared.promise.then(
+			(provisioned) => {
+				leave();
+				resolvePromise(provisioned);
+			},
+			(error) => {
+				leave();
+				rejectPromise(error);
+			},
+		);
+	});
+}
+
+function installFailed(
+	phase: GitInstallPhase,
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+	cause: unknown,
+	detail?: string,
+): GitUnavailableError {
+	return new GitUnavailableError(
+		{
+			code: "install-failed",
+			phase,
+			asset: target.asset,
+			installDir: layout.root,
+			...hostPlatform(),
+			...(detail === undefined ? {} : { detail }),
+		},
+		cause === undefined ? undefined : { cause },
+	);
+}
+
+function errnoCode(error: unknown): string | undefined {
+	return error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+}
+
+type GitInstallLock =
+	| { readonly kind: "held"; readonly release: () => Promise<void>; readonly compromised: () => Error | undefined }
+	| { readonly kind: "installed"; readonly provisioned: ProvisionedGit };
+
+/** proper-lockfile never declares a lock stale by itself: wall-clock staleness breaks under clock skew. */
+const LOCK_NEVER_STALE_MS = 2 ** 31 - 1;
+
+/**
+ * Serialize installs across processes so concurrent starts download once. A waiter treats the lock as abandoned only
+ * after its mtime stops changing for `lockStaleMs` of the waiter's own monotonic time, so neither clock skew nor a
+ * live holder's slow download breaks it. Correctness does not depend on the lock: every release is published by an
+ * atomic rename into a directory of its own, so a holder that is killed, stopped, or loses the lock never exposes a
+ * partial install or removes one another process uses.
+ */
+async function acquireGitInstallLock(
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+	signal: AbortSignal,
+	emit: (status: ToolStatus) => void,
+): Promise<GitInstallLock> {
+	const binDir = dirname(layout.root);
+	const lockPath = join(binDir, "git.install.lock");
+	const startedAt = performance.now();
+	let observedMtimeMs: number | undefined;
+	let observedSince = startedAt;
+	let announced = false;
+	for (;;) {
+		signal.throwIfAborted();
+		let compromised: Error | undefined;
+		try {
+			const release = await lockfile.lock(binDir, {
+				lockfilePath: lockPath,
+				realpath: false,
+				retries: 0,
+				stale: LOCK_NEVER_STALE_MS,
+				update: gitProvisionSettings.lockUpdateMs,
+				onCompromised: (error) => {
+					compromised = error;
+				},
+			});
+			return { kind: "held", release, compromised: () => compromised };
+		} catch (error) {
+			if (errnoCode(error) !== "ELOCKED") throw installFailed("stage", target, layout, error, "install lock");
+		}
+		const provisioned = findCurrentGit(target);
+		if (provisioned !== undefined) return { kind: "installed", provisioned };
+		const now = performance.now();
+		const mtimeMs = statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs;
+		if (mtimeMs !== observedMtimeMs) {
+			observedMtimeMs = mtimeMs;
+			observedSince = now;
+		} else if (mtimeMs !== undefined && now - observedSince >= gitProvisionSettings.lockStaleMs) {
+			rmSync(lockPath, { recursive: true, force: true });
+		}
+		const elapsedMs = Math.round(now - startedAt);
+		if (elapsedMs >= gitProvisionSettings.lockWaitTimeoutMs)
+			throw new GitProvisionTimeoutError({
+				phase: "lock",
+				timeoutMs: gitProvisionSettings.lockWaitTimeoutMs,
+				elapsedMs,
+				...installCommandField(),
+			});
+		if (!announced) {
+			announced = true;
+			emit({ type: "info", message: "Another Atomic process is installing git. Waiting for it to finish..." });
+		}
+		await delay(gitProvisionSettings.lockPollMs, undefined, { signal });
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return errnoCode(error) !== "ESRCH";
+	}
+}
+
+/**
+ * Remove staging directories whose installer process has exited. Ownership comes from the pid in the name, never
+ * from timestamps, so a skewed clock cannot make a live installer's staging look abandoned.
+ */
+const PID_NAMESPACE_LINK = "/proc/self/ns/pid";
+
+/**
+ * Staging names carry a tag of the host and PID namespace plus the pid, so a sweep never judges an installer whose
+ * pid it cannot see, such as one in another container sharing the directory.
+ */
+function stagingOwnerTag(): string {
+	const pidNamespace = existsSync(PID_NAMESPACE_LINK) ? readlinkSync(PID_NAMESPACE_LINK) : "";
+	return createHash("sha256").update(`${hostname()}\0${pidNamespace}`).digest("hex").slice(0, 8);
+}
+
+function removeAbandonedStagingDirectories(binDir: string): void {
+	const host = stagingOwnerTag();
+	for (const entry of readdirSync(binDir)) {
+		const owner = /^\.git-staging-([0-9a-f]{8})-(\d+)-/.exec(entry);
+		if (owner === null || owner[1] !== host || isProcessAlive(Number(owner[2]))) continue;
+		rmSync(join(binDir, entry), { recursive: true, force: true });
+	}
+}
+
+async function downloadGitArchive(target: GitDistributionTarget, signal: AbortSignal): Promise<Buffer> {
+	const startedAt = Date.now();
+	const timeout = AbortSignal.timeout(gitProvisionSettings.downloadTimeoutMs);
+	try {
+		const response = await fetchWithRetry(target.url, {
+			headers: { "User-Agent": getPiUserAgent(VERSION) },
+			signal: AbortSignal.any([signal, timeout]),
+		});
+		if (!response.ok)
+			throw new GitUnavailableError({
+				code: "download-failed",
+				asset: target.asset,
+				url: target.url,
+				httpStatus: response.status,
+				...hostPlatform(),
+			});
+		return Buffer.from(await response.arrayBuffer());
+	} catch (error) {
+		if (signal.aborted) throw signal.reason;
+		if (timeout.aborted)
+			throw new GitProvisionTimeoutError(
+				{
+					phase: "download",
+					timeoutMs: gitProvisionSettings.downloadTimeoutMs,
+					elapsedMs: Date.now() - startedAt,
+					...installCommandField(),
+				},
+				{ cause: error },
+			);
+		if (isGitProvisionError(error)) throw error;
+		throw new GitUnavailableError(
+			{ code: "download-failed", asset: target.asset, url: target.url, ...hostPlatform() },
+			{ cause: error },
+		);
+	}
+}
+
+type BoundedRunResult =
+	| { readonly ok: true; readonly stdout: string }
+	| { readonly ok: false; readonly detail: string };
+
+function firstLine(text: string): string {
+	return text.trim().split(/\r?\n/, 1)[0]!.slice(0, 200);
+}
+
+/** Run a provisioning step; cancellation rejects with `signal.reason`, the time limit with a typed timeout. */
+function runProvisionStep(
+	command: string,
+	args: readonly string[],
+	options: {
+		readonly signal: AbortSignal;
+		readonly timeoutMs: number;
+		readonly phase: GitProvisionPhase;
+		readonly env: NodeJS.ProcessEnv;
+	},
+): Promise<BoundedRunResult> {
+	const startedAt = Date.now();
+	const timeout = AbortSignal.timeout(options.timeoutMs);
+	return new Promise((resolvePromise, rejectPromise) => {
+		execFile(
+			command,
+			[...args],
+			{ env: options.env, maxBuffer: 16 * 1024 * 1024, signal: AbortSignal.any([options.signal, timeout]) },
+			(error, stdout, stderr) => {
+				if (options.signal.aborted) {
+					rejectPromise(options.signal.reason);
+					return;
+				}
+				if (timeout.aborted) {
+					rejectPromise(
+						new GitProvisionTimeoutError(
+							{
+								phase: options.phase,
+								timeoutMs: options.timeoutMs,
+								elapsedMs: Date.now() - startedAt,
+								...installCommandField(),
+							},
+							{ cause: error },
+						),
+					);
+					return;
+				}
+				if (error === null) {
+					resolvePromise({ ok: true, stdout });
+					return;
+				}
+				const status = typeof error.code === "number" ? `exited with status ${error.code}` : String(error.code);
+				const reason = stderr === "" ? "" : `: ${firstLine(stderr)}`;
+				resolvePromise({ ok: false, detail: `${command.split(/[\\/]/).pop()} ${status}${reason}` });
+			},
+		);
+	});
+}
+
+function gitTarCommand(): string {
+	return platform() === "win32" ? getWindowsTarCommand() : "tar";
+}
+
+async function extractGitArchive(
+	archivePath: string,
+	destination: string,
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+	signal: AbortSignal,
+): Promise<void> {
+	const result = await runProvisionStep(gitTarCommand(), ["xzf", archivePath, "-C", destination], {
+		signal,
+		timeoutMs: gitProvisionSettings.extractTimeoutMs,
+		phase: "extract",
+		env: createChildProcessEnvironment(),
+	});
+	if (!result.ok) throw installFailed("extract", target, layout, undefined, result.detail);
+}
+
+/** Fail unless every path the archive lists exists in the staged tree, so an extraction that was interfered with is never published. */
+async function verifyStagedEntries(
+	archivePath: string,
+	stagedRoot: string,
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+	signal: AbortSignal,
+): Promise<void> {
+	const listing = await runProvisionStep(gitTarCommand(), ["tzf", archivePath], {
+		signal,
+		timeoutMs: gitProvisionSettings.verifyTimeoutMs,
+		phase: "verify",
+		env: createChildProcessEnvironment(),
+	});
+	if (!listing.ok) throw installFailed("verify", target, layout, undefined, listing.detail);
+	const missing = listing.stdout
+		.split(/\r?\n/)
+		.filter((entry) => lstatSync(join(stagedRoot, entry), { throwIfNoEntry: false }) === undefined);
+	if (missing.length > 0)
+		throw installFailed(
+			"verify",
+			target,
+			layout,
+			undefined,
+			`${missing.length} archive entries are missing from the staged tree, including ${missing[0]}`,
+		);
+}
+
+async function verifyGitDistribution(
+	staged: GitDistributionLayout,
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+	signal: AbortSignal,
+): Promise<string> {
+	if (!existsSync(staged.executable))
+		throw installFailed(
+			"verify",
+			target,
+			layout,
+			undefined,
+			`${relative(staged.root, staged.executable)} is missing from the archive`,
+		);
+	const result = await runProvisionStep(staged.executable, ["--version"], {
+		signal,
+		timeoutMs: gitProvisionSettings.verifyTimeoutMs,
+		phase: "verify",
+		env: createGitEnvironment(portableGitEnv(staged, process.env), createChildProcessEnvironment()),
+	});
+	if (!result.ok) throw installFailed("verify", target, layout, undefined, result.detail);
+	const version = parseGitVersion(result.stdout);
+	if (version === undefined)
+		throw installFailed("verify", target, layout, undefined, "git --version printed no version");
+	return version;
+}
+
+type Publication = { readonly winner: ProvisionedGit } | { readonly published: GitDistributionLayout };
+
+function selectGitRelease(name: string, target: GitDistributionTarget, layout: GitDistributionLayout): void {
+	const selected = join(gitReleasesDir(), GIT_SELECTED_RELEASE);
+	const pendingSelection = `${selected}.${name}`;
+	try {
+		writeFileSync(pendingSelection, name);
+		renameSync(pendingSelection, selected);
+	} catch (error) {
+		const failure = installFailed("promote", target, layout, error);
+		try {
+			rmSync(pendingSelection, { force: true });
+		} catch (cleanupError) {
+			attachGitCleanupFailure(failure, cleanupError);
+		}
+		throw failure;
+	}
+}
+
+/**
+ * Publish the staged distribution with one rename, never moving or removing a published release: paths and
+ * environments resolved from it stay usable. The first install becomes `getGitInstallDir()`. A current install
+ * published first by another process wins. Any other release goes into a directory of its own under `releases`, and
+ * an atomic rename of the `selected` file makes it the release later resolutions find.
+ */
+function publishGitDistribution(
+	stagedRoot: string,
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+): Publication {
+	try {
+		renameSync(stagedRoot, layout.root);
+		return { published: layout };
+	} catch (error) {
+		if (!existsSync(layout.root)) throw installFailed("promote", target, layout, error);
+	}
+	const winner = findCurrentGit(target);
+	if (winner !== undefined) return { winner };
+	const name = randomUUID();
+	const release = currentGitLayout(join(gitReleasesDir(), name));
+	try {
+		mkdirSync(gitReleasesDir(), { recursive: true });
+		renameSync(stagedRoot, release.root);
+	} catch (error) {
+		throw installFailed("promote", target, layout, error);
+	}
+	selectGitRelease(name, target, layout);
+	return { published: release };
+}
+
+function describeSystemGitForStatus(system: SystemGitProbe): string {
+	if (system?.kind !== "rejected") return "git not found.";
+	return system.rejected.problem === "below-minimum"
+		? `git ${system.rejected.version} at ${system.rejected.path} is older than ${GIT_MINIMUM_VERSION}.`
+		: `git at ${system.rejected.path} did not report a usable version.`;
+}
+
+async function installGitDistribution(
+	target: GitDistributionTarget,
+	system: SystemGitProbe,
+	signal: AbortSignal,
+	emit: (status: ToolStatus) => void,
+): Promise<ProvisionedGit> {
+	const layout = currentGitLayout();
+	const binDir = dirname(layout.root);
+	try {
+		mkdirSync(binDir, { recursive: true });
+	} catch (error) {
+		throw installFailed("stage", target, layout, error);
+	}
+	const lock = await acquireGitInstallLock(target, layout, signal, emit);
+	if (lock.kind === "installed") return lock.provisioned;
+	let primary: unknown;
+	try {
+		const existing = findCurrentGit(target);
+		if (existing !== undefined) return existing;
+		const retained = findRetainedGit(target);
+		if (retained !== undefined) {
+			signal.throwIfAborted();
+			selectGitRelease(basename(retained.layout.root), target, layout);
+			return retained;
+		}
+		return await installUnderLock(target, layout, system, signal, emit);
+	} catch (error) {
+		primary = error;
+		throw error;
+	} finally {
+		const compromised = lock.compromised();
+		try {
+			if (compromised === undefined) await lock.release();
+		} catch (releaseError) {
+			if (primary === undefined)
+				emit({
+					type: "warning",
+					message: `Could not release the git install lock: ${firstLine(String(releaseError))}`,
+				});
+			else attachGitCleanupFailure(primary, releaseError);
+		}
+	}
+}
+
+async function installUnderLock(
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+	system: SystemGitProbe,
+	signal: AbortSignal,
+	emit: (status: ToolStatus) => void,
+): Promise<ProvisionedGit> {
+	const binDir = dirname(layout.root);
+	let staging: string;
+	try {
+		removeAbandonedStagingDirectories(binDir);
+		staging = mkdtempSync(join(binDir, `${GIT_STAGING_PREFIX}${stagingOwnerTag()}-${process.pid}-`));
+	} catch (error) {
+		throw installFailed("stage", target, layout, error);
+	}
+	let primary: unknown;
+	try {
+		emit({
+			type: "info",
+			message: `${describeSystemGitForStatus(system)} Downloading portable git ${gitProvisionSettings.release.version}...`,
+		});
+		const archive = await downloadGitArchive(target, signal);
+		const actualSha256 = createHash("sha256").update(archive).digest("hex");
+		if (actualSha256 !== target.sha256)
+			throw new GitUnavailableError({
+				code: "checksum-mismatch",
+				asset: target.asset,
+				url: target.url,
+				expectedSha256: target.sha256,
+				actualSha256,
+				...hostPlatform(),
+			});
+		const archivePath = join(staging, target.asset);
+		const stagedRoot = join(staging, "git");
+		try {
+			await writeFile(archivePath, archive);
+			mkdirSync(stagedRoot);
+		} catch (error) {
+			throw installFailed("stage", target, layout, error);
+		}
+		await extractGitArchive(archivePath, stagedRoot, target, layout, signal);
+		const stagedLayout = gitLayout(stagedRoot, platform(), arch());
+		const version = await verifyGitDistribution(stagedLayout, target, layout, signal);
+		await verifyStagedEntries(archivePath, stagedRoot, target, layout, signal);
+		try {
+			writeFileSync(join(stagedRoot, GIT_RELEASE_MARKER), JSON.stringify(markerOf(target)));
+		} catch (error) {
+			throw installFailed("stage", target, layout, error);
+		}
+		signal.throwIfAborted();
+		const publication = publishGitDistribution(stagedRoot, target, layout);
+		if ("winner" in publication) return publication.winner;
+		const { published } = publication;
+		provisionedGitVersions.set(published.executable, version);
+		emit({ type: "info", message: `git ${version} installed to ${published.root}` });
+		return { layout: published, version };
+	} catch (error) {
+		primary = error;
+		throw error;
+	} finally {
+		try {
+			rmSync(staging, { recursive: true, force: true });
+		} catch (cleanupError) {
+			if (primary === undefined)
+				emit({
+					type: "warning",
+					message: `Could not remove the git staging directory ${staging}: ${firstLine(String(cleanupError))}`,
+				});
+			else attachGitCleanupFailure(primary, cleanupError);
+		}
 	}
 }

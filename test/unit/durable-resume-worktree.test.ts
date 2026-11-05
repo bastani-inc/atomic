@@ -313,7 +313,10 @@ describe("durable resume with reusable git worktrees", () => {
 		const cwd = join(root, "repo");
 		mkdirSync(fakeBin, { recursive: true });
 		mkdirSync(cwd);
-		writeFileSync(join(fakeBin, "git"), "#!/bin/sh\nsleep 1\necho fake git delayed >&2\nexit 1\n");
+		writeFileSync(
+			join(fakeBin, "git"),
+			'#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.45.0"; exit 0; fi\nsleep 1\necho fake git delayed >&2\nexit 1\n',
+		);
 		chmodSync(join(fakeBin, "git"), 0o755);
 		const originalPath = process.env.PATH;
 		process.env.PATH = `${fakeBin}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;

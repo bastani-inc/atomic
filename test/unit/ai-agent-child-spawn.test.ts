@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { test, vi } from "vitest";
 import {
 	cleanupWorktrees as cleanupSubagentWorktrees,
@@ -21,6 +21,7 @@ interface SpawnObservation {
 }
 
 const observations = vi.hoisted(() => [] as SpawnObservation[]);
+const isGitCommand = vi.hoisted(() => (command: string) => /^git(\.exe)?$/i.test(command.split(/[\\/]/).pop() ?? ""));
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -30,7 +31,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 		options?: SpawnSyncOptionsWithStringEncoding,
 	): SpawnSyncReturns<string> => {
 		observations.push({ command, args: [...args], options });
-		if (command === "git") return actual.spawnSync(command, args, options) as SpawnSyncReturns<string>;
+		if (isGitCommand(command)) return actual.spawnSync(command, args, options) as SpawnSyncReturns<string>;
 		return {
 			pid: process.pid,
 			output: [null, '{"syntheticPaths":[]}', ""],
@@ -72,7 +73,7 @@ function withCallerEnvironment<T>(callback: () => T): T {
 }
 
 function assertAtomicGitSpawns(): void {
-	const gitCalls = observations.filter((call) => call.command === "git");
+	const gitCalls = observations.filter((call) => isGitCommand(call.command));
 	assert.ok(gitCalls.length > 0, "the worktree lifecycle must spawn Git");
 	for (const call of gitCalls) {
 		assert.equal(call.options?.env?.AI_AGENT, "atomic");
@@ -126,6 +127,8 @@ test("workflow worktree Git and setup-hook spawns receive Atomic attribution", (
 				setupHook: { hookPath: hook, timeoutMs: 1_234 },
 			});
 			assertAtomicGitSpawns();
+			for (const call of observations.filter((observed) => isGitCommand(observed.command)))
+				assert.ok(isAbsolute(call.command) && basename(call.command).startsWith("git"), call.command);
 			assertSetupHookSpawn(hook, 1_234);
 		});
 	} finally {

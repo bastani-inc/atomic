@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import type { GitSource } from "../utils/git.ts";
+import { isGitProvisionError } from "../utils/git-errors.ts";
 import { stripBom } from "../utils/text.ts";
+import { getToolEnv, getToolPath } from "../utils/tools-manager.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
@@ -16,24 +18,39 @@ import type {
 	SourceScope,
 } from "./package-manager-types.ts";
 
-function runGitProcess(
+/** A failure to provide git is never a best-effort miss: callers see it, with its code and install command. */
+function rethrowGitProvisionError(error: unknown): void {
+	if (isGitProvisionError(error)) throw error;
+}
+
+/** The resolved git and, for a provisioned copy, the portable variables it needs. */
+async function resolveGitCommand(): Promise<{ readonly path: string; readonly env?: Record<string, string> }> {
+	const [path, env] = await Promise.all([getToolPath("git"), getToolEnv("git")]);
+	return Object.keys(env).length === 0 ? { path } : { path, env };
+}
+
+async function runGitProcess(
 	context: PackageManagerContext,
-	command: string,
 	args: string[],
 	options?: { cwd?: string },
 ): Promise<void> {
-	return context.driver ? context.driver.runCommand(command, args, options) : runCommand(command, args, options);
+	const git = await resolveGitCommand();
+	const gitOptions = git.env === undefined ? options : { ...options, env: git.env };
+	return context.driver
+		? context.driver.runCommand(git.path, args, gitOptions)
+		: runCommand(git.path, args, gitOptions);
 }
 
-function captureGitProcess(
+async function captureGitProcess(
 	context: PackageManagerContext,
-	command: string,
 	args: string[],
-	options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
+	options: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
 ): Promise<string> {
+	const git = await resolveGitCommand();
+	const gitOptions = git.env === undefined ? options : { ...options, env: { ...git.env, ...options.env } };
 	return context.driver
-		? context.driver.runCommandCapture(command, args, options)
-		: runCommandCapture(command, args, options);
+		? context.driver.runCommandCapture(git.path, args, gitOptions)
+		: runCommandCapture(git.path, args, gitOptions);
 }
 
 function getSafeGitRef(ref: string): string {
@@ -118,8 +135,9 @@ async function cleanAndInstallGitDependencies(
 	// the marker so the next update retries the clean.
 	let cleaned = true;
 	try {
-		await runGitProcess(context, "git", ["clean", "-fdx"], { cwd: targetDir });
+		await runGitProcess(context, ["clean", "-fdx"], { cwd: targetDir });
 	} catch (error) {
+		rethrowGitProvisionError(error);
 		cleaned = false;
 		const reason = error instanceof Error ? error.message : String(error);
 		emitProgress(context, {
@@ -166,9 +184,9 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 		throw new Error(`Refusing to clone repository with unsafe URL: ${cloneUrl}`);
 	}
 	try {
-		await runGitProcess(context, "git", ["clone", "--", cloneUrl, targetDir]);
+		await runGitProcess(context, ["clone", "--", cloneUrl, targetDir]);
 		if (safeRef) {
-			await runGitProcess(context, "git", ["checkout", safeRef], { cwd: targetDir });
+			await runGitProcess(context, ["checkout", safeRef], { cwd: targetDir });
 		}
 		const packageJsonPath = join(targetDir, "package.json");
 		if (existsSync(packageJsonPath)) {
@@ -193,12 +211,13 @@ export async function getInstalledGitHead(
 	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
 	if (!existsSync(targetDir)) return undefined;
 	try {
-		const head = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+		const head = await captureGitProcess(context, ["rev-parse", "HEAD"], {
 			cwd: targetDir,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		return head.trim() || undefined;
-	} catch {
+	} catch (error) {
+		rethrowGitProvisionError(error);
 		return undefined;
 	}
 }
@@ -226,14 +245,14 @@ async function ensureGitRef(
 	fetchArgs: string[],
 	ref: string,
 ): Promise<void> {
-	await runGitProcess(context, "git", fetchArgs, { cwd: targetDir });
+	await runGitProcess(context, fetchArgs, { cwd: targetDir });
 
-	const localHead = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+	const localHead = await captureGitProcess(context, ["rev-parse", "HEAD"], {
 		cwd: targetDir,
 		timeoutMs: NETWORK_TIMEOUT_MS,
 	});
 	const commitRef = `${ref}^{commit}`;
-	const targetHead = await captureGitProcess(context, "git", ["rev-parse", commitRef], {
+	const targetHead = await captureGitProcess(context, ["rev-parse", commitRef], {
 		cwd: targetDir,
 		timeoutMs: NETWORK_TIMEOUT_MS,
 	});
@@ -248,7 +267,7 @@ async function ensureGitRef(
 	}
 
 	writeFileSync(markerPath, "", "utf-8");
-	await runGitProcess(context, "git", ["reset", "--hard", commitRef], { cwd: targetDir });
+	await runGitProcess(context, ["reset", "--hard", commitRef], { cwd: targetDir });
 	await cleanAndInstallGitDependencies(context, targetDir, markerPath);
 }
 
@@ -265,7 +284,7 @@ export async function refreshTemporaryGitSource(
 		// A ref can name a moving branch, so refresh refs too. Skip the network call only when the
 		// ref is a commit hash that is already checked out.
 		if (source.ref && /^[0-9a-f]{7,64}$/i.test(source.ref)) {
-			const head = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+			const head = await captureGitProcess(context, ["rev-parse", "HEAD"], {
 				cwd: installedPath,
 				timeoutMs: NETWORK_TIMEOUT_MS,
 			});
@@ -276,7 +295,9 @@ export async function refreshTemporaryGitSource(
 		await withProgress(context, "pull", sourceStr, `Refreshing ${sourceStr}...`, async () => {
 			await updateGit(context, source, "temporary");
 		});
-	} catch {}
+	} catch (error) {
+		rethrowGitProvisionError(error);
+	}
 }
 
 export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
@@ -311,13 +332,14 @@ export async function gitHasAvailableUpdate(context: PackageManagerContext, inst
 		return false;
 	}
 	try {
-		const localHead = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+		const localHead = await captureGitProcess(context, ["rev-parse", "HEAD"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		const remoteHead = await getRemoteGitHead(context, installedPath);
 		return localHead.trim() !== remoteHead.trim();
-	} catch {
+	} catch (error) {
+		rethrowGitProvisionError(error);
 		return false;
 	}
 }
@@ -343,7 +365,7 @@ export async function getLocalGitUpdateTarget(
 	installedPath: string,
 ): Promise<GitUpdateTargetInfo> {
 	try {
-		const upstream = await captureGitProcess(context, "git", ["rev-parse", "--abbrev-ref", "@{upstream}"], {
+		const upstream = await captureGitProcess(context, ["rev-parse", "--abbrev-ref", "@{upstream}"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
@@ -351,7 +373,7 @@ export async function getLocalGitUpdateTarget(
 		if (!trimmedUpstream.startsWith("origin/")) throw new Error(`Unsupported upstream remote: ${trimmedUpstream}`);
 		const branch = trimmedUpstream.slice("origin/".length);
 		if (!branch) throw new Error("Missing upstream branch name");
-		const head = await captureGitProcess(context, "git", ["rev-parse", "@{upstream}"], {
+		const head = await captureGitProcess(context, ["rev-parse", "@{upstream}"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
@@ -360,18 +382,28 @@ export async function getLocalGitUpdateTarget(
 			head,
 			fetchArgs: ["fetch", "--prune", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
 		};
-	} catch {
-		await runGitProcess(context, "git", ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch(
-			() => {},
-		);
-		const head = await captureGitProcess(context, "git", ["rev-parse", "origin/HEAD"], {
+	} catch (upstreamError) {
+		rethrowGitProvisionError(upstreamError);
+		await runGitProcess(context, ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch((error) => {
+			rethrowGitProvisionError(error);
+			emitProgress(context, {
+				type: "progress",
+				action: "update",
+				source: installedPath,
+				message: `Could not refresh the default branch of ${installedPath} (${error instanceof Error ? error.message : String(error)}); using the last known one.`,
+			});
+		});
+		const head = await captureGitProcess(context, ["rev-parse", "origin/HEAD"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
-		const originHeadRef = await captureGitProcess(context, "git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
+		const originHeadRef = await captureGitProcess(context, ["symbolic-ref", "refs/remotes/origin/HEAD"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
-		}).catch(() => "");
+		}).catch((error) => {
+			rethrowGitProvisionError(error);
+			return "";
+		});
 		const branch = originHeadRef.trim().replace(/^refs\/remotes\/origin\//, "");
 		if (branch) {
 			return {
@@ -396,7 +428,7 @@ export async function getLocalGitUpdateTarget(
 
 async function getGitUpstreamRef(context: PackageManagerContext, installedPath: string): Promise<string | undefined> {
 	try {
-		const upstream = await captureGitProcess(context, "git", ["rev-parse", "--abbrev-ref", "@{upstream}"], {
+		const upstream = await captureGitProcess(context, ["rev-parse", "--abbrev-ref", "@{upstream}"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
@@ -404,13 +436,14 @@ async function getGitUpstreamRef(context: PackageManagerContext, installedPath: 
 		if (!trimmed.startsWith("origin/")) return undefined;
 		const branch = trimmed.slice("origin/".length);
 		return branch ? `refs/heads/${branch}` : undefined;
-	} catch {
+	} catch (error) {
+		rethrowGitProvisionError(error);
 		return undefined;
 	}
 }
 
 function runGitRemoteCommand(context: PackageManagerContext, installedPath: string, args: string[]): Promise<string> {
-	return captureGitProcess(context, "git", args, {
+	return captureGitProcess(context, args, {
 		cwd: installedPath,
 		timeoutMs: NETWORK_TIMEOUT_MS,
 		env: { GIT_TERMINAL_PROMPT: "0" },

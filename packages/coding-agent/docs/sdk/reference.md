@@ -256,6 +256,60 @@ Inactive (2)
 
 Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or an extension that failed to load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` to add terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
 
+The report's `git` field says which git Atomic runs: `{ source: "system" | "provisioned", version, path, update? }`, or `{ source: "unavailable", error }`, where `error` is a serialized [git error](#git-errors). A provisioned install of an older pinned release carries `update: { pinnedTag, installedTag?, reason? }`; `reason`, a serialized git error, appears once a replacement was tried in this process and could not be made (offline, or a failed download). A failed replacement is not retried by every later resolution in the same process, and the next start tries again. Reading the status never downloads git.
+
+#### Resolving git
+
+Atomic runs git 2.30.0 or newer (`GIT_MINIMUM_VERSION`) from `PATH`, and otherwise a portable git it downloads into `getBinDir()/git`; see [Git](/getting-started/installation#git). Use the same resolution for your own git commands:
+
+```typescript
+import { spawnSync } from "node:child_process";
+import { resolveGit } from "@bastani/atomic";
+
+const git = await resolveGit();
+spawnSync(git.path, ["status", "--short"], { cwd: projectDir, env: git.env, encoding: "utf8" });
+```
+
+| Function | Returns |
+|---|---|
+| `resolveGit({ signal?, onStatus? })` | `Promise<ResolvedGit>`. May download and verify the portable git. `onStatus` receives `{ type: "info" \| "warning", message }` progress. Aborting `signal` rejects with `signal.reason`; concurrent callers share one download, which stops only when every caller has aborted. |
+| `resolveGitSync()` | `ResolvedGit` without downloading. When no git is usable it throws, in this order: the `GitUnavailableError` (`unsupported-platform` or `offline`) that rules out provisioning; else the error the last `resolveGit()` failed with in this process (a `GitUnavailableError` such as `download-failed`, or a `GitProvisionTimeoutError`); else `GitUnavailableError` with code `not-installed`. Pass the error to `isRetryableGitProvisionError()` to tell whether `await resolveGit()` can help. |
+| `getGitStatus()` | `GitToolStatus`, the value in the tools report. Never downloads. |
+
+`ResolvedGit` has `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`: a copy of `process.env` plus, for a provisioned git, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows). Pass `env` to the child process; a `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` you already set is kept. `env` is computed per call, so later changes to `process.env` are picked up.
+
+For a provisioned git, the returned `path` and matching `env` remain usable across automatic updates. Keep them together for a running command; resolve again when starting work with the currently selected release. Do not construct executable or helper paths from the cache directory yourself.
+
+#### Git errors
+
+Every git resolution failure is a `GitProvisionError`, with `code`, `hint` (the remediation), `retryable`, and JSON-safe `fields`. Invalid SDK options are rejected before provisioning starts. Failed downloads, checksums, and verification never select a partial installation; failed updates leave earlier resolved paths usable. Branch on `code` or the class, never on `message`.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `GitUnavailableError` | `unsupported-platform` | No portable build for this system: `reason` is `musl`, `glibc-too-old`, `architecture`, or `platform` | `platform`, `arch`, `reason`, `libc?`, `systemGit?` | Run `installCommand` (for example `apk add git` on Alpine) or install git 2.30.0+ |
+| `GitUnavailableError` | `offline` | `ATOMIC_OFFLINE` is set and no usable git exists | `platform`, `arch`, `offlineVariable`, `systemGit?` | Unset the variable or install git 2.30.0+ |
+| `GitUnavailableError` | `not-installed` | `resolveGitSync()` found no usable git and does not download | `platform`, `arch`, `installDir`, `systemGit?` | `await resolveGit()` first, or install git 2.30.0+ |
+| `GitUnavailableError` | `checksum-mismatch` | The download's SHA-256 differs from the pinned value | `platform`, `arch`, `asset`, `url`, `expectedSha256`, `actualSha256` | Check for a proxy that alters downloads, or install git yourself. Not retryable |
+| `GitUnavailableError` | `download-failed` | The download failed; `httpStatus` is absent for network errors | `platform`, `arch`, `asset`, `url`, `httpStatus?` | Check access to github.com and retry. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
+| `GitUnavailableError` | `install-failed` | Reading the selected install, staging, extracting, running, or publishing the download failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, check cache readability or install git yourself if this system cannot run the build |
+| `GitProvisionTimeoutError` | `provision-timeout` | A step exceeded its limit (`phase`: `lock`, `download`, `extract`, `verify`) | `phase`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
+| `GitProvisionConfigError` | `invalid-option` | A `resolveGit()` option had the wrong type; checked before any probe | `source` (`"sdk"`), `field`, `expected` | Fix the option |
+
+`systemGit`, when present, is the git found on `PATH` that Atomic could not use: `{ path, problem: "below-minimum" | "probe-failed", version? }`. `GitUnavailableError` also exposes `platform` directly. Every `GitUnavailableError` and `GitProvisionTimeoutError` carries `installCommand` when Atomic recognizes the distribution (from `/etc/os-release`, or the platform on macOS, Windows, Android, BSD and illumos); `hint` ends with it, and a rehydrated error keeps the command of the machine that raised it. Linux commands are written for a root shell, and Ubuntu earlier than 22.04 gets the git-core PPA because its own package is older than 2.30. A cleanup failure after an error is attached as `cleanupCause` and never replaces it.
+
+Guards accept errors from other processes and realms by `name` and `code`: `isGitProvisionError`, `isGitUnavailableError`, `isGitProvisionTimeoutError`, and `isGitProvisionConfigError` test one value; `findGitProvisionError(error)` returns the first git error in a cause chain and `isRetryableGitProvisionError(error)` asks whether any is retryable, both to a bounded depth. `JSON.stringify(error)` produces `{ name, code, message, hint, retryable, fields, cause? }`, and `rehydrateGitProvisionError(payload)` restores the same class with its cause chain; an unknown name becomes a `GitProvisionError` that keeps the original `name` and `code`.
+
+```typescript
+import { isGitUnavailableError, resolveGit } from "@bastani/atomic";
+
+try {
+  await resolveGit();
+} catch (error) {
+  if (isGitUnavailableError(error) && error.code === "unsupported-platform") console.error(error.hint);
+  else throw error;
+}
+```
+
 #### Bash tool behavior
 
 Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
@@ -974,6 +1028,12 @@ type SessionStartConfigSource
 type SessionStartConfigReason
 type SerializedSessionStartError
 type SerializedSessionStartCause
+// Git resolution (see "Resolving git")
+resolveGit, resolveGitSync, getGitStatus, GIT_MINIMUM_VERSION
+GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
+isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
+findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError
+type ResolvedGit, type ResolveGitOptions, type GitToolStatus, type GitUnavailableCode, type GitUnavailableFields
 
 // Tool factories
 createCodingTools

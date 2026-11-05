@@ -195,18 +195,22 @@ export class DefaultPackageManager implements PackageManager {
 		return getLatestNpmVersionFromContext(this.context, packageSpec, range);
 	}
 
-	private spawnCommand(command: string, args: string[], options?: { cwd?: string }): ChildProcess {
+	private spawnCommand(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+	): ChildProcess {
 		return spawnProcess(command, args, {
 			cwd: options?.cwd,
 			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
-			env: getCommandEnv(command),
+			env: getCommandEnv(command, options?.env),
 		});
 	}
 
 	private spawnCaptureCommand(
 		command: string,
 		args: string[],
-		options?: { cwd?: string; env?: Record<string, string> },
+		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 	): ChildProcessByStdio<null, Readable, Readable> {
 		return spawnProcess(command, args, {
 			cwd: options?.cwd,
@@ -218,7 +222,7 @@ export class DefaultPackageManager implements PackageManager {
 	private runCommandCapture(
 		command: string,
 		args: string[],
-		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
+		options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 	): Promise<string> {
 		return new Promise((resolvePromise, reject) => {
 			const child = this.spawnCaptureCommand(command, args, options);
@@ -259,7 +263,11 @@ export class DefaultPackageManager implements PackageManager {
 		});
 	}
 
-	private runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void> {
+	private runCommand(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+	): Promise<void> {
 		return new Promise((resolvePromise, reject) => {
 			const child = this.spawnCommand(command, args, options);
 			child.on("error", reject);

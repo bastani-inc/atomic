@@ -9,6 +9,8 @@ import {
 	watchWithErrorHandler,
 } from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
+import { isGitProvisionError } from "../utils/git-errors.ts";
+import { type ResolvedGit, resolveGitSync } from "../utils/tools-manager.ts";
 
 export type GitPaths = {
 	repoDir: string;
@@ -54,12 +56,24 @@ export function findGitPaths(cwd: string): GitPaths | null {
 	}
 }
 
+/** The resolved git, or undefined when none is available; the status surface reports the typed reason. */
+function availableGit(): ResolvedGit | undefined {
+	try {
+		return resolveGitSync();
+	} catch (error) {
+		if (isGitProvisionError(error)) return undefined;
+		throw error;
+	}
+}
+
 /** Ask git for the current branch. Returns null on detached HEAD or if git is unavailable. */
 function resolveBranchWithGitSync(repoDir: string): string | null {
-	const result = spawnSync("git", ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], {
+	const git = availableGit();
+	if (git === undefined) return null;
+	const result = spawnSync(git.path, ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], {
 		cwd: repoDir,
 		encoding: "utf8",
-		env: createGitEnvironment(undefined, createChildProcessEnvironment()),
+		env: createGitEnvironment(undefined, createChildProcessEnvironment(undefined, git.env)),
 		stdio: ["ignore", "pipe", "ignore"],
 	});
 	const branch = result.status === 0 ? result.stdout.trim() : "";
@@ -68,14 +82,16 @@ function resolveBranchWithGitSync(repoDir: string): string | null {
 
 /** Ask git for the current branch asynchronously. Returns null on detached HEAD or if git is unavailable. */
 function resolveBranchWithGitAsync(repoDir: string): Promise<string | null> {
+	const git = availableGit();
+	if (git === undefined) return Promise.resolve(null);
 	return new Promise((resolvePromise) => {
 		execFile(
-			"git",
+			git.path,
 			["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"],
 			{
 				cwd: repoDir,
 				encoding: "utf8",
-				env: createGitEnvironment(undefined, createChildProcessEnvironment()),
+				env: createGitEnvironment(undefined, createChildProcessEnvironment(undefined, git.env)),
 			},
 			(error: ExecFileException | null, stdout: string) => {
 				if (error) {

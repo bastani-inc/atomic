@@ -4,18 +4,22 @@ import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import { getCommandEnv } from "./package-manager-env.ts";
 
-function spawnCommand(command: string, args: string[], options?: { cwd?: string }): ChildProcess {
+function spawnCommand(
+	command: string,
+	args: string[],
+	options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+): ChildProcess {
 	return spawnProcess(command, args, {
 		cwd: options?.cwd,
 		stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
-		env: getCommandEnv(command),
+		env: getCommandEnv(command, options?.env),
 	});
 }
 
 function spawnCaptureCommand(
 	command: string,
 	args: string[],
-	options?: { cwd?: string; env?: Record<string, string> },
+	options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): ChildProcessByStdio<null, Readable, Readable> {
 	return spawnProcess(command, args, {
 		cwd: options?.cwd,
@@ -27,7 +31,7 @@ function spawnCaptureCommand(
 export function runCommandCapture(
 	command: string,
 	args: string[],
-	options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
+	options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 ): Promise<string> {
 	return new Promise((resolvePromise, reject) => {
 		const child = spawnCaptureCommand(command, args, options);
@@ -68,7 +72,11 @@ export function runCommandCapture(
 	});
 }
 
-export function runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void> {
+export function runCommand(
+	command: string,
+	args: string[],
+	options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+): Promise<void> {
 	return new Promise((resolvePromise, reject) => {
 		const child = spawnCommand(command, args, options);
 		child.on("error", reject);

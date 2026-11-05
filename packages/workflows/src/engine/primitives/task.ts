@@ -1,6 +1,7 @@
 import {
 	cleanupPreparedWorktrees,
 	collectWorktreeDiffs,
+	inputsSelectGitWorktree,
 	prepareTaskWorktrees,
 	stageOptionsWithGitWorktree,
 	stageOptionsWithInputDefaults,
@@ -16,6 +17,7 @@ import {
 	truncateTaskOutput,
 } from "../../runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
+import { prepareTaskGit } from "../../runs/shared/worktree-git-runner.js";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type {
 	WorkflowArtifact,
@@ -25,6 +27,7 @@ import type {
 	WorkflowTaskResult,
 	WorkflowTaskStep,
 } from "../../shared/types.js";
+import { wrapGitRequired } from "../../shared/workflow-git-required-error.js";
 import type { EngineRuntime } from "../runtime.js";
 import { createChainPrimitive } from "./chain.js";
 import { createParallelPrimitive } from "./parallel.js";
@@ -42,7 +45,7 @@ export interface WorkflowTaskRunners {
 }
 
 function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
-	return async (
+	const runTask = async (
 		name: string,
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
@@ -56,6 +59,11 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			let resolvedTaskOptions =
 				stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults) ?? taskOptions;
 			const stageOptions = taskStageOptions(resolvedTaskOptions);
+			if (
+				(taskOptions.worktree === true || inputsSelectGitWorktree(taskOptions)) &&
+				!runtime.agentStageReplaysSavedResult(name, stageOptions)
+			)
+				await prepareTaskGit(runtime.signal);
 			const stageHandle = runtime.spawnStage(name, {
 				kind: "agent",
 				...(stageOptions !== undefined ? { options: stageOptions } : {}),
@@ -137,6 +145,20 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			return artifacts.length === 0 ? result : { ...result, artifacts: [...(result.artifacts ?? []), ...artifacts] };
 		} finally {
 			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
+		}
+	};
+	/** A git failure while a task sets up its own worktree says that the task needs git, and why. */
+	return async (name, options, stageFailFastScope) => {
+		try {
+			return await runTask(name, options, stageFailFastScope);
+		} catch (error) {
+			throw wrapGitRequired(error, {
+				workflow: runtime.workflowName,
+				runId: runtime.runId,
+				source: "task-option",
+				field: name,
+				...(options.gitWorktreeDir === undefined ? {} : { gitWorktreeDir: options.gitWorktreeDir }),
+			});
 		}
 	};
 }

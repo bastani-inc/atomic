@@ -108,11 +108,11 @@ export interface GitUpdateTargetInfo {
 }
 
 export interface PackageManagerDriver {
-	runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void>;
+	runCommand(command: string, args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }): Promise<void>;
 	runCommandCapture(
 		command: string,
 		args: string[],
-		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
+		options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
 	): Promise<string>;
 	runCommandSync(command: string, args: string[]): string;
 	installParsedSource(parsed: ParsedSource, scope: SourceScope): Promise<void>;
