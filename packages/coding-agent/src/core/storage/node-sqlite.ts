@@ -2,20 +2,20 @@ import {
 	closeSync,
 	existsSync,
 	type FSWatcher,
-	mkdirSync,
-	openSync,
+	open,
 	readdirSync,
 	readFileSync,
 	statSync,
 	unlinkSync,
 	utimesSync,
 	watch,
-	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { promisify } from "node:util";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -62,7 +62,8 @@ function reportDegradationInDebugMode(degradation: StorageWriterQueueDegradedErr
 
 /**
  * A ticket its owner has not refreshed for this long belongs to a process that died or stopped waiting. A ticket
- * refreshed this far in the future is stale too: its owner's clock, or the system clock since, jumped.
+ * refreshed this far in the future is stale too: the system clock stepped back since, or its owner stamped it from a
+ * clock of its own.
  */
 const TICKET_STALE_MS = 2_000;
 /** Stale tickets older than this are removed by whichever writer notices them. */
@@ -70,6 +71,21 @@ const TICKET_REMOVE_AFTER_MS = 10 * TICKET_STALE_MS;
 /** How often a waiting writer refreshes its ticket: well within `TICKET_STALE_MS`, even for a writer short of CPU. */
 const TICKET_REFRESH_MS = TICKET_STALE_MS / 4;
 const TICKET_TIME = /^(\d{15})-/;
+/** Now on the database's clock, in milliseconds: the clock tickets are stamped and aged on (see `SqliteWriteQueue`). */
+const DATABASE_NOW = "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now";
+
+/** An in-memory connection of the process's own, which the database clock is read through. */
+let clockConnection: DatabaseSync | undefined;
+
+/**
+ * Now on the clock SQLite reads for `unixepoch()`: the system clock, which every process shares, whatever this
+ * process's own says. SQLite reads it from the operating system, not from a database file, so a connection of the
+ * process's own reads the same time as every handle's, and a handle can read it after it is closed.
+ */
+function databaseNow(Database: typeof DatabaseSync): number {
+	clockConnection ??= new Database(":memory:");
+	return Number(clockConnection.prepare(DATABASE_NOW).get()!.now);
+}
 
 let ticketSequence = 0;
 
@@ -93,7 +109,42 @@ function isMissingFile(error: unknown): boolean {
  * touch it) as EPERM until that handle closes.
  */
 function isVanishedTicket(error: unknown): boolean {
-	return isMissingFile(error) || ((error as NodeJS.ErrnoException).code === "EPERM" && process.platform === "win32");
+	return isMissingFile(error) || ((error as NodeJS.ErrnoException).code === "EPERM" && platform() === "win32");
+}
+
+/**
+ * Writes an empty queue entry, making its directory only when it is missing, as it is the first time the database
+ * is contended: a writer joining the queue makes no more round trips off the event loop than it must.
+ */
+async function writeEntry(path: string, flag: "wx" | "w"): Promise<void> {
+	try {
+		await writeFile(path, "", { flag });
+	} catch (error) {
+		if (!isMissingFile(error)) throw error;
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, "", { flag });
+	}
+}
+
+/** A queue entry and when its owner last marked it live, on the database clock. */
+interface QueueEntry {
+	readonly name: string;
+	readonly mtimeMs: number;
+}
+
+/**
+ * Judges a queue's entries, sorted by name, on the database clock: the live ones, oldest first, and the ones
+ * abandoned long enough to remove.
+ */
+function judgeEntries(entries: readonly QueueEntry[], now: number): { live: QueueEntry[]; abandoned: string[] } {
+	const live: QueueEntry[] = [];
+	const abandoned: string[] = [];
+	for (const entry of entries) {
+		const age = Math.abs(now - entry.mtimeMs);
+		if (age < TICKET_STALE_MS) live.push(entry);
+		else if (age > TICKET_REMOVE_AFTER_MS) abandoned.push(entry.name);
+	}
+	return { live, abandoned };
 }
 
 /**
@@ -111,46 +162,93 @@ function isVanishedTicket(error: unknown): boolean {
  * notice neither keeps a dead or stopped waiter's ticket alive nor, sent late, rolls a live one back to an older
  * time. A writer also rechecks on a timer, for the releases nobody announces: a holder killed with the lock, a
  * ticket ahead whose owner died, a raw SQLite client, an older Atomic.
+ *
+ * Tickets are stamped and aged on the database's clock, the system clock SQLite reads for `unixepoch()`, which also
+ * stamps the files: every process shares it. A process's own clock can differ from it by seconds. On Windows, V8
+ * extrapolates `Date.now()` from a reading of the system clock it renews once a minute, so after the system clock is
+ * set (a virtual machine's time synchronization, say) a running process stays off by the step until then, and
+ * processes aging tickets on their own clocks took live tickets for stale and overtook their writers (#4387).
  */
 class SqliteWriteQueue {
 	private readonly directory: string;
 	private readonly noticeDirectory: string;
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
+	/** Now on the database's clock, in milliseconds. */
+	readonly now: () => number;
 
 	/** `degraded` records what the queue had to give up on without failing the transaction that met it. */
-	constructor(databasePath: string, degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void) {
+	constructor(
+		databasePath: string,
+		degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void,
+		now: () => number,
+	) {
 		this.directory = `${databasePath}-writers`;
 		this.noticeDirectory = `${databasePath}-wakes`;
 		this.degraded = degraded;
+		this.now = now;
 	}
 
-	join(live = this.liveTickets()): SqliteWriteTicket {
+	/** Whether the queue directory exists: an uncontended writer finds none and reads nothing more. */
+	contended(): boolean {
+		return existsSync(this.directory);
+	}
+
+	/** Takes a ticket behind `live`, writing it and its notice off the event loop. */
+	async join(live: readonly string[]): Promise<SqliteWriteTicket> {
 		const name = ticketName(live);
 		const ticket = new SqliteWriteTicket(this, name, join(this.directory, name), join(this.noticeDirectory, name));
-		this.create(ticket, "wx");
+		await this.create(ticket, "wx");
 		return ticket;
 	}
 
-	create(ticket: SqliteWriteTicket, flag: "wx" | "w"): void {
-		mkdirSync(this.directory, { recursive: true });
-		mkdirSync(this.noticeDirectory, { recursive: true });
-		writeFileSync(ticket.path, "", { flag });
+	/**
+	 * Writes the ticket's release notice, then the ticket, so a writer that finds the ticket can always touch its
+	 * notice. A ticket that cannot be written takes its notice with it; `wx` never takes over another writer's files.
+	 */
+	async create(ticket: SqliteWriteTicket, flag: "wx" | "w"): Promise<void> {
+		await writeEntry(ticket.noticePath, flag);
 		try {
-			writeFileSync(ticket.noticePath, "");
+			await writeEntry(ticket.path, flag);
 		} catch (error) {
-			ticket.leave();
+			try {
+				await unlink(ticket.noticePath);
+			} catch (cleanup) {
+				this.removalFailed(cleanup);
+			}
 			throw error;
 		}
 	}
 
+	/** A ticket's notice, then the ticket: removed in that order, so no notice outlives its ticket. */
+	private entryPaths(name: string): string[] {
+		return [join(this.noticeDirectory, name), join(this.directory, name)];
+	}
+
+	/** Whether removing an entry has to stop at `error`; one that is not a vanished entry is recorded as degraded. */
+	private removalFailed(error: unknown): boolean {
+		if (isVanishedTicket(error)) return false;
+		this.degraded("stale-ticket-kept", error);
+		return true;
+	}
+
+	/** Removes an abandoned entry found while reading the queue. */
 	removeEntry(name: string): void {
-		for (const path of [join(this.noticeDirectory, name), join(this.directory, name)]) {
+		for (const path of this.entryPaths(name)) {
 			try {
 				unlinkSync(path);
 			} catch (error) {
-				if (isVanishedTicket(error)) continue;
-				this.degraded("stale-ticket-kept", error);
-				return;
+				if (this.removalFailed(error)) return;
+			}
+		}
+	}
+
+	/** Removes an entry off the event loop: a leaving writer's own, or an abandoned one a waiting writer found. */
+	async removeEntryOffLoop(name: string): Promise<void> {
+		for (const path of this.entryPaths(name)) {
+			try {
+				await unlink(path);
+			} catch (error) {
+				if (this.removalFailed(error)) return;
 			}
 		}
 	}
@@ -186,34 +284,63 @@ class SqliteWriteQueue {
 	 * it goes, so a failure other than the ticket having vanished (another user's ticket in a shared directory, say)
 	 * is recorded as degraded, once, and never fails a transaction.
 	 */
-	private liveTicketEntries(except?: string): { readonly name: string; readonly mtimeMs: number }[] {
+	private liveTicketEntries(except?: string): QueueEntry[] {
 		let names: string[];
 		// Uncontended writers find no directory; checking costs a third of a failed listing, twice per transaction.
-		if (!existsSync(this.directory)) return [];
+		if (!this.contended()) return [];
 		try {
 			names = readdirSync(this.directory);
 		} catch (error) {
 			if (!isMissingFile(error)) throw error;
 			return [];
 		}
-		const now = Date.now();
-		const live: { readonly name: string; readonly mtimeMs: number }[] = [];
+		// An empty queue, as contention leaves it, is read without the clock.
+		if (names.length === 0) return [];
+		const now = this.now();
+		const entries: QueueEntry[] = [];
 		for (const name of names.sort()) {
 			if (name === except) continue;
-			let mtimeMs: number;
 			try {
-				mtimeMs = statSync(join(this.directory, name)).mtimeMs;
+				entries.push({ name, mtimeMs: statSync(join(this.directory, name)).mtimeMs });
 			} catch (error) {
 				if (!isVanishedTicket(error)) throw error;
-				continue;
-			}
-			const age = now - mtimeMs;
-			if (Math.abs(age) < TICKET_STALE_MS) live.push({ name, mtimeMs });
-			else if (Math.abs(age) > TICKET_REMOVE_AFTER_MS) {
-				this.removeEntry(name);
 			}
 		}
+		const { live, abandoned } = judgeEntries(entries, now);
+		for (const name of abandoned) this.removeEntry(name);
 		return live;
+	}
+
+	/**
+	 * Live tickets other than `except`, for a writer waiting in the queue: read off the event loop and judged like
+	 * `liveTicketEntries`, in no particular order. Entries are read together; the first failure in listing order that
+	 * is not a vanished entry is thrown.
+	 */
+	async liveTicketsOffLoop(except?: string): Promise<string[]> {
+		let names: string[];
+		try {
+			names = await readdir(this.directory);
+		} catch (error) {
+			if (!isMissingFile(error)) throw error;
+			return [];
+		}
+		const listed = names.filter((name) => name !== except);
+		const read = await Promise.all(
+			listed.map((name) =>
+				stat(join(this.directory, name)).then(
+					(found): QueueEntry => ({ name, mtimeMs: found.mtimeMs }),
+					(error: unknown) => ({ name, error }),
+				),
+			),
+		);
+		const entries: QueueEntry[] = [];
+		for (const entry of read) {
+			if (!("error" in entry)) entries.push(entry);
+			else if (!isVanishedTicket(entry.error)) throw entry.error;
+		}
+		const { live, abandoned } = judgeEntries(entries, this.now());
+		for (const name of abandoned) await this.removeEntryOffLoop(name);
+		return live.map((entry) => entry.name);
 	}
 }
 
@@ -236,25 +363,26 @@ class SqliteWriteTicket {
 	/**
 	 * Keeps this ticket live: refreshes it once `TICKET_REFRESH_MS` have passed since it was created or last
 	 * refreshed, recreating it and its release notice in the place it had if it was removed as stale while this
-	 * writer stalled. Returns whether the notice was recreated, which ends a watch on the removed one.
+	 * writer stalled. Returns whether the notice was recreated, which ends a watch on the removed one. The file work
+	 * runs off the event loop.
 	 */
-	keepLive(): boolean {
+	async keepLive(): Promise<boolean> {
 		if (performance.now() - this.refreshed < TICKET_REFRESH_MS) return false;
 		this.refreshed = performance.now();
-		const now = new Date();
+		const now = new Date(this.queue.now());
 		try {
-			utimesSync(this.path, now, now);
+			await utimes(this.path, now, now);
 			return false;
 		} catch (error) {
 			if (!isMissingFile(error)) throw error;
-			this.queue.create(this, "w");
+			await this.queue.create(this, "w");
 			return true;
 		}
 	}
 
-	/** Whether an older live ticket is still ahead of this one. */
-	behindOthers(): boolean {
-		return this.queue.liveTickets(this.name).some((other) => other < this.name);
+	/** Whether an older live ticket is still ahead of this one, read off the event loop. */
+	async behindOthers(): Promise<boolean> {
+		return (await this.queue.liveTicketsOffLoop(this.name)).some((other) => other < this.name);
 	}
 
 	/** Watches this writer's release notice: anything that touches the file, as a releasing writer does. */
@@ -262,25 +390,30 @@ class SqliteWriteTicket {
 		return new ReleaseNotices(this.noticePath, onUnavailable);
 	}
 
-	leave(): void {
+	async leave(): Promise<void> {
 		if (this.left) return;
 		this.left = true;
-		this.queue.removeEntry(this.name);
+		await this.queue.removeEntryOffLoop(this.name);
 	}
 }
 
 /**
  * The release notices a queued writer receives while it waits: a change to its notice file, which is how the writer
- * that lets go of the lock hands it the turn. The watch starts before the writer first checks the lock, and a notice can
- * only be delivered while the writer awaits `wait`, so one sent while it checks still ends its next wait at once.
+ * that lets go of the lock hands it the turn. The watch starts before the writer first checks the lock. A notice that
+ * arrives while the writer reads the queue or attempts the lock is kept until its next wait, which then ends at once,
+ * so one sent while it checks is never lost; `clear` forgets the notices a fresh look at the queue and the lock covers.
  */
 class ReleaseNotices {
 	private watcher?: FSWatcher;
-	private wake = () => {};
+	private arrived = false;
+	private wake?: () => void;
 
 	constructor(path: string, onUnavailable: (cause: Error) => void) {
 		try {
-			const watcher = watch(path, () => this.wake());
+			const watcher = watch(path, () => {
+				this.arrived = true;
+				this.wake?.();
+			});
 			watcher.on("error", (cause: Error) => {
 				this.close();
 				onUnavailable(cause);
@@ -295,14 +428,22 @@ class ReleaseNotices {
 		return this.watcher !== undefined;
 	}
 
-	/** Resolves once a notice arrives, or after `ms`. */
+	/** Forgets the notices received so far: the writer is about to look at the queue and the lock afresh. */
+	clear(): void {
+		this.arrived = false;
+	}
+
+	/** Resolves once a notice arrives, at once if one arrived since `clear`, or after `ms`. */
 	wait(ms: number): Promise<void> {
+		if (this.arrived) return Promise.resolve();
 		return new Promise((resolve) => {
-			const timer = setTimeout(resolve, ms);
-			this.wake = () => {
+			const done = () => {
 				clearTimeout(timer);
+				this.wake = undefined;
 				resolve();
 			};
+			const timer = setTimeout(done, ms);
+			this.wake = done;
 		});
 	}
 
@@ -330,18 +471,35 @@ function processAlive(pid: number): boolean {
  * the record free once it lets go; only the holder writes its record, so records never race. Nothing reads them
  * until a writer gives up: the live record taken most recently names the holder. A connection removes the records
  * of exited processes when it creates its own, so the killed ones do not pile up. Recording is a diagnostic: a
- * record that cannot be written is dropped, never a failed transaction.
+ * record that cannot be created, written or cleaned up never fails a transaction. The failure is recorded as a
+ * degradation instead, and a writer that gives up waiting may then name no holder.
  */
 class SqliteHolderRecord {
 	private descriptor?: number;
-	private broken = false;
 	private readonly directory: string;
 	private readonly path: string;
+	private readonly unavailable: (cause: unknown) => void;
 
-	constructor(databasePath: string) {
+	/** `unavailable` records a failure to keep the record, or to remove an exited process's. */
+	constructor(databasePath: string, unavailable: (cause: unknown) => void) {
 		this.directory = holderDirectory(databasePath);
 		holderSequence += 1;
 		this.path = join(this.directory, `${process.pid}-${holderSequence}`);
+		this.unavailable = unavailable;
+	}
+
+	/**
+	 * Creates the record off the event loop as a writable connection opens, removing exited processes' records on the
+	 * way, so that taking the lock only writes to it in place.
+	 */
+	async open(): Promise<void> {
+		try {
+			await mkdir(this.directory, { recursive: true });
+			await removeExitedHolderRecords(this.directory, this.unavailable);
+			this.descriptor = await openFile(this.path, "w");
+		} catch (cause) {
+			this.unavailable(cause);
+		}
 	}
 
 	held(): void {
@@ -349,7 +507,7 @@ class SqliteHolderRecord {
 	}
 
 	free(): void {
-		if (this.descriptor !== undefined) this.write(`free ${"0".repeat(15)}\n`);
+		this.write(`free ${"0".repeat(15)}\n`);
 	}
 
 	/** The process, this one or another, whose record says it took the write lock most recently. */
@@ -368,25 +526,47 @@ class SqliteHolderRecord {
 		this.descriptor = undefined;
 	}
 
-	/** Every record has the same length and is written in place, so a reader never sees a shorter, stale tail. */
+	/**
+	 * Every record has the same length and is written in place, so a reader never sees a shorter, stale tail. A
+	 * connection without a record, read-only or unable to create one, writes nothing.
+	 */
 	private write(record: string): void {
-		if (this.broken) return;
+		if (this.descriptor === undefined) return;
 		try {
-			if (this.descriptor === undefined) {
-				mkdirSync(this.directory, { recursive: true });
-				liveHolderRecords(this.directory);
-				this.descriptor = openSync(this.path, "w");
-			}
 			writeSync(this.descriptor, record, 0);
-		} catch {
-			this.broken = true;
+		} catch (cause) {
 			this.close();
+			this.unavailable(cause);
 		}
 	}
 }
 
 function holderDirectory(databasePath: string): string {
 	return `${databasePath}-holders`;
+}
+
+const openFile = promisify(open);
+
+/** The process a holder record belongs to, from its name: `<pid>-<sequence>`. */
+function holderPid(name: string): number | undefined {
+	const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
+	return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/**
+ * Removes the records of exited processes, off the event loop. One another connection removed first is gone; any
+ * other failure to remove one goes to `failed`, and the rest are still removed.
+ */
+async function removeExitedHolderRecords(directory: string, failed: (cause: unknown) => void): Promise<void> {
+	for (const name of await readdir(directory)) {
+		const pid = holderPid(name);
+		if (pid === undefined || processAlive(pid)) continue;
+		try {
+			await unlink(join(directory, name));
+		} catch (error) {
+			if (!isVanishedTicket(error)) failed(error);
+		}
+	}
 }
 
 /** The records of live processes, as pid and the time each took the lock (undefined when free); others are removed. */
@@ -399,8 +579,8 @@ function liveHolderRecords(directory: string): { readonly pid: number; readonly 
 	}
 	const live: { pid: number; since?: number }[] = [];
 	for (const name of names) {
-		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
-		if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+		const pid = holderPid(name);
+		if (pid === undefined) continue;
 		if (!processAlive(pid)) {
 			try {
 				unlinkSync(join(directory, name));
@@ -675,9 +855,20 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.descriptor = descriptor;
 		this.executor = this.createExecutor(() => true);
 		if (typeof transactionIdentity === "string") {
-			this.writeQueue = new SqliteWriteQueue(transactionIdentity, (reason, cause) => this.degraded(reason, cause));
-			this.holderRecord = new SqliteHolderRecord(transactionIdentity);
+			this.writeQueue = new SqliteWriteQueue(
+				transactionIdentity,
+				(reason, cause) => this.degraded(reason, cause),
+				() => databaseNow(connection.constructor as typeof DatabaseSync),
+			);
+			this.holderRecord = new SqliteHolderRecord(transactionIdentity, (cause) =>
+				this.degraded("holder-record-unavailable", cause),
+			);
 		}
+	}
+
+	/** Creates this connection's write-lock record; see `SqliteHolderRecord`. */
+	async openHolderRecord(): Promise<void> {
+		await this.holderRecord?.open();
 	}
 
 	writerQueueStats(): WriterQueueStats {
@@ -742,17 +933,19 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		try {
 			// Writers already waiting in other processes go first.
 			const queue = this.writeQueue;
-			if (queue !== undefined) {
+			if (queue?.contended()) {
+				// Read on the event loop, once, before the writer asks for the lock: its place in line has to be prompt.
 				const waiting = this.queueOp(() => queue.liveTickets());
-				if (waiting.length > 0) ticket = this.queueOp(() => queue.join(waiting));
+				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
 			}
 			// Read only once this writer waits, so an uncontended transaction pays nothing for it.
 			let version = ticket === undefined ? undefined : this.dataVersion();
 			let stalledSince = performance.now();
 			let lastCause: unknown;
 			for (;;) {
-				if (ticket !== undefined) notices = this.watchTicket(ticket, notices);
-				const behind = ticket !== undefined && this.queueOp(() => ticket!.behindOthers());
+				notices?.clear();
+				if (ticket !== undefined) notices = await this.watchTicket(ticket, notices);
+				const behind = ticket !== undefined && (await this.queueFileOp(() => ticket!.behindOthers()));
 				if (!behind) {
 					try {
 						this.tryBegin();
@@ -763,9 +956,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 						if (!isSqliteBusy(cause)) throw error;
 						lastCause = cause;
 					}
-					if (ticket === undefined && this.writeQueue !== undefined) {
+					if (ticket === undefined && queue !== undefined) {
 						// A release before this ticket existed told nobody: watch it, then try once more before waiting.
-						ticket = this.queueOp(() => this.writeQueue!.join());
+						ticket = await this.queueFileOp(async () => queue.join(await queue.liveTicketsOffLoop()));
 						continue;
 					}
 				}
@@ -787,7 +980,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			}
 		} finally {
 			notices?.close();
-			ticket?.leave();
+			// Gone before the commit, so the release that follows hands the turn to the next writer, not to this one.
+			await ticket?.leave();
 		}
 	}
 
@@ -795,8 +989,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Keeps the ticket live and watched: one watch for the whole wait, started again only when the ticket had to be
 	 * recreated, since a watch ends with the file it watched.
 	 */
-	private watchTicket(ticket: SqliteWriteTicket, notices: ReleaseNotices | undefined): ReleaseNotices {
-		const recreated = this.queueOp(() => ticket.keepLive());
+	private async watchTicket(ticket: SqliteWriteTicket, notices: ReleaseNotices | undefined): Promise<ReleaseNotices> {
+		const recreated = await this.queueFileOp(() => ticket.keepLive());
 		if (notices !== undefined && !recreated) return notices;
 		notices?.close();
 		return ticket.watch((cause) => this.degraded("watch-unavailable", cause));
@@ -863,6 +1057,15 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private queueOp<T>(operation: () => T): T {
 		try {
 			return operation();
+		} catch (cause) {
+			throw new StorageWriterQueueUnusableError(this.descriptor, cause as StorageFailureCause);
+		}
+	}
+
+	/** `queueOp` for the file work a waiting writer does off the event loop. */
+	private async queueFileOp<T>(operation: () => Promise<T>): Promise<T> {
+		try {
+			return await operation();
 		} catch (cause) {
 			throw new StorageWriterQueueUnusableError(this.descriptor, cause as StorageFailureCause);
 		}
@@ -1186,7 +1389,9 @@ export async function openNodeSqliteDatabase(
 		}
 		const location = connection.location();
 		const identity = location === null ? connection : await realpath(location);
-		return new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs);
+		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs);
+		if (!readOnly) await database.openHolderRecord();
+		return database;
 	} catch (cause) {
 		try {
 			connection?.close();

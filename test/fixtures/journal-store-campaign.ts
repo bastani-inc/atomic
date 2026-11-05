@@ -3,11 +3,12 @@
  * no journal setting, so it uses the default journal store under `ATOMIC_CODING_AGENT_DIR`. After its first checkpoint
  * it waits until `peers` campaigns have recorded theirs, so every campaign writes while the others do. Before it exits
  * it prints which shard holds its root and which database files of the store this process took the write lock on,
- * read from the records each connection keeps next to a database while it holds that database's lock.
+ * read from the holder records next to each database: a writable connection keeps an empty record from when it opens
+ * and writes to it only once it takes that database's write lock.
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -46,7 +47,10 @@ const holders = existsSync(storeDirectory)
 	? readdirSync(storeDirectory)
 			.filter((name) => name.endsWith("-holders"))
 			.filter((name) =>
-				readdirSync(join(storeDirectory, name)).some((record) => record.startsWith(`${process.pid}-`)),
+				readdirSync(join(storeDirectory, name)).some(
+					(record) =>
+						record.startsWith(`${process.pid}-`) && statSync(join(storeDirectory, name, record)).size > 0,
+				),
 			)
 			.map((name) => name.slice(0, -"-holders".length))
 	: [];
