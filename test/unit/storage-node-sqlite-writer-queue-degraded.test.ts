@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -19,11 +20,24 @@ vi.mock("node:fs", async (importOriginal) => {
 	return {
 		...actual,
 		watch: vi.fn(actual.watch),
+		mkdirSync: vi.fn(actual.mkdirSync),
+		openSync: vi.fn(actual.openSync),
 		utimesSync: vi.fn(actual.utimesSync),
-		writeFileSync: vi.fn(actual.writeFileSync),
 		readdirSync: vi.fn(actual.readdirSync),
 		statSync: vi.fn(actual.statSync),
 		unlinkSync: vi.fn(actual.unlinkSync),
+	};
+});
+
+// A waiting writer writes and refreshes its own ticket and notice off the event loop.
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		mkdir: vi.fn(actual.mkdir),
+		utimes: vi.fn(actual.utimes),
+		writeFile: vi.fn(actual.writeFile),
+		unlink: vi.fn(actual.unlink),
 	};
 });
 
@@ -46,13 +60,19 @@ await import("../../packages/coding-agent/src/core/debug.js");
 /** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
 const DEBUG_RECORD_WAIT_MS = 10_000;
 const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+const actualPromises = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
 const watch = vi.mocked(fs.watch);
+const mkdirSync = vi.mocked(fs.mkdirSync);
+const openSync = vi.mocked(fs.openSync);
 const utimesSync = vi.mocked(fs.utimesSync);
-const writeFileSync = vi.mocked(fs.writeFileSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
 const unlinkSync = vi.mocked(fs.unlinkSync);
+const mkdir = vi.mocked(fsPromises.mkdir);
+const utimes = vi.mocked(fsPromises.utimes);
+const writeFile = vi.mocked(fsPromises.writeFile);
+const unlink = vi.mocked(fsPromises.unlink);
 const platform = vi.mocked(os.platform);
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -60,11 +80,16 @@ const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
 	vi.useRealTimers();
 	watch.mockImplementation(actual.watch);
+	mkdirSync.mockImplementation(actual.mkdirSync);
+	openSync.mockImplementation(actual.openSync);
 	utimesSync.mockImplementation(actual.utimesSync);
-	writeFileSync.mockImplementation(actual.writeFileSync);
 	readdirSync.mockImplementation(actual.readdirSync);
 	statSync.mockImplementation(actual.statSync);
 	unlinkSync.mockImplementation(actual.unlinkSync);
+	mkdir.mockImplementation(actualPromises.mkdir);
+	utimes.mockImplementation(actualPromises.utimes);
+	writeFile.mockImplementation(actualPromises.writeFile);
+	unlink.mockImplementation(actualPromises.unlink);
 	platform.mockImplementation(actualOs.platform);
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -350,10 +375,10 @@ test("a waiting writer that cannot refresh its own ticket fails the transaction 
 			(error: unknown) => error,
 		);
 	await untilWaiting();
-	utimesSync.mockImplementation(((path: fs.PathLike) => {
+	utimes.mockImplementation((async (path: fs.PathLike) => {
 		if (String(path).startsWith(writers))
 			throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-	}) as typeof fs.utimesSync);
+	}) as typeof fsPromises.utimes);
 	await vi.advanceTimersByTimeAsync(500);
 	const error = await failure;
 	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
@@ -756,10 +781,12 @@ test("an abandoned ticket whose notice cannot be removed stays for the next scan
 
 test("a writer that cannot create its release notice fails as an unusable writers' queue and leaves no ticket behind (#4316)", async () => {
 	const { database, holder, writers } = await fixture();
-	writeFileSync.mockImplementation(((path: fs.PathOrFileDescriptor, data: unknown, options?: unknown) => {
-		if (dirname(String(path)) === wakes(writers)) throw failure("EACCES");
-		return (actual.writeFileSync as (...args: unknown[]) => void)(path, data, options);
-	}) as typeof fs.writeFileSync);
+	let attempts = 0;
+	writeFile.mockImplementation((async (path: fs.PathLike, data: string, options?: fs.WriteFileOptions) => {
+		if (dirname(String(path)) !== wakes(writers)) return actualPromises.writeFile(path, data, options);
+		attempts += 1;
+		throw failure("EACCES");
+	}) as typeof fsPromises.writeFile);
 	holder.exec("BEGIN IMMEDIATE");
 	const error = await database
 		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
@@ -769,7 +796,8 @@ test("a writer that cannot create its release notice fails as an unusable writer
 		);
 	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
 	assert.equal(error.errno, "EACCES");
-	assert.deepEqual(fs.readdirSync(writers), [], "its ticket did not stay to block the writers behind it");
+	assert.equal(attempts, 1, "a notice it may not write is not tried again");
+	assert.equal(fs.existsSync(writers), false, "its ticket did not stay to block the writers behind it");
 });
 
 test("a release passes over a live ticket that has no release notice to the next one, and reports nothing (#4316)", async () => {
@@ -896,4 +924,154 @@ test("debug output that cannot load is reported as a process warning, and the de
 	} finally {
 		vi.doUnmock("../../packages/coding-agent/src/core/debug.js");
 	}
+});
+
+/** Makes removing the files in `directory` with `fs/promises`, as a writer removes its own entry, fail with `code`. */
+function failOwnUnlink(directory: string, code: string): void {
+	unlink.mockImplementation((async (file: fs.PathLike) => {
+		if (dirname(String(file)) === directory) throw failure(code);
+		return actualPromises.unlink(file);
+	}) as typeof fsPromises.unlink);
+}
+
+test("a writer whose ticket cannot be written fails as an unusable writers' queue, and records the notice it could not take back (#4387)", async () => {
+	const { database, holder, path, writers } = await fixture();
+	suppressWarnings();
+	writeFile.mockImplementation((async (file: fs.PathLike, data: string, options?: fs.WriteFileOptions) => {
+		if (dirname(String(file)) === writers) throw failure("EACCES");
+		return actualPromises.writeFile(file, data, options);
+	}) as typeof fsPromises.writeFile);
+	failOwnUnlink(wakes(writers), "EACCES");
+	holder.exec("BEGIN IMMEDIATE");
+	const error = await database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
+		.then(
+			() => assert.fail("wrote under a held lock"),
+			(cause: unknown) => cause,
+		);
+	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+	assert.equal(error.errno, "EACCES");
+	const [kept, ...more] = getWriterQueueDegradation(database);
+	assert.deepEqual(more, []);
+	assert.deepEqual(
+		[kept?.reason, kept?.location, (kept?.cause as { code?: string } | undefined)?.code],
+		["stale-ticket-kept", path, "EACCES"],
+	);
+	assert.equal(fs.existsSync(writers), false, "no ticket was written");
+	assert.equal(fs.readdirSync(wakes(writers)).length, 1, "the notice it could not remove stays");
+});
+
+test("a writer whose own entry cannot be removed when it leaves still commits, and records the entry it kept (#4387)", async () => {
+	const { database, holder, path, writers } = await fixture();
+	suppressWarnings();
+	failOwnUnlink(wakes(writers), "EACCES");
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('kept its entry')"));
+	await untilWaiting();
+	const [name] = fs.readdirSync(writers);
+	holder.exec("COMMIT");
+	const time = new Date();
+	actual.utimesSync(join(wakes(writers), name!), time, time);
+	await write;
+	const [kept, ...more] = getWriterQueueDegradation(database);
+	assert.deepEqual(more, []);
+	assert.deepEqual(
+		[kept?.reason, kept?.location, (kept?.cause as { code?: string } | undefined)?.code],
+		["stale-ticket-kept", path, "EACCES"],
+	);
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "kept its entry" }]);
+	assert.deepEqual(
+		[fs.existsSync(join(writers, name!)), fs.existsSync(join(wakes(writers), name!))],
+		[true, true],
+		"removal stopped at the notice, so the ticket did not outlive it",
+	);
+});
+
+/** Reads the synchronous file calls made from now on that list, create or open `directory` or a file in it. */
+function syncCallsOn(directory: string): () => string[] {
+	const marks = [mkdirSync, openSync, readdirSync].map((spy) => spy.mock.calls.length);
+	return () =>
+		[mkdirSync, openSync, readdirSync].flatMap((spy, index) =>
+			spy.mock.calls
+				.slice(marks[index])
+				.map(([path]) => String(path))
+				.filter((path) => path === directory || dirname(path) === directory),
+		);
+}
+
+test("a connection creates its write-lock record off the event loop as it opens, so taking the lock only writes it in place (#4387)", async () => {
+	const { path } = await fixture();
+	const holders = `${path}-holders`;
+	const calls = syncCallsOn(holders);
+	const database = await openNodeSqliteDatabase(path);
+	cleanups.push(() => database.close());
+	const opened = actual.readdirSync(holders);
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('first')"));
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('second')"));
+	assert.deepEqual(calls(), [], "no synchronous call made, listed or opened a record");
+	assert.deepEqual(actual.readdirSync(holders), opened, "the record was there before the lock was taken");
+	const records = opened.map((name) => actual.readFileSync(join(holders, name), "utf8").slice(0, 4));
+	assert.deepEqual(records.sort(), ["", "free"], "the fixture's untouched record, and this one's");
+});
+
+test("a write-lock record that cannot be created is left out, and the transaction still commits (#4387)", async () => {
+	const { path } = await fixture();
+	const holders = `${path}-holders`;
+	const earlier = actual.readdirSync(holders);
+	mkdir.mockImplementation((async (directory: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+		if (String(directory) === holders) throw failure("EACCES");
+		return actualPromises.mkdir(directory, options);
+	}) as typeof fsPromises.mkdir);
+	const calls = syncCallsOn(holders);
+	const database = await openNodeSqliteDatabase(path);
+	cleanups.push(() => database.close());
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('unrecorded')"));
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "unrecorded" }]);
+	assert.deepEqual(actual.readdirSync(holders), earlier, "no record");
+	assert.deepEqual(calls(), [], "and no synchronous attempt to create one under the lock");
+});
+
+/**
+ * Makes the first write of a release notice find its directory missing although another writer makes it at that
+ * moment, with `existing` written under the notice's name first when given.
+ */
+function raceNoticeDirectory(writers: string, existing?: string): void {
+	let raced = false;
+	writeFile.mockImplementation((async (file: fs.PathLike, data: string, options?: fs.WriteFileOptions) => {
+		if (raced || dirname(String(file)) !== wakes(writers)) return actualPromises.writeFile(file, data, options);
+		raced = true;
+		actual.mkdirSync(wakes(writers), { recursive: true });
+		if (existing !== undefined) actual.writeFileSync(String(file), existing);
+		throw failure("ENOENT");
+	}) as typeof fsPromises.writeFile);
+}
+
+test("a writer whose missing queue directory another writer makes as it joins still joins and commits (#4387)", async () => {
+	const { database, holder, writers } = await fixture();
+	raceNoticeDirectory(writers);
+	holder.exec("BEGIN IMMEDIATE");
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('joined')"));
+	while (!fs.existsSync(writers) || actual.readdirSync(writers).length === 0) await turn();
+	holder.exec("COMMIT");
+	await releaseWaiters(writers);
+	await write;
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "joined" }]);
+});
+
+test("a writer that makes its missing queue directory still never writes over a file named like its entry (#4387)", async () => {
+	const { database, holder, writers } = await fixture();
+	raceNoticeDirectory(writers, "another writer's notice");
+	holder.exec("BEGIN IMMEDIATE");
+	const error = await database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
+		.then(
+			() => assert.fail("wrote under a held lock"),
+			(cause: unknown) => cause,
+		);
+	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+	assert.equal(error.errno, "EEXIST");
+	const [notice, ...more] = actual.readdirSync(wakes(writers));
+	assert.deepEqual(more, []);
+	assert.equal(actual.readFileSync(join(wakes(writers), notice!), "utf8"), "another writer's notice");
 });

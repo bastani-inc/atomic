@@ -281,7 +281,12 @@ test("a writer that watches its release notice rechecks every recheck period, up
 		(error: unknown) => error,
 	);
 	await untilWaiting();
-	await vi.advanceTimersByTimeAsync(700);
+	// Each recheck, the ticket refresh it makes off the event loop included, ends before the next is due.
+	await vi.advanceTimersByTimeAsync(250);
+	await untilWaiting();
+	await vi.advanceTimersByTimeAsync(250);
+	await untilWaiting();
+	await vi.advanceTimersByTimeAsync(200);
 	const error = await failure;
 	assert.ok(isStorageWriteLockTimeoutError(error));
 	assert.equal(error.timeoutMs, 700);
@@ -653,6 +658,59 @@ test("a writer behind a live ticket that never moves gives up as queued and name
 	assert.ok(existsSync(join(writers, ahead)));
 });
 
+test("a connection removes exited processes' write-lock records as it creates its own, and reads only records named <pid>-<sequence> (#4387)", async () => {
+	const { writers, path } = await fixture();
+	const holders = `${path}-holders`;
+	const earlier = readdirSync(holders);
+	const record = (name: string, tookAt: number) =>
+		writeFileSync(join(holders, name), `held ${String(tookAt).padStart(15, "0")}\n`);
+	// Pids this large are never live.
+	record("999999999-1", Date.now());
+	// Not records: no pid, the pid of no process, a pid that does not start the name. Each claims the lock last.
+	const strays = ["stray", "0-1", `a${process.pid}-1`];
+	for (const name of strays) record(name, Date.now());
+	const holderRecord = `${process.pid}-999999`;
+	record(holderRecord, Date.now() - 1_000);
+	const database = await openNodeSqliteDatabase(path, { lockWaitMs: 300 });
+	cleanups.push(() => database.close());
+	const [own, ...more] = readdirSync(holders).filter(
+		(name) => name.startsWith(`${process.pid}-`) && name !== holderRecord && !earlier.includes(name),
+	);
+	assert.deepEqual(more, []);
+	const kept = [...earlier, ...strays, holderRecord, own!].sort();
+	assert.deepEqual(readdirSync(holders).sort(), kept, "only the exited one went, as it opened");
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('recorded')"));
+	assert.equal(
+		fs.readFileSync(join(holders, own!), "utf8").slice(0, 4),
+		"free",
+		"its own record, in a directory it found",
+	);
+	ticket(writers, Date.now() - 1, 999_999_998);
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const failure = database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
+		.then(
+			() => assert.fail("overtook a live ticket"),
+			(error: unknown) => error,
+		);
+	await untilWaiting();
+	await vi.advanceTimersByTimeAsync(300);
+	const error = await failure;
+	assert.ok(isStorageWriteLockTimeoutError(error), String(error));
+	assert.equal(error.holderPid, process.pid);
+	assert.ok((error.holderHeldMs ?? -1) >= 1_000, "named from its record, not from a stray file");
+	assert.deepEqual(readdirSync(holders).sort(), kept, "and none is removed");
+});
+
+test("a read-only connection makes no write-lock record next to the database (#4387)", async () => {
+	const { path } = await fixture();
+	const holders = `${path}-holders`;
+	const records = readdirSync(holders);
+	const reader = await openNodeSqliteDatabase(path, { readOnly: true });
+	cleanups.push(() => reader.close());
+	assert.deepEqual(readdirSync(holders), records);
+});
+
 test("a waiting writer refreshes its ticket every 500 ms, recreates it if it was removed, and still hears the release (#4316)", async () => {
 	const { database, holder, writers } = await fixture();
 	holder.exec("BEGIN IMMEDIATE");
@@ -664,14 +722,18 @@ test("a waiting writer refreshes its ticket every 500 ms, recreates it if it was
 	await untilWaiting();
 	const age = () => databaseNow() - statSync(path).mtimeMs;
 	touch(path, -1_500);
+	// The refresh runs off the event loop: each check waits for the recheck to end, as its next wait starts.
 	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+	await untilWaiting();
 	assert.ok(age() >= 1_400, "not refreshed before 500 ms");
 	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+	await untilWaiting();
 	assert.ok(age() < 1_000, "refreshed at 500 ms");
 	const notice = join(wakes(writers), name!);
 	fs.unlinkSync(path);
 	fs.unlinkSync(notice);
 	await vi.advanceTimersByTimeAsync(2 * WATCHED_RECHECK_MS);
+	await untilWaiting();
 	assert.ok(existsSync(path), "recreated under its old name, keeping its place");
 	assert.ok(existsSync(notice), "with its release notice");
 	holder.exec("COMMIT");
@@ -691,19 +753,36 @@ test("a writer never takes over a file already named like its ticket, and fails 
 	touch(join(wakes(writers), earlier!));
 	await first;
 	const [time, pid, sequence] = earlier!.split("-");
-	const taken = `${time}-${pid}-${Number(sequence) + 1}`;
-	writeFileSync(join(writers, taken), "another writer's");
-	touch(join(writers, taken), -5_000);
-	holder.exec("BEGIN IMMEDIATE");
-	const error = await database
-		.transaction((tx) => tx.run("INSERT INTO items VALUES ('second')"))
-		.then(
-			() => assert.fail("took the lock past a ticket it did not create"),
-			(cause: unknown) => cause,
-		);
-	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
-	assert.equal(error.errno, "EEXIST");
-	assert.equal(fs.readFileSync(join(writers, taken), "utf8"), "another writer's", "the file was left as it was");
+	const takeOver = async () => {
+		holder.exec("BEGIN IMMEDIATE");
+		const error = await database
+			.transaction((tx) => tx.run("INSERT INTO items VALUES ('second')"))
+			.then(
+				() => assert.fail("took the lock past a ticket it did not create"),
+				(cause: unknown) => cause,
+			);
+		holder.exec("ROLLBACK");
+		assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+		assert.equal(error.errno, "EEXIST");
+	};
+	// Another writer's ticket, without its notice: the notice written first goes again.
+	const ticketOnly = `${time}-${pid}-${Number(sequence) + 1}`;
+	writeFileSync(join(writers, ticketOnly), "another writer's");
+	touch(join(writers, ticketOnly), -5_000);
+	await takeOver();
+	assert.equal(fs.readFileSync(join(writers, ticketOnly), "utf8"), "another writer's", "the file was left as it was");
+	assert.equal(existsSync(join(wakes(writers), ticketOnly)), false, "and the notice it wrote first went with it");
+	// Another writer's ticket and notice: neither is written over or removed.
+	const both = `${time}-${pid}-${Number(sequence) + 2}`;
+	writeFileSync(join(writers, both), "another writer's");
+	writeFileSync(join(wakes(writers), both), "another writer's notice");
+	touch(join(writers, both), -5_000);
+	await takeOver();
+	assert.deepEqual(
+		[fs.readFileSync(join(writers, both), "utf8"), fs.readFileSync(join(wakes(writers), both), "utf8")],
+		["another writer's", "another writer's notice"],
+		"both files were left as they were",
+	);
 });
 
 test("commits by other connections keep a waiting writer from giving up, however long the lock stays busy (#4316)", async () => {
@@ -776,9 +855,10 @@ test("a writer names its ticket <15-digit time>-<pid>-<sequence> and ignores fil
 	const own = names.find((name) => name !== stray)!;
 	assert.match(own, new RegExp(`^\\d{15}-${process.pid}-\\d+$`));
 	assert.ok(Number(own.slice(0, 15)) < Date.now() + 60_000, "named from the clock, not from the stray file");
+	// Read once the writer waits, so both files are fully written.
+	await untilWaiting();
 	assert.equal(fs.readFileSync(join(writers, own), "utf8"), "", "a ticket carries nothing but its name and times");
 	assert.equal(fs.readFileSync(join(wakes(writers), own), "utf8"), "", "and so does its release notice");
-	await untilWaiting();
 	holder.exec("COMMIT");
 	touch(join(wakes(writers), own));
 	await write;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
@@ -163,16 +163,21 @@ test(
 				last = now;
 			}, 20);
 			const started = performance.now();
-			await database.transaction((tx) => tx.run("INSERT INTO probe VALUES (1)"));
-			const finished = performance.now();
-			const waitedMs = finished - started;
-			clearInterval(ticker);
-			// The interval still open at commit counts: a wait that blocks synchronously lets no tick fire at all.
-			maxBusyMs = Math.max(
-				maxBusyMs,
-				performance.eventLoopUtilization(performance.eventLoopUtilization(), last).active,
-			);
-			assert.ok(waitedMs >= 1_000, `committed after ${waitedMs} ms while the lock was held`);
+			let acquired = 0;
+			await database.transaction((tx) => {
+				// The wait ends with the lock taken. The commit that follows syncs the log to disk on the event loop, as
+				// every commit does whether or not it waited, and is not part of the wait.
+				acquired = performance.now();
+				clearInterval(ticker);
+				// The interval still open when the lock is taken counts: a wait that blocks synchronously lets no tick fire.
+				maxBusyMs = Math.max(
+					maxBusyMs,
+					performance.eventLoopUtilization(performance.eventLoopUtilization(), last).active,
+				);
+				return tx.run("INSERT INTO probe VALUES (1)");
+			});
+			const waitedMs = acquired - started;
+			assert.ok(waitedMs >= 1_000, `took the lock after ${waitedMs} ms while it was held`);
 			assert.ok(maxBusyMs < 500, `event loop blocked for ${Math.round(maxBusyMs)} ms while waiting for the lock`);
 			assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM probe"), { count: 1 });
 			assert.deepEqual(await database.get("PRAGMA busy_timeout"), { timeout: 5_000 });
@@ -239,7 +244,8 @@ async function assertWritersTakeTurns(hogClockOffsetsMs: readonly number[]): Pro
 		for (const clockOffsetMs of hogClockOffsetsMs) hogs.push(await startHog(path, stopPath, clockOffsetMs));
 		const reader = new DatabaseSync(path, { readOnly: true });
 		observer = reader;
-		const hogCommits = () => Number(reader.prepare("SELECT COUNT(*) AS count FROM hog").get()!.count);
+		const countHogCommits = reader.prepare("SELECT COUNT(*) AS count FROM hog");
+		const hogCommits = () => Number(countHogCommits.get()!.count);
 		const overtaken: number[] = [];
 		for (let index = 0; index < VICTIM_TRANSACTIONS; index++) {
 			const before = (await database.get<{ count: number }>("SELECT COUNT(*) AS count FROM hog"))!.count;
@@ -254,6 +260,8 @@ async function assertWritersTakeTurns(hogClockOffsetsMs: readonly number[]): Pro
 				() => true,
 				() => true,
 			);
+			// Polled once begin() has run, so the count starts with this transaction asking for the lock.
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			for (let done = false; !done; ) {
 				const ahead = hogCommits() - before;
 				if (!began && ahead > MAX_COMMITS_AHEAD)
@@ -335,14 +343,15 @@ test(
 );
 
 const STALLED_WRITER_FIXTURE = fileURLToPath(new URL("../fixtures/sqlite-stalled-writer.mjs", import.meta.url));
-const STALLED_WRITERS = 10;
+/** Writers queued ahead of the one under test, which wait far longer than the test runs. */
+const PATIENT_WRITERS = 9;
+const PATIENT_LOCK_WAIT_MS = 60_000;
 const STALLED_LOCK_WAIT_MS = 500;
-/**
- * A queued writer measures the same stall: with nobody committing, each gives up about one lock wait after the last
- * commit. Before #3978's follow-up, every older ticket counted as progress, so the tenth writer waited roughly once
- * per writer ahead of it (4.7 s here); this bound sits well between the two.
- */
-const STALLED_WAIT_BOUND_MS = (STALLED_WRITERS / 2) * STALLED_LOCK_WAIT_MS;
+
+interface StalledWriterOutcome {
+	readonly waitedMs: number;
+	readonly error: SerializedStorageError | null;
+}
 
 async function readLine(child: SpawnedProcess): Promise<string> {
 	assert.ok(child.stdout);
@@ -360,52 +369,73 @@ async function readLine(child: SpawnedProcess): Promise<string> {
 	return text.trim();
 }
 
+/** The queue's tickets once there are `count`, oldest first. */
+async function queuedTickets(queue: string, count: number): Promise<string[]> {
+	for (;;) {
+		const names = existsSync(queue) ? readdirSync(queue).sort() : [];
+		if (names.length >= count) return names;
+		await sleep(20);
+	}
+}
+
+/**
+ * Before #3978's follow-up, a writer behind older tickets counted them as progress and gave up only once they had
+ * gone: the tenth of ten writers queued at an idle lock waited once per writer ahead of it. Here the writers ahead
+ * wait far longer than the test runs, so a writer that waited for them would outlast the test, however loaded the
+ * machine.
+ */
 test(
-	"writers queued behind an idle lock still give up one lock wait after the last commit, not one per writer ahead (#3978)",
+	"a writer queued behind others at an idle lock gives up one lock wait after the last commit, while the writers ahead still wait (#3978)",
 	async () => {
 		const directory = makeTempDirectory("journal-lock-queued-stall-");
 		const path = join(directory, "journal.sqlite");
+		const queue = `${path}-writers`;
 		const database = await openNodeSqliteDatabase(path);
 		const writers: SpawnedProcess[] = [];
 		let holder: SpawnedProcess | undefined;
+		const startWriter = async (lockWaitMs: number): Promise<SpawnedProcess> => {
+			const writer = spawnProcess([process.execPath, STALLED_WRITER_FIXTURE, path, String(lockWaitMs)], {
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			writers.push(writer);
+			assert.equal(await readLine(writer), "ready");
+			return writer;
+		};
 		try {
 			await database.exec("CREATE TABLE probe(x)");
-			for (let index = 0; index < STALLED_WRITERS; index++) {
-				const writer = spawnProcess(
-					[process.execPath, STALLED_WRITER_FIXTURE, path, String(STALLED_LOCK_WAIT_MS)],
-					{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
-				);
-				writers.push(writer);
-				assert.equal(await readLine(writer), "ready");
-			}
+			const patient: SpawnedProcess[] = [];
+			for (let index = 0; index < PATIENT_WRITERS; index++) patient.push(await startWriter(PATIENT_LOCK_WAIT_MS));
+			const last = await startWriter(STALLED_LOCK_WAIT_MS);
 			// Held and never committed: nobody makes progress through the lock.
 			holder = await holdWriteLock(path, -1);
-			for (const writer of writers) writer.stdin?.end("go\n");
-			const outcomes = await Promise.all(
-				writers.map(
-					async (writer) =>
-						JSON.parse(await readLine(writer)) as {
-							waitedMs: number;
-							error: SerializedStorageError | null;
-						},
-				),
+			for (const writer of patient) writer.stdin?.end("go\n");
+			const ahead = await queuedTickets(queue, PATIENT_WRITERS);
+			last.stdin?.end("go\n");
+			const outcome = JSON.parse(await readLine(last)) as StalledWriterOutcome;
+			assert.deepEqual(
+				readdirSync(queue).filter((name) => ahead.includes(name)),
+				ahead,
+				`it gave up after ${Math.round(outcome.waitedMs)} ms only once writers ahead of it had gone`,
 			);
-			for (const outcome of outcomes) {
-				assert.ok(outcome.error, JSON.stringify(outcome));
-				// Serialized in the writer's process, rehydrated here as the same class with the same facts (#4316).
-				const error = rehydrateStorageError(outcome.error);
-				assert.ok(error instanceof StorageWriteLockTimeoutError, JSON.stringify(outcome));
-				assert.ok(isStorageWriteLockTimeoutError(error));
-				assert.equal(error.timeoutMs, STALLED_LOCK_WAIT_MS);
-				assert.ok(error.elapsedMs >= STALLED_LOCK_WAIT_MS);
-				assert.ok(error.phase === "queued" || error.phase === "acquiring", error.phase);
-				assert.equal(error.location, path);
+			assert.ok(outcome.error, JSON.stringify(outcome));
+			// Serialized in the writer's process, rehydrated here as the same class with the same facts (#4316).
+			const error = rehydrateStorageError(outcome.error);
+			assert.ok(error instanceof StorageWriteLockTimeoutError, JSON.stringify(outcome));
+			assert.ok(isStorageWriteLockTimeoutError(error));
+			assert.equal(error.timeoutMs, STALLED_LOCK_WAIT_MS);
+			assert.ok(error.elapsedMs >= STALLED_LOCK_WAIT_MS);
+			assert.ok(error.phase === "queued" || error.phase === "acquiring", error.phase);
+			assert.equal(error.location, path);
+			// The holder goes; the writers that waited all along take the lock in turn.
+			holder.kill("SIGKILL");
+			await holder.exited;
+			for (const writer of patient) {
+				const committed = JSON.parse(await readLine(writer)) as StalledWriterOutcome;
+				assert.equal(committed.error, null, JSON.stringify(committed));
 			}
-			const longest = Math.max(...outcomes.map((outcome) => outcome.waitedMs));
-			assert.ok(
-				longest < STALLED_WAIT_BOUND_MS,
-				`a writer waited ${Math.round(longest)} ms with no commit; each should give up after about ${STALLED_LOCK_WAIT_MS} ms`,
-			);
+			assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM probe"), { count: PATIENT_WRITERS });
 		} finally {
 			holder?.kill("SIGKILL");
 			await holder?.exited;

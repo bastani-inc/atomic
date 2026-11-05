@@ -25,6 +25,9 @@ const { openNodeSqliteDatabase } = await jiti.import(
 	fileURLToPath(new URL("../../packages/coding-agent/src/core/storage/node-sqlite.ts", import.meta.url)),
 );
 const database = await openNodeSqliteDatabase(path);
+// Durability is not under test, only who gets the lock: a hog that syncs every commit to disk only slows the disk for
+// every other process on the machine.
+await database.exec("PRAGMA synchronous=OFF");
 let announced = false;
 while (!existsSync(stopPath)) {
 	await database.transaction(async (tx) => {
