@@ -1,4 +1,5 @@
 import type { SqliteValue, StorageDescriptor } from "./database.js";
+import { isSqliteBusy } from "./write-ahead-log.js";
 
 export type StorageFailureCause = object | SqliteValue | boolean | symbol | undefined;
 
@@ -368,6 +369,348 @@ export function findStorageWriteLockTimeoutError(error: unknown): StorageWriteLo
 	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH; depth++) {
 		if (isStorageWriteLockTimeoutError(current)) return current;
 		current = causeOf(current);
+
+/** A JSON-safe fact an error of the journal store carries: an id, a path, a count, a phase. */
+export type JournalStoreFieldValue = string | number | boolean | null;
+export type JournalStoreFields = Readonly<Record<string, JournalStoreFieldValue>>;
+
+export const JOURNAL_CATALOG_ERROR_CODES = [
+	"catalog-unavailable",
+	"schema-version",
+	"corrupt",
+	"write-failed",
+	"run-conflict",
+	"run-not-found",
+] as const;
+export type JournalCatalogErrorCode = (typeof JOURNAL_CATALOG_ERROR_CODES)[number];
+
+export const JOURNAL_SHARD_UNAVAILABLE_ERROR_CODES = ["shard-missing", "shard-open-failed"] as const;
+export type JournalShardUnavailableErrorCode = (typeof JOURNAL_SHARD_UNAVAILABLE_ERROR_CODES)[number];
+
+export const JOURNAL_ADOPT_ERROR_CODES = ["path-not-found", "not-a-journal", "schema-version", "run-conflict"] as const;
+export type JournalAdoptErrorCode = (typeof JOURNAL_ADOPT_ERROR_CODES)[number];
+
+/** What a catalog write was doing when it failed. */
+export type JournalCatalogPhase =
+	| "opening"
+	| "placing-run"
+	| "recording-status"
+	| "removing-run"
+	| "registering-shard"
+	| "moving-run";
+
+/** Why a path is not an adoptable journal. */
+export type JournalAdoptNotJournalReason = "not-sqlite" | "no-journal-tables" | "store-catalog" | "directory";
+
+const MAX_CAUSE_DEPTH = 8;
+const DETAIL_LIMIT = 200;
+
+/** The first line of a cause's message, short and free of stack frames, as `StorageUnavailableError` keeps it. */
+function causeDetail(cause: StorageFailureCause | Error | undefined): string | null {
+	if (!(cause instanceof Error)) return null;
+	const nested = cause.cause instanceof Error ? cause.cause.message : "";
+	const line = (cause.message.includes(nested) ? cause.message : `${cause.message}: ${nested}`).split("\n", 1)[0]!;
+	const trimmed = line.trim();
+	if (trimmed === "") return null;
+	return trimmed.length > DETAIL_LIMIT ? `${trimmed.slice(0, DETAIL_LIMIT - 1)}…` : trimmed;
+}
+
+/** Only a write lock another connection holds is worth retrying; every other storage failure needs a person. */
+function busyCause(cause: StorageFailureCause | Error | undefined): boolean {
+	return isSqliteBusy(cause);
+}
+
+interface JournalStoreErrorParts {
+	readonly name?: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint?: string;
+	readonly fields: JournalStoreFields;
+	readonly retryable: boolean;
+	readonly cause?: StorageFailureCause | Error;
+}
+
+/**
+ * The family of the workflow journal store: its catalog, its shards, and adopting journals into it. Every member
+ * carries a stable `code`, JSON-safe `fields`, a `hint` naming what to do next, and `retryable`.
+ */
+export class JournalStoreError extends StorageError {
+	override readonly name: string;
+	readonly code: string;
+	readonly hint: string | undefined;
+	readonly fields: JournalStoreFields;
+	readonly retryable: boolean;
+
+	constructor(parts: JournalStoreErrorParts) {
+		super(parts.message, parts.cause === undefined ? undefined : { cause: parts.cause });
+		this.name = parts.name ?? "JournalStoreError";
+		this.code = parts.code;
+		this.hint = parts.hint;
+		this.fields = Object.freeze({ ...parts.fields });
+		this.retryable = parts.retryable;
+	}
+}
+
+function compact(fields: Readonly<Record<string, JournalStoreFieldValue | undefined>>): JournalStoreFields {
+	return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as JournalStoreFields;
+}
+
+export interface JournalCatalogErrorInit {
+	readonly code: JournalCatalogErrorCode;
+	readonly catalogPath: string;
+	readonly phase?: JournalCatalogPhase;
+	readonly runId?: string;
+	readonly shardId?: number;
+	readonly shardPath?: string;
+	/** `schema-version`: the version found in the catalog. */
+	readonly found?: string | number | null;
+	/** `schema-version`: the version this Atomic supports. */
+	readonly supported?: number;
+	/** `corrupt`: which consistency rule the catalog breaks. */
+	readonly rule?: string;
+	/** `run-not-found`: the journal selection searched, as `atomic storage status` describes it. */
+	readonly selection?: string;
+	/** `run-not-found`: whether this machine's storage is local only, so a run of another machine cannot be here. */
+	readonly localOnly?: boolean;
+	readonly retryable?: boolean;
+	readonly cause?: StorageFailureCause | Error;
+}
+
+/** The command that joins this machine to shared storage, named by errors whose remedy is joining it. */
+export const SHARED_STORAGE_JOIN_HINT = "atomic storage join <url> --token-file <path>";
+/** The command that registers an older journal file in the journal store. */
+export const JOURNAL_ADOPT_COMMAND = "atomic storage adopt <path>";
+
+function catalogText(init: JournalCatalogErrorInit, detail: string | null): { message: string; hint: string } {
+	const subject = init.catalogPath;
+	switch (init.code) {
+		case "catalog-unavailable":
+			return {
+				message: `Journal catalog unavailable: ${subject}${detail === null ? "" : ` (${detail})`} (catalog-unavailable).`,
+				hint: "Check that the journal directory is readable and writable and the disk has free space, then retry; `atomic storage status` shows the store in use.",
+			};
+		case "schema-version":
+			return {
+				message: `Journal catalog schema not supported: ${subject} has version ${String(init.found)}, this Atomic supports ${String(init.supported)} (schema-version).`,
+				hint: "Upgrade Atomic to the version that wrote this catalog, or select another journal with workflows.journal.",
+			};
+		case "corrupt":
+			return {
+				message: `Journal catalog is inconsistent: ${subject} (${init.rule ?? "unknown rule"}) (corrupt).`,
+				hint: `Move ${subject} aside and adopt the shard files again with \`atomic storage adopt <path>\` to rebuild it.`,
+			};
+		case "write-failed":
+			return {
+				message: `Journal catalog write failed: ${subject} while ${init.phase ?? "writing"}${init.runId === undefined ? "" : ` run ${init.runId}`}${detail === null ? "" : ` (${detail})`} (write-failed).`,
+				hint: "Free disk space or release the lock another process holds on the catalog, then retry; checkpoints already written stay on their shard.",
+			};
+		case "run-conflict":
+			return {
+				message: `Journal run conflict: run ${init.runId ?? "unknown"} already has a different copy in ${init.shardPath ?? `shard ${String(init.shardId)}`} (run-conflict).`,
+				hint: "Compare the two copies before moving the run; nothing was changed for this run.",
+			};
+		case "run-not-found":
+			return {
+				message: `Workflow run not found: ${init.runId ?? "unknown"} in ${init.selection ?? subject} (run-not-found).`,
+				hint: init.localOnly
+					? `This machine uses local-only storage and is not joined to shared storage. If the run started on another machine, join its storage with \`${SHARED_STORAGE_JOIN_HINT}\`; if it is in an older journal file, adopt it with \`${JOURNAL_ADOPT_COMMAND}\`.`
+					: "The shared storage selected here does not hold this run; check the run ID with `/workflow status`.",
+			};
+	}
+}
+
+/** The journal catalog, which maps every run to its shard, cannot be opened, read or written. */
+export class JournalCatalogError extends JournalStoreError {
+	override readonly name = "JournalCatalogError" as const;
+	declare readonly code: JournalCatalogErrorCode;
+	declare readonly hint: string;
+	readonly catalogPath: string;
+	readonly phase: JournalCatalogPhase | undefined;
+	readonly runId: string | undefined;
+
+	constructor(init: JournalCatalogErrorInit) {
+		const detail = causeDetail(init.cause);
+		const text = catalogText(init, detail);
+		super({
+			code: init.code,
+			message: text.message,
+			hint: text.hint,
+			fields: compact({
+				catalogPath: init.catalogPath,
+				phase: init.phase,
+				runId: init.runId,
+				shardId: init.shardId,
+				shardPath: init.shardPath,
+				found: init.found,
+				supported: init.supported,
+				rule: init.rule,
+				selection: init.selection,
+				localOnly: init.localOnly,
+				detail: detail ?? undefined,
+			}),
+			retryable: init.retryable ?? busyCause(init.cause),
+			cause: init.cause,
+		});
+		this.catalogPath = init.catalogPath;
+		this.phase = init.phase;
+		this.runId = init.runId;
+	}
+}
+
+export interface JournalShardUnavailableErrorInit {
+	readonly code: JournalShardUnavailableErrorCode;
+	readonly shardId: number;
+	readonly shardPath: string;
+	readonly runId?: string;
+	readonly retryable?: boolean;
+	readonly cause?: StorageFailureCause | Error;
+}
+
+/** The shard file that holds a run cannot be opened: it is missing, unreadable, or not a database. */
+export class JournalShardUnavailableError extends JournalStoreError {
+	override readonly name = "JournalShardUnavailableError" as const;
+	declare readonly code: JournalShardUnavailableErrorCode;
+	declare readonly hint: string;
+	readonly shardId: number;
+	readonly shardPath: string;
+	readonly runId: string | undefined;
+
+	constructor(init: JournalShardUnavailableErrorInit) {
+		const detail = causeDetail(init.cause);
+		const subject = `${init.shardPath}${init.runId === undefined ? "" : ` for run ${init.runId}`}`;
+		const missing = init.code === "shard-missing";
+		super({
+			code: init.code,
+			message: `Journal shard unavailable: ${subject}${detail === null ? "" : ` (${detail})`} (${init.code}).`,
+			hint: missing
+				? "Restore the file; if it is an adopted journal that moved, adopt it again at its new path with `atomic storage adopt <path>`."
+				: "Check the file's permissions and the disk's free space, then retry.",
+			fields: compact({
+				shardId: init.shardId,
+				shardPath: init.shardPath,
+				runId: init.runId,
+				detail: detail ?? undefined,
+			}),
+			retryable: init.retryable ?? (!missing && busyCause(init.cause)),
+			cause: init.cause,
+		});
+		this.shardId = init.shardId;
+		this.shardPath = init.shardPath;
+		this.runId = init.runId;
+	}
+}
+
+export interface JournalAdoptErrorInit {
+	readonly code: JournalAdoptErrorCode;
+	readonly path: string;
+	readonly reason?: JournalAdoptNotJournalReason;
+	readonly runId?: string;
+	/** `run-conflict`: where the store already has the run. */
+	readonly existingPath?: string;
+	readonly found?: string | number | null;
+	readonly supported?: number;
+	readonly cause?: StorageFailureCause | Error;
+}
+
+function adoptText(init: JournalAdoptErrorInit): { message: string; hint: string } {
+	switch (init.code) {
+		case "path-not-found":
+			return {
+				message: `Cannot adopt journal: ${init.path} does not exist (path-not-found).`,
+				hint: "Pass the path of a journal .sqlite file, or of the directory holding its journal.sqlite.",
+			};
+		case "not-a-journal":
+			return {
+				message: `Cannot adopt journal: ${init.path} is not a workflow journal (${init.reason ?? "no-journal-tables"}) (not-a-journal).`,
+				hint:
+					init.reason === "store-catalog"
+						? "The journal store's own catalog is never adopted; pass the path of a legacy journal file."
+						: "Pass a SQLite file that Atomic wrote workflow runs to, such as a journal.sqlite selected with ATOMIC_WORKFLOW_JOURNAL_PATH.",
+			};
+		case "schema-version":
+			return {
+				message: `Cannot adopt journal: ${init.path} has schema version ${String(init.found)}, this Atomic supports ${String(init.supported)} (schema-version).`,
+				hint: "Adopt it with the Atomic version that wrote it, or upgrade Atomic.",
+			};
+		case "run-conflict":
+			return {
+				message: `Cannot adopt journal: ${init.path} holds run ${init.runId ?? "unknown"}, which the store already has in ${init.existingPath ?? "another journal"} (run-conflict).`,
+				hint: "Adopt only one copy of a journal; nothing was registered.",
+			};
+	}
+}
+
+/** A journal file cannot be adopted into the journal store; nothing was registered. */
+export class JournalAdoptError extends JournalStoreError {
+	override readonly name = "JournalAdoptError" as const;
+	declare readonly code: JournalAdoptErrorCode;
+	declare readonly hint: string;
+	readonly path: string;
+	readonly reason: JournalAdoptNotJournalReason | undefined;
+
+	constructor(init: JournalAdoptErrorInit) {
+		const text = adoptText(init);
+		super({
+			code: init.code,
+			message: text.message,
+			hint: text.hint,
+			fields: compact({
+				path: init.path,
+				reason: init.reason,
+				runId: init.runId,
+				existingPath: init.existingPath,
+				found: init.found,
+				supported: init.supported,
+				detail: causeDetail(init.cause) ?? undefined,
+			}),
+			retryable: false,
+			cause: init.cause,
+		});
+		this.path = init.path;
+		this.reason = init.reason;
+	}
+}
+
+function hasCode<Code extends string>(value: unknown, name: string, codes: readonly Code[]): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as { name?: unknown; code?: unknown };
+	return candidate.name === name && typeof candidate.code === "string" && codes.includes(candidate.code as Code);
+}
+
+export function isJournalStoreError(value: unknown): value is JournalStoreError {
+	if (value instanceof JournalStoreError) return true;
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as { name?: unknown; code?: unknown; fields?: unknown; retryable?: unknown };
+	return (
+		typeof candidate.name === "string" &&
+		typeof candidate.code === "string" &&
+		typeof candidate.retryable === "boolean" &&
+		typeof candidate.fields === "object" &&
+		candidate.fields !== null
+	);
+}
+
+export function isJournalCatalogError(value: unknown): value is JournalCatalogError {
+	return value instanceof JournalCatalogError || hasCode(value, "JournalCatalogError", JOURNAL_CATALOG_ERROR_CODES);
+}
+
+export function isJournalShardUnavailableError(value: unknown): value is JournalShardUnavailableError {
+	return (
+		value instanceof JournalShardUnavailableError ||
+		hasCode(value, "JournalShardUnavailableError", JOURNAL_SHARD_UNAVAILABLE_ERROR_CODES)
+	);
+}
+
+export function isJournalAdoptError(value: unknown): value is JournalAdoptError {
+	return value instanceof JournalAdoptError || hasCode(value, "JournalAdoptError", JOURNAL_ADOPT_ERROR_CODES);
+}
+
+/** The first journal store error in `error`'s cause chain, looking at most eight causes deep. */
+export function findJournalStoreError(error: unknown): JournalStoreError | undefined {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+		if (isJournalStoreError(current)) return current;
+		current = current instanceof Error ? current.cause : undefined;
 	}
 	return undefined;
 }
@@ -378,6 +721,16 @@ export function isRetryableStorageError(error: unknown): boolean {
 	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH; depth++) {
 		if (isStorageWriteLockTimeoutError(current) && current.retryable === true) return true;
 		current = causeOf(current);
+	}
+	return false;
+}
+
+/** Whether anything in `error`'s cause chain is a journal store error a caller may retry. */
+export function isRetryableJournalStoreError(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+		if (isJournalStoreError(current) && current.retryable === true) return true;
+		current = current instanceof Error ? current.cause : undefined;
 	}
 	return false;
 }
@@ -580,4 +933,131 @@ function rehydrateFailure(serialized: SerializedStorageError, depth: number): Er
  */
 export function rehydrateStorageError(serialized: SerializedStorageError): StorageError {
 	return rehydrateFailure(serialized, 0) as StorageError;
+}
+
+/** A cause as it crosses a process boundary: its name, message and code, never its stack. */
+export interface SerializedJournalStoreCause {
+	readonly name: string;
+	readonly message: string;
+	readonly code?: string;
+	readonly cause?: SerializedJournalStoreCause;
+}
+
+export interface SerializedJournalStoreError {
+	readonly name: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint?: string;
+	readonly retryable: boolean;
+	readonly fields: JournalStoreFields;
+	readonly cause?: SerializedJournalStoreCause;
+}
+
+function serializeCause(cause: unknown, depth: number): SerializedJournalStoreCause | undefined {
+	if (depth >= MAX_CAUSE_DEPTH || cause === undefined || cause === null) return undefined;
+	if (!(cause instanceof Error)) return { name: "Error", message: String(cause) };
+	const code = (cause as { code?: unknown }).code;
+	const nested = serializeCause(cause.cause, depth + 1);
+	return {
+		name: cause.name,
+		message: cause.message,
+		...(typeof code === "string" ? { code } : {}),
+		...(nested === undefined ? {} : { cause: nested }),
+	};
+}
+
+/** The plain form of a journal store error, for a worker, coordinator or broker message. */
+export function serializeJournalStoreError(error: JournalStoreError): SerializedJournalStoreError {
+	const cause = serializeCause(error.cause, 0);
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		...(error.hint === undefined ? {} : { hint: error.hint }),
+		retryable: error.retryable,
+		fields: { ...error.fields },
+		...(cause === undefined ? {} : { cause }),
+	};
+}
+
+function rehydrateCause(cause: SerializedJournalStoreCause | undefined): Error | undefined {
+	if (cause === undefined) return undefined;
+	const nested = rehydrateCause(cause.cause);
+	const error = new Error(cause.message, nested === undefined ? undefined : { cause: nested });
+	error.name = cause.name;
+	if (cause.code !== undefined) Object.defineProperty(error, "code", { value: cause.code, enumerable: true });
+	return error;
+}
+
+function text(fields: JournalStoreFields, key: string): string | undefined {
+	const value = fields[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function numeric(fields: JournalStoreFields, key: string): number | undefined {
+	const value = fields[key];
+	return typeof value === "number" ? value : undefined;
+}
+
+function versionField(fields: JournalStoreFields): string | number | null | undefined {
+	const value = fields.found;
+	return typeof value === "boolean" ? undefined : value;
+}
+
+/** Rebuilds the error a process serialized; a name this Atomic does not know becomes the family base, name and code kept. */
+export function rehydrateJournalStoreError(serialized: SerializedJournalStoreError): JournalStoreError {
+	const error = rebuild(serialized);
+	// The message was built from the same fields; keep the sender's text exactly, whatever its cause looked like here.
+	if (error.message !== serialized.message) error.message = serialized.message;
+	return error;
+}
+
+function rebuild(serialized: SerializedJournalStoreError): JournalStoreError {
+	const { fields } = serialized;
+	const cause = rehydrateCause(serialized.cause);
+	if (hasCode(serialized, "JournalCatalogError", JOURNAL_CATALOG_ERROR_CODES))
+		return new JournalCatalogError({
+			code: serialized.code as JournalCatalogErrorCode,
+			catalogPath: text(fields, "catalogPath") ?? "",
+			phase: text(fields, "phase") as JournalCatalogPhase | undefined,
+			runId: text(fields, "runId"),
+			shardId: numeric(fields, "shardId"),
+			shardPath: text(fields, "shardPath"),
+			found: versionField(fields),
+			supported: numeric(fields, "supported"),
+			rule: text(fields, "rule"),
+			selection: text(fields, "selection"),
+			localOnly: typeof fields.localOnly === "boolean" ? fields.localOnly : undefined,
+			retryable: serialized.retryable,
+			cause,
+		});
+	if (hasCode(serialized, "JournalShardUnavailableError", JOURNAL_SHARD_UNAVAILABLE_ERROR_CODES))
+		return new JournalShardUnavailableError({
+			code: serialized.code as JournalShardUnavailableErrorCode,
+			shardId: numeric(fields, "shardId") ?? -1,
+			shardPath: text(fields, "shardPath") ?? "",
+			runId: text(fields, "runId"),
+			retryable: serialized.retryable,
+			cause,
+		});
+	if (hasCode(serialized, "JournalAdoptError", JOURNAL_ADOPT_ERROR_CODES))
+		return new JournalAdoptError({
+			code: serialized.code as JournalAdoptErrorCode,
+			path: text(fields, "path") ?? "",
+			reason: text(fields, "reason") as JournalAdoptNotJournalReason | undefined,
+			runId: text(fields, "runId"),
+			existingPath: text(fields, "existingPath"),
+			found: versionField(fields),
+			supported: numeric(fields, "supported"),
+			cause,
+		});
+	return new JournalStoreError({
+		name: serialized.name,
+		code: serialized.code,
+		message: serialized.message,
+		hint: serialized.hint,
+		fields,
+		retryable: serialized.retryable,
+		cause,
+	});
 }

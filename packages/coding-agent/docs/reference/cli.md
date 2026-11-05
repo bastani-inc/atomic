@@ -107,6 +107,8 @@ Once the complete credential reaches stdout, the command has succeeded. If the s
 ```bash
 atomic storage status [--json]                                       # Selection, source, adapter and connection per domain
 atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL / Turso database
+atomic storage adopt <path>... [--no-discover]                       # Register existing journal files in place
+atomic storage consolidate                                           # Move finished runs of adopted files into the store
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
 ```
@@ -114,6 +116,8 @@ atomic intercom restart                                              # Replace t
 `atomic storage status` reports, for sessions, workflow runs, and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, or a database does not answer.
 
 `atomic storage join` checks the token and the connection with `@bastani/atomic-storage-libsql`, stores the trimmed token in a new `storage-token.<id>` file in the agent directory with mode 600, writes only the global `storage` setting, and lists the environment variables and settings that override it. Previous token files are never overwritten; a settings-write failure removes only the new token. It creates no tables. `--token-file` is required except for absolute `file:` URLs; relative file URLs and URLs that contain the token itself (a user name, a password, or an `authToken` parameter) are refused. When the package is not installed, it prints the install command. See [Storage](/storage#joining-a-machine-to-a-shared-database).
+
+`atomic storage adopt` registers journal files in the workflow journal store in place, without copying them, so their runs resolve by ID and resume where they are. Each path is a journal `.sqlite` file or a directory holding `journal.sqlite`; every path is checked before the first is registered. It also adopts the journal files the adopted runs were written to, unless `--no-discover` is given. `atomic storage consolidate` moves finished runs from adopted files into the store's own shards and reports the runs it left in place with the reason. Both exit `1` with the error's message and hint when they cannot proceed. See [The workflow journal store](/storage#the-workflow-journal-store).
 
 `atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
 

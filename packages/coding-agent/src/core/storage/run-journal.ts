@@ -1,5 +1,8 @@
 import type { StorageDescriptor } from "./database.js";
 
+/** The schema version of a SQL run journal's `meta` table that this Atomic reads and writes. */
+export const RUN_JOURNAL_SCHEMA_VERSION = 1;
+
 export const RUN_EVENT_TYPES = {
 	runStarted: "RunStarted",
 	runFinished: "RunFinished",

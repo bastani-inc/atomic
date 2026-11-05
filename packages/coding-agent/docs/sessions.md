@@ -8,7 +8,7 @@ This page covers working with sessions: storage, commands, resuming, naming, and
 
 ## Session Storage
 
-Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.sqlite`. Workflow runs use the same file, with `session_` and `wf_` table prefixes separating their records. Session history remains a tree regardless of the selected store.
+Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.sqlite`, in `session_` tables. Workflow runs are kept separately, in the [journal store](/storage#the-workflow-journal-store). Session history remains a tree regardless of the selected store.
 
 To choose another store, set `sessions.storage` in settings. Use shared `storage` to select one database for both sessions and workflow runs. JSONL is available only when explicitly selected. Memory is available through `--no-session`, `{ "memory": true }` in settings, or an explicit SDK option; it is never a fallback for a failed persistent store.
 

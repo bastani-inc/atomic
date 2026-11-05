@@ -14,6 +14,19 @@ export type StorageInputSelection =
 	| StorageSettingsSelection
 	| { readonly database: SqliteDatabase; readonly prefix?: string };
 
+/**
+ * Whether a journal selection names no store of its own (`{}`, or an empty `path`), so it means the default journal:
+ * the local journal store. A `prefix` alone still selects tables in the legacy single file, as it always did.
+ */
+export function selectsDefaultJournalStore(value: StorageInputSelection): boolean {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+	const keys = Object.entries(value)
+		.filter(([key, entry]) => entry !== undefined && !(key === "memory" && entry === false))
+		.map(([key]) => key);
+	const path = (value as { readonly path?: string }).path;
+	return keys.every((key) => key === "path") && (path === undefined || path === "");
+}
+
 export function selectStorage(
 	value: StorageInputSelection,
 	source: "sdk" | "settings" | "env" | "cli",

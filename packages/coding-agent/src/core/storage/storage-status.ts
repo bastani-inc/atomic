@@ -8,8 +8,10 @@ import { selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
-import type { SqliteDatabase } from "./database.js";
+import type { SqliteDatabase, SqliteRow } from "./database.js";
 import { describeStorageError, StorageAdapterLoadError } from "./errors.js";
+import { defaultJournalStoreDirectory } from "./journal-adoption.js";
+import { JOURNAL_CATALOG_FILE } from "./journal-catalog.js";
 import {
 	processSharedStorageSelection,
 	SESSIONS_STORAGE_ENV,
@@ -25,7 +27,27 @@ import {
 	type StorageSelection,
 	storageSelectionKey,
 } from "./provider.js";
-import { type StorageSettingsSelection, selectStorage } from "./selection.js";
+import { type StorageSettingsSelection, selectStorage, selectsDefaultJournalStore } from "./selection.js";
+
+/** What the journal store's catalog lists, read without changing it. */
+async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string): Promise<JournalStoreStatus> {
+	const shards = await catalog.all<SqliteRow & { path: string; kind: string }>(
+		"SELECT path, kind FROM catalog_shards",
+	);
+	const runs = await catalog.get<SqliteRow & { count: number }>("SELECT count(*) AS count FROM catalog_runs");
+	const skipped = await catalog.all<SqliteRow & { path: string; reason: string }>(
+		"SELECT path, COALESCE(reason, 'unknown') AS reason FROM catalog_discovery WHERE outcome = 'skipped' ORDER BY path",
+	);
+	const adopted = shards.filter((shard) => shard.kind === "adopted");
+	return {
+		catalog: join(directory, JOURNAL_CATALOG_FILE),
+		shards: shards.length - adopted.length,
+		adopted: adopted.length,
+		runs: Number(runs?.count ?? 0),
+		missing: adopted.filter((shard) => !existsSync(shard.path)).map((shard) => shard.path),
+		skipped: skipped.map((record) => ({ path: record.path, reason: record.reason })),
+	};
+}
 
 export type StorageStatusDomain = "sessions" | "journal" | "intercom";
 
@@ -56,6 +78,21 @@ export interface DomainStatus {
 	readonly multiNode?: string;
 	/** Intercom: host names of the brokers live in the shared database, when it could be read. */
 	readonly liveBrokers?: readonly string[];
+	/** Workflow runs in the journal store: its shards, adopted journals and runs, read from its catalog. */
+	readonly journalStore?: JournalStoreStatus;
+}
+
+export interface JournalStoreStatus {
+	readonly catalog: string;
+	/** The store's own shard files. */
+	readonly shards: number;
+	/** Journal files adopted in place. */
+	readonly adopted: number;
+	readonly runs: number;
+	/** Adopted journal files that no longer exist; their runs cannot be opened. */
+	readonly missing: readonly string[];
+	/** Journals the store considered adopting and skipped, with the `JournalAdoptError` code. */
+	readonly skipped: readonly { readonly path: string; readonly reason: string }[];
 }
 
 export interface BrokerStatusSection {
@@ -119,6 +156,8 @@ export function describeStorageSelection(selection: StorageSelection): string {
 			return `database ${selection.database.descriptor.adapter}${prefixSuffix(selection.prefix)}`;
 		case "adapter":
 			return `adapter ${selection.module}${prefixSuffix(selection.prefix)}`;
+		case "sharded":
+			return `journal store ${selection.dir}`;
 	}
 }
 
@@ -155,6 +194,18 @@ async function probeSelection(
 		};
 	}
 	if (selection.kind === "database") return { connection: { status: "skipped", detail: "caller-owned database" } };
+	if (selection.kind === "sharded") {
+		const catalog = join(selection.dir, JOURNAL_CATALOG_FILE);
+		if (!existsSync(catalog)) {
+			return {
+				connection: {
+					status: "skipped",
+					detail: "journal store not created yet; Atomic creates it on first use",
+				},
+			};
+		}
+		return probeSelection({ kind: "sqlite", path: catalog }, context, inspect);
+	}
 	if (selection.kind === "sqlite") {
 		if (selection.path === "" || selection.path === ":memory:") {
 			return { connection: { status: "skipped", detail: "in memory; nothing to open" } };
@@ -277,7 +328,8 @@ function selectJournal(agentDir: string, settings: Settings): StorageSelection {
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	const journal = journalSetting(settings);
 	const value = journal ?? settings.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultPath };
+	if (value === undefined || (journal !== undefined && selectsDefaultJournalStore(journal)))
+		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
 	const selection = selectStorage(
 		value,
 		"settings",
@@ -303,6 +355,12 @@ function projectTrust(cwd: string, agentDir: string): boolean {
 		new ProjectTrustStore(agentDir).get(cwd) ??
 		SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust() === "always"
 	);
+}
+
+/** The workflow journal this directory's sessions select, with the precedence the workflows extension applies. */
+export function effectiveJournalSelection(cwd: string, agentDir: string): StorageSelection {
+	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: projectTrust(cwd, agentDir) });
+	return selectJournal(agentDir, manager.getSettings());
 }
 
 /**
@@ -384,13 +442,23 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 					? selectSessionStorage(cwd, { agentDir, settings: merged })
 					: selectJournal(agentDir, merged);
 			const selection = chosen as StorageSelection;
-			const probe = await probeOnce(domain, selection);
+			let journalStore: JournalStoreStatus | undefined;
+			const probe = await probeOnce(
+				domain,
+				selection,
+				selection.kind === "sharded"
+					? async (database) => {
+							journalStore = await readJournalStoreStatus(database, selection.dir);
+						}
+					: undefined,
+			);
 			domains.push({
 				domain,
 				selection: describeStorageSelection(selection),
 				source,
 				overridden,
 				...(probe === undefined ? {} : { probe }),
+				...(journalStore === undefined ? {} : { journalStore }),
 			});
 		} catch (error) {
 			domains.push({ domain, selection: "invalid", source, overridden, error: errorText(error as Error) });

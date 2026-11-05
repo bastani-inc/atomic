@@ -1530,7 +1530,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 import type { RunJournalOption } from "@bastani/atomic/workflows";
 ```
 
-`run()` uses the local SQLite journal at `~/.atomic/workflows/journal.sqlite` by default, shared with sessions under separate `wf_` and `session_` table prefixes. It releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
+`run()` uses the local [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/` by default: a catalog plus SQLite shard files, with each root and its children on one shard. It releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
 
 - `{ path }` opens that SQLite file.
 - `{ database, prefix? }` uses a caller-owned async `SqliteDatabase` facade. Atomic initializes the journal schema on it but does not close the database.
@@ -1597,7 +1597,7 @@ A custom journal can also implement two optional speed-ups that `SqlRunJournal` 
 
 The types `RunVersion`, `RunSnapshotTail` and `RunJournalBatchAppend` are exported from `@bastani/atomic/storage`. When these members are present, `registerRunJournalConformance` also checks them.
 
-Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
+Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal store in `~/.atomic/workflows/journal/`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Resume a run from the journal that holds it: the store finds its own and adopted runs by ID; a run in an explicitly selected file needs that selection or `atomic storage adopt`.
 
 ```ts
 import { run } from "@bastani/atomic/workflows";
