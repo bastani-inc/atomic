@@ -357,6 +357,18 @@ A generated one-line description of the session, written automatically once the 
 
 A `branch_summary` written after a `session_summary` also retires it, because the branch it described was abandoned.
 
+### WorktreeSnapshotEntry
+
+The repository state of one checkout at the end of a turn that called a file-writing tool. Never sent to the LLM. See [Worktree snapshots](/worktree-snapshots).
+
+```json
+{"type":"worktree_snapshot","id":"m3n4o5p6","parentId":"l2m3n4o5","timestamp":"2024-12-03T14:37:00.000Z","root":"/home/me/project","snapshotId":"3f9a…","snapshot":{"version":1,"id":"3f9a…","root":"/home/me/project","remotes":["https://github.com/me/project.git"],"branch":"main","head":"…","tree":"…","envHash":"…","delta":{"base":"head","patch":"…","bytes":412},"chain":[{"tree":"…","patch":"…","bytes":412}],"bundle":null,"omitted":[],"filters":null,"capturedAt":"2024-12-03T14:37:00.000Z","snapshot":"…"}}
+```
+
+- `snapshot`: Present when the state changed. An entry without it refers to the earlier entry whose snapshot has the same `snapshotId`.
+- `restore`: Present on the entry written when a resume restored the snapshot into a new worktree: `{ "from", "to", "snapshotId", "tree", "restoredAt" }`. Later resumes map `from` to `to`.
+- `blobs`: Present only in exported files: base64 patch and bundle content keyed by SHA-256. Import verifies and stores them, then drops this field.
+
 ## Tree Structure
 
 Entries form a tree:

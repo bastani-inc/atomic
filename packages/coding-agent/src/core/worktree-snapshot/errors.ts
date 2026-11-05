@@ -192,7 +192,7 @@ function restoreMessage(
 		case "blob-missing":
 			return [
 				`Cannot restore snapshot ${snapshot}: ${fields.role} blob ${fields.blob} is missing from storage`,
-				"Use the storage the snapshot was recorded in, or import a session file exported with `atomic --export <session> <file>`, which carries its blobs.",
+				"Use the storage the snapshot was recorded in, or import (`atomic --import <file>`) a session saved with `/export <file>.jsonl`, which carries its blobs.",
 			];
 		case "blob-corrupt":
 			return [

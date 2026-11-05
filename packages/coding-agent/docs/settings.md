@@ -349,6 +349,18 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 |---------|------|---------|-------------|
 | `sessionSummary.enabled` | boolean | `true` | Generate a one-line summary of each session for the `/resume` picker once the agent goes idle |
 
+### Snapshots
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `snapshots.enabled` | boolean | `true` | Record worktree snapshots so sessions and workflow runs resume with their repository state |
+| `snapshots.includeUntracked` | boolean | `true` | Capture untracked files that no ignore rule or deny pattern excludes |
+| `snapshots.maxFileBytes` | number | `5242880` | Largest file a snapshot captures, in bytes |
+| `snapshots.maxSnapshotBytes` | number | `52428800` | Largest total of captured content, and largest unpushed-commit bundle, in bytes |
+| `snapshots.fullEvery` | number | `10` | Restart the patch chain from `HEAD` after this many snapshots |
+
+See [Worktree snapshots](/worktree-snapshots).
+
 ### Retry
 
 | Setting | Type | Default | Description |

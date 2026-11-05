@@ -32,7 +32,7 @@ Use `/session` in interactive mode to see the current session ID, message count,
 
 For UUID-backed sessions, `--session` and `--fork` accept either the full UUID or exactly eight hexadecimal prefix characters. A prefix must be unique within the current project (or, if no local session matches, across the global session store); collisions list the matching UUIDs and require the full value. Exact custom session IDs keep their existing priority. `--session-id` remains an exact project-local ID used to open or create a session, not a prefix selector.
 
-Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a JSONL export into the selected store. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older supported formats are upgraded automatically when opened for import.
+Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a JSONL export into the selected store. A `/export <file>.jsonl` export carries the content of the session's [worktree snapshots](/worktree-snapshots), and import stores it alongside the session. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older supported formats are upgraded automatically when opened for import.
 
 Use `atomic --no-session --import <file>` to work with an imported conversation without saving it. `--import` cannot be combined with `--session`, `--fork`, `--session-id`, `--continue`, or `--resume`; choose one way to select the conversation. `--session-dir` remains available when importing into a persistent store.
 
@@ -98,6 +98,8 @@ Each session records the working directory it was created in and never changes i
 | `--fork`, or a `--session` ID from another directory that you choose to fork | The current directory, in a new session |
 
 If a session's working directory no longer exists, interactive mode offers to continue in the current directory instead; other modes exit with an error that names both directories.
+
+A session that recorded [worktree snapshots](/worktree-snapshots) is checked against its last snapshot when it resumes. When its checkout drifted, or does not exist on this machine, Atomic restores the snapshot into a fresh worktree under `~/.atomic/agent/worktree-snapshots/`, prints one line naming it, and runs the session there. `/session snapshot` shows the recorded snapshots and how they differ from the current tree.
 
 Sessions written in formats 1, 2, and 3, and early 0.9.38 alpha sessions whose header uses `timestamp`, appear in the picker and upgrade automatically to format 4. In the default store this happens when you first open one. In an explicit JSONL store it happens when you open them, including with `--continue`, `--session`, or `--fork`; browsing the picker does not change session files, and opening an older session rewrites only that file. No flag or confirmation is needed.
 
