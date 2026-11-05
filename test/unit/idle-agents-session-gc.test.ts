@@ -10,6 +10,7 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import {
 	ChildTaskWaits,
+	childCommandRouteCount,
 	createChildCommandTaskOwner,
 } from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
@@ -23,12 +24,14 @@ import {
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { collectEverythingTracked, collectGarbage, trackCollection } from "../helpers/collect-garbage.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
+import { launchReleasedShellWait } from "../helpers/released-shell-launch.js";
 import { agent, launchReleasedTask } from "../helpers/released-task-launch.js";
 import { trackLastEntry, trackSessions } from "../helpers/track-sessions.js";
 
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
 const CHILDREN = 12;
 const OWNER_SESSION_ID = "gc-owner";
+const SHELL_OWNER_SESSION_ID = "gc-shell-owner";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -153,6 +156,35 @@ test(
 		assert.deepEqual(
 			{ created: tracked.created, stillReachable: tracked.created - tracked.collected() },
 			{ created: 4 * CHILDREN, stillReachable: 0 },
+		);
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
+const SHELL_CHILDREN = 4;
+
+test(
+	"released subagent children can be collected while the shell task their wait watches still runs (#4326)",
+	async () => {
+		const tracked = trackCollection();
+		cleanups.push(trackSessions(tracked));
+		const env = await liveChildEnvironment(cleanups);
+		const dispatcher = new AgentWakeDispatcher();
+		dispatcher.handle(subagentWakeNamespace(SHELL_OWNER_SESSION_ID), async () => {});
+		const owner = SessionManager.inMemory(env.root);
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: SHELL_OWNER_SESSION_ID },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
+		for (let index = 0; index < SHELL_CHILDREN; index++)
+			await launchReleasedShellWait(index, env, host, owner, dispatcher, parentCommandTaskOwner);
+		assert.equal(childCommandRouteCount(host), SHELL_CHILDREN, "each child's shell task is still running");
+		await collectEverythingTracked(tracked);
+		assert.deepEqual(
+			{ created: tracked.created, stillReachable: tracked.created - tracked.collected() },
+			{ created: 4 * SHELL_CHILDREN, stillReachable: 0 },
 		);
 	},
 	CHILD_LOAD_TIMEOUT_MS,

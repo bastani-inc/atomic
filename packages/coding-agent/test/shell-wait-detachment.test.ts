@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { test, vi } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.js";
-import { setToolDetachment } from "../src/core/agent-session-detached-tools.js";
-import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
 import { waitingUntilSettled } from "../src/core/agent-session-tasks.js";
 import type { OperationId, TaskId, WaitId, WaitOutcome, YieldReason } from "../src/core/tasks/contracts.js";
 import { createBashToolDefinition } from "../src/core/tools/bash.js";
@@ -40,12 +37,6 @@ function countingOwner(outcomes: WaitOutcome[]) {
 	return { owner, budgets };
 }
 
-function sessionWithDetachment(afterMs: number | undefined): AgentSession {
-	const session = {} as AgentSessionInternalSurface;
-	if (afterMs !== undefined) setToolDetachment.call(session, { afterMs });
-	return session as unknown as AgentSession;
-}
-
 test("a shell wait without a budget in a session that may detach waits through elapsed yields until its task settles (#4326)", async () => {
 	const settled: WaitOutcome = {
 		kind: "settled",
@@ -54,7 +45,7 @@ test("a shell wait without a budget in a session that may detach waits through e
 	};
 	const { owner, budgets } = countingOwner([yielded("elapsed"), yielded("elapsed"), settled]);
 
-	const observed = await waitingUntilSettled(sessionWithDetachment(60_000), owner).waitForTask?.("t-1" as TaskId);
+	const observed = await waitingUntilSettled(owner, true).waitForTask?.("t-1" as TaskId);
 
 	assert.deepEqual(observed, { ok: true, value: settled });
 	assert.deepEqual(budgets, [undefined, undefined, undefined]);
@@ -62,14 +53,14 @@ test("a shell wait without a budget in a session that may detach waits through e
 
 test("a shell wait still returns at once when it yields for a message, has a budget, or the session cannot detach (#4326)", async () => {
 	const byMessage = countingOwner([yielded("intercom-coordination")]);
-	assert.deepEqual(
-		await waitingUntilSettled(sessionWithDetachment(60_000), byMessage.owner).waitForTask?.("t-1" as TaskId),
-		{ ok: true, value: yielded("intercom-coordination") },
-	);
+	assert.deepEqual(await waitingUntilSettled(byMessage.owner, true).waitForTask?.("t-1" as TaskId), {
+		ok: true,
+		value: yielded("intercom-coordination"),
+	});
 	const budgeted = countingOwner([yielded("elapsed")]);
-	await waitingUntilSettled(sessionWithDetachment(60_000), budgeted.owner).waitForTask?.("t-1" as TaskId, 500);
+	await waitingUntilSettled(budgeted.owner, true).waitForTask?.("t-1" as TaskId, 500);
 	const noPolicy = countingOwner([yielded("elapsed")]);
-	await waitingUntilSettled(sessionWithDetachment(undefined), noPolicy.owner).waitForTask?.("t-1" as TaskId);
+	await waitingUntilSettled(noPolicy.owner, false).waitForTask?.("t-1" as TaskId);
 
 	assert.deepEqual([byMessage.budgets, budgeted.budgets, noPolicy.budgets], [[undefined], [500], [undefined]]);
 });

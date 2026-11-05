@@ -241,7 +241,8 @@ function releaseDeliveredTaskRecord(
  * so they appear in the parent's `/tasks` and outlive the child.
  */
 export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner | undefined {
-	if (!isSubagentChildSession(this)) return waitingUntilSettled(this, this.getAgentTaskHost().ownerBinding);
+	if (!isSubagentChildSession(this))
+		return waitingUntilSettled(this.getAgentTaskHost().ownerBinding, hasToolDetachment(this));
 	if (!this._parentCommandTaskOwner || this._disposed) return undefined;
 	const route: ChildTaskCompletionRoute = {
 		isOpen: () => !this._disposed && this._subagentPolicy?.messageAdmission?.isOpen() === true,
@@ -252,30 +253,42 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 		},
 	};
 	return waitingUntilSettled(
-		this,
 		this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits),
+		hasToolDetachment(this),
 	);
 }
 
+type TaskWait = NonNullable<SupervisedCommandOwner["waitForTask"]>;
+
+/** Wait for `taskId` to settle, through the yields of the owner's default budget. Takes no session: it outlives its run. */
+async function waitUntilTaskSettles(
+	wait: TaskWait,
+	taskId: Parameters<TaskWait>[0],
+	onRegistered: Parameters<TaskWait>[2],
+): ReturnType<TaskWait> {
+	for (;;) {
+		const observed = await wait(taskId, undefined, onRegistered);
+		if (!observed.ok || observed.value.kind !== "yielded" || observed.value.reason !== "elapsed") return observed;
+	}
+}
+
 /**
- * In a session whose detachable calls may outlive its runs, a shell wait without a budget waits until its task
- * settles instead of yielding at the owner's default budget, so the call can detach and the session be released while
- * the task runs. A wait that yields for any other reason, such as a message for the session, still returns.
+ * In a session whose detachable calls may outlive its runs (`detaches`, decided when the owner is resolved), a shell
+ * wait without a budget waits until its task settles instead of yielding at the owner's default budget, so the call can
+ * detach and the session be released while the task runs. A wait that yields for any other reason, such as a message
+ * for the session, still returns. The returned owner holds the owner binding and the flag, never the session: a
+ * released child's wait runs on, and must not keep the child's session reachable.
  */
-export function waitingUntilSettled(session: AgentSession, owner: SupervisedCommandOwner): SupervisedCommandOwner {
-	const wait: NonNullable<SupervisedCommandOwner["waitForTask"]> =
+export function waitingUntilSettled(owner: SupervisedCommandOwner, detaches: boolean): SupervisedCommandOwner {
+	const wait: TaskWait =
 		owner.waitForTask ??
 		((taskId, budgetMs, onRegistered) => owner.supervisor.waitForTaskId(owner.owner, taskId, budgetMs, onRegistered));
 	return {
 		...owner,
-		waitForTask: async (taskId, budgetMs, onRegistered) => {
-			if (budgetMs !== undefined || !hasToolDetachment(session)) return wait(taskId, budgetMs, onRegistered);
-			for (;;) {
-				const observed = await wait(taskId, undefined, onRegistered);
-				if (!observed.ok || observed.value.kind !== "yielded" || observed.value.reason !== "elapsed")
-					return observed;
-			}
-		},
+		waitForTask: (taskId, budgetMs, onRegistered) =>
+			budgetMs !== undefined || !detaches
+				? wait(taskId, budgetMs, onRegistered)
+				: waitUntilTaskSettles(wait, taskId, onRegistered),
 	};
 }
 

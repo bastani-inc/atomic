@@ -3,7 +3,10 @@ import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
-import { childCommandRouteCount } from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
+import {
+	childCommandRouteCount,
+	createChildCommandTaskOwner,
+} from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
 import { subagentWakeNamespace } from "../../packages/subagents/src/runs/foreground/released-children.ts";
 import { subagentChildRecordOf } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.ts";
 import {
@@ -15,11 +18,14 @@ import { clearSubagentControls } from "../../packages/subagents/src/runs/inproce
 import { liveAsyncResources, trackAsyncResources } from "../../scripts/perf/idle-agents/async-resources.js";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
+import { launchReleasedShellWait, SHELL_TOOL } from "../helpers/released-shell-launch.js";
 import { launchReleasedTask } from "../helpers/released-task-launch.js";
 
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
 const OWNER_SESSION_ID = "registry-owner";
 const COUNTING_OWNER_SESSION_ID = "counting-owner";
+const SHELL_REGISTRY_OWNER_SESSION_ID = "shell-registry-owner";
+const SHELL_COUNTING_OWNER_SESSION_ID = "shell-counting-owner";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -84,6 +90,73 @@ test(
 		const afterFirst = liveAsyncResources();
 
 		for (let index = 1; index <= 6; index++) await launchReleasedTask(index, env, host, owner, dispatcher);
+		await settle();
+
+		assert.deepEqual(liveAsyncResources(), afterFirst);
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
+test(
+	"a child released on a shell wait keeps one record and one completion route while its shell runs, and nothing else (#4326)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const dispatcher = new AgentWakeDispatcher();
+		dispatcher.handle(subagentWakeNamespace(SHELL_REGISTRY_OWNER_SESSION_ID), async () => {});
+		const owner = SessionManager.inMemory(env.root);
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: SHELL_REGISTRY_OWNER_SESSION_ID },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
+		await launchReleasedShellWait(0, env, host, owner, dispatcher, parentCommandTaskOwner);
+		const before = subagentRegistrySizes();
+		const routes = childCommandRouteCount(host);
+
+		const children = 4;
+		for (let index = 1; index <= children; index++)
+			await launchReleasedShellWait(index, env, host, owner, dispatcher, parentCommandTaskOwner);
+
+		assert.deepEqual(growth(before, subagentRegistrySizes(), children), { records: 1 });
+		assert.equal(
+			childCommandRouteCount(host) - routes,
+			children,
+			"the route that lets the running shell's completion wake its child is the one more entry, in the parent's owner",
+		);
+		const childId = `gsw-${children}:0`;
+		const entry = subagentChildRecordOf(owner.getSessionId(), childId);
+		assert.equal(entry?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
+		assert.deepEqual(
+			entry?.waitingOn?.map((call) => call.toolName),
+			[SHELL_TOOL],
+			"it waits on the shell's wait",
+		);
+		assert.deepEqual(JSON.parse(JSON.stringify(entry)), entry, "it is plain data");
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
+test(
+	"children released on a shell wait hold no timer, socket or process of this thread between them (#4326)",
+	async () => {
+		cleanups.push(trackAsyncResources());
+		const env = await liveChildEnvironment(cleanups);
+		const dispatcher = new AgentWakeDispatcher();
+		dispatcher.handle(subagentWakeNamespace(SHELL_COUNTING_OWNER_SESSION_ID), async () => {});
+		const owner = SessionManager.inMemory(env.root);
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: SHELL_COUNTING_OWNER_SESSION_ID },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
+		await launchReleasedShellWait(0, env, host, owner, dispatcher, parentCommandTaskOwner);
+		await settle();
+		const afterFirst = liveAsyncResources();
+
+		for (let index = 1; index <= 4; index++)
+			await launchReleasedShellWait(index, env, host, owner, dispatcher, parentCommandTaskOwner);
 		await settle();
 
 		assert.deepEqual(liveAsyncResources(), afterFirst);
