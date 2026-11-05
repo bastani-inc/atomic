@@ -232,7 +232,11 @@ async function constructAgentSession(
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	validateProcessStorage(agentDir);
-	await assertTeamAdapterInstalled(agentDir, options.storage);
+	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
+	// `journal`; an unused selection needs no adapter, while the process's own profile is still checked.
+	const storageUsed =
+		(options.sessionManager === undefined && options.sessionStore === undefined) || options.journal === undefined;
+	await assertTeamAdapterInstalled(agentDir, storageUsed ? options.storage : undefined);
 	let resourceLoader = options.resourceLoader;
 	// The concrete default can rediscover into private storage (including deferred
 	// CLI configuration). Custom discovery stays delegated; composition instantiates

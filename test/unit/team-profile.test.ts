@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import type { CreateAgentSessionOptions } from "../../packages/coding-agent/src/core/sdk-types.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { resolveSessionStore, selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
 import {
 	isTeamProfileConfigError,
@@ -456,6 +457,25 @@ describe("teamProfileSelection (#4320)", () => {
 		assert.match(fromStorage.hint, /^The storage selection opens the team database through it\./);
 		assert.equal(opens.mock.calls.length + loads.mock.calls.length, 0);
 		assert.deepEqual(readdirSync(agentDir), []);
+	});
+
+	test("an SDK storage selection that no store uses needs no adapter, while one store using it still does (#4320)", async () => {
+		const storage = teamProfileSelection({ profile: "ci", url: TEAM_URL, token: "t" });
+		const sessionStore = { kind: "memory" } as const;
+		const journal = { memory: true } as const;
+		const adapterFailure = (options: CreateAgentSessionOptions) =>
+			createAgentSession({ cwd: project, agentDir, storage, ...options }).then(
+				async ({ session }) => {
+					session.dispose();
+					return undefined;
+				},
+				(error: Error) => (isTeamProfileError(error) ? error.code : `${error}`),
+			);
+
+		assert.equal(await adapterFailure({ sessionStore, journal }), undefined);
+		assert.equal(await adapterFailure({ sessionManager: SessionManager.inMemory(project), journal }), undefined);
+		assert.equal(await adapterFailure({ sessionStore }), "adapter-not-installed");
+		assert.equal(await adapterFailure({ journal }), "adapter-not-installed");
 	});
 
 	test("an in-memory secret reaches the adapter's options, and secret order never changes the connection key (#4320)", async () => {
