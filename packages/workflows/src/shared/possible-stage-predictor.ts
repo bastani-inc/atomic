@@ -42,6 +42,7 @@ const MAX_DEFINITIONS = 128;
 const MAX_TARGETS_PER_DEFINITION = 256;
 const MAX_ROOTS = 512;
 const MAX_STATE_STAGES = 64;
+const MAX_SUGGESTION_LENGTH = 512;
 const SCAN_INSTRUCTIONS =
 	"A workflow's static scan could not read some of its stage names. `uncertainCallSites` holds the source around each call site a question asks about, `otherUnreadCallSites` the source of call sites with no candidates, `knownStages` the names the scan did read, and `inputsShape` the type of each run input. Judge only from this source; for each question, its listed candidates are the only names that call site can produce.";
 const TARGET_INSTRUCTIONS =
@@ -161,7 +162,11 @@ export class StagePredictor {
 			...predicted.map((entry) => entry.path),
 			...rootRun.stages.map((stage) => stage.name),
 		]);
-		return { prediction: "unknown", unexpected: true, ...(suggestion === undefined ? {} : { suggestion }) };
+		return {
+			prediction: "unknown",
+			unexpected: true,
+			...(suggestion === undefined || suggestion.length > MAX_SUGGESTION_LENGTH ? {} : { suggestion }),
+		};
 	}
 
 	/** Abort every open decision; nothing is recorded for a cancelled one. The owning session calls it on shutdown. */
@@ -284,7 +289,7 @@ export class StagePredictor {
 	private recordTarget(store: Store, runId: string, path: string, probability: number): void {
 		const current = this.current(store, runId);
 		if (current === undefined || current.targets[path] === probability) return;
-		const expected = probability >= POSSIBLE_STAGE_PREDICTION_THRESHOLDS.known;
+		const expected = probability >= POSSIBLE_STAGE_PREDICTION_THRESHOLDS.known && !path.includes("*");
 		store.recordRunStagePredictions?.(runId, {
 			...current,
 			targets: { ...current.targets, [path]: probability },

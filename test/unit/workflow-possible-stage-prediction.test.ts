@@ -400,6 +400,163 @@ describe("prediction policy (#4359)", () => {
 		);
 		assert.deepEqual(inputsShape({ b: true, a: { x: 1 } }), { a: "object", b: "boolean" });
 	});
+
+	test("a candidate whose name looks like a credential is withheld, and its site's wildcard stays (#4359)", () => {
+		const scan = scanOf([
+			uncertainty([["sk-abcdefghijklmnop1234"], ["review"]], { placeholder: "*" }),
+			uncertainty([["token=hunter2secret"]], { placeholder: "workflow:c/*", line: 7 }),
+			uncertainty([["lint"]], { placeholder: "workflow:d/*", line: 9 }),
+		]);
+		const plan = scanQuestionPlan(scan);
+		assert.deepEqual(Object.keys(plan.questions), ["site0", "site1"]);
+		assert.deepEqual(plan.questions.site0?.criteria, { c0: "stage review", none: "none of these candidates" });
+		assert.deepEqual([...plan.options.get("site0")!.values()], [{ stages: ["review"], source: "literal" }]);
+		assert.match(plan.questions.site1!.instructions, /workflow\.mjs:9/);
+		const state = scanDecisionState("flow", scan, {});
+		assert.deepEqual(
+			(state.uncertainCallSites as readonly { readonly line: number }[]).map((site) => site.line),
+			[3, 9],
+		);
+		assert.deepEqual(
+			(state.otherUnreadCallSites as readonly { readonly line: number }[]).map((site) => site.line),
+			[7],
+		);
+		assert.doesNotMatch(JSON.stringify({ state, questions: plan.questions }), /abcdefghijklmnop1234|hunter2secret/);
+		const decoded = decodeScanAnswers(plan, {
+			answers: {
+				site0: { type: "choice", probabilities: { c0: 0.95 } },
+				site1: { type: "choice", probabilities: { c0: 0.95 } },
+			},
+		});
+		assert.deepEqual(decoded, {
+			entries: [
+				{ path: "review", probability: 0.95, source: "scan" },
+				{ path: "lint", probability: 0.95, source: "scan" },
+			],
+			resolvedPlaceholders: ["workflow:d/*"],
+		});
+	});
+
+	test("every candidate path is screened, including a child's nested stages (#4359)", () => {
+		const plan = scanQuestionPlan(
+			scanOf([
+				uncertainty([], {
+					code: "unresolved-child",
+					candidates: [
+						{ stages: ["workflow:a", "workflow:a/draft"], source: "child-definition" },
+						{ stages: ["workflow:b", "workflow:b/Bearer abcdefgh12345678"], source: "child-definition" },
+					],
+				}),
+			]),
+		);
+		assert.deepEqual(plan.questions.site0?.criteria, {
+			c0: "child workflow workflow:a with stages workflow:a/draft",
+			none: "none of these candidates",
+		});
+	});
+
+	test("the scan state screens known stages and every call site's file and boundary (#4359)", () => {
+		const state = scanDecisionState(
+			"token=hunter2secret",
+			scanOf(
+				[
+					uncertainty([["review"]], { file: "token=hunter2secret.mjs", boundary: "workflow:token=hunter2secret" }),
+					uncertainty([], { file: "sk-abcdefghijklmnop1234.mjs" }),
+				],
+				["sk-abcdefghijklmnop1234", "review"],
+			),
+			{},
+		);
+		assert.doesNotMatch(JSON.stringify(state), /abcdefghijklmnop1234|hunter2secret/);
+		assert.deepEqual(state.knownStages, ["sk-abcdefgh[redacted]", "review"]);
+		const plan = scanQuestionPlan(scanOf([uncertainty([["review"]], { file: "token=hunter2secret.mjs" })]));
+		assert.doesNotMatch(plan.questions.site0!.instructions, /hunter2secret/);
+	});
+
+	test("each offered option's origin is in the state, so a computed name is told from a literal (#4359)", () => {
+		const scan = scanPossibleStagesFromSource(fixtureEntry("helper-names"));
+		const plan = scanQuestionPlan(scan);
+		assert.deepEqual(plan.questions.site0?.criteria, {
+			c0: "stage review",
+			c1: "stage review-1",
+			none: "none of these candidates",
+		});
+		assert.match(plan.questions.site0!.instructions, /candidateOrigins/);
+		const state = scanDecisionState("helper-names", scan, {});
+		const sites = state.uncertainCallSites as readonly { readonly candidateOrigins: Record<string, string> }[];
+		assert.deepEqual(sites[0]?.candidateOrigins, {
+			c0: "a string literal appearing in the source, without evaluating any helper transformation",
+			c1: "the output of a helper function's template filled with this call's literal arguments",
+		});
+		const origins = scanDecisionState(
+			"flow",
+			scanOf([
+				uncertainty([], {
+					candidates: [
+						{ stages: ["api", "ui"], source: "enum-array" },
+						{ stages: ["lint"], source: "factory" },
+						{ stages: ["workflow:a"], source: "child-definition" },
+					],
+				}),
+			]),
+			{},
+		).uncertainCallSites as readonly { readonly candidateOrigins: Record<string, string> }[];
+		assert.deepEqual(origins[0]?.candidateOrigins, {
+			c0: "elements of a constant array of string literals the name may range over",
+			c1: "the name field of a step object a factory function returns",
+			c2: "an imported child workflow definition, with the stages scanned from it",
+		});
+	});
+
+	test("the complete scan request carries no credential from a candidate, and keeps the wildcard (#4359)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "stage-prediction-credential-"));
+		try {
+			const entry = join(directory, "workflow.mjs");
+			writeFileSync(
+				entry,
+				[
+					"function nameFromCredential(key) {",
+					"\treturn `\x24{key}`;",
+					"}",
+					"export default workflow({ name: 'leaky', run: async (ctx) => {",
+					'\tawait ctx.task(nameFromCredential("sk-abcdefghijklmnop1234"), {});',
+					'\tawait ctx.task(pick("review", "token: hunter2secret"), {});',
+					"}});",
+					"",
+				].join("\n"),
+			);
+			const scan = scanPossibleStagesFromSource(entry);
+			assert.ok(
+				scan.uncertainties.some((site) =>
+					site.candidates.some((candidate) => candidate.stages.includes("sk-abcdefghijklmnop1234")),
+				),
+				"the scan itself offers the credential as a candidate",
+			);
+			const { port, requests } = recordedPort({ "stage review": 0.95 });
+			const store = createStore();
+			store.recordRunStart(rootRun());
+			new StagePredictor().launch({
+				store,
+				runId: "root",
+				workflowName: "leaky",
+				scan,
+				maxDepth: 3,
+				inputs: {},
+				decisions: port,
+				admitted: Promise.resolve(true),
+			});
+			await until(() => store.run("root")?.stagePredictions !== undefined);
+			assert.equal(requests.length, 1);
+			const { state, questions, instructions } = requests[0]!;
+			assert.doesNotMatch(JSON.stringify({ state, questions, instructions }), /abcdefghijklmnop1234|hunter2secret/);
+			assert.deepEqual(store.run("root")?.stagePredictions?.entries, [
+				{ path: "review", probability: 0.95, source: "scan" },
+			]);
+			assert.deepEqual(store.run("root")?.stagePredictions?.resolvedPlaceholders, []);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("prediction errors (#4359)", () => {

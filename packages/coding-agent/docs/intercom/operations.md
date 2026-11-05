@@ -113,6 +113,8 @@ Live workflow stages receive incoming messages according to the sender's `delive
 
 A send to a workflow stage path that has not started is queued and delivered to every matching stage that starts before the run ends; a queued entry that never delivers is reported once when the run ends. The result is `Message queued for <target>`, and its details carry `prediction`: `known` when the launch scan or a started stage covers the path, `predicted` when the [decision model](/settings#decisionmodel) expects a stage to match it, and `unknown` otherwise. No warning is shown for `unknown`. The first send to a path the decision model has not judged yet is queued plainly while the model is asked in the background. Once it judged the path unlikely, a later send to that path, in this run or a later run of the same workflow, adds one line, `No stage named <x> is expected; did you mean <closest>?`, naming the closest known stage when one is close enough. Set `intercom.showUnknownTargetWarnings` to `true` in `settings.json` to add a note to every `unknown` send. See [Deferred delivery to pending stages](/intercom/reference#deferred-delivery-to-pending-stages) for delivery states.
 
+A positive prediction for a wildcard target, such as `release-*`, means at least one stage is expected to match. It does not confirm every matching name. An exact target is judged separately, so a broad send does not hide a later typo warning. Suggestions longer than 512 characters are omitted; delivery still queues normally.
+
 ### Subagent Control Notices
 
 The `subagent` tool's `control` options select which control events notify the parent and over which channels:

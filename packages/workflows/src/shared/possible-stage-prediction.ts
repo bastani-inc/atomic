@@ -10,7 +10,12 @@ import {
 	type StageDecisionQuestion,
 	type StageDecisionResult,
 } from "./possible-stage-prediction-errors.js";
-import type { PossibleStageCandidate, PossibleStagesScanResult, PossibleStageUncertainty } from "./possible-stages.js";
+import type {
+	PossibleStageCandidate,
+	PossibleStageCandidateSource,
+	PossibleStagesScanResult,
+	PossibleStageUncertainty,
+} from "./possible-stages.js";
 import { isTerminalRunStatus } from "./store-internal.js";
 import type { RunSnapshot, RunStagePrediction, RunStagePredictionFallback } from "./store-types.js";
 import type { WorkflowSerializableObject } from "./types.js";
@@ -23,7 +28,7 @@ import { matchStagePathSegments, splitStagePathSegments } from "./workflow-stage
 // ---------------------------------------------------------------------------
 
 /** Bumped whenever the questions or state change meaning, so cached answers are not reused across versions. */
-const QUESTION_VERSION = 1;
+const QUESTION_VERSION = 2;
 const MAX_UNCERTAIN_SITES = 12;
 const MAX_STATE_STAGES = 64;
 const NONE_OPTION = "none";
@@ -58,12 +63,32 @@ interface ScanQuestionPlan {
 	readonly options: ReadonlyMap<string, ReadonlyMap<string, PossibleStageCandidate>>;
 	/** Per question key, the wildcard entry its call site added, if any. */
 	readonly placeholders: ReadonlyMap<string, string | undefined>;
-	/** Wildcard entries also added by a call site no question asks about, so no answer can stand in for them. */
+	/**
+	 * Wildcard entries no answer can stand in for: added by a call site no question asks about, or by one whose
+	 * credential-like candidates were withheld, since the withheld name may be the one the run produces.
+	 */
 	readonly unaskedPlaceholders: ReadonlySet<string | undefined>;
 }
 
-function askedSites(uncertainties: readonly PossibleStageUncertainty[]): readonly PossibleStageUncertainty[] {
-	return uncertainties.filter((uncertainty) => uncertainty.candidates.length > 0).slice(0, MAX_UNCERTAIN_SITES);
+interface AskedSite {
+	readonly uncertainty: PossibleStageUncertainty;
+	readonly candidates: readonly PossibleStageCandidate[];
+	readonly withheld: boolean;
+}
+
+function looksSensitive(text: string): boolean {
+	return redactSensitiveText(text) !== text;
+}
+
+function askedSites(uncertainties: readonly PossibleStageUncertainty[]): readonly AskedSite[] {
+	const sites: AskedSite[] = [];
+	for (const uncertainty of uncertainties) {
+		const candidates = uncertainty.candidates.filter((candidate) => !candidate.stages.some(looksSensitive));
+		if (candidates.length === 0) continue;
+		sites.push({ uncertainty, candidates, withheld: candidates.length < uncertainty.candidates.length });
+		if (sites.length === MAX_UNCERTAIN_SITES) break;
+	}
+	return sites;
 }
 
 function describeCandidate(candidate: PossibleStageCandidate): string {
@@ -75,9 +100,22 @@ function describeCandidate(candidate: PossibleStageCandidate): string {
 	return `stage ${first}`;
 }
 
+const CANDIDATE_ORIGINS: Readonly<Record<PossibleStageCandidateSource, string>> = {
+	literal: "a string literal appearing in the source, without evaluating any helper transformation",
+	template: "the output of a helper function's template filled with this call's literal arguments",
+	"enum-array": "elements of a constant array of string literals the name may range over",
+	factory: "the name field of a step object a factory function returns",
+	"child-definition": "an imported child workflow definition, with the stages scanned from it",
+};
+
+function optionKey(index: number): string {
+	return `c${index}`;
+}
+
 /**
- * One choice question per uncertain call site that has candidates; option keys never carry names. A wildcard that a
- * source without an uncertainty record also added is never resolved by an answer.
+ * One choice question per uncertain call site that has candidates once credential-like ones are withheld; option keys
+ * never carry names. A wildcard that a source without an uncertainty record also added, or that a site with a
+ * withheld candidate added, is never resolved by an answer.
  */
 export function scanQuestionPlan(
 	scan: Pick<PossibleStagesScanResult, "uncertainties" | "wildcardsWithoutUncertainty">,
@@ -87,27 +125,29 @@ export function scanQuestionPlan(
 	const options = new Map<string, ReadonlyMap<string, PossibleStageCandidate>>();
 	const placeholders = new Map<string, string | undefined>();
 	const asked = askedSites(uncertainties);
-	asked.forEach((uncertainty, site) => {
+	asked.forEach(({ uncertainty, candidates }, site) => {
 		const key = `site${site}`;
 		const siteOptions = new Map<string, PossibleStageCandidate>();
 		const criteria: Record<string, string> = {};
-		uncertainty.candidates.forEach((candidate, index) => {
-			siteOptions.set(`c${index}`, candidate);
-			criteria[`c${index}`] = describeCandidate(candidate);
+		candidates.forEach((candidate, index) => {
+			siteOptions.set(optionKey(index), candidate);
+			criteria[optionKey(index)] = describeCandidate(candidate);
 		});
 		criteria[NONE_OPTION] = "none of these candidates";
 		questions[key] = {
 			type: "choice",
-			instructions: `Which candidate will the call site ${key} (${uncertainty.file}:${uncertainty.line}) produce when this workflow runs? Choose only from the listed candidates; choose none when no candidate fits.`,
+			instructions: `Which candidate will the call site ${key} (${redactSensitiveText(uncertainty.file)}:${uncertainty.line}) produce when this workflow runs? Each candidate's origin is in that call site's candidateOrigins. Choose only from the listed candidates; choose none when no candidate fits.`,
 			criteria,
 		};
 		options.set(key, siteOptions);
 		placeholders.set(key, uncertainty.placeholder);
 	});
+	const askedUncertainties = new Set(asked.map((site) => site.uncertainty));
 	const unaskedPlaceholders = new Set([
 		...uncertainties
-			.filter((uncertainty) => !asked.includes(uncertainty))
+			.filter((uncertainty) => !askedUncertainties.has(uncertainty))
 			.map((uncertainty) => uncertainty.placeholder),
+		...asked.filter((site) => site.withheld).map((site) => site.uncertainty.placeholder),
 		...wildcardsWithoutUncertainty,
 	]);
 	return { questions, options, placeholders, unaskedPlaceholders };
@@ -116,16 +156,16 @@ export function scanQuestionPlan(
 function describeSite(uncertainty: PossibleStageUncertainty): WorkflowSerializableObject {
 	return {
 		code: uncertainty.code,
-		file: uncertainty.file,
+		file: redactSensitiveText(uncertainty.file),
 		line: uncertainty.line,
-		boundary: uncertainty.boundary,
+		boundary: redactSensitiveText(uncertainty.boundary),
 		source: redactSensitiveText(uncertainty.excerpt),
 	};
 }
 
 /**
  * The state the decision model reads: the redacted source of every call site the scan could not read, those with
- * candidates keyed by their question, and the scan's partial result.
+ * candidates keyed by their question with each offered option's origin, and the scan's redacted partial result.
  */
 export function scanDecisionState(
 	workflowName: string,
@@ -133,13 +173,20 @@ export function scanDecisionState(
 	inputs: WorkflowSerializableObject,
 ): WorkflowSerializableObject {
 	const asked = askedSites(scan.uncertainties);
+	const askedUncertainties = new Set(asked.map((site) => site.uncertainty));
 	return {
-		workflow: workflowName,
-		knownStages: scan.stages.slice(0, MAX_STATE_STAGES),
+		workflow: redactSensitiveText(workflowName),
+		knownStages: scan.stages.slice(0, MAX_STATE_STAGES).map(redactSensitiveText),
 		inputsShape: inputsShape(inputs),
-		uncertainCallSites: asked.map((uncertainty, site) => ({ site: `site${site}`, ...describeSite(uncertainty) })),
+		uncertainCallSites: asked.map(({ uncertainty, candidates }, site) => ({
+			site: `site${site}`,
+			...describeSite(uncertainty),
+			candidateOrigins: Object.fromEntries(
+				candidates.map((candidate, index) => [optionKey(index), CANDIDATE_ORIGINS[candidate.source]]),
+			),
+		})),
 		otherUnreadCallSites: scan.uncertainties
-			.filter((uncertainty) => !asked.includes(uncertainty))
+			.filter((uncertainty) => !askedUncertainties.has(uncertainty))
 			.slice(0, MAX_UNCERTAIN_SITES)
 			.map(describeSite),
 	};
