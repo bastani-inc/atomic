@@ -64,7 +64,6 @@ import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
-import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 import {
 	assertSessionManagerInWorktree,
 	bindSessionWorkspace,
@@ -72,6 +71,7 @@ import {
 	WORKSPACE_WRITE_TOOL_NAMES,
 	workspaceSessionCwd,
 } from "./workspace/session.ts";
+import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
 export { withResourceAdmission } from "./resource-admission-scope.ts";

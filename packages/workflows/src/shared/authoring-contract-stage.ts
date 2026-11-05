@@ -3,10 +3,10 @@
 import type {
 	AgentSession,
 	AgentSessionEvent,
+	BoundWorkspace,
 	DecisionQuestions,
 	DecisionRequest,
 	DecisionResult,
-	BoundWorkspace,
 	ModelConstraints,
 	ModelRoute,
 	ModelRouterOutput,
