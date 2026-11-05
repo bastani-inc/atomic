@@ -870,9 +870,10 @@ async function removeSessions(copied: CopiedSessions): Promise<void> {
 			failures.push(error as Error);
 		}
 	}
-	if (failures.length === 1) throw failures[0];
-	if (failures.length > 1)
-		throw new AggregateError(failures, `${failures.length} copied fork sessions were not removed`);
+	if (failures.length > 0)
+		throw failures.length === 1
+			? failures[0]
+			: new AggregateError(failures, `${failures.length} copied fork sessions were not removed`);
 }
 
 function removeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {

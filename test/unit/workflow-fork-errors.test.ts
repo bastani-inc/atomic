@@ -953,6 +953,25 @@ test("cleanup failures cross the wire with the error, as an AggregateError when 
 	assert.equal(back.cleanupCause.message, "2 fork cleanup steps failed");
 	assert.deepEqual(serializeForkError(back), wire);
 	assert.equal("cleanupCause" in serializeForkError(new ForkJournalUnsupportedError()), false);
+	const clean = rehydrateForkError(serializeForkError(new ForkJournalUnsupportedError()));
+	assert.equal(
+		Object.hasOwn(clean, "cleanupCause"),
+		false,
+		"an error without cleanup failures comes back without one",
+	);
+	const explained = rehydrateForkError(
+		serializeForkError(
+			new ForkCopyFailedError(
+				{ runId, forkRunId, phase: "sessions" },
+				{ cause: new AggregateError([new Error("kept")], "grouped", { cause: new Error("why") }) },
+			),
+		),
+	);
+	assert.ok(explained.cause instanceof AggregateError);
+	assert.deepEqual(
+		[explained.cause.message, (explained.cause.errors[0] as Error).message, (explained.cause.cause as Error).message],
+		["grouped", "kept", "why"],
+	);
 	const opaque = new AggregateError(["not an error", new Error("kept")], "mixed");
 	const mixed = serializeForkError(
 		new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause: opaque }),
