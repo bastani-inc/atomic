@@ -47,7 +47,7 @@ pub(super) struct Owner {
 	pub cap: Cap,
 	pub scope: OwnerScope,
 	pub state: String,
-	pub tasks: Vec<Task>,
+	pub tasks: OwnerTasks,
 }
 impl Actor {
 	pub(super) fn bind(&self, scope: OwnerScope) -> HostSession {
@@ -75,7 +75,12 @@ impl Actor {
 			task: None,
 			attempt: 0,
 		};
-		s.owners.push(Owner { cap: cap.clone(), scope, state: "open".into(), tasks: vec![] });
+		s.owners.push(Owner {
+			cap: cap.clone(),
+			scope,
+			state: "open".into(),
+			tasks: OwnerTasks::default(),
+		});
 		Ok(OwnerLease { cap })
 	}
 	pub(super) fn begin_close(&self, owner: &OwnerLease) -> Door<()> {
@@ -85,7 +90,9 @@ impl Actor {
 		}
 		let oi = s.owner(self.id, &owner.cap, "EnvironmentClosing")?;
 		s.begin_close(oi);
+		let evicted = s.retire(oi);
 		drop(s);
+		drop(evicted);
 		self.changed.notify_waiters();
 		Ok(())
 	}
@@ -208,7 +215,7 @@ impl State {
 		}
 		self.owners[oi].state = "closing".into();
 		self.emit(oi, None, TaskEvent::OwnerClosing {});
-		for ti in 0..self.owners[oi].tasks.len() {
+		for ti in self.owners[oi].tasks.ordinals() {
 			if matches!(self.owners[oi].tasks[ti].record.execution, Execution::Settled { .. }) {
 				continue;
 			}
@@ -233,7 +240,7 @@ impl State {
 			self.owners[oi].state = "closed".into();
 			// Every task of a closed owner is done: its commands keep their spooled output on disk and none in memory,
 			// so a long-lived process does not keep every session's command output until it exits (#4215).
-			for task in &self.owners[oi].tasks {
+			for task in self.owners[oi].tasks.iter() {
 				if let Some(command) = &task.command {
 					command.release_output_memory();
 				}

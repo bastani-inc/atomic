@@ -18,6 +18,9 @@ mod events;
 mod owner;
 mod process;
 mod report_identity;
+mod retention;
+#[cfg(test)]
+mod retention_tests;
 mod strings;
 mod task;
 #[cfg(test)]
@@ -30,6 +33,7 @@ pub use process::{
 	CommandTerminal, InputData, InputReceipt, OutputPage, OutputRange, StdinLease,
 };
 use report_identity::{TASK_REPORT_IDENTITY_WINDOW, activity_hash};
+use retention::OwnerTasks;
 use strings::JsString;
 pub use task::*;
 pub use waits::*;
@@ -372,12 +376,7 @@ impl NapiTaskSupervisor {
 			self.check(&env, "ScopeMismatch")?;
 			let s = self.actor.state.lock().unwrap();
 			let oi = s.owner(self.actor.id, &owner.cap, "ScopeMismatch")?;
-			s.owners[oi]
-				.tasks
-				.iter()
-				.find(|t| task_id.equals_str(&t.record.reference.task_id))
-				.map(|t| TaskLease { cap: t.cap.clone() })
-				.ok_or_else(|| fail("UnknownTask"))
+			s.lookup(oi, &task_id)
 		})())
 	}
 	/// Registers the observation before returning. Await observeTaskWait separately.

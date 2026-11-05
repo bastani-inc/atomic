@@ -735,6 +735,7 @@ export type TaskEvent =
   | { kind: 'task-cancelling'; ref: NativeTaskRef; cause: CancelCause }
   | { kind: 'task-settled'; ref: NativeTaskRef; result: TaskResult; completionId: string }
   | { kind: 'cleanup-changed'; ref: NativeTaskRef; cleanup: Cleanup }
+  | { kind: 'task-evicted'; ref: NativeTaskRef }
   | { kind: 'owner-closing' }
   | { kind: 'owner-closed' }
 

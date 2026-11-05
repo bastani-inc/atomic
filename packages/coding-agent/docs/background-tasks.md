@@ -307,6 +307,8 @@ On native Windows, Suspend opens a PowerShell subshell rather than freezing Atom
 
 Task inspection is owner-scoped. It is not a machine-wide process list. Switching sessions does not copy the previous session's task rows into the new one. Missing retained history is reported explicitly.
 
+Each session and workflow stage keeps its 256 most recently finished tasks in `/tasks`, so a long session that runs thousands of shells or background subagents does not keep a record of every one. Running, queued and stopping tasks are always kept, and so is a finished shell whose cleanup is still being confirmed or failed. When another task finishes, the one that finished longest ago leaves `/tasks`. Its result stays where the conversation reported it, in its completion notice or tool result, and a subagent's transcript stays in its own saved session; a paused or quit subagent still resumes with `subagent({ action: "resume", id })`. A shell command's full output is deleted with its record. Waiting on, stopping or reading the output of such a task reports `Task "<id>" finished and is no longer kept in this session` (code `TaskEvicted`) instead of an unknown task.
+
 Closing `/tasks` does not stop the chat footer's live Git branch updates.
 
 ## Task state and completion delivery

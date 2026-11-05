@@ -16,6 +16,7 @@ import type {
 	WaitOutcome,
 	WatchError,
 } from "../tasks/contracts.js";
+import { TaskEvictedError } from "../tasks/eviction-error.js";
 
 export type TaskStatusTone = "success" | "error" | "warning" | "dim";
 
@@ -196,6 +197,10 @@ const TASK_ERROR_COPY: Record<TaskToolFailureCode, TaskErrorCopy> = {
 		headline: (taskId) => `Task "${taskId}" belongs to another session`,
 		hint: "Run /tasks to see the tasks in this session.",
 	},
+	TaskEvicted: {
+		headline: (taskId) => `Task "${taskId}" finished and is no longer kept in this session`,
+		hint: "Only the most recently finished tasks are kept. Its result is where the conversation reported it.",
+	},
 	OwnerClosed: {
 		headline: () => "This session's background tasks are closed",
 		hint: "Run the command again to start a new task.",
@@ -219,7 +224,8 @@ function isTaskToolFailureCode(code: string): code is TaskToolFailureCode {
 
 /**
  * A task failure on the `wait`/`kill` path. The message is `<Code>: <plain-language headline naming the task>`;
- * callers that branch on the failure read `code` instead of parsing it.
+ * callers that branch on the failure read `code` instead of parsing it. An evicted task's failure has a
+ * {@link TaskEvictedError} as its `cause`.
  */
 export class TaskToolError extends Error {
 	readonly code: TaskToolFailureCode;
@@ -228,6 +234,7 @@ export class TaskToolError extends Error {
 	constructor(failure: Failure<TaskToolFailureCode>, taskId: string) {
 		super(
 			`${failure.code}: ${TASK_ERROR_COPY[failure.code].headline(taskId, informativeMessage(failure.code, failure.message))}`,
+			failure.code === "TaskEvicted" ? { cause: new TaskEvictedError({ taskId }) } : undefined,
 		);
 		this.name = "TaskToolError";
 		this.code = failure.code;

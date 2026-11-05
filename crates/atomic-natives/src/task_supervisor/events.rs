@@ -59,6 +59,11 @@ pub enum TaskEvent {
 		reference: NativeTaskRef,
 		cleanup: Cleanup,
 	},
+	/// A finished task's record left the owner's retention (#4385); later lookups of it refuse with `TaskEvicted`.
+	TaskEvicted {
+		#[napi(js_name = "ref")]
+		reference: NativeTaskRef,
+	},
 	OwnerClosing {},
 	OwnerClosed {},
 }
@@ -84,6 +89,8 @@ pub(super) struct Subscription {
 	pub cap: Cap,
 	pub cursor: u64,
 	pub failed: bool,
+	/// The cursor of this watcher's previous delivery: everything through it has been processed.
+	pub acknowledged: u64,
 }
 impl State {
 	pub fn cursor(&self, oi: usize) -> Cursor {
@@ -144,8 +151,10 @@ impl Actor {
 		let index = s.next_subscription;
 		s.next_subscription += 1;
 		let lease = SubscriptionLease { cap: owner.cap.clone(), index };
-		s.subscriptions
-			.insert(index, Subscription { cap: owner.cap.clone(), cursor: sequence, failed: false });
+		s.subscriptions.insert(
+			index,
+			Subscription { cap: owner.cap.clone(), cursor: sequence, failed: false, acknowledged: 0 },
+		);
 		let snapshot = s.snapshot(oi);
 		Ok((lease, snapshot))
 	}
@@ -172,8 +181,12 @@ impl Actor {
 		let cursor = s.cursor(oi);
 		let sequence = s.sequence;
 		let sub = s.subscriptions.get_mut(&lease.index).unwrap();
+		sub.acknowledged = sub.cursor;
 		sub.cursor = sequence;
 		sub.failed = false;
+		let evicted = s.retire(oi);
+		drop(s);
+		drop(evicted);
 		Ok(SubscriptionDrain { reset, snapshot, cursor, events, failed })
 	}
 	pub(super) fn subscription_failed(&self, lease: &SubscriptionLease) {
@@ -184,8 +197,10 @@ impl Actor {
 	}
 	pub(super) fn dispose_subscription(&self, lease: &SubscriptionLease) {
 		let mut s = self.state.lock().unwrap();
-		if lease.cap.environment == self.id {
-			s.subscriptions.remove(&lease.index);
+		if lease.cap.environment == self.id && s.subscriptions.remove(&lease.index).is_some() {
+			let evicted = s.retire(lease.cap.owner);
+			drop(s);
+			drop(evicted);
 		}
 	}
 }

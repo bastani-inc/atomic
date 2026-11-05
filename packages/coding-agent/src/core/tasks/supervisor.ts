@@ -11,6 +11,7 @@ import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cle
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
+import { TaskEvictedError } from "./eviction-error.js";
 
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
 	readonly completionSource?: TaskCompletionSource;
@@ -109,6 +110,7 @@ type TaskState = {
 	native: native.TaskLease;
 	owner: OwnerState;
 	ref: C.NativeTaskRef;
+	operation: C.OperationId;
 	controller: AbortController;
 	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
@@ -125,7 +127,7 @@ const environment = {
 	hosts: new WeakMap<HostSession, HostState>(),
 	owners: new WeakMap<OwnerLease, OwnerState>(),
 	tasks: new WeakMap<TaskLease, TaskState>(),
-	inputs: new WeakMap<StdinLease, native.StdinLease>(),
+	inputs: new WeakMap<StdinLease, { native: native.StdinLease; taskId: C.TaskId }>(),
 	waits: new WeakMap<WaitLease, WaitState>(),
 	waitRegistry: new Map<C.WaitId, WaitLease>(),
 	ownerIds: new Map<C.OwnerId, OwnerLease>(),
@@ -209,6 +211,14 @@ function mapped<T, U, Code extends string>(
 	if (!code) throw new Error(`Unexpected native task refusal: ${result.error.code}: ${result.error.message}`);
 	return { ok: false, error: { code, message: result.error.message } };
 }
+/** A refusal of a task its owner evicted carries the {@link TaskEvictedError} message, hint included. */
+function explainEviction<T, Code extends string>(
+	result: C.Result<T, C.Failure<Code>>,
+	taskId: string,
+): C.Result<T, C.Failure<Code>> {
+	if (result.ok || result.error.code !== "TaskEvicted") return result;
+	return { ok: false, error: { code: result.error.code, message: new TaskEvictedError({ taskId }).message } };
+}
 const ownerErrors = ["ScopeMismatch", "EnvironmentClosing"] as const;
 const startErrors = [
 	"OwnerClosing",
@@ -222,7 +232,14 @@ const startErrors = [
 	"SpawnFailed",
 	"ContainmentUnavailable",
 ] as const;
-const waitErrors = ["UnknownTask", "OwnerClosed", "EnvironmentClosing", "ScopeMismatch", "ObserverCancelled"] as const;
+const waitErrors = [
+	"UnknownTask",
+	"TaskEvicted",
+	"OwnerClosed",
+	"EnvironmentClosing",
+	"ScopeMismatch",
+	"ObserverCancelled",
+] as const;
 const reportErrors = ["StaleAttempt", "OwnerClosing", "TaskTerminal", "ReportConflict"] as const;
 const watchErrors = ["OwnerClosed", "StaleGeneration", "EnvironmentClosing"] as const;
 function reference(value: native.NativeTaskRef): C.NativeTaskRef {
@@ -397,6 +414,8 @@ function payload(value: native.TaskEvent): C.TaskEvent {
 			};
 		case "cleanup-changed":
 			return { kind: value.kind, ref: reference(value.ref), cleanup: value.cleanup };
+		case "task-evicted":
+			return { kind: value.kind, ref: reference(value.ref) };
 		case "owner-closing":
 		case "owner-closed":
 			return { kind: value.kind };
@@ -454,6 +473,10 @@ function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnap
 	}
 	const index = next.tasks.findIndex((task) => task.ref.taskId === change.ref.taskId);
 	if (index < 0) throw new Error("Native delta references a task absent from its snapshot");
+	if (change.kind === "task-evicted") {
+		next.tasks.splice(index, 1);
+		return next;
+	}
 	const task: C.TaskRecord = { ...next.tasks[index] };
 	next.tasks[index] = task;
 	switch (change.kind) {
@@ -734,6 +757,9 @@ export class TaskSupervisor {
 							ownerState.unconfirmedCleanups.set(record.ref.taskId, record.cleanup.resources);
 						else ownerState.unconfirmedCleanups.delete(record.ref.taskId);
 					}
+					const retained = new Set(projection.tasks.map((record) => record.ref.taskId));
+					for (const [taskId, task] of [...ownerState.tasks])
+						if (!retained.has(taskId)) this.#forgetEvictedTask(ownerState, taskId, task);
 					this.#notifyAdmissionWatchers(ownerState);
 					for (const { ref, resources } of quarantinedCleanups(projection, events)) {
 						if (ownerState.quarantinedTasks.has(ref.taskId)) continue;
@@ -770,6 +796,17 @@ export class TaskSupervisor {
 			},
 			ownerErrors,
 		);
+	}
+	/** The native supervisor evicted this finished task (#4385): keep none of its host state either. */
+	#forgetEvictedTask(state: OwnerState, taskId: C.TaskId, task: TaskLease): void {
+		const { operation } = this.#task(task);
+		state.tasks.delete(taskId);
+		state.settledTasks.delete(taskId);
+		state.quarantinedTasks.delete(taskId);
+		routerSelections.delete(taskId);
+		requestedModels.delete(taskId);
+		launchHeartbeats.delete(launchKey(state.id, operation));
+		state.commandStarts.delete(operation);
 	}
 	#releasePermit(state: OwnerState, taskId: C.TaskId): void {
 		const held = state.permits.get(taskId);
@@ -945,6 +982,7 @@ export class TaskSupervisor {
 				native: admitted.value,
 				owner: state,
 				ref: reference(ref.value),
+				operation,
 				controller: new AbortController(),
 				kind: "command",
 				statuses: new Map(),
@@ -978,26 +1016,28 @@ export class TaskSupervisor {
 		await Promise.all([...this.#owner(owner).commandAdmissions]);
 	}
 	taskStdin(task: TaskLease): C.Result<StdinLease, C.InputError> {
-		return mapped(
+		const { taskId } = this.#task(task).ref;
+		const stdin = mapped(
 			this.#native.taskStdin(this.#task(task).native),
 			(input) => {
 				const lease = new StdinCapability();
-				environment.inputs.set(lease, input);
+				environment.inputs.set(lease, { native: input, taskId });
 				return lease;
 			},
-			["TaskTerminal", "StdinClosed", "UnknownTask", "OutputUnavailable"] as const,
+			["TaskTerminal", "StdinClosed", "UnknownTask", "TaskEvicted", "OutputUnavailable"] as const,
 		);
+		return explainEviction(stdin, taskId);
 	}
 	async writeTaskInput(
 		input: StdinLease,
 		operation: C.OperationId,
 		data: C.InputData,
 	): Promise<C.Result<C.InputReceipt, C.InputError>> {
-		const lease = environment.inputs.get(input);
-		if (!lease) throw new TypeError("Foreign stdin capability");
-		return mapped(
+		const stdin = environment.inputs.get(input);
+		if (!stdin) throw new TypeError("Foreign stdin capability");
+		const written = mapped(
 			await this.#native.writeTaskInput(
-				lease,
+				stdin.native,
 				operation,
 				data.kind === "bytes" ? { kind: "bytes", bytes: Buffer.from(data.bytes) } : data,
 			),
@@ -1006,11 +1046,19 @@ export class TaskSupervisor {
 				acceptedBytes: value.acceptedBytes,
 				kind: value.kind as "bytes" | "eof",
 			}),
-			["TaskTerminal", "StdinClosed", "InputBackpressure", "OperationConflict", "InputDeliveryUnknown"] as const,
+			[
+				"TaskTerminal",
+				"StdinClosed",
+				"InputBackpressure",
+				"OperationConflict",
+				"InputDeliveryUnknown",
+				"TaskEvicted",
+			] as const,
 		);
+		return explainEviction(written, stdin.taskId);
 	}
 	async readTaskOutput(task: TaskLease, range: C.OutputRange): Promise<C.Result<C.OutputPage, C.OutputError>> {
-		return mapped(
+		const read = mapped(
 			await this.#native.readTaskOutput(this.#task(task).native, range),
 			(page) => ({
 				requested: page.requested,
@@ -1018,8 +1066,9 @@ export class TaskSupervisor {
 				omittedRanges: page.omittedRanges,
 				...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
 			}),
-			["UnknownTask", "OutputUnavailable"] as const,
+			["UnknownTask", "TaskEvicted", "OutputUnavailable"] as const,
 		);
+		return explainEviction(read, this.#task(task).ref.taskId);
 	}
 	async startAgentTask(
 		owner: OwnerLease,
@@ -1057,6 +1106,7 @@ export class TaskSupervisor {
 			native: admitted.value,
 			owner: state,
 			ref: reference(ref.value),
+			operation,
 			controller: new AbortController(),
 			statuses: new Map(),
 			statusListeners: new Set(),
@@ -1158,12 +1208,17 @@ export class TaskSupervisor {
 			(lease) => this.#register(lease),
 			waitErrors,
 		);
-		return registered.ok ? this.observeTaskWait(registered.value) : registered;
+		return registered.ok
+			? this.observeTaskWait(registered.value)
+			: explainEviction(registered, this.#task(task).ref.taskId);
 	}
 	/** Resolve only a task admitted under this live owner; IDs alone confer no authority. */
 	lookupTask(owner: OwnerLease, taskId: C.TaskId): C.Result<TaskLease, C.WaitError> {
 		const state = this.#owner(owner);
-		const found = mapped(this.#native.lookupTask(state.native, taskId), () => state.tasks.get(taskId), waitErrors);
+		const found = explainEviction(
+			mapped(this.#native.lookupTask(state.native, taskId), () => state.tasks.get(taskId), waitErrors),
+			taskId,
+		);
 		if (!found.ok) return found;
 		if (!found.value) return { ok: false, error: { code: "UnknownTask", message: "No agent runner bound to task" } };
 		return { ok: true, value: found.value };
@@ -1175,7 +1230,10 @@ export class TaskSupervisor {
 		budgetMs?: number,
 		onRegistered?: (wait: WaitLease) => void,
 	): Promise<C.Result<C.WaitOutcome, C.WaitError>> {
-		const found = mapped(this.#native.lookupTask(this.#owner(owner).native, taskId), (lease) => lease, waitErrors);
+		const found = explainEviction(
+			mapped(this.#native.lookupTask(this.#owner(owner).native, taskId), (lease) => lease, waitErrors),
+			taskId,
+		);
 		if (!found.ok) return found;
 		const known = this.#owner(owner).tasks.get(taskId);
 		const registered = mapped(
@@ -1196,7 +1254,7 @@ export class TaskSupervisor {
 	}
 	async foregroundTask(task: TaskLease, budgetMs?: number): Promise<C.Result<C.WaitOutcome, C.ForegroundError>> {
 		const state = this.#task(task);
-		const errors = ["TaskTerminal", "OwnerClosing", "UnknownTask", "ObserverCancelled"] as const;
+		const errors = ["TaskTerminal", "OwnerClosing", "UnknownTask", "TaskEvicted", "ObserverCancelled"] as const;
 		const registered = mapped(
 			this.#native.foregroundTask(
 				state.native,
@@ -1208,7 +1266,7 @@ export class TaskSupervisor {
 		);
 		return registered.ok
 			? mapped(await this.observeTaskWait(registered.value), (outcome) => outcome, errors)
-			: registered;
+			: explainEviction(registered, state.ref.taskId);
 	}
 	waitId(wait: WaitLease): C.WaitId {
 		return this.#wait(wait).native.waitId as C.WaitId;
@@ -1257,10 +1315,11 @@ export class TaskSupervisor {
 		const state = this.#task(task);
 		const result = mapped(this.#native.cancelTask(state.native, cause), cancelReceipt, [
 			"UnknownTask",
+			"TaskEvicted",
 			"CleanupFailed",
 		]);
 		if (result.ok && result.value.decision === "cancellation-requested") state.controller.abort(cause);
-		return result;
+		return explainEviction(result, state.ref.taskId);
 	}
 	async closeTaskOwner(
 		owner: OwnerLease,

@@ -1093,6 +1093,10 @@ type SessionStartConfigSource
 type SessionStartConfigReason
 type SerializedSessionStartError
 type SerializedSessionStartCause
+// Finished task retention (see "Owner-bound task supervisor (S1)")
+FINISHED_TASK_RETENTION
+TaskEvictedError, isTaskEvictedError, rehydrateTaskEvictedError
+type TaskEvictedErrorCode, type TaskEvictedErrorFields
 // Git resolution (see "Resolving git")
 resolveGit, resolveGitSync, getGitStatus, GIT_MINIMUM_VERSION
 GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
@@ -1165,6 +1169,16 @@ For trusted custom hosts, the package exports `AgentTaskHost` and its integratio
 `startAgentTask(intent, operation, runnerFactory)` returns a Result containing `{taskId, lease}` after setup. The factory receives the original `AbortSignal`, reference, and `reportActivity` context. Return separate `result` and `cleanup` promises; report cleanup only when it is confirmed. Replaying the same operation reuses execution without calling another factory.
 
 Use `observeAgentLaunch(taskId, policy?)`, `waitForTask`, `resolveTask`, `cancelTask`, `watchOwnerTasks`, and `close` within the bound owner. Observation returns Result/WaitOutcome. Yielding or cancelling an observation does not stop execution. Cancellation and cleanup failures remain observable; owner close may remain pending until your runner acknowledges cleanup.
+
+An owner keeps its 256 most recently finished tasks (`FINISHED_TASK_RETENTION`): a task is finished once its result settled and its cleanup was reaped. Queued, running and stopping tasks, and tasks whose cleanup is quarantined or failed, are never evicted. When more tasks finish, the one that finished longest ago is evicted: `watchOwnerTasks` delivers a `task-evicted` event and later snapshots omit it. A finished task is evicted only after every live subscription of its owner has drained it and then drained again, so no subscriber misses a settlement. A settled wait registered before eviction still returns its outcome. Operation replay reuses a task only while it is kept; afterwards the same operation starts a new one.
+
+`resolveTask`, `waitForTask`, `cancelTask` and output reads of an evicted task refuse with code `TaskEvicted` instead of `UnknownTask`; the refusal's `message` is the `TaskEvictedError` message. The `wait` and `kill` tools throw a `TaskToolError` with code `TaskEvicted` whose `cause` is a `TaskEvictedError`.
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `TaskEvictedError` | `task_evicted` | A task id or lease names a finished task its owner no longer keeps, because `retainedFinishedTasks` or more of its tasks finished after it. `retryable` is `false`. | `taskId`, `retainedFinishedTasks`, `hint` | Use the result the conversation already reported; a subagent's transcript stays in its own saved session. A shell command's full output is no longer available. |
+
+`isTaskEvictedError(value)` checks the class first and then `name` and `code`, so it also matches a copy from another realm or process. `rehydrateTaskEvictedError(value)` rebuilds the class from a copy such as `JSON.parse(JSON.stringify(error))`, and returns `undefined` for a copy without a string `taskId` or a positive integer `retainedFinishedTasks`.
 
 ### Supervised command SDK
 
