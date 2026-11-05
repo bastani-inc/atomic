@@ -144,6 +144,7 @@ describe("team input checks name the field and the fix (#4320)", () => {
 			"credential-in-url",
 		);
 		assert.equal(checkTeamUrl("https://db/?token=public", "sdk"), "https://db/?token=public");
+		assert.equal(checkTeamUrl("https://[unparsable", "sdk"), "https://[unparsable");
 	});
 
 	test("prefixes, token files and missing tokens (#4320)", () => {

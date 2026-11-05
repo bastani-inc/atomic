@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { runIntercomCommand } from "../../packages/coding-agent/src/cli/intercom-command.js";
+import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { parseTeamCommand, runTeamCommand } from "../../packages/coding-agent/src/cli/team-command.js";
 import type {
 	IntercomBrokerControl,
@@ -356,5 +358,149 @@ describe("atomic team output (#4320)", () => {
 		const result = await team(["status"], control({ status: "not-running" }));
 		assert.equal(result.code, 1);
 		assert.match(result.err, /^Error: Cannot load settings: project settings: /);
+	});
+});
+
+describe("atomic storage join and broker reports (#4320)", () => {
+	async function storage(args: string[], broker?: IntercomBrokerControl) {
+		const out: string[] = [];
+		const err: string[] = [];
+		const code = await runStorageCommand(args, {
+			cwd: project,
+			agentDir,
+			log: (line) => out.push(line),
+			error: (line) => err.push(line),
+			...(broker === undefined ? {} : { loadControl: async () => broker }),
+		});
+		const normalize = (text: string) =>
+			text.replaceAll(root, "<root>").replace(/storage-token\.[\da-f-]+/g, "storage-token.<id>");
+		return { code, out: normalize(out.join("\n")), err: normalize(err.join("\n")) };
+	}
+
+	test(
+		"storage join reports a stored, kept or absent token and the replaced selection (#4320)",
+		async () => {
+			writeSettings({ packages: [packageRoot], storage: { path: "old.sqlite" } });
+			const first = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+			assert.equal(first.code, 0, first.err);
+			assert.deepEqual(first.out.split("\n").slice(0, 4), [
+				`Connected to ${databaseUrl.replaceAll(root, "<root>")}.`,
+				"Stored the token in <root>/agent/storage-token.<id> (mode 600).",
+				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
+				"It replaces the previous selection: SQLite old.sqlite.",
+			]);
+			const again = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+			assert.deepEqual(again.out.split("\n").slice(1, 3), [
+				"Kept the token in <root>/agent/storage-token.<id>; it already holds this token.",
+				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
+			]);
+			const fileOnly = await storage(["join", databaseUrl]);
+			assert.deepEqual(fileOnly.out.split("\n").slice(1, 3), [
+				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
+				`It replaces the previous selection: adapter ${LIBSQL_ADAPTER_PACKAGE}.`,
+			]);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test("storage join prints typed errors as their message alone (#4320)", async () => {
+		writeSettings({ theme: "dark" });
+		const relative = await storage(["join", "file:relative.sqlite"]);
+		assert.equal(relative.code, 1);
+		assert.equal(
+			relative.err,
+			"Invalid storage configuration: <url> (relative-file-url). Use an absolute file: URL (for example file:///path/to/shared.sqlite), so every working directory uses the same database.",
+		);
+		const missing = await storage(["join", databaseUrl]);
+		assert.equal(
+			missing.err,
+			`The libSQL storage adapter is not installed: ${LIBSQL_ADAPTER_PACKAGE} for <root>/agent (adapter-not-installed). Install it, then run this command again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
+		);
+	});
+
+	test("a running broker on another selection is reported with how it was started (#4320)", async () => {
+		writeSettings({ storage: { memory: true } });
+		const running = (source: "env" | "settings"): IntercomBrokerControl => ({
+			...control({ status: "not-running" }),
+			queryIntercomBroker: async () => ({
+				state: "running",
+				report: {
+					pid: 77,
+					sessions: 1,
+					storage: { digest: "old", source },
+					multiNode: { status: "off" },
+				},
+			}),
+			expectedBrokerStorage: () => ({ digest: "new", source: "settings", adapter: "sqlite" }),
+		});
+		const fromEnv = await storage(["status"], running("env"));
+		assert.match(
+			fromEnv.out,
+			/^ {2}storage: {5}differs from the selection above \(a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage\); run `atomic intercom restart` to use the current one$/m,
+		);
+		assert.match(fromEnv.out, /^ {2}multi-node: {2}off: the shared storage selection is in memory$/m);
+		const fromSettings = await storage(["status"], running("settings"));
+		assert.match(
+			fromSettings.out,
+			/^ {2}storage: {5}differs from the selection above; run `atomic intercom restart` to use the current one$/m,
+		);
+		const lines: string[] = [];
+		assert.equal(
+			await runIntercomCommand(["status"], {
+				agentDir,
+				log: (line) => lines.push(line),
+				loadControl: async () => running("env"),
+			}),
+			0,
+		);
+		assert.equal(
+			lines[1],
+			"Storage: differs from the current selection (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage); run `atomic intercom restart`",
+		);
+		lines.length = 0;
+		await runIntercomCommand(["status"], {
+			agentDir,
+			log: (line) => lines.push(line),
+			loadControl: async () => running("settings"),
+		});
+		assert.equal(lines[1], "Storage: differs from the current selection; run `atomic intercom restart`");
+	});
+
+	test("team status reads the given directories, reports the broker, and fails when any domain fails (#4320)", async () => {
+		const elsewhere = join(root, "elsewhere-agent");
+		mkdirSync(elsewhere);
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", elsewhere);
+		mkdirSync(join(project, ".atomic"), { recursive: true });
+		writeFileSync(join(project, ".atomic", "settings.json"), JSON.stringify({ sessions: { storage: { dir: "s" } } }));
+		new ProjectTrustStore(agentDir).set(project, true);
+		writeSettings({ sessions: { storage: LOCAL_SESSIONS_STORAGE }, storage: { adapter: "./missing-adapter.ts" } });
+		const json = await team(["status", "--json"], control({ status: "not-running" }, "project:x/y"));
+		assert.equal(json.code, 1);
+		const parsed = JSON.parse(json.out);
+		assert.equal(parsed.profile.profile, "custom");
+		assert.equal(parsed.projectGroup, "project:x/y");
+		assert.deepEqual(parsed.broker, { state: "stopped" });
+		assert.deepEqual(
+			parsed.domains.map((domain: { domain: string; probe?: { adapter?: { loaded: boolean } } }) => [
+				domain.domain,
+				domain.probe?.adapter?.loaded,
+			]),
+			[
+				["sessions", undefined],
+				["journal", false],
+				["intercom", false],
+			],
+		);
+		const left = await team(["leave"], control({ status: "not-running" }));
+		assert.match(left.out, /^Profile: custom /m);
+		const usage = (() => {
+			try {
+				parseTeamCommand(["doctor"]);
+			} catch (error) {
+				return error as { source: string };
+			}
+			return undefined;
+		})();
+		assert.equal(usage?.source, "cli");
 	});
 });

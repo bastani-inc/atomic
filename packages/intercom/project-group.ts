@@ -59,7 +59,7 @@ export class ProjectGroupError extends Error {
   readonly code: ProjectGroupErrorCode;
   readonly cwd: string;
   readonly hint: string;
-  readonly detail?: string;
+  declare readonly detail?: string;
   readonly retryable = false;
 
   constructor(

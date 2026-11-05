@@ -15,6 +15,7 @@ import {
 	gitInstallCommand,
 	isProjectGroupError,
 	multiNodeSelected,
+	ProjectGroupError,
 	projectGroup,
 	projectHomeGroup,
 	projectName,
@@ -369,4 +370,59 @@ test("remote URL forms that only differ in case, scheme characters or a .git ins
 	assert.equal(remoteRepositoryPath("https://github.com/acme/alpha.git.backup.git"), "acme/alpha.git.backup");
 	assert.equal(remoteRepositoryPath("x https://host/acme/alpha"), "host/acme/alpha");
 	assert.equal(remoteRepositoryPath("/srv/a:b/repo.git"), "srv/a:b/repo");
+});
+
+test("ProjectGroupError carries only the fields it was given and the guard checks name and code (#4320)", () => {
+	const bare = new ProjectGroupError("git-failed", { cwd: "/repo", hint: "Fix it." });
+	assert.equal(
+		bare.message,
+		"Git could not read this repository's origin for its Intercom project group: /repo (git-failed). Fix it.",
+	);
+	assert.equal(Object.hasOwn(bare, "detail"), false);
+	assert.equal(Object.hasOwn(bare, "cause"), false);
+	const cause = new Error("spawn git ENOENT");
+	const full = new ProjectGroupError("git-unavailable", {
+		cwd: "/repo",
+		hint: "Install.",
+		detail: "spawn git ENOENT",
+		cause,
+	});
+	assert.equal(
+		full.message,
+		"Git is needed to name this repository's Intercom project group: /repo (git-unavailable): spawn git ENOENT. Install.",
+	);
+	assert.equal(full.cause, cause);
+	assert.equal(isProjectGroupError(full), true);
+	assert.equal(isProjectGroupError({ name: "ProjectGroupError", code: "git-unavailable" }), true);
+	assert.equal(isProjectGroupError({ name: "Other", code: "git-failed" }), false);
+	assert.equal(isProjectGroupError("ProjectGroupError"), false);
+	assert.equal(isProjectGroupError(undefined), false);
+});
+
+test.skipIf(process.platform === "win32")("a failing origin lookup and a silent git failure are typed (#4320)", () => {
+	const bin = join(root, "bin-origin");
+	mkdirSync(bin);
+	const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+	writeFileSync(
+		join(bin, "git"),
+		`#!/bin/sh\ncase "$*" in *"remote get-url"*) echo "fatal: bad config" >&2; exit 1;; esac\nexec "${realGit}" "$@"\n`,
+		{ mode: 0o755 },
+	);
+	const repo = repository("origin-fails", "https://github.com/acme/origin.git");
+	const env = { ...createGitEnvironment(), PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+	assert.throws(
+		() => projectName(repo, env),
+		(error: Error) =>
+			isProjectGroupError(error) &&
+			error.code === "git-failed" &&
+			error.detail === "fatal: bad config" &&
+			error.hint ===
+				`Run git -C ${repo} remote get-url origin to see why and fix the repository, or set ATOMIC_INTERCOM_GROUP to choose this session's group.`,
+	);
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 128\n", { mode: 0o755 });
+	const silent = repository("silent-failure");
+	assert.throws(
+		() => projectName(silent, env),
+		(error: Error) => isProjectGroupError(error) && error.detail === "git exited with status 128",
+	);
 });
