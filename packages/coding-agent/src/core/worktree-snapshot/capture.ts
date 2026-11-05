@@ -352,11 +352,12 @@ async function objectExists(root: string, object: string, signal?: AbortSignal):
 }
 
 /**
- * The working-tree omissions of a snapshot as sorted `reason path` keys. Sizes are left out, so a file that keeps
- * growing past a cap is the same omission; history omissions depend only on HEAD and are compared through it.
+ * The working-tree omissions of a snapshot as `reason path` keys, in the path order capture lists them. Sizes are left
+ * out, so a file that keeps growing past a cap is the same omission; history omissions depend only on HEAD and are
+ * compared through it.
  */
 function pathOmissionKeys(omitted: readonly WorktreeSnapshotOmission[]): string[] {
-	return omitted.flatMap((omission) => ("path" in omission ? [`${omission.reason}\0${omission.path}`] : [])).sort();
+	return omitted.flatMap((omission) => ("path" in omission ? [`${omission.reason}\0${omission.path}`] : []));
 }
 
 function snapshotId(

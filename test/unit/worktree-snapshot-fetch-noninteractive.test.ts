@@ -191,12 +191,12 @@ describe.skipIf(process.platform === "win32")("a restore fetch over ssh never wa
 });
 
 describe.skipIf(process.platform === "win32")("cancelling a command that has no terminal (#4245)", () => {
-	test("an abort kills the Git process and the helpers it started, and rejects with the signal's reason", async () => {
+	test("an abort kills the Git process and the helpers it started, even ones that ignore SIGTERM, and rejects with the signal's reason", async () => {
 		const helperPid = sandbox.path("helper.pid");
 		const fakeGit = sandbox.path("slow-git");
 		writeFileSync(
 			fakeGit,
-			`#!/bin/sh\ncase "$*" in *core.sshCommand*) exit 1 ;; esac\nsleep 300 &\necho $! > '${helperPid}'\nwait\n`,
+			`#!/bin/sh\ncase "$*" in *core.sshCommand*) exit 1 ;; esac\ntrap '' TERM\nsleep 300 &\necho $! > '${helperPid}'\nwait\n`,
 		);
 		chmodSync(fakeGit, 0o755);
 		setWorktreeSnapshotGit(async () => ({ path: fakeGit, env: {} }));
