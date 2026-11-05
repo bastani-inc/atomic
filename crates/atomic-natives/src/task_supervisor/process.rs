@@ -2159,15 +2159,26 @@ mod tests {
 		assert_eq!(unsafe { libc::kill(-group, 0) }, -1, "process group {group} survived cleanup");
 		assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
 	}
+	/// A holder process a test started outside the command's group. It is killed and awaited when dropped, also when
+	/// the test panics first, so a failing test never leaves it holding a pipe or stopped.
 	#[cfg(target_os = "linux")]
-	fn reap_holder(holder: libc::pid_t) {
-		unsafe {
-			libc::kill(holder, libc::SIGKILL);
+	struct Holder(libc::pid_t);
+	#[cfg(target_os = "linux")]
+	impl Holder {
+		fn read(dir: &std::path::Path) -> Self {
+			Self(wait_for_file(&dir.join("holder")).trim().parse().unwrap())
 		}
-		let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
-		while unsafe { libc::kill(holder, 0) } == 0 {
-			assert!(Instant::now() < deadline, "holder {holder} outlived SIGKILL");
-			std::thread::sleep(PROCESS_POLL);
+	}
+	#[cfg(target_os = "linux")]
+	impl Drop for Holder {
+		fn drop(&mut self) {
+			unsafe {
+				libc::kill(self.0, libc::SIGKILL);
+			}
+			let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
+			while unsafe { libc::kill(self.0, 0) } == 0 && Instant::now() < deadline {
+				std::thread::sleep(PROCESS_POLL);
+			}
 		}
 	}
 	#[cfg(target_os = "linux")]
@@ -2198,10 +2209,10 @@ mod tests {
 			)
 			.unwrap();
 		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
-		let holder: libc::pid_t = wait_for_file(&dir.join("holder")).trim().parse().unwrap();
+		let holder = Holder::read(&dir);
 		let group = command.process_group.load(Ordering::Acquire);
 		let settled = settled_record(&actor, &owner);
-		let holding = unsafe { libc::kill(holder, 0) } == 0;
+		let holding = unsafe { libc::kill(holder.0, 0) } == 0;
 		actor.begin_close(&owner).unwrap();
 		let closing = actor.close_receipt(&owner);
 		std::fs::write(dir.join("release"), b"").unwrap();
@@ -2209,7 +2220,7 @@ mod tests {
 		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
 		let closed = actor.close_receipt(&owner);
 		actor.shutdown();
-		reap_holder(holder);
+		drop(holder);
 		std::fs::remove_dir_all(&dir).unwrap();
 		match &settled.execution {
 			Execution::Settled { result: TaskResult::Completed { exit_code, output } } => {
@@ -2243,7 +2254,7 @@ mod tests {
 		dir: &std::path::Path,
 		leader: &str,
 		grace: Duration,
-	) -> (TaskLease, Arc<CommandTask>, libc::pid_t, libc::pid_t) {
+	) -> (TaskLease, Arc<CommandTask>, Holder, libc::pid_t) {
 		std::fs::create_dir(dir).unwrap();
 		TEST_QUARANTINE_GRACE.set(grace);
 		let launched =
@@ -2251,7 +2262,7 @@ mod tests {
 		TEST_QUARANTINE_GRACE.set(PROCESS_QUARANTINE_GRACE);
 		let task = launched.unwrap();
 		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
-		let holder: libc::pid_t = wait_for_file(&dir.join("holder")).trim().parse().unwrap();
+		let holder = Holder::read(dir);
 		let group = command.process_group.load(Ordering::Acquire);
 		(task, command, holder, group)
 	}
@@ -2290,7 +2301,7 @@ mod tests {
 		actor.begin_close(&owner).unwrap();
 		let closed = actor.close_receipt(&owner);
 		actor.shutdown();
-		reap_holder(holder);
+		drop(holder);
 		std::fs::remove_dir_all(&dir).unwrap();
 		assert!(held, "quarantine must not expire while the owner is open");
 		assert!(finished, "cleanup was not confirmed after the holder released the pipe");
@@ -2313,7 +2324,7 @@ mod tests {
 		let grace = Duration::from_secs(1);
 		let (_task, command, holder, group) =
 			start_escaped(&actor, &owner, &dir, "printf done; exit 7", grace);
-		assert_eq!(unsafe { libc::kill(holder, libc::SIGSTOP) }, 0);
+		assert_eq!(unsafe { libc::kill(holder.0, libc::SIGSTOP) }, 0);
 		let settled = settled_record(&actor, &owner);
 		let held = stays_quarantined(&actor, &owner, grace * 2);
 		actor.begin_close(&owner).unwrap();
@@ -2322,7 +2333,7 @@ mod tests {
 		let closing = actor.close_receipt(&owner);
 		let retained = command.retained.lock().unwrap().is_some();
 		actor.shutdown();
-		reap_holder(holder);
+		drop(holder);
 		std::fs::remove_dir_all(&dir).unwrap();
 		assert!(matches!(
 			&settled.execution,
@@ -2357,14 +2368,14 @@ mod tests {
 		let grace = Duration::from_secs(1);
 		let (task, command, holder, group) =
 			start_escaped(&actor, &owner, &dir, "exec sleep 30", grace);
-		assert_eq!(unsafe { libc::kill(holder, libc::SIGSTOP) }, 0);
+		assert_eq!(unsafe { libc::kill(holder.0, libc::SIGSTOP) }, 0);
 		actor.cancel(&task, CancelCause::User).unwrap();
 		let settled = settled_record(&actor, &owner);
 		let finished = command.join_until(Instant::now() + grace + PROCESS_SHUTDOWN_GRACE);
 		let failed = actor.snapshot(&owner).unwrap().tasks[0].clone();
 		let state = actor.snapshot(&owner).unwrap().state;
 		actor.shutdown();
-		reap_holder(holder);
+		drop(holder);
 		std::fs::remove_dir_all(&dir).unwrap();
 		assert_eq!(
 			settled.cleanup,
@@ -2402,7 +2413,7 @@ mod tests {
 			)
 			.unwrap();
 		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
-		let holder: libc::pid_t = wait_for_file(&dir.join("holder")).trim().parse().unwrap();
+		let holder = Holder::read(&dir);
 		let settled = settled_record(&actor, &owner);
 		std::fs::write(dir.join("write"), b"").unwrap();
 		wait_for_file(&dir.join("written"));
@@ -2411,7 +2422,7 @@ mod tests {
 		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
 		let spool = std::fs::read(&command.output.lock().unwrap().path).unwrap();
 		actor.shutdown();
-		reap_holder(holder);
+		drop(holder);
 		std::fs::remove_dir_all(&dir).unwrap();
 		assert!(finished);
 		assert_eq!(confirmed.cleanup, Cleanup::Reaped {});
@@ -2555,7 +2566,7 @@ mod tests {
 			.start_command(&owner, pipe_intent(&escaped_holder(&dir, "exec sleep 30")), "stop".into())
 			.unwrap();
 		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
-		let holder: libc::pid_t = wait_for_file(&dir.join("holder")).trim().parse().unwrap();
+		let holder = Holder::read(&dir);
 		let group = command.process_group.load(Ordering::Acquire);
 		actor.cancel(&task, CancelCause::User).unwrap();
 		let settled = settled_record(&actor, &owner);
@@ -2563,7 +2574,7 @@ mod tests {
 		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
 		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
 		actor.shutdown();
-		reap_holder(holder);
+		drop(holder);
 		std::fs::remove_dir_all(&dir).unwrap();
 		match &settled.execution {
 			Execution::Settled { result: TaskResult::Failed { code, message, .. } } => {

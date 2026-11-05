@@ -192,6 +192,10 @@ async function runStage(
 			group,
 			holder: pidFile(dir, "holder"),
 		};
+	} catch (error) {
+		// A stage that failed before returning its fixture must not leave the holder it started running.
+		releaseHolder({ dir, holder: pidFile(dir, "holder") });
+		throw error;
 	} finally {
 		await stage?.cleanup();
 	}
