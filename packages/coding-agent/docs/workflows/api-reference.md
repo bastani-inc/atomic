@@ -1330,6 +1330,7 @@ Binding resolves the workspace, at most once per workspace value; later bindings
 - **`worktree: "auto"`:** reuses the worktree already on the branch, wherever it is, or adds one at `<atomic home>/worktrees/<host>/<owner>/<repo>/<branch>` (`<atomic home>/worktrees/file/<repo>-<hash>/<branch>` for a `file://` remote, `<atomic home>/worktrees/local/<name>-<hash>/<branch>` for a local repository). Binding a local repository without a branch binds its own checkout.
 - **Explicit worktree:** an existing path must be the root of a worktree of the same repository, compared by its canonical git common directory after resolving symbolic links, and must be on the branch. Worktrees outside the repository root are allowed. A missing path is added from the branch.
 - **Dirty checkouts:** uncommitted and untracked files are accepted as they are and recorded in the binding's `tree`.
+- **Several processes at once:** processes on one machine that bind the same new branch get its one worktree; adding worktrees to a repository is serialized across processes.
 
 ### `BoundWorkspace`
 

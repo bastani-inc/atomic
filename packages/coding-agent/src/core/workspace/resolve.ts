@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../../config.js";
 import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
+import { withWorktreeLock } from "./lease.ts";
 import { redactCredentials } from "./redact.ts";
 import {
 	assertWorkspace,
@@ -343,7 +344,12 @@ async function bindWorktree(
 	}
 	const pending = pendingWorktrees.get(path);
 	if (pending !== undefined || !existsSync(path))
-		await (pending ?? shared(pendingWorktrees, path, () => addWorktree(repository, path, branch, baseTip)));
+		await (pending ??
+			shared(pendingWorktrees, path, () =>
+				withWorktreeLock(repository.commonDir, async () => {
+					if (!existsSync(path)) await addWorktree(repository, path, branch, baseTip);
+				}),
+			));
 	await verifyWorktree(repository, repo, path, branch);
 	return realpath(path);
 }

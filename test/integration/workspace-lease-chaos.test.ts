@@ -5,11 +5,19 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { resolveWorkspace, workspace } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
-import { createRepository, git, type WorkspaceSandboxDirs, workspaceSandbox } from "../helpers/workspace-repos.ts";
+import {
+	createRemote,
+	createRepository,
+	git,
+	type WorkspaceSandboxDirs,
+	workspaceSandbox,
+} from "../helpers/workspace-repos.ts";
 
 /** Structural cost: every case starts real Bun processes that load the lease module and contend through SQLite. */
 const CHAOS_TIMEOUT_MS = 120_000;
 const WORKER = join(moduleDir(import.meta.url), "..", "fixtures", "workspace-lease-worker.ts");
+const RESOLVER = join(moduleDir(import.meta.url), "..", "fixtures", "workspace-resolve-worker.ts");
+const BINDERS = 8;
 const CONTENDERS = 24;
 
 interface Outcome {
@@ -159,6 +167,45 @@ describe.skipIf(process.platform === "win32")("workspace writer lease under proc
 			const recovered = contend(worktree, "recovered");
 			assert.equal((await recovered.first)?.outcome, "acquired", "every killed holder is recoverable");
 			recovered.child.kill("SIGKILL");
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+});
+
+describe("workspace binding across processes (#3109)", () => {
+	test(
+		"processes binding one new branch at once all get its one worktree (#3109)",
+		async () => {
+			const remote = createRemote(dirs.root, "shared-branch");
+			const outcomes = await Promise.all(
+				Array.from(
+					{ length: BINDERS },
+					() =>
+						new Promise<{ readonly outcome: string; readonly worktree?: string; readonly message?: string }>(
+							(resolve, reject) => {
+								const child = spawn(bunExecutable(), [RESOLVER, remote.url, "together"], {
+									stdio: ["ignore", "pipe", "pipe"],
+								});
+								let output = "";
+								child.stdout.setEncoding("utf-8");
+								child.stdout.on("data", (chunk: string) => {
+									output += chunk;
+								});
+								child.once("error", reject);
+								child.once("close", () => resolve(JSON.parse(output.split("\n")[0] ?? "{}")));
+							},
+						),
+				),
+			);
+			assert.deepEqual(
+				outcomes.map((outcome) => outcome.outcome),
+				Array.from({ length: BINDERS }, () => "bound"),
+				JSON.stringify(outcomes.find((outcome) => outcome.outcome !== "bound")),
+			);
+			const worktrees = new Set(outcomes.map((outcome) => outcome.worktree));
+			assert.equal(worktrees.size, 1, "one worktree for the branch");
+			const [worktree] = worktrees;
+			assert.equal(git(worktree!, "symbolic-ref", "--short", "HEAD"), "together");
 		},
 		CHAOS_TIMEOUT_MS,
 	);

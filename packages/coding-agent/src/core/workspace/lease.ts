@@ -35,6 +35,8 @@ export interface AcquireWorkspaceWriterLeaseOptions {
 }
 
 const LEASE_DATABASE = "atomic-writer-lease.sqlite";
+const WORKTREE_LOCK_DATABASE = "atomic-worktree-lock.sqlite";
+const WORKTREE_LOCK_WAIT_MS = 10 * 60_000;
 const DEFAULT_LOCK_WAIT_MS = 5_000;
 const SCHEMA =
 	"CREATE TABLE IF NOT EXISTS writer (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, owner TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL, acquired_at TEXT NOT NULL)";
@@ -108,6 +110,15 @@ export async function closeAfter<T>(database: { close(): Promise<void> }, body: 
 	}
 	await database.close();
 	return result;
+}
+
+/**
+ * Run `body` holding the repository's worktree lock: a SQLite write transaction in its git directory, so processes on
+ * this host add worktrees to one repository one at a time. A lock whose process dies is released with it.
+ */
+export async function withWorktreeLock<T>(commonDir: string, body: () => Promise<T>): Promise<T> {
+	const database = await openLeaseDatabase(join(commonDir, WORKTREE_LOCK_DATABASE), WORKTREE_LOCK_WAIT_MS);
+	return closeAfter(database, () => database.transaction(body));
 }
 
 /**
