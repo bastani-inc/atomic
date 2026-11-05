@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	captureWorktreeSnapshot,
@@ -235,6 +236,34 @@ test("a failed pass removes the worktrees it created and records no mapping; cal
 	);
 	assert.deepEqual(events, []);
 	assert.deepEqual(worktreesIn(storeDir), []);
+});
+
+test("a leftover a rollback finds is reported with the restore it was removing, and needs no listener (#4245)", async () => {
+	const clones = [await sandbox.remoteWithClone("a"), await sandbox.remoteWithClone("b")];
+	const run = await startRun();
+	const snapshots = [await run.record(clones[0]!.clone, "a\n"), await run.record(clones[1]!.clone, "b\n")];
+	await fixture.journal.snapshotBlobs.deleteBlobs([snapshots[1]!.chain[0]!.patch!], { olderThanSeconds: 0 });
+	for (const listen of [true, false]) {
+		for (const { clone } of clones) sandbox.write(join(clone, "state.txt"), `drift ${listen}\n`);
+		const storeDir = sandbox.path(`host-${listen}`);
+		mkdirSync(join(storeDir, "restores"), { recursive: true });
+		const leftover = join(storeDir, "restores", `${randomUUID()}.json`);
+		writeFileSync(leftover, "{");
+		const warnings: Array<[string, string]> = [];
+		await assert.rejects(
+			resolveWorkflowSnapshotFrontier(fixture.journal, "run", {
+				storeDir,
+				...(listen ? { onWarning: (warning, mapping) => warnings.push([warning.code, mapping.snapshotId]) } : {}),
+			}),
+			(error: unknown) => {
+				assert.ok(isWorkspaceDriftError(error));
+				assert.equal("cleanupCause" in error, false);
+				return true;
+			},
+		);
+		assert.deepEqual(warnings, listen ? [["stale-restore-retained", snapshots[0]!.id]] : []);
+		assert.deepEqual(worktreesIn(storeDir), []);
+	}
 });
 
 test("a rollback that cannot remove a worktree keeps the original error and attaches the cleanup failure (#4245)", async () => {

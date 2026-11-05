@@ -394,7 +394,7 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 	// Show startup warnings
 	const { migratedProviders, startupDiagnostics, initialMessage, initialImages, initialMessages } = this.options;
 
-	showSessionNotices(this, startupDiagnostics ?? []);
+	showSessionNotices(this, startupDiagnostics);
 
 	if (migratedProviders && migratedProviders.length > 0) {
 		this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);

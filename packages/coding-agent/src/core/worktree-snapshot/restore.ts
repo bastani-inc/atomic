@@ -573,6 +573,7 @@ const LFS_POINTER_MAX_BYTES = 1024;
 
 async function isLfsPointer(file: string): Promise<boolean> {
 	try {
+		if (!(await lstat(file)).isFile()) return false;
 		const handle = await open(file, "r");
 		try {
 			const buffer = Buffer.alloc(LFS_POINTER_MAX_BYTES);
@@ -609,10 +610,9 @@ async function pullLfsObjects(
 	tree: string,
 	remotes: readonly string[],
 ): Promise<string[]> {
-	const neutral: GitRunOptions = { ...worktree, neutral: true, env: { GIT_LFS_SKIP_SMUDGE: "1" } };
 	const snapshotCommit = await writeSnapshotCommit(worktree, head, tree);
 	await runGit(["update-ref", "--no-deref", "HEAD", snapshotCommit], worktree);
-	await runGit(["read-tree", snapshotCommit], neutral);
+	await runGit(["read-tree", snapshotCommit], worktree);
 	let pointers = await remainingPointers(worktree.cwd, await lfsPaths(worktree));
 	for (const remote of remotes) {
 		if (pointers.length === 0) break;
@@ -625,8 +625,8 @@ async function pullLfsObjects(
 		pointers = await remainingPointers(worktree.cwd, pointers);
 	}
 	await runGit(["update-ref", "--no-deref", "HEAD", head], worktree);
-	await runGit(["read-tree", head], neutral);
-	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+	await runGit(["read-tree", head], worktree);
+	await runGit(["update-index", "-q", "--refresh"], { ...worktree, neutral: true, allowExitCodes: [1] });
 	return pointers;
 }
 

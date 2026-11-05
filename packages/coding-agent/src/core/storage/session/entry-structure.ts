@@ -102,16 +102,11 @@ function validPayload(entry: SessionEntry): boolean {
 	}
 }
 
-function validRestoreHostWarning(warning: WorktreeRestoreHostWarning): boolean {
-	if (warning === null || typeof warning !== "object") return false;
-	switch (warning.code) {
-		case "lfs-objects-unavailable":
-			return Array.isArray(warning.paths) && warning.paths.every((path) => typeof path === "string");
-		case "stale-restore-retained":
-			return typeof warning.path === "string";
-		default:
-			return false;
+function validRestoreHostWarning(warning: WorktreeRestoreHostWarning | null): boolean {
+	if (warning?.code === "lfs-objects-unavailable") {
+		return Array.isArray(warning.paths) && warning.paths.every((path) => typeof path === "string");
 	}
+	return warning?.code === "stale-restore-retained" && typeof warning.path === "string";
 }
 
 function validMessage(message: SessionMessageEntry["message"]): boolean {
