@@ -3,15 +3,19 @@ import { join } from "node:path";
 import ignore, { type Ignore } from "ignore";
 import { unreadablePathError } from "./errors.ts";
 
-/** Built-in patterns, in `.gitignore` syntax, for files that commonly hold credentials. */
+/**
+ * Built-in patterns, in `.gitignore` syntax, for files that commonly hold credentials. The last matching pattern
+ * decides, so the key-file extensions come after the negation that keeps `id_*` files with an extension, such as
+ * `id_rsa.pub` or `id_utils.ts`.
+ */
 export const SNAPSHOT_DENY_PATTERNS: readonly string[] = Object.freeze([
 	".env*",
+	"id_*",
+	"!id_*.*",
 	"*.pem",
 	"*.key",
 	"*.p12",
 	"*.pfx",
-	"id_*",
-	"!id_*.*",
 	"credentials",
 	"credentials.json",
 	".netrc",
