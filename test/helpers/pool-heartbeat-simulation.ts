@@ -2,7 +2,9 @@
  * Hundreds of simulated pool workers heartbeating against one real SQLite pool journal, on a virtual clock: the
  * journal's `unixepoch()` and the workers' timers both follow vitest's fake `Date`, so a two-minute window runs in
  * seconds. Each worker holds a distinct claimed attempt. Every transaction the pool submits while a window is measured
- * is counted; the root's lease renewals and the test's own inspections are not.
+ * is counted; the root's lease renewals and the test's own inspections are not. Pool reads run as read transactions on
+ * a read-only connection the journal opens itself (#4314), which this module does not clock: a test whose reads check
+ * leases against the journal's clock fakes `node:sqlite` so that every connection reads its clock from `Date`.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";

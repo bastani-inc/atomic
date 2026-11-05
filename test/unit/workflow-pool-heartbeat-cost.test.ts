@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { defaultWorkerHeartbeatMs } from "../../packages/workflows/src/workers/worker-timing.js";
 import {
 	assertNoLapse,
@@ -13,6 +13,21 @@ import {
 	usageAt,
 } from "../helpers/pool-heartbeat-simulation.js";
 
+/**
+ * Pool reads run on a read-only connection the journal opens itself (#4314). Every SQLite connection in this file reads
+ * its clock from `Date`, so that connection follows the simulation's fake clock as the journal's own connection does.
+ */
+vi.mock("node:sqlite", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:sqlite")>();
+	class DateClockedDatabase extends actual.DatabaseSync {
+		constructor(...args: ConstructorParameters<typeof actual.DatabaseSync>) {
+			super(...args);
+			this.function("unixepoch", { varargs: true }, () => Date.now() / 1_000);
+		}
+	}
+	return { ...actual, DatabaseSync: DateClockedDatabase };
+});
+
 /** Workers of one pool, as many as #4312 measured per coordinator. */
 const WORKERS = 450;
 /** The lease #4312's pools ran with. */
@@ -24,8 +39,8 @@ const STEP_MS = 500;
 /** The reduction #4313 requires of heartbeat-driven journal writes per second. */
 const REQUIRED_REDUCTION = 10;
 /**
- * Structural cost: hundreds of simulated workers and the ~160,000 journal transactions of the legacy heartbeat over
- * the window, run for real against SQLite.
+ * Structural cost: hundreds of simulated workers and the ~160,000 journal requests of the legacy heartbeat over the
+ * window, run for real against SQLite.
  */
 const HUNDREDS_OF_WORKERS_BENCHMARK_TIMEOUT_MS = 300_000;
 
@@ -109,7 +124,11 @@ test(
 
 			assert.equal(intervalMs, 15_000, "a 60 s lease is renewed every 15 s");
 			assert.equal(legacy.requests, WORKERS * 3 * (WINDOW_MS / LEGACY_HEARTBEAT_INTERVAL_MS));
-			assert.equal(legacy.transactions, legacy.requests, "the legacy heartbeat cost a transaction per request");
+			assert.equal(
+				legacy.transactions,
+				WORKERS * 2 * (WINDOW_MS / LEGACY_HEARTBEAT_INTERVAL_MS),
+				"the legacy heartbeat cost a transaction per renewal and per usage report, and its control poll is a read (#4314)",
+			);
 			assert.equal(coalesced.requests, WORKERS * heartbeatsPerWorker, "one coalesced request per heartbeat");
 			assert.equal(coalesced.transactions, coalesced.requests, "one journal transaction per coalesced heartbeat");
 			assert.ok(

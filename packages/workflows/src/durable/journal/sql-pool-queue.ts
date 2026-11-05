@@ -297,7 +297,7 @@ export class SqlPoolQueue {
 	 * a late one is renewed again by the same holder. `timeout` is the window for a root whose pool row does not exist yet.
 	 */
 	async rootLease(lease: Lease, timeout: number): Promise<"current" | "late" | "lost"> {
-		// Read outside a transaction: a pool waiting for a late root takes no write lock to ask again.
+		// A read: a pool waiting for a late root takes no write lock to ask again.
 		const row = await this.storage.read((executor) => this.leaseRow(executor, lease));
 		if (!row || row.epoch !== lease.epoch || row.holder_id !== lease.holderId) return "lost";
 		return isWorkflowLeaseExpired(row.renewed_at, row.timeout ?? timeout, row.now) ? "late" : "current";
@@ -325,9 +325,9 @@ export class SqlPoolQueue {
 		);
 	}
 	async control(lease: Lease): Promise<PoolControl> {
-		return this.transaction(async (tx) => {
-			await this.authority(tx, lease);
-			return this.controlIn(tx, lease);
+		return this.storage.read(async (executor) => {
+			await this.authority(executor, lease);
+			return this.controlIn(executor, lease);
 		});
 	}
 	private async controlIn(tx: SqliteExecutor, lease: Lease): Promise<PoolControl> {
@@ -387,9 +387,9 @@ export class SqlPoolQueue {
 	}
 
 	async assertCurrent(lease: Lease, token: WorkLease): Promise<void> {
-		await this.transaction(async (tx) => {
-			const { now } = await this.authority(tx, lease);
-			const row = await this.current(tx, lease, token);
+		await this.storage.read(async (executor) => {
+			const { now } = await this.authority(executor, lease);
+			const row = await this.current(executor, lease, token);
 			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 		});
 	}
@@ -999,8 +999,8 @@ export class SqlPoolQueue {
 		});
 	}
 	async result(root: string, id: string): Promise<WorkflowSerializableObject | undefined> {
-		return this.transaction(async (tx) => {
-			const row = await tx.get(
+		return this.storage.read(async (executor) => {
+			const row = await executor.get(
 				`SELECT r.result FROM ${this.work}_results r JOIN ${this.work} w ON w.id = r.work WHERE w.root = ? AND w.id = ?`,
 				root,
 				id,
@@ -1163,8 +1163,8 @@ export class SqlPoolQueue {
 		});
 	}
 	async inspect(root: string): Promise<readonly PoolWork[]> {
-		return this.transaction(async (tx) =>
-			(await tx.all<WorkRow>(`SELECT * FROM ${this.work} WHERE root = ? ORDER BY ready_at, rowid`, root)).map(
+		return this.storage.read(async (executor) =>
+			(await executor.all<WorkRow>(`SELECT * FROM ${this.work} WHERE root = ? ORDER BY ready_at, rowid`, root)).map(
 				fromRow,
 			),
 		);

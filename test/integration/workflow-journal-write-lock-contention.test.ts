@@ -88,7 +88,7 @@ test(
 			);
 			assert.ok(claimed);
 			holder = await holdWriteLock(path, 6_500);
-			await pool.assertCurrent(acquired.lease, claimed);
+			await pool.extend(acquired.lease, claimed, 600_000);
 			assert.equal(await holder.exited, 0, await readStreamText(holder.stderr));
 		} finally {
 			holder?.kill("SIGKILL");

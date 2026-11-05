@@ -30,6 +30,7 @@ interface ReadCounts {
 /**
  * A database that counts what every statement run through it reads, as the run-list counters do for the store.
  * Row counts are deterministic, so "stays flat" is checked as equal counts at two history sizes, never as a timing.
+ * It names its own adapter, so a journal reads through it rather than opening a read connection to the file.
  */
 function countReads(database: SqliteDatabase): { database: SqliteDatabase; reads: ReadCounts; reset(): void } {
 	const reads: ReadCounts = { statements: 0, rows: 0, tables: {} };
@@ -60,7 +61,7 @@ function countReads(database: SqliteDatabase): { database: SqliteDatabase; reads
 	return {
 		database: {
 			...wrap(database),
-			descriptor: database.descriptor,
+			descriptor: { ...database.descriptor, adapter: "counting" },
 			transaction: (callback, options) => database.transaction((tx) => callback(wrap(tx)), options),
 			close: () => database.close(),
 		},
