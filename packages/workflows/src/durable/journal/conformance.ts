@@ -546,6 +546,72 @@ export function registerRunJournalConformance(
 		);
 		assert.equal((await journal.getRun(header.runId))?.status, "waiting");
 	});
+	check("optional createRunWithEvents creates a run with its events atomically, or nothing", async (journal) => {
+		const createRunWithEvents = journal.createRunWithEvents;
+		if (createRunWithEvents === undefined) return;
+		const seeded = await createRunWithEvents.call(journal, header, [
+			{ event: { type: "RunStarted", payload: null }, key: "start" },
+			{ event: { type: "CheckpointRecorded", payload: { kind: "tool", id: "a" } }, key: "a" },
+			{ event: { type: "StatusChanged", payload: { status: "paused" } } },
+		]);
+		assert.equal(seeded, "created");
+		const written = await entries(journal);
+		assert.deepEqual(
+			written.map((entry) => [entry.seq, entry.key, entry.event.type]),
+			[
+				[1, "start", "RunStarted"],
+				[2, "a", "CheckpointRecorded"],
+				[3, undefined, "StatusChanged"],
+			],
+		);
+		assert.equal((await journal.getRun(header.runId))?.status, "paused");
+		assert.equal(await journal.leaseState(header.runId), undefined);
+		assert.equal((await journal.readKey(header.runId, "a"))?.seq, 2);
+		assert.equal(
+			await createRunWithEvents.call(journal, { ...header, name: "ignored" }, [
+				{ event: { type: "RunFinished", payload: null } },
+			]),
+			"exists",
+		);
+		assert.equal((await entries(journal)).length, 3);
+		const held = await lease(journal);
+		assert.equal((await journal.append(held, { type: "RunFinished", payload: null })).entry.seq, 4);
+		const other = { ...header, runId: "invalid" };
+		await assert.rejects(
+			createRunWithEvents.call(journal, other, [
+				{ event: { type: "RunStarted", payload: null } },
+				{ event: { type: "StatusChanged", payload: { status: "bad\u0000status" } } },
+			]),
+			JournalInvalidTextError,
+		);
+		assert.equal(await journal.getRun(other.runId), undefined);
+		for (const field of ["runId", "name", "cwd", "status"] as const)
+			await assert.rejects(
+				createRunWithEvents.call(journal, { ...header, [field]: "bad\u0000text" }, []),
+				(error: Error) =>
+					error.name === "JournalInvalidTextError" && (error as JournalInvalidTextError).field === field,
+			);
+		await assert.rejects(
+			createRunWithEvents.call(journal, other, [
+				{ event: { type: "RunStarted", payload: null }, key: "bad\u0000key" },
+			]),
+			(error: Error) =>
+				error.name === "JournalInvalidTextError" && (error as JournalInvalidTextError).field === "key",
+		);
+		const duplicate = { ...header, runId: "duplicate" };
+		await assert.rejects(
+			createRunWithEvents.call(journal, duplicate, [
+				{ event: { type: "RunStarted", payload: null }, key: "same" },
+				{ event: { type: "RunFinished", payload: null }, key: "same" },
+			]),
+			{ name: "StorageUnavailableError" },
+		);
+		assert.equal(await journal.getRun(duplicate.runId), undefined);
+		assert.deepEqual(
+			(await journal.listRuns()).map((run) => run.runId),
+			[header.runId],
+		);
+	});
 	check("optional change tracking reports run versions and snapshot tails", async (journal) => {
 		const members = [journal.changeToken, journal.runVersions, journal.snapshotTail];
 		if (members.every((member) => member === undefined)) return;
@@ -616,6 +682,9 @@ export function registerRunJournalConformance(
 			() => journal.readKey(header.runId, "\u0000"),
 			() => journal.deleteOwnedRun({ ...held, holderId: "\u0000" }),
 			() => journal.deleteRun("\u0000"),
+			...(journal.createRunWithEvents === undefined
+				? []
+				: [() => journal.createRunWithEvents!.call(journal, { ...header, runId: "created-after-close" }, [])]),
 		];
 		for (const operation of operations)
 			await assert.rejects(operation(), (error: Error) => {

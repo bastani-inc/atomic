@@ -224,6 +224,11 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 		["mode", detail.mode === "chain" ? `chain · ${detail.stages.length} stages` : "single"],
 		["started", formatTime(detail.startedAt)],
 	];
+	if (detail.forkedFrom !== undefined)
+		rows.push([
+			"forked from",
+			`${detail.forkedFrom.runId}${detail.forkedFrom.stagePath === undefined ? "" : ` at ${detail.forkedFrom.stagePath}`}`,
+		]);
 	if (detail.phase !== undefined) rows.push(["phase", `${detail.phase} (${detail.phaseAgeMs ?? 0}ms)`]);
 	if (detail.lastProgressAt !== undefined) rows.push(["last progress", formatTime(detail.lastProgressAt)]);
 	if (detail.dependencyError !== undefined) rows.push(["dependency", detail.dependencyError]);

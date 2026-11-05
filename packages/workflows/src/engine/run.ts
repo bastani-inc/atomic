@@ -365,6 +365,7 @@ async function executeRun(
 			: undefined);
 	const runPossibleStages =
 		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
+	const forkedFrom = rootBackend.getWorkflow(runId)?.forkedFrom;
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -395,6 +396,7 @@ async function executeRun(
 						: {}),
 				}
 			: {}),
+		...(forkedFrom !== undefined ? { forkedFrom: { ...forkedFrom } } : {}),
 		// A continuation keeps the attribution of the run it continues rather than
 		// recomputing it, so resuming an agent-started run still reads as one the
 		// agent started. Only the resume itself is attributed to its requester.

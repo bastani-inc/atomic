@@ -44,6 +44,8 @@ import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 export interface RunDetail extends RunExecutionObservation {
 	readonly runId: string;
 	readonly label?: string;
+	/** Source run and stage, when this run was created by `forkRun`. */
+	readonly forkedFrom?: { readonly runId: string; readonly stagePath?: string };
 	readonly identity?: string;
 	readonly summary?: string;
 	readonly summarizedThrough?: number;
@@ -130,6 +132,7 @@ export function inspectRun(
 		...observeRunExecution(copy, now),
 		runId: copy.id,
 		...(copy.rootRunId === undefined ? {} : { rootRunId: copy.rootRunId }),
+		...(copy.forkedFrom === undefined ? {} : { forkedFrom: copy.forkedFrom }),
 		name: copy.name,
 		label: copy.label,
 		identity: workflowIdentity(copy.id, copy.label, copy.inputs),

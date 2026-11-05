@@ -13,6 +13,7 @@ import {
 	type RunEvent,
 	type RunHeader,
 	type RunJournal,
+	type RunJournalSeedEvent,
 	RunNotFoundError,
 	type RunSummary,
 	StaleLeaseError,
@@ -50,6 +51,48 @@ export class MemoryRunJournal implements RunJournal {
 		const stored = storageBoundary(":memory:", () => JSON.parse(serializeJson(record)) as RunHeader);
 		if (this.runs.has(header.runId)) return "exists";
 		this.runs.set(header.runId, { header: stored, entries: [] });
+		return "created";
+	}
+
+	async createRunWithEvents(header: RunHeader, events: readonly RunJournalSeedEvent[]): Promise<"created" | "exists"> {
+		this.ensureOpen();
+		validateText("runId", header.runId);
+		validateText("name", header.name);
+		validateText("cwd", header.cwd);
+		validateText("status", header.status);
+		const record = this.storage === undefined ? header : { ...header, storage: this.storage };
+		const stored = storageBoundary(":memory:", () => JSON.parse(serializeJson(record)) as RunHeader);
+		const keys = new Set<string>();
+		const entries = events.map((seed, index): JournalEntry => {
+			if (seed.key !== undefined) {
+				validateText("key", seed.key);
+				if (keys.has(seed.key))
+					throw new StorageUnavailableError(
+						{ adapter: "memory", location: ":memory:" },
+						new Error(`Duplicate event key in run ${header.runId}`),
+					);
+				keys.add(seed.key);
+			}
+			const payload = storageBoundary(
+				":memory:",
+				() => JSON.parse(serializeJson(seed.event.payload)) as RunEvent["payload"],
+			);
+			const event = { type: seed.event.type, payload } as RunEvent;
+			if (event.type === "StatusChanged") validateText("status", event.payload.status);
+			return {
+				runId: header.runId,
+				seq: index + 1,
+				epoch: JOURNAL_LEASE.absentEpoch,
+				...(seed.key === undefined ? {} : { key: seed.key }),
+				event,
+				at: Date.now(),
+			};
+		});
+		if (this.runs.has(header.runId)) return "exists";
+		const latest = entries.findLast((entry) => entry.event.type === "StatusChanged")?.event.payload as
+			| { readonly status: string }
+			| undefined;
+		this.runs.set(header.runId, { header: { ...stored, status: latest?.status ?? stored.status }, entries });
 		return "created";
 	}
 

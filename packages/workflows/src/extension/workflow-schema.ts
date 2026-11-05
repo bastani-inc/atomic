@@ -42,7 +42,7 @@ export const WorkflowParametersSchema = Type.Object(
 			Type.Record(Type.String(), Type.Unknown(), {
 				default: {},
 				description:
-					"Inputs for action 'run', validated with defaults against the named workflow's input contract. Invalid values fail without launching.",
+					"Inputs for action 'run', validated with defaults against the named workflow's input contract, or replacement inputs for action 'fork'. Invalid values fail without launching.",
 			}),
 		),
 		budget: Type.Optional(WorkflowBudgetSchema),
@@ -62,18 +62,19 @@ export const WorkflowParametersSchema = Type.Object(
 					Type.Literal("pause"),
 					Type.Literal("quit"),
 					Type.Literal("resume"),
+					Type.Literal("fork"),
 					Type.Literal("reload"),
 				],
 				{
 					description:
-						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/quit runs, inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail, including its final outputs (result); add summary:true for a compact form without the stage history. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/quit runs, fork a durable run into a new run (optionally re-running from fromStage with replacement inputs; the source run is never changed), inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail, including its final outputs (result); add summary:true for a compact form without the stage history. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
 				},
 			),
 		),
 		runId: Type.Optional(
 			Type.String({
 				description:
-					"Full 36-character run UUID or unique 8-character hexadecimal UUID prefix for status/stages/stage/transcript/answer/pause/resume/quit. Other truncated forms are rejected; ambiguous prefixes require the full UUID. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
+					"Full 36-character run UUID or unique 8-character hexadecimal UUID prefix for status/stages/stage/transcript/answer/pause/resume/quit/fork (for fork, the source run). Other truncated forms are rejected; ambiguous prefixes require the full UUID. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
 			}),
 		),
 		all: Type.Optional(
@@ -155,6 +156,18 @@ export const WorkflowParametersSchema = Type.Object(
 		promptId: Type.Optional(
 			Type.String({
 				description: "Pending prompt identifier for the answer action.",
+			}),
+		),
+		fromStage: Type.Optional(
+			Type.String({
+				description:
+					"Fork-only: dot path of the completed stage the fork re-runs from, for example 'implement-api.review-2' for a stage inside a nested workflow. An unknown path fails with the run's valid stage paths. Omit to fork the whole run.",
+			}),
+		),
+		carryMessages: Type.Optional(
+			Type.Union([Type.Literal("before"), Type.Literal("all")], {
+				description:
+					"Fork-only: carry Intercom messages and prompt answers recorded before the fork point ('before', default) or all of them ('all').",
 			}),
 		),
 		reason: Type.Optional(

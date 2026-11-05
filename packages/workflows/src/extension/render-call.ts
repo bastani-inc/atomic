@@ -23,6 +23,7 @@ export interface WorkflowToolArgs {
 		| "pause"
 		| "quit"
 		| "resume"
+		| "fork"
 		| "reload"
 		| "inputs";
 	runId?: string;
@@ -96,6 +97,9 @@ export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): s
 			break;
 		case "resume":
 			line = name === undefined ? "workflow: resume run" : `workflow: resume run ${quoted(name)}`;
+			break;
+		case "fork":
+			line = name === undefined ? "workflow: fork run" : `workflow: fork run ${quoted(name)}`;
 			break;
 		case "get":
 			line = name === undefined ? "workflow: get" : `workflow: get ${quoted(name)}`;

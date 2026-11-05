@@ -31,6 +31,8 @@ export interface WorkflowRunStatusDigest {
 	readonly error?: string;
 	readonly exitReason?: string;
 	readonly resumable?: boolean;
+	/** Source run and stage when the run was created by a fork. */
+	readonly forkedFrom?: RunDetail["forkedFrom"];
 	readonly resumeGuidance?: string;
 	readonly ownerActiveElsewhere?: true;
 	/** Empty for runs that completed, were cancelled or were killed. */
@@ -85,6 +87,7 @@ export function buildWorkflowRunStatusDigest(detail: RunDetail): WorkflowRunStat
 		...(detail.error === undefined ? {} : { error: detail.error }),
 		...(detail.exitReason === undefined ? {} : { exitReason: detail.exitReason }),
 		...(detail.resumable === undefined ? {} : { resumable: detail.resumable }),
+		...(detail.forkedFrom === undefined ? {} : { forkedFrom: detail.forkedFrom }),
 		...(detail.resumeGuidance === undefined ? {} : { resumeGuidance: detail.resumeGuidance }),
 		...(detail.ownerActiveElsewhere === true ? { ownerActiveElsewhere: true as const } : {}),
 		blockers: blockers(detail),

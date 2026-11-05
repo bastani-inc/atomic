@@ -77,6 +77,7 @@ export async function stripWorkflowOnlyOptions(
 		routerSelection: _routerSelection,
 		context,
 		forkFromSessionId,
+		forkFromEntryId,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		sessionStore,
@@ -118,6 +119,8 @@ export async function stripWorkflowOnlyOptions(
 			forkFromSessionId,
 			cwd,
 			classification,
+			undefined,
+			forkFromEntryId,
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {

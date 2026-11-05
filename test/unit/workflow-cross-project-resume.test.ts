@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultSessionDirPath, JsonlSessionStore, SessionManager } from "@bastani/atomic";
+import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { forkDurableWorkflow } from "../../packages/workflows/src/durable/fork-workflow.js";
+import { ForkCopyFailedError } from "../../packages/workflows/src/durable/fork-errors.js";
+import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createDurableTaskPrimitive } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
@@ -225,7 +227,22 @@ test("forked stage conversations copy history without sharing the source session
 		const forkSession = vi.spyOn(sessionStore, "create");
 		let forkId: string;
 		try {
-			forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined, sessionStore);
+			forkId = (
+				await forkDurableRun(backend, {
+					source: "cli",
+					runId: id,
+					cwd,
+					carryMessages: "all",
+					definition: workflow({
+						name: "history",
+						description: "",
+						inputs: { items: Type.Array(Type.String()) },
+						outputs: {},
+						run: async () => ({}),
+					}),
+					sessionStore,
+				})
+			).runId;
 			assert.equal(forkSession.mock.calls.length, 1);
 		} finally {
 			forkSession.mockRestore();
@@ -292,13 +309,14 @@ test("cross-project forks read the source project store and write the selected d
 			output: { text: "saved", sessionId: source.getSessionId() },
 			completedAt: 1,
 		});
-		const forkId = await forkDurableWorkflow(
-			backend,
-			backend.getWorkflow(sourceId)!,
-			join(root, "target"),
-			undefined,
-			destination,
-		);
+		const { runId: forkId } = await forkDurableRun(backend, {
+			source: "cli",
+			runId: sourceId,
+			cwd: join(root, "target"),
+			carryMessages: "all",
+			definition: workflow({ name: "history", description: "", inputs: {}, outputs: {}, run: async () => ({}) }),
+			sessionStore: destination,
+		});
 		const checkpoint = backend.listCheckpoints(forkId)[0];
 		assert.equal(checkpoint.kind, "stage");
 		if (checkpoint.kind !== "stage") assert.fail("stage checkpoint required");
@@ -357,9 +375,10 @@ test("cross-project fork retries an interrupted tool frontier and replays earlie
 	assert.deepEqual(backend.getWorkflow(id), source);
 });
 
-test("interrupted cross-project checkpoint copies never become resumable (#3577)", async () => {
+test("an interrupted cross-project fork copy leaves no run, and a retry forks every checkpoint (#3577, #4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sourceId = testRunId("interrupted-copy");
+	const definition = workflow({ name: "copy", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
 	await backend.commitWorkflowRegistration({
 		workflowId: sourceId,
 		name: "copy",
@@ -378,26 +397,26 @@ test("interrupted cross-project checkpoint copies never become resumable (#3577)
 			completedAt: 1,
 		});
 	}
-	const original = backend.commitCheckpoint.bind(backend);
-	let incompleteId: string | undefined;
-	const copy = vi.spyOn(backend, "commitCheckpoint").mockImplementation(async (checkpoint) => {
-		incompleteId = checkpoint.workflowId;
-		assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
-		if (checkpoint.kind === "tool" && checkpoint.name === "second") throw new Error("copy interrupted");
-		await original(checkpoint);
-	});
-	try {
-		await assert.rejects(
-			forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined),
-			/copy interrupted/,
-		);
-	} finally {
-		copy.mockRestore();
-	}
-	assert.ok(incompleteId);
-	assert.equal(backend.listCheckpoints(incompleteId).length, 1);
-	assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
-	const completedId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
+	const request = {
+		source: "cli" as const,
+		runId: sourceId,
+		cwd: "/target-project",
+		carryMessages: "all" as const,
+		definition,
+	};
+	const create = backend.journal.createRunWithEvents.bind(backend.journal);
+	const interrupted = vi
+		.spyOn(backend.journal, "createRunWithEvents")
+		.mockImplementationOnce(async (header, events) => {
+			await assert.rejects(create(header, [...events, events[1]!]));
+			throw new Error("copy interrupted");
+		});
+	const failure = await forkDurableRun(backend, request).catch((error: Error) => error);
+	interrupted.mockRestore();
+	assert.ok(failure instanceof ForkCopyFailedError);
+	assert.equal(await backend.journal.getRun(failure.forkRunId), undefined);
+	assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === failure.forkRunId));
+	const { runId: completedId } = await forkDurableRun(backend, request);
 	assert.equal(backend.listCheckpoints(completedId).length, 2);
 	assert.ok(backend.listResumableWorkflows().some((entry) => entry.workflowId === completedId));
 });
@@ -437,7 +456,13 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 		backend,
 	);
 	const original = structuredClone(backend.getWorkflow(sourceId));
-	const forkId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
+	const { runId: forkId } = await forkDurableRun(backend, {
+		source: "cli",
+		runId: sourceId,
+		cwd: "/target-project",
+		carryMessages: "all",
+		definition: workflow({ name: "sticky", description: "", inputs: {}, outputs: {}, run: async () => ({}) }),
+	});
 	const pending = backend.getWorkflow(forkId)!.pendingStageMessages;
 	assert.equal(pending?.[0].stageKey, `workflow:${forkId}/review-*`);
 	assert.equal(pending?.[0].targetPath, `workflow:${forkId}/review-*`);

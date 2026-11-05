@@ -32,6 +32,7 @@ const MUTATING_WORKFLOW_ACTIONS = new Set<NonNullable<WorkflowToolArgs["action"]
 	"answer",
 	"pause",
 	"resume",
+	"fork",
 	"quit",
 ]);
 

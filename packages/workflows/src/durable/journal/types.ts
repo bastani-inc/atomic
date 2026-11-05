@@ -40,6 +40,7 @@ export type {
 	RunHeader,
 	RunJournal,
 	RunJournalBatchAppend,
+	RunJournalSeedEvent,
 	RunSnapshotTail,
 	RunSummary,
 	RunVersion,

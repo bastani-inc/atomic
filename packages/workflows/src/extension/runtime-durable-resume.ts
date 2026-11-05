@@ -4,6 +4,8 @@ import {
 	type OpenCompletedDurableResult,
 	openCompletedDurableWorkflow as openCompletedSnapshot,
 } from "../durable/completed-inspection.js";
+import { type ForkConfigSource, type ForkError, isForkError } from "../durable/fork-errors.js";
+import { type ForkCarryMessages, forkDurableRun } from "../durable/fork-run.js";
 import {
 	prepareRuntimeDurableResumable,
 	prepareTargetedDurableResumable,
@@ -12,10 +14,11 @@ import {
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
 } from "../durable/resume-runtime.js";
+import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
-import type { ResumableWorkflowEntry } from "../durable/types.js";
+import type { ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
 import type { ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
@@ -26,14 +29,43 @@ import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
-import type { WorkflowExecutionPolicy } from "../shared/types.js";
+import type { WorkflowExecutionPolicy, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { discoverWorkflows } from "./discovery.js";
 import { withWorkflowResumeAdmission } from "./dormant-run-gate.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
+/** Outcome of forking a durable run from this session and resuming the fork. */
+export type ForkDurableWorkflowResult =
+	| {
+			readonly ok: true;
+			readonly runId: string;
+			readonly forkedFrom: WorkflowForkedFrom;
+			/** False when the fork was created but its resume did not start; `/workflow resume` starts it. */
+			readonly started: boolean;
+			readonly message: string;
+	  }
+	| { readonly ok: false; readonly error: ForkError; readonly message: string; readonly runId?: string };
+
+export interface ForkDurableWorkflowOptions {
+	readonly source: ForkConfigSource;
+	readonly fromStage?: string;
+	readonly inputs?: WorkflowInputValues;
+	readonly carryMessages?: ForkCarryMessages;
+	readonly policy?: WorkflowExecutionPolicy;
+	readonly actor?: WorkflowActor;
+	readonly modelOwner?: string;
+	readonly signal?: AbortSignal;
+	readonly onRunAccepted?: (runId: string) => void;
+}
+
 export interface DurableResumeRuntime {
 	durableBackend(): DurableWorkflowBackend;
+	/**
+	 * Fork a durable run into this session's directory with `forkRun` semantics and resume the fork in
+	 * the background. A fork failure is reported as its typed `ForkError`; the source run is never written.
+	 */
+	forkDurableWorkflow(sourceRunId: string, options: ForkDurableWorkflowOptions): Promise<ForkDurableWorkflowResult>;
 	resumeDurableWorkflow(
 		workflowId: string,
 		options?: {
@@ -111,8 +143,65 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		for (const id of ids) await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id);
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
-	return {
+	const resolveDefinition = async (name: string, cwd: string | undefined) =>
+		deps.registry.get(name) ??
+		(
+			await discoverWorkflows({
+				cwd: cwd ?? deps.runtimeCwd,
+				getWorkflowHostModules: deps.getWorkflowHostModules,
+			})
+		).registry.get(name);
+	const runtime: DurableResumeRuntime = {
 		durableBackend: selectedBackend,
+		async forkDurableWorkflow(sourceRunId, options) {
+			options.signal?.throwIfAborted();
+			const backend = await withRecovery(
+				async () => availableRunDurableBackend(deps.store, sourceRunId) ?? (await ensureReady()),
+			);
+			let fork: Awaited<ReturnType<typeof forkDurableRun>>;
+			try {
+				fork = await forkDurableRun(backend, {
+					source: options.source,
+					runId: sourceRunId,
+					cwd: deps.runtimeCwd,
+					carryMessages: options.carryMessages ?? "before",
+					fromStage: options.fromStage,
+					inputs: options.inputs,
+					resolveDefinition,
+					sessionStore: deps.adapters?.sessionStore,
+					modelOwner: options.modelOwner,
+					signal: options.signal,
+					isLiveRun: (runId) => hasActiveLiveRun(deps.store, runId),
+				});
+			} catch (error) {
+				if (!isForkError(error)) throw error;
+				return { ok: false, error, message: error.message };
+			}
+			preparedCatalog = await prepareTargetedDurableResumable(backend, [fork.runId]);
+			const resumed = await runtime.resumeDurableWorkflow(fork.runId, {
+				policy: options.policy,
+				actor: options.actor,
+				modelOwner: options.modelOwner,
+				signal: options.signal,
+				onRunAccepted: options.onRunAccepted,
+			});
+			const from = `${fork.forkedFrom.runId}${fork.forkedFrom.stagePath === undefined ? "" : ` from stage "${fork.forkedFrom.stagePath}"`}`;
+			if (!resumed.ok)
+				return {
+					ok: true,
+					runId: fork.runId,
+					forkedFrom: fork.forkedFrom,
+					started: false,
+					message: `Forked workflow ${from} into ${fork.runId}; it did not start: ${resumed.message} Resume it with /workflow resume ${fork.runId}.`,
+				};
+			return {
+				ok: true,
+				runId: fork.runId,
+				forkedFrom: fork.forkedFrom,
+				started: true,
+				message: `Forked workflow ${from} into ${fork.runId}. ${resumed.message}`,
+			};
+		},
 		async inspectDurableWorkflow(workflowId) {
 			return withRecovery(async () => {
 				const backend = availableRunDurableBackend(deps.store, workflowId) ?? (await ensureReady());
@@ -263,6 +352,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			}
 		},
 	};
+	return runtime;
 }
 
 function resolveCatalogEntry(

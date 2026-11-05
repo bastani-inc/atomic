@@ -274,6 +274,7 @@ export interface WorkflowToolArgs {
 		| "pause"
 		| "quit"
 		| "resume"
+		| "fork"
 		| "reload"
 		| "inputs";
 	runId?: string;
@@ -291,6 +292,10 @@ export interface WorkflowToolArgs {
 	response?: unknown;
 	promptId?: string;
 	reason?: string;
+	/** Fork only: dot path of the stage the fork re-runs from. */
+	fromStage?: string;
+	/** Fork only: carry Intercom messages and prompt answers before the fork point, or all. */
+	carryMessages?: "before" | "all";
 }
 
 export type WorkflowExecuteToolResult = PiAgentToolResult<WorkflowRegisteredToolResult>;

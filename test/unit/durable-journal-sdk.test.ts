@@ -102,7 +102,7 @@ for (const runtime of ["node", "bun"] as const) {
 				assert.equal(result.exitCode, 0, result.stderr.toString() + result.stdout.toString());
 				assert.deepEqual(JSON.parse(result.stdout.toString()), {
 					runtime,
-					publicConformance: 25,
+					publicConformance: 26,
 					status: "passed",
 				});
 			} finally {

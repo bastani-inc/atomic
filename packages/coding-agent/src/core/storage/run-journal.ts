@@ -104,6 +104,11 @@ export interface RunJournalBatchAppend {
 	readonly key?: string;
 	readonly context: <R>(action: () => R) => R;
 }
+/** One event of a run created with `createRunWithEvents`; `key` is the event's idempotency key, as with `append`. */
+export interface RunJournalSeedEvent {
+	readonly event: RunEvent;
+	readonly key?: string;
+}
 export interface RunJournal {
 	createRun(header: RunHeader): Promise<"created" | "exists">;
 	getRun(runId: string): Promise<RunSummary | undefined>;
@@ -139,4 +144,10 @@ export interface RunJournal {
 		lease: Lease,
 		appends: readonly RunJournalBatchAppend[],
 	): Promise<readonly PromiseSettledResult<AppendOutcome>[]>;
+	/**
+	 * Optional atomic creation of a run together with its first events, as sequences 1..n, in one transaction:
+	 * afterwards the run either exists with exactly these events or was not written at all. The run is created
+	 * without a lease. Resolves "exists", writing nothing, when the run id is taken. `forkRun` requires it.
+	 */
+	createRunWithEvents?(header: RunHeader, events: readonly RunJournalSeedEvent[]): Promise<"created" | "exists">;
 }

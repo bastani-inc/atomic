@@ -1,3 +1,4 @@
+import { ForkConfigError } from "../durable/fork-errors.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
@@ -37,6 +38,7 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
 import { overlaySurfaceFromContext, reloadFailureMessage, resolveRunId } from "./workflow-targets.js";
+import { workflowForkAction } from "./workflow-tool-fork.js";
 
 export interface WorkflowSlashCommandDeps {
 	runtimeProxy: ExtensionRuntime;
@@ -61,7 +63,7 @@ export function registerWorkflowSlashCommand(
 		"workflow",
 		{
 			description:
-				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|quit|pause|resume|inputs|reload] [args]",
+				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
 			handler: (args, ctx) => workflowSlashHandler(args, ctx, pi, deps),
 			getArgumentCompletions: (
 				partial: string,
@@ -202,6 +204,22 @@ async function workflowSlashHandler(
 		await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, deps.runControl);
 		return;
 	}
+	if (subcommand === "fork") {
+		const parsed = parseWorkflowForkArgs(parts.slice(1));
+		if (parsed instanceof ForkConfigError) return fail(parsed.message);
+		await ensureWorkflowResourcesVisible();
+		const result = await workflowForkAction(
+			{
+				action: "fork",
+				runId: parsed.runId,
+				...(parsed.fromStage === undefined ? {} : { fromStage: parsed.fromStage }),
+			},
+			{ getRuntime: () => deps.runtimeForContext(ctx), policy, source: "cli" },
+		);
+		if (result.status === "failed") return fail(result.message);
+		print(result.message);
+		return;
+	}
 	if (subcommand === "inputs") {
 		const workflowName = parts[1] ?? "";
 		if (!workflowName) return fail("Usage: /workflow inputs <name>");
@@ -302,4 +320,36 @@ async function workflowSlashHandler(
 	) {
 		deps.overlay.open(runResult.runId, overlaySurfaceFromContext(ctx));
 	}
+}
+
+/** `/workflow fork <run> [--from <stage>]` arguments, or the typed error naming what is wrong with them. */
+export function parseWorkflowForkArgs(
+	tokens: readonly string[],
+): { readonly runId: string; readonly fromStage?: string } | ForkConfigError {
+	const positional: string[] = [];
+	let fromStage: string | undefined;
+	let invalidFrom = false;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		if (token === "--from") {
+			const value = tokens[index + 1];
+			if (value === undefined || value.startsWith("--") || fromStage !== undefined) invalidFrom = true;
+			else fromStage = value;
+			index++;
+		} else if (token.startsWith("--from=")) {
+			const value = token.slice("--from=".length);
+			if (value.length === 0 || fromStage !== undefined) invalidFrom = true;
+			else fromStage = value;
+		} else positional.push(token);
+	}
+	const issues: { readonly field: "runId" | "fromStage"; readonly expected: string }[] = [];
+	if (positional.length !== 1 || positional[0]!.startsWith("--"))
+		issues.push({
+			field: "runId",
+			expected: "exactly one run id or 8-character prefix: /workflow fork <run> [--from <stage>]",
+		});
+	if (invalidFrom) issues.push({ field: "fromStage", expected: "one stage path after --from" });
+	const [first, ...rest] = issues;
+	if (first !== undefined) return new ForkConfigError({ source: "cli", issues: [first, ...rest] });
+	return { runId: positional[0]!, ...(fromStage === undefined ? {} : { fromStage }) };
 }

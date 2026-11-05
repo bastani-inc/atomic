@@ -127,6 +127,8 @@ export type {
 	WorkflowProvidedInputsFromSchemas,
 } from "./authoring/workflow.js";
 export { workflow } from "./authoring/workflow.js";
+export * from "./durable/fork-errors.js";
+export type { ForkCarryMessages, ForkPoint } from "./durable/fork-run.js";
 export type {
 	ObserveRunJournalRead,
 	OpenRunJournal,
@@ -144,6 +146,7 @@ export {
 	type WorkflowSnapshotBoundary,
 	workflowSnapshotFrontier,
 } from "./durable/worktree-snapshots.js";
+export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "./durable/types.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";
 export { createAgentSessionAdapter } from "./extension/wiring.js";
@@ -161,6 +164,13 @@ export {
 	readinessVerdict,
 	type StageReadinessDecision,
 } from "./runs/foreground/readiness-decision.js";
+export type {
+	ForkedRun,
+	ForkRunOptions,
+	ListForkPointsOptions,
+	WorkflowRunEvent,
+} from "./runs/foreground/sdk-fork.js";
+export { forkRun, listForkPoints } from "./runs/foreground/sdk-fork.js";
 export { run } from "./runs/foreground/sdk-run.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";

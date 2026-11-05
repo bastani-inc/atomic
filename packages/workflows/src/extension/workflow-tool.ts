@@ -39,6 +39,7 @@ import {
 	workflowReloadAction,
 	workflowResumeAction,
 } from "./workflow-tool-control.js";
+import { workflowForkAction } from "./workflow-tool-fork.js";
 import {
 	type WorkflowInspectionSource,
 	workflowStageResult,
@@ -337,6 +338,18 @@ export function makeExecuteWorkflowTool(
 								undefined,
 								requireStoreDurableBackend(store, id),
 							),
+					}),
+				);
+			case "fork":
+				await ensureWorkflowResourcesVisible();
+				return awaitRequest(
+					workflowForkAction(args, {
+						getRuntime,
+						policy,
+						source: "sdk",
+						modelOwner: workflowCaller(ctx),
+						signal,
+						onRunAccepted,
 					}),
 				);
 			default: {

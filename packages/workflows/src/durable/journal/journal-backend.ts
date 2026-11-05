@@ -212,6 +212,19 @@ function snapshotNeedsHistory(tail: RunSnapshotTail): boolean {
 	);
 }
 
+/**
+ * The handle a journal event writes, with its pending-stage entries decoded against the run's handle before the
+ * event; undefined for an event that carries no handle. Reading a run's events in order through this yields the
+ * handle as of any event.
+ */
+export function decodeJournalEventHandle(
+	event: RunEvent,
+	previous: DurableWorkflowHandle | undefined,
+): DurableWorkflowHandle | undefined {
+	const handle = writtenHandle(event as BackendEvent);
+	return handle === undefined ? undefined : decodeHandle(handle, previous?.pendingStageMessages);
+}
+
 function* invoke<T>(action: () => Promise<T>): Operation<T> {
 	try {
 		const result = action();
@@ -1317,6 +1330,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	async hydrateWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.rebuild(runId), false);
+	}
+	/** Whether a workflow execution of this process holds `runId` (`withWorkflowLease`). */
+	hasWorkflowExecution(runId: string): boolean {
+		return this.executions.has(runId);
 	}
 	async catchUpWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.extend(runId), false);

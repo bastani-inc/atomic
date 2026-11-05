@@ -26,6 +26,7 @@ function adminCompletions(): PiArgumentCompletion[] {
 		{ value: "pause ", label: "pause", description: "Pause a run" },
 		{ value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
 		{ value: "resume ", label: "resume", description: "Re-open overlay for a run" },
+		{ value: "fork ", label: "fork", description: "Fork a run into a new run, optionally --from a stage" },
 		{ value: "inputs ", label: "inputs", description: "Show a workflow's input schema" },
 		{ value: "reload ", label: "reload", description: "Reload workflow resources" },
 	];
@@ -52,7 +53,7 @@ export function workflowArgumentCompletionsNeedWorkflowResources(partial: string
 	const subcommand = parts[0] ?? "";
 	if (!partial.includes(" ")) return true;
 	if (!subcommand || subcommand === "inputs") return true;
-	if (["status", "connect", "resume", "attach", "pause", "quit", "reload"].includes(subcommand)) {
+	if (["status", "connect", "resume", "attach", "pause", "quit", "reload", "fork"].includes(subcommand)) {
 		return false;
 	}
 	return true;
@@ -78,6 +79,12 @@ export function workflowArgumentCompletions(
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
 			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
 			{ value: "-y ", label: "-y", description: "Skip confirmation" },
+			...runIdItems(activeStore),
+		]);
+	}
+	if (subcommand === "fork") {
+		return completeToken(partial, [
+			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
 			...runIdItems(activeStore),
 		]);
 	}

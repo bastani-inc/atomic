@@ -1,0 +1,722 @@
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import {
+	FORK_ERROR_MAX_CAUSE_DEPTH,
+	ForkConfigError,
+	ForkCopyFailedError,
+	ForkDefinitionMismatchError,
+	ForkEntryNotFoundError,
+	ForkError,
+	type ForkErrorFields,
+	ForkJournalUnavailableError,
+	ForkJournalUnsupportedError,
+	ForkSessionNotFoundError,
+	ForkSourceBusyError,
+	ForkSourceNotFoundError,
+	ForkTargetNotFoundError,
+	findForkError,
+	isForkConfigError,
+	isForkCopyFailedError,
+	isForkDefinitionMismatchError,
+	isForkEntryNotFoundError,
+	isForkError,
+	isForkJournalUnavailableError,
+	isForkJournalUnsupportedError,
+	isForkSessionNotFoundError,
+	isForkSourceBusyError,
+	isForkSourceNotFoundError,
+	isForkTargetNotFoundError,
+	isRetryableForkError,
+	type KnownForkError,
+	rehydrateForkError,
+	type SerializedForkError,
+	serializeForkError,
+} from "../../packages/workflows/src/durable/fork-errors.js";
+import * as sdk from "../../packages/workflows/src/sdk-surface.js";
+
+const runId = "3f2a0c1e-0000-4000-8000-000000000001";
+const forkRunId = "9b1d0c1e-0000-4000-8000-000000000002";
+const join = "atomic team join <url> --token-file <path>";
+
+interface Case {
+	readonly error: KnownForkError;
+	readonly message: string;
+	readonly hint: string;
+	readonly fields: ForkErrorFields;
+}
+
+function assertCases(cases: readonly Case[]): void {
+	for (const { error, message, hint, fields } of cases) {
+		assert.equal(error.message, message);
+		assert.equal(error.hint, hint);
+		assert.deepEqual(error.fields, fields);
+		assert.ok(error.message.endsWith(` (${error.code}). ${error.hint}`));
+	}
+}
+
+const many = Array.from({ length: 12 }, (_, index) => `stage-${index}`);
+
+test("ForkTargetNotFoundError renders the paths it lists as a stable message and hint (#4321)", () => {
+	const listed = many.slice(0, 10).join(", ");
+	assertCases([
+		{
+			error: new ForkTargetNotFoundError({ runId, fromStage: "x.y", validStagePaths: many }),
+			message: `Fork target not found: stage "x.y" in run ${runId} (target-not-found). Pass one of: ${listed} (and 2 more); listForkPoints("${runId}") lists them all.`,
+			hint: `Pass one of: ${listed} (and 2 more); listForkPoints("${runId}") lists them all.`,
+			fields: { runId, fromStage: "x.y", validStagePaths: many.slice(0, 10), totalValidStagePaths: 12 },
+		},
+		{
+			error: new ForkTargetNotFoundError({
+				runId,
+				fromStage: "x",
+				validStagePaths: ["a", "b"],
+				totalValidStagePaths: 5,
+			}),
+			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). Pass one of: a, b (and 3 more); listForkPoints("${runId}") lists them all.`,
+			hint: `Pass one of: a, b (and 3 more); listForkPoints("${runId}") lists them all.`,
+			fields: { runId, fromStage: "x", validStagePaths: ["a", "b"], totalValidStagePaths: 5 },
+		},
+		{
+			error: new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: ["a"] }),
+			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). Pass one of: a; listForkPoints("${runId}") lists them all.`,
+			hint: `Pass one of: a; listForkPoints("${runId}") lists them all.`,
+			fields: { runId, fromStage: "x", validStagePaths: ["a"], totalValidStagePaths: 1 },
+		},
+		{
+			error: new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: [] }),
+			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). The run has no completed stage to fork from yet; listForkPoints("${runId}") lists stages once they complete.`,
+			hint: `The run has no completed stage to fork from yet; listForkPoints("${runId}") lists stages once they complete.`,
+			fields: { runId, fromStage: "x", validStagePaths: [], totalValidStagePaths: 0 },
+		},
+	]);
+});
+
+test("ForkDefinitionMismatchError renders each reason as a stable message and hint (#4321)", () => {
+	const pass = `Pass the "goal" definition with the definition option, or register it in the registry option.`;
+	assertCases([
+		{
+			error: new ForkDefinitionMismatchError({ runId, workflow: "goal", reason: "definition-unavailable" }),
+			message: `Fork definition mismatch: workflow "goal" of run ${runId} could not be resolved (definition-mismatch). ${pass}`,
+			hint: pass,
+			fields: { runId, workflow: "goal", reason: "definition-unavailable" },
+		},
+		{
+			error: new ForkDefinitionMismatchError({
+				runId,
+				workflow: "goal",
+				reason: "name-changed",
+				definition: "ralph",
+			}),
+			message: `Fork definition mismatch: definition "ralph" does not match workflow "goal" of run ${runId} (definition-mismatch). ${pass}`,
+			hint: pass,
+			fields: { runId, workflow: "goal", reason: "name-changed", definition: "ralph" },
+		},
+		{
+			error: new ForkDefinitionMismatchError({ runId, workflow: "goal", reason: "inputs-incompatible" }),
+			message: `Fork definition mismatch: the recorded inputs of run ${runId} no longer satisfy workflow "goal" (definition-mismatch). Pass replacement inputs that satisfy the current definition with the inputs option.`,
+			hint: "Pass replacement inputs that satisfy the current definition with the inputs option.",
+			fields: { runId, workflow: "goal", reason: "inputs-incompatible" },
+		},
+	]);
+});
+
+test("ForkSourceBusyError renders each reason as a stable message and hint (#4321)", () => {
+	const retry = "Retry after the other fork or resume finishes.";
+	const quit = `Pause or quit the run (/workflow quit ${runId}), then fork it.`;
+	assertCases([
+		{
+			error: new ForkSourceBusyError({ runId, reason: "fork-in-progress" }),
+			message: `Fork source busy: run ${runId} is already being forked (source-busy). ${retry}`,
+			hint: retry,
+			fields: { runId, reason: "fork-in-progress" },
+		},
+		{
+			error: new ForkSourceBusyError({ runId, reason: "resume-in-progress" }),
+			message: `Fork source busy: run ${runId} is being resumed (source-busy). ${retry}`,
+			hint: retry,
+			fields: { runId, reason: "resume-in-progress" },
+		},
+		{
+			error: new ForkSourceBusyError({ runId, reason: "live-execution" }),
+			message: `Fork source busy: run ${runId} is executing in this process (source-busy). ${quit}`,
+			hint: quit,
+			fields: { runId, reason: "live-execution" },
+		},
+		{
+			error: new ForkSourceBusyError({ runId, reason: "foreign-lease", holderId: "host-b" }),
+			message: `Fork source busy: run ${runId} is held by another Atomic process (source-busy). ${quit}`,
+			hint: quit,
+			fields: { runId, reason: "foreign-lease", holderId: "host-b" },
+		},
+	]);
+});
+
+test("ForkEntryNotFoundError renders the entry and stage as a stable message and hint (#4321)", () => {
+	const hint = "Pass an entry id from that session, for example a fork point's entryId from listForkPoints().";
+	assertCases([
+		{
+			error: new ForkEntryNotFoundError({ sessionId: "s-1", entryId: "e-9", stageName: "retry-impl" }),
+			message: `Fork entry not found: entry e-9 in session s-1 for stage "retry-impl" (entry-not-found). ${hint}`,
+			hint,
+			fields: { sessionId: "s-1", entryId: "e-9", stageName: "retry-impl" },
+		},
+		{
+			error: new ForkEntryNotFoundError({ sessionId: "s-1", entryId: "e-9" }),
+			message: `Fork entry not found: entry e-9 in session s-1 (entry-not-found). ${hint}`,
+			hint,
+			fields: { sessionId: "s-1", entryId: "e-9" },
+		},
+	]);
+});
+
+test("ForkSessionNotFoundError renders the session, its storage and the join command (#4321)", () => {
+	const local = `This node reads sessions from local-only jsonl storage and is not joined to the shared storage; run ${join}, or pass the sessionStore option of the project that owns the run.`;
+	const elsewhere =
+		"Open the run from the project that owns its sessions, or pass that project's sessionStore option.";
+	assertCases([
+		{
+			error: new ForkSessionNotFoundError({
+				sessionId: "s-1",
+				runId,
+				stagePath: "plan",
+				storage: { adapter: "jsonl", scope: "local-only" },
+			}),
+			message: `Fork session not found: session s-1 of stage "plan" in run ${runId} (session-not-found). ${local}`,
+			hint: local,
+			fields: { sessionId: "s-1", runId, stagePath: "plan", storage: { adapter: "jsonl", scope: "local-only" } },
+		},
+		{
+			error: new ForkSessionNotFoundError({ sessionId: "s-1", storage: { adapter: "libsql", scope: "shared" } }),
+			message: `Fork session not found: session s-1 (session-not-found). ${elsewhere}`,
+			hint: elsewhere,
+			fields: { sessionId: "s-1", storage: { adapter: "libsql", scope: "shared" } },
+		},
+		{
+			error: new ForkSessionNotFoundError({ sessionId: "s-1", runId }),
+			message: `Fork session not found: session s-1 in run ${runId} (session-not-found). ${elsewhere}`,
+			hint: elsewhere,
+			fields: { sessionId: "s-1", runId },
+		},
+	]);
+});
+
+test("ForkConfigError renders every invalid option at once as a stable message and hint (#4321)", () => {
+	assertCases([
+		{
+			error: new ForkConfigError({ source: "sdk", field: "carryMessages", expected: `"before" or "all"` }),
+			message: `Invalid fork option: sdk option carryMessages (invalid-option). Pass carryMessages as "before" or "all".`,
+			hint: `Pass carryMessages as "before" or "all".`,
+			fields: {
+				source: "sdk",
+				field: "carryMessages",
+				expected: `"before" or "all"`,
+				issues: [{ field: "carryMessages", expected: `"before" or "all"` }],
+			},
+		},
+		{
+			error: new ForkConfigError({
+				source: "cli",
+				issues: [
+					{ field: "runId", expected: "a run id" },
+					{ field: "fromStage", expected: "one stage path after --from" },
+				],
+			}),
+			message:
+				"Invalid fork option: cli arguments runId, fromStage (invalid-option). Pass runId as a run id. Pass fromStage as one stage path after --from.",
+			hint: "Pass runId as a run id. Pass fromStage as one stage path after --from.",
+			fields: {
+				source: "cli",
+				field: "runId",
+				expected: "a run id",
+				issues: [
+					{ field: "runId", expected: "a run id" },
+					{ field: "fromStage", expected: "one stage path after --from" },
+				],
+			},
+		},
+		{
+			error: new ForkConfigError({ source: "cli", issues: [{ field: "runId", expected: "a run id" }] }),
+			message: "Invalid fork option: cli argument runId (invalid-option). Pass runId as a run id.",
+			hint: "Pass runId as a run id.",
+			fields: {
+				source: "cli",
+				field: "runId",
+				expected: "a run id",
+				issues: [{ field: "runId", expected: "a run id" }],
+			},
+		},
+	]);
+});
+
+test("ForkSourceNotFoundError renders each reason, its journal and the join command (#4321)", () => {
+	const local = `This node uses a local-only journal and is not joined to the shared storage; run ${join} to fork runs started on other nodes, or pass a run id from /workflow list.`;
+	const list = "Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.";
+	const matches = Array.from({ length: 12 }, (_, index) => `aaaaaaaa-0000-4000-8000-0000000000${10 + index}`);
+	assertCases([
+		{
+			error: new ForkSourceNotFoundError({
+				runId,
+				reason: "not-found",
+				storage: { adapter: "node-sqlite", scope: "local-only" },
+			}),
+			message: `Fork source not found: no durable root run ${runId} in the local-only node-sqlite journal (source-not-found). ${local}`,
+			hint: local,
+			fields: { runId, reason: "not-found", matches: [], storage: { adapter: "node-sqlite", scope: "local-only" } },
+		},
+		{
+			error: new ForkSourceNotFoundError({
+				runId,
+				reason: "not-found",
+				storage: { adapter: "libsql", scope: "shared" },
+			}),
+			message: `Fork source not found: no durable root run ${runId} in the shared libsql journal (source-not-found). ${list}`,
+			hint: list,
+			fields: { runId, reason: "not-found", matches: [], storage: { adapter: "libsql", scope: "shared" } },
+		},
+		{
+			error: new ForkSourceNotFoundError({ runId, reason: "not-found" }),
+			message: `Fork source not found: no durable root run ${runId} (source-not-found). ${list}`,
+			hint: list,
+			fields: { runId, reason: "not-found", matches: [] },
+		},
+		{
+			error: new ForkSourceNotFoundError({ runId: "abc", reason: "malformed" }),
+			message: `Fork source not found: "abc" is neither a full run id nor an 8-character prefix (source-not-found). ${list}`,
+			hint: list,
+			fields: { runId: "abc", reason: "malformed", matches: [] },
+		},
+		{
+			error: new ForkSourceNotFoundError({ runId: "aaaaaaaa", reason: "ambiguous", matches }),
+			message: `Fork source not found: prefix "aaaaaaaa" matches ${matches.slice(0, 10).join(", ")} (and 2 more) (source-not-found). Pass the full run id.`,
+			hint: "Pass the full run id.",
+			fields: { runId: "aaaaaaaa", reason: "ambiguous", matches: matches.slice(0, 10) },
+		},
+	]);
+});
+
+test("ForkJournalUnsupportedError and ForkCopyFailedError render stable messages and hints (#4321)", () => {
+	const retry = "Retry the fork; the source run was not changed.";
+	const cause = new Error("disk full");
+	assertCases([
+		{
+			error: new ForkJournalUnsupportedError(),
+			message:
+				"Fork journal unsupported: the run journal has no atomic createRunWithEvents (journal-unsupported). Use the SQLite or memory run journal, or implement RunJournal.createRunWithEvents.",
+			hint: "Use the SQLite or memory run journal, or implement RunJournal.createRunWithEvents.",
+			fields: { capability: "createRunWithEvents" },
+		},
+		{
+			error: new ForkCopyFailedError({ runId, forkRunId, phase: "journal" }, { cause }),
+			message: `Fork copy failed: journal events of run ${runId} into ${forkRunId} (copy-failed). ${retry}`,
+			hint: retry,
+			fields: { runId, forkRunId, phase: "journal" },
+		},
+		{
+			error: new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause }),
+			message: `Fork copy failed: stage sessions of run ${runId} into ${forkRunId} (copy-failed). ${retry}`,
+			hint: retry,
+			fields: { runId, forkRunId, phase: "sessions" },
+		},
+	]);
+});
+
+test("ForkJournalUnavailableError renders each phase, its journal and whether to retry or resume (#4321)", () => {
+	const status = "atomic storage status shows the storage in use.";
+	const retry = `Nothing was written and run ${runId} is unchanged; retry the fork once the journal is reachable. ${status}`;
+	const resume = `Fork run ${forkRunId} was written; resume it with /workflow resume ${forkRunId} once the journal is reachable instead of forking again. ${status}`;
+	const cause = new Error("Storage unavailable: libsql at libsql://journal");
+	const shared = { adapter: "libsql", scope: "shared" } as const;
+	const local = { adapter: "node-sqlite", scope: "local-only" } as const;
+	assertCases([
+		{
+			error: new ForkJournalUnavailableError({ runId, phase: "read", storage: shared }, { cause }),
+			message: `Fork journal unavailable: reading run ${runId} from the shared libsql journal (journal-unavailable). ${retry}`,
+			hint: retry,
+			fields: { runId, phase: "read", storage: shared },
+		},
+		{
+			error: new ForkJournalUnavailableError({ runId, phase: "claim", storage: local }, { cause }),
+			message: `Fork journal unavailable: claiming run ${runId} in the local-only node-sqlite journal (journal-unavailable). ${retry}`,
+			hint: retry,
+			fields: { runId, phase: "claim", storage: local },
+		},
+		{
+			error: new ForkJournalUnavailableError({ runId, phase: "hydrate", forkRunId, storage: shared }, { cause }),
+			message: `Fork journal unavailable: loading fork run ${forkRunId} of run ${runId} from the shared libsql journal (journal-unavailable). ${resume}`,
+			hint: resume,
+			fields: { runId, phase: "hydrate", forkRunId, storage: shared },
+		},
+	]);
+	const read = new ForkJournalUnavailableError({ runId, phase: "read", storage: shared }, { cause });
+	const hydrate = new ForkJournalUnavailableError({ runId, phase: "hydrate", forkRunId, storage: shared }, { cause });
+	assert.deepEqual([read.retryable, read.forkRunId, read.cause], [true, undefined, cause]);
+	assert.deepEqual([hydrate.retryable, hydrate.forkRunId], [false, forkRunId]);
+	assert.equal(isRetryableForkError(new Error("wrapped", { cause: hydrate })), false);
+	const rehydrated = rehydrateForkError(JSON.parse(JSON.stringify(hydrate)) as SerializedForkError);
+	assert.ok(rehydrated instanceof ForkJournalUnavailableError);
+	assert.deepEqual(
+		[rehydrated.runId, rehydrated.phase, rehydrated.forkRunId, rehydrated.storage, rehydrated.retryable],
+		[runId, "hydrate", forkRunId, shared, false],
+	);
+});
+
+const samples: readonly { readonly error: KnownForkError; readonly guard: (value: unknown) => boolean }[] = [
+	{
+		error: new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: ["a"] }),
+		guard: isForkTargetNotFoundError,
+	},
+	{
+		error: new ForkDefinitionMismatchError(
+			{ runId, workflow: "goal", reason: "name-changed", definition: "ralph" },
+			{ cause: new TypeError("schema") },
+		),
+		guard: isForkDefinitionMismatchError,
+	},
+	{ error: new ForkSourceBusyError({ runId, reason: "foreign-lease", holderId: "h" }), guard: isForkSourceBusyError },
+	{
+		error: new ForkEntryNotFoundError({ sessionId: "s", entryId: "e", stageName: "x" }),
+		guard: isForkEntryNotFoundError,
+	},
+	{
+		error: new ForkSessionNotFoundError(
+			{ sessionId: "s", runId, stagePath: "p", storage: { adapter: "jsonl", scope: "local-only" } },
+			{ cause: new Error("ENOENT") },
+		),
+		guard: isForkSessionNotFoundError,
+	},
+	{
+		error: new ForkConfigError({ source: "cli", issues: [{ field: "runId", expected: "a run id" }] }),
+		guard: isForkConfigError,
+	},
+	{
+		error: new ForkSourceNotFoundError({
+			runId,
+			reason: "ambiguous",
+			matches: ["a", "b"],
+			storage: { adapter: "libsql", scope: "shared" },
+		}),
+		guard: isForkSourceNotFoundError,
+	},
+	{ error: new ForkJournalUnsupportedError(), guard: isForkJournalUnsupportedError },
+	{
+		error: new ForkJournalUnavailableError(
+			{ runId, phase: "read", storage: { adapter: "libsql", scope: "shared" } },
+			{ cause: Object.assign(new Error("fetch failed"), { name: "StorageUnavailableError" }) },
+		),
+		guard: isForkJournalUnavailableError,
+	},
+	{
+		error: new ForkCopyFailedError(
+			{ runId, forkRunId, phase: "journal" },
+			{ cause: Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }) },
+		),
+		guard: isForkCopyFailedError,
+	},
+];
+
+const guards = samples.map((sample) => sample.guard);
+
+for (const { error, guard } of samples) {
+	test(`${error.name} has its typed discriminants and matches only its own guard (#4321)`, () => {
+		assert.ok(error instanceof ForkError);
+		assert.ok(error instanceof Error);
+		assert.ok(isForkError(error));
+		assert.equal(error.name, error.constructor.name);
+		const retryable = ["source-busy", "copy-failed", "journal-unavailable"].includes(error.code);
+		assert.equal(isRetryableForkError(error), retryable);
+		assert.equal(error.retryable, retryable);
+		assert.ok(guard({ name: error.name, code: error.code }), "the guard matches across realms by name and code");
+		assert.ok(isForkError({ name: error.name, code: error.code }));
+		assert.ok(!guard({ name: error.name, code: "other-code" }));
+		assert.ok(!isForkError({ name: error.name, code: "other-code" }));
+		for (const other of guards) if (other !== guard) assert.equal(other(error), false);
+		assert.deepEqual(JSON.parse(JSON.stringify(error.fields)), error.fields, "fields are JSON-safe");
+	});
+
+	test(`${error.name} round-trips through its wire form as the same class (#4321)`, () => {
+		const wire = JSON.parse(JSON.stringify(error)) as SerializedForkError;
+		assert.deepEqual(wire, serializeForkError(error));
+		assert.equal(wire.name, error.name);
+		assert.equal(wire.code, error.code);
+		assert.equal(wire.retryable, error.retryable);
+		const rehydrated = rehydrateForkError(wire);
+		assert.equal(rehydrated.constructor, error.constructor);
+		assert.ok(guard(rehydrated));
+		assert.equal(rehydrated.message, error.message);
+		assert.equal(rehydrated.hint, error.hint);
+		assert.equal(rehydrated.retryable, error.retryable);
+		assert.deepEqual(rehydrated.fields, error.fields);
+		assert.deepEqual(serializeForkError(rehydrated), wire);
+		if (error.cause instanceof Error) {
+			assert.ok(rehydrated.cause instanceof Error);
+			assert.equal(rehydrated.cause.message, error.cause.message);
+			assert.equal(rehydrated.cause.name, error.cause.name);
+		} else assert.equal("cause" in rehydrated, false);
+	});
+}
+
+test("rehydrated fork errors keep their typed fields (#4321)", () => {
+	const typed = samples.map(({ error }) => rehydrateForkError(serializeForkError(error)));
+	const [target, mismatch, busy, entry, session, config, source, journal, unavailable, copy] = typed;
+	assert.ok(target instanceof ForkTargetNotFoundError);
+	assert.deepEqual(
+		[target.runId, target.fromStage, target.validStagePaths, target.totalValidStagePaths],
+		[runId, "x", ["a"], 1],
+	);
+	assert.ok(mismatch instanceof ForkDefinitionMismatchError);
+	assert.deepEqual(
+		[mismatch.runId, mismatch.workflow, mismatch.reason, mismatch.definition],
+		[runId, "goal", "name-changed", "ralph"],
+	);
+	assert.ok(busy instanceof ForkSourceBusyError);
+	assert.deepEqual([busy.runId, busy.reason, busy.holderId], [runId, "foreign-lease", "h"]);
+	assert.ok(entry instanceof ForkEntryNotFoundError);
+	assert.deepEqual([entry.sessionId, entry.entryId, entry.stageName], ["s", "e", "x"]);
+	assert.ok(session instanceof ForkSessionNotFoundError);
+	assert.deepEqual(
+		[session.sessionId, session.runId, session.stagePath, session.storage],
+		["s", runId, "p", { adapter: "jsonl", scope: "local-only" }],
+	);
+	assert.ok(config instanceof ForkConfigError);
+	assert.deepEqual(
+		[config.source, config.field, config.expected, config.issues],
+		["cli", "runId", "a run id", [{ field: "runId", expected: "a run id" }]],
+	);
+	assert.ok(source instanceof ForkSourceNotFoundError);
+	assert.deepEqual(
+		[source.runId, source.reason, source.matches, source.storage],
+		[runId, "ambiguous", ["a", "b"], { adapter: "libsql", scope: "shared" }],
+	);
+	assert.ok(journal instanceof ForkJournalUnsupportedError);
+	assert.equal(journal.capability, "createRunWithEvents");
+	assert.ok(unavailable instanceof ForkJournalUnavailableError);
+	assert.deepEqual(
+		[unavailable.runId, unavailable.phase, unavailable.forkRunId, unavailable.storage, unavailable.retryable],
+		[runId, "read", undefined, { adapter: "libsql", scope: "shared" }, true],
+	);
+	assert.equal((unavailable.cause as Error).name, "StorageUnavailableError");
+	const unavailableBare = rehydrateForkError({ ...serializeForkError(unavailable), cause: undefined });
+	assert.match((unavailableBare.cause as Error).message, /not serialized/);
+	const unavailableNoStorage = rehydrateForkError({
+		...serializeForkError(unavailable),
+		fields: { runId, phase: "claim" },
+	});
+	assert.ok(unavailableNoStorage instanceof ForkJournalUnavailableError);
+	assert.deepEqual(unavailableNoStorage.storage, { adapter: "unknown", scope: "shared" });
+	assert.ok(copy instanceof ForkCopyFailedError);
+	assert.deepEqual([copy.runId, copy.forkRunId, copy.phase], [runId, forkRunId, "journal"]);
+	assert.equal((copy.cause as Error & { code?: string }).code, "SQLITE_BUSY");
+	const bare = rehydrateForkError({ ...serializeForkError(copy), cause: undefined });
+	assert.ok(bare instanceof ForkCopyFailedError);
+	assert.match((bare.cause as Error).message, /not serialized/);
+	const legacyConfig = rehydrateForkError({
+		...serializeForkError(config),
+		fields: { source: "sdk", field: "cwd", expected: "an existing directory" },
+	});
+	assert.ok(legacyConfig instanceof ForkConfigError);
+	assert.deepEqual(legacyConfig.issues, [{ field: "cwd", expected: "an existing directory" }]);
+	const noOptionals = rehydrateForkError(serializeForkError(new ForkSessionNotFoundError({ sessionId: "s" })));
+	assert.ok(noOptionals instanceof ForkSessionNotFoundError);
+	assert.deepEqual([noOptionals.runId, noOptionals.stagePath, noOptionals.storage], [undefined, undefined, undefined]);
+	assert.deepEqual(noOptionals.fields, { sessionId: "s" });
+});
+
+test("rehydration keeps every issue, count and cause, and tolerates missing fields (#4321)", () => {
+	const config = new ForkConfigError(
+		{
+			source: "sdk",
+			issues: [
+				{ field: "runId", expected: "a run id" },
+				{ field: "cwd", expected: "an existing directory" },
+			],
+		},
+		{ cause: new Error("ENOENT") },
+	);
+	const rehydratedConfig = rehydrateForkError(serializeForkError(config));
+	assert.ok(rehydratedConfig instanceof ForkConfigError);
+	assert.deepEqual(rehydratedConfig.issues, config.issues);
+	assert.equal((rehydratedConfig.cause as Error).message, "ENOENT");
+	const target = new ForkTargetNotFoundError({
+		runId,
+		fromStage: "x",
+		validStagePaths: many,
+		totalValidStagePaths: 14,
+	});
+	const rehydratedTarget = rehydrateForkError(serializeForkError(target));
+	assert.ok(rehydratedTarget instanceof ForkTargetNotFoundError);
+	assert.deepEqual([rehydratedTarget.validStagePaths, rehydratedTarget.totalValidStagePaths], [many.slice(0, 10), 14]);
+	const empty = rehydrateForkError({
+		name: "ForkTargetNotFoundError",
+		code: "target-not-found",
+		message: "",
+		retryable: false,
+		fields: {},
+	});
+	assert.ok(empty instanceof ForkTargetNotFoundError);
+	assert.deepEqual([empty.runId, empty.fromStage, empty.validStagePaths, empty.totalValidStagePaths], ["", "", [], 0]);
+	const codeless = rehydrateForkError(
+		serializeForkError(new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause: new Error("x") })),
+	);
+	assert.equal(Object.hasOwn(codeless.cause as Error, "code"), false, "a cause without a code gets none");
+	assert.equal(new ForkSourceNotFoundError({ runId, reason: "not-found" }).storage, undefined);
+	assert.equal(isForkTargetNotFoundError({ name: "ForkSourceBusyError", code: "target-not-found" }), false);
+});
+
+test("guards reject values that are not fork errors (#4321)", () => {
+	for (const value of [
+		undefined,
+		null,
+		"ForkTargetNotFoundError",
+		7,
+		new Error("plain"),
+		{ name: "toString", code: "x" },
+	])
+		for (const guard of [isForkError, ...guards]) assert.equal(guard(value), false, String(value));
+	assert.equal(isForkError({ name: "ForkFutureError", code: "future" }), false);
+	assert.equal(isRetryableForkError({ name: "ForkSourceBusyError", code: "source-busy", retryable: false }), false);
+	assert.equal(isRetryableForkError({ name: "ForkSourceBusyError", code: "source-busy", retryable: true }), true);
+	assert.equal(isRetryableForkError(null), false);
+	assert.equal(isRetryableForkError(new Error("x", { cause: "not an object" })), false);
+});
+
+test("findForkError and isRetryableForkError walk causes up to the bounded depth only (#4321)", () => {
+	const busy = new ForkSourceBusyError({ runId, reason: "fork-in-progress" });
+	const wrap = (error: Error, depth: number): Error => {
+		let current = error;
+		for (let index = 0; index < depth; index++) current = new Error(`wrapper ${index}`, { cause: current });
+		return current;
+	};
+	assert.equal(findForkError(busy), busy);
+	assert.equal(findForkError(wrap(busy, FORK_ERROR_MAX_CAUSE_DEPTH - 1)), busy);
+	assert.equal(findForkError(wrap(busy, FORK_ERROR_MAX_CAUSE_DEPTH)), undefined);
+	assert.equal(isRetryableForkError(wrap(busy, FORK_ERROR_MAX_CAUSE_DEPTH - 1)), true);
+	assert.equal(isRetryableForkError(wrap(busy, FORK_ERROR_MAX_CAUSE_DEPTH)), false);
+	const terminal = new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: [] });
+	const nested = new ForkDefinitionMismatchError(
+		{ runId, workflow: "w", reason: "definition-unavailable" },
+		{ cause: busy },
+	);
+	assert.equal(findForkError(new Error("outer", { cause: nested })), nested, "the outermost fork error wins");
+	assert.equal(isRetryableForkError(nested), true, "a retryable cause makes the chain retryable");
+	assert.equal(isRetryableForkError(terminal), false);
+	assert.equal(findForkError(new Error("x", { cause: null })), undefined);
+	assert.equal(findForkError("not an error"), undefined);
+});
+
+test("an unknown fork error name rehydrates into ForkError keeping its name, code and message (#4321)", () => {
+	const wire: SerializedForkError = {
+		name: "ForkFutureError",
+		code: "future-code",
+		message: "Fork future: x (future-code). Upgrade.",
+		hint: "Upgrade.",
+		retryable: true,
+		fields: { runId },
+		cause: { name: "TypeError", message: "inner", code: "E_INNER", cause: { name: "Error", message: "deepest" } },
+	};
+	const error = rehydrateForkError(wire);
+	assert.equal(error.constructor, ForkError);
+	assert.equal(error.name, "ForkFutureError");
+	assert.equal(error.code, "future-code");
+	assert.equal(error.message, wire.message);
+	assert.equal(error.hint, "Upgrade.");
+	assert.equal(error.retryable, true);
+	assert.deepEqual(error.fields, { runId });
+	assert.ok(error.cause instanceof Error);
+	assert.equal(error.cause.name, "TypeError");
+	assert.equal((error.cause as Error & { code?: string }).code, "E_INNER");
+	assert.equal((error.cause.cause as Error).message, "deepest");
+	assert.deepEqual(serializeForkError(error), wire);
+	const hintless = rehydrateForkError({ name: "ForkOther", code: "c", message: "m", retryable: false, fields: {} });
+	assert.equal(hintless.hint, "");
+	assert.equal("cause" in hintless, false);
+	assert.equal(rehydrateForkError({ ...wire, name: "toString" }).constructor, ForkError);
+});
+
+test("a serialized error keeps at most the bounded number of causes and drops non-error causes (#4321)", () => {
+	let cause: Error = new Error("root cause");
+	for (let index = 0; index < FORK_ERROR_MAX_CAUSE_DEPTH + 4; index++) cause = new Error(`level ${index}`, { cause });
+	const wire = serializeForkError(new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause }));
+	let depth = 0;
+	for (let current = wire.cause; current !== undefined; current = current.cause) depth++;
+	assert.equal(depth, FORK_ERROR_MAX_CAUSE_DEPTH);
+	const numeric = serializeForkError(
+		new ForkCopyFailedError(
+			{ runId, forkRunId, phase: "sessions" },
+			{ cause: Object.assign(new Error("x"), { code: 5 }) },
+		),
+	);
+	assert.deepEqual(numeric.cause, { name: "Error", message: "x" });
+	const opaque = serializeForkError(
+		new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause: "text" as never as Error }),
+	);
+	assert.equal("cause" in opaque, false);
+});
+
+test("a nested fork cause survives the round trip as its own class within the depth bound (#4321)", () => {
+	const inner = new ForkEntryNotFoundError({ sessionId: "s", entryId: "e" });
+	const outer = new ForkDefinitionMismatchError(
+		{ runId, workflow: "w", reason: "definition-unavailable" },
+		{ cause: inner },
+	);
+	const wire = serializeForkError(outer);
+	assert.equal(wire.cause?.name, "ForkEntryNotFoundError");
+	assert.equal(wire.cause?.code, "entry-not-found");
+	assert.equal(wire.cause?.message, inner.message);
+	const rehydrated = rehydrateForkError(JSON.parse(JSON.stringify(outer)) as SerializedForkError);
+	assert.ok(rehydrated instanceof ForkDefinitionMismatchError);
+	assert.ok(rehydrated.cause instanceof ForkEntryNotFoundError);
+	let deep: Error = inner;
+	for (let index = 0; index < FORK_ERROR_MAX_CAUSE_DEPTH + 2; index++)
+		deep = new ForkDefinitionMismatchError(
+			{ runId, workflow: "w", reason: "definition-unavailable" },
+			{ cause: deep },
+		);
+	let causes = 0;
+	for (let current = serializeForkError(deep as ForkError).cause; current !== undefined; current = current.fork?.cause)
+		causes++;
+	assert.equal(causes, FORK_ERROR_MAX_CAUSE_DEPTH);
+});
+
+test("a cleanup failure is attached without replacing the primary error (#4321)", () => {
+	const cleanup = new Error("release failed");
+	const error = new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: [] });
+	assert.equal(error.cleanupCause, undefined);
+	assert.equal(error.withCleanupCause(cleanup), error);
+	assert.equal(error.cleanupCause, cleanup);
+	assert.equal(error.code, "target-not-found");
+	assert.equal("cause" in error, false);
+});
+
+test("the SDK surface exports every fork error class and guard (#4321)", () => {
+	for (const name of [
+		"ForkError",
+		"ForkTargetNotFoundError",
+		"ForkDefinitionMismatchError",
+		"ForkSourceBusyError",
+		"ForkEntryNotFoundError",
+		"ForkSessionNotFoundError",
+		"ForkConfigError",
+		"ForkSourceNotFoundError",
+		"ForkJournalUnsupportedError",
+		"ForkJournalUnavailableError",
+		"ForkCopyFailedError",
+		"isForkError",
+		"isForkTargetNotFoundError",
+		"isForkDefinitionMismatchError",
+		"isForkSourceBusyError",
+		"isForkEntryNotFoundError",
+		"isForkSessionNotFoundError",
+		"isForkConfigError",
+		"isForkSourceNotFoundError",
+		"isForkJournalUnsupportedError",
+		"isForkJournalUnavailableError",
+		"isForkCopyFailedError",
+		"isRetryableForkError",
+		"findForkError",
+		"serializeForkError",
+		"rehydrateForkError",
+		"forkRun",
+		"listForkPoints",
+	])
+		assert.equal(typeof (sdk as Record<string, unknown>)[name], "function", name);
+});
