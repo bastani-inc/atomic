@@ -110,8 +110,8 @@ export interface SessionLockFs {
 
 /** Removing a lock directory fails with these on Windows while another handle, such as a scanner or indexer, holds it. */
 const TRANSIENT_RELEASE_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"]);
-/** Waits between attempts to remove the lock directory, about 1.5 s in all, far inside the lock's 10 s stale window. */
-const RELEASE_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
+/** Waits between attempts to take or remove the lock directory, about 1.5 s in all, far inside the lock's 10 s stale window. */
+const LOCK_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
 
 export class JsonlSessionStore implements SessionStore {
 	private queue: Promise<void> = Promise.resolve();
@@ -385,6 +385,7 @@ export class JsonlSessionStore implements SessionStore {
 			try {
 				return await (locked ? this.exclusive(operation, signal) : operation());
 			} catch (cause) {
+				if (signal?.aborted && cause === signal.reason) throw cause;
 				if (
 					cause instanceof SessionConflictError ||
 					cause instanceof SessionExistsError ||
@@ -414,6 +415,7 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<T> {
 		const lockfilePath = join(directory, ".session.lock");
 		let release: () => Promise<void>;
+		let refusals = 0;
 		for (;;) {
 			this.checkAbort(signal);
 			try {
@@ -426,7 +428,12 @@ export class JsonlSessionStore implements SessionStore {
 				});
 				break;
 			} catch (cause) {
-				if ((cause as NodeJS.ErrnoException).code !== "ELOCKED") throw cause;
+				const code = (cause as NodeJS.ErrnoException).code;
+				if (code === "EPERM" && process.platform === "win32" && refusals < LOCK_BACKOFF_MS.length) {
+					await delay(LOCK_BACKOFF_MS[refusals++]);
+					continue;
+				}
+				if (code !== "ELOCKED") throw cause;
 				if (await this.clearUnreleased(lockfilePath)) continue;
 				await delay(5);
 			}
@@ -459,7 +466,7 @@ export class JsonlSessionStore implements SessionStore {
 			if (!TRANSIENT_RELEASE_CODES.has((cause as NodeJS.ErrnoException).code ?? "")) throw cause;
 		}
 		// proper-lockfile has already forgotten the lock, so removing the directory is all that is left.
-		for (const wait of RELEASE_BACKOFF_MS) {
+		for (const wait of LOCK_BACKOFF_MS) {
 			await delay(wait);
 			try {
 				await removeDirectory(fs, lockfilePath);
@@ -498,7 +505,7 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	private checkAbort(signal?: AbortSignal): void {
-		if (signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+		signal?.throwIfAborted();
 	}
 
 	private async paths(options: { readonly skipUnreadableDirectories?: boolean } = {}): Promise<string[]> {
