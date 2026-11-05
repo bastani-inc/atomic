@@ -101,6 +101,11 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	let topology = start?.topology;
 	let terminalRecorded = false;
 	const recordedWorkspace = start?.topology?.boundary?.workspace;
+	// Read now: a pooled root lets go of a resumed child's checkpoints once its boundary is prepared (#4318).
+	const childCheckpoints =
+		recordedWorkspace === undefined
+			? []
+			: scopedChildCheckpoints(input.backend.listCheckpoints(input.workflowId), input.replayKey);
 	let workspace: BoundWorkspace | undefined;
 	let workspaceLease: WorkspaceWriterLease | undefined;
 	const identity: DurableBoundaryRuntimeIdentity = {
@@ -120,10 +125,8 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		scope: { rootWorkflowId: input.rootWorkflowId, scopePrefix: input.replayKey },
 		identity,
 		recordedWorkspace,
-		recordedChildProgress: () =>
-			hasScopedChildCheckpoints(input.backend.listCheckpoints(input.workflowId), input.replayKey),
-		recordedChildHeads: (binding) =>
-			scopedChildHeads(input.backend.listCheckpoints(input.workflowId), input.replayKey, binding),
+		recordedChildProgress: () => childCheckpoints.length > 0,
+		recordedChildHeads: (binding) => childHeads(childCheckpoints, binding),
 		get workspace() {
 			return workspace;
 		},
@@ -445,9 +448,9 @@ function hasPriorInvocationData(checkpoints: readonly DurableCheckpoint[], repla
 }
 
 /** Checkpoints recorded inside a child carry its scope prefix; the boundary's own start and terminal records do not. */
-function hasScopedChildCheckpoints(checkpoints: readonly DurableCheckpoint[], replayKey: string): boolean {
+function scopedChildCheckpoints(checkpoints: readonly DurableCheckpoint[], replayKey: string): DurableCheckpoint[] {
 	const prefix = `${replayKey}:`;
-	return checkpoints.some((checkpoint) => checkpoint.checkpointId.startsWith(prefix));
+	return checkpoints.filter((checkpoint) => checkpoint.checkpointId.startsWith(prefix));
 }
 
 function changeSetOf(
@@ -463,15 +466,13 @@ function changeSetOf(
 }
 
 /** The `changeSet` heads that completed steps inside a child recorded on one repository's branch. */
-function scopedChildHeads(
-	checkpoints: readonly DurableCheckpoint[],
-	replayKey: string,
+function childHeads(
+	childCheckpoints: readonly DurableCheckpoint[],
 	binding: Pick<BoundWorkspace, "repo" | "branch">,
 ): string[] {
-	const prefix = `${replayKey}:`;
 	const heads = new Set<string>();
-	for (const checkpoint of checkpoints) {
-		if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith(prefix)) continue;
+	for (const checkpoint of childCheckpoints) {
+		if (checkpoint.kind !== "stage") continue;
 		const changeSet = changeSetOf(checkpoint.output);
 		if (changeSet?.repo === binding.repo && changeSet.branch === binding.branch) heads.add(changeSet.headCommit);
 	}
