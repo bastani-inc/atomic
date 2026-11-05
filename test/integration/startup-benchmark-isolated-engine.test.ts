@@ -120,13 +120,20 @@ export default function (pi) {
 			const hostPid = Number(tmux("display-message", "-p", "-t", "benchmark", "#{pane_pid}"));
 			tmux("pipe-pane", "-o", "-t", "benchmark", `cat >> '${rawPath}'`);
 			tmux("send-keys", "-t", "benchmark", "Enter");
-			const exited = await waitUntil(
-				() => tmux("display-message", "-p", "-t", "benchmark", "#{pane_dead}") === "1",
-				Date.now() + BENCHMARK_EXIT_TIMEOUT_MS,
-			);
+			let exitState = "0::";
+			const exited = await waitUntil(() => {
+				exitState = tmux(
+					"display-message",
+					"-p",
+					"-t",
+					"benchmark",
+					"#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}",
+				);
+				return exitState.startsWith("1:") && exitState !== "1::";
+			}, Date.now() + BENCHMARK_EXIT_TIMEOUT_MS);
 			const pane = tmux("capture-pane", "-p", "-J", "-S", "-", "-t", "benchmark");
-			assert.ok(exited, `the benchmark run must exit by itself\n${pane}`);
-			assert.equal(tmux("display-message", "-p", "-t", "benchmark", "#{pane_dead_status}"), "0", pane);
+			assert.ok(exited, `the benchmark run must exit by itself (pane state ${exitState})\n${pane}`);
+			assert.equal(exitState, "1:0:", `the benchmark must exit with status 0 and no signal\n${pane}`);
 			let rawSize = -1;
 			let unchangedPolls = 0;
 			await waitUntil(async () => {
