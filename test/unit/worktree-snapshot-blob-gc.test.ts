@@ -279,6 +279,26 @@ describe("collection runs in batches", () => {
 		assert.deepEqual(await stored(), [...keep].sort());
 	});
 
+	test("a collection returns to the event loop between batches, so timers and I/O run during a long one", async () => {
+		await put(...Array.from({ length: SNAPSHOT_COLLECTION_BATCH * 2 + 1 }, (_, index) => `blob-${index}`));
+		await ageBlobs(shared.database, blobs().table, DEFAULT_BLOB_GRACE_SECONDS + 10);
+		let ticked = false;
+		const tickedBeforeBatch: boolean[] = [];
+
+		await blobs().sweep({
+			graceSeconds: DEFAULT_BLOB_GRACE_SECONDS,
+			onBatch: () => {
+				tickedBeforeBatch.push(ticked);
+				ticked = false;
+				setImmediate(() => {
+					ticked = true;
+				});
+			},
+		});
+
+		assert.deepEqual(tickedBeforeBatch, [false, true, true], "a callback queued by one batch ran before the next");
+	});
+
 	test("an aborted collection rejects with the signal's reason, unwrapped, and keeps what earlier batches deleted", async () => {
 		await put(...Array.from({ length: SNAPSHOT_COLLECTION_BATCH + 1 }, (_, index) => `blob-${index}`));
 		await ageBlobs(shared.database, blobs().table, DEFAULT_BLOB_GRACE_SECONDS + 10);

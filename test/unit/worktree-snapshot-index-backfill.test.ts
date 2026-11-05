@@ -578,6 +578,48 @@ describe("the backfill works in short transactions that resume where they stoppe
 		assert.equal(renewals, backfillBatches + sweepBatches);
 	});
 
+	test("a backfill returns to the event loop between batches, so timers and I/O run during a long one", async () => {
+		const { database } = await oldHistory();
+		let ticked = false;
+		const tickedAtBatchStart: boolean[] = [];
+		const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
+			exec: (sql) => executor.exec(sql),
+			all: (sql, ...params) => executor.all(sql, ...params),
+			get: async (sql, ...params) => {
+				if (sql.startsWith("SELECT watermark, backfilled_through FROM") && params[0] === "journal-events")
+					tickedAtBatchStart.push(ticked);
+				return executor.get(sql, ...params);
+			},
+			run: async (sql, ...params) => {
+				const result = await executor.run(sql, ...params);
+				if (sql.startsWith("UPDATE snapshot_index_sources SET backfilled_through")) {
+					ticked = false;
+					setImmediate(() => {
+						ticked = true;
+					});
+				}
+				return result;
+			},
+		});
+		const watching: SqliteDatabase = {
+			...wrap(database),
+			descriptor: database.descriptor,
+			close: () => database.close(),
+			transaction: (callback, options) =>
+				database.transaction((transaction) => callback(wrap(transaction)), options),
+		};
+		const upgraded = await openStores(watching);
+
+		await upgraded.blobs.completeIndex();
+
+		const batches = Math.ceil((EVENTS + 2) / SNAPSHOT_INDEX_BACKFILL_BATCH);
+		assert.deepEqual(
+			tickedAtBatchStart,
+			[false, ...Array<boolean>(batches - 1).fill(true)],
+			"a callback queued by one batch ran before the next",
+		);
+	});
+
 	test("a backfill stopped after its first batch resumes there, a sweep finishes it, and every referenced blob stays", async () => {
 		const { database, lease } = await oldHistory();
 		const controller = new AbortController();

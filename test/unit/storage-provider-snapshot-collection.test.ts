@@ -119,7 +119,7 @@ test("a database another store still uses is not closed by one store's close, co
 	await journal.close();
 });
 
-test("a failure to close the database after its collection is reported once as a warning with the storage error as its cause (#4355)", async () => {
+test("a storage error that fails the database's close after its collection is reported once as that error (#4355)", async () => {
 	const store = await sessionStoreWithOrphans(3);
 	const failure = new StorageUnavailableError(
 		{ adapter: "node-sqlite", location: "shared.sqlite" },
@@ -134,7 +134,24 @@ test("a failure to close the database after its collection is reported once as a
 	await collection;
 
 	await vi.waitFor(() => assert.equal(warnings.length, 1));
-	assert.ok(warnings[0] instanceof Error);
-	assert.equal(warnings[0].message, "storage");
-	assert.equal(warnings[0].cause, failure);
+	assert.equal(warnings[0], failure);
+});
+
+test("any other failure to close the database is reported once as a typed storage error naming the database (#4355)", async () => {
+	const store = await sessionStoreWithOrphans(3);
+	const database = databaseOf(store);
+	const failure = new Error("disk full");
+	vi.spyOn(database, "close").mockRejectedValue(failure);
+	const warnings: unknown[] = [];
+	vi.spyOn(process, "emitWarning").mockImplementation((warning) => void warnings.push(warning));
+	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
+
+	await store.close();
+	await collection;
+
+	await vi.waitFor(() => assert.equal(warnings.length, 1));
+	const [warning] = warnings;
+	assert.ok(warning instanceof StorageUnavailableError);
+	assert.deepEqual([warning.adapter, warning.location], [database.descriptor.adapter, database.descriptor.location]);
+	assert.equal(warning.cause, failure);
 });

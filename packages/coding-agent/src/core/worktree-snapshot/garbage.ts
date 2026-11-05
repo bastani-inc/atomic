@@ -9,6 +9,7 @@ import {
 	trackSnapshotCollection,
 } from "./blob-store.ts";
 import { type SnapshotCollectionPhase, WorkspaceCollectionError, WorkspaceConfigError } from "./errors.ts";
+import { resolveWorktreeSnapshotSettings } from "./settings.ts";
 import type { SnapshotBlobStore, WorktreeSnapshotSettings } from "./types.ts";
 
 /**
@@ -78,20 +79,25 @@ function skipped(reason: SnapshotCollectionSkipReason): Promise<SnapshotCollecti
  * and no process sharing the database claimed a collection in the last `collectIntervalSeconds` on the database
  * clock. This process asks the database at most once per interval. A failure is recorded in the table's collection
  * row and reported once through `onFailure`.
+ *
+ * Throws {@link WorkspaceConfigError} before reading the store when a setting is invalid: `autoCollect` not a boolean,
+ * `collectIntervalSeconds` not a positive integer, or `graceSeconds` not a non-negative integer. Everything else is an
+ * outcome of the returned promise, which never rejects.
  */
 export function scheduleSnapshotCollection(
 	store: SnapshotBlobStore | undefined,
 	settings: CollectionSettings,
 	options: ScheduleSnapshotCollectionOptions = {},
 ): Promise<SnapshotCollectionOutcome> {
-	if (!settings.autoCollect) return skipped("disabled");
+	const checked = resolveWorktreeSnapshotSettings(settings, "sdk", "settings");
+	if (!checked.autoCollect) return skipped("disabled");
 	if (!(store instanceof SqlSnapshotBlobStore)) return skipped("unsupported");
 	if (runningSnapshotCollectionOf(store)) return skipped("in-progress");
 	const now = performance.now();
-	if (now - (lastAskedAt.get(store.identity) ?? Number.NEGATIVE_INFINITY) < settings.collectIntervalSeconds * 1000)
+	if (now - (lastAskedAt.get(store.identity) ?? Number.NEGATIVE_INFINITY) < checked.collectIntervalSeconds * 1000)
 		return skipped("not-due");
 	lastAskedAt.set(store.identity, now);
-	const running = collectIfDue(store, settings, options.onFailure ?? ((error) => process.emitWarning(error)));
+	const running = collectIfDue(store, checked, options.onFailure ?? ((error) => process.emitWarning(error)));
 	trackSnapshotCollection(store, running);
 	void running.then((outcome) => {
 		if (outcome.status === "interrupted") lastAskedAt.delete(store.identity);

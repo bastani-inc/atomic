@@ -15,6 +15,7 @@ import {
 import {
 	isRetryableWorkspaceError,
 	isWorkspaceCollectionError,
+	isWorkspaceConfigError,
 	WorkspaceCollectionError,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
 import {
@@ -597,4 +598,62 @@ describe("the collection a process is running, and a failure listener that throw
 			assert.equal(warnings.length, 1, "the same failure is reported once");
 		},
 	);
+});
+
+describe("scheduleSnapshotCollection validates its settings at entry, before any storage is touched (#4355)", () => {
+	const GRACE = "a non-negative integer number of seconds";
+	const INTERVAL = "a positive integer";
+	test.each([
+		["graceSeconds", -5, GRACE],
+		["graceSeconds", -100_000, GRACE],
+		["graceSeconds", 1.5, GRACE],
+		["graceSeconds", Number.NaN, GRACE],
+		["graceSeconds", "10", GRACE],
+		["collectIntervalSeconds", 0, INTERVAL],
+		["collectIntervalSeconds", -1, INTERVAL],
+		["collectIntervalSeconds", Number.NaN, INTERVAL],
+		["autoCollect", "yes", "true or false"],
+	] as const)("%s %s is refused with a typed config error and no statement runs", async (field, value, expected) => {
+		const { database, store, counted, reset } = await connection();
+		await agedOrphans(store, database, 1);
+		reset();
+
+		assert.throws(
+			() => scheduleSnapshotCollection(store, { ...settings, [field]: value } as never, silent),
+			(error: unknown) => {
+				assert.ok(isWorkspaceConfigError(error));
+				assert.equal(error.code, "invalid-setting");
+				assert.deepEqual(error.fields, { source: "sdk", field: `settings.${field}`, expected });
+				return true;
+			},
+		);
+
+		assert.equal(counted.statements.length, 0);
+		assert.equal(counted.counts.transactions, 0);
+		assert.equal((await store.listBlobHashes()).length, 1, "nothing was deleted");
+	});
+
+	test("an invalid setting is refused even when the collection would have been skipped, and a non-object too", () => {
+		assert.throws(
+			() => scheduleSnapshotCollection(new MemorySnapshotBlobStore(), { ...settings, graceSeconds: -1 }, silent),
+			isWorkspaceConfigError,
+		);
+		assert.throws(
+			() =>
+				scheduleSnapshotCollection(
+					undefined,
+					{ ...settings, autoCollect: false, collectIntervalSeconds: 0 },
+					silent,
+				),
+			isWorkspaceConfigError,
+		);
+		assert.throws(
+			() => scheduleSnapshotCollection(undefined, null as never, silent),
+			(error: unknown) => {
+				assert.ok(isWorkspaceConfigError(error));
+				assert.deepEqual(error.fields, { source: "sdk", field: "settings", expected: "an object" });
+				return true;
+			},
+		);
+	});
 });

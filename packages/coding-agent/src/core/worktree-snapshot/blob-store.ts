@@ -99,6 +99,13 @@ export function runningSnapshotCollectionsOn(descriptor: StorageDescriptor): Pro
 	return [...collectionsRunning].filter(([identity]) => identity.startsWith(prefix)).map(([, running]) => running);
 }
 
+/**
+ * Resolves after the event loop has run its timers and I/O callbacks. The node:sqlite adapter commits an uncontended
+ * transaction without ever returning to the loop, so a collection yields here between batches instead of holding
+ * the host process for all of them.
+ */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 /** Blobs one collection batch examines and deletes in one write transaction. */
 export const SNAPSHOT_COLLECTION_BATCH = 256;
 
@@ -457,7 +464,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Indexes the rows that referencing tables held before their triggers were installed, in transactions of
 	 * {@link SNAPSHOT_INDEX_BACKFILL_BATCH} rows, so that the index covers every reference. A one-time cost in the number
 	 * of existing rows, paid in the background by the first collection; resumes where it stopped. Does nothing once the
-	 * index is complete. Checks `signal` before each batch and rejects with its reason.
+	 * index is complete. Yields to the event loop between batches, and checks `signal` before each batch and rejects
+	 * with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
 		for (const { source, backfilled } of await this.installIndex()) {
@@ -465,6 +473,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			for (;;) {
 				options.signal?.throwIfAborted();
 				if (await this.backfillBatch(source, options.holder)) break;
+				await yieldToEventLoop();
 			}
 		}
 	}
@@ -503,8 +512,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * backfill, as {@link completeIndex} leaves them. When one does not, because a table appeared or lost its triggers
 	 * since, nothing is deleted until the index has been completed again. A sweep repairs the index once; when it is
 	 * incomplete again after that, because the schema keeps changing under it, the sweep stops without deleting
-	 * anything more and the next collection tries again. Checks `signal` before each batch and rejects with its
-	 * reason.
+	 * anything more and the next collection tries again. Yields to the event loop between batches, and checks `signal`
+	 * before each batch and rejects with its reason.
 	 */
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
@@ -547,6 +556,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			options.onBatch?.(batch.deleted);
 			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) return deleted;
 			cursor = batch.page.at(-1);
+			await yieldToEventLoop();
 		}
 	}
 
