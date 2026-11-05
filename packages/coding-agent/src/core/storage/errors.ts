@@ -666,7 +666,7 @@ const SUMMARIES: Readonly<Record<TeamProfileErrorCode, string>> = {
 	"connection-timeout": "The team database did not answer in time",
 	"token-write-failed": "Could not store the database token",
 	"settings-write-failed": "Could not write the global settings",
-	"settings-locked": "Another process is writing the global settings",
+	"settings-locked": "Another process is writing the settings",
 	"broker-restart-failed": "Could not restart the Intercom broker",
 	"token-delete-failed": "Could not delete the token file",
 };

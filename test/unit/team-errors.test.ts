@@ -219,7 +219,7 @@ test("the code lists, summaries and usage prefixes are the documented ones (#432
 		"connection-timeout": "The team database did not answer in time",
 		"token-write-failed": "Could not store the database token",
 		"settings-write-failed": "Could not write the global settings",
-		"settings-locked": "Another process is writing the global settings",
+		"settings-locked": "Another process is writing the settings",
 		"broker-restart-failed": "Could not restart the Intercom broker",
 		"token-delete-failed": "Could not delete the token file",
 	});
@@ -362,7 +362,7 @@ test("serialized team errors carry only the fields that are set, and causes keep
 		{
 			name: "TeamProfileError",
 			code: "settings-locked",
-			message: "Another process is writing the global settings: /s.json (settings-locked). Retry.",
+			message: "Another process is writing the settings: /s.json (settings-locked). Retry.",
 			hint: "Retry.",
 			fields: { retryable: true, subject: "/s.json" },
 		},

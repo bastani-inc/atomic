@@ -353,4 +353,80 @@ describe("team leave and a trusted project's remote storage (#4320)", () => {
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
+
+	test(
+		"a leave that cannot read a locked project settings file names that file in settings-locked",
+		async () => {
+			await joinTeamDatabase();
+			writeProjectStorage(true);
+			const projectSettings = join(project, ".atomic", "settings.json");
+			const joined = settingsText();
+			releaseHeldLock = lockfile.lockSync(projectSettings, { realpath: false });
+
+			const failure = await leave().then(
+				() => assert.fail("left while the project settings were locked"),
+				(error: Error) => error,
+			);
+
+			assert.ok(isTeamProfileError(failure));
+			assert.deepEqual(
+				[failure.code, failure.subject, failure.retryable],
+				["settings-locked", projectSettings, true],
+			);
+			assert.equal(settingsText(), joined);
+			assert.equal(tokenFiles().length, 1);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+});
+
+describe("team leave when the agent directory is the project's config directory (#4320)", () => {
+	test(
+		"removes the selection, the pin and the token file without waiting on a lock it already holds",
+		async () => {
+			agentDir = join(project, ".atomic");
+			settingsPath = join(agentDir, "settings.json");
+			mkdirSync(agentDir, { recursive: true });
+			const original = { theme: "dark", packages: [packageRoot] };
+			writeFileSync(settingsPath, JSON.stringify(original, null, 2));
+			const joined = await joinTeamDatabase();
+			assert.ok(joined.tokenPath);
+			assert.equal(existsSync(joined.tokenPath), true);
+
+			const left = await leave();
+
+			assert.deepEqual(left.removed, ["storage", "sessions.storage"]);
+			assert.deepEqual(left.kept, []);
+			assert.deepEqual(left.deletedTokenFiles, [joined.tokenPath]);
+			assert.equal(existsSync(joined.tokenPath), false);
+			assert.deepEqual(JSON.parse(settingsText()), original);
+			assert.deepEqual(tokenFiles(), []);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"keeps the pin and a token file that a lower-priority legacy project settings file still references",
+		async () => {
+			agentDir = join(project, ".atomic");
+			settingsPath = join(agentDir, "settings.json");
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(settingsPath, JSON.stringify({ theme: "dark", packages: [packageRoot] }, null, 2));
+			const joined = await joinTeamDatabase();
+			assert.ok(joined.tokenPath);
+			const legacy = join(project, ".pi", "settings.json");
+			mkdirSync(dirname(legacy), { recursive: true });
+			writeFileSync(legacy, JSON.stringify({ storage: JSON.parse(settingsText()).storage }));
+			new ProjectTrustStore(agentDir).set(project, true);
+
+			const left = await leave();
+
+			assert.deepEqual(left.removed, ["storage"]);
+			assert.deepEqual(left.kept, [{ key: "sessions.storage", reason: "storage-remains" }]);
+			assert.deepEqual(left.keptTokenFiles, [joined.tokenPath]);
+			assert.equal(existsSync(joined.tokenPath), true);
+			assert.deepEqual(JSON.parse(settingsText()).sessions, { storage: LOCAL_SESSIONS_STORAGE });
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
 });

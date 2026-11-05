@@ -5,7 +5,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir, getProjectConfigPaths } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
@@ -13,6 +22,7 @@ import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-c
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
 import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
+import { deepMergeSettings } from "../settings-merge.js";
 import type { Settings } from "../settings-schema.ts";
 import { FileSettingsStorage, writeSettingsFile } from "../settings-storage.ts";
 import {
@@ -577,7 +587,29 @@ function referencedTokenFiles(settings: Settings, agentDir: string): string[] {
 	);
 }
 
-function readProjectSettings(cwd: string, agentDir: string, settingsPath: string): Settings {
+function projectSettingsPathOf(cwd: string): string {
+	return getProjectConfigPaths(cwd, "settings.json")[0] as string;
+}
+
+function isSameFile(first: string, second: string): boolean {
+	return existsSync(first) && existsSync(second) && realpathSync(first) === realpathSync(second);
+}
+
+function readIndependentProjectSettings(cwd: string, settingsPath: string): Settings {
+	let merged: Settings = {};
+	for (const path of getProjectConfigPaths(cwd, "settings.json").reverse()) {
+		if (!existsSync(path) || isSameFile(settingsPath, path)) continue;
+		try {
+			merged = deepMergeSettings(merged, parseJsonFileContent(readFileSync(path, "utf-8")) as Settings);
+		} catch (error) {
+			throw unreadableSettingsError(path, error as Error);
+		}
+	}
+	return merged;
+}
+
+function readProjectSettings(cwd: string, agentDir: string): Settings {
+	const projectPath = projectSettingsPathOf(cwd);
 	const storage = new FileSettingsStorage(cwd, agentDir, {
 		projectReadPaths: getProjectConfigPaths(cwd, "settings.json"),
 	});
@@ -589,8 +621,8 @@ function readProjectSettings(cwd: string, agentDir: string, settingsPath: string
 		});
 		return merged === undefined ? {} : (parseJsonFileContent(merged) as Settings);
 	} catch (error) {
-		if (isLocked(error as Error)) throw lockedError(settingsPath, error as Error, "Nothing was changed.");
-		throw unreadableSettingsError("the project settings", error as Error);
+		if (isLocked(error as Error)) throw lockedError(projectPath, error as Error, "Nothing was changed.");
+		throw unreadableSettingsError(projectPath, error as Error);
 	}
 }
 
@@ -608,7 +640,9 @@ export async function leaveTeamWith(
 	if (!existsSync(settingsPath)) return empty;
 	const trusted = projectTrust(cwd, agentDir);
 	const outcome = withGlobalSettings(agentDir, unchanged, (global) => {
-		const project = readProjectSettings(cwd, agentDir, settingsPath);
+		const project = isSameFile(settingsPath, projectSettingsPathOf(cwd))
+			? readIndependentProjectSettings(cwd, settingsPath)
+			: readProjectSettings(cwd, agentDir);
 		const storage: StorageSettingsSelection | undefined = global.storage;
 		const removed: TeamSettingKey[] = [];
 		const kept: TeamKeptSetting[] = [];
