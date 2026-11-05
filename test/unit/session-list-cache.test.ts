@@ -224,17 +224,21 @@ describe("/resume session list cache", () => {
 			// One lands in the project too, so both listings fetch by id and each pauses after its batches.
 			const changed = LISTING_FETCH_BATCH + 1;
 			const elsewhere = join(dir, "other");
-			for (let index = 0; index < 4 * changed; index++) {
-				const listed = `listed-${index}`;
-				await store.create(header(listed, index % 2 === 0 ? cwd : elsewhere), [message(`${listed}-m`, listed)]);
-			}
+			await Promise.all(
+				Array.from({ length: 4 * changed }, (_, index) => {
+					const listed = `listed-${index}`;
+					return store.create(header(listed, index % 2 === 0 ? cwd : elsewhere), [message(`${listed}-m`, listed)]);
+				}),
+			);
 			await SessionManager.list(cwd, store);
 			await SessionManager.listAll(store);
 			const other = await otherConnection();
-			for (let index = 0; index < changed; index++) {
-				const created = `created-${index}`;
-				await other.create(header(created, index === 0 ? cwd : elsewhere), [message(`${created}-m`, created)]);
-			}
+			await Promise.all(
+				Array.from({ length: changed }, (_, index) => {
+					const created = `created-${index}`;
+					return other.create(header(created, index === 0 ? cwd : elsewhere), [message(`${created}-m`, created)]);
+				}),
+			);
 			const expectedProject = ids(await SessionManager.list(cwd, other));
 			const expectedAll = ids(await SessionManager.listAll(other));
 			yieldAfterFetchBatches(database);
