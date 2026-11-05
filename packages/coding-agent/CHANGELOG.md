@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `SessionStore.list` now rejects cancellation with the original `AbortSignal.reason` across JSONL, SQL and in-memory stores. Callers supplying a custom reason should compare the caught value to `signal.reason` rather than expecting a new `AbortError`; `controller.abort()` without a custom reason still produces the standard `AbortError` ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+
 ### Added
 
 - `getWriterQueueStats(database)` from `@bastani/atomic/storage` reports how a node-sqlite handle used the database's write lock over the last 10 seconds: `lockHeldRatio`, `waiters` (writers in any process waiting now), `p50WaitMs`, `p95WaitMs`, and `commitsPerSecond` ([#4316](https://github.com/bastani-inc/atomic/issues/4316))

@@ -90,21 +90,21 @@ export class MemorySessionStore implements SessionStore {
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertOpen();
-		if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+		query.signal?.throwIfAborted();
 		const matchesCwd =
 			query.cwd === undefined
 				? undefined
 				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		for (const record of this.records.values()) {
 			this.assertOpen();
-			if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+			query.signal?.throwIfAborted();
 			const snapshot = JSON.parse(record) as SessionSnapshot;
 			if (matchesCwd && !matchesCwd(snapshot.header.cwd)) continue;
 			if (!query.includeInternal && snapshot.header.internal) continue;
 			yield summarizeSession(snapshot);
 		}
 		this.assertOpen();
-		if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+		query.signal?.throwIfAborted();
 	}
 
 	async findMostRecent(query: {

@@ -706,25 +706,37 @@ export function registerSessionStoreConformance(
 				assert.deepEqual((await store.load("session")).entries, [entry]);
 			});
 
-			check("rejects aborted listings before and between yields", async (store, reload) => {
-				await store.create(header("one"), []);
-				await store.create(header("two"), []);
-				store = await reload(store);
-				const controller = new AbortController();
-				controller.abort("custom reason");
-				const aborted = store.list({ signal: controller.signal })[Symbol.asyncIterator]();
-				const isAbort = (error: Error): boolean => {
-					assert.equal(error.name, "AbortError");
-					return true;
-				};
-				await assert.rejects(aborted.next(), isAbort);
-				const active = new AbortController();
-				const iterator = store.list({ signal: active.signal })[Symbol.asyncIterator]();
-				assert.equal((await iterator.next()).done, false);
-				active.abort();
-				await assert.rejects(iterator.next(), isAbort);
-				assert.equal((await iterator.next()).done, true);
-			});
+			check(
+				"preserves cancellation reasons before, between and after listing yields (#4319)",
+				async (store, reload) => {
+					await store.create(header("one"), []);
+					await store.create(header("two"), []);
+					store = await reload(store);
+					const isReason = (reason: unknown) => (error: unknown) => {
+						assert.equal(error, reason);
+						return true;
+					};
+					for (const reason of [undefined, new Error("custom reason"), "custom reason"]) {
+						const before = new AbortController();
+						before.abort(reason);
+						const aborted = store.list({ signal: before.signal })[Symbol.asyncIterator]();
+						await assert.rejects(aborted.next(), isReason(before.signal.reason));
+						const between = new AbortController();
+						const iterator = store.list({ signal: between.signal })[Symbol.asyncIterator]();
+						assert.equal((await iterator.next()).done, false);
+						between.abort(reason);
+						await assert.rejects(iterator.next(), isReason(between.signal.reason));
+						assert.equal((await iterator.next()).done, true);
+						const last = new AbortController();
+						const drained = store.list({ signal: last.signal })[Symbol.asyncIterator]();
+						assert.equal((await drained.next()).done, false);
+						assert.equal((await drained.next()).done, false);
+						last.abort(reason);
+						await assert.rejects(drained.next(), isReason(last.signal.reason));
+						assert.equal((await drained.next()).done, true);
+					}
+				},
+			);
 
 			check("deletes and recreates sessions and reports missing reads and writes", async (store, reload) => {
 				await assert.rejects(store.load("missing"), notFound("missing"));

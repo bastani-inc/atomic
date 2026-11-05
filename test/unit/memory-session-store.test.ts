@@ -101,3 +101,21 @@ test("structural text preserves valid surrogate pairs and rejects lone low surro
 		await store.close();
 	}
 });
+
+test("an already-cancelled listing never invokes the cwd matcher (#4319)", async () => {
+	let matcherCalls = 0;
+	const store = new MemorySessionStore(() => {
+		matcherCalls++;
+		return () => true;
+	});
+	const controller = new AbortController();
+	const reason = new Error("listing cancelled before preparation");
+	controller.abort(reason);
+	try {
+		const iterator = store.list({ cwd: "/project", signal: controller.signal })[Symbol.asyncIterator]();
+		await assert.rejects(iterator.next(), (error: object) => error === reason);
+		assert.equal(matcherCalls, 0);
+	} finally {
+		await store.close();
+	}
+});
