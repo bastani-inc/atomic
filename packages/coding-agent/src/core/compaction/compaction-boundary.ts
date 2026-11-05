@@ -177,7 +177,12 @@ export function prepareCompactionBoundary(
 			previous.entry.firstKeptEntryId === null
 				? -1
 				: entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
-		regionStart = keptIndex >= 0 ? keptIndex : previous.index + 1;
+		const coveredId = previous.entry.coveredThroughEntryId;
+		const coveredIndex =
+			coveredId === undefined
+				? -1
+				: entries.findIndex((entry, index) => index < previous.index && entry.id === coveredId);
+		regionStart = keptIndex >= 0 ? keptIndex : coveredIndex >= 0 ? coveredIndex + 1 : previous.index + 1;
 	}
 
 	const visible = visibleEntries(entries, regionStart, collectContextEdits(entries));

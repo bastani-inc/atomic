@@ -30,7 +30,7 @@ import type {
 	SessionCompactFailedEvent,
 } from "./extensions/index.js";
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
-import type { CompactionEntry } from "./session-manager.ts";
+import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
@@ -88,15 +88,30 @@ function extensionStats(preparation: VerbatimCompactionPreparation, compactedTex
 	);
 }
 
-export async function _applyVerbatimCompaction(
+/** A finished compaction plan, ready to be persisted as one boundary. */
+export interface PlannedVerbatimCompaction {
+	readonly text: string;
+	readonly firstKeptEntryId: string | null;
+	readonly tokensBefore: number;
+	/** Durable details without `backupPath`, which only a commit creates. */
+	readonly details: VerbatimCompactionDetails;
+	readonly usage?: Usage;
+	readonly fromExtension: boolean;
+}
+
+/**
+ * Plan one verbatim compaction of `pathEntries` without changing the session: the extension hook,
+ * then the planner ladder. Returns undefined when nothing is compactable and the caller may proceed.
+ */
+export async function planVerbatimCompaction(
 	this: AgentSession,
 	options: VerbatimCompactionApplyOptions,
-): Promise<VerbatimCompactionResult | undefined> {
+	pathEntries: SessionEntry[],
+): Promise<PlannedVerbatimCompaction | undefined> {
 	assertCompactionOpen(this);
 	if (!this.model) throw new Error(formatNoModelSelectedMessage());
 	options.abortController.signal.throwIfAborted();
 	const model = this.model;
-	const pathEntries = this.sessionManager.getBranch();
 	const settings = this.settingsManager.getCompactionSettings(model);
 	// A sub-minimum region is admitted only when the caller already knows the
 	// context does not fit: overflow recovery, or a post-tool preflight over the
@@ -243,43 +258,62 @@ export async function _applyVerbatimCompaction(
 	// A fresh rung that had to drop the protected tail persists no tail boundary.
 	const firstKeptEntryId =
 		compacted.summaryFirstKeptEntryId ?? (compacted.keptTail ? preparation.firstKeptEntryId : null);
-	const tokensBefore = compacted.summaryTokensBefore ?? preparation.tokensBefore;
-	const backupPath = await this.sessionManager.writeBackupSnapshot(options.backupLabel);
-	const details: VerbatimCompactionDetails = {
-		strategy: VERBATIM_COMPACTION_STRATEGY,
-		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-		parameters: preparation.parameters,
-		stats: compacted.stats,
-		rung: compacted.rung,
-		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
-		...(compacted.backend ? { backend: compacted.backend } : {}),
-		...(compacted.model ? { model: compacted.model } : {}),
-		...(compacted.summary ? { summary: compacted.summary } : {}),
-		...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
-		...(backupPath ? { backupPath } : {}),
-	};
-	const entryId = await this.sessionManager.appendCompaction(
-		compacted.text,
+	return {
+		text: compacted.text,
 		firstKeptEntryId,
-		tokensBefore,
+		tokensBefore: compacted.summaryTokensBefore ?? preparation.tokensBefore,
+		details: {
+			strategy: VERBATIM_COMPACTION_STRATEGY,
+			promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
+			parameters: preparation.parameters,
+			stats: compacted.stats,
+			rung: compacted.rung,
+			...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
+			...(compacted.backend ? { backend: compacted.backend } : {}),
+			...(compacted.model ? { model: compacted.model } : {}),
+			...(compacted.summary ? { summary: compacted.summary } : {}),
+			...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
+		},
+		...(compacted.usage ? { usage: compacted.usage } : {}),
+		fromExtension,
+	};
+}
+
+/**
+ * Persist a planned compaction as one boundary, refresh the in-memory context, and notify
+ * `session_compact` listeners. `coveredThroughEntryId` marks a background result whose later
+ * entries replay unchanged.
+ */
+export async function commitVerbatimCompaction(
+	this: AgentSession,
+	planned: PlannedVerbatimCompaction,
+	options: { reason: "manual" | "threshold" | "overflow"; backupLabel: string; coveredThroughEntryId?: string },
+): Promise<VerbatimCompactionResult> {
+	const backupPath = await this.sessionManager.writeBackupSnapshot(options.backupLabel);
+	const details: VerbatimCompactionDetails = { ...planned.details, ...(backupPath ? { backupPath } : {}) };
+	const entryId = await this.sessionManager.appendCompaction(
+		planned.text,
+		planned.firstKeptEntryId,
+		planned.tokensBefore,
 		details,
-		compacted.usage,
+		planned.usage,
+		options.coveredThroughEntryId,
 	);
 	this._refreshFinalizedContext();
 	const result: VerbatimCompactionResult = {
-		compactedText: compacted.text,
-		firstKeptEntryId,
-		tokensBefore,
-		stats: compacted.stats,
-		parameters: preparation.parameters,
+		compactedText: planned.text,
+		firstKeptEntryId: planned.firstKeptEntryId,
+		tokensBefore: planned.tokensBefore,
+		stats: details.stats,
+		parameters: details.parameters,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-		rung: compacted.rung,
-		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
-		...(compacted.backend ? { backend: compacted.backend } : {}),
-		...(compacted.model ? { model: compacted.model } : {}),
-		...(compacted.summary ? { summary: compacted.summary } : {}),
-		...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
-		...(compacted.usage ? { usage: compacted.usage } : {}),
+		rung: details.rung,
+		...(details.plannerModel ? { plannerModel: details.plannerModel } : {}),
+		...(details.backend ? { backend: details.backend } : {}),
+		...(details.model ? { model: details.model } : {}),
+		...(details.summary ? { summary: details.summary } : {}),
+		...(details.freshReason ? { freshReason: details.freshReason } : {}),
+		...(planned.usage ? { usage: planned.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;
@@ -287,10 +321,10 @@ export async function _applyVerbatimCompaction(
 		await this._extensionRunner.emit({
 			type: "session_compact",
 			reason: options.reason,
-			parameters: preparation.parameters,
+			parameters: details.parameters,
 			result,
 			compactionEntry,
-			fromExtension,
+			fromExtension: planned.fromExtension,
 		} satisfies SessionCompactEvent);
 	} catch (error) {
 		this._extensionRunner.emitError({
@@ -301,6 +335,15 @@ export async function _applyVerbatimCompaction(
 		});
 	}
 	return result;
+}
+
+export async function _applyVerbatimCompaction(
+	this: AgentSession,
+	options: VerbatimCompactionApplyOptions,
+): Promise<VerbatimCompactionResult | undefined> {
+	const planned = await planVerbatimCompaction.call(this, options, this.sessionManager.getBranch());
+	if (!planned) return undefined;
+	return commitVerbatimCompaction.call(this, planned, { reason: options.reason, backupLabel: options.backupLabel });
 }
 
 export async function emitSessionCompactFailed(
@@ -421,6 +464,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 	// session abort before publishing this new manual owner so abort() cancels
 	// prior work rather than cancelling or waiting on the compaction being started.
 	this._autoCompactionAbortController?.abort();
+	this._abortBackgroundCompaction();
 	const abortBoundary = this.abort();
 
 	const controller = new AbortController();
@@ -457,6 +501,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 export function abortCompaction(this: AgentSession): void {
 	this._compactionAbortController?.abort();
 	this._autoCompactionAbortController?.abort();
+	this._abortBackgroundCompaction();
 }
 export function abortBranchSummary(this: AgentSession): void {
 	this._branchSummaryAbortController?.abort();

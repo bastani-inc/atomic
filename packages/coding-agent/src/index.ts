@@ -226,6 +226,7 @@ export {
 } from "./core/auth-storage-backends.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
+export type { CompactionCacheMiss } from "./core/cache-stats.ts";
 export {
 	type CallbackActivityDescriptor,
 	type CallbackActivityKind,
@@ -241,6 +242,42 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
+export {
+	BACKGROUND_COMPACTION_RESULT_TYPE,
+	type BackgroundCompactionResultRecord,
+	type BackgroundCompactionState,
+	type BackgroundCompactionStatus,
+	type CompactionReadyWake,
+	type CompactionWakeDispatcher,
+	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
+	rehydrateBackgroundCompactionState,
+	type SerializedBackgroundCompactionState,
+	serializeBackgroundCompactionState,
+} from "./core/compaction/background-compaction.ts";
+export {
+	BackgroundCompactionConfigError,
+	type BackgroundCompactionConfigReason,
+	type BackgroundCompactionConfigSource,
+	BackgroundCompactionDiscardedError,
+	type BackgroundCompactionDiscardReason,
+	BackgroundCompactionError,
+	type BackgroundCompactionErrorCode,
+	type BackgroundCompactionErrorFields,
+	BackgroundCompactionNotCompactableError,
+	BackgroundCompactionPersistError,
+	type BackgroundCompactionPhase,
+	BackgroundCompactionPlanningError,
+	isBackgroundCompactionConfigError,
+	isBackgroundCompactionDiscardedError,
+	isBackgroundCompactionError,
+	isBackgroundCompactionNotCompactableError,
+	isBackgroundCompactionPersistError,
+	isBackgroundCompactionPlanningError,
+	isRetryableBackgroundCompactionError,
+	rehydrateBackgroundCompactionError,
+	type SerializedBackgroundCompactionError,
+	serializeBackgroundCompactionError,
+} from "./core/compaction/background-compaction-errors.ts";
 // Compaction
 export {
 	type BranchPreparation,

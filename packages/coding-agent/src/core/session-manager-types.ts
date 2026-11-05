@@ -89,6 +89,12 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	/** First context-visible tail entry, or null when the durable summary replaces the entire pre-boundary transcript. */
 	firstKeptEntryId: string | null;
 	tokensBefore: number;
+	/**
+	 * Last entry the boundary covers, when a background compaction committed it after more entries were
+	 * appended. Entries after it and before the boundary replay unchanged. Absent: the boundary covers
+	 * every entry before it.
+	 */
+	coveredThroughEntryId?: string;
 	details?: T;
 	/** Aggregate usage from model calls that produced this boundary. */
 	usage?: Usage;

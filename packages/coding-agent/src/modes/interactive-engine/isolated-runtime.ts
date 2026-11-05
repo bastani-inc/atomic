@@ -10,6 +10,12 @@ import type {
 	PromptOptions,
 	SessionRecoveryReport,
 } from "../../core/agent-session-types.js";
+import {
+	type BackgroundCompactionState,
+	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
+	IDLE_BACKGROUND_COMPACTION_STATE,
+	rehydrateBackgroundCompactionState,
+} from "../../core/compaction/background-compaction.ts";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError } from "../../core/extensions/index.js";
@@ -124,6 +130,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly queuePause: RemoteQueuePause;
 	private readonly sessionStats: EngineSessionStats;
 	private autoCompactionEnabled = true;
+	private backgroundCompaction: BackgroundCompactionState = IDLE_BACKGROUND_COMPACTION_STATE;
+	private backgroundCompactionEnabled = true;
+	private backgroundCompactionThresholdPercent = DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT;
 	private autoRetryEnabled = true;
 	private remoteSessionName: string | undefined;
 	private remoteSessionFile: string | undefined;
@@ -285,6 +294,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			session.agent.steeringMode = state.steeringMode;
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
+			this.backgroundCompaction =
+				state.compaction === undefined
+					? IDLE_BACKGROUND_COMPACTION_STATE
+					: rehydrateBackgroundCompactionState(state.compaction);
+			this.backgroundCompactionEnabled = state.backgroundCompactionEnabled ?? this.backgroundCompactionEnabled;
+			this.backgroundCompactionThresholdPercent =
+				state.backgroundCompactionThresholdPercent ?? this.backgroundCompactionThresholdPercent;
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;
@@ -693,6 +709,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
+			compaction: { configurable: true, get: () => this.backgroundCompaction },
+			backgroundCompactionEnabled: { configurable: true, get: () => this.backgroundCompactionEnabled },
+			backgroundCompactionThresholdPercent: {
+				configurable: true,
+				get: () => this.backgroundCompactionThresholdPercent,
+			},
 			autoRetryEnabled: { configurable: true, get: () => this.autoRetryEnabled },
 			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
@@ -906,6 +928,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					this.dispatchBestEffort("set auto compaction", this.client.setAutoCompaction(enabled));
 				},
 			},
+			setBackgroundCompactionEnabled: {
+				configurable: true,
+				value: (enabled: boolean) => {
+					this.backgroundCompactionEnabled = enabled;
+					this.dispatchBestEffort("set background compaction", this.client.setBackgroundCompaction(enabled));
+				},
+			},
+			setBackgroundCompactionThresholdPercent: {
+				configurable: true,
+				value: (percent: number) => {
+					this.backgroundCompactionThresholdPercent = percent;
+					this.dispatchBestEffort(
+						"set background compaction threshold",
+						this.client.setBackgroundCompactionThreshold(percent),
+					);
+				},
+			},
 			setAutoRetryEnabled: {
 				configurable: true,
 				value: (enabled: boolean) => {
@@ -1102,6 +1141,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.compacting = false;
 				this.compactionReason = undefined;
 				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
+				break;
+			case "background_compaction":
+				this.backgroundCompaction = rehydrateBackgroundCompactionState(event.compaction);
 				break;
 			case "message_end":
 				this.sessionStats.refresh();

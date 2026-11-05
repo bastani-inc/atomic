@@ -53,6 +53,7 @@ describe("session compaction model overrides", () => {
 				contextWindow: 1000,
 				settings: {
 					compaction: {
+						background: false,
 						reserveTokens: reserveTokens === 0 ? 200 : 0,
 						preserve_recent: 2,
 						modelOverrides: { "faux/faux-1": { reserveTokens, preserve_recent: 0 } },
@@ -87,6 +88,7 @@ describe("session compaction model overrides", () => {
 				contextWindow: 1000,
 				settings: {
 					compaction: {
+						background: false,
 						reserveTokens: reserveTokens === 0 ? 200 : 0,
 						modelOverrides: { "faux/faux-1": { reserveTokens, preserve_recent: 0 } },
 					},

@@ -244,6 +244,8 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	settingsManager.getCompactionBackground();
+	settingsManager.getCompactionBackgroundThresholdPercent();
 	let sessionManager = options.sessionManager;
 	if (!sessionManager) {
 		const store = await resolveSessionStore(cwd, {
@@ -745,6 +747,7 @@ async function constructAgentSession(
 			customTools: options.customTools,
 			modelRuntime,
 			cacheWarmer,
+			...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 			initialActiveToolNames,
 			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
 			defaultToolModifiers: toolModifiers,

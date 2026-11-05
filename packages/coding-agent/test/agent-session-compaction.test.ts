@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, test } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { BackgroundCompactionRuntime } from "../src/core/agent-session-background-compaction.ts";
 import { agentSessionCompactionMethods } from "../src/core/agent-session-compaction.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -22,7 +23,12 @@ test("RPC get_state round-trips the active compaction reason", async () => {
 			followUpMode: "all",
 		},
 		sessionManager: SessionManager.inMemory(process.cwd()),
-		settingsManager: { getCompactionEnabled: () => true },
+		settingsManager: {
+			getCompactionEnabled: () => true,
+			getCompactionBackground: () => true,
+			getCompactionBackgroundThresholdPercent: () => 75,
+		},
+		_backgroundCompaction: new BackgroundCompactionRuntime(undefined),
 		_resourceLoader: { getExtensions: () => ({ extensions: [], overlaps: [] }) },
 		_scopedModels: [],
 		_steeringMessages: [],
@@ -52,4 +58,11 @@ test("RPC get_state round-trips the active compaction reason", async () => {
 	if (!response.success || !("data" in response)) throw new Error("get_state did not return state data");
 	assert.equal(response.data.isCompacting, true);
 	assert.equal(response.data.compactionReason, "threshold");
+	assert.deepEqual(
+		response.data.compaction,
+		{ state: "idle" },
+		"background compaction never sets isCompacting (#4330)",
+	);
+	assert.equal(response.data.backgroundCompactionEnabled, true);
+	assert.equal(response.data.backgroundCompactionThresholdPercent, 75);
 });

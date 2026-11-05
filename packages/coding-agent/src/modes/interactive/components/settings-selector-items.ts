@@ -16,23 +16,39 @@ import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-type
  */
 const NO_DEFAULT_MODELS_VALUE = "__no-models__";
 
+/** Index just after the compaction items, where the image and UI toggles start. */
+function afterCompactionItems(items: SettingItem[]): number {
+	return items.findIndex((item) => item.id === "background-compaction-threshold") + 1;
+}
+
 function insertImageItems(items: SettingItem[], config: SettingsConfig): void {
 	if (!getCapabilities().images) return;
+	const start = afterCompactionItems(items);
 
-	items.splice(1, 0, {
+	items.splice(start, 0, {
 		id: "show-images",
 		label: "Show images",
 		description: "Render images inline in terminal",
 		currentValue: config.showImages ? "true" : "false",
 		values: ["true", "false"],
 	});
-	items.splice(2, 0, {
+	items.splice(start + 1, 0, {
 		id: "image-width-cells",
 		label: "Image width",
 		description: "Preferred inline image width in terminal cells",
 		currentValue: String(config.imageWidthCells),
 		values: ["60", "80", "120"],
 	});
+}
+
+/** Offered background compaction thresholds; a configured value outside the list stays selectable. */
+export const BACKGROUND_COMPACTION_THRESHOLD_CHOICES: readonly number[] = [50, 60, 70, 75, 80, 90];
+
+function backgroundThresholdChoices(current: number): string[] {
+	const choices = BACKGROUND_COMPACTION_THRESHOLD_CHOICES.includes(current)
+		? BACKGROUND_COMPACTION_THRESHOLD_CHOICES
+		: [...BACKGROUND_COMPACTION_THRESHOLD_CHOICES, current].sort((a, b) => a - b);
+	return choices.map(String);
 }
 
 function insertAfter(items: SettingItem[], afterId: string, item: SettingItem): void {
@@ -42,7 +58,7 @@ function insertAfter(items: SettingItem[], afterId: string, item: SettingItem): 
 
 function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 	const supportsImages = getCapabilities().images;
-	items.splice(supportsImages ? 3 : 1, 0, {
+	items.splice(afterCompactionItems(items) + (supportsImages ? 2 : 0), 0, {
 		id: "auto-resize-images",
 		label: "Auto-resize images",
 		description: "Resize large images to 2000x2000 max for better model compatibility",
@@ -166,6 +182,21 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			description: "Automatically compact context when it gets too large",
 			currentValue: config.autoCompact ? "true" : "false",
 			values: ["true", "false"],
+		},
+		{
+			id: "background-compaction",
+			label: "Background compaction",
+			description:
+				"Compact older context in the background while the agent keeps working; blocking compaction only on overflow",
+			currentValue: config.backgroundCompaction ? "true" : "false",
+			values: ["true", "false"],
+		},
+		{
+			id: "background-compaction-threshold",
+			label: "Background compaction threshold",
+			description: "Percentage of the context window at which background compaction starts",
+			currentValue: String(config.backgroundCompactionThresholdPercent),
+			values: backgroundThresholdChoices(config.backgroundCompactionThresholdPercent),
 		},
 		{
 			id: "steering-mode",

@@ -2,6 +2,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { runCallback } from "../../core/callback-activity.ts";
+import { serializeBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
@@ -60,6 +61,8 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "pause_queued_messages":
 		case "resume_queued_messages":
 		case "set_auto_compaction":
+		case "set_background_compaction":
+		case "set_background_compaction_threshold":
 		case "set_auto_retry":
 		case "set_debug":
 		case "set_extension_ui_capabilities":
@@ -225,6 +228,9 @@ export function createRpcCommandHandler({
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
+					compaction: serializeBackgroundCompactionState(session.compaction),
+					backgroundCompactionEnabled: session.backgroundCompactionEnabled,
+					backgroundCompactionThresholdPercent: session.backgroundCompactionThresholdPercent,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
 					queuedMessagesPaused: session.queuedMessagesPaused,
@@ -378,6 +384,12 @@ export function createRpcCommandHandler({
 			case "set_auto_compaction":
 				session.setAutoCompactionEnabled(command.enabled);
 				return createRpcSuccessResponse(id, "set_auto_compaction");
+			case "set_background_compaction":
+				session.setBackgroundCompactionEnabled(command.enabled);
+				return createRpcSuccessResponse(id, "set_background_compaction");
+			case "set_background_compaction_threshold":
+				session.setBackgroundCompactionThresholdPercent(command.percent);
+				return createRpcSuccessResponse(id, "set_background_compaction_threshold");
 			case "abort_compaction":
 				session.abortCompaction();
 				return createRpcSuccessResponse(id, "abort_compaction");

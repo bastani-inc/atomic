@@ -110,6 +110,7 @@ export function createCompactionEntry(
 	usage: Usage | undefined,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
+	coveredThroughEntryId?: string,
 ): CompactionEntry<VerbatimCompactionDetails> {
 	return {
 		type: "compaction",
@@ -117,6 +118,7 @@ export function createCompactionEntry(
 		summary: compactedText,
 		firstKeptEntryId,
 		tokensBefore,
+		...(coveredThroughEntryId === undefined ? {} : { coveredThroughEntryId }),
 		details,
 		usage,
 		fromHook: details.rung === "extension" || undefined,

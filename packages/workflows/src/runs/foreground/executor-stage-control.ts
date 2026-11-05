@@ -66,6 +66,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				to: "quarantined",
 				meta: event.resources.map((entry) => `${event.taskId} ${entry.resource}: ${entry.message}`).join("; "),
 			});
+		if (event.type === "background_compaction")
+			runtime.activeStore.recordStageCompaction(runtime.runId, runtime.stageId, event.compaction);
 	});
 	// Mounted chats subscribe through this handle for as long as they exist, hidden or not.
 	let externalSubscribers = 0;

@@ -13,6 +13,9 @@ export const SETTINGS_DEFAULTS = {
 		preserve_recent: 2,
 		/** Wall-clock limit on automatic compaction's model planning, so it cannot block a turn (#4198). */
 		planningTimeoutMs: 300_000,
+		/** Compact a frozen prefix in the background past the soft threshold; commit at a turn boundary (#4330). */
+		background: true,
+		backgroundThresholdPercent: 75,
 	},
 	branchSummary: {
 		reserveTokens: 16384,

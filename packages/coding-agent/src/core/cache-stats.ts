@@ -19,7 +19,7 @@ export interface CacheWasteTotals {
 	missCount: number;
 }
 export interface ModelPriceSource {
-	getModel(provider: string, modelId: string): { cost: { cacheRead: number } } | undefined;
+	getModel(provider: string, modelId: string): { cost: { cacheRead: number; input?: number } } | undefined;
 	getPromptCacheTtlMs?(provider: string, modelId: string): number | undefined;
 }
 export function createCacheMissModelSource(runtime: {
@@ -139,4 +139,41 @@ export function detectCacheMiss(
 	models: ModelPriceSource,
 ): CacheMiss | undefined {
 	return detect(scan(entries, models).prev, message, models);
+}
+
+/** The prompt-cache miss a compaction commit causes on the next request: the cached prefix it rewrites. */
+export interface CompactionCacheMiss {
+	expectedMissedTokens: number;
+	expectedMissedCost: number;
+}
+
+/**
+ * Estimate the cache miss of committing a compaction boundary: the next request re-bills its prompt
+ * (at most the previously cached prompt) at the uncached rate. Undefined when the last request
+ * reported no prompt caching.
+ */
+export function estimateCompactionCacheMiss(
+	entries: SessionEntry[],
+	promptTokensAfter: number,
+	models: ModelPriceSource,
+): CompactionCacheMiss | undefined {
+	const prev = scan(entries, models).prev;
+	if (!prev?.reportedCache) return undefined;
+	const expectedMissedTokens = Math.max(0, Math.min(prev.promptTokens, promptTokensAfter));
+	if (expectedMissedTokens === 0) return undefined;
+	let last: AssistantMessage | undefined;
+	for (let index = entries.length - 1; index >= 0 && !last; index--) {
+		const entry = entries[index];
+		if (entry.type === "message" && entry.message.role === "assistant") last = entry.message;
+	}
+	const usage = last?.usage;
+	const model = models.getModel(prev.provider, prev.model);
+	const paidTokens = usage ? usage.input + usage.cacheWrite : 0;
+	const paidRate =
+		usage && paidTokens > 0
+			? (usage.cost.input + usage.cost.cacheWrite) / paidTokens
+			: (model?.cost.input ?? 0) / 1_000_000;
+	const readRate =
+		usage && usage.cacheRead > 0 ? usage.cost.cacheRead / usage.cacheRead : (model?.cost.cacheRead ?? 0) / 1_000_000;
+	return { expectedMissedTokens, expectedMissedCost: expectedMissedTokens * Math.max(0, paidRate - readRate) };
 }

@@ -466,6 +466,18 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 				this.addCompactionBoundaryToChat(event.result);
 				if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
+				if (event.cacheMiss && this.settingsManager.getShowCacheMissNotices()) {
+					this.chatContainer.addChild(
+						new Text(
+							theme.fg(
+								"warning",
+								`Prompt cache miss expected after background compaction: ${event.cacheMiss.expectedMissedTokens.toLocaleString()} tokens re-billed ($${event.cacheMiss.expectedMissedCost.toFixed(3)})`,
+							),
+							1,
+							0,
+						),
+					);
+				}
 				this.footer.invalidate();
 			} else if (event.errorMessage && !manualTakeoverPending) {
 				if (event.reason === "manual") {

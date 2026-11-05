@@ -27,7 +27,7 @@ import type {
 import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
+import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -358,6 +358,10 @@ export interface HarnessOptions {
 	extensionFactories?: Array<ExtensionFactory | CreateTestExtensionsResultInput>;
 	/** Configure the real Agent before AgentSession installs its runtime adapters. */
 	configureAgent?: (agent: Agent) => void;
+	/** Session manager to use. Default: in-memory. */
+	sessionManager?: SessionManager;
+	/** Background compaction wake dispatcher passed to the session. */
+	compactionWake?: AgentSessionConfig["compactionWake"];
 }
 
 export interface Harness {
@@ -404,7 +408,7 @@ async function createHarnessWithResourceLoader(
 	});
 	options.configureAgent?.(agent);
 
-	const sessionManager = SessionManager.inMemory();
+	const sessionManager = options.sessionManager ?? SessionManager.inMemory();
 	const settingsManager = SettingsManager.create(tempDir, tempDir);
 
 	if (options.settings) {
@@ -428,6 +432,7 @@ async function createHarnessWithResourceLoader(
 		modelRuntime,
 		resourceLoader,
 		baseToolsOverride: options.baseToolsOverride,
+		...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 	});
 
 	const events: AgentSessionEvent[] = [];

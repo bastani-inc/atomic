@@ -1,0 +1,558 @@
+/**
+ * Background compaction for an agent session (#4330).
+ *
+ * Past the soft threshold a task compacts a frozen prefix (up to the safe point) with the unchanged
+ * verbatim compaction ladder while turns continue. Its result is stored as one session entry and
+ * committed once, at the next turn boundary, as a boundary that covers only that prefix. Foreground
+ * compaction remains for the hard threshold and overflow when no result is ready.
+ */
+
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	commitVerbatimCompaction,
+	type PlannedVerbatimCompaction,
+	planVerbatimCompaction,
+} from "./agent-session-compaction.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
+import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { type CompactionCacheMiss, createCacheMissModelSource, estimateCompactionCacheMiss } from "./cache-stats.ts";
+import {
+	BACKGROUND_COMPACTION_RESULT_TYPE,
+	type BackgroundCompactionResultRecord,
+	type BackgroundCompactionState,
+	backgroundCompactionRetryDelayMs,
+	type CompactionWakeDispatcher,
+	coveredThroughIndex,
+	discardedBackgroundCompaction,
+	findBackgroundCompactionSafePoint,
+	IDLE_BACKGROUND_COMPACTION_STATE,
+	selectReadyBackgroundCompaction,
+	serializeBackgroundCompactionState,
+	shouldStartBackgroundCompaction,
+} from "./compaction/background-compaction.ts";
+import {
+	BackgroundCompactionDiscardedError,
+	type BackgroundCompactionError,
+	BackgroundCompactionNotCompactableError,
+	BackgroundCompactionPersistError,
+	BackgroundCompactionPlanningError,
+	isBackgroundCompactionConfigError,
+	serializeBackgroundCompactionError,
+} from "./compaction/background-compaction-errors.ts";
+import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
+import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
+import { sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
+import type { SessionEntry } from "./session-manager-types.ts";
+import { settingsWriteOwner } from "./settings-write-ownership.ts";
+
+interface RunningBackgroundCompaction {
+	readonly controller: AbortController;
+	readonly upToEntryId: string;
+	readonly startedAt: string;
+	readonly attempt: number;
+	readonly settled: Promise<void>;
+}
+
+/** A ready result committed at a turn boundary. */
+export interface CommittedBackgroundCompaction {
+	readonly result: VerbatimCompactionResult;
+	readonly cacheMiss?: CompactionCacheMiss;
+}
+
+/** A ready result a foreground compaction committed; `sufficient` when no further compaction is needed. */
+export interface ForegroundBackgroundCompaction extends CommittedBackgroundCompaction {
+	readonly sufficient: boolean;
+}
+
+type TaskOutcome =
+	| { readonly kind: "ready"; readonly resultEntryId: string }
+	| { readonly kind: "failed"; readonly error: BackgroundCompactionError }
+	| { readonly kind: "discarded"; readonly error: BackgroundCompactionDiscardedError }
+	| { readonly kind: "cancelled" };
+
+/** Per-session scheduler state. No timers: retries wait for a turn boundary after `nextAttemptAt`. */
+export class BackgroundCompactionRuntime {
+	task: RunningBackgroundCompaction | undefined;
+	failure:
+		| { readonly error: BackgroundCompactionError; readonly upToEntryId?: string; readonly startedAt?: string }
+		| undefined;
+	consecutiveFailures = 0;
+	nextAttemptAt = 0;
+	/** The stored result last announced as ready, so a later discard of it is reported once. */
+	announcedResultEntryId: string | undefined;
+	commitInFlight: Promise<CommittedBackgroundCompaction | undefined> | undefined;
+	readonly readyListeners = new Set<(state: BackgroundCompactionState) => void>();
+
+	readonly wake: CompactionWakeDispatcher | undefined;
+
+	constructor(wake: CompactionWakeDispatcher | undefined) {
+		this.wake = wake;
+	}
+}
+
+function runtimeOf(session: AgentSession): BackgroundCompactionRuntime {
+	return session._backgroundCompaction;
+}
+
+function foregroundCompactionActive(session: AgentSession): boolean {
+	return (
+		session._compactionAbortController !== undefined ||
+		session._manualCompactionPromise !== undefined ||
+		session._autoCompactionAbortController !== undefined
+	);
+}
+
+/** Effective settings, or the typed config error recorded as the failure reason. */
+function backgroundSettings(session: AgentSession): { enabled: boolean; thresholdPercent: number } | undefined {
+	try {
+		return {
+			enabled: session.settingsManager.getCompactionEnabled() && session.settingsManager.getCompactionBackground(),
+			thresholdPercent: session.settingsManager.getCompactionBackgroundThresholdPercent(),
+		};
+	} catch (error) {
+		if (!isBackgroundCompactionConfigError(error)) throw error;
+		const runtime = runtimeOf(session);
+		if (!isBackgroundCompactionConfigError(runtime.failure?.error)) {
+			runtime.failure = { error };
+			emitBackgroundCompactionState(session);
+		}
+		return undefined;
+	}
+}
+
+/** Current state: a running task, else a stored result that fits the branch, else the last failure. */
+export function backgroundCompactionState(session: AgentSession): BackgroundCompactionState {
+	const runtime = runtimeOf(session);
+	if (runtime.task) {
+		return { state: "running", upToEntryId: runtime.task.upToEntryId, startedAt: runtime.task.startedAt };
+	}
+	const ready = selectReadyBackgroundCompaction(session.sessionManager.getBranch());
+	if (ready) return { state: "ready", upToEntryId: ready.record.upToEntryId, startedAt: ready.record.startedAt };
+	const failure = runtime.failure;
+	if (failure) {
+		return {
+			state: "failed",
+			...(failure.upToEntryId === undefined ? {} : { upToEntryId: failure.upToEntryId }),
+			...(failure.startedAt === undefined ? {} : { startedAt: failure.startedAt }),
+			error: failure.error,
+		};
+	}
+	return IDLE_BACKGROUND_COMPACTION_STATE;
+}
+
+function reportListenerFailure(session: AgentSession, error: unknown): void {
+	session._extensionRunner.emitError({
+		extensionPath: "<background_compaction>",
+		event: "background_compaction",
+		error: error instanceof Error ? error.message : String(error),
+		stack: error instanceof Error ? error.stack : undefined,
+	});
+}
+
+function emitBackgroundCompactionState(
+	session: AgentSession,
+	discarded?: BackgroundCompactionDiscardedError,
+): BackgroundCompactionState {
+	const state = backgroundCompactionState(session);
+	try {
+		session._emit({
+			type: "background_compaction",
+			compaction: serializeBackgroundCompactionState(state),
+			...(discarded === undefined ? {} : { discarded: serializeBackgroundCompactionError(discarded) }),
+		});
+	} catch (error) {
+		reportListenerFailure(session, error);
+	}
+	return state;
+}
+
+function announceReady(session: AgentSession, resultEntryId: string, upToEntryId: string): void {
+	const runtime = runtimeOf(session);
+	runtime.announcedResultEntryId = resultEntryId;
+	const state = emitBackgroundCompactionState(session);
+	for (const listener of [...runtime.readyListeners]) {
+		try {
+			listener(state);
+		} catch (error) {
+			reportListenerFailure(session, error);
+		}
+	}
+	try {
+		runtime.wake?.compactionReady({ sessionId: session.sessionManager.getSessionId(), resultEntryId, upToEntryId });
+	} catch (error) {
+		reportListenerFailure(session, error);
+	}
+}
+
+/**
+ * The in-memory context after a commit, without the usage of assistants from before the boundary: that
+ * usage measured the uncompacted prompt and must not drive the next threshold decision.
+ */
+export function committedContextMessages(session: AgentSession): AgentMessage[] {
+	return scrubPreCompactionAssistantUsage(session.agent.state.messages.slice(), session.sessionManager.getBranch());
+}
+
+function plannedFromRecord(record: BackgroundCompactionResultRecord): PlannedVerbatimCompaction {
+	return {
+		text: record.summary,
+		firstKeptEntryId: record.firstKeptEntryId,
+		tokensBefore: record.tokensBefore,
+		details: record.details,
+		...(record.usage ? { usage: record.usage } : {}),
+		fromExtension: record.fromExtension,
+	};
+}
+
+function resultRecord(
+	planned: PlannedVerbatimCompaction,
+	upToEntryId: string,
+	startedAt: string,
+): BackgroundCompactionResultRecord {
+	return {
+		version: 1,
+		upToEntryId,
+		startedAt,
+		completedAt: new Date().toISOString(),
+		summary: planned.text,
+		firstKeptEntryId: planned.firstKeptEntryId,
+		tokensBefore: planned.tokensBefore,
+		details: planned.details,
+		...(planned.usage ? { usage: planned.usage } : {}),
+		fromExtension: planned.fromExtension,
+	};
+}
+
+async function runTask(
+	session: AgentSession,
+	task: RunningBackgroundCompaction,
+	prefix: SessionEntry[],
+): Promise<TaskOutcome> {
+	const { controller, upToEntryId } = task;
+	let planned: PlannedVerbatimCompaction | undefined;
+	try {
+		planned = await planVerbatimCompaction.call(
+			session,
+			{
+				reason: "threshold",
+				urgency: "recoverable",
+				abortController: controller,
+				backupLabel: "background-compact",
+				resolvePlannerAuth: async (candidate, signal) => {
+					const auth = await session._getRequiredRequestAuth(candidate, signal ?? controller.signal);
+					return auth.apiKey || auth.headers ? authForStream(session, auth) : undefined;
+				},
+			},
+			prefix,
+		);
+	} catch (error) {
+		if (controller.signal.aborted || session._disposed) return { kind: "cancelled" };
+		return {
+			kind: "failed",
+			error: new BackgroundCompactionPlanningError({ upToEntryId, attempt: task.attempt }, { cause: error }),
+		};
+	}
+	if (controller.signal.aborted || session._disposed) return { kind: "cancelled" };
+	if (!planned) return { kind: "failed", error: new BackgroundCompactionNotCompactableError({ upToEntryId }) };
+
+	const branch = session.sessionManager.getBranch();
+	const upToIndex = branch.findIndex((entry) => entry.id === upToEntryId);
+	if (upToIndex < 0) {
+		return {
+			kind: "discarded",
+			error: new BackgroundCompactionDiscardedError({ upToEntryId, reason: "off-branch", phase: "persist" }),
+		};
+	}
+	if (upToIndex <= coveredThroughIndex(branch)) {
+		return {
+			kind: "discarded",
+			error: new BackgroundCompactionDiscardedError({ upToEntryId, reason: "superseded", phase: "persist" }),
+		};
+	}
+	try {
+		const resultEntryId = await session.sessionManager.appendCustomEntry(
+			BACKGROUND_COMPACTION_RESULT_TYPE,
+			resultRecord(planned, upToEntryId, task.startedAt),
+		);
+		return { kind: "ready", resultEntryId };
+	} catch (error) {
+		if (controller.signal.aborted || session._disposed) return { kind: "cancelled" };
+		return { kind: "failed", error: new BackgroundCompactionPersistError({ upToEntryId }, { cause: error }) };
+	}
+}
+
+function settleTask(session: AgentSession, task: RunningBackgroundCompaction, outcome: TaskOutcome): void {
+	const runtime = runtimeOf(session);
+	if (runtime.task === task) runtime.task = undefined;
+	switch (outcome.kind) {
+		case "ready": {
+			runtime.consecutiveFailures = 0;
+			runtime.nextAttemptAt = 0;
+			runtime.failure = undefined;
+			const entry = session.sessionManager.getEntry(outcome.resultEntryId);
+			if (entry) {
+				try {
+					session._emit({ type: "entry_appended", entry });
+				} catch (error) {
+					reportListenerFailure(session, error);
+				}
+			}
+			announceReady(session, outcome.resultEntryId, task.upToEntryId);
+			return;
+		}
+		case "failed":
+			runtime.consecutiveFailures += 1;
+			runtime.nextAttemptAt = Date.now() + backgroundCompactionRetryDelayMs(runtime.consecutiveFailures);
+			runtime.failure = { error: outcome.error, upToEntryId: task.upToEntryId, startedAt: task.startedAt };
+			emitBackgroundCompactionState(session);
+			return;
+		case "discarded":
+			runtime.failure = undefined;
+			emitBackgroundCompactionState(session, outcome.error);
+			return;
+		case "cancelled":
+			runtime.failure = undefined;
+			emitBackgroundCompactionState(session);
+			return;
+	}
+}
+
+function startTask(session: AgentSession, prefix: SessionEntry[]): void {
+	const runtime = runtimeOf(session);
+	const upToEntryId = prefix[prefix.length - 1].id;
+	const controller = new AbortController();
+	const lifetime = sessionLifetime(session);
+	const relayAbort = () => controller.abort(lifetime.reason);
+	lifetime.addEventListener("abort", relayAbort, { once: true });
+	let settle!: () => void;
+	const settled = new Promise<void>((resolve) => {
+		settle = resolve;
+	});
+	const task: RunningBackgroundCompaction = {
+		controller,
+		upToEntryId,
+		startedAt: new Date().toISOString(),
+		attempt: runtime.consecutiveFailures + 1,
+		settled,
+	};
+	runtime.task = task;
+	runtime.failure = undefined;
+	emitBackgroundCompactionState(session);
+	void trackSessionWork(session, async () => {
+		try {
+			settleTask(session, task, await runTask(session, task, prefix));
+		} finally {
+			lifetime.removeEventListener("abort", relayAbort);
+			if (runtime.task === task) runtime.task = undefined;
+			settle();
+		}
+	}).catch((error: unknown) => reportListenerFailure(session, error));
+}
+
+/**
+ * Start a background task when context usage passes the soft threshold, nothing is running or
+ * waiting for a commit, and the retry backoff has elapsed. Never waits for the task.
+ */
+export function _maybeStartBackgroundCompaction(this: AgentSession, contextTokens: number): void {
+	const runtime = runtimeOf(this);
+	if (runtime.task || this._disposed || foregroundCompactionActive(this)) return;
+	const model = this.model;
+	if (!model) return;
+	const settings = backgroundSettings(this);
+	if (!settings?.enabled) return;
+	if (!shouldStartBackgroundCompaction(contextTokens, model.contextWindow ?? 0, settings.thresholdPercent)) return;
+	if (Date.now() < runtime.nextAttemptAt) return;
+	const branch = this.sessionManager.getBranch();
+	if (selectReadyBackgroundCompaction(branch)) return;
+	const safe = findBackgroundCompactionSafePoint(branch);
+	if (safe < 0 || safe <= coveredThroughIndex(branch)) return;
+	startTask(this, branch.slice(0, safe + 1));
+}
+
+/**
+ * `awaitPersistence` waits for queued message saves first; it is set only outside the session event
+ * queue (the agent loop's next-turn hook), never from an event handler running inside that queue.
+ */
+export interface CommitReadyOptions {
+	readonly foreground?: boolean;
+	readonly awaitPersistence?: boolean;
+}
+
+async function commitReady(
+	session: AgentSession,
+	{ foreground = false, awaitPersistence = false }: CommitReadyOptions,
+): Promise<CommittedBackgroundCompaction | undefined> {
+	if (session._disposed || session._persistenceFailure !== undefined) return undefined;
+	if (!foreground && foregroundCompactionActive(session)) return undefined;
+	if (!backgroundSettings(session)?.enabled) return undefined;
+	const runtime = runtimeOf(session);
+	if (
+		runtime.announcedResultEntryId === undefined &&
+		selectReadyBackgroundCompaction(session.sessionManager.getBranch()) === undefined
+	)
+		return undefined;
+	if (awaitPersistence) {
+		await session._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
+		if (session._disposed || session._persistenceFailure !== undefined) return undefined;
+	}
+	const branch = session.sessionManager.getBranch();
+	const announced = runtime.announcedResultEntryId;
+	if (announced !== undefined) {
+		const discarded = discardedBackgroundCompaction(branch, announced);
+		if (discarded) {
+			runtime.announcedResultEntryId = undefined;
+			emitBackgroundCompactionState(session, discarded);
+		}
+	}
+	const ready = selectReadyBackgroundCompaction(branch);
+	if (!ready) return undefined;
+	const result = await commitVerbatimCompaction.call(session, plannedFromRecord(ready.record), {
+		reason: "threshold",
+		backupLabel: "background-compact",
+		coveredThroughEntryId: ready.record.upToEntryId,
+	});
+	const cacheMiss = estimateCompactionCacheMiss(
+		branch,
+		estimateContextTokens(committedContextMessages(session)).tokens,
+		createCacheMissModelSource(session._modelRuntime),
+	);
+	runtime.consecutiveFailures = 0;
+	runtime.nextAttemptAt = 0;
+	runtime.failure = undefined;
+	runtime.announcedResultEntryId = undefined;
+	emitBackgroundCompactionState(session);
+	return { result, ...(cacheMiss ? { cacheMiss } : {}) };
+}
+
+/**
+ * Commit the stored result that fits the current branch, once, if there is one. `foreground` is set
+ * by a foreground compaction that already owns the boundary and tries a ready result first.
+ */
+export function _commitReadyBackgroundCompaction(
+	this: AgentSession,
+	options: CommitReadyOptions = {},
+): Promise<CommittedBackgroundCompaction | undefined> {
+	const runtime = runtimeOf(this);
+	const inFlight = runtime.commitInFlight;
+	if (inFlight) return inFlight.then(() => undefined);
+	const flight = commitReady(this, options).finally(() => {
+		if (runtime.commitInFlight === flight) runtime.commitInFlight = undefined;
+	});
+	runtime.commitInFlight = flight;
+	return flight;
+}
+
+/**
+ * Turn-boundary step: commit a ready result, or start a task when `contextTokens` passes the soft
+ * threshold. Returns true when a boundary was committed.
+ */
+export async function _runBackgroundCompactionBoundary(
+	this: AgentSession,
+	contextTokens: number | undefined,
+	midTurn: boolean,
+	awaitPersistence = false,
+): Promise<boolean> {
+	if (foregroundCompactionActive(this)) return false;
+	const committed = await this._commitReadyBackgroundCompaction({ awaitPersistence });
+	if (committed) {
+		this._emit({
+			type: "compaction_end",
+			reason: "threshold",
+			result: committed.result,
+			aborted: false,
+			willRetry: false,
+			midTurn,
+			background: true,
+			...(committed.cacheMiss ? { cacheMiss: committed.cacheMiss } : {}),
+		});
+		return true;
+	}
+	if (contextTokens !== undefined) this._maybeStartBackgroundCompaction(contextTokens);
+	return false;
+}
+
+/**
+ * Foreground entry point: commit a ready result instead of planning when one exists and the
+ * compacted context is back under the hard threshold; otherwise cancel any running task so the
+ * foreground boundary supersedes it.
+ */
+export async function _useReadyBackgroundCompaction(
+	this: AgentSession,
+): Promise<ForegroundBackgroundCompaction | undefined> {
+	const committed = await this._commitReadyBackgroundCompaction({ foreground: true });
+	const model = this.model;
+	const sufficient =
+		committed !== undefined &&
+		model !== undefined &&
+		!shouldCompact(
+			estimateContextTokens(committedContextMessages(this)).tokens,
+			model.contextWindow ?? 0,
+			this.settingsManager.getCompactionSettings(model),
+		);
+	if (!sufficient) this._abortBackgroundCompaction();
+	return committed === undefined ? undefined : { ...committed, sufficient };
+}
+
+export function _abortBackgroundCompaction(this: AgentSession): void {
+	runtimeOf(this).task?.controller.abort();
+}
+
+/** Resolves once no background task is running, with the state at that point. Never rejects. */
+export async function awaitBackgroundCompaction(this: AgentSession): Promise<BackgroundCompactionState> {
+	const task = runtimeOf(this).task;
+	if (task) await task.settled;
+	return backgroundCompactionState(this);
+}
+
+/** Call `listener` each time a background result is stored and ready to commit. Returns an unsubscribe. */
+export function onCompactionReady(
+	this: AgentSession,
+	listener: (state: BackgroundCompactionState) => void,
+): () => void {
+	const listeners = runtimeOf(this).readyListeners;
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+
+export function setBackgroundCompactionEnabled(this: AgentSession, enabled: boolean): void {
+	settingsWriteOwner.run(this, () => this.settingsManager.setCompactionBackground(enabled));
+	if (!this.settingsManager.getCompactionBackground()) this._abortBackgroundCompaction();
+}
+
+export function setBackgroundCompactionThresholdPercent(this: AgentSession, percent: number): void {
+	settingsWriteOwner.run(this, () => this.settingsManager.setCompactionBackgroundThresholdPercent(percent));
+}
+
+export function installBackgroundCompactionAccessors(prototype: AgentSession): void {
+	Object.defineProperties(prototype, {
+		compaction: {
+			get(this: AgentSession) {
+				return backgroundCompactionState(this);
+			},
+		},
+		backgroundCompactionEnabled: {
+			get(this: AgentSession) {
+				return this.settingsManager.getCompactionBackground();
+			},
+		},
+		backgroundCompactionThresholdPercent: {
+			get(this: AgentSession) {
+				return this.settingsManager.getCompactionBackgroundThresholdPercent();
+			},
+		},
+	});
+}
+
+export const agentSessionBackgroundCompactionMethods = {
+	_maybeStartBackgroundCompaction,
+	_commitReadyBackgroundCompaction,
+	_runBackgroundCompactionBoundary,
+	_useReadyBackgroundCompaction,
+	_abortBackgroundCompaction,
+	awaitBackgroundCompaction,
+	onCompactionReady,
+	setBackgroundCompactionEnabled,
+	setBackgroundCompactionThresholdPercent,
+};

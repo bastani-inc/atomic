@@ -1,9 +1,11 @@
 import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
 import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
+import { committedContextMessages } from "./agent-session-background-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
@@ -161,10 +163,14 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {
+		const committed = await this._runBackgroundCompactionBoundary(undefined, true, true);
+		const boundaryMessages = committed ? committedContextMessages(this) : turn.context.messages;
 		const compactedMessages =
 			turn.toolResults.length > 0
-				? await this._preflightPostToolContext(turn.context.messages, signal)
-				: turn.context.messages;
+				? await this._preflightPostToolContext(boundaryMessages, signal)
+				: boundaryMessages;
+		if (!committed && compactedMessages === boundaryMessages)
+			this._maybeStartBackgroundCompaction(estimateContextTokens(compactedMessages).tokens);
 		const compactedContext =
 			compactedMessages === turn.context.messages ? turn.context : { ...turn.context, messages: compactedMessages };
 		const preparedTurn = compactedContext === turn.context ? turn : { ...turn, context: compactedContext };

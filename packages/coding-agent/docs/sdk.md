@@ -534,6 +534,13 @@ interface AgentSession {
   compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // Partial<VerbatimCompactionParameters> & { compactionModel?: string }
   abortCompaction(): void;
 
+  // Background compaction
+  readonly compaction: BackgroundCompactionState; // { state: "idle" | "running" | "ready" | "failed", upToEntryId?, startedAt?, error? }
+  onCompactionReady(listener: (state: BackgroundCompactionState) => void): () => void;
+  awaitBackgroundCompaction(): Promise<BackgroundCompactionState>;
+  setBackgroundCompactionEnabled(enabled: boolean): void;
+  setBackgroundCompactionThresholdPercent(percent: number): void;
+
   // Abort current operation
   abort(): Promise<void>;
 
@@ -608,6 +615,16 @@ Pass `compactionModel` to choose the compaction model for one call without chang
 
 ```typescript
 await session.compact({ compactionModel: "typesafe/jev-latest", query: "keep the auth decisions" });
+```
+
+[Background compaction](/compaction#background-compaction) runs automatically once context passes `compaction.backgroundThresholdPercent`. `session.compaction` reports its state, `onCompactionReady()` runs when a result is saved, and `awaitBackgroundCompaction()` waits until no background task is running. `abortCompaction()` also cancels a running background task. Pass `compactionWake` to `createAgentSession` to receive the "compaction ready" notice outside the session:
+
+```typescript
+const { session } = await createAgentSession({
+  compactionWake: { compactionReady: ({ sessionId, resultEntryId, upToEntryId }) => scheduleWake(sessionId) },
+});
+const state = await session.awaitBackgroundCompaction();
+if (state.state === "failed" && isBackgroundCompactionError(state.error)) console.warn(state.error.code, state.error.hint);
 ```
 
 `session.navigateTree()` rejects during streaming, compaction, or branch summarization rather than queueing the navigation. The active branch stays unchanged. Wait for the operation to finish before retrying.

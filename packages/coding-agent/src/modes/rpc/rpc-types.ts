@@ -24,6 +24,7 @@ import type {
 	SessionStats,
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
+import type { SerializedBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -129,6 +130,8 @@ export type RpcCommand =
 	// Compaction
 	| { id?: string; type: "compact" }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
+	| { id?: string; type: "set_background_compaction"; enabled: boolean }
+	| { id?: string; type: "set_background_compaction_threshold"; percent: number }
 	| { id?: string; type: "abort_compaction" }
 
 	// Extension UI
@@ -231,6 +234,10 @@ export interface RpcSessionState {
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;
+	/** Background compaction state (#4330), the same shape workflow stage status carries; absent on older RPC peers. */
+	compaction?: SerializedBackgroundCompactionState;
+	backgroundCompactionEnabled?: boolean;
+	backgroundCompactionThresholdPercent?: number;
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
@@ -371,6 +378,8 @@ export type RpcResponse =
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: VerbatimCompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
+	| { id?: string; type: "response"; command: "set_background_compaction"; success: true }
+	| { id?: string; type: "response"; command: "set_background_compaction_threshold"; success: true }
 	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
 
 	// Extension UI

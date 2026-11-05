@@ -165,6 +165,8 @@ describe("Group 5 parity", () => {
 		const items = buildSettingsItems(
 			{
 				autoCompact: true,
+				backgroundCompaction: true,
+				backgroundCompactionThresholdPercent: 75,
 				showImages: true,
 				imageWidthCells: 60,
 				autoResizeImages: true,

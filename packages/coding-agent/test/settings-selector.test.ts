@@ -8,7 +8,11 @@ import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
+import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.ts";
+import {
+	BACKGROUND_COMPACTION_THRESHOLD_CHOICES,
+	buildSettingsItems,
+} from "../src/modes/interactive/components/settings-selector-items.ts";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -21,6 +25,8 @@ beforeAll(() => {
 function settingsConfig(overrides: Partial<SettingsConfig> = {}): SettingsConfig {
 	return {
 		autoCompact: true,
+		backgroundCompaction: true,
+		backgroundCompactionThresholdPercent: 75,
 		showImages: false,
 		imageWidthCells: 60,
 		autoResizeImages: true,
@@ -446,4 +452,86 @@ test("pages a searchable submenu with selection page keys (upstream #7629)", () 
 	submenu.handleInput("\r");
 
 	assert.deepEqual(onSelect.mock.calls, [["theme-10"]]);
+});
+
+test("shows background compaction next to auto-compact, enabled by default with a 75% threshold (#4330)", () => {
+	const items = buildSettingsItems(settingsConfig(), {} as SettingsCallbacks);
+	const ids = items.map(({ id }) => id);
+	const autocompact = ids.indexOf("autocompact");
+	assert.deepEqual(ids.slice(autocompact, autocompact + 3), [
+		"autocompact",
+		"background-compaction",
+		"background-compaction-threshold",
+	]);
+	const toggle = items[autocompact + 1];
+	assert.equal(toggle.label, "Background compaction");
+	assert.equal(
+		toggle.description,
+		"Compact older context in the background while the agent keeps working; blocking compaction only on overflow",
+	);
+	assert.equal(toggle.currentValue, "true");
+	assert.deepEqual(toggle.values, ["true", "false"]);
+	const threshold = items[autocompact + 2];
+	assert.equal(threshold.label, "Background compaction threshold");
+	assert.equal(threshold.currentValue, "75");
+	assert.deepEqual(threshold.values, ["50", "60", "70", "75", "80", "90"]);
+	assert.deepEqual(BACKGROUND_COMPACTION_THRESHOLD_CHOICES, [50, 60, 70, 75, 80, 90]);
+});
+
+test("keeps a configured background threshold outside the choices selectable (#4330)", () => {
+	const items = buildSettingsItems(
+		settingsConfig({ backgroundCompaction: false, backgroundCompactionThresholdPercent: 85 }),
+		{} as SettingsCallbacks,
+	);
+	assert.equal(items.find(({ id }) => id === "background-compaction")?.currentValue, "false");
+	const threshold = items.find(({ id }) => id === "background-compaction-threshold");
+	assert.equal(threshold?.currentValue, "85");
+	assert.deepEqual(threshold?.values, ["50", "60", "70", "75", "80", "85", "90"]);
+});
+
+test("routes the background compaction rows to their callbacks (#4330)", () => {
+	const onBackgroundCompactionChange = vi.fn();
+	const onBackgroundCompactionThresholdChange = vi.fn();
+	const handle = createSettingsChangeHandler({
+		onBackgroundCompactionChange,
+		onBackgroundCompactionThresholdChange,
+	} as unknown as SettingsCallbacks);
+	handle("background-compaction", "false");
+	handle("background-compaction", "true");
+	handle("background-compaction-threshold", "60");
+	assert.deepEqual(onBackgroundCompactionChange.mock.calls, [[false], [true]]);
+	assert.deepEqual(onBackgroundCompactionThresholdChange.mock.calls, [[60]]);
+});
+
+test("persists the background compaction settings like other settings (#4330)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "background-compaction-settings-"));
+	try {
+		const agentDir = join(dir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const manager = SettingsManager.create(dir, agentDir);
+		assert.equal(manager.getCompactionBackground(), true);
+		assert.equal(manager.getCompactionBackgroundThresholdPercent(), 75);
+		manager.setCompactionBackground(false);
+		manager.setCompactionBackgroundThresholdPercent(60);
+		await manager.flush();
+		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+		assert.deepEqual(saved.compaction, { background: false, backgroundThresholdPercent: 60 });
+		const reloaded = SettingsManager.create(dir, agentDir);
+		assert.equal(reloaded.getCompactionBackground(), false);
+		assert.equal(reloaded.getCompactionBackgroundThresholdPercent(), 60);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ compaction: { backgroundThresholdPercent: "75" } }),
+		);
+		const invalid = SettingsManager.create(dir, agentDir);
+		assert.throws(
+			() => invalid.getCompactionBackgroundThresholdPercent(),
+			(error: unknown) =>
+				error instanceof Error &&
+				error.name === "BackgroundCompactionConfigError" &&
+				(error as { source?: string }).source === "settings",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
