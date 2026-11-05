@@ -349,6 +349,9 @@ test("a fork of a source that saved local workers is pooled: it refuses process-
 		onStageEnd: () => undefined,
 	}).catch((error: Error) => error);
 	assert.ok(isForkConfigError(refused), String(refused));
+	assert.equal(refused.code, "invalid-option");
+	assert.equal(refused.source, "sdk");
+	assert.equal(refused.field, "localWorkers");
 	assert.deepEqual(refused.issues, [
 		{ field: "localWorkers", expected: "localWorkers without options bound to this process (registry, onStageEnd)" },
 	]);
