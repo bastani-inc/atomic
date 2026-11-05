@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -149,6 +159,31 @@ describe("AuthStorage file backend regressions", () => {
 		} finally {
 			release();
 		}
+	});
+
+	test("a symlinked auth.json path waits for the lock held on the real file (pi #11655)", async () => {
+		const aliasPath = join(tempDir, "alias.json");
+		symlinkSync(authPath, aliasPath);
+		const release = await lockfile.lock(authPath, { realpath: false });
+		const backend = new FileAuthStorageBackend(aliasPath, [aliasPath]);
+		const update = vi.fn(async () => ({ result: undefined, next: JSON.stringify({}) }));
+		const syncUpdate = vi.fn(() => ({ result: undefined, next: JSON.stringify({}) }));
+		let pending: Promise<void> | undefined;
+		try {
+			pending = backend.withLockAsync(update);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect(update).not.toHaveBeenCalled();
+			expect(() => backend.withLock(syncUpdate)).toThrow(expect.objectContaining({ code: "ELOCKED" }));
+			expect(() => backend.deleteProvider("anthropic")).toThrow(expect.objectContaining({ code: "ELOCKED" }));
+			expect(syncUpdate).not.toHaveBeenCalled();
+			expect(JSON.parse(readFileSync(authPath, "utf8"))).toEqual({
+				anthropic: { type: "api_key", key: "anthropic-key" },
+			});
+		} finally {
+			await release();
+		}
+		await pending;
+		expect(update).toHaveBeenCalledTimes(1);
 	});
 
 	test("many fresh storage reads succeed while the write lock is held", async () => {

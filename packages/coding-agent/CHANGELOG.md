@@ -58,6 +58,7 @@
 - Images in steering and follow-up messages, including a prompt sent while the agent is working, are now resized like images in idle prompts instead of being sent and saved at full size (upstream [#11782](https://github.com/earendil-works/pi/pull/11782))
 - An image-only steering or follow-up message leaves the queue once it is delivered, so the pending count and queued-message display no longer keep a stale entry (upstream [#8612](https://github.com/earendil-works/pi/pull/8612))
 - A user `!` command whose earlier output was dropped from the in-memory buffer now reports its output as truncated, with the path of the saved full log, even when the kept tail fits the output limits (upstream [#10165](https://github.com/earendil-works/pi/pull/10165))
+- A symlinked `auth.json` shares one lock with the file it points to, so two Atomic processes that reach the same credentials through different paths no longer refresh the same OAuth token at the same time. Writes replace the real file instead of the symlink, which a write used to turn into a separate regular file (upstream [#11787](https://github.com/earendil-works/pi/pull/11787))
 
 ## [0.9.71] - 2026-11-03
 
