@@ -15,7 +15,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
 	assertWorkspaceGitAvailable,
@@ -1261,7 +1261,7 @@ describe("interrupted worktree additions (#3109)", () => {
 	test("refuses git's own interrupted addition at a caller's path and names the fix (#3109)", async () => {
 		const repo = createRepository(dirs.root, "callers-cut");
 		const path = join(dirs.root, "callers-cut-worktree");
-		const adminDir = interruptedWorktree(repo, path, "feat/cut", "initializing");
+		const adminDir = resolvePath(interruptedWorktree(repo, path, "feat/cut", "initializing"));
 		const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/cut", worktree: path })));
 		assert.ok(isWorkspaceBindingError(error));
 		assert.equal(error.code, "incomplete-worktree");
