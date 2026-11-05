@@ -273,8 +273,6 @@ test("one heartbeat request renews the attempt, records its usage and answers po
 		assert.equal(stats.requests.claim?.count, 2);
 		assert.ok((stats.writes.claim?.count ?? 0) > 0, "claims' writes count as the claims'");
 		assert.ok((stats.writes["root-prepare"]?.count ?? 0) > 0, "the root's commands are counted as root-<kind>");
-		while ((stats.writes.recovery?.count ?? 0) === 0) stats = await f.nextStats(f.events.length);
-		assert.ok((stats.writes.recovery?.count ?? 0) > 0, "expired-lease recovery's writes count as recovery");
 		assert.equal(
 			(await holder.request({ kind: "activity", runs: [] })).value,
 			undefined,
@@ -285,6 +283,11 @@ test("one heartbeat request renews the attempt, records its usage and answers po
 			assert.equal(stats.requests[kind], undefined, `no worker request of kind ${kind}`);
 		assert.ok(stats.since <= Date.now());
 		assert.ok((stats.requests.heartbeat?.perSecond ?? 0) > 0);
+		// Recovery looks for expired leases with a read (#4314), so it writes only once a lease has expired: run the shared
+		// clock past the attempt's expiry, and recovery renews the lease of the attempt's live worker.
+		vi.useFakeTimers({ toFake: ["Date"], now: (await f.queue.inspect("root"))[0]!.expiresAt + 1 });
+		while ((stats.writes.recovery?.count ?? 0) === 0) stats = await f.nextStats(f.events.length);
+		assert.ok((stats.writes.recovery?.count ?? 0) > 0, "expired-lease recovery's writes count as recovery");
 	} finally {
 		await f.close();
 	}
