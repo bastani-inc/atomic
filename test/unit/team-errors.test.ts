@@ -412,7 +412,8 @@ test("a rehydrated timeout keeps its subject and cause, and malformed fields fal
 	assert.equal(timedOut.subject, "libsql://team");
 	const cause = Object.getOwnPropertyDescriptor(timedOut, "cause");
 	assert.deepEqual([cause?.writable, cause?.enumerable, cause?.configurable], [true, false, true]);
-	assert.equal((cause?.value as Error).message, "late");
+	assert.ok(cause);
+	assert.equal((cause.value as Error).message, "late");
 
 	const malformedTimeout = rehydrateTeamError({
 		name: "TeamProfileTimeoutError",
