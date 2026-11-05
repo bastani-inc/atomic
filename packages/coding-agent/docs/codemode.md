@@ -28,7 +28,7 @@ The result starts with `Script completed` or `Script failed`, the wall time, and
 |---|---|
 | `tools.<name>(args)` | Call a tool. See [Call tools](#call-tools). |
 | `text(value)` | Add a text item to the output. Strings are added as is, other values as JSON. |
-| `image(value)` | Add an image to the output: a base64 `data:` URL, an `{ image_url }` object, or an image block `{ type: "image", data, mimeType }` such as those returned by MCP tools and `models.generateImages()`. Remote URLs are not supported. PNG, JPEG, GIF, and WebP are accepted. Each image is also saved to a temp file, and the result names the path before the image. |
+| `image(value)` | Add an image to the output: a base64 `data:` URL, an `{ image_url }` object, or an image block `{ type: "image", data, mimeType }` such as those returned by MCP tools and `models.generateImages()`. Remote URLs are not supported. PNG, JPEG, GIF, and WebP are accepted. SVG is not: Atomic saves generated SVG images itself, see [Generate images](#generate-images). Each image is also saved to a temp file, and the result names the path before the image. |
 | `console.log(...)` | Add a line to the `<console_output>` block after other output. Arguments are joined with spaces; `info`, `warn`, `error`, and `debug` do the same. |
 | `return value` | A top-level `return` adds the value like `text()`. |
 | `exit()` | End the script successfully. |
@@ -68,7 +68,7 @@ The store is for small state such as IDs, cursors, or summaries. One value may h
 
 ## Models
 
-`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state and, for some models, images, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models, and OpenAI's GPT Image models under `openai-images`, such as `gpt-image-2.5-flare`, which reuse your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time). Neither kind appears in `/model`.
+`models` reaches the model catalog and runs non-LLM models with the session's credentials: classifiers, which answer typed questions about JSON state and, for some models, images, and image models, which generate images. Chat models are listed but cannot be run from scripts. Classifier models include [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp); image models include OpenRouter's, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, which use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models, and OpenAI's GPT Image models under `openai-images`, such as `gpt-image-2.6-flare`, which reuse your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time). Neither kind appears in `/model`.
 
 ```ts
 type ModelType = "chat" | "image" | "classifier";
@@ -95,11 +95,11 @@ declare const models: {
   /** Answer `context.questions` about `context.state`; answers are in `result.answers` by question ID. */
   classify(model: ModelInfo, context: ClassifierContext): Promise<ClassifierResult>;
   /** Generate images from `context.input` text and image blocks; show `result.output` blocks with image(). Can take minutes. */
-  generateImages(model: ModelInfo, context: ImagesContext): Promise<ImagesResult>;
+  generateImages(model: ModelInfo, context: ImagesContext, options?: ImagesOptions): Promise<ImagesResult>;
 };
 ```
 
-`classify()` and `generateImages()` use only the `provider` and `id` of `model`, so `{ provider, id }` works as well, and a script-supplied `baseUrl` or headers never receive the credentials. They do not throw on provider errors: check `stopReason` and `errorMessage`. A malformed model or context does throw, with the expected shape in the message; an unknown or mistyped model points to `models.getAvailableOfType()`. At most four such calls run at once per script; more calls wait for a free slot, so `Promise.all()` over many items is fine. Their usage is added to the `codemode` tool result and counts toward the session cost.
+`classify()` and `generateImages()` use only the `provider` and `id` of `model`, so `{ provider, id }` works as well, and a script-supplied `baseUrl` or headers never receive the credentials. They do not throw on provider errors: check `stopReason` and `errorMessage`; `generateImages()` also sets `error` for a classified failure. A malformed model or context does throw, with the expected shape in the message; an unknown or mistyped model points to `models.getAvailableOfType()`. At most four such calls run at once per script; more calls wait for a free slot, so `Promise.all()` over many items is fine. Their usage is added to the `codemode` tool result and counts toward the session cost.
 
 Model IDs differ between providers. Use `models.getAvailableOfType(type)` to find the IDs that work with the current credentials.
 
@@ -200,6 +200,22 @@ interface ImagesContext {
   input: (TextBlock | ImageBlock)[];
 }
 
+/** Request options. Other options, such as `apiKey`, `headers` or `fetch`, throw. Each is sent only when set. */
+interface ImagesOptions {
+  size?: string;
+  quality?: "low" | "medium" | "high" | "xhigh" | "max" | "auto";
+  n?: number;
+  background?: "transparent" | "opaque" | "auto";
+  outputFormat?: "png" | "jpeg" | "webp" | "svg" | "gif";
+  outputCompression?: number;
+  frameCount?: number;
+  frameDurationMs?: number;
+  complexity?: "low" | "medium" | "high";
+  svg?: { model: string; reasoning?: { effort?: string } };
+  moderation?: "auto" | "low";
+  safetyIdentifier?: string;
+}
+
 interface ImagesResult {
   provider: string;
   model: string;
@@ -208,14 +224,18 @@ interface ImagesResult {
   usage?: ModelUsage;
   stopReason: "stop" | "error" | "aborted";
   errorMessage?: string;
+  /** A classified failure: `name`, a stable `code`, `retryable`, `hint` and safe `fields`. */
+  error?: { name: string; code: string; message: string; hint?: string; retryable: boolean; fields: Record<string, unknown> };
 }
 
 type TextBlock = { type: "text"; text: string };
-/** `data` is base64. */
-type ImageBlock = { type: "image"; data: string; mimeType: string };
+/** `data` is base64. An image without a `role` is the base image (the first) or a reference. */
+type ImageBlock = { type: "image"; data: string; mimeType: string; role?: "markup" | "mask" };
 ```
 
-Show generated images with `image(block)`. Do not print `data` with `text()`, `console`, or `return`: it is large and the model cannot read it as text. A script that generates images without showing any gets a note saying so. `image()` also saves each image to a private temp file and puts its path in the result, so a later turn can copy or move the file.
+The options are those of OpenAI's GPT Image models under `openai-images`; OpenRouter image models ignore them. The first image without a `role` is the base image to edit and the others are references. An image with `role: "markup"` is a transparent PNG with annotations, sent as `markup` and applied to the first image, which it must match in size; one with `role: "mask"` is an alpha-channel mask for the first image. They cannot be combined. `outputFormat: "gif"` returns an animation (`frameCount` 2-16, `frameDurationMs` 20-2000) and `"svg"` returns SVG; both need a GPT Image 2.6 model and generation without images. A request that cannot succeed does not throw: before anything is sent it returns `stopReason: "error"` with `error.code` `invalid-option` and `error.fields.field` naming the option. `error.code` is also `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout` or `api-error`; branch on it, and on `error.retryable`, not on the message. See [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels) for each code.
+
+Show generated images with `image(block)`. Do not print `data` with `text()`, `console`, or `return`: it is large and the model cannot read it as text. A script that generates images without showing any gets a note saying so. `image()` accepts PNG, JPEG, GIF and WebP, so show an animated GIF with `image(block)`. It does not accept SVG: Atomic saves each SVG that `models.generateImages()` returns to a private temp `.svg` file and names its path in the result, as `[SVG saved to <path> (image/svg+xml, <size>)]`. An SVG block (`image/svg+xml`) holds XML text, which a script can read with `atob(block.data)`. `image()` also saves each image to a private temp file and puts its path in the result, so a later turn can copy or move the file.
 
 ```js
 // @options: {"timeout_ms": 300000}

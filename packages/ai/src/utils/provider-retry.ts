@@ -6,6 +6,8 @@ interface ProviderRetryOptions {
 	signal?: AbortSignal;
 	/** HTTP statuses that fail at once although the default policy would retry them. */
 	noRetryStatuses?: readonly number[];
+	/** Failures that fail at once although the default policy would retry them, for example a 429 for exhausted quota. */
+	noRetry?: (error: Error) => boolean;
 }
 
 interface ProviderError extends Error {
@@ -124,6 +126,7 @@ export async function retryProviderRequest<T>(
 			if (options.signal?.aborted) throw createAbortError();
 			if (retriesRemaining <= 0 || !isProviderError(error) || !isRetryableProviderError(error)) throw error;
 			if (error.status !== undefined && options.noRetryStatuses?.includes(error.status)) throw error;
+			if (options.noRetry?.(error)) throw error;
 
 			const retryIndex = maxRetries - retriesRemaining;
 			retriesRemaining--;

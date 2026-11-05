@@ -67,7 +67,34 @@ Access models, auth state, and provider-aware requests.
 
 Use `ctx.modelRegistry.complete()` for an extension model request that must use Atomic's provider composition. It dispatches through the active `ModelRuntime`, retaining registered custom providers and resolved request auth: the credential-specific `baseUrl`, headers (including `null` suppression markers), and environment values.
 
-Use `ctx.modelRegistry.generateImages(model, context, options)` to run an image model with request-time authentication. It resolves to the generated image blocks and usage, and reports provider errors through `stopReason` and `errorMessage` instead of rejecting.
+Use `ctx.modelRegistry.generateImages(model, context, options)` to run an image model with request-time authentication. It resolves to the generated image blocks and usage, and reports provider errors through `stopReason`, `errorMessage` and, for a classified failure, `error` instead of rejecting. For `openai-images` models, `options` takes `size`, `quality`, `n`, `background`, `outputFormat` (`png`, `jpeg`, `webp`, `gif`, `svg`), `outputCompression`, `frameCount`, `frameDurationMs`, `complexity`, `svg`, `moderation` and `safetyIdentifier`; an image block with `role: "markup"` or `role: "mask"` is sent as the `markup` or `mask` field, and the first other image is the base image of an edit. GIF, SVG, `complexity` and the frame options need a GPT Image 2.6 model, which declares them in `model.capabilities`; a provider you register with image models declares them the same way.
+
+`result.error` is a JSON-safe `ImageGenerationErrorData`. Rebuild it with `imageGenerationErrorFromData()` from `@bastani/pi-ai` and branch on its class, guard or `code`, not on the message. A cancelled request resolves with `stopReason: "aborted"` and no `error`.
+
+| Error class (guard) | `code` | When it happens | `retryable` | What to do |
+| --- | --- | --- | --- | --- |
+| `ImageGenerationConfigError` (`isImageGenerationConfigError`) | `invalid-option` | An option or input is invalid, for example GIF on an edit, `frameCount` without GIF, markup with a mask, SVG with `n` above 1, compression with `png`, `gif` or `svg`, or a 2.6 feature on an older model. Nothing was sent. Fields: `field`, `reason`, `related`, `model`. | No | Fix the option named by `field`; see `hint`. |
+| `ImageGenerationQuotaError` (`isImageGenerationQuotaError`) | `quota-exceeded` | The account is out of quota or credit, although the HTTP status is 429. | No | Add credit or raise the limit. |
+| `ImageGenerationRateLimitError` (`isImageGenerationRateLimitError`) | `rate-limited` | HTTP 429 rate limit. | Yes | Wait, or set `maxRetries`. |
+| `ImageGenerationServerError` (`isImageGenerationServerError`) | `server-error` | HTTP 5xx. | Yes | Retry later, or set `maxRetries`. |
+| `ImageGenerationUserError` (`isImageGenerationUserError`) | `user-error` | The API reports `image_generation_user_error`; `apiCode` is the stable discriminator. | No | Change the prompt or input images. |
+| `ImageModerationBlockedError` (`isImageModerationBlockedError`) | `moderation-blocked` | Moderation blocked the prompt, an input image or the output. Fields: `moderationStage` (`input`, `output`, `unknown`), `categories`. | No | Revise the prompt or images. |
+| `ImageGenerationTimeoutError` (`isImageGenerationTimeoutError`) | `timeout` | The request exceeded `timeoutMs`. Fields: `timeoutMs`, `elapsedMs`, `phase`. | Yes | Raise `timeoutMs` or lower size, count or quality. |
+| `ImageGenerationApiError` (`isImageGenerationApiError`) | `api-error` | Any other API or connection failure. Fields: `status`, `apiCode`, `apiType`, `requestId`. | Only HTTP 408, 409 and connection errors | Check `status` and `apiCode`. |
+
+An `ImageGenerationConfigError` carries a `reason`:
+
+| `reason` | When it fires | What to do |
+| --- | --- | --- |
+| `out-of-range` | `frameCount` outside 2-16, `frameDurationMs` outside 20-2000, `outputCompression` outside 0-100 (or not an integer), or `safetyIdentifier` longer than 128 characters. The bounds are in `OPENAI_IMAGES_LIMITS`. | Use a value within the bounds. |
+| `requires-option` | `frameCount` or `frameDurationMs` without `outputFormat: "gif"`, or `svg` without `outputFormat: "svg"`. `related` names the missing option. | Set the option in `related`, or remove `field`. |
+| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg` or no format; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
+| `generation-only` | GIF or SVG output on a request with input images, which goes to the edits endpoint. | Remove the input images, or choose `png`, `jpeg` or `webp`. |
+| `unsupported-by-model` | `complexity`, GIF, SVG or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
+| `requires-base-image` | An image with `role: "markup"` or `role: "mask"` but no image without a role for it to apply to. | Put the base image first, without a role. |
+| `duplicate-role` | Two images with `role: "markup"`, or two with `role: "mask"`. | Send at most one image per role. |
+
+All of them extend `ImageGenerationError` (`isImageGenerationError`). A guard checks the value it is given; to look through a `cause` chain, use `findImageGenerationError(error, guard)`. `isRetryableImageGenerationError()` answers whether the nearest one in the chain is retryable. Typed errors name the HTTP status and the provider's codes, never the provider's message, which can quote the prompt.
 
 For streaming requests, use `ctx.modelRegistry.streamSimple(model, context, options)` with provider-neutral options, or `stream()` with API-specific options. Both use configured providers and request-time authentication, including extension registrations. Iterate the returned `AssistantMessageEventStream` for events and await `.result()` for the final message. Setup failures produce error events and error results. The global compatibility streaming functions do not see extension provider registrations.
 

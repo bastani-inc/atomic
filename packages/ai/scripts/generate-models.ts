@@ -3128,24 +3128,60 @@ const OPENAI_CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
 // are the text input rates and `output` is the image output rate. ModelCost has no
 // separate image input rate, so image input tokens on edits are priced as text input.
 const OPENAI_IMAGES_BASE_URL = "https://api.openai.com/v1";
+// `capabilities` lists the optional request features a model supports; an absent feature is rejected
+// before the request. Complexity, SVG and GIF output ship with GPT Image 2.6; markup-guided edits are
+// documented for GPT Image 2.5 and 2.6 (https://developers.openai.com/api/docs/guides/image-generation).
 const OPENAI_IMAGE_MODELS: ImageModel<"openai-images">[] = [
-	{ id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", input: 5, cacheRead: 1.25, output: 30 },
-	{ id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", input: 5, cacheRead: 1.25, output: 30 },
+	{
+		id: "gpt-image-2.6-sunburst",
+		name: "GPT Image 2.6 Sunburst",
+		input: 5,
+		cacheRead: 1.25,
+		output: 30,
+		capabilities: { complexity: true, markup: true, svg: true, gif: true },
+	},
+	{
+		id: "gpt-image-2.6-flare",
+		name: "GPT Image 2.6 Flare",
+		input: 5,
+		cacheRead: 1.25,
+		output: 30,
+		capabilities: { complexity: true, markup: true, svg: true, gif: true },
+	},
+	{
+		id: "gpt-image-2.5-sunburst",
+		name: "GPT Image 2.5 Sunburst",
+		input: 5,
+		cacheRead: 1.25,
+		output: 30,
+		capabilities: { markup: true },
+	},
+	{
+		id: "gpt-image-2.5-flare",
+		name: "GPT Image 2.5 Flare",
+		input: 5,
+		cacheRead: 1.25,
+		output: 30,
+		capabilities: { markup: true },
+	},
 	{ id: "gpt-image-2", name: "GPT Image 2", input: 5, cacheRead: 1.25, output: 30 },
 	{ id: "gpt-image-1.5", name: "GPT Image 1.5", input: 5, cacheRead: 1.25, output: 32 },
 	{ id: "gpt-image-1", name: "GPT Image 1", input: 5, cacheRead: 1.25, output: 40 },
 	{ id: "gpt-image-1-mini", name: "GPT Image 1 Mini", input: 2, cacheRead: 0.2, output: 8 },
-].map(({ id, name, input, cacheRead, output }): ImageModel<"openai-images"> => ({
-	type: "image",
-	id,
-	name,
-	api: "openai-images",
-	provider: "openai-images",
-	baseUrl: OPENAI_IMAGES_BASE_URL,
-	input: ["text", "image"],
-	output: ["image"],
-	cost: { input, output, cacheRead, cacheWrite: 0 },
-}));
+].map(
+	({ id, name, input, cacheRead, output, capabilities }): ImageModel<"openai-images"> => ({
+		type: "image",
+		id,
+		name,
+		api: "openai-images",
+		provider: "openai-images",
+		baseUrl: OPENAI_IMAGES_BASE_URL,
+		input: ["text", "image"],
+		output: ["image"],
+		...(capabilities ? { capabilities } : {}),
+		cost: { input, output, cacheRead, cacheWrite: 0 },
+	}),
+);
 
 async function generateModels() {
 	// Fetch models from all upstream catalogs.

@@ -8,6 +8,7 @@ import type {
 	ClassifierApi,
 	ClassifierModel,
 	ImageApi,
+	ImageModelCapabilities,
 	Model,
 	ModelAuth,
 	OAuthAuth,
@@ -80,6 +81,8 @@ export interface ProviderImageModelConfig extends ProviderModelConfigBase {
 	type: "image";
 	api?: ImageApi;
 	output: ("text" | "image")[];
+	/** Optional request features the model supports, for example `complexity` or `svg` on `openai-images`. */
+	capabilities?: ImageModelCapabilities;
 }
 
 export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {

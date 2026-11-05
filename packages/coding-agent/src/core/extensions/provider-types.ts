@@ -2,6 +2,7 @@ import type {
 	AnyModel,
 	ClassifierApi,
 	ImageApi,
+	ImageModelCapabilities,
 	ProviderClassifier,
 	ProviderImages,
 	RefreshModelsContext,
@@ -111,6 +112,8 @@ export interface ProviderImageModelConfig extends ProviderModelConfigBase {
 	type: "image";
 	api?: ImageApi;
 	output: ("text" | "image")[];
+	/** Optional request features the model supports, for example `complexity` or `svg` on `openai-images`. */
+	capabilities?: ImageModelCapabilities;
 }
 
 export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {

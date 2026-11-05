@@ -5,6 +5,7 @@ import type {
 	ImagesContext,
 	ModelType,
 	ModelTypeMap,
+	OpenAIImagesOptions,
 	TextContent,
 	Usage,
 } from "@bastani/pi-ai";
@@ -109,6 +110,28 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 	"image/gif": ".gif",
 	"image/webp": ".webp",
 };
+
+const SVG_MIME_TYPE = "image/svg+xml";
+
+/** `image()` cannot show SVG, so generated SVG documents are saved by the host and named in the result. */
+async function saveSvgs(svgs: readonly ImageContent[]): Promise<TextContent[]> {
+	const unique = [...new Map(svgs.map((svg) => [svg.data, svg])).values()];
+	return Promise.all(
+		unique.map(async ({ data }): Promise<TextContent> => {
+			const bytes = Buffer.from(data, "base64");
+			const kind = `${SVG_MIME_TYPE}, ${formatSize(bytes.length)}`;
+			try {
+				const path = await writeOutputFile("atomic-codemode", ".svg", bytes);
+				return { type: "text", text: `[SVG saved to ${path} (${kind})]` };
+			} catch (error) {
+				return {
+					type: "text",
+					text: `[SVG (${kind}) could not be saved: ${error instanceof Error ? error.message : String(error)}]`,
+				};
+			}
+		}),
+	);
+}
 
 async function saveImages(items: (TextContent | ImageContent)[]): Promise<(TextContent | ImageContent)[]> {
 	const labels = new Map<string, Promise<string>>();
@@ -312,11 +335,47 @@ function checkImagesContext(context: unknown): ImagesContext {
 			block.type === "image" &&
 			typeof block.data === "string" &&
 			typeof block.mimeType === "string"
-		)
-			return;
+		) {
+			if (block.role === undefined || IMAGE_ROLES.includes(block.role as string)) return;
+			throw fail(
+				`context.input[${index}].role must be "markup" or "mask" when set, got ${describeValue(block.role)}`,
+			);
+		}
 		throw fail(`context.input[${index}] must be a text or image block, got ${describeValue(block)}`);
 	});
 	return context as unknown as ImagesContext;
+}
+const IMAGE_ROLES: readonly string[] = ["markup", "mask"];
+const IMAGE_REQUEST_OPTIONS = [
+	"size",
+	"quality",
+	"n",
+	"background",
+	"outputFormat",
+	"outputCompression",
+	"frameCount",
+	"frameDurationMs",
+	"complexity",
+	"svg",
+	"moderation",
+	"safetyIdentifier",
+] as const satisfies readonly (keyof OpenAIImagesOptions)[];
+/** Only request-shaping options reach the provider: scripts never supply credentials, headers, fetch or hooks. */
+function checkImageOptions(options: unknown): OpenAIImagesOptions {
+	if (options === undefined || options === null) return {};
+	const allowed = IMAGE_REQUEST_OPTIONS.join(", ");
+	if (!isRecord(options))
+		throw new Error(
+			`models.generateImages() expects options as its third argument to be an object, got ${describeValue(options)}. Allowed options: ${allowed}. See "Generate images" in ${CODEMODE_DOCS_PATH}.`,
+		);
+	const rejected = Object.keys(options).filter((key) => !(IMAGE_REQUEST_OPTIONS as readonly string[]).includes(key));
+	if (rejected.length > 0)
+		throw new Error(
+			`models.generateImages() does not accept the option ${rejected.map((key) => `"${key}"`).join(", ")}. Allowed options: ${allowed}. See "Generate images" in ${CODEMODE_DOCS_PATH}.`,
+		);
+	return Object.fromEntries(
+		IMAGE_REQUEST_OPTIONS.flatMap((key) => (options[key] === undefined ? [] : [[key, options[key]]])),
+	) as OpenAIImagesOptions;
 }
 function provider(value: unknown): string | undefined {
 	if (value === undefined || value === null) return undefined;
@@ -450,7 +509,7 @@ function modelGlobals(
 	calls: CodemodeNestedCall[],
 	publish: () => void,
 	addUsage: (usage: Usage) => void,
-	addGeneratedImages: (count: number) => void,
+	addGeneratedImages: (images: ImageContent[]) => void,
 ): CodemodeTool[] {
 	const models = ctx.modelRegistry;
 	const limit = createLimiter(4);
@@ -458,9 +517,9 @@ function modelGlobals(
 	const runModelCall = async <TType extends "classifier" | "image", TContext, TResult extends ModelCallResult>(
 		name: string,
 		type: TType,
-		[ref, context]: unknown[],
+		[ref, context, callOptions]: unknown[],
 		checkContext: (context: unknown) => TContext,
-		run: (model: ModelTypeMap[TType], context: TContext) => Promise<TResult>,
+		run: (model: ModelTypeMap[TType], context: TContext, callOptions: unknown) => Promise<TResult>,
 	): Promise<TResult> => {
 		const listHint = `List the ${type} models you can use with models.getAvailableOfType("${type}").`;
 		if (!isRecord(ref) || typeof ref.provider !== "string" || typeof ref.id !== "string") {
@@ -485,6 +544,7 @@ function modelGlobals(
 			);
 		}
 		const checked = checkContext(context);
+		const checkedOptions = type === "image" ? checkImageOptions(callOptions) : undefined;
 		const record: CodemodeNestedCall = {
 			id: `${id}/${name}/${++count}`,
 			name,
@@ -494,7 +554,7 @@ function modelGlobals(
 		calls.push(record);
 		publish();
 		const start = performance.now();
-		const result = await limit(() => run(model, checked));
+		const result = await limit(() => run(model, checked, checkedOptions));
 		record.durationMs = performance.now() - start;
 		record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
 		if (result.errorMessage) record.error = result.errorMessage.slice(0, 500);
@@ -554,9 +614,12 @@ function modelGlobals(
 					"image",
 					args as unknown[],
 					checkImagesContext,
-					async (model, context) => {
-						const result = await models.generateImages(model, context, { signal });
-						addGeneratedImages(result.output.filter((block) => block.type === "image").length);
+					async (model, context, callOptions) => {
+						const result = await models.generateImages(model, context, {
+							...(callOptions as OpenAIImagesOptions),
+							signal,
+						});
+						addGeneratedImages(result.output.filter((block): block is ImageContent => block.type === "image"));
 						return result;
 					},
 				),
@@ -577,6 +640,7 @@ export async function executeCodemode(
 	const calls: CodemodeNestedCall[] = [];
 	let usage: Usage | undefined;
 	let generatedImages = 0;
+	const generatedSvgs: ImageContent[] = [];
 	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
 	const publish = () => update?.({ content: [], details: snapshot() });
 	// Show the script as running before its first nested call, so the row's timer starts.
@@ -655,8 +719,11 @@ export async function executeCodemode(
 							(extra) => {
 								usage = usage ? combineUsage(usage, extra) : extra;
 							},
-							(count) => {
-								generatedImages += count;
+							(images) => {
+								for (const image of images) {
+									if (image.mimeType === SVG_MIME_TYPE) generatedSvgs.push(image);
+									else generatedImages++;
+								}
 							},
 						)
 					: []),
@@ -734,7 +801,7 @@ export async function executeCodemode(
 		];
 	}
 	// Save after truncation so labels cannot be cut or separated from their images.
-	content = joinAdjacentText(await saveImages(content));
+	content = joinAdjacentText([...(await saveImages(content)), ...(await saveSvgs(generatedSvgs))]);
 	return {
 		content: [
 			{

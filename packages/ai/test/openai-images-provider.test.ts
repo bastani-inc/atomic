@@ -13,6 +13,8 @@ const OPENAI_IMAGE_MODEL_IDS = [
 	"gpt-image-2",
 	"gpt-image-2.5-flare",
 	"gpt-image-2.5-sunburst",
+	"gpt-image-2.6-flare",
+	"gpt-image-2.6-sunburst",
 ];
 
 const context: ImagesContext = { input: [{ type: "text", text: "A red fox in the snow" }] };
@@ -74,6 +76,66 @@ describe("openai-images provider", () => {
 		assert.deepEqual(models.getModelsOfType("image", "openai-api"), []);
 		assert.equal(models.getModelOfType("image", "openai-api", "gpt-image-2.5-flare"), undefined);
 		assert.equal(models.getModelOfType("image", "openai", "gpt-image-2.5-flare"), undefined);
+	});
+
+	it.each([
+		["gpt-image-2.6-sunburst", "GPT Image 2.6 Sunburst"],
+		["gpt-image-2.6-flare", "GPT Image 2.6 Flare"],
+	])("lists %s under openai-images only at $5 input, $1.25 cache read and $30 output (#4332)", (id, name) => {
+		const models = builtinModels();
+		const model = models.getModelOfType("image", "openai-images", id);
+
+		assert(model);
+		assert.equal(model.name, name);
+		assert.equal(model.api, "openai-images");
+		assert.equal(model.baseUrl, "https://api.openai.com/v1");
+		assert.deepEqual(model.input, ["text", "image"]);
+		assert.deepEqual(model.output, ["image"]);
+		assert.deepEqual(model.cost, { input: 5, output: 30, cacheRead: 1.25, cacheWrite: 0 });
+		assert.equal(models.getModelOfType("image", "openai", id), undefined);
+		assert.equal(models.getModelOfType("image", "openai-api", id), undefined);
+		assert.equal(models.getModelOfType("image", "openai-decisions", id), undefined);
+		assert.equal(models.getModelOfType("chat", "openai-images", id), undefined);
+		assert.equal(models.getModelOfType("chat", "openai", id), undefined);
+	});
+
+	it.each([
+		["gpt-image-2.6-sunburst", { complexity: true, markup: true, svg: true, gif: true }],
+		["gpt-image-2.6-flare", { complexity: true, markup: true, svg: true, gif: true }],
+		["gpt-image-2.5-sunburst", { markup: true }],
+		["gpt-image-2.5-flare", { markup: true }],
+		["gpt-image-2", undefined],
+		["gpt-image-1.5", undefined],
+		["gpt-image-1", undefined],
+		["gpt-image-1-mini", undefined],
+	])("declares the optional request features of %s (#4332)", (id, capabilities) => {
+		const model = builtinModels().getModelOfType("image", "openai-images", id);
+
+		assert(model);
+		assert.deepEqual(model.capabilities, capabilities);
+	});
+
+	it("prices a GPT Image 2.6 generation from its usage tokens (#4332)", async () => {
+		const models = await imagesModels({ stored: { "openai-api": apiKey("sk-openai-api") } });
+		const flare = models.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
+		assert(flare);
+
+		const result = await models.generateImages(flare, context, {
+			fetch: async () =>
+				Response.json({
+					created: 1,
+					output_format: "png",
+					data: [{ b64_json: "aW1n" }],
+					usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, total_tokens: 2_000_000 },
+				}),
+		});
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(result.model, "gpt-image-2.6-flare");
+		assert.deepEqual(
+			{ input: result.usage?.cost.input, output: result.usage?.cost.output, total: result.usage?.cost.total },
+			{ input: 5, output: 30, total: 35 },
+		);
 	});
 
 	it("has no login of its own and rejects login attempts (#3527)", async () => {

@@ -33,7 +33,7 @@ import {
 	type ModelsClassifierOptions,
 	type ModelsDeferredCancelOptions,
 	type ModelsDeferredFetchOptions,
-	type ModelsImagesOptions,
+	type ModelsImagesApiOptions,
 	type ModelsRefreshOptions,
 	type ModelsRefreshResult,
 	type ModelsStore,
@@ -1120,10 +1120,10 @@ export class ModelRuntime implements Models {
 		return mergeHeaders(configured, headers) ?? {};
 	}
 
-	generateImages(
-		model: ImageModel<ImageApi>,
+	generateImages<TApi extends ImageApi>(
+		model: ImageModel<TApi>,
 		context: ImagesContext,
-		options?: ModelsImagesOptions,
+		options?: ModelsImagesApiOptions<TApi>,
 	): Promise<AssistantImages> {
 		return this.models.generateImages(model, context, {
 			...options,
@@ -1131,7 +1131,7 @@ export class ModelRuntime implements Models {
 				const prepared = this.operationHeaders(model, headers, options?.env);
 				return (await options?.transformHeaders?.(prepared)) ?? prepared;
 			},
-		});
+		} as ModelsImagesApiOptions<TApi>);
 	}
 
 	classify(
