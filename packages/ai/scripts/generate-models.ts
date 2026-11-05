@@ -899,8 +899,8 @@ function isAnthropicTemperatureUnsupportedModel(modelId: string): boolean {
 		id.includes("opus-4.8") ||
 		id.includes("opus-5") ||
 		id.includes("opus.5") ||
-		id.includes("sonnet-5-5") ||
-		id.includes("sonnet-5.5") ||
+		id.includes("sonnet-5") ||
+		id.includes("sonnet.5") ||
 		id.includes("haiku-5-5") ||
 		id.includes("haiku-5.5") ||
 		id.includes("fable-5")

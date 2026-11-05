@@ -31,6 +31,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Messages stream errors keep their structured provider type, request ID and retry hints, so a rejected Copilot request is not retried as a cut-off stream. Error guards reject malformed serialized payloads instead of rebuilding them without their context ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Fixed Azure GPT-6 Luna, Sol, GPT-6.1 Sol and GPT-6.1 Terra using a 272K context window instead of the 1,050,000 tokens Azure Foundry deploys them with, which made sessions compact far earlier than needed (upstream [#11781](https://github.com/earendil-works/pi/pull/11781))
 - Fixed `qwen-token-plan-individual` missing `glm-5.3`, which `qwen-token-plan` and `qwen-token-plan-cn` already list (upstream [#11785](https://github.com/earendil-works/pi/pull/11785))
+- Fixed Claude Sonnet 5 requests failing with a 400 when a temperature was set: Sonnet 5 rejects non-default `temperature`, like Sonnet 5.5, so it is no longer sent (upstream [#7961](https://github.com/earendil-works/pi/pull/7961))
 
 ## [0.9.71] - 2026-11-03
 
