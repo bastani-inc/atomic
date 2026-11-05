@@ -1130,6 +1130,7 @@ export async function forkDurableRun<
 			];
 			// Everything read from the source is in memory: if the claim still holds, it is one consistent state.
 			await claim.assertHeld();
+			request.signal?.throwIfAborted();
 			let created: "created" | "exists" | undefined;
 			let writeFailure: Error | undefined;
 			try {

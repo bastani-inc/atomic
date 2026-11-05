@@ -894,9 +894,10 @@ async function slowCopy(seed: string, options: { readonly ownLease?: boolean } =
 	});
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 	const release = vi.spyOn(source.backend.journal, "release");
+	const realRenew = source.backend.journal.renew.bind(source.backend.journal);
 	const renew = vi.spyOn(source.backend.journal, "renew");
 	const holder = async () => (await source.backend.journal.leaseState(source.runId))?.holderId;
-	return { ...source, open, entered, release, renew, holder };
+	return { ...source, open, entered, release, renew, realRenew, holder };
 }
 
 const QUARTER_WINDOW_MS = 30_000;
@@ -1013,10 +1014,10 @@ test("the check before the write catches a takeover no renewal saw, and never wr
 });
 
 test("a journal that cannot renew is retried and logged once, and a failed check before the write is a retryable ForkJournalUnavailableError (#4321)", async () => {
-	const { backend, fork, open, entered, renew, copyKept, forkRuns } = await slowCopy("fork-claim-journal");
+	const { fork, open, entered, renew, realRenew, copyKept, forkRuns } = await slowCopy("fork-claim-journal");
 	try {
 		const unavailable = new StorageUnavailableError({ adapter: "memory", location: ":memory:" }, new Error("reset"));
-		const real = backend.journal.renew.bind(backend.journal);
+		const real = realRenew;
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const forking = fork();
 		await entered;
@@ -1087,11 +1088,11 @@ test("a renewal that fails unexpectedly is logged once with its cause, while the
 });
 
 test("a check whose renewal committed but whose reply is late still fails when a periodic renewal found the takeover meanwhile (#4321)", async () => {
-	const { backend, runId, fork, open, entered, renew, holder, copyKept, forkRuns } =
+	const { backend, runId, fork, open, entered, renew, realRenew, holder, copyKept, forkRuns } =
 		await slowCopy("fork-claim-late-reply");
 	try {
 		const write = vi.spyOn(backend.journal, "createRunWithEvents");
-		const real = backend.journal.renew.bind(backend.journal);
+		const real = realRenew;
 		let committed!: () => void;
 		const renewed = new Promise<void>((resolve) => {
 			committed = resolve;
@@ -1325,9 +1326,9 @@ test("renewal failures are logged once per streak: a renewal that succeeds start
 });
 
 test("releasing while a renewal's reply is in flight leaves no timer and no later renewal (#4321)", async () => {
-	const { backend, fork, open, entered, renew, release, copyKept } = await slowCopy("fork-claim-release-in-flight");
+	const { fork, open, entered, renew, realRenew, release, copyKept } = await slowCopy("fork-claim-release-in-flight");
 	try {
-		const real = backend.journal.renew.bind(backend.journal);
+		const real = realRenew;
 		let reply!: () => void;
 		const late = new Promise<void>((resolve) => {
 			reply = resolve;
@@ -1413,6 +1414,32 @@ test("a cancelled fork rejects with the exact reason, stops its renewals and rel
 		assert.equal(source.renew.mock.calls.length, renewals, "no renewal after the claim was released");
 		assert.equal(await source.copyKept(), false);
 	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("cancellation during the final claim renewal rejects its exact reason before any fork write (#4321)", async () => {
+	const source = await slowCopy("fork-cancel-final-renewal");
+	const controller = new AbortController();
+	const reason = new Error("caller cancelled during the final renewal");
+	const renew = source.realRenew;
+	try {
+		source.renew.mockImplementation(async (lease) => {
+			await renew(lease);
+			if (source.renew.mock.calls.length === 3) controller.abort(reason);
+		});
+		const write = vi.spyOn(source.backend.journal, "createRunWithEvents");
+		const forking = source.fork(controller.signal).catch((error: unknown) => error);
+		await source.entered;
+		source.open();
+		assert.equal(await forking, reason);
+		assert.equal(write.mock.calls.length, 0);
+		assert.deepEqual(await source.forkRuns(), []);
+		assert.equal(await source.copyKept(), false);
+		assert.equal(source.release.mock.calls.length, 1);
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		source.open();
 		vi.useRealTimers();
 	}
 });
