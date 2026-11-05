@@ -65,6 +65,8 @@ export async function executeBashWithOperations(
 ): Promise<BashResult> {
 	const outputChunks: string[] = [];
 	let outputBytes = 0;
+	// Earlier chunks dropped from the rolling buffer: the output is truncated even if the kept tail fits (pi #10164).
+	let discardedOutput = false;
 	const maxOutputBytes = DEFAULT_MAX_BYTES * 2;
 
 	let tempFilePath: string | undefined;
@@ -138,6 +140,7 @@ export async function executeBashWithOperations(
 		while (outputBytes > maxOutputBytes && outputChunks.length > 1) {
 			const removed = outputChunks.shift()!;
 			outputBytes -= removed.length;
+			discardedOutput = true;
 		}
 
 		// Stream to callback
@@ -184,7 +187,7 @@ export async function executeBashWithOperations(
 			output: truncationResult.truncated ? truncationResult.content : fullOutput,
 			exitCode: cancelled ? undefined : (result.exitCode ?? undefined),
 			cancelled,
-			truncated: truncationResult.truncated,
+			truncated: discardedOutput || truncationResult.truncated,
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
@@ -201,7 +204,7 @@ export async function executeBashWithOperations(
 				output: truncationResult.truncated ? truncationResult.content : fullOutput,
 				exitCode: undefined,
 				cancelled: true,
-				truncated: truncationResult.truncated,
+				truncated: discardedOutput || truncationResult.truncated,
 				fullOutputPath: tempFilePath,
 			};
 		}
