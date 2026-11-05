@@ -251,6 +251,7 @@ export type {
 	DetachedToolResult,
 	ToolDetachmentPolicy,
 } from "./core/agent-session-detached-tools.ts";
+export { markToolCallReadyForDetachment, toolCallNeedsDetachmentHandoff } from "./core/agent-session-detached-tools.ts";
 export type { ReleasedAgentSession, ReleaseWhenIdleOptions } from "./core/agent-session-release.ts";
 export {
 	type AgentWake,

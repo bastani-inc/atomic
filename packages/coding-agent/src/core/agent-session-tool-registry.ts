@@ -111,6 +111,7 @@ export function _refreshToolRegistry(
 						(id, params, signal, onUpdate, context) => definition.execute(id, params, signal, onUpdate, context),
 						(id, signal) => runner.createToolContext(id, signal),
 						typeof detachable === "function" ? (params) => detachable(params) : undefined,
+						definition.detachmentRequiresReady === true,
 					)
 				: guarded;
 		toolRegistry.set(tool.name, scheduleToolExecution(executable, this._toolExecutionScheduler, abortError));

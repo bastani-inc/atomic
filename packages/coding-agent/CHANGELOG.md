@@ -60,6 +60,7 @@
 - `AgentWakeDispatcher` and `agentWakeDispatcher()`: one process-wide owner of waiting agents that wakes each one in arrival order, one batch at a time, with timed wakes on a single shared timer that also handles delays longer than one timer can hold. `onUnobservedFailure(listener)` reports wakes that failed with nobody waiting on them, and `whenIdle(wakeKey?)` resolves once a key, or the whole dispatcher, has nothing queued or running ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
 - `AgentSessionBusyError` and `isAgentSessionBusyError`: `prompt()` during a running turn without `streamingBehavior` now throws this typed error (`code: "agent_session_busy"`, with a `hint`) ([#4327](https://github.com/bastani-inc/atomic/issues/4327))
 - A tool's `detachable` may be a function of the call's arguments, so a tool can let only its waiting calls outlive a run: only those calls detach under a host's release policy and are started again after a restart. A shell `wait` without a budget is such a call: in a session that may be released it waits until its task finishes, so a background subagent waiting on its own shell is released while the task runs ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A detachable tool can require a durable handoff before it releases the session with `detachmentRequiresReady: true`; `toolCallNeedsDetachmentHandoff(signal)` and `markToolCallReadyForDetachment(signal)` let it save and signal that handoff before detachment ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
 
 ### Changed
 

@@ -162,6 +162,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	detachable?: boolean | DetachableCallPredicate<Static<TParams>>;
 
+	/** The call marks its durable handoff ready before it can detach. */
+	detachmentRequiresReady?: boolean;
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,

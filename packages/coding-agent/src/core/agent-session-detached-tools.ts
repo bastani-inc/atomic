@@ -129,6 +129,18 @@ export type DetachableContext = (toolCallId: string, signal: AbortSignal) => Ext
 /** Whether one call of a tool may detach, decided from the call's arguments. */
 export type DetachesCall = (params: ToolParams) => boolean;
 
+const readinessCallbacks = new WeakMap<AbortSignal, () => void>();
+
+/** Marks the durable handoff of a call ready for detachment. No-op without a waiting detachment policy. */
+export function markToolCallReadyForDetachment(signal: AbortSignal): void {
+	readinessCallbacks.get(signal)?.();
+}
+
+/** Whether this call must prepare a durable handoff before it can detach. */
+export function toolCallNeedsDetachmentHandoff(signal: AbortSignal | undefined): boolean {
+	return signal !== undefined && readinessCallbacks.has(signal);
+}
+
 /**
  * What a detachable call's work reaches of its session, only while the call runs inline. Detaching clears it, so
  * the work keeps neither the agent loop nor the session's context reachable for as long as it goes on.
@@ -158,14 +170,18 @@ function startOperation(
 	facts: DetachedCallFacts,
 	createContext: DetachableContext | undefined,
 	start?: Promise<void>,
-): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult> } {
+): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult>; readonly signal: AbortSignal } {
 	return outsideAnySession(() => {
 		const controller = new AbortController();
 		if (createContext !== undefined) inline.context = createContext(facts.toolCallId, controller.signal);
 		const onUpdate = inline.onUpdate === undefined ? undefined : forwardedUpdate(inline);
 		const context = callContext(inline, facts);
 		const settled = invokeDetached(execute, facts.toolCallId, params, controller.signal, onUpdate, context, start);
-		return { settled, call: detachedCall(toolName, facts.toolCallId, settled, controller) };
+		return {
+			settled,
+			signal: controller.signal,
+			call: detachedCall(toolName, facts.toolCallId, settled, controller),
+		};
 	});
 }
 
@@ -291,6 +307,7 @@ export function detachableTool(
 	execute: DetachableExecute,
 	createContext: DetachableContext,
 	detachesCall?: DetachesCall,
+	requiresReady = false,
 ): AgentTool {
 	const state = detachmentState(session);
 	state.executes.set(tool.name, execute);
@@ -322,7 +339,7 @@ export function detachableTool(
 				permit.release();
 				throw error;
 			}
-			const { call, settled } = operation;
+			const { call, settled, signal: operationSignal } = operation;
 			releaseWhenSettled(settled, permit);
 			const forwardAbort = (): void => call.abort(signal?.reason);
 			if (signal?.aborted) forwardAbort();
@@ -331,11 +348,22 @@ export function detachableTool(
 			// created in the run's context stays on the call once it detaches.
 			const gate = Promise.withResolvers<symbol>();
 			openGateWhenSettled(settled, gate);
-			const timer = setTimeout(() => gate.resolve(DETACH), policy.afterMs);
+			let ready = !requiresReady;
+			let elapsed = false;
+			if (requiresReady)
+				readinessCallbacks.set(operationSignal, () => {
+					ready = true;
+					if (elapsed) gate.resolve(DETACH);
+				});
+			const timer = setTimeout(() => {
+				elapsed = true;
+				if (ready) gate.resolve(DETACH);
+			}, policy.afterMs);
 			try {
 				if ((await gate.promise) === INLINE) return await settled;
 			} finally {
 				clearTimeout(timer);
+				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}
 			inline.onUpdate = undefined;
