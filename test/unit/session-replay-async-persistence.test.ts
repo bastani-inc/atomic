@@ -118,3 +118,10 @@ test("exit-first replay cleanup commits start before its terminal entry", async 
 	assert.equal(stage.status, "skipped");
 	assert.equal(stage.skippedReason, "workflow-exit: stop");
 });
+
+test("a replayed stage has no session: readMessages() and its resident messages are empty, as messages is (#4309)", async () => {
+	const { context } = replay({ appendEntry: async () => {} });
+	assert.deepEqual(await context.readMessages(), []);
+	assert.deepEqual(context.__residentMessages(), []);
+	assert.deepEqual(context.messages, []);
+});

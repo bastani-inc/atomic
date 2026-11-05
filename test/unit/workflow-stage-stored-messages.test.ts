@@ -44,12 +44,14 @@ describe("reading a released stage's messages from the session store (#4309)", (
 		}
 	});
 
-	test("a caller's sessionStore or sessionManager is read and left open (#4309)", async () => {
+	test("a caller's sessionStore or sessionManager is read and left open, also when the read fails (#4309)", async () => {
 		const { store, sessionId } = await storeWithSession();
 		const close = vi.spyOn(store, "close");
 		const manager = await SessionManager.open(store, sessionId, process.cwd());
-		for (const options of [{ sessionStore: store }, { sessionManager: manager }] satisfies StageOptions[])
+		for (const options of [{ sessionStore: store }, { sessionManager: manager }] satisfies StageOptions[]) {
 			assert.deepEqual(contents(await readStoredStageMessages(options, undefined, sessionId)), ["go"]);
+			await assert.rejects(readStoredStageMessages(options, undefined, "missing-session"), SessionNotFoundError);
+		}
 		assert.equal(close.mock.calls.length, 0);
 	});
 
@@ -72,6 +74,9 @@ describe("reading a released stage's messages from the session store (#4309)", (
 		);
 		assert.ok(error instanceof SessionNotFoundError);
 		assert.equal((error as Error & { readonly cleanupCause?: unknown }).cleanupCause, closeFailure);
+		const outerCleanupFailure = new Error("outer cleanup failed");
+		Object.defineProperty(error, "cleanupCause", { value: outerCleanupFailure });
+		assert.equal((error as Error & { readonly cleanupCause?: unknown }).cleanupCause, outerCleanupFailure);
 	});
 
 	test("a failure that is not an Error is thrown as it is when the store also fails to close (#4309)", async () => {

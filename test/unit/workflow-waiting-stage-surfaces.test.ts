@@ -441,11 +441,16 @@ describe("a stage's wait is checkpointed durably (#4309)", () => {
 		);
 	});
 
-	test("a stage context deferred by a paused run forwards release and rehydrate once the run is released", async () => {
+	test("a stage context deferred by a paused run forwards release, rehydrate and readMessages once the run is released", async () => {
 		const calls: string[] = [];
+		const stored = [{ role: "user", content: "plan", timestamp: 1 }];
 		const real = {
 			release: async () => void calls.push("release"),
 			rehydrate: async () => void calls.push("rehydrate"),
+			readMessages: async () => {
+				calls.push("readMessages");
+				return stored;
+			},
 		} as unknown as StageContext;
 		let paused = true;
 		const waiters: (() => void)[] = [];
@@ -459,13 +464,15 @@ describe("a stage's wait is checkpointed durably (#4309)", () => {
 
 		const released = deferred.release();
 		const rehydrated = deferred.rehydrate();
+		const read = deferred.readMessages();
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepEqual(calls, [], "neither runs while the run is paused");
+		assert.deepEqual(calls, [], "none runs while the run is paused");
 
 		paused = false;
 		for (const resolve of waiters.splice(0)) resolve();
 		await Promise.all([released, rehydrated]);
-		assert.deepEqual(calls.sort(), ["rehydrate", "release"]);
+		assert.equal(await read, stored);
+		assert.deepEqual(calls.sort(), ["readMessages", "rehydrate", "release"]);
 	});
 });
 

@@ -85,6 +85,8 @@ export interface RigConfig {
 	readonly signal?: AbortSignal;
 	/** The run's working directory, which a stage without a `cwd` option works in. */
 	readonly defaultCwd?: string;
+	/** Runs once a created session is attached, before the stage counts it ready. */
+	readonly onSessionReady?: () => void | Promise<void>;
 	readonly stageOptions?: StageOptions;
 	/** The calls a session's `prompt()` leaves detached; default none. */
 	readonly detachOnPrompt?: (sessionNumber: number, text: string, ci: Ci) => DetachedToolCall[];
@@ -249,6 +251,7 @@ export function makeRig(config: RigConfig = {}): Rig {
 			adapters,
 			...(config.signal === undefined ? {} : { signal: config.signal }),
 			...(config.defaultCwd === undefined ? {} : { defaultCwd: config.defaultCwd }),
+			...(config.onSessionReady === undefined ? {} : { onSessionReady: config.onSessionReady }),
 			...(config.noHooks === true ? {} : { waiting: hooks }),
 			onStartupChange: (snapshot) => startups.push(snapshot),
 			...(config.bare === true

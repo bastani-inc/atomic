@@ -187,6 +187,13 @@ describe("reading a stage whose session is released (#4309)", () => {
 		assert.equal(releasedReadOf(() => rig.ctx.agent).fields.waitKind, "tool");
 		assert.equal(rig.ctx.model, MODEL);
 		assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
+		let rehydrated = false;
+		void rig.ctx.rehydrate().then(() => {
+			rehydrated = true;
+		});
+		await until(() => rehydrated);
+		assert.equal(rig.created(), 1, "rehydrate() leaves a tool wait to its result");
+		assert.equal(rig.ctx.__isReleased?.(), true);
 
 		rig.ci.finish("c1");
 		await turn;
@@ -235,6 +242,20 @@ describe("reading a stage whose session is released (#4309)", () => {
 		await reopening;
 	});
 
+	test("a reopened session that is still getting ready is read as the stage's session, not as released (#4309)", async () => {
+		const seen: object[] = [];
+		const rig: ReturnType<typeof makeRig> = makeRig({
+			customize: storedTranscripts(),
+			onSessionReady: () => {
+				if (rig.created() === 2) seen.push(rig.ctx.agent);
+			},
+		});
+		await rig.ctx.prompt("go");
+		await rig.ctx.release();
+		await rig.ctx.rehydrate();
+		assert.deepEqual(seen, [{ session: 2 }]);
+	});
+
 	test("a stage that never opened a session reads as before: no messages, no model, agent and thinkingLevel not available yet (#4309)", async () => {
 		const rig = makeRig({ customize: storedTranscripts() });
 		const load = vi.spyOn(rig.store, "load");
@@ -242,10 +263,16 @@ describe("reading a stage whose session is released (#4309)", () => {
 		assert.deepEqual(rig.ctx.messages, []);
 		assert.equal(rig.ctx.model, undefined);
 		assert.equal(rig.ctx.isStreaming, false);
-		for (const read of [() => rig.ctx.agent, () => rig.ctx.thinkingLevel]) {
+		for (const [property, read] of [
+			["agent", () => rig.ctx.agent],
+			["thinkingLevel", () => rig.ctx.thinkingLevel],
+		] as const) {
 			assert.throws(read, (error: Error) => {
 				assert.equal(isStageWaitError(error), false);
-				assert.match(error.message, /unavailable until the SDK session has been created/);
+				assert.equal(
+					error.message,
+					`atomic-workflows: stage AgentSession property "${property}" is unavailable until the SDK session has been created`,
+				);
 				return true;
 			});
 		}
@@ -430,7 +457,7 @@ describe("a stage whose tool wait ended without reopening its session (#4309)", 
 			sessionId,
 			property: "agent",
 		});
-		assert.equal(error.cause, undefined);
+		assert.equal(Object.hasOwn(error, "cause"), false);
 		assert.equal(rig.ctx.model, MODEL);
 		assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
 		assert.equal(rig.created(), 1);

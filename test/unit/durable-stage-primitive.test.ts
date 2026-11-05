@@ -214,6 +214,31 @@ describe("recordStageCheckpoint", () => {
 		assert.deepEqual(recorded, [{ name: "analyze", replayKey, output: "cached output" }]);
 	});
 
+	test("a stage replayed from its checkpoint has no session: readMessages() resolves to no messages, as messages is (#4309)", async () => {
+		const replayKey = "stage:analyze:1";
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: WORKFLOW_ID,
+			checkpointId: `stage:${replayKey}`,
+			name: "analyze",
+			replayKey,
+			output: "cached output",
+			completedAt: Date.now(),
+		});
+		const stage = createDurableStagePrimitive({
+			workflowId: WORKFLOW_ID,
+			backend,
+			nextReplayKey: () => replayKey,
+			stage: () => {
+				throw new Error("live stage should not run");
+			},
+		});
+
+		const ctx = stage("analyze");
+		assert.deepEqual(await ctx.readMessages(), []);
+		assert.deepEqual(ctx.messages, []);
+	});
+
 	test("replayed task invokes recordCachedTask for graph/store visibility", async () => {
 		const replayKey = "stage:task:review:1";
 		const cached = { name: "review", stageName: "review", text: "cached task output" };
