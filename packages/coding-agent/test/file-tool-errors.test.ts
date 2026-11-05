@@ -395,7 +395,7 @@ describe("guards across realms", () => {
 		assert.equal(isFileToolAbortedError({ name: "AbortError", code: "aborted" }), true);
 	});
 
-	it("reject a name with a code from another class, and non-objects", () => {
+	it("reject invalid codes and non-object values without throwing (#4328)", () => {
 		assert.equal(isEditInputError({ name: "EditInputError", code: "no-change" }), false);
 		assert.equal(isEditMatchError({ name: "EditMatchError", code: "edits-empty" }), false);
 		assert.equal(isEditTargetError({ name: "EditTargetError", code: 7 }), false);
@@ -406,8 +406,17 @@ describe("guards across realms", () => {
 		assert.equal(isEditInputError({ name: "EditMatchError", code: "edits-empty" }), false);
 		assert.equal(isWriteSelectorError({ name: "EditMatchError", code: "unsupported-scheme" }), false);
 		assert.equal(isFileToolAbortedError({ name: "Error", code: "aborted" }), false);
-		assert.equal(isEditToolError(null), false);
-		assert.equal(isEditToolError("EditMatchError"), false);
+		const guards = [
+			isEditToolError,
+			isEditInputError,
+			isEditMatchError,
+			isEditTargetError,
+			isWriteSelectorError,
+			isFileToolAbortedError,
+		];
+		for (const value of [undefined, null, false, 0, "EditMatchError", Symbol("error")]) {
+			for (const guard of guards) assert.equal(guard(value), false);
+		}
 	});
 });
 
