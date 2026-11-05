@@ -58,7 +58,17 @@ export interface GitRunOptions {
 	readonly allowExitCodes?: readonly number[];
 	/** Prepend {@link NEUTRAL_CONVERSION_CONFIG}. */
 	readonly neutral?: boolean;
+	/**
+	 * Run a command that talks to a remote so it can never wait for a person: on POSIX it starts in a new session, so
+	 * ssh and credential helpers have no terminal to prompt on and fail at once, and ssh runs in batch mode with a
+	 * bounded connect time unless the user chose their own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or
+	 * `core.sshCommand`). A prompt is never answered, so the command fails with the usual {@link WorkspaceGitError}.
+	 */
+	readonly nonInteractive?: boolean;
 }
+
+/** How long a non-interactive ssh waits for a connection before giving up, in seconds. */
+export const NON_INTERACTIVE_SSH_CONNECT_TIMEOUT_SECONDS = 15;
 
 export interface GitRunResult {
 	readonly stdout: Buffer;
@@ -87,6 +97,31 @@ function firstLine(text: string): string {
 	return redactUrlCredentials(text.trim().split("\n", 1)[0] ?? "").slice(0, 300);
 }
 
+/** Whether the user's Git configuration (not the environment) names the ssh command Git runs. */
+async function configuresSshCommand(options: GitRunOptions): Promise<boolean> {
+	const lookup = await runGit(["config", "--get", "core.sshCommand"], {
+		cwd: options.cwd,
+		env: options.env,
+		signal: options.signal,
+		allowExitCodes: [1],
+	});
+	return lookup.exitCode === 0;
+}
+
+/** Kills `child`, and with it the ssh or helper processes it started when it leads its own session. */
+function killChild(child: ChildProcessWithoutNullStreams, detached: boolean): void {
+	if (detached && child.pid !== undefined) {
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch {
+			// The group is already gone, or cannot be signalled: the child itself is all that is left to kill.
+			child.kill("SIGKILL");
+		}
+		return;
+	}
+	child.kill("SIGKILL");
+}
+
 /** Runs one Git command through the injected executable. Rejects with the signal's reason when aborted. */
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
@@ -97,6 +132,11 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		createChildProcessEnvironment(),
 	);
 	Object.assign(env, executable.env, options.env);
+	if (options.nonInteractive && !env.GIT_SSH_COMMAND && !env.GIT_SSH && !(await configuresSshCommand(options))) {
+		env.GIT_SSH_COMMAND = `ssh -o BatchMode=yes -o ConnectTimeout=${NON_INTERACTIVE_SSH_CONNECT_TIMEOUT_SECONDS}`;
+	}
+	// A new session has no controlling terminal. Windows has no such thing, and `detached` there opens a console.
+	const detached = options.nonInteractive === true && process.platform !== "win32";
 	const argv = [...BASE_CONFIG, ...(options.neutral ? NEUTRAL_CONVERSION_CONFIG : []), ...args];
 	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
 		(error.code === "ENOENT" || error.code === "EACCES") && existsSync(options.cwd)
@@ -113,7 +153,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	return new Promise<GitRunResult>((resolve, reject) => {
 		let child: ChildProcessWithoutNullStreams;
 		try {
-			child = spawn(executable.path, argv, { cwd: options.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+			child = spawn(executable.path, argv, { cwd: options.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached });
 		} catch (error) {
 			// Node throws instead of emitting `error` for some failures, such as a path component that is a file.
 			reject(spawnFailure(error as NodeJS.ErrnoException));
@@ -125,7 +165,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		const onAbort = () => {
 			if (settled) return;
 			settled = true;
-			child.kill("SIGKILL");
+			killChild(child, detached);
 			reject(options.signal?.reason);
 		};
 		options.signal?.addEventListener("abort", onAbort, { once: true });

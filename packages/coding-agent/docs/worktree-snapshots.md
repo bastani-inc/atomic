@@ -76,6 +76,8 @@ A restore builds the worktree under a staging directory, verifies it there, and 
 
 Snapshot records come from storage and from imported session files, so restore and verification check each record before running anything. Remotes must be URLs or paths (never a value starting with `-`, never control characters), and commits, trees, blob hashes, and the snapshot id must have the form Atomic writes. A record that does not fails with `invalid-snapshot`, which names the field but not its value. Restore fetches only over `https`, `http`, `ssh`, `git`, and local paths; Git remote helpers such as `ext::` are refused.
 
+Restore fetches never wait for input. On Linux and macOS they run without a terminal, so an unknown host key, a passphrase, or a credential prompt fails at once as `commits-unavailable` (`reason: "not-fetched"`) instead of waiting. Unless you configured your own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH`, or `core.sshCommand`), ssh runs with `BatchMode=yes` and a 15-second connect timeout. To fix such a failure, run `git ls-remote <remote>` once yourself to accept the host key or unlock the key, then resume again.
+
 Workflow runs follow the same rule at the point where execution resumes: each bound worktree is compared once with the last snapshot recorded for it, and restored automatically into a fresh worktree when it drifted. See [Workflows operations](/workflows/operations).
 
 ## Inspecting snapshots

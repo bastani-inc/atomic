@@ -16,7 +16,7 @@ import {
 	WorkspaceRestoreError,
 	type WorkspaceRestoreErrorFields,
 } from "./errors.ts";
-import { type GitRunOptions, gitText, nulFields, runGit } from "./git.ts";
+import { type GitRunOptions, type GitRunResult, gitText, nulFields, runGit } from "./git.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord } from "./records.ts";
 import {
@@ -419,6 +419,11 @@ function fetchArgs(repository: string, refspecs: readonly string[]): string[] {
 	return [...FETCH_TRANSPORTS, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", repository, ...refspecs];
 }
 
+/** Runs {@link fetchArgs} through the runner without a way to prompt, so an unreachable or unknown host fails at once. */
+function runFetch(git: GitRunOptions, repository: string, refspecs: readonly string[]): Promise<GitRunResult> {
+	return runGit(fetchArgs(repository, refspecs), { ...git, nonInteractive: true });
+}
+
 async function fetchCommits(
 	git: GitRunOptions,
 	remotes: readonly string[],
@@ -430,7 +435,7 @@ async function fetchCommits(
 		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
 		if (missing.length === 0) return undefined;
 		try {
-			await runGit(fetchArgs(remote, missing), git);
+			await runFetch(git, remote, missing);
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			failure = error;
@@ -456,7 +461,7 @@ async function ensureHead(
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
-				await runGit(fetchArgs(file, ["HEAD"]), git);
+				await runFetch(git, file, ["HEAD"]);
 			} catch (error) {
 				if (!isWorkspaceGitError(error)) throw error;
 				failure = error;
