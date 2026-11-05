@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -19,6 +19,8 @@ interface AdapterRecord {
 	closed: number;
 	fail?: Error;
 	answerAfterMs?: number;
+	hang?: boolean;
+	onQuery?: () => void;
 }
 
 declare global {
@@ -34,6 +36,8 @@ export default {
 		return {
 			async get(sql) {
 				record().queries.push(sql);
+				record().onQuery?.();
+				if (record().hang) return new Promise(() => {});
 				const { answerAfterMs, fail } = record();
 				if (answerAfterMs !== undefined) await new Promise((done) => setTimeout(done, answerAfterMs));
 				if (fail !== undefined) throw fail;
@@ -61,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	globalThis.__team4320Adapter = undefined;
@@ -170,4 +175,38 @@ test("a connection check that fails after the deadline is kept as the timeout's 
 		enumerable: false,
 		configurable: true,
 	});
+});
+
+test("a database that never answers times out exactly at the deadline, with the elapsed time measured from the start (#4320)", async () => {
+	installAdapter(RECORDING_ADAPTER);
+	const before = settingsText();
+	const reached = new Promise<void>((resolve) => {
+		record.onQuery = resolve;
+	});
+	record.hang = true;
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	const url = "libsql://team.example.turso.io";
+	let settled = false;
+	const joining = join4320(url, writeToken("team-token"), 300).then(
+		() => assert.fail("joined a database that never answered"),
+		(error: Error) => {
+			settled = true;
+			return error;
+		},
+	);
+	await reached;
+	await vi.advanceTimersByTimeAsync(299);
+	assert.equal(settled, false);
+	await vi.advanceTimersByTimeAsync(1);
+	const failure = await joining;
+	assert.ok(isTeamProfileTimeoutError(failure));
+	assert.deepEqual(
+		[failure.code, failure.timeoutMs, failure.elapsedMs, failure.phase, failure.retryable, failure.subject],
+		["connection-timeout", 300, 300, "connect", true, url],
+	);
+	assert.equal(settingsText(), before);
+	assert.deepEqual(
+		readdirSync(agentDir).filter((name) => name.startsWith("storage-token.")),
+		[],
+	);
 });
