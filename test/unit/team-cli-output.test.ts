@@ -514,6 +514,9 @@ describe("atomic storage join and broker reports (#4320)", () => {
 		assert.equal(parsed.profile.profile, "custom");
 		assert.equal(parsed.projectGroup, "project:x/y");
 		assert.deepEqual(parsed.broker, { state: "stopped" });
+		const text = await team(["status"], control({ status: "not-running" }, "project:x/y"));
+		assert.match(text.out, /^Profile: custom \(matches no preset; see the selections below\)$/m);
+		assert.match(text.out, /^Sessions: /m);
 		assert.deepEqual(
 			parsed.domains.map((domain: { domain: string; probe?: { adapter?: { loaded: boolean } } }) => [
 				domain.domain,

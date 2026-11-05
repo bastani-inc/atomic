@@ -360,6 +360,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 		const settingsPath = join(agentDir, "settings.json");
 		const cases: [string, string][] = [
 			['{\n  "apiKey": "sk-secret",\n}', "not valid JSON at line 3, column 1"],
+			[`${"\n".repeat(11)}{"apiKey": "sk-secret",}`, "not valid JSON at line 12, column 24"],
 			['{"apiKey": sk-secret}', "not valid JSON"],
 			["null", "TypeError"],
 		];
