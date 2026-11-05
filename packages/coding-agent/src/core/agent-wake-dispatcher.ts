@@ -1,5 +1,6 @@
 import { AgentRehydrateError, AgentReleaseConfigError } from "./agent-rehydrate-errors.ts";
 import type { DetachedToolResult } from "./agent-session-detached-tools.ts";
+import { WakeDeadlines } from "./agent-wake-deadlines.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
 
 /** What woke an agent. Every kind arrives the same way, as a wake on the agent's key. */
@@ -83,12 +84,6 @@ interface KeyState {
 	running: Pending[];
 }
 
-interface Scheduled {
-	readonly at: number;
-	readonly wakeKey: string;
-	readonly wake: AgentWake;
-}
-
 const systemClock: AgentWakeClock = {
 	now: () => Date.now(),
 	setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -117,7 +112,7 @@ export class AgentWakeDispatcher {
 	private readonly handlers = new Map<string, AgentWakeHandler>();
 	private readonly slots = new Map<string, NamespaceSlots>();
 	private readonly keys = new Map<string, KeyState>();
-	private scheduled: Scheduled[] = [];
+	private readonly deadlines = new WakeDeadlines();
 	private timer: AgentWakeTimer | undefined;
 	private timerAt = Number.POSITIVE_INFINITY;
 	private readonly clock: AgentWakeClock;
@@ -200,24 +195,25 @@ export class AgentWakeDispatcher {
 		return pending.settled;
 	}
 
-	/** Deliver `wake` to `wakeKey` once `delayMs` has passed. A scheduled wake with the same key and id is replaced. */
+	/**
+	 * Deliver `wake` to `wakeKey` once `delayMs` has passed. A scheduled wake with the same key and id is replaced. Wakes
+	 * due at the same time are delivered in the order they were scheduled. Costs O(log n) in the wakes waiting.
+	 */
 	schedule(wakeKey: string, wake: AgentWake, delayMs: number): void {
-		this.cancel(wakeKey, wake.id);
-		const at = this.clock.now() + (Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0);
-		const index = this.scheduled.findIndex((entry) => entry.at > at);
-		const entry: Scheduled = { at, wakeKey, wake };
-		if (index < 0) this.scheduled.push(entry);
-		else this.scheduled.splice(index, 0, entry);
+		this.deadlines.set(wakeKey, wake, this.clock.now() + (Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0));
 		this.arm();
 	}
 
 	/** Drop a scheduled wake. Returns whether one was scheduled. */
 	cancel(wakeKey: string, wakeId: string): boolean {
-		const index = this.scheduled.findIndex((entry) => entry.wakeKey === wakeKey && entry.wake.id === wakeId);
-		if (index < 0) return false;
-		this.scheduled.splice(index, 1);
+		if (!this.deadlines.delete(wakeKey, wakeId)) return false;
 		this.arm();
 		return true;
+	}
+
+	/** Comparisons between deadlines so far: counted by tests to show timed wakes cost O(log n) each. */
+	get deadlineComparisons(): number {
+		return this.deadlines.comparisons;
 	}
 
 	stats(): AgentWakeDispatcherStats {
@@ -231,7 +227,7 @@ export class AgentWakeDispatcher {
 			keys: this.keys.size,
 			queued,
 			running,
-			scheduled: this.scheduled.length,
+			scheduled: this.deadlines.size,
 			timers: this.timer === undefined ? 0 : 1,
 			handlers: this.handlers.size,
 			namespaces: this.slots.size,
@@ -297,7 +293,7 @@ export class AgentWakeDispatcher {
 	}
 
 	private arm(): void {
-		const next = this.scheduled[0]?.at ?? Number.POSITIVE_INFINITY;
+		const next = this.deadlines.earliest();
 		if (next === this.timerAt) return;
 		if (this.timer !== undefined) this.clock.clearTimer(this.timer);
 		this.timer = undefined;
@@ -313,9 +309,7 @@ export class AgentWakeDispatcher {
 	private fire(): void {
 		this.timer = undefined;
 		this.timerAt = Number.POSITIVE_INFINITY;
-		const now = this.clock.now();
-		const due = this.scheduled.filter((entry) => entry.at <= now);
-		this.scheduled = this.scheduled.filter((entry) => entry.at > now);
+		const due = this.deadlines.takeDue(this.clock.now());
 		this.arm();
 		for (const entry of due)
 			void this.deliver(entry.wakeKey, entry.wake).catch((error: AgentRehydrateError) =>
