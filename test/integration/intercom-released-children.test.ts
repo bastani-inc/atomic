@@ -35,9 +35,14 @@ let broker: ChildProcess | undefined;
 
 async function connect(
 	name: string,
-	options: { ownerToken?: string; supervisor?: { capability: string; supervisorSessionId: string } } = {},
+	options: {
+		ownerToken?: string;
+		supervisor?: { capability: string; supervisorSessionId: string };
+		messages?: string[];
+	} = {},
 ): Promise<Client> {
 	const client = new IntercomClient(randomUUID());
+	if (options.messages !== undefined) recordMessages(client, options.messages);
 	await client.connect(
 		{
 			name,
@@ -63,10 +68,8 @@ function recordWakes(owner: Client): WakeNotice[] {
 	return notices;
 }
 
-function recordMessages(child: Client): string[] {
-	const received: string[] = [];
+function recordMessages(child: Client, received: string[]): void {
 	child.on("message", (_from: object, message: { id: string }) => received.push(message.id));
-	return received;
 }
 
 async function heldSends(client: Client): Promise<number | undefined> {
@@ -128,8 +131,8 @@ test(
 		assert.deepEqual(notices, [{ childName }], "one wake notice for the hold that started empty, by name only");
 		await owner.acknowledgeReleasedChildWake(childName);
 
-		const child = await connect(childName);
-		const received = recordMessages(child);
+		const received: string[] = [];
+		await connect(childName, { messages: received });
 		const delivered = await results;
 		assert.deepEqual(
 			delivered.map((result) => result.delivered),
@@ -282,8 +285,8 @@ test(
 		await supervisor.reserveRestoringRecipient(capability);
 		assert.equal((await supervisor.brokerStatus())?.heldSends, 2);
 
-		const child = await connect(childName, { supervisor: { capability, supervisorSessionId } });
-		const received = recordMessages(child);
+		const received: string[] = [];
+		await connect(childName, { supervisor: { capability, supervisorSessionId }, messages: received });
 		const delivered = await results;
 		await vi.waitFor(() => assert.equal(received.length, 2), { timeout: 10_000, interval: 20 });
 		assert.deepEqual(
