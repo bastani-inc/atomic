@@ -595,3 +595,20 @@ test("a cancelled structured output on the decision model keeps its cancellation
 		(error: unknown) => !isDecisionError(error) && error instanceof Error && /cancelled/.test(error.message),
 	);
 });
+
+test("structured output that fails on the decision model falls back to the current chat model (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
+	const classify = vi.fn(async () => ({ ...CLASSIFIED_REVIEW, answers: {} }));
+	const result = await structuredOutputOnDecisionModel("decision-test/classifier", {
+		streamSimple: dispatch,
+		getClassifierModel: () => decisionClassifier,
+		classify,
+	});
+	assert.equal(result.model, "decision-test/chat");
+	assert.deepEqual(
+		result.modelAttempts?.map((attempt) => attempt.model),
+		["decision-test/classifier", "decision-test/chat"],
+	);
+	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(dispatch.mock.calls.length, 1);
+});
