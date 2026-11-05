@@ -54,8 +54,8 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 	): Promise<WorkflowTaskResult> => {
 		runtime.exit.throwIfWorkflowExitSelected();
 		// The stage spawns at call time, as without a workspace; its session resolves the workspace when it starts.
-		const workspace = (stageOptionsWithInputDefaults(options, runtime.inputRuntimeDefaults) ?? options).workspace;
-		if (workspace !== undefined) assertWorkspaceCompatible({ ...options, workspace });
+		const workspace = stageOptionsWithInputDefaults(options, runtime.inputRuntimeDefaults)!.workspace;
+		assertWorkspaceCompatible({ ...options, workspace });
 		const runTaskOnce = async (
 			taskOptions: WorkflowTaskOptions,
 			prepareLiveOptions?: () => WorkflowTaskOptions,

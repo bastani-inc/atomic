@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -15,10 +15,18 @@ import {
 	WORKSPACE_BINDING_ENTRY_TYPE,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import {
+	bindSessionWorkspace,
+	inheritWorkspace,
+	recordSessionWorkspace,
+	workspaceSandboxDenial,
+	workspaceSessionCwd,
+} from "../../packages/coding-agent/src/core/workspace/session.ts";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.ts";
 import {
 	countGitCommands,
 	createRepository,
+	git,
 	type WorkspaceSandboxDirs,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
@@ -278,5 +286,129 @@ describe("child sessions of a bound session (#3109)", () => {
 		assert.equal((cappedBinding.workspace as { sandbox: string }).sandbox, "read-only");
 		const free = inheritChildSessionOptions({ cwd: writable.worktree, workspace: writable }, { workspace: own });
 		assert.equal(free.workspace, own);
+	});
+});
+
+function fakeSession(entries: { customType?: string; data?: unknown }[] = []) {
+	const appended: { customType: string; data: unknown }[] = [];
+	return {
+		appended,
+		getEntries: () => [...entries, ...appended].map((entry) => ({ type: "custom", ...entry })),
+		async appendCustomEntry(customType: string, data?: unknown) {
+			appended.push({ customType, data });
+			return String(appended.length);
+		},
+	};
+}
+
+describe("workspace session helpers (#3109)", () => {
+	test("resolve a session cwd inside the worktree and reject escapes (#3109)", async () => {
+		const repo = createRepository(dirs.root, "cwd-helper");
+		const binding = await resolveWorkspace(workspace({ repo }));
+		mkdirSync(join(binding.worktree, "pkg"));
+		assert.equal(workspaceSessionCwd(binding), binding.worktree);
+		assert.equal(workspaceSessionCwd(binding, "."), binding.worktree);
+		assert.equal(workspaceSessionCwd(binding, "pkg"), join(binding.worktree, "pkg"));
+		assert.equal(workspaceSessionCwd(binding, join(binding.worktree, "pkg")), join(binding.worktree, "pkg"));
+		assert.equal(workspaceSessionCwd(binding, "not/yet/there"), join(binding.worktree, "not", "yet", "there"));
+		symlinkSync(dirs.root, join(binding.worktree, "escape-link"), "junction");
+		for (const escape of ["..", "../other", "escape-link", "escape-link/sub", dirs.root]) {
+			const error = (() => {
+				try {
+					workspaceSessionCwd(binding, escape);
+				} catch (caught) {
+					return caught;
+				}
+				return undefined;
+			})();
+			assert.ok(isWorkspaceBindingError(error), escape);
+			assert.equal(error.code, "cwd-outside-worktree");
+			assert.equal(error.fields.worktree, binding.worktree);
+		}
+		assert.equal(git(repo, "status", "--porcelain").includes("escape-link"), true);
+	});
+
+	test("deny only file-writing tools, only in read-only bindings (#3109)", () => {
+		const readOnly = { sandbox: "read-only" as const, worktree: "/w" };
+		const denial = workspaceSandboxDenial(readOnly, "edit");
+		assert.equal(denial?.code, "write-denied");
+		assert.deepEqual(denial?.fields, { tool: "edit", worktree: "/w", sandbox: "read-only" });
+		assert.equal(workspaceSandboxDenial(readOnly, "read"), undefined);
+		assert.equal(workspaceSandboxDenial(readOnly, "bash"), undefined);
+		assert.equal(workspaceSandboxDenial({ sandbox: "workspace-write", worktree: "/w" }, "write"), undefined);
+		assert.equal(workspaceSandboxDenial(undefined, "write"), undefined);
+	});
+
+	test("inherit a parent's workspace and keep a read-only ceiling (#3109)", () => {
+		const writable = workspace({ repo: "/srv/a" });
+		const readOnly = writable.readOnly();
+		assert.equal(inheritWorkspace(undefined, undefined), undefined);
+		assert.equal(inheritWorkspace(undefined, writable), writable);
+		assert.equal(inheritWorkspace(writable, undefined), writable);
+		assert.equal(inheritWorkspace(readOnly, writable), readOnly);
+		assert.equal(inheritWorkspace(writable, readOnly), readOnly);
+	});
+
+	test("restore a recorded binding only for the same workspace, keeping or replacing its label (#3109)", async () => {
+		const repo = createRepository(dirs.root, "recorded");
+		const recorded = await resolveWorkspace(workspace({ repo, base: "main", branch: "recorded", label: "first" }));
+		const session = fakeSession([
+			{ customType: "something-else", data: recorded },
+			{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: { kind: "not-a-binding" } },
+			{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: recorded },
+		]);
+		const same = await bindSessionWorkspace(workspace({ repo, branch: "recorded" }), session);
+		assert.equal(same.label, "first");
+		assert.equal(same.head, recorded.head);
+		const relabelled = await bindSessionWorkspace(workspace({ repo, branch: "recorded", label: "second" }), session);
+		assert.equal(relabelled.label, "second");
+		const auto = await bindSessionWorkspace(workspace({ repo, branch: "recorded", worktree: "auto" }), session);
+		assert.equal(auto.label, "first");
+		const explicit = await bindSessionWorkspace(
+			workspace({ repo, branch: "recorded", worktree: recorded.worktree }),
+			session,
+		);
+		assert.equal(explicit.label, "first");
+		const elsewhere = await rejection(
+			bindSessionWorkspace(
+				workspace({ repo, branch: "recorded", worktree: join(dirs.root, "elsewhere-wt") }),
+				session,
+			),
+		);
+		assert.ok(isWorkspaceBindingError(elsewhere), "another worktree path is resolved, not restored");
+		for (const different of [
+			workspace({ repo, branch: "other-branch" }),
+			workspace({ repo, base: "HEAD", branch: "recorded" }),
+			workspace({ repo: createRepository(dirs.root, "elsewhere"), branch: "recorded" }),
+		]) {
+			const bound = await bindSessionWorkspace(different, session);
+			assert.equal(
+				bound.label,
+				undefined,
+				`${different.repo} ${different.branch} ${different.base} ${different.worktree}`,
+			);
+		}
+		const unlabelled = await resolveWorkspace(workspace({ repo, branch: "plain" }));
+		const plain = await bindSessionWorkspace(
+			workspace({ repo, branch: "plain" }),
+			fakeSession([{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: unlabelled }]),
+		);
+		assert.equal("label" in plain, false);
+		assert.equal(await bindSessionWorkspace(recorded, session), recorded);
+	});
+
+	test("record a binding once per change (#3109)", async () => {
+		const repo = createRepository(dirs.root, "record-once");
+		const binding = await resolveWorkspace(workspace({ repo }));
+		const session = fakeSession();
+		await recordSessionWorkspace(session, binding);
+		await recordSessionWorkspace(session, binding);
+		assert.equal(session.appended.length, 1);
+		await recordSessionWorkspace(session, { ...binding, sandbox: "read-only" });
+		assert.equal(session.appended.length, 2);
+		assert.deepEqual(session.appended[1], {
+			customType: WORKSPACE_BINDING_ENTRY_TYPE,
+			data: { ...binding, sandbox: "read-only" },
+		});
 	});
 });

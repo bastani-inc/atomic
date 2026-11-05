@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { getEventListeners } from "node:events";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
+	assertWorkspaceGitAvailable,
+	observeWorkspaceGitCommands,
 	runWorkspaceGit,
 	setWorkspaceGitExecutableResolver,
 } from "../../packages/coding-agent/src/core/workspace/git.ts";
@@ -557,4 +570,127 @@ describe("workspace git runner (#3109)", () => {
 		);
 		assert.equal(resolving, reason);
 	});
+
+	test("restores the previous executable and stops observing when asked (#3109)", async () => {
+		const restore = setWorkspaceGitExecutableResolver(async () => ({ path: join(dirs.root, "absent-git"), env: {} }));
+		restore();
+		const seen: string[][] = [];
+		const stop = observeWorkspaceGitCommands((command) => seen.push([...command.args]));
+		await runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe" });
+		stop();
+		await runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe" });
+		assert.deepEqual(seen, [["--version"]]);
+	});
+
+	test("passes a resolver failure that is not about git through unchanged (#3109)", async () => {
+		const failure = new Error("resolver bug");
+		const restore = setWorkspaceGitExecutableResolver(async () => {
+			throw failure;
+		});
+		try {
+			assert.equal(
+				await rejection(runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe" })),
+				failure,
+			);
+		} finally {
+			restore();
+		}
+	});
+
+	test("never lets git prompt (#3109)", async () => {
+		const result = await runWorkspaceGit({
+			cwd: dirs.root,
+			args: ["-c", "alias.env=!echo $GIT_TERMINAL_PROMPT $GCM_INTERACTIVE", "env"],
+			phase: "probe",
+		});
+		assert.equal(result.stdout.trim(), "0 never");
+	});
+
+	// POSIX: the alias kills git's own process from its shell.
+	test.skipIf(process.platform === "win32")(
+		"describes failures from git's own output and command (#3109)",
+		async () => {
+			const outside = await rejection(
+				runWorkspaceGit({ cwd: dirs.root, args: ["rev-parse", "HEAD"], phase: "validate" }),
+			);
+			assert.ok(isWorkspaceBindingError(outside));
+			assert.equal(outside.fields.command, "git rev-parse HEAD");
+			assert.equal(outside.fields.cwd, dirs.root);
+			assert.equal(outside.fields.status, 128);
+			assert.match(String(outside.fields.detail), /not a git repository/);
+			const stdoutOnly = await rejection(
+				runWorkspaceGit({
+					cwd: dirs.root,
+					args: ["-c", "alias.fail=!echo only-stdout; exit 3", "fail"],
+					phase: "probe",
+				}),
+			);
+			assert.ok(isWorkspaceBindingError(stdoutOnly));
+			assert.equal(stdoutOnly.fields.detail, "only-stdout");
+			assert.equal(stdoutOnly.fields.status, 3);
+			const killed = await rejection(
+				runWorkspaceGit({ cwd: dirs.root, args: ["-c", "alias.die=!kill -KILL $PPID", "die"], phase: "probe" }),
+			);
+			assert.ok(isWorkspaceBindingError(killed));
+			assert.equal(killed.fields.status, -1);
+		},
+	);
+
+	test("tells a missing working directory and an unrunnable executable apart from a missing git (#3109)", async () => {
+		const missingCwd = await rejection(
+			runWorkspaceGit({ cwd: join(dirs.root, "gone"), args: ["--version"], phase: "probe" }),
+		);
+		assert.ok(isWorkspaceBindingError(missingCwd));
+		assert.equal(missingCwd.code, "git-failed");
+		assert.equal(missingCwd.fields.status, null);
+		const restore = setWorkspaceGitExecutableResolver(async () => ({ path: dirs.root, env: {} }));
+		try {
+			const directory = await rejection(runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe" }));
+			assert.ok(isWorkspaceBindingError(directory));
+			assert.equal(directory.code, "git-failed");
+			assert.match(String(directory.fields.detail), /EACCES/);
+		} finally {
+			restore();
+		}
+	});
+
+	test("reports elapsed time of a timeout within its bound and leaves no abort listener behind (#3109)", async () => {
+		const error = await rejection(
+			runWorkspaceGit({
+				cwd: dirs.root,
+				args: ["-c", "alias.slow=!sleep 5", "slow"],
+				phase: "fetch",
+				timeoutMs: 50,
+			}),
+		);
+		assert.ok(isWorkspaceTimeoutError(error));
+		assert.ok(error.elapsedMs < 5_000);
+		assert.equal(error.fields.command, "git -c alias.slow=!sleep 5 slow");
+		const controller = new AbortController();
+		await runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe", signal: controller.signal });
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+	});
+
+	// POSIX: the executable appears later as a symbolic link to git.
+	test.skipIf(process.platform === "win32")(
+		"checks git once per executable and does not remember a failed check (#3109)",
+		async () => {
+			const gitPath = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
+			const link = join(dirs.root, "late-git");
+			const restore = setWorkspaceGitExecutableResolver(async () => ({ path: link, env: {} }));
+			try {
+				const missing = await rejection(assertWorkspaceGitAvailable());
+				assert.ok(isWorkspaceBindingError(missing));
+				assert.equal(missing.code, "git-unavailable");
+				symlinkSync(gitPath, link);
+				const { commands } = await countGitCommands(async () => {
+					await assertWorkspaceGitAvailable();
+					await assertWorkspaceGitAvailable();
+				});
+				assert.deepEqual(commands, [["--version"]]);
+			} finally {
+				restore();
+			}
+		},
+	);
 });

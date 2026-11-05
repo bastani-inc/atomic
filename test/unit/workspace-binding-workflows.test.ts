@@ -248,6 +248,26 @@ describe("ctx.workflow(child, { workspace }) (#3109)", () => {
 				return {};
 			},
 		});
+		let readersStarted = 0;
+		let openGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			openGate = resolve;
+		});
+		const gated = workflow({
+			name: "gated-reader",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("read", {}, async () => {
+					readersStarted += 1;
+					if (readersStarted === 2) openGate();
+					await gate;
+					return "read";
+				});
+				return {};
+			},
+		});
 		let second: unknown;
 		const parent = workflow({
 			name: "two-writers",
@@ -260,8 +280,8 @@ describe("ctx.workflow(child, { workspace }) (#3109)", () => {
 				release();
 				await first;
 				const readers = await Promise.all([
-					ctx.workflow(slow, { workspace: api.readOnly(), stageName: "reader-1" }),
-					ctx.workflow(slow, { workspace: api.readOnly(), stageName: "reader-2" }),
+					ctx.workflow(gated, { workspace: api.readOnly(), stageName: "reader-1" }),
+					ctx.workflow(gated, { workspace: api.readOnly(), stageName: "reader-2" }),
 				]);
 				assert.deepEqual(
 					readers.map((reader) => reader.status),
@@ -873,5 +893,312 @@ describe("read-only reviewers in a workflow (#3109)", () => {
 		assert.ok(typed instanceof WorkspaceBindingError, "rehydrated into the same class");
 		assert.equal(typed.code, "invalid-repository");
 		assert.equal(typed.fields.repo, plain);
+	});
+});
+
+describe("workspace plumbing in the engine (#3109)", () => {
+	test("the child fingerprint changes with every workspace identity field and not without one (#3109)", async () => {
+		const { durableChildInvocationFingerprint } = await import(
+			"../../packages/workflows/src/durable/child-invocation.js"
+		);
+		const { durableHash } = await import("../../packages/workflows/src/durable/durable-hash.js");
+		const child = { name: "child", normalizedName: "child" };
+		const plain = durableChildInvocationFingerprint(child, { a: 1 });
+		assert.equal(
+			plain,
+			durableHash({ definition: child, inputs: { a: 1 } }),
+			"unbound children keep their fingerprint",
+		);
+		const base = workspace({ repo: "/r", base: "main", branch: "b", worktree: "/w" });
+		const variants = [
+			base,
+			workspace({ repo: "/other", base: "main", branch: "b", worktree: "/w" }),
+			workspace({ repo: "/r", base: "dev", branch: "b", worktree: "/w" }),
+			workspace({ repo: "/r", base: "main", branch: "c", worktree: "/w" }),
+			workspace({ repo: "/r", base: "main", branch: "b", worktree: "/v" }),
+			base.readOnly(),
+			workspace({ repo: "/r" }),
+		];
+		const fingerprints = variants.map((variant) => durableChildInvocationFingerprint(child, { a: 1 }, variant));
+		assert.equal(new Set([plain, ...fingerprints]).size, variants.length + 1);
+		assert.equal(
+			durableChildInvocationFingerprint(
+				child,
+				{ a: 1 },
+				workspace({ repo: "/r", base: "main", branch: "b", worktree: "/w", label: "x" }),
+			),
+			fingerprints[0],
+			"the label is not part of the identity",
+		);
+	});
+
+	test("a stage's own workspace replaces input worktree defaults, and conflicts are explicit (#3109)", async () => {
+		const { assertWorkspaceCompatible, stageOptionsWithInputDefaults } = await import(
+			"../../packages/workflows/src/runs/foreground/executor-direct-helpers.js"
+		);
+		const api = workspace({ repo: "/r" });
+		const defaults = { gitWorktreeDir: "/wt", baseBranch: "main", model: "m" };
+		assert.deepEqual(stageOptionsWithInputDefaults({ workspace: api }, defaults), { model: "m", workspace: api });
+		assert.deepEqual(stageOptionsWithInputDefaults({ cwd: "x" }, defaults), { ...defaults, cwd: "x" });
+		assertWorkspaceCompatible(undefined);
+		assertWorkspaceCompatible({ gitWorktreeDir: "/wt" });
+		assertWorkspaceCompatible({ workspace: api, gitWorktreeDir: "   " });
+		assertWorkspaceCompatible({ workspace: api, worktree: false });
+		for (const [options, input] of [
+			[{ workspace: api, gitWorktreeDir: "/wt" }, "gitWorktreeDir"],
+			[{ workspace: api, worktree: true }, "worktree"],
+		] as const) {
+			const error = (() => {
+				try {
+					assertWorkspaceCompatible(options);
+				} catch (caught) {
+					return caught;
+				}
+				return undefined;
+			})();
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "conflicting-worktree-input");
+			assert.deepEqual(error.fields, { input });
+		}
+	});
+
+	test("a bound stage keeps no default cwd so its worktree decides (#3109)", async () => {
+		const { buildStageSessionOptions } = await import(
+			"../../packages/workflows/src/runs/foreground/stage-runner-session-options.js"
+		);
+		const base = {
+			candidate: undefined,
+			ownsFallbackChain: false,
+			reattachSessionId: undefined,
+			sharedModelRuntime: undefined,
+		};
+		const api = workspace({ repo: "/r" });
+		assert.equal(
+			(await buildStageSessionOptions({ ...base, effectiveStageOptions: { workspace: api }, defaultCwd: "/d" }))
+				?.cwd,
+			undefined,
+		);
+		assert.equal(
+			(await buildStageSessionOptions({ ...base, effectiveStageOptions: {}, defaultCwd: "/d" }))?.cwd,
+			"/d",
+		);
+		assert.equal(
+			(await buildStageSessionOptions({ ...base, effectiveStageOptions: { cwd: "/c" }, defaultCwd: "/d" }))?.cwd,
+			"/c",
+		);
+		assert.equal(await buildStageSessionOptions({ ...base, effectiveStageOptions: {} }), undefined);
+	});
+
+	test("rejects a malformed workspace naming the field, and ignores a blank git_worktree_dir (#3109)", async () => {
+		const repo = createRepository(dirs.root, "blank-input");
+		const { adapters } = recordingAdapter();
+		let malformed: unknown;
+		let blank: { status: string } | undefined;
+		const parent = workflow({
+			name: "blank-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				malformed = await rejection(
+					ctx.workflow(implement, { workspace: { kind: "workspace" } as unknown as Workspace }),
+				);
+				blank = await ctx.workflow(implement, {
+					workspace: workspace({ repo }),
+					inputs: { git_worktree_dir: "   " },
+				});
+				return {};
+			},
+		});
+		const result = await run(
+			parent,
+			{},
+			{ store: createStore(), durableBackend: await createMemoryTestBackend(), adapters },
+		);
+		assert.equal(result.status, "completed", result.error);
+		assert.equal((malformed as { field?: string }).field, "workspace");
+		assert.equal(blank?.status, "completed");
+	});
+
+	test("an exited bound child still reports its changeSet (#3109)", async () => {
+		const repo = createRepository(dirs.root, "exiting");
+		const exiting = workflow({
+			name: "exiting",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("change", {}, async () => commitFile(ctx.cwd ?? "", "exit.txt", "exit\n"));
+				return ctx.exit({ status: "blocked", reason: "needs a human" });
+			},
+		});
+		let child: { exited?: boolean; changeSet?: { diffStat: { files: number } } } | undefined;
+		const parent = workflow({
+			name: "exit-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				child = await ctx.workflow(exiting, { workspace: workspace({ repo, branch: "exits" }) });
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { store: createStore(), durableBackend: await createMemoryTestBackend() });
+		assert.equal(result.status, "completed", result.error);
+		assert.equal(child?.exited, true);
+		assert.equal(child?.changeSet?.diffStat.files, 1);
+	});
+
+	test("an unbound boundary records no workspace key (#3109)", async () => {
+		const backend = await createMemoryTestBackend();
+		const { adapters } = recordingAdapter();
+		const parent = workflow({
+			name: "unbound-key",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(implement);
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { store: createStore(), durableBackend: backend, adapters, cwd: dirs.root });
+		const [start] = boundaryStarts(backend.listCheckpoints(result.runId));
+		assert.equal("workspace" in (start?.topology?.boundary ?? {}), false);
+	});
+
+	test("continuation replay of a bound child runs no git and keeps its changeSet (#3109)", async () => {
+		const repo = createRepository(dirs.root, "replayed");
+		let failOnce = true;
+		const parent = workflow({
+			name: "replay-parent",
+			description: "",
+			inputs: {},
+			outputs: { files: Type.Number() },
+			run: async (ctx) => {
+				const child = await ctx.workflow(implement, { workspace: workspace({ repo, branch: "replayed" }) });
+				await ctx.task("after", { prompt: "after" });
+				return { files: child.changeSet?.diffStat.files ?? -1 };
+			},
+		});
+		const store = createStore();
+		const backend = await createMemoryTestBackend();
+		const recording = recordingAdapter({ commitIn: (stage) => stage === "change" });
+		const adapters = {
+			...recording.adapters,
+			agentSession: {
+				async create(options: CreateAgentSessionOptions): Promise<StageSessionRuntime> {
+					const session = await recording.adapters.agentSession.create(options);
+					const stage =
+						options.orchestrationContext?.kind === "workflow-stage"
+							? options.orchestrationContext.workflowStageName
+							: "";
+					if (stage !== "after") return session;
+					return {
+						...session,
+						async prompt() {
+							if (failOnce) {
+								failOnce = false;
+								throw new Error("fail once after the child");
+							}
+							appendProseTurn(session.messages);
+						},
+					};
+				},
+			},
+		};
+		const first = await run(parent, {}, { store, durableBackend: backend, adapters });
+		assert.equal(first.status, "failed");
+		const source = store.runs().find((candidate) => candidate.id === first.runId)!;
+		const { result, commands } = await countGitCommands(() =>
+			run(
+				parent,
+				{},
+				{
+					store: createStore(),
+					durableBackend: backend,
+					adapters,
+					continuation: { source, resumeFromStageId: source.failedStageId },
+				},
+			),
+		);
+		assert.equal(result.status, "completed", result.error);
+		assert.equal(result.result?.files, 1);
+		assert.equal(commands.length, 0, "a replayed boundary never touches git");
+	});
+
+	test("resume keeps the recorded label even when the code now passes another (#3109)", async () => {
+		const journalPath = join(dirs.root, "label-journal.sqlite");
+		const repo = createRepository(dirs.root, "relabel");
+		let label = "first";
+		let failFirst = true;
+		const child = workflow({
+			name: "relabel-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("gate", {}, async () => {
+					if (failFirst) throw new Error("interrupted");
+					return "open";
+				});
+				await ctx.task("work", { prompt: "work" });
+				return {};
+			},
+		});
+		const done = workflow({
+			name: "relabel-done",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("done", { prompt: "done" });
+				return {};
+			},
+		});
+		const parent = workflow({
+			name: "relabel-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const cachedBranch = workspace({ repo, branch: "cached", label });
+				await ctx.workflow(done, { workspace: cachedBranch, stageName: "cached" });
+				await ctx.workflow(child, {
+					workspace: workspace({ repo, branch: "relabel", label }),
+					stageName: "relabel",
+				});
+				return {};
+			},
+		});
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const failed = await run(
+			parent,
+			{},
+			{
+				store: createStore(),
+				durableBackend: firstBackend,
+				adapters: recordingAdapter({ commitIn: () => true }).adapters,
+			},
+		);
+		assert.equal(failed.status, "failed");
+		await firstBackend.close();
+		label = "second";
+		failFirst = false;
+		const resumedBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const second = recordingAdapter();
+		const resumed = await run(
+			parent,
+			{},
+			{ runId: failed.runId, store: createStore(), durableBackend: resumedBackend, adapters: second.adapters },
+		);
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.deepEqual(
+			second.sessions.map((session) => [session.stage, (session.workspace as BoundWorkspace).label]),
+			[["work", "first"]],
+		);
+		const cached = resumed.stages.find((stage) => stage.name === "cached");
+		assert.equal(cached?.workflowChild?.changeSet?.diffStat.files, 1, "a cached child keeps its changeSet");
+		await resumedBackend.close();
 	});
 });

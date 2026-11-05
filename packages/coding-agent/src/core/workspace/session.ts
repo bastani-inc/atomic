@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { WorkspaceBindingError, WorkspaceSandboxError } from "./errors.ts";
 import { type BoundWorkspace, isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
 import { restoreWorkspace } from "./restore.ts";
@@ -11,14 +11,13 @@ export const WORKSPACE_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(["write",
 /** Session custom entry that records the resolved binding. */
 export const WORKSPACE_BINDING_ENTRY_TYPE = "workspace_binding";
 
+/** `path` with symbolic links resolved in its existing part; the filesystem root always exists. */
 function canonical(path: string): string {
 	let existing = path;
 	const missing: string[] = [];
 	while (!existsSync(existing)) {
-		const parent = resolve(existing, "..");
-		if (parent === existing) break;
 		missing.unshift(basename(existing));
-		existing = parent;
+		existing = dirname(existing);
 	}
 	return resolve(realpathSync(existing), ...missing);
 }
@@ -33,7 +32,8 @@ export function workspaceSessionCwd(binding: Pick<BoundWorkspace, "worktree">, c
 	const root = canonical(binding.worktree);
 	const target = canonical(requested);
 	const path = relative(root, target);
-	if (path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path))) return target;
+	// `relative` returns an absolute path only across Windows drives.
+	if (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)) return target;
 	throw new WorkspaceBindingError({
 		code: "cwd-outside-worktree",
 		fields: { worktree: binding.worktree, cwd: requested },
@@ -71,8 +71,7 @@ function recordedBinding(sessionManager: WorkspaceEntrySource | undefined): Boun
 	const entries = sessionManager?.getEntries() ?? [];
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
-		if (entry.type === "custom" && entry.customType === WORKSPACE_BINDING_ENTRY_TYPE && isBoundWorkspace(entry.data))
-			return entry.data;
+		if (entry.customType === WORKSPACE_BINDING_ENTRY_TYPE && isBoundWorkspace(entry.data)) return entry.data;
 	}
 	return undefined;
 }
@@ -110,6 +109,6 @@ export async function recordSessionWorkspace(
 	binding: BoundWorkspace,
 ): Promise<void> {
 	const recorded = recordedBinding(sessionManager);
-	if (recorded !== undefined && JSON.stringify(recorded) === JSON.stringify(binding)) return;
+	if (JSON.stringify(recorded) === JSON.stringify(binding)) return;
 	await sessionManager.appendCustomEntry(WORKSPACE_BINDING_ENTRY_TYPE, binding);
 }

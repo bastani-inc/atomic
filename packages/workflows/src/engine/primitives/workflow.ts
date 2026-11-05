@@ -163,7 +163,7 @@ export function createChildWorkflowRunner(input: {
 				...runtime.childRunOptions,
 				runId: childRunId,
 				cwd: workspace?.worktree ?? input.resolveWorkflowCwd(),
-				...(workspace !== undefined ? { workspace } : {}),
+				workspace,
 				depth: runtime.depth + 1,
 				parentRun: {
 					runId: runtime.runId,

@@ -117,10 +117,8 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 		const child = spawn(git.path, argv, { cwd: command.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
-		let settled = false;
+		// A promise settles once, so a late `close` after an error, abort or timeout changes nothing.
 		const settle = (finish: () => void): void => {
-			if (settled) return;
-			settled = true;
 			clearTimeout(timer);
 			command.signal?.removeEventListener("abort", onAbort);
 			finish();

@@ -115,7 +115,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	return {
 		scope: { rootWorkflowId: input.rootWorkflowId, scopePrefix: input.replayKey },
 		identity,
-		...(recordedWorkspace !== undefined ? { recordedWorkspace } : {}),
+		recordedWorkspace,
 		get workspace() {
 			return workspace;
 		},

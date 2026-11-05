@@ -116,6 +116,7 @@ export function createDurableChildWorkflowPrimitive(input: {
 			...(options ?? {}),
 			inputs: validatedInputs,
 		} as never) as Promise<WorkflowChildResult<TChildOutputs>>;
+		// An unbound child settles exactly as before, without the lease wrapper's extra turns.
 		return workspace === undefined ? await running : releasingWorkspaceLease(invocation, running);
 	};
 }
@@ -141,10 +142,10 @@ function assertNoWorktreeInput(
 	child: Pick<WorkflowDefinition, "name" | "inputBindings">,
 	inputs: Readonly<Record<string, unknown>>,
 ): void {
-	const names = new Set(["git_worktree_dir"]);
-	const declared = child.inputBindings?.worktree?.gitWorktreeDir;
-	if (declared !== undefined) names.add(declared);
-	for (const name of names) {
+	for (const name of new Set([
+		"git_worktree_dir",
+		child.inputBindings?.worktree?.gitWorktreeDir ?? "git_worktree_dir",
+	])) {
 		const value = inputs[name];
 		if (typeof value === "string" && value.trim().length > 0)
 			throw new WorkspaceBindingError({
