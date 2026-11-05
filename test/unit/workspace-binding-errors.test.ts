@@ -200,6 +200,11 @@ describe("workspace error family (#3109)", () => {
 			assert.equal(failure(errno).retryable, true, errno);
 		for (const errno of ["EACCES", "EROFS", "ENOTDIR"]) assert.equal(failure(errno).retryable, false, errno);
 		assert.equal(
+			new WorkspaceBindingError({ code: "drift", fields: { errno: "ENOSPC" } }).retryable,
+			false,
+			"only a filesystem failure is retried for its errno",
+		);
+		assert.equal(
 			failure("EDQUOT").hint,
 			"Free disk space on the volume that holds /home/u/.atomic/repos/x.git, then retry.",
 		);

@@ -14,7 +14,13 @@ import {
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { closeAfter } from "../../packages/coding-agent/src/core/workspace/lease.ts";
-import { createRepository, git, type WorkspaceSandboxDirs, workspaceSandbox } from "../helpers/workspace-repos.ts";
+import {
+	createRepository,
+	git,
+	gitTranscript,
+	type WorkspaceSandboxDirs,
+	workspaceSandbox,
+} from "../helpers/workspace-repos.ts";
 
 const DEFAULT_LOCK_WAIT_MS = 5_000;
 
@@ -195,6 +201,15 @@ describe("workspace writer lease (#3109)", () => {
 		assert.ok(error instanceof StorageUnavailableError);
 		assert.equal(isWorkspaceBindingError(error), false);
 		assert.match(error.message, /no such column: token/);
+	});
+
+	test("locates the lease store with one local git command (#3109)", async () => {
+		const worktree = await boundWorktree("lease-phase");
+		const { result, transcript } = await gitTranscript(() =>
+			acquireWorkspaceWriterLease({ worktree }, { owner: "phase" }),
+		);
+		assert.deepEqual(transcript, ["lease: rev-parse --absolute-git-dir"]);
+		await result.release();
 	});
 
 	test("closing after a failure records a close failure without replacing the failure (#3109)", async () => {

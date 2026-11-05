@@ -304,7 +304,6 @@ async function listWorktrees(repository: OpenRepository): Promise<ListedWorktree
 }
 
 async function addWorktree(repository: OpenRepository, path: string, branch: string, baseTip: string): Promise<void> {
-	await filesystem("create directory", dirname(path), () => mkdir(dirname(path), { recursive: true }));
 	await git(repository.root, ["worktree", "prune"], "worktree-add");
 	if ((await commitOf(repository, `refs/heads/${branch}`)) !== undefined) {
 		await git(repository.root, ["worktree", "add", path, branch], "worktree-add");
