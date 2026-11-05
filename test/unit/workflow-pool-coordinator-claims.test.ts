@@ -19,9 +19,8 @@ import {
 	coordinatorReplyError,
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
-import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, sleep } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const { work, boundary } = poolWorkFixture();
 const REPLY_WAIT_MS = 10_000;
@@ -47,7 +46,7 @@ async function coordinator() {
 	const replies: CoordinatorReply[] = [];
 	const listeners: ((message: CoordinatorInbound) => void)[] = [];
 	// The coordinator lives as long as its port: it listens on it from construction.
-	new PoolCoordinator({
+	const instance = new PoolCoordinator({
 		send: (message: CoordinatorEvent) => {
 			const received = JSON.parse(JSON.stringify(message)) as CoordinatorEvent;
 			if (received.kind === "reply") replies.push(received);
@@ -105,8 +104,9 @@ async function coordinator() {
 		queued: async () => (await openSqlPoolQueue(journal)).inspect("root"),
 		async close() {
 			await command({ kind: "close" });
+			await instance.shutdown();
 			await journal.close();
-			await removeLibsqlDirectory(directory);
+			removeTempDirectory(directory);
 		},
 	};
 }
