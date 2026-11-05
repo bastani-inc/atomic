@@ -35,6 +35,8 @@ interface ResumeOutcome {
 	readonly error: string | null;
 	readonly children: readonly { readonly status: string; readonly firstPid: number; readonly finalPid: number }[];
 	readonly workerPids: readonly number[];
+	/** What the resumed root's parent held once every child settled, beside what the root's run recorded (#4318). */
+	readonly index: { readonly held: number; readonly childCheckpointsHeld: number; readonly recorded: number };
 }
 
 function startedWorkers(directory: string): number[] {
@@ -84,6 +86,10 @@ test.skipIf(process.platform === "win32")(
 				assert.ok(deadWorkers.includes(child.firstPid), "the committed checkpoint is replayed, not repeated");
 				assert.ok(outcome.workerPids.includes(child.finalPid), "a worker of the resumed root finished the child");
 			}
+			// The resumed parent let go of each child's checkpoints once it checked them, and kept none its workers wrote
+			// since: they stay in the journal (#4318).
+			assert.equal(outcome.index.childCheckpointsHeld, 0, JSON.stringify(outcome.index));
+			assert.ok(outcome.index.recorded >= outcome.index.held + 2 * CHILDREN, JSON.stringify(outcome.index));
 		} finally {
 			removeTempDirectory(directory);
 		}

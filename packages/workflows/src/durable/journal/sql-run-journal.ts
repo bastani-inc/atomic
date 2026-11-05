@@ -19,6 +19,7 @@ import {
 	NON_SNAPSHOT_EVENT_TYPES,
 	type RunSnapshotTail,
 	type RunVersion,
+	registerJournalKeyRangeRead,
 	registerSqlPoolStorage,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
@@ -96,6 +97,9 @@ export class SqlRunJournal implements RunJournal {
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 		});
+		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
+			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),
+		);
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {

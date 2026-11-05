@@ -99,6 +99,20 @@ export function pendingStageMessagesForDurableRun(
 	);
 }
 
+/**
+ * What `backend.listCheckpoints(workflowId)` lists plus the checkpoints under one child boundary scope (every
+ * checkpoint when `scope` is undefined), including any the backend leaves in storage (`readCheckpoints`).
+ */
+export async function readDurableCheckpoints(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	scope?: string,
+): Promise<readonly DurableCheckpoint[]> {
+	return backend.readCheckpoints === undefined
+		? backend.listCheckpoints(workflowId)
+		: await backend.readCheckpoints(workflowId, scope);
+}
+
 /** A position in one workflow's receipt change log; a reset workflow starts a new log. */
 export interface PendingStageReceiptCursor {
 	readonly log: object;
@@ -380,6 +394,24 @@ export interface DurableWorkflowBackend {
 	 */
 	nestedSnapshotVersion?(workflowId: string): number | undefined;
 
+	/**
+	 * What `listCheckpoints` lists for the run plus the checkpoints recorded under its child boundary scope `scope`
+	 * (`<scope>:…`), or every checkpoint of the run when `scope` is undefined, including those this backend left in
+	 * storage. Only a backend that can keep a run's own checkpoints in memory without its children's implements it (a
+	 * pooled root, #4318); call it through `readDurableCheckpoints`, which falls back to `listCheckpoints`.
+	 */
+	readCheckpoints?(workflowId: string, scope?: string): Promise<readonly DurableCheckpoint[]>;
+	/**
+	 * Lets go of the checkpoints of the child boundary scope `scope` the run still keeps in memory, once the run read
+	 * them for that boundary's replay or checks; a backend that keeps every checkpoint ignores it.
+	 */
+	releaseCheckpointScope?(workflowId: string, scope: string): void;
+	/**
+	 * Whether the checkpoints of the child boundary scope `scope` are left in storage rather than listed by
+	 * `listCheckpoints`: reconstruction then reads that child as not loaded rather than as missing.
+	 */
+	checkpointScopeReleased?(workflowId: string, scope: string): boolean;
+
 	/** Get the top-level workflow handle, or `undefined` if not registered. */
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
 	/**
@@ -612,8 +644,23 @@ interface JournalWorkflowRecord {
 	released: number;
 }
 
-function checkpointKey(c: DurableCheckpoint): string {
+export function checkpointKey(c: DurableCheckpoint): string {
 	return `${c.kind}:${c.checkpointId}`;
+}
+
+/** A recorded checkpoint as a run's indexes keep it: a session read from its file, and a stage's implied topology. */
+export function normalizedCheckpoint(recorded: DurableCheckpoint): DurableCheckpoint {
+	const checkpoint = recorded.kind === "stage" ? migrateStageSessionCheckpoint(recorded) : recorded;
+	return checkpoint.kind === "stage" && checkpoint.topology === undefined
+		? {
+				...checkpoint,
+				topology: {
+					version: DURABLE_STAGE_TOPOLOGY_VERSION,
+					stageId: checkpoint.checkpointId,
+					parentIds: [],
+				},
+			}
+		: checkpoint;
 }
 
 export function createJournalProjection() {
@@ -845,6 +892,30 @@ class JournalProjection {
 	}
 
 	/**
+	 * Drops the checkpoints with these keys from memory; they stay counted, as `releaseCheckpoints` leaves them. The keys
+	 * name every checkpoint a run kept under one child boundary scope, whose lookup identities (tool args hash, prompt
+	 * hash, replay key) are all that scope's, so their lookups go with them: a lookup of another scope or of the run's
+	 * own checkpoints finds what it found before, and the run's nested snapshot version does not change. The version's
+	 * replay group summaries keep the scope's entries; they are read only for the run's own replay records.
+	 */
+	forgetCheckpoints(workflowId: string, keys: readonly string[]): void {
+		const rec = this.workflows.get(workflowId);
+		if (!rec) return;
+		for (const key of keys) {
+			const checkpoint = rec.checkpoints.get(key);
+			if (checkpoint === undefined) continue;
+			rec.checkpoints.delete(key);
+			rec.released++;
+			if (checkpoint.kind === "tool") rec.toolByHash.delete(checkpoint.argsHash);
+			else if (checkpoint.kind === "ui") rec.uiByHash.delete(checkpoint.promptHash);
+			else {
+				rec.stageOutputByReplayKey.delete(checkpoint.replayKey);
+				rec.stageSessionByReplayKey.delete(checkpoint.replayKey);
+			}
+		}
+	}
+
+	/**
 	 * Keeps again a checkpoint that was counted and released. Checkpoints are restored in the order they were recorded,
 	 * so each read finds what it found when every checkpoint was kept; the run's handle does not change.
 	 */
@@ -855,18 +926,7 @@ class JournalProjection {
 
 	/** Adds a checkpoint to its run's indexes; the normalized checkpoint, or undefined when the run already has it. */
 	private index(rec: JournalWorkflowRecord, recorded: DurableCheckpoint): DurableCheckpoint | undefined {
-		const checkpoint = recorded.kind === "stage" ? migrateStageSessionCheckpoint(recorded) : recorded;
-		const currentCheckpoint =
-			checkpoint.kind === "stage" && checkpoint.topology === undefined
-				? {
-						...checkpoint,
-						topology: {
-							version: DURABLE_STAGE_TOPOLOGY_VERSION,
-							stageId: checkpoint.checkpointId,
-							parentIds: [],
-						},
-					}
-				: checkpoint;
+		const currentCheckpoint = normalizedCheckpoint(recorded);
 		const key = checkpointKey(currentCheckpoint);
 		if (rec.checkpoints.has(key)) return undefined;
 		rec.checkpoints.set(key, currentCheckpoint);

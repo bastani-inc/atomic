@@ -112,11 +112,10 @@ test.skipIf(process.platform === "win32")(
 			const queue = await openSqlPoolQueue(journal);
 			const work = (await queue.inspect(root)).find((entry) => entry.childRunId === target.runId)!;
 			await backend.hydrateWorkflow(root);
-			const pid = backend
-				.listCheckpoints(root)
-				.find(
-					(entry) => entry.kind === "tool" && entry.name === "pid" && entry.topology?.run?.runId === target.runId,
-				);
+			// The root's backend keeps only the root's own checkpoints; the child's are read from the journal (#4318).
+			const pid = (await backend.readCheckpoints(root)).find(
+				(entry) => entry.kind === "tool" && entry.name === "pid" && entry.topology?.run?.runId === target.runId,
+			);
 			assert.ok(pid?.kind === "tool");
 			process.kill(Number(pid.output), "SIGKILL");
 			await untilOrRunEnds(

@@ -15,6 +15,7 @@ import {
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
+import type { DurableStageCheckpoint } from "../durable/types.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
 import {
 	findWorkflowExitSignal,
@@ -696,9 +697,14 @@ async function executeRun(
 	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
 	const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
+	// Only this run's own stages: a resumed pooled root holds its children's checkpoints until it replays them (#4318).
 	const priorPromptStageCheckpoints = durableBackend
 		.listCheckpoints(runId)
-		.filter((checkpoint) => checkpoint.kind === "stage");
+		.filter(
+			(checkpoint): checkpoint is DurableStageCheckpoint =>
+				checkpoint.kind === "stage" &&
+				(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === runId),
+		);
 	let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
 	const getPromptNodeUi = (): ReturnType<typeof buildPromptNodeUiAdapter> => {
 		promptNodeUi ??= buildPromptNodeUiAdapter({

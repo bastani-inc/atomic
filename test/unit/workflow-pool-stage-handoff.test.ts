@@ -1287,6 +1287,73 @@ test("completing the work ends projections a replaying successor never republish
 	}
 });
 
+test("completing a pooled child settles its nested runs from the terminal records its root leaves in the journal (#4318)", async () => {
+	const f = await fixture();
+	try {
+		await f.backend.commitCheckpoint(boundary);
+		await f.backend.retainOwnCheckpoints(ROOT);
+		const link = { alias: "n", workflow: "n", runId: "grandchild" };
+		await f.handoff.publish(f.first, [
+			childRun([stage("nested", { workflowChildRun: link }), stage("agent")]),
+			snapshot("grandchild", { parentRunId: descriptor.childRunId, parentStageId: "nested", rootRunId: ROOT }),
+		]);
+		const nestedScope = `${descriptor.scope}:workflow:n:1`;
+		const terminal: DurableStageCheckpoint = {
+			kind: "stage",
+			workflowId: ROOT,
+			checkpointId: `${descriptor.scope}:boundary-terminal:workflow:n:1:completed`,
+			name: "nested",
+			replayKey: nestedScope,
+			startedAt: 0,
+			completedAt: 0,
+			output: { workflow: "n", runId: "grandchild", status: "completed", exited: false, outputs: { pid: 7 } },
+			topology: {
+				version: 1,
+				stageId: "nested",
+				parentIds: [],
+				sourceOrder: 0,
+				status: "completed",
+				run: { runId: descriptor.childRunId, runName: descriptor.childRunId },
+				boundary: {
+					version: 1,
+					event: "terminal",
+					status: "completed",
+					replayScope: nestedScope,
+					alias: "n",
+					workflow: "n",
+					invocationFingerprint: "fingerprint",
+					child: {
+						runId: "grandchild",
+						runName: "n",
+						parentRunId: descriptor.childRunId,
+						parentStageId: "nested",
+						rootRunId: ROOT,
+					},
+				},
+			},
+		};
+		await f.backend.commitCheckpoint(terminal);
+		assert.equal(
+			f.backend.listCheckpoints(ROOT).some((checkpoint) => checkpoint.checkpointId === terminal.checkpointId),
+			false,
+			"the root does not keep its child's checkpoints in memory",
+		);
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			result: { done: true },
+			stages: [stage("nested", { status: "completed" }), stage("agent", { status: "completed" })],
+			toolNodes: [],
+		} as never);
+		await f.handoff.complete(f.first);
+		const grandchild = f.store.runs().find((run) => run.id === "grandchild");
+		assert.equal(grandchild?.status, "completed");
+		assert.equal(grandchild?.result?.pid, 7);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a live worker whose work lease lapsed before the coordinator extended it still records its stage's delivery", async () => {
 	const f = await fixture();
 	try {

@@ -250,16 +250,17 @@ export class PoolStageHandoff {
 		});
 	}
 
-	async complete(work: Pick<PoolWork, "id" | "childRunId">): Promise<void> {
+	async complete(work: Pick<PoolWork, "id" | "childRunId" | "scope">): Promise<void> {
 		const root = this.lease.runId;
 		const result = (await this.queue.result(root, work.id)) as RunResult | undefined;
 		await this.backend.catchUpWorkflow(root);
 		if (result === undefined) return;
 		const terminals = new Map<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>();
 		// Terminal boundaries settle the child's own nested runs; a child without any skips the scan of every
-		// root checkpoint, which made the completion of a wide fan-out quadratic in its width.
+		// root checkpoint, which made the completion of a wide fan-out quadratic in its width. The root keeps only its
+		// own checkpoints, so the child's are read from its scope (#4318).
 		const nested = this.ownedRunIds(work).some((id) => id !== work.childRunId && this.unended(id) !== undefined);
-		for (const checkpoint of nested ? this.backend.listCheckpoints(root) : []) {
+		for (const checkpoint of nested ? await this.backend.readCheckpoints(root, work.scope) : []) {
 			const boundary = checkpoint.kind === "stage" ? checkpoint.topology?.boundary : undefined;
 			if (checkpoint.kind !== "stage" || boundary?.event !== "terminal") continue;
 			const child = parseWorkflowChildResult(checkpoint.output);

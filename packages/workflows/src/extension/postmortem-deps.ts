@@ -12,7 +12,8 @@
  *   - src/tui/overlay-adapter.ts (attach pane wiring)
  * */
 
-import { requireStoreDurableBackend } from "../durable/store-backend.js";
+import { readDurableCheckpoints } from "../durable/backend.js";
+import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
 	type EnsurePostMortemStageHandleResult,
 	ensurePostMortemStageHandle,
@@ -98,7 +99,9 @@ export function createPostMortemHandleResolver(
 		// recorded on the stage's session checkpoints in the journal.
 		const sessionId =
 			found.sessionId ??
-			(found.workerExecution === undefined ? undefined : pooledStageSessionId(deps.store ?? store, runId, stageId));
+			(found.workerExecution === undefined
+				? undefined
+				: await pooledStageSessionId(deps.store ?? store, snapshot.runs, runId, stageId));
 		const stage = {
 			...found,
 			...(pooledEnded ? { status: "failed" as const } : {}),
@@ -108,25 +111,41 @@ export function createPostMortemHandleResolver(
 	};
 }
 
-/** The last session a stage on a local worker committed, from its session checkpoints. */
-function pooledStageSessionId(runStore: Store, runId: string, stageId: string): string | undefined {
-	try {
-		const backend = requireStoreDurableBackend(runStore, runId);
-		const run = readGraphStoreSnapshot(runStore).runs.find((candidate) => candidate.id === runId);
-		const root = run?.rootRunId ?? runId;
-		let sessionId: string | undefined;
-		for (const checkpoint of backend.listCheckpoints(root))
-			if (
-				checkpoint.kind === "stage" &&
-				checkpoint.sessionId !== undefined &&
-				checkpoint.topology?.stageId === stageId &&
-				checkpoint.topology.run?.runId === runId
-			)
-				sessionId = checkpoint.sessionId;
-		return sessionId;
-	} catch {
-		return undefined;
+/**
+ * The last session a stage on a local worker committed, from its session checkpoints. A pooled root keeps only its own
+ * checkpoints in memory, so they are read from the scope of the root's child the stage ran under (#4318).
+ */
+async function pooledStageSessionId(
+	runStore: Store,
+	runs: readonly RunSnapshot[],
+	runId: string,
+	stageId: string,
+): Promise<string | undefined> {
+	const backend = availableStoreDurableBackend(runStore, runId);
+	if (backend === undefined) return undefined;
+	const root = runs.find((candidate) => candidate.id === runId)?.rootRunId ?? runId;
+	let sessionId: string | undefined;
+	for (const checkpoint of await readDurableCheckpoints(backend, root, rootChildScope(runs, root, runId)))
+		if (
+			checkpoint.kind === "stage" &&
+			checkpoint.sessionId !== undefined &&
+			checkpoint.topology?.stageId === stageId &&
+			checkpoint.topology.run?.runId === runId
+		)
+			sessionId = checkpoint.sessionId;
+	return sessionId;
+}
+
+/** The replay key of the root boundary `runId` runs under, at any depth, or undefined when the store cannot tell. */
+function rootChildScope(runs: readonly RunSnapshot[], root: string, runId: string): string | undefined {
+	const byId = new Map(runs.map((run) => [run.id, run]));
+	let child = byId.get(runId);
+	for (const seen = new Set<string>(); child !== undefined && child.parentRunId !== root; ) {
+		if (child.parentRunId === undefined || seen.has(child.id)) return undefined;
+		seen.add(child.id);
+		child = byId.get(child.parentRunId);
 	}
+	return byId.get(root)?.stages.find((stage) => stage.id === child?.parentStageId)?.replayKey;
 }
 
 /** The one stage of a failed boundary's child run that ran on a local worker, if there is exactly one. */

@@ -90,7 +90,10 @@ export function createDurableChildWorkflowPrimitive(input: {
 		const cachedResult = parseWorkflowChildResult(cached?.output);
 		if (cached !== undefined && cachedResult !== undefined) {
 			validateDurableCompletedBoundary({ ...descriptor, checkpoint: cached, output: cachedResult });
-			await input.recordCachedStage(boundaryName, replayKey, cached);
+			const recorded = input.recordCachedStage(boundaryName, replayKey, cached);
+			// A pooled root keeps a resumed child's checkpoints in memory only until its boundary has read them (#4318).
+			input.backend.releaseCheckpointScope?.(input.workflowId, replayKey);
+			await recorded;
 			return cachedResult as WorkflowChildResult<TChildOutputs>;
 		}
 		validateDurableChildInvocation(descriptor);
@@ -99,6 +102,7 @@ export function createDurableChildWorkflowPrimitive(input: {
 		// invocation publishes an identity whose start record is awaited by the
 		// inner runner before child code is dispatched.
 		input.setChildDurableInvocation(prepareDurableChildInvocation(descriptor));
+		input.backend.releaseCheckpointScope?.(input.workflowId, replayKey);
 		return (await input.workflow(child, {
 			...(options ?? {}),
 			inputs: validatedInputs,

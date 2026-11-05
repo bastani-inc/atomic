@@ -79,6 +79,28 @@ const pool = new LocalWorkerPool(backend, {
 	definitions: [{ definition: child, path: childPath, exportName }],
 });
 const children = [];
+/**
+ * What the parent's backend held for the root once every child settled, while the root still ran: its own checkpoints
+ * and any of its children's (#4318), beside every checkpoint the root's run recorded.
+ */
+let heldAtSettle;
+const heldIndex = () => {
+	const held = backend.listCheckpoints(ROOT);
+	const scopes = held.flatMap((checkpoint) =>
+		checkpoint.kind === "stage" &&
+		checkpoint.topology?.boundary?.event === "start" &&
+		checkpoint.topology.run?.runId === ROOT
+			? [checkpoint.replayKey]
+			: [],
+	);
+	return {
+		held: held.length,
+		childCheckpointsHeld: held.filter((checkpoint) =>
+			scopes.some((scope) => checkpoint.checkpointId.startsWith(`${scope}:`)),
+		).length,
+		recorded: backend.getWorkflow(ROOT)?.completedCheckpoints ?? 0,
+	};
+};
 const parent = workflow({
 	name: "pool-resume-root",
 	description: "Root whose host process dies while pooled children hold leases",
@@ -89,6 +111,7 @@ const parent = workflow({
 			Array.from({ length: CHILDREN }, (_, index) => ctx.workflow(child, { inputs: { directory, index } })),
 		);
 		for (const result of results) children.push({ status: result.status, ...result.outputs });
+		heldAtSettle = heldIndex();
 		return {};
 	},
 });
@@ -115,7 +138,7 @@ try {
 	const record = store.runs().find((candidate) => candidate.id === ROOT);
 	writeFileSync(
 		join(directory, "outcome.json"),
-		JSON.stringify({ status: record?.status, error: record?.error ?? null, children, workerPids: pool.workerPids }),
+		JSON.stringify({ status: record?.status, error: record?.error ?? null, children, workerPids: pool.workerPids, index: heldAtSettle }),
 	);
 } finally {
 	await pool.close();

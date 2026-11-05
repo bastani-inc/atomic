@@ -7,8 +7,10 @@ import type { PendingStageMessage, PendingStageMessageDelivery } from "../../sha
 import type { WorkflowSerializableValue } from "../../shared/types.js";
 import { WorkflowInstanceOwnershipError } from "../../shared/workflow-instance-ownership-error.js";
 import {
+	checkpointKey,
 	createJournalProjection,
 	type DurableWorkflowBackend,
+	normalizedCheckpoint,
 	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "../backend.js";
@@ -28,6 +30,7 @@ import type {
 	DurableWorkflowStatus,
 } from "../types.js";
 import {
+	journalKeyRangeRead,
 	type NON_SNAPSHOT_EVENT_TYPES,
 	type RunJournalVersions,
 	type RunSnapshotTail,
@@ -328,7 +331,7 @@ export interface CheckpointSelection {
 /**
  * A journal that reads a run's events by a range of keys, through the index the keys already have. It is not part of a
  * journal's public shape: a wrapper provides it as its own `readKeyRange`, as a local worker's read-only view of a SQL
- * journal does (`SqlRunJournal.readKeyRange`).
+ * journal does (`SqlRunJournal.readKeyRange`), and a SQL journal registers it for itself (`registerJournalKeyRangeRead`).
  */
 export interface KeyRangeJournal {
 	readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<JournalEntry>;
@@ -364,9 +367,44 @@ function checkpointKeyRanges(selection: CheckpointSelection): (readonly [string,
 }
 
 function keyRangeJournal(journal: RunJournal): KeyRangeJournal | undefined {
-	return typeof (journal as Partial<KeyRangeJournal>).readKeyRange === "function"
-		? (journal as unknown as KeyRangeJournal)
-		: undefined;
+	if (typeof (journal as Partial<KeyRangeJournal>).readKeyRange === "function")
+		return journal as unknown as KeyRangeJournal;
+	const readKeyRange = journalKeyRangeRead(journal);
+	return readKeyRange === undefined ? undefined : { readKeyRange };
+}
+
+/**
+ * The child boundary scope a boundary start opens when run `runId` recorded it itself (its own `ctx.workflow`), or
+ * undefined for any other checkpoint. Every checkpoint of that child and its descendants has an id `<scope>:…`.
+ */
+function ownBoundaryScope(runId: string, checkpoint: DurableCheckpoint): string | undefined {
+	if (checkpoint.kind !== "stage" || checkpoint.topology?.boundary?.event !== "start") return undefined;
+	const owner = checkpoint.topology.run?.runId;
+	return owner === undefined || owner === runId ? checkpoint.replayKey : undefined;
+}
+
+/** The scope of `scopes` a checkpoint id is `<scope>:…` under, or undefined. */
+function scopeOf(scopes: ReadonlySet<string>, checkpointId: string): string | undefined {
+	for (let colon = checkpointId.indexOf(":"); colon >= 0; colon = checkpointId.indexOf(":", colon + 1)) {
+		const scope = checkpointId.slice(0, colon);
+		if (scopes.has(scope)) return scope;
+	}
+	return undefined;
+}
+
+/** A run that keeps only its own checkpoints in memory (`retainOwnCheckpoints`). */
+interface OwnCheckpoints {
+	/** The child boundary scopes the run opened, as its folded boundary starts name them. */
+	readonly scopes: Set<string>;
+	/**
+	 * Scopes whose checkpoints stay in memory until the run reads them once more (`releaseCheckpointScope`), with the
+	 * keys of those checkpoints: a resumed root's children, folded before the run kept only its own.
+	 */
+	readonly retained: Map<string, string[]>;
+}
+
+function byCompletedAt(left: DurableCheckpoint, right: DurableCheckpoint): number {
+	return left.completedAt - right.completedAt;
 }
 
 export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
@@ -406,6 +444,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly prompts = new Map<string, PromptReservationState>();
 	/** Runs whose checkpoints `retainCheckpoints` narrowed; every other run keeps all of its checkpoints. */
 	private readonly checkpointSelections = new Map<string, CheckpointSelection>();
+	/**
+	 * Runs that keep only their own checkpoints in memory (`retainOwnCheckpoints`): a checkpoint under one of their child
+	 * boundary scopes is counted and left in the journal, unless its scope is still retained.
+	 */
+	private readonly ownCheckpoints = new Map<string, OwnCheckpoints>();
+	/** Runs that kept only their own checkpoints while this backend owned them, and lack the rest until rebuilt. */
+	private readonly partialRuns = new Set<string>();
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
@@ -494,6 +539,23 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return result;
 	}
 
+	/** Whether folding `checkpoint` keeps it in memory, or only counts it (`retainCheckpoints`, `retainOwnCheckpoints`). */
+	private keepsCheckpoint(runId: string, checkpoint: DurableCheckpoint): boolean {
+		const selection = this.checkpointSelections.get(runId);
+		if (selection !== undefined) return selectsCheckpoint(selection, checkpoint);
+		const own = this.ownCheckpoints.get(runId);
+		if (own === undefined) return true;
+		const scope = scopeOf(own.scopes, checkpoint.checkpointId);
+		if (scope !== undefined) {
+			const retained = own.retained.get(scope);
+			retained?.push(checkpointKey(checkpoint));
+			return retained !== undefined;
+		}
+		const opened = ownBoundaryScope(runId, checkpoint);
+		if (opened !== undefined) own.scopes.add(opened);
+		return true;
+	}
+
 	private fold(entry: JournalEntry): void {
 		if (entry.seq <= (this.sequences.get(entry.runId) ?? 0)) return;
 		const event = entry.event as BackendEvent;
@@ -501,9 +563,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (event.type === E.checkpointRecorded) {
 			const checkpoint = event.payload;
 			validateCheckpointInvocationFingerprint(checkpoint);
-			const selection = this.checkpointSelections.get(entry.runId);
-			if (selection === undefined || selectsCheckpoint(selection, checkpoint))
-				this.projection.recordCheckpoint(checkpoint);
+			if (this.keepsCheckpoint(entry.runId, checkpoint)) this.projection.recordCheckpoint(checkpoint);
 			else this.projection.countCheckpoint(checkpoint);
 		} else if (event.type === E.messageSettled) {
 			void this.projection.archivePendingStageMessage(entry.runId, event.payload.message);
@@ -655,6 +715,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.foldedAt.delete(runId);
 		this.summarized.delete(runId);
 		this.prompts.delete(runId);
+		this.partialRuns.delete(runId);
+		// The folds below find each retained scope's checkpoints again.
+		for (const keys of this.ownCheckpoints.get(runId)?.retained.values() ?? []) keys.length = 0;
 		for (const entry of entries) this.fold(entry);
 	}
 	private *refresh(runId: string): Operation<void> {
@@ -1177,6 +1240,22 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	nestedSnapshotVersion(runId: string) {
 		return this.projection.nestedSnapshotVersion(runId);
 	}
+	checkpointScopeReleased(runId: string, scope: string): boolean {
+		const own = this.ownCheckpoints.get(runId);
+		return own?.scopes.has(scope) === true && !own.retained.has(scope);
+	}
+	/**
+	 * Lets go of the checkpoints of the child boundary scope `scope` that `runId` still retains in memory once it keeps
+	 * only its own (`retainOwnCheckpoints`); they stay counted and in the journal. Does nothing for any other run or
+	 * scope. The run's nested snapshot version does not change: no other scope reads differently without them.
+	 */
+	releaseCheckpointScope(runId: string, scope: string): void {
+		const own = this.ownCheckpoints.get(runId);
+		const keys = own?.retained.get(scope);
+		if (own === undefined || keys === undefined) return;
+		own.retained.delete(scope);
+		this.projection.forgetCheckpoints(runId, keys);
+	}
 	getWorkflow(runId: string) {
 		return this.projection.getWorkflow(runId);
 	}
@@ -1257,6 +1336,86 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.projection.restoreCheckpoint(checkpoint);
 		}
 	}
+	/**
+	 * Keeps in memory only the checkpoints `runId` recorded itself, from now on and for as long as this backend owns the
+	 * run; a backend that does not own it leaves it as is. A checkpoint under one of the run's child boundary scopes
+	 * (`<scope>:…`, the replay key of a boundary start the run recorded) stays counted in the run's handle and in the
+	 * journal, and `readCheckpoints` reads it back. The checkpoints the run already folded under a scope stay in memory
+	 * until `releaseCheckpointScope` lets go of them: a resumed root reads them, as it always has, when its
+	 * `ctx.workflow` reaches that boundary again.
+	 *
+	 * A pooled root's children run on local workers, which keep their own checkpoints; the root needs only its
+	 * boundaries. Its memory then follows its own checkpoints, not every stage session its children opened (#4318).
+	 */
+	async retainOwnCheckpoints(runId: string): Promise<void> {
+		await this.serialize(runId, () => invoke(async () => this.narrowToOwn(runId)), false);
+	}
+	private narrowToOwn(runId: string): void {
+		if (this.ownCheckpoints.has(runId) || !this.leases.has(runId)) return;
+		const own: OwnCheckpoints = { scopes: new Set(), retained: new Map() };
+		const checkpoints = this.projection.listCheckpoints(runId);
+		for (const checkpoint of checkpoints) {
+			const scope = ownBoundaryScope(runId, checkpoint);
+			if (scope !== undefined) own.scopes.add(scope);
+		}
+		for (const checkpoint of checkpoints) {
+			const scope = scopeOf(own.scopes, checkpoint.checkpointId);
+			if (scope === undefined) continue;
+			const keys = own.retained.get(scope);
+			if (keys === undefined) own.retained.set(scope, [checkpointKey(checkpoint)]);
+			else keys.push(checkpointKey(checkpoint));
+		}
+		this.ownCheckpoints.set(runId, own);
+	}
+	/**
+	 * The checkpoints the run keeps in memory and those under the child boundary scope `scope` (every checkpoint when
+	 * `scope` is undefined), in completion order, up to what this backend has folded. A run that keeps only its own reads
+	 * the scope's from the journal, through its key index when it has one; any other run lists every checkpoint it holds.
+	 */
+	async readCheckpoints(runId: string, scope?: string): Promise<readonly DurableCheckpoint[]> {
+		if (!this.lacksChildCheckpoints(runId)) return this.projection.listCheckpoints(runId);
+		const read = await this.serialize(runId, () => this.scopedCheckpoints(runId, scope), false);
+		return read ?? this.projection.listCheckpoints(runId);
+	}
+	private lacksChildCheckpoints(runId: string): boolean {
+		return this.ownCheckpoints.has(runId) || this.partialRuns.has(runId);
+	}
+	/** What `readCheckpoints` lists, or undefined once the run keeps all of its checkpoints again. */
+	private *scopedCheckpoints(
+		runId: string,
+		scope: string | undefined,
+	): Operation<readonly DurableCheckpoint[] | undefined> {
+		if (!this.lacksChildCheckpoints(runId)) return undefined;
+		const folded = this.sequences.get(runId) ?? 0;
+		const listed = new Map<string, DurableCheckpoint>();
+		const list = (checkpoint: DurableCheckpoint) => {
+			const key = checkpointKey(checkpoint);
+			if (!listed.has(key)) listed.set(key, checkpoint);
+		};
+		if (scope !== undefined) for (const checkpoint of this.projection.listCheckpoints(runId)) list(checkpoint);
+		const entries =
+			scope === undefined
+				? yield* this.foldedCheckpoints(runId, folded)
+				: yield* this.selectedCheckpoints(runId, { ids: [], prefixes: [`${scope}:`] }, folded);
+		for (const entry of entries)
+			list(
+				normalizedCheckpoint(
+					(entry.event as BackendEventOf<typeof E.checkpointRecorded, DurableCheckpoint>).payload,
+				),
+			);
+		return [...listed.values()].sort(byCompletedAt);
+	}
+	/** Every checkpoint event of the run up to `throughSeq`, in journal order. */
+	private *foldedCheckpoints(runId: string, throughSeq: number): Operation<JournalEntry[]> {
+		return yield* invoke(async () => {
+			const entries: JournalEntry[] = [];
+			for await (const entry of this.journal.read(runId)) {
+				if (entry.seq > throughSeq) break;
+				if ((entry.event as BackendEvent).type === E.checkpointRecorded) entries.push(entry);
+			}
+			return entries;
+		});
+	}
 	/** The run's checkpoint events up to `throughSeq` that `selection` selects, in journal order. */
 	private *selectedCheckpoints(
 		runId: string,
@@ -1322,6 +1481,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		);
 	}
 	private *catchUp(runId: string, version: RunVersion | undefined, journal: RunJournalVersions): Operation<void> {
+		if (this.partialRuns.has(runId)) return yield* this.rebuild(runId);
 		const folded = this.sequences.get(runId) ?? 0;
 		if (folded === 0 && version !== undefined) {
 			const summarized = this.summarized.get(runId);
@@ -1338,7 +1498,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private *extend(runId: string): Operation<void> {
 		const folded = this.sequences.get(runId) ?? 0;
-		if (folded > 0) {
+		if (folded > 0 && !this.partialRuns.has(runId)) {
 			const entries = yield* this.entries(runId, folded);
 			if (entries[0]?.seq === folded && entries[0].at === this.foldedAt.get(runId)) {
 				for (const entry of entries) this.fold(entry);
@@ -1367,6 +1527,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.summarized.delete(runId);
 		this.prompts.delete(runId);
 		this.reconciledPendingStages.delete(runId);
+		this.ownCheckpoints.delete(runId);
+		this.partialRuns.delete(runId);
 		void this.projection.deleteWorkflow(runId);
 	}
 	async deleteWorkflow(runId: string): Promise<void> {
@@ -1496,6 +1658,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private dropLease(runId: string): void {
 		this.leases.delete(runId);
+		// Only the run's owner keeps it narrowed; the next full read of the run rebuilds every checkpoint.
+		if (this.ownCheckpoints.delete(runId)) this.partialRuns.add(runId);
 		if (this.leases.size === 0) {
 			if (this.timer !== undefined) clearInterval(this.timer);
 			this.timer = undefined;
