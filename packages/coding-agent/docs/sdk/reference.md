@@ -1084,6 +1084,7 @@ type AgentWakeClock
 type AgentWakeTimer
 type AgentWakeDispatcherOptions
 type AgentWakeDispatcherStats
+type AgentWakeFailureListener
 AgentRehydrateError
 AgentReleaseConfigError
 type AgentRehydrateErrorCode

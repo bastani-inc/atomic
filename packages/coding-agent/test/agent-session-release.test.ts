@@ -41,6 +41,8 @@ import { sessionLifecycleScopes } from "../src/core/session-lifecycle-scope.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
 import type { SessionStore, StorageDescriptor } from "../src/core/storage/session/types.ts";
+import type { OperationId, TaskResult } from "../src/core/tasks/contracts.ts";
+import { MAX_TOOL_DETACHMENT_AFTER_MS } from "../src/core/tool-detachment-errors.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 /** Delegates to a memory store and counts every operation, so tests prove a failure happened before any work. */
@@ -286,6 +288,36 @@ describe("releaseWhenIdle (#4326)", () => {
 		);
 	});
 
+	test("afterMs longer than a timer can wait is refused before any store or admission work, and the longest is accepted (#4326)", async () => {
+		const counted = countingStore();
+		let admissions = 0;
+		const resourceAdmission: ResourceAdmission = {
+			acquire: async () => {
+				admissions += 1;
+				return async () => {};
+			},
+		};
+		const tooLong = MAX_TOOL_DETACHMENT_AFTER_MS + 1;
+
+		await assert.rejects(
+			createAgentSession({ sessionStore: counted.store, resourceAdmission, releaseWhenIdle: { afterMs: tooLong } }),
+			(error: AgentReleaseConfigError) => {
+				assert.ok(isAgentReleaseConfigError(error));
+				assert.deepEqual(
+					[error.code, error.source, error.field, error.value],
+					["invalid-release-policy", "sdk", "releaseWhenIdle.afterMs", String(tooLong)],
+				);
+				assert.ok(error.hint.includes(`from 0 to ${MAX_TOOL_DETACHMENT_AFTER_MS}`));
+				return true;
+			},
+		);
+		assert.equal(counted.total(), 0);
+		assert.equal(admissions, 0);
+		assert.deepEqual(parseReleaseWhenIdle({ afterMs: MAX_TOOL_DETACHMENT_AFTER_MS }), {
+			afterMs: MAX_TOOL_DETACHMENT_AFTER_MS,
+		});
+	});
+
 	test("an idle session is released after afterMs through one shared timer, and a run starting disarms it", async () => {
 		const time = manualClock();
 		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
@@ -365,6 +397,7 @@ async function runtimeHost(
 		readonly releaseWhenIdle?: { afterMs: number };
 		readonly tools?: ToolDefinition[];
 		readonly adapter?: StorageDescriptor["adapter"];
+		readonly onSession?: (session: AgentSession, runtimeOptions: CreateAgentSessionRuntimeOptions) => void;
 	} = {},
 ): Promise<RuntimeHost> {
 	const tempDir = join(tmpdir(), `atomic-release-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -411,18 +444,16 @@ async function runtimeHost(
 					noThemes: true,
 				},
 			}));
-		return {
-			...(await createAgentSessionFromServices({
-				services,
-				sessionManager: runtimeOptions.sessionManager,
-				sessionStartEvent: runtimeOptions.sessionStartEvent,
-				model,
-				...(options.tools === undefined ? {} : { customTools: options.tools }),
-				...(options.releaseWhenIdle === undefined ? {} : { releaseWhenIdle: options.releaseWhenIdle }),
-			})),
+		const created = await createAgentSessionFromServices({
 			services,
-			diagnostics: services.diagnostics,
-		};
+			sessionManager: runtimeOptions.sessionManager,
+			sessionStartEvent: runtimeOptions.sessionStartEvent,
+			model,
+			...(options.tools === undefined ? {} : { customTools: options.tools }),
+			...(options.releaseWhenIdle === undefined ? {} : { releaseWhenIdle: options.releaseWhenIdle }),
+		});
+		options.onSession?.(created.session, runtimeOptions);
+		return { ...created, services, diagnostics: services.diagnostics };
 	};
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: tempDir,
@@ -757,6 +788,44 @@ describe("AgentSessionRuntime.rehydrate details (#4326)", () => {
 		assert.equal(host.runtime.rehydratedSessionCount, 0);
 	});
 
+	test("a runtime closed while it rehydrates refuses with SessionClosed and keeps the new session's close failure as a typed cleanupCause (#4326)", async () => {
+		const closeFailure = Object.assign(
+			new AggregateError([new Error("store unreachable")], "Session shutdown failed"),
+			{
+				code: "ShutdownFailed",
+			},
+		);
+		const host = await runtimeHost({
+			onSession: (session, runtimeOptions) => {
+				if (runtimeOptions.sessionStartEvent?.reason !== "resume") return;
+				const dispose = session.dispose.bind(session);
+				Object.defineProperty(session, "dispose", {
+					configurable: true,
+					value: async () => {
+						await dispose();
+						throw closeFailure;
+					},
+				});
+			},
+		});
+		const other = await SessionManager.create(host.store.store, host.runtime.cwd);
+		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
+		const rehydrating = host.runtime.rehydrate(other.getSessionId());
+		const disposing = host.runtime.dispose();
+
+		await assert.rejects(rehydrating, (error: Error & { code?: string; cleanupCause?: AgentRehydrateError }) => {
+			assert.equal(error instanceof AggregateError, false);
+			assert.equal(error.code, "SessionClosed");
+			assert.ok(isAgentRehydrateError(error.cleanupCause));
+			assert.equal(error.cleanupCause.code, "release-failed");
+			assert.deepEqual(error.cleanupCause.fields, { sessionId: other.getSessionId(), storage: "memory" });
+			assert.equal(error.cleanupCause.cause, closeFailure);
+			return true;
+		});
+		await disposing;
+		assert.equal(host.runtime.rehydratedSessionCount, 0);
+	});
+
 	test("a rehydrated session that fails to close is reported by the runtime's dispose", async () => {
 		const host = await runtimeHost();
 		const other = await SessionManager.create(host.store.store, host.runtime.cwd);
@@ -772,12 +841,108 @@ describe("AgentSessionRuntime.rehydrate details (#4326)", () => {
 		});
 		await assert.rejects(host.runtime.dispose(), (error: AggregateError & { code?: string }) => {
 			assert.equal(error.code, "ShutdownFailed");
-			assert.ok(error.errors.includes(failure));
+			const reported = error.errors.find(isAgentRehydrateError);
+			assert.ok(reported);
+			assert.equal(reported.code, "release-failed");
+			assert.deepEqual(reported.fields, { sessionId: other.getSessionId(), storage: "memory" });
+			assert.equal(reported.cause, failure);
+			assert.equal(error.errors.includes(failure), false, "the close failure is reported typed, never bare");
 			return true;
 		});
 		assert.equal(host.runtime.rehydratedSessionCount, 0, "the runtime forgets a session that failed to close");
 		await dispose();
 		Object.defineProperty(host.runtime, "dispose", { configurable: true, value: async () => {} });
+	});
+});
+
+function nextSettled(session: AgentSession): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const stop = session.subscribe((event) => {
+			if (event.type !== "agent_settled") return;
+			stop();
+			resolve();
+		});
+	});
+}
+
+async function backgroundTask(session: AgentSession) {
+	const host = session.getAgentTaskHost();
+	let dispatch!: () => Promise<void>;
+	let finish!: (result: TaskResult) => void;
+	const started = await host.startAgentTask(
+		{ kind: "agent", agent: "fixture", task: "background work" },
+		"background-work" as OperationId,
+		() => ({
+			result: new Promise<TaskResult>((resolve) => {
+				finish = resolve;
+			}),
+			cleanup: Promise.resolve({ kind: "reaped" }),
+		}),
+		(run) => {
+			dispatch = run;
+		},
+	);
+	if (!started.ok) throw new Error(started.error.message);
+	const { taskId } = started.value;
+	return {
+		start: () => dispatch(),
+		async finish(): Promise<void> {
+			finish({ kind: "failed", code: "done", message: "finished" });
+			await host.waitForTask(taskId);
+		},
+	};
+}
+
+describe("background tasks keep a session from being released (#4326)", () => {
+	test("a queued or running background task refuses release as retryable session-busy, and the settled session releases (#4326)", async () => {
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("noted")]);
+		const task = await backgroundTask(h.session);
+		const refused = () =>
+			assert.rejects(h.session.release(), (error: AgentRehydrateError) => {
+				assert.ok(isAgentRehydrateError(error));
+				assert.equal(error.code, "session-busy");
+				assert.deepEqual(error.fields, { sessionId: h.session.sessionId, activity: "background-tasks" });
+				assert.ok(isRetryableAgentRehydrateError(error));
+				return true;
+			});
+
+		await refused();
+		const running = task.start();
+		await refused();
+		assert.equal(internal(h.session)._disposed, false);
+		assert.equal(h.eventsOfType("session_released").length, 0);
+		const noticeHandled = nextSettled(h.session);
+		await task.finish();
+		await running;
+		await noticeHandled;
+
+		assert.equal((await h.session.release()).sessionId, h.session.sessionId);
+		assert.equal(internal(h.session)._disposed, true);
+	});
+
+	test("an idle session with a running background task is checked again after afterMs, and released once it settles (#4326)", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("noted")]);
+		const task = await backgroundTask(h.session);
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		const running = task.start();
+
+		await time.advance(100);
+		await dispatcher.whenIdle();
+		assert.equal(internal(h.session)._disposed, false);
+		assert.equal(dispatcher.stats().scheduled, 1, "re-armed instead of released");
+		const noticeHandled = nextSettled(h.session);
+		await task.finish();
+		await running;
+		await noticeHandled;
+		await time.advance(100);
+		await dispatcher.whenIdle();
+
+		assert.equal(internal(h.session)._disposed, true);
+		assert.equal(armedIdleSessionCount(), 0);
 	});
 });
 

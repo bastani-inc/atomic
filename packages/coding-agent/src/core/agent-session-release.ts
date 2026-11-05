@@ -3,6 +3,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { type AgentWakeDispatcher, agentWakeDispatcher } from "./agent-wake-dispatcher.ts";
 import { isPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
+import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
 
 /** What is left of a released session: plain data that names its stored conversation, and nothing live. */
 export interface ReleasedAgentSession {
@@ -12,7 +13,10 @@ export interface ReleasedAgentSession {
 	readonly sessionFile?: string;
 }
 
-/** `createAgentSession({ releaseWhenIdle })`: release the session once it has been idle for `afterMs`. */
+/**
+ * `createAgentSession({ releaseWhenIdle })`: release the session once it has been idle for `afterMs`, a number of
+ * milliseconds from 0 to {@link MAX_TOOL_DETACHMENT_AFTER_MS}.
+ */
 export interface ReleaseWhenIdleOptions {
 	readonly afterMs: number;
 }
@@ -33,7 +37,7 @@ export function parseReleaseWhenIdle(
 	if (typeof value !== "object" || value === null || Array.isArray(value))
 		throw new AgentReleaseConfigError({ source, field: "releaseWhenIdle", value: describe(value) });
 	const afterMs = (value as { readonly afterMs?: number | string }).afterMs;
-	if (!(typeof afterMs === "number" && afterMs >= 0 && afterMs !== Number.POSITIVE_INFINITY))
+	if (!(typeof afterMs === "number" && afterMs >= 0 && afterMs <= MAX_TOOL_DETACHMENT_AFTER_MS))
 		throw new AgentReleaseConfigError({ source, field: "releaseWhenIdle.afterMs", value: describe(afterMs) });
 	return { afterMs };
 }
@@ -58,7 +62,18 @@ export function sessionActivity(session: AgentSession): AgentSessionActivity | u
 	if (session.isCompacting) return "compaction";
 	if (session.isBashRunning || session.hasPendingBashMessages) return "shell";
 	if (session.pendingMessageCount > 0) return "queued-messages";
+	if (hasLiveTasks(session)) return "background-tasks";
 	return undefined;
+}
+
+function hasLiveTasks(session: AgentSession): boolean {
+	const watched = session._agentTaskHost?.watchOwnerTasks();
+	if (watched === undefined || !watched.ok) return false;
+	const live = watched.value.snapshot.tasks.some(
+		(task) => task.execution.kind === "queued" || task.execution.kind === "running",
+	);
+	watched.value.dispose();
+	return live;
 }
 
 const releases = new WeakMap<AgentSession, Promise<ReleasedAgentSession>>();
@@ -66,9 +81,10 @@ const releases = new WeakMap<AgentSession, Promise<ReleasedAgentSession>>();
 /**
  * Let go of everything the session holds in memory (its agent loop, extension instances, tool registry, listeners,
  * timers, Intercom and MCP connections, provider caches) and keep only its stored history. Refused with a retryable
- * `session-busy` {@link AgentRehydrateError} while a run, compaction, shell command or queued message is pending, and
- * with a `not-reopenable` one when its history is in a private in-memory store that nothing could reopen it from.
- * A close that fails rejects with a `release-failed` one whose `cause` is the close failure. Releasing again returns the same result. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`.
+ * `session-busy` {@link AgentRehydrateError} while a run, compaction, shell command, queued message or background
+ * task is pending, and with a `not-reopenable` one when its history is in a private in-memory store that nothing
+ * could reopen it from. A close that fails rejects with a `release-failed` one whose `cause` is the close failure.
+ * Releasing again returns the same result. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`.
  */
 export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 	const existing = releases.get(this);

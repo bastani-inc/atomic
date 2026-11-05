@@ -1,5 +1,6 @@
 import { AgentRehydrateError, AgentReleaseConfigError } from "./agent-rehydrate-errors.ts";
 import type { DetachedToolResult } from "./agent-session-detached-tools.ts";
+import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
 
 /** What woke an agent. Every kind arrives the same way, as a wake on the agent's key. */
 export type AgentWakeKind = "intercom" | "tool-result" | "timer";
@@ -61,11 +62,13 @@ export interface AgentWakeHandlerOptions {
 	readonly replace?: boolean;
 }
 
+export type AgentWakeFailureListener = (error: AgentRehydrateError) => void;
+
 /** Options for a dispatcher; the defaults use the system clock and report nothing beyond `lastFailure`. */
 export interface AgentWakeDispatcherOptions {
 	readonly clock?: AgentWakeClock;
 	/** Called with each failed delivery that nobody was waiting on, such as a timed wake whose handler failed. */
-	readonly onUnobservedFailure?: (error: AgentRehydrateError) => void;
+	readonly onUnobservedFailure?: AgentWakeFailureListener;
 }
 
 interface Pending {
@@ -118,13 +121,35 @@ export class AgentWakeDispatcher {
 	private timer: AgentWakeTimer | undefined;
 	private timerAt = Number.POSITIVE_INFINITY;
 	private readonly clock: AgentWakeClock;
-	private readonly onUnobservedFailure: ((error: AgentRehydrateError) => void) | undefined;
+	private readonly failureListeners = new Set<AgentWakeFailureListener>();
+	private readonly keyIdleWaiters = new Map<string, Array<() => void>>();
+	private readonly idleWaiters: Array<() => void> = [];
 	private unobservedFailures = 0;
 	private _lastFailure: AgentRehydrateError | undefined;
 
 	constructor(options: AgentWakeDispatcherOptions = {}) {
 		this.clock = options.clock ?? systemClock;
-		this.onUnobservedFailure = options.onUnobservedFailure;
+		if (options.onUnobservedFailure !== undefined) this.failureListeners.add(options.onUnobservedFailure);
+	}
+
+	onUnobservedFailure(listener: AgentWakeFailureListener): () => void {
+		this.failureListeners.add(listener);
+		return () => {
+			this.failureListeners.delete(listener);
+		};
+	}
+
+	whenIdle(wakeKey?: string): Promise<void> {
+		if (wakeKey === undefined ? this.keys.size === 0 : !this.keys.has(wakeKey)) return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			if (wakeKey === undefined) {
+				this.idleWaiters.push(resolve);
+				return;
+			}
+			const waiters = this.keyIdleWaiters.get(wakeKey);
+			if (waiters === undefined) this.keyIdleWaiters.set(wakeKey, [resolve]);
+			else waiters.push(resolve);
+		});
 	}
 
 	/** The last failed delivery nobody was waiting on. */
@@ -261,6 +286,14 @@ export class AgentWakeDispatcher {
 			}
 		}
 		this.keys.delete(wakeKey);
+		this.settleIdleWaiters(wakeKey);
+	}
+
+	private settleIdleWaiters(wakeKey: string): void {
+		const waiters = this.keyIdleWaiters.get(wakeKey) ?? [];
+		this.keyIdleWaiters.delete(wakeKey);
+		for (const resolve of waiters) resolve();
+		if (this.keys.size === 0) for (const resolve of this.idleWaiters.splice(0)) resolve();
 	}
 
 	private arm(): void {
@@ -270,7 +303,10 @@ export class AgentWakeDispatcher {
 		this.timer = undefined;
 		this.timerAt = next;
 		if (next === Number.POSITIVE_INFINITY) return;
-		this.timer = this.clock.setTimer(() => this.fire(), Math.max(0, next - this.clock.now()));
+		this.timer = this.clock.setTimer(
+			() => this.fire(),
+			Math.min(MAX_TOOL_DETACHMENT_AFTER_MS, Math.max(0, next - this.clock.now())),
+		);
 		this.timer.unref?.();
 	}
 
@@ -291,7 +327,7 @@ export class AgentWakeDispatcher {
 	reportUnobservedFailure(error: AgentRehydrateError): void {
 		this.unobservedFailures += 1;
 		this._lastFailure = error;
-		this.onUnobservedFailure?.(error);
+		for (const listener of [...this.failureListeners]) listener(error);
 	}
 }
 

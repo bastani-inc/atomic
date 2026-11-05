@@ -153,10 +153,10 @@ export interface CreateAgentSessionOptions {
 	 */
 	onResourceAdmissionWait?: (waiting: boolean) => void;
 	/**
-	 * Release the session once it has been idle (no run, compaction, shell command or queued message) for `afterMs`
-	 * milliseconds: it lets go of everything live and keeps only its stored history, and subscribers get a
-	 * `session_released` event first. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`. Validated before
-	 * anything is created; an invalid value throws `AgentReleaseConfigError`.
+	 * Release the session once it has been idle (no run, compaction, shell command, queued message or background task)
+	 * for `afterMs` milliseconds, from 0 to 2147483647: it lets go of everything live and keeps only its stored history,
+	 * and subscribers get a `session_released` event first. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`.
+	 * Validated before anything is created; an invalid value throws `AgentReleaseConfigError`.
 	 */
 	releaseWhenIdle?: ReleaseWhenIdleOptions;
 	/** Transform the fully constructed base system prompt at session construction. */

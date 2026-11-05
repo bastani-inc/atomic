@@ -19,6 +19,7 @@ import {
 	agentWakeDispatcher,
 	wakeKeyNamespace,
 } from "../src/core/agent-wake-dispatcher.ts";
+import { MAX_TOOL_DETACHMENT_AFTER_MS } from "../src/core/tool-detachment-errors.ts";
 
 /** A clock tests move by hand; it counts the timers it arms and clears. */
 function manualClock() {
@@ -637,7 +638,7 @@ describe("AgentRehydrateError messages and serialization (#4326)", () => {
 		const cases: Array<[AgentRehydrateError, string]> = [
 			[
 				new AgentReleaseConfigError({ source: "sdk", field: "releaseWhenIdle.afterMs", value: "-1" }),
-				"Invalid releaseWhenIdle.afterMs from sdk: -1 (invalid-release-policy). Pass releaseWhenIdle as { afterMs } with afterMs a finite number of milliseconds of at least 0, or leave it unset.",
+				"Invalid releaseWhenIdle.afterMs from sdk: -1 (invalid-release-policy). Pass releaseWhenIdle as { afterMs } with afterMs a number of milliseconds from 0 to 2147483647, or leave it unset.",
 			],
 			[
 				new AgentReleaseConfigError({ source: "sdk", field: "maxConcurrent", value: "0" }),
@@ -646,6 +647,10 @@ describe("AgentRehydrateError messages and serialization (#4326)", () => {
 			[
 				new AgentRehydrateError("session-busy", { sessionId: "s-1", activity: "compaction" }),
 				"Session s-1 cannot be released while its compaction is active (session-busy). Wait until the session settles (its agent_settled event), then release it again.",
+			],
+			[
+				new AgentRehydrateError("session-busy", { sessionId: "s-3", activity: "background-tasks" }),
+				"Session s-3 cannot be released while its background tasks are running (session-busy). Wait until the session's background tasks finish, or cancel them, then release it again.",
 			],
 			[
 				new AgentRehydrateError("session-not-found", { sessionId: "s-2", storage: "libsql", localOnly: false }),
@@ -1047,5 +1052,113 @@ describe("AgentWakeDispatcher handler removal (#4326)", () => {
 		finishFirst();
 		await Promise.all([first, second]);
 		assert.deepEqual(started, ["ns:a", "next:ns:b"]);
+	});
+});
+
+describe("AgentWakeDispatcher long delays, failure listeners and idle waits (#4326)", () => {
+	test("a wake due later than one timer can wait is waited out with one timer at a time, each at most the longest delay (#4326)", async () => {
+		const time = manualClock();
+		const delays: number[] = [];
+		const clock: AgentWakeClock = {
+			now: () => time.clock.now(),
+			setTimer(callback, delayMs) {
+				delays.push(delayMs);
+				return time.clock.setTimer(callback, delayMs);
+			},
+			clearTimer: (timer) => time.clock.clearTimer(timer),
+		};
+		const dispatcher = new AgentWakeDispatcher({ clock });
+		const fired: string[] = [];
+		dispatcher.handle("t", async (key) => {
+			fired.push(key);
+		});
+
+		dispatcher.schedule("t:far", wake("x", "timer"), 2 * MAX_TOOL_DETACHMENT_AFTER_MS + 500);
+		assert.deepEqual(delays, [MAX_TOOL_DETACHMENT_AFTER_MS]);
+		assert.equal(time.live, 1);
+		time.advance(MAX_TOOL_DETACHMENT_AFTER_MS);
+		await flush();
+		assert.deepEqual(fired, []);
+		assert.deepEqual(delays, [MAX_TOOL_DETACHMENT_AFTER_MS, MAX_TOOL_DETACHMENT_AFTER_MS]);
+		assert.equal(time.live, 1);
+		time.advance(MAX_TOOL_DETACHMENT_AFTER_MS);
+		await flush();
+		assert.deepEqual(delays, [MAX_TOOL_DETACHMENT_AFTER_MS, MAX_TOOL_DETACHMENT_AFTER_MS, 500]);
+		assert.deepEqual(fired, []);
+		time.advance(500);
+		await flush();
+
+		assert.deepEqual(fired, ["t:far"]);
+		assert.equal(time.armed, 3);
+		assert.equal(time.live, 0);
+		assert.deepEqual([dispatcher.stats().timers, dispatcher.stats().scheduled], [0, 0]);
+	});
+
+	test("listeners subscribed after construction get each unobserved failure until they unsubscribe (#4326)", async () => {
+		const time = manualClock();
+		const fromOption: AgentRehydrateError[] = [];
+		const dispatcher = new AgentWakeDispatcher({
+			clock: time.clock,
+			onUnobservedFailure: (error) => fromOption.push(error),
+		});
+		dispatcher.handle("t", async () => {
+			throw new Error("store unreachable");
+		});
+		const first: AgentRehydrateError[] = [];
+		const second: AgentRehydrateError[] = [];
+		const stopFirst = dispatcher.onUnobservedFailure((error) => first.push(error));
+		dispatcher.onUnobservedFailure((error) => second.push(error));
+
+		dispatcher.schedule("t:a", wake("1", "timer"), 10);
+		time.advance(10);
+		await flush();
+		stopFirst();
+		stopFirst();
+		dispatcher.schedule("t:b", wake("2", "timer"), 10);
+		time.advance(10);
+		await flush();
+
+		const keys = (errors: AgentRehydrateError[]) => errors.map((error) => [error.code, error.fields.wakeKey]);
+		assert.deepEqual(keys(first), [["wake-failed", "t:a"]]);
+		assert.deepEqual(keys(second), [
+			["wake-failed", "t:a"],
+			["wake-failed", "t:b"],
+		]);
+		assert.deepEqual(keys(fromOption), keys(second));
+		assert.equal(second[1], dispatcher.lastFailure);
+		assert.equal(dispatcher.stats().unobservedFailures, 2);
+	});
+
+	test("whenIdle resolves once a key, or the whole dispatcher, has nothing queued or running (#4326)", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const gates = new Map<string, () => void>();
+		dispatcher.handle("child", (key) => new Promise<void>((resolve) => gates.set(key, resolve)));
+		dispatcher.schedule("child:later", wake("timer", "timer"), 1_000);
+		await dispatcher.whenIdle();
+		await dispatcher.whenIdle("child:a");
+
+		const idle: string[] = [];
+		const a = dispatcher.deliver("child:a", wake("1"));
+		const b = dispatcher.deliver("child:b", wake("1"));
+		void dispatcher.whenIdle("child:a").then(() => idle.push("child:a"));
+		void dispatcher.whenIdle().then(() => idle.push("all"));
+		await flush();
+		const queuedBehind = dispatcher.deliver("child:a", wake("2"));
+		gates.get("child:a")?.();
+		await a;
+		await flush();
+		assert.deepEqual(idle, [], "child:a still runs the wake queued behind its first");
+		gates.get("child:a")?.();
+		await queuedBehind;
+		await flush();
+		assert.deepEqual(idle, ["child:a"]);
+		assert.equal(dispatcher.stats().keys, 1);
+		gates.get("child:b")?.();
+		await b;
+		await flush();
+
+		assert.deepEqual(idle, ["child:a", "all"]);
+		assert.deepEqual([dispatcher.stats().keys, dispatcher.stats().scheduled], [0, 1]);
 	});
 });

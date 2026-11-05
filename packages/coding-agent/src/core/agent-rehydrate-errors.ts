@@ -1,3 +1,5 @@
+import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
+
 /**
  * Why releasing an idle agent, or waking and rehydrating a released one, was refused or failed. Codes are public
  * API: never rename or reuse one.
@@ -13,7 +15,13 @@ export type AgentRehydrateErrorCode =
 	| "release-failed";
 
 /** What kept a session from being released. */
-export type AgentSessionActivity = "streaming" | "prompt" | "compaction" | "shell" | "queued-messages";
+export type AgentSessionActivity =
+	| "streaming"
+	| "prompt"
+	| "compaction"
+	| "shell"
+	| "queued-messages"
+	| "background-tasks";
 
 /** Where an invalid input entered. */
 export type AgentReleaseConfigSource = "sdk" | "settings";
@@ -90,9 +98,11 @@ function hintFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorField
 		case "invalid-release-policy":
 			return fields.field === "maxConcurrent"
 				? "Pass maxConcurrent as a whole number of at least 1, or leave it unset for no limit."
-				: "Pass releaseWhenIdle as { afterMs } with afterMs a finite number of milliseconds of at least 0, or leave it unset.";
+				: `Pass releaseWhenIdle as { afterMs } with afterMs a number of milliseconds from 0 to ${MAX_TOOL_DETACHMENT_AFTER_MS}, or leave it unset.`;
 		case "session-busy":
-			return "Wait until the session settles (its agent_settled event), then release it again.";
+			return fields.activity === "background-tasks"
+				? "Wait until the session's background tasks finish, or cancel them, then release it again."
+				: "Wait until the session settles (its agent_settled event), then release it again.";
 		case "not-reopenable":
 			return "Create the session over a store that outlives it: a SQLite or JSONL session store, or a MemorySessionStore the host keeps and passes as `sessionStore`. A session from `SessionManager.inMemory()` has nowhere to be reopened from.";
 		case "session-not-found":
@@ -117,7 +127,9 @@ function subjectFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorFi
 		case "invalid-release-policy":
 			return `Invalid ${fields.field} from ${fields.source}: ${fields.value}`;
 		case "session-busy":
-			return `Session ${fields.sessionId} cannot be released while its ${fields.activity} is active`;
+			return fields.activity === "background-tasks"
+				? `Session ${fields.sessionId} cannot be released while its background tasks are running`
+				: `Session ${fields.sessionId} cannot be released while its ${fields.activity} is active`;
 		case "not-reopenable":
 			return `Session ${fields.sessionId} cannot be released: its ${fields.storage} store cannot be reopened`;
 		case "session-not-found":

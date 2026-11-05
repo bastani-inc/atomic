@@ -108,6 +108,14 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
 		.join("");
 }
 
+function closeFailure(session: AgentSession, failure: Error): AgentRehydrateError {
+	return new AgentRehydrateError(
+		"release-failed",
+		{ sessionId: session.sessionId, storage: session.sessionManager.getSessionStore().descriptor.adapter },
+		{ cause: failure },
+	);
+}
+
 /**
  * Owns the current AgentSession plus its cwd-bound services.
  *
@@ -787,8 +795,14 @@ export class AgentSessionRuntime {
 		this.rehydrated.set(sessionId, session);
 		onSessionClose(session as unknown as AgentSessionInternalSurface, () => this.rehydrated.delete(sessionId));
 		if (this.closed) {
-			await session.dispose();
-			this.assertOpen();
+			const cleanupCause = await session.dispose().then(
+				() => undefined,
+				(failure: Error) => closeFailure(session, failure),
+			);
+			throw Object.assign(new Error("Session is closed"), {
+				code: "SessionClosed",
+				...(cleanupCause === undefined ? {} : { cleanupCause }),
+			});
 		}
 		return session;
 	}
@@ -820,7 +834,7 @@ export class AgentSessionRuntime {
 				try {
 					await session.dispose();
 				} catch (error) {
-					this.cleanupFailures.push(error);
+					this.cleanupFailures.push(closeFailure(session, error as Error));
 				}
 			}
 			this.rehydrated.clear();
