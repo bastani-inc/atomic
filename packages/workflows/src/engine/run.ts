@@ -1068,14 +1068,15 @@ async function executeRun(
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
+		const worktreeBinding = def.inputBindings?.worktree;
 		await prepareRunGit(
 			ownController.signal,
-			inputsSelectGitWorktree(inputRuntimeDefaults)
+			worktreeBinding !== undefined && inputsSelectGitWorktree(inputRuntimeDefaults)
 				? {
 						workflow: def.name,
 						runId,
 						source: "input",
-						field: def.inputBindings?.worktree?.gitWorktreeDir ?? "gitWorktreeDir",
+						field: worktreeBinding.gitWorktreeDir,
 						gitWorktreeDir: inputRuntimeDefaults.gitWorktreeDir,
 					}
 				: undefined,

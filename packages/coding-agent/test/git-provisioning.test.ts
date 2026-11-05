@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 	readdirSync: vi.fn(),
 	rmSync: vi.fn(),
 	renameSync: vi.fn(),
+	writeFileSync: vi.fn(),
 	existsSync: vi.fn(),
 	osRelease: undefined as import("../src/utils/git-install-command.ts").OsRelease | undefined,
 	osReleaseReads: 0,
@@ -91,6 +92,7 @@ vi.mock("fs", async () => {
 		readdirSync: mocks.readdirSync,
 		rmSync: mocks.rmSync,
 		renameSync: mocks.renameSync,
+		writeFileSync: mocks.writeFileSync,
 	};
 });
 
@@ -274,6 +276,8 @@ beforeEach(async () => {
 	mocks.renameSync.mockImplementation(actualFs.renameSync);
 	mocks.osRelease = undefined;
 	mocks.osReleaseReads = 0;
+	mocks.writeFileSync.mockReset();
+	mocks.writeFileSync.mockImplementation(actualFs.writeFileSync);
 	mocks.existsSync.mockReset();
 	mocks.existsSync.mockImplementation(actualFs.existsSync);
 	mocks.spawnSyncOptions.length = 0;
@@ -1979,5 +1983,159 @@ describe("git install command on this machine (#4322)", () => {
 			assert.equal(existsSync(abandoned), false);
 			assert.equal(existsSync(live), true);
 		});
+	});
+
+	describe.skipIf(isWindows)("replacement details", () => {
+		const provision = (overrides: Parameters<ToolsManager["withGitProvisionSettingsForTest"]>[0], options = {}) =>
+			tools.withGitProvisionSettingsForTest(overrides, () => tools.resolveGit(options));
+		const bytes = () => archiveOf(gitScript('echo "git version 2.56.0"'));
+		const markerPath = () => join(installDir, ".atomic-git-release.json");
+
+		async function installOlder() {
+			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
+			const fetchMock = serveArchive(first.bytes);
+			await provision({ release: first.release });
+			return { first, fetchMock, newer: releaseFor(first.bytes, undefined, "v2.56.0-3") };
+		}
+
+		it("returns the replacement install, not the older one", async () => {
+			const { newer } = await installOlder();
+			const git = await provision({ release: newer.release });
+			assert.equal(git.source, "provisioned");
+			assert.equal(git.path, join(installDir, "bin", "git"));
+			assert.equal(git.version, "2.56.0");
+			assert.equal(git.env.GIT_EXEC_PATH, join(installDir, "libexec", "git-core"));
+		});
+
+		it("reinstalls over a marker that cannot be read as a file", async () => {
+			const { first, fetchMock } = await installOlder();
+			rmSync(markerPath());
+			mkdirSync(markerPath());
+			await provision({ release: first.release });
+			assert.equal(fetchMock.mock.calls.length, 2);
+			assert.equal(JSON.parse(readFileSync(markerPath(), "utf-8")).tag, "v2.56.0-2");
+		});
+
+		it("warns once and keeps the new install when the replaced one cannot be removed", async () => {
+			const { newer } = await installOlder();
+			const busy = new Error("EBUSY: replaced install in use");
+			const actualRm = mocks.actualFs!.rmSync;
+			mocks.rmSync.mockImplementation((path: string, options: object) => {
+				if (String(path).includes(".git-replaced-")) throw busy;
+				return actualRm(path, options);
+			});
+			const statuses: { type: string; message: string }[] = [];
+			const git = await provision(
+				{ release: newer.release },
+				{ onStatus: (status: { type: string; message: string }) => statuses.push(status) },
+			);
+			assert.equal(JSON.parse(readFileSync(markerPath(), "utf-8")).tag, "v2.56.0-3");
+			assert.equal(git.source, "provisioned");
+			const warnings = statuses.filter((status) => status.type === "warning");
+			assert.equal(warnings.length, 1);
+			assert.match(
+				warnings[0]!.message,
+				/^Could not remove the replaced git install .*\/\.git-replaced-[0-9a-f]{8}-\d+-\d+: Error: EBUSY: replaced install in use$/,
+			);
+		});
+
+		it("rejects with the caller's reason when cancelled while a newer release downloads", async () => {
+			const { newer } = await installOlder();
+			vi.spyOn(globalThis, "fetch").mockImplementation(
+				(_input, init) =>
+					new Promise((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+					}),
+			);
+			const controller = new AbortController();
+			const reason = new Error("stop updating");
+			const pending = provision({ release: newer.release }, { signal: controller.signal });
+			await vi.waitFor(() => assert.ok(leftovers().some((name) => name.startsWith(".git-staging-"))));
+			controller.abort(reason);
+			await assert.rejects(pending, (error) => error === reason);
+			assert.equal(JSON.parse(readFileSync(markerPath(), "utf-8")).tag, "v2.56.0-2");
+		});
+
+		it("keeps the older install without an onStatus sink when the download fails", async () => {
+			const { newer } = await installOlder();
+			vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("gone", { status: 404 }));
+			const git = await provision({ release: newer.release });
+			assert.equal(git.source, "provisioned");
+		});
+
+		it("restores the older install and attaches the failure when putting the new one in place fails twice", async () => {
+			const { first } = await installOlder();
+			rmSync(markerPath());
+			const denied = Object.assign(new Error("EACCES: rename"), { code: "EACCES" });
+			const lost = new Error("EIO: restore failed");
+			const actualRename = mocks.actualFs!.renameSync;
+			mocks.rmSync.mockImplementation(mocks.actualFs!.rmSync);
+			vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(new Uint8Array(first.bytes)));
+			rmSync(join(installDir, "bin", "git"));
+			mkdirSync(join(installDir, "bin"), { recursive: true });
+			let intoPlace = 0;
+			mocks.renameSync.mockImplementation((from: string, to: string) => {
+				if (String(from).includes(".git-staging-") && to === installDir && ++intoPlace === 2) throw denied;
+				if (String(from).includes(".git-replaced-") && to === installDir) throw lost;
+				return actualRename(from, to);
+			});
+			const error = await provision({ release: first.release }).catch((caught: Error) => caught);
+			assert.ok(isGitUnavailableError(error));
+			assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "promote");
+			assert.equal(error.cause, denied);
+			assert.equal(error.cleanupCause, lost);
+		});
+
+		it("fails the install, publishing nothing, when the release marker cannot be written", async () => {
+			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
+			serveArchive(first.bytes);
+			const denied = Object.assign(new Error("EACCES: write marker"), { code: "EACCES" });
+			const actualWrite = mocks.actualFs!.writeFileSync;
+			mocks.writeFileSync.mockImplementation((path: string, ...rest: unknown[]) => {
+				if (String(path).endsWith(".atomic-git-release.json")) throw denied;
+				return (actualWrite as (...args: unknown[]) => unknown)(path, ...rest);
+			});
+			const error = await provision({ release: first.release }).catch((caught: Error) => caught);
+			assert.ok(isGitUnavailableError(error));
+			assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "stage");
+			assert.equal(error.cause, denied);
+			assert.equal(existsSync(installDir), false);
+			assert.deepEqual(leftovers(), []);
+		});
+	});
+
+	it("names the platform command without reading os-release off Linux", async () => {
+		mocks.platform.mockReturnValue("darwin");
+		mocks.arch.mockReturnValue("arm64");
+		vi.stubEnv(ENV_OFFLINE, "1");
+		const error = await tools.resolveGit().catch((caught: Error) => caught);
+		assert.ok(isGitUnavailableError(error));
+		assert.equal(error.fields.installCommand, "xcode-select --install");
+		assert.equal(mocks.osReleaseReads, 0);
+	});
+
+	it("forgets probes and the last failure when reset, as a new process would", async () => {
+		const systemGit = makeSystemGit("2.43.0");
+		usePath(join(systemGit, ".."));
+		assert.equal(tools.resolveGitSync().version, "2.43.0");
+		mocks.probes.set(systemGit, { status: 0, stdout: "git version 2.50.0\n" });
+		assert.equal(tools.resolveGitSync().version, "2.43.0");
+		tools.resetGitProvisionStateForTest();
+		assert.equal(tools.resolveGitSync().version, "2.50.0");
+
+		usePath(join(tempDir, "none"));
+		makeProvisionedGit("2.56.0");
+		assert.equal(tools.resolveGitSync().version, "2.56.0");
+		mocks.probes.set(provisionedExecutable(), { status: 0, stdout: "git version 2.57.0\n" });
+		assert.equal(tools.resolveGitSync().version, "2.56.0");
+		tools.resetGitProvisionStateForTest();
+		assert.equal(tools.resolveGitSync().version, "2.57.0");
+
+		rmSync(installDir, { recursive: true });
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("gone", { status: 404 }));
+		await tools.resolveGit().catch(() => undefined);
+		assert.equal((caught(() => tools.resolveGitSync()) as { code?: string }).code, "download-failed");
+		tools.resetGitProvisionStateForTest();
+		assert.equal((caught(() => tools.resolveGitSync()) as { code?: string }).code, "not-installed");
 	});
 });

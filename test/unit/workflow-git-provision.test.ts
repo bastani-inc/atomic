@@ -193,6 +193,37 @@ describe("workflow runs without git (#4322)", () => {
 		assert.match(run.error ?? "", /download-failed/);
 	});
 
+	test("a task that asks for no worktree never starts a download, and one that names a gitWorktreeDir does", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = failingFetch();
+		const plain = workflow({
+			name: "task-plain",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Optional(Type.Boolean()) },
+			run: async (ctx) => {
+				await ctx.task("edit", { prompt: "x" });
+				return { ok: true };
+			},
+		}) as unknown as WorkflowDefinition;
+		await finish(plain, {});
+		assert.equal(fetchMock.mock.calls.length, 0);
+
+		const named = workflow({
+			name: "task-named-dir",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Optional(Type.Boolean()) },
+			run: async (ctx) => {
+				await ctx.task("edit", { prompt: "x", gitWorktreeDir: "../named" });
+				return { ok: true };
+			},
+		}) as unknown as WorkflowDefinition;
+		const { run } = await finish(named, {});
+		assert.equal(run.status, "failed");
+		assert.equal(fetchMock.mock.calls.length, 3);
+	});
+
 	test("prepareTaskGit attempts a download only when git is missing and downloadable", async () => {
 		const fetchMock = failingFetch();
 		const controller = new AbortController();
@@ -230,10 +261,13 @@ describe("workflow runs without git (#4322)", () => {
 	});
 
 	test("a fake git runner skips provisioning", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = failingFetch();
 		const runner = () => ({ stdout: "", stderr: "", status: 0, signal: null });
 		const controller = new AbortController();
 		assert.equal(await withGitRunnerForTest(runner, () => prepareRunGit(controller.signal, REQUEST)), undefined);
 		assert.equal(await withGitRunnerForTest(runner, () => prepareTaskGit(controller.signal)), undefined);
+		assert.equal(fetchMock.mock.calls.length, 0);
 		await assert.rejects(prepareRunGit(controller.signal, REQUEST), (error: Error) =>
 			isWorkflowGitRequiredError(error),
 		);

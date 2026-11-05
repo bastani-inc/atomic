@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { runCommand } from "../src/core/package-manager-command.ts";
+import { getInstalledGitHead } from "../src/core/package-manager-git.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { GitUnavailableError } from "../src/utils/git-errors.ts";
 
@@ -357,5 +358,153 @@ describe("package manager without git (#4322)", () => {
 		assert.deepEqual(progress, [
 			`Could not refresh the default branch of ${tempDir} (remote refused); using the last known one.`,
 		]);
+	});
+});
+
+describe("package manager rethrows an unavailable git from each best-effort site (#4322)", () => {
+	let tempDir: string;
+	let packageManager: DefaultPackageManager;
+	let internals: CommandInternals;
+	const unavailable = new GitUnavailableError({
+		code: "offline",
+		offlineVariable: "ATOMIC_OFFLINE",
+		platform: "linux",
+		arch: "x64",
+	});
+	const source = {
+		type: "git",
+		repo: "https://github.com/user/repo",
+		host: "github.com",
+		path: "user/repo",
+		pinned: false,
+	};
+	const isUnavailable = (error: Error) => error === unavailable;
+	const target = (path = tempDir) =>
+		(
+			packageManager as never as {
+				getLocalGitUpdateTarget(path: string): Promise<{ ref: string; fetchArgs: string[] }>;
+			}
+		).getLocalGitUpdateTarget(path);
+
+	/** Capture answers by command: a value returns it, an Error throws it; unlisted commands return "head". */
+	function capturing(answers: Record<string, string | Error>) {
+		vi.spyOn(internals, "runCommandCapture").mockImplementation(async (_command, args) => {
+			const answer = answers[args.join(" ")] ?? "head";
+			if (answer instanceof Error) throw answer;
+			return answer;
+		});
+	}
+
+	function running(answers: Record<string, Error>) {
+		return vi.spyOn(internals, "runCommand").mockImplementation(async (_command, args) => {
+			const failure = answers[args.join(" ")];
+			if (failure !== undefined) throw failure;
+		});
+	}
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "atomic-pm-sites-"));
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		packageManager = new DefaultPackageManager({
+			cwd: tempDir,
+			agentDir: join(tempDir, "agent"),
+			settingsManager: SettingsManager.inMemory(),
+		});
+		internals = packageManager as unknown as CommandInternals;
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("when reading the upstream of the update target", async () => {
+		capturing({ "rev-parse --abbrev-ref @{upstream}": unavailable });
+		const run = running({});
+		await assert.rejects(target(), isUnavailable);
+		assert.equal(run.mock.calls.length, 0);
+	});
+
+	it("when refreshing the default branch", async () => {
+		capturing({ "rev-parse --abbrev-ref @{upstream}": new Error("no upstream") });
+		running({ "remote set-head origin -a": unavailable });
+		await assert.rejects(target(), isUnavailable);
+	});
+
+	it("when reading the remote default branch name", async () => {
+		capturing({
+			"rev-parse --abbrev-ref @{upstream}": new Error("no upstream"),
+			"symbolic-ref refs/remotes/origin/HEAD": unavailable,
+		});
+		running({});
+		await assert.rejects(target(), isUnavailable);
+	});
+
+	it("but a missing remote default branch falls back to the remote HEAD", async () => {
+		capturing({
+			"rev-parse --abbrev-ref @{upstream}": new Error("no upstream"),
+			"symbolic-ref refs/remotes/origin/HEAD": new Error("not a symbolic ref"),
+		});
+		running({});
+		const result = await target();
+		assert.equal(result.ref, "origin/HEAD");
+		assert.deepEqual(result.fetchArgs, ["fetch", "--prune", "--no-tags", "origin", "+HEAD:refs/remotes/origin/HEAD"]);
+	});
+
+	it("reports a failing set-head with the progress event's full shape, once", async () => {
+		const events: object[] = [];
+		packageManager.setProgressCallback((event) => events.push(event));
+		capturing({
+			"rev-parse --abbrev-ref @{upstream}": new Error("no upstream"),
+			"symbolic-ref refs/remotes/origin/HEAD": "refs/remotes/origin/main",
+		});
+		running({ "remote set-head origin -a": new Error("remote refused") });
+		await target();
+		assert.deepEqual(events, [
+			{
+				type: "progress",
+				action: "update",
+				source: tempDir,
+				message: `Could not refresh the default branch of ${tempDir} (remote refused); using the last known one.`,
+			},
+		]);
+	});
+
+	it("when reading the upstream for an update check", async () => {
+		capturing({ "rev-parse --abbrev-ref @{upstream}": unavailable });
+		await assert.rejects(
+			(packageManager as never as { gitHasAvailableUpdate(path: string): Promise<boolean> }).gitHasAvailableUpdate(
+				tempDir,
+			),
+			isUnavailable,
+		);
+	});
+
+	it("when reading an installed head", async () => {
+		const installed = join(tempDir, "agent", "git", "github.com", "user", "repo");
+		mkdirSync(installed, { recursive: true });
+		capturing({ "rev-parse HEAD": unavailable });
+		const context = (packageManager as never as { context: Parameters<typeof getInstalledGitHead>[0] }).context;
+		await assert.rejects(getInstalledGitHead(context, source as never, "user"), isUnavailable);
+		capturing({ "rev-parse HEAD": new Error("not a repository") });
+		assert.equal(await getInstalledGitHead(context, source as never, "user"), undefined);
+	});
+
+	it("when cleaning an updated checkout, instead of reporting that files are in use", async () => {
+		const installed = join(tempDir, "agent", "git", "github.com", "user", "repo");
+		mkdirSync(installed, { recursive: true });
+		const events: object[] = [];
+		packageManager.setProgressCallback((event) => events.push(event));
+		capturing({ "rev-parse HEAD": "old", "rev-parse FETCH_HEAD^{commit}": "new" });
+		running({ "clean -fdx": unavailable });
+		await assert.rejects(
+			(packageManager as never as { updateGit(source: object, scope: string): Promise<void> }).updateGit(
+				{ ...source, ref: "v1", pinned: true },
+				"user",
+			),
+			isUnavailable,
+		);
+		assert.deepEqual(events, []);
 	});
 });

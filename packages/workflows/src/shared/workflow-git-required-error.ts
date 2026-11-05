@@ -49,7 +49,7 @@ export class WorkflowGitRequiredError extends Error {
 	readonly hint: string;
 	readonly retryable: boolean;
 	readonly fields: WorkflowGitRequiredFields;
-	declare readonly cause?: GitProvisionError;
+	declare readonly cause: GitProvisionError;
 
 	constructor(fields: WorkflowGitRequiredFields, cause: GitProvisionError) {
 		super(
@@ -69,7 +69,7 @@ export class WorkflowGitRequiredError extends Error {
 			hint: this.hint,
 			retryable: this.retryable,
 			fields: this.fields,
-			...(this.cause === undefined ? {} : { cause: this.cause.toJSON() }),
+			cause: this.cause.toJSON(),
 		};
 	}
 }
@@ -85,10 +85,9 @@ export function isWorkflowGitRequiredError(value: unknown): value is WorkflowGit
 export function rehydrateWorkflowGitRequiredError(
 	payload: SerializedWorkflowGitRequiredError,
 ): WorkflowGitRequiredError {
-	const cause = payload.cause === undefined ? undefined : rehydrateGitProvisionError(payload.cause);
-	if (cause === undefined)
+	if (payload.cause === undefined)
 		throw new TypeError("A serialized WorkflowGitRequiredError must carry its git provisioning cause");
-	return new WorkflowGitRequiredError(payload.fields, cause);
+	return new WorkflowGitRequiredError(payload.fields, rehydrateGitProvisionError(payload.cause));
 }
 
 /** The git provisioning error behind `error`, wrapped for the workflow that needed it; anything else is returned as is. */

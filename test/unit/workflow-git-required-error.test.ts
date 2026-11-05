@@ -73,6 +73,11 @@ describe("WorkflowGitRequiredError (#4322)", () => {
 		assert.ok(isRetryableGitProvisionError(outer));
 	});
 
+	test("a guard given null or a primitive answers false instead of throwing", () => {
+		for (const value of [null, undefined, 0, "git-required", true])
+			assert.equal(isWorkflowGitRequiredError(value), false);
+	});
+
 	test("matches by class and by name and code from another realm", () => {
 		assert.ok(isWorkflowGitRequiredError(new WorkflowGitRequiredError(INPUT, OFFLINE)));
 		assert.ok(isWorkflowGitRequiredError({ name: "WorkflowGitRequiredError", code: "git-required" }));
@@ -97,7 +102,12 @@ describe("WorkflowGitRequiredError (#4322)", () => {
 
 	test("refuses to rehydrate a payload without its git cause", () => {
 		const { cause: _cause, ...withoutCause } = new WorkflowGitRequiredError(INPUT, OFFLINE).toJSON();
-		assert.throws(() => rehydrateWorkflowGitRequiredError(withoutCause), TypeError);
+		assert.throws(
+			() => rehydrateWorkflowGitRequiredError(withoutCause),
+			(error: Error) =>
+				error instanceof TypeError &&
+				error.message === "A serialized WorkflowGitRequiredError must carry its git provisioning cause",
+		);
 	});
 
 	test("wraps a git error or a chain that holds one, and passes anything else through", () => {

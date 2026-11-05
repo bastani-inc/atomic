@@ -639,11 +639,7 @@ export function detectLinuxLibc(): GitLibc {
 /** The command that installs git on this machine, as an error field (os-release is read once per process). */
 function installCommandField(): { readonly installCommand?: string } {
 	const plat = platform();
-	const installCommand = gitInstallCommand(
-		plat,
-		plat === "linux" ? readOsRelease() : undefined,
-		plat === "linux" && detectLinuxLibc().family === "musl",
-	);
+	const installCommand = gitInstallCommand(plat, plat === "linux" ? readOsRelease() : undefined);
 	return installCommand === undefined ? {} : { installCommand };
 }
 
@@ -814,26 +810,24 @@ export function getGitReleaseMarker(): GitReleaseMarker | undefined {
 	return target.supported ? markerOf(target.target) : undefined;
 }
 
+/** The recorded marker; a missing, unreadable or corrupt one counts as an older release, so the install is redone. */
 function readReleaseMarker(layout: GitDistributionLayout): GitReleaseMarker | undefined {
 	try {
 		return JSON.parse(readFileSync(join(layout.root, GIT_RELEASE_MARKER), "utf-8")) as GitReleaseMarker;
-	} catch (error) {
-		if (errnoCode(error) === "ENOENT" || error instanceof SyntaxError) return undefined;
-		throw error;
+	} catch {
+		return undefined;
 	}
 }
 
-/** Whether the installed distribution is the pinned release for this machine; true where nothing is pinned. */
-function isCurrentRelease(layout: GitDistributionLayout): boolean {
-	const expected = getGitReleaseMarker();
-	if (expected === undefined) return true;
+function isCurrentRelease(layout: GitDistributionLayout, target: GitDistributionTarget): boolean {
+	const expected = markerOf(target);
 	const recorded = readReleaseMarker(layout);
 	return recorded?.tag === expected.tag && recorded.asset === expected.asset && recorded.sha256 === expected.sha256;
 }
 
 /** The version of a working install of the pinned release; an install of another release does not count. */
-function probeCurrentGit(layout: GitDistributionLayout): string | undefined {
-	return isCurrentRelease(layout) ? probeProvisionedGit(layout) : undefined;
+function probeCurrentGit(layout: GitDistributionLayout, target: GitDistributionTarget): string | undefined {
+	return isCurrentRelease(layout, target) ? probeProvisionedGit(layout) : undefined;
 }
 
 function probeProvisionedGit(layout: GitDistributionLayout): string | undefined {
@@ -986,7 +980,7 @@ async function selectGit(options: ResolveGitOptions): Promise<GitSelection> {
 async function refreshStaleInstall(selection: GitSelection, options: ResolveGitOptions): Promise<GitSelection> {
 	const layout = selection.layout!;
 	const target = currentGitTarget();
-	if (isCurrentRelease(layout) || !target.supported || isOfflineModeEnabled()) return selection;
+	if (!target.supported || isCurrentRelease(layout, target.target) || isOfflineModeEnabled()) return selection;
 	try {
 		const version = await joinGitProvision(target.target, layout, probeSystemGit(), options);
 		return { path: layout.executable, source: "provisioned", version, layout };
@@ -1203,7 +1197,7 @@ async function acquireGitInstallLock(
 		} catch (error) {
 			if (errnoCode(error) !== "ELOCKED") throw installFailed("stage", target, layout, error, "install lock");
 		}
-		const version = probeCurrentGit(layout);
+		const version = probeCurrentGit(layout, target);
 		if (version !== undefined) return { kind: "installed", version };
 		const now = performance.now();
 		const mtimeMs = statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs;
@@ -1460,7 +1454,7 @@ function promoteGitDistribution(
 	} catch (error) {
 		if (!existsSync(layout.root)) throw installFailed("promote", target, layout, error);
 	}
-	const existing = probeCurrentGit(layout);
+	const existing = probeCurrentGit(layout, target);
 	if (existing !== undefined) return { winner: existing };
 	const replaced = join(
 		dirname(layout.root),
@@ -1509,7 +1503,7 @@ async function installGitDistribution(
 	if (lock.kind === "installed") return lock.version;
 	let primary: unknown;
 	try {
-		const existing = probeCurrentGit(layout);
+		const existing = probeCurrentGit(layout, target);
 		if (existing !== undefined) return existing;
 		return await installUnderLock(target, layout, system, signal, emit);
 	} catch (error) {
