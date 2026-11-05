@@ -10,7 +10,7 @@ import { loadConfig } from "../../packages/subagents/src/extension/config.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { ExtensionConfig, RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
-import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { decisionChatModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 
 const AGENT_DIR_ENV = "ATOMIC_CODING_AGENT_DIR";
 const savedAgentDir = process.env[AGENT_DIR_ENV];
@@ -94,7 +94,7 @@ async function executorFixture(config: ExtensionConfig) {
 	const { registry } = await registeredDecisionRuntime(() => assert.fail("no model is asked"));
 	const ctx = {
 		cwd,
-		model: decisionModel,
+		model: decisionChatModel,
 		thinkingLevel: "low",
 		modelRegistry: registry,
 		sessionManager: {
