@@ -21,7 +21,7 @@ import {
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, isIntercomRoutingMismatchError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -348,10 +348,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function projectGroupOf(ctx: ExtensionContext | null): () => string | undefined {
     return () => (multiNodeRouting() ? projectGroup(ctx?.cwd ?? process.cwd(), createGitEnvironment()) : undefined);
   }
-  async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<void> {
+  async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<boolean> {
     const agentDir = dirname(getIntercomDirPath());
     const routing = await queryBrokerRouting(agentDir);
-    if (!getLiveContext(ctx, generation)) return;
+    if (!getLiveContext(ctx, generation)) throw new Error("Intercom runtime no longer active");
     const actual = routing.acrossMachines;
     brokerRouting = actual;
     const explicit = explicitHomeGroup(config, ctx);
@@ -362,7 +362,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     if (homeRoutedAcrossMachines === null) {
       homeRoutedAcrossMachines = actual;
+      const previousHome = sessionHomeGroup;
       sessionHomeGroup = resolveHomeGroup(config, ctx, projectGroupOf(ctx));
+      if (sessionHomeGroup !== previousHome) clearJoinedGroups();
       if (joinedGroups === null) {
         const restored = persistedJoinedGroups(ctx);
         if (restored) setJoinedGroups(restored);
@@ -371,6 +373,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       throw new IntercomRoutingMismatchError("implicit-default-on-remote-broker", resolveSessionHomeGroup());
     }
     if (actual && explicit === DEFAULT_GROUP) warnExplicitDefaultGroup(ctx);
+    return actual;
   }
   function resolveSessionHomeGroup(): string {
     if (sessionHomeGroup !== null) return sessionHomeGroup;
@@ -1381,7 +1384,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
             await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
-            await settleBrokerRouting(contextAtStart, generationAtStart);
+            const verifiedRouting = await settleBrokerRouting(contextAtStart, generationAtStart);
             const childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
@@ -1392,6 +1395,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               readSubagentMessageSource(runtimeContext?.subagentPolicy),
               // Origin controls workflow authority, not membership or child inheritance.
               resolveSessionHomeGroup(),
+              { acrossMachines: verifiedRouting },
             );
             clientRegistrationGroup = resolveSessionHomeGroup();
             // Termination may have won while registration was in flight.
@@ -1469,7 +1473,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             // The broker retired while this session was registering with it (idle retirement, a restart, a
             // replacement): spawn its successor and register again, rather than failing the start-up or leaving
             // the retry to the one-second background timer.
-            if (isIntercomBrokerRetiring(error)) {
+            if (isIntercomBrokerRetiring(error) || isIntercomRoutingChangedError(error)) {
               retiringDeadline ??= Date.now() + BROKER_RETIRING_RETRY_WINDOW_MS;
               if (
                 Date.now() < retiringDeadline &&

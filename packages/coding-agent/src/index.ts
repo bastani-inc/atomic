@@ -409,6 +409,7 @@ export {
 	type ProjectGroupErrorCode,
 } from "./core/intercom-project-group-error.ts";
 export {
+	IntercomRoutingChangedError,
 	IntercomRoutingError,
 	type IntercomRoutingErrorCode,
 	IntercomRoutingMismatchError,
@@ -417,6 +418,7 @@ export {
 	IntercomRoutingTimeoutError,
 	IntercomRoutingUnavailableError,
 	type IntercomRoutingUnavailableReason,
+	isIntercomRoutingChangedError,
 	isIntercomRoutingError,
 	isIntercomRoutingMismatchError,
 	isIntercomRoutingTimeoutError,

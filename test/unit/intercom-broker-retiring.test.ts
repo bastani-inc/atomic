@@ -100,7 +100,8 @@ async function fakeBroker(onRegister: OnRegister, onLiveRoute?: (socket: net.Soc
 			createMessageReader(
 				(frame) => {
 					const message = frame as Frame;
-					if (message.type === "register") onRegister(socket, server, ++registrations);
+					if (message.type === "register" || message.type === "register_verified")
+						onRegister(socket, server, ++registrations);
 					if (message.type === "register_live_workflow_stage_route") onLiveRoute?.(socket);
 					if (message.type === "list")
 						writeMessage(socket, { type: "sessions", requestId: message.requestId, sessions: [] });

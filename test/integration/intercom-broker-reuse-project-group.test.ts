@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -30,13 +30,13 @@ type LifecycleHandler = (event: { type: string; reason: string }, ctx: Extension
 interface ToolResult {
 	isError: boolean;
 	content: Array<{ text: string }>;
-	details?: { groups?: string[]; code?: string };
+	details?: { groups?: string[]; code?: string; retryable?: boolean };
 }
 interface IntercomTool {
 	name: string;
 	execute(
 		id: string,
-		params: { action: string },
+		params: { action: string; group?: string },
 		signal: AbortSignal | undefined,
 		update: undefined,
 		ctx: ExtensionContext,
@@ -46,7 +46,10 @@ interface IntercomTool {
 let root: string;
 let agentDir: string;
 const cleanups: Array<() => Promise<void> | void> = [];
-const routingQueries = { count: 0 };
+const routingQueries: { count: number; afterQuery: (() => Promise<void>) | undefined } = {
+	count: 0,
+	afterQuery: undefined,
+};
 
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "icrg-"));
@@ -61,15 +64,20 @@ beforeEach(() => {
 	writeFileSync(join(agentDir, "intercom", "config.json"), JSON.stringify({ brokerCommand: "bun", brokerArgs: [] }));
 	vi.resetModules();
 	routingQueries.count = 0;
+	routingQueries.afterQuery = undefined;
 	vi.doMock("../../packages/intercom/broker/broker-routing.js", async () => {
 		const actual = await vi.importActual<typeof import("../../packages/intercom/broker/broker-routing.js")>(
 			"../../packages/intercom/broker/broker-routing.js",
 		);
 		return {
 			...actual,
-			queryBrokerRouting: (queriedAgentDir: string) => {
+			queryBrokerRouting: async (queriedAgentDir: string) => {
 				routingQueries.count += 1;
-				return actual.queryBrokerRouting(queriedAgentDir);
+				const answer = await actual.queryBrokerRouting(queriedAgentDir);
+				const hook = routingQueries.afterQuery;
+				routingQueries.afterQuery = undefined;
+				await hook?.();
+				return answer;
 			},
 		};
 	});
@@ -97,7 +105,7 @@ function sharedStorage(): string {
 }
 
 /** A broker started the way an Atomic process starts one, by a process launched with `ATOMIC_STORAGE`. */
-function startBrokerWithStorage(selection: string): void {
+function startBrokerWithStorage(selection: string): ChildProcess {
 	const broker = spawn("bun", [join(extensionDir, "broker/broker.ts")], {
 		stdio: "ignore",
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_STORAGE: selection },
@@ -105,6 +113,17 @@ function startBrokerWithStorage(selection: string): void {
 	cleanups.push(() => {
 		broker.kill("SIGKILL");
 	});
+	return broker;
+}
+
+async function replaceBrokerWithSharedStorage(old: ChildProcess): Promise<void> {
+	old.kill("SIGKILL");
+	await vi.waitFor(async () => assert.equal((await queryIntercomBroker(agentDir)).state, "stopped"), {
+		timeout: BROKER_WAIT_MS,
+		interval: 25,
+	});
+	startBrokerWithStorage(sharedStorage());
+	await brokerRouting("on");
 }
 
 async function brokerRouting(status: "on" | "off"): Promise<void> {
@@ -137,13 +156,13 @@ function repository(name: string, origin: string): string {
 	return directory;
 }
 
-function sessionContext(cwd: string, sessionId: string, notices?: string[]): ExtensionContext {
+function sessionContext(cwd: string, sessionId: string, notices?: string[], entries: unknown[] = []): ExtensionContext {
 	return {
 		hasUI: notices !== undefined,
 		cwd,
 		isIdle: () => true,
 		ui: { notify: (message: string, level: string) => notices?.push(`${level}: ${message}`), setStatus() {} },
-		sessionManager: { getSessionId: () => sessionId, getBranch: () => [], getEntries: () => [] },
+		sessionManager: { getSessionId: () => sessionId, getBranch: () => [], getEntries: () => entries },
 	} as unknown as ExtensionContext;
 }
 
@@ -166,18 +185,20 @@ async function loadExtension() {
 		events: createEventBus(),
 	};
 	intercomHeavy(pi as never);
+	const run = (ctx: ExtensionContext, params: { action: string; group?: string }): Promise<ToolResult> => {
+		assert.ok(intercomTool, "the intercom tool is registered");
+		return intercomTool.execute(params.action, params, undefined, undefined, ctx);
+	};
 	const extension = {
-		async start(ctx: ExtensionContext) {
+		async start(ctx: ExtensionContext, reason = "startup") {
 			for (const handler of handlers.get("session_start") ?? [])
-				await handler({ type: "session_start", reason: "startup" }, ctx);
+				await handler({ type: "session_start", reason }, ctx);
 		},
-		status(ctx: ExtensionContext): Promise<ToolResult> {
-			assert.ok(intercomTool, "the intercom tool is registered");
-			return intercomTool.execute("status", { action: "status" }, undefined, undefined, ctx);
-		},
-		async stop(ctx: ExtensionContext) {
+		status: (ctx: ExtensionContext): Promise<ToolResult> => run(ctx, { action: "status" }),
+		run,
+		async stop(ctx: ExtensionContext, reason = "quit") {
 			for (const handler of handlers.get("session_shutdown") ?? [])
-				await handler({ type: "session_shutdown", reason: "quit" }, ctx);
+				await handler({ type: "session_shutdown", reason }, ctx);
 		},
 	};
 	return extension;
@@ -273,15 +294,16 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-type StatusFault = "silent" | "unsupported" | "malformed";
+type StatusFault = "silent" | "unsupported" | "malformed" | "multi-node" | "register-unsupported";
 
 interface FaultyBroker {
 	statusRequests: number;
 	registrations: number;
+	verifiedRegistrations: number;
 }
 
 async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
-	const broker: FaultyBroker = { statusRequests: 0, registrations: 0 };
+	const broker: FaultyBroker = { statusRequests: 0, registrations: 0, verifiedRegistrations: 0 };
 	const sockets = new Set<net.Socket>();
 	const server = net.createServer((socket) => {
 		sockets.add(socket);
@@ -293,9 +315,25 @@ async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
 				(message) => {
 					if (typeof message !== "object" || message === null || Array.isArray(message)) return;
 					if (message.type === "register") broker.registrations += 1;
+					if (message.type === "register_verified") {
+						broker.verifiedRegistrations += 1;
+						if (fault === "register-unsupported") socket.destroy();
+					}
 					if (message.type !== "broker_status") return;
 					broker.statusRequests += 1;
 					if (fault === "unsupported") socket.destroy();
+					if (fault === "multi-node" || fault === "register-unsupported") {
+						writeMessage(socket, {
+							type: "broker_status",
+							requestId: message.requestId,
+							report: {
+								pid: 1,
+								sessions: 0,
+								...(fault === "multi-node" ? { storage: { digest: "d", source: "env" } } : {}),
+								multiNode: { status: fault === "multi-node" ? "on" : "off" },
+							},
+						});
+					}
 					if (fault === "malformed") {
 						writeMessage(socket, {
 							type: "broker_status",
@@ -338,6 +376,7 @@ for (const [fault, code] of FAULT_CODES) {
 			const denied = await alpha.status(alphaContext);
 			assert.equal(denied.isError, true, denied.content[0]?.text);
 			assert.equal(denied.details?.code, code);
+			assert.equal(denied.details?.retryable, true);
 			assert.equal(faulty.statusRequests, 1);
 			assert.equal(faulty.registrations, 0);
 
@@ -419,6 +458,123 @@ test(
 		assert.equal(refused.isError, true, refused.content[0]?.text);
 		assert.equal(refused.details?.code, "broker-routing-mismatch");
 		assert.equal(await sessionsOnBroker(), 0);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a broker that turns multi-node between the routing check and the registration refuses the verified registration, so no default member is ever registered (#4320)",
+	async () => {
+		const local = startBrokerWithStorage("");
+		await brokerRouting("off");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "flip-alpha");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+		routingQueries.afterQuery = () => replaceBrokerWithSharedStorage(local);
+
+		const refused = await alpha.status(alphaContext);
+		assert.equal(refused.isError, true, refused.content[0]?.text);
+		assert.equal(refused.details?.code, "broker-routing-mismatch");
+		assert.equal(await sessionsOnBroker(), 0);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a broker that cannot verify the routing a registration expects is never given the default group by a silent unverified register (#4320)",
+	async () => {
+		const faulty = await startFaultyBroker("register-unsupported");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "old-broker");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+
+		const denied = await alpha.status(alphaContext);
+		assert.equal(denied.isError, true, denied.content[0]?.text);
+		assert.equal(denied.details?.code, "broker-routing-unavailable");
+		assert.equal(faulty.verifiedRegistrations, 1);
+		assert.equal(faulty.registrations, 0);
+		await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
+		assert.equal(faulty.registrations, 0);
+	},
+	STUCK_STATUS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an attempt whose session was replaced while it checked the broker registers nothing (#4320)",
+	async () => {
+		const faulty = await startFaultyBroker("multi-node");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "stale-alpha");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext, "reload"));
+		await alpha.start(alphaContext);
+		const queried = Promise.withResolvers<void>();
+		const released = Promise.withResolvers<void>();
+		routingQueries.afterQuery = async () => {
+			queried.resolve();
+			await released.promise;
+		};
+
+		const stale = alpha.status(alphaContext);
+		await queried.promise;
+		await alpha.stop(alphaContext, "reload");
+		await alpha.start(alphaContext, "reload");
+		released.resolve();
+		await new Promise((settle) => setTimeout(settle, 1_000));
+		assert.equal(faulty.registrations + faulty.verifiedRegistrations, 0);
+		await stale.catch(() => {});
+	},
+	STUCK_STATUS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a resumed session whose saved memberships were held under the single-machine home does not rejoin default when its broker routes across machines (#4320)",
+	async () => {
+		startBrokerWithStorage(sharedStorage());
+		await brokerRouting("on");
+		const saved = {
+			type: "custom",
+			customType: "intercom_session_memberships",
+			data: { sessionId: "resumed-alpha", homeGroup: "default", groups: ["default", "reviewers"] },
+		};
+		const alphaContext = sessionContext(
+			repository("alpha", "git@github.com:acme/alpha.git"),
+			"resumed-alpha",
+			undefined,
+			[saved],
+		);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext, "resume");
+
+		const status = await alpha.status(alphaContext);
+		assert.equal(status.isError, false, status.content[0]?.text);
+		assert.deepEqual(status.details?.groups, ["project:acme/alpha"]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a reloaded session that only joined reviewers does not keep the implicit default when its broker now routes across machines (#4320)",
+	async () => {
+		const local = startBrokerWithStorage("");
+		await brokerRouting("off");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "reload-alpha");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+		const joined = await alpha.run(alphaContext, { action: "join", group: "reviewers" });
+		assert.equal(joined.isError, false, joined.content[0]?.text);
+		assert.deepEqual((await alpha.status(alphaContext)).details?.groups, ["default", "reviewers"]);
+
+		await alpha.stop(alphaContext, "reload");
+		await replaceBrokerWithSharedStorage(local);
+		await alpha.start(alphaContext, "reload");
+
+		const status = await alpha.status(alphaContext);
+		assert.equal(status.isError, false, status.content[0]?.text);
+		assert.deepEqual(status.details?.groups, ["project:acme/alpha"]);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

@@ -334,8 +334,10 @@ function isRouteClientRegister(frame: WireFrame): boolean {
 }
 
 function mainRegisters(host: Host): number {
-	return proxy.toBroker.filter(({ frame }) => frame.type === "register" && frame.returnAddress === host.sessionId)
-		.length;
+	return proxy.toBroker.filter(
+		({ frame }) =>
+			(frame.type === "register" || frame.type === "register_verified") && frame.returnAddress === host.sessionId,
+	).length;
 }
 
 test("the routes of every run in one invocation group share one broker connection (#3904)", async () => {

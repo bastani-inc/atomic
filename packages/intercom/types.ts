@@ -161,11 +161,8 @@ export interface SupervisorRegistration {
 }
 
 
-export type ClientMessage =
-	| { type: "health"; requestId: string }
-	| {
-			type: "register";
-			session: Omit<SessionInfo, "id">;
+export interface RegisterRequest {
+	session: Omit<SessionInfo, "id">;
 			/** Internal host-owned identity retained across broker reconnects. */
 			returnAddress?: string;
 			/**
@@ -179,7 +176,16 @@ export type ClientMessage =
 			supervisorOwnerToken?: string;
 			/** #3761: this recipient sends `received` once it has saved each message; `delivered` waits for it. */
 			acknowledgesReceipt?: true;
-	  }
+}
+
+export type ClientMessage =
+	| { type: "health"; requestId: string }
+	| ({ type: "register" } & RegisterRequest)
+	| ({
+			type: "register_verified";
+			/** The registration is refused, before it takes effect, unless the broker's multi-node routing is still this. */
+			expectedRouting: { acrossMachines: boolean };
+	  } & RegisterRequest)
 	| { type: "unregister" }
 	/** #3761: the recipient saved this message; it ignores a copy of it sent again. */
 	| { type: "received"; messageId: string }

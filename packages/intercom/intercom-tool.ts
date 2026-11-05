@@ -1,4 +1,4 @@
-import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError } from "@bastani/atomic";
+import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError, isRetryableIntercomRoutingError } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
@@ -341,7 +341,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       try {
         connectedClient = await ensureConnected("tool");
       } catch (error) {
-        const retainedToken = retryToken !== undefined && isRecoverableIntercomDisconnect(error) ? retryToken : undefined;
+        const retryable = isRecoverableIntercomDisconnect(error) || isRetryableIntercomRoutingError(error);
+        const retainedToken = retryToken !== undefined && retryable ? retryToken : undefined;
         return {
           content: [{
             type: "text",
@@ -350,7 +351,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           isError: true,
           details: {
             ...retryErrorDetails(retainedToken),
-            retryable: isRecoverableIntercomDisconnect(error),
+            retryable,
             ...(isIntercomRoutingError(error) || isProjectGroupError(error) ? { code: error.code, hint: error.hint } : {}),
           },
         };

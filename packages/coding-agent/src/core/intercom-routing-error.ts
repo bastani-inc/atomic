@@ -1,20 +1,24 @@
 export type IntercomRoutingErrorCode =
 	| "broker-routing-mismatch"
 	| "broker-routing-unavailable"
-	| "broker-routing-timeout";
+	| "broker-routing-timeout"
+	| "broker-routing-changed";
 
 export type IntercomRoutingMismatchReason = "implicit-default-on-remote-broker" | "shared-storage-not-on-broker";
 
 export type IntercomRoutingUnavailableReason = "unsupported" | "malformed";
 
-export type IntercomRoutingPhase = "broker_status";
+export type IntercomRoutingPhase = "broker_status" | "register";
 
 const ROUTING_ERROR_CODES: ReadonlySet<string> = new Set<IntercomRoutingErrorCode>([
 	"broker-routing-mismatch",
 	"broker-routing-unavailable",
 	"broker-routing-timeout",
+	"broker-routing-changed",
 ]);
 
+const RETRY_HINT =
+	"The session checks the broker again and retries; run `atomic intercom restart` if it keeps failing.";
 const REPLACE_BROKER_HINT = "Run `atomic intercom restart` to replace the broker, then retry.";
 const MISMATCH_HINTS: Readonly<Record<IntercomRoutingMismatchReason, string>> = {
 	"implicit-default-on-remote-broker":
@@ -107,6 +111,22 @@ export class IntercomRoutingTimeoutError extends IntercomRoutingError {
 	}
 }
 
+export class IntercomRoutingChangedError extends IntercomRoutingError {
+	override readonly name = "IntercomRoutingChangedError" as const;
+	declare readonly code: "broker-routing-changed";
+	declare readonly retryable: true;
+	readonly expectedAcrossMachines: boolean;
+
+	constructor(expectedAcrossMachines: boolean) {
+		super(
+			"broker-routing-changed",
+			`The Intercom broker changed how it routes between this session's check and its registration, so the registration was refused before it took effect (broker-routing-changed). ${RETRY_HINT}`,
+			{ hint: RETRY_HINT, retryable: true },
+		);
+		this.expectedAcrossMachines = expectedAcrossMachines;
+	}
+}
+
 function structural(error: unknown, name: string, code: IntercomRoutingErrorCode): boolean {
 	if (typeof error !== "object" || error === null) return false;
 	const candidate = error as { readonly name?: unknown; readonly code?: unknown };
@@ -143,6 +163,13 @@ export function isIntercomRoutingTimeoutError(error: unknown): error is Intercom
 	return (
 		error instanceof IntercomRoutingTimeoutError ||
 		structural(error, "IntercomRoutingTimeoutError", "broker-routing-timeout")
+	);
+}
+
+export function isIntercomRoutingChangedError(error: unknown): error is IntercomRoutingChangedError {
+	return (
+		error instanceof IntercomRoutingChangedError ||
+		structural(error, "IntercomRoutingChangedError", "broker-routing-changed")
 	);
 }
 

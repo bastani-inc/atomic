@@ -6,6 +6,9 @@ import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
+vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false }),
+}));
 afterEach(() => vi.restoreAllMocks());
 
 type LifecycleHandler = (event: { type: string; reason: string }, ctx: ExtensionContext) => unknown;
