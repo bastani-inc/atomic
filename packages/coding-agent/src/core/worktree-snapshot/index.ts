@@ -46,7 +46,7 @@ export { type CollectSnapshotGarbageOptions, collectSnapshotGarbage, DEFAULT_BLO
 export { type GitExecutable, type GitExecutableResolver, setWorktreeSnapshotGit } from "./git.ts";
 export { isHeadOnlyAdvance } from "./head-advance.ts";
 export { canonicalizeWorktreePath } from "./paths.ts";
-export { SNAPSHOT_DENY_PATTERNS, SNAPSHOT_IGNORE_FILE } from "./policy.ts";
+export { SNAPSHOT_DENY_PATTERNS, SNAPSHOT_IGNORE_FILE, SNAPSHOT_KEY_FILE_PATTERNS } from "./policy.ts";
 export {
 	defaultWorktreeSnapshotStoreDir,
 	type RestoredWorktree,
