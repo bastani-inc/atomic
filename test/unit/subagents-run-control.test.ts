@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentSession, DetachedToolCall, ExtensionContext } from "@bastani/atomic";
+import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import {
 	AgentWakeDispatcher,
@@ -26,16 +26,24 @@ import {
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
-import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
+import {
+	bindReleasedChildWakes,
+	RELEASED_CHILD_WAKE_FAILURE_LABEL,
+} from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
 	lateToolResultMessage,
+	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
-import { subagentChildCardRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	observeSubagentChildRecord,
+	subagentChildCardRecord,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
+	currentWakeFailure,
 	isSubagentChildRecord,
 	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
@@ -44,6 +52,7 @@ import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
+	subagentChildRecordsAppended,
 	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
 	WORKFLOW_STAGE_END_CHILDREN_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
@@ -69,11 +78,12 @@ import {
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
-import type {
-	RunSyncOptions,
-	SingleResult,
-	SubagentToolResult,
-	TestSessionQueue,
+import {
+	type RunSyncOptions,
+	type SingleResult,
+	SUBAGENT_COMPLETE_EVENT,
+	type SubagentToolResult,
+	type TestSessionQueue,
 } from "../../packages/subagents/src/shared/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -156,6 +166,10 @@ interface Harness {
 	releaseGate?: PromiseWithResolvers<void>;
 	releasedPendingMessages?: string[];
 	disposeGate?: PromiseWithResolvers<void>;
+	readonly notices: Array<Record<string, string | number>>;
+	redispatchCalls: DetachedToolCall[];
+	redispatchGate?: PromiseWithResolvers<void>;
+	readonly redispatching: { active: number; most: number };
 	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
@@ -201,6 +215,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const authorizations: string[] = [];
 	const holds: Harness["holds"] = [];
 	const releasedChildRequests: Harness["releasedChildRequests"] = [];
+	const notices: Harness["notices"] = [];
 	const events = {
 		on: () => () => {},
 		emit(channel: string, data: object) {
@@ -236,6 +251,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			}
 			if (channel === SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT)
 				releasedChildRequests.push({ acknowledge: (data as { childName: string }).childName });
+			if (channel === SUBAGENT_COMPLETE_EVENT) notices.push(data as Record<string, string | number>);
 			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReleaseRestoringChildRequest;
 				holds.push({ release: request.capability, ...(request.gone === undefined ? {} : { gone: request.gone }) });
@@ -309,6 +325,9 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		resumedRunsWait: false,
 		releaseOriginal: false,
 		releasedCalls: [],
+		notices,
+		redispatchCalls: [],
+		redispatching: { active: 0, most: 0 },
 		agentDefined: true,
 		agents: [agent],
 		finishOn: new Map(),
@@ -362,6 +381,26 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
 		const original = task === ORIGINAL_TASK;
+		if (options.redispatchDetachedCalls) {
+			state.redispatching.active += 1;
+			state.redispatching.most = Math.max(state.redispatching.most, state.redispatching.active);
+			await state.redispatchGate?.promise;
+			const reopened = await runSync(parentCwd, agents, agentName, task, {
+				...options,
+				redispatchDetachedCalls: false,
+				skipTaskPrompt: true,
+				testSession: { output: "" },
+			});
+			state.redispatching.active -= 1;
+			const calls = state.redispatchCalls;
+			return {
+				...reopened,
+				status: "interrupted",
+				interrupted: true,
+				released: { waitingOn: calls.map(({ toolCallId, toolName }) => ({ toolCallId, toolName })), calls },
+				...(options.resumeFollowUps?.length ? { pendingMessages: options.resumeFollowUps } : {}),
+			};
+		}
 		if (original && state.releaseOriginal) {
 			const waiting = await runSync(parentCwd, agents, agentName, task, {
 				...options,
@@ -3485,4 +3524,158 @@ test("a wake waits until the child's previous run has closed its session before 
 
 	assert.equal(runsWhenClosed, runsBeforeWake, "no wake ran before the previous run's session closed");
 	assert.equal(h.runs.length, runsBeforeWake + 1);
+});
+
+async function untilNotices(h: Harness, count: number): Promise<number> {
+	for (let turn = 0; turn < DRAIN_TURNS && h.notices.length < count; turn++)
+		await new Promise((resolve) => setImmediate(resolve));
+	return h.notices.length;
+}
+
+test("a wake that cannot restore its child keeps what it carried in the child's record with a typed failure, tells the owner once, and resume then delivers it once (#4326)", async () => {
+	const h = harness();
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	h.agentDefined = false;
+	const green = waitResult("CI green");
+	h.releaseOriginal = true;
+	h.releasedCalls = [settledCall(green)];
+	await settled(h, await h.admit("wakefail1"));
+	h.releaseOriginal = false;
+
+	const failed = await h.waitForLatest("wakefail1:0", (record) => record.wakeFailure?.reported === true);
+	assert.equal(failed.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
+	assert.deepEqual(failed.heldToolResults, [green], "the result the failed wake carried is kept");
+	assert.deepEqual([failed.wakeFailure?.code, failed.wakeFailure?.taskId], ["child-unrestorable", failed.taskId]);
+	assert.match(failed.wakeFailure?.reason ?? "", /worker/);
+	assert.match(failed.wakeFailure?.hint ?? "", /"resume"/);
+	assert.equal(await untilNotices(h, 1), 1);
+	assert.deepEqual(
+		[h.notices[0]?.noticeLabel, h.notices[0]?.status, h.notices[0]?.agent],
+		[RELEASED_CHILD_WAKE_FAILURE_LABEL, "error", "worker"],
+	);
+	assert.match(String(h.notices[0]?.summary), /\(child-unrestorable\)/);
+
+	void dispatcher
+		.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "wakefail1:0"), { id: "intercom:2", kind: "intercom" })
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
+	assert.equal(await drained(dispatcher), 0);
+	await subagentChildRecordsAppended(h.sessionManager.getSessionId());
+	assert.equal(await untilNotices(h, 2), 1, "the owner is told once, however often the wake fails");
+	const status = await h.call({ action: "status", id: "wakefail1:0" });
+	assert.match(
+		text(status),
+		/released · waiting on wait_for_ci \(ci-1\);[^\n]*Its last wake failed: [^\n]*\(child-unrestorable\)/,
+	);
+
+	h.agentDefined = true;
+	const resumed = await h.call({ action: "resume", id: "wakefail1:0" });
+	await settled(h, resumedTaskId(resumed));
+	const done = await h.waitForLatest("wakefail1:0", clearedOk);
+	assert.equal(currentWakeFailure(done), undefined, "a run that took the results clears the failure");
+	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+async function releasedByEarlierProcess(
+	h: Harness,
+	runId: string,
+	extra: Partial<SubagentChildRecord> = {},
+): Promise<SubagentChildRecord> {
+	h.releaseOriginal = true;
+	await settled(h, await h.admit(runId));
+	const released = await h.waitForLatest(
+		`${runId}:0`,
+		(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+	h.releaseOriginal = false;
+	assert.equal(released.ownerGeneration, SUBAGENT_OWNER_GENERATION);
+	const earlier: SubagentChildRecord = { ...released, ownerGeneration: "earlier-process", ...extra };
+	await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, earlier);
+	observeSubagentChildRecord(earlier);
+	return earlier;
+}
+
+function bindProcessWakes(h: Harness): AgentWakeDispatcher {
+	const dispatcher = agentWakeDispatcher();
+	h.wakeDispatcher = dispatcher;
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	return dispatcher;
+}
+
+test("an owner that restarts starts each call its released children waited on again, once, releases them again on this process, and the new call's result wakes them (#4326)", async () => {
+	const h = harness();
+	const earlier = await releasedByEarlierProcess(h, "restart1");
+	const redispatched = Promise.withResolvers<DetachedToolResult>();
+	h.redispatchCalls = [{ ...RELEASED_CALL, result: redispatched.promise, abort() {} }];
+
+	const dispatcher = bindProcessWakes(h);
+	const again = await h.waitForLatest(
+		"restart1:0",
+		(record) =>
+			record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS &&
+			record.ownerGeneration === SUBAGENT_OWNER_GENERATION,
+	);
+	assert.notEqual(again.taskId, earlier.taskId);
+	assert.deepEqual(again.waitingOn, [RELEASED_CALL]);
+	const redispatches = h.runs.filter((run) => run.options.redispatchDetachedCalls);
+	assert.equal(redispatches.length, 1);
+	assert.deepEqual(
+		[redispatches[0]?.options.resumeToolResults, redispatches[0]?.options.resumeFollowUps],
+		[undefined, undefined],
+		"nothing is answered or prompted: only the call starts again",
+	);
+
+	const green = waitResult("CI green after the restart");
+	redispatched.resolve(green);
+	const woken = await h.waitForLatest("restart1:0", (record) => record.taskId !== again.taskId && clearedOk(record));
+	assert.ok(woken.taskId);
+	await settled(h, woken.taskId);
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1, "started again once");
+});
+
+test("a child of the earlier process whose call result is already held is woken with it instead of starting the call again (#4326)", async () => {
+	const h = harness();
+	const green = waitResult("CI green before the restart");
+	await releasedByEarlierProcess(h, "heldrestart1", { heldToolResults: [green] });
+
+	bindProcessWakes(h);
+	await h.waitForLatest("heldrestart1:0", clearedOk);
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 0);
+	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+test("binding the owner again in the process that released its children starts nothing again (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "samegen1");
+	const runs = h.runs.length;
+
+	bindProcessWakes(h);
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.length, runs);
+	assert.equal(h.latest("samegen1:0")?.ownerGeneration, SUBAGENT_OWNER_GENERATION);
+});
+
+test("an owner restart starts the calls of its earlier released children at most parallel.runningCapacity at a time (#4326)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	await releasedByEarlierProcess(h, "throttle1");
+	await releasedByEarlierProcess(h, "throttle2");
+	h.redispatchGate = Promise.withResolvers<void>();
+
+	bindProcessWakes(h);
+	for (let turn = 0; turn < DRAIN_TURNS && h.redispatching.active === 0; turn++)
+		await new Promise((resolve) => setImmediate(resolve));
+	for (let turn = 0; turn < DRAIN_TURNS; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(h.redispatching.active, 1, "the second child waits for the first");
+	h.redispatchGate.resolve();
+
+	for (const childId of ["throttle1:0", "throttle2:0"])
+		await h.waitForLatest(childId, (record) => record.ownerGeneration === SUBAGENT_OWNER_GENERATION);
+	assert.equal(h.redispatching.most, 1);
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 2);
 });

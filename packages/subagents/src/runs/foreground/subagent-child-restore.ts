@@ -120,6 +120,7 @@ export interface SubagentChildResumeRequest {
 	readonly toolResults?: readonly DetachedToolResult[];
 	/** Only `toolResults` woke the child: nothing is prompted unless a result came too late for its call. */
 	readonly promptless?: boolean;
+	readonly redispatch?: true;
 }
 
 export type SubagentChildRestoreOutcome =
@@ -414,7 +415,9 @@ async function relaunchChild(
 			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
 		);
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
-	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
+	const redispatch = resume?.redispatch === true && !fresh && sessionManager !== undefined;
+	const supervisorAuthorization =
+		redispatch || (childOptions && !childAllowsIntercom(childOptions)) ? undefined : hold?.authorization;
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
 	if (!supervisorAuthorization) await hold?.release();
 	const intercomGroup = launchIntercomGroup(record, ctx);
@@ -424,6 +427,7 @@ async function relaunchChild(
 		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
 	const promptless = resume?.promptless === true && heldMessages.length === 0;
 	const wakePlan =
+		!redispatch &&
 		!fresh &&
 		sessionManager &&
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
@@ -432,7 +436,11 @@ async function relaunchChild(
 			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, !promptless)
 			: undefined;
 	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
-	const prompts = wakePlan ? wakePrompts(basePrompts, wakePlan.lateMessages, promptless) : basePrompts;
+	const prompts = redispatch
+		? { task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT, followUps: heldMessages, taskLiteral: true }
+		: wakePlan
+			? wakePrompts(basePrompts, wakePlan.lateMessages, promptless)
+			: basePrompts;
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -460,13 +468,16 @@ async function relaunchChild(
 				}
 			: {}),
 		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),
+		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
 		workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 		...(record.intercomTarget ? { intercomSessionName: record.intercomTarget } : {}),
 		...(supervisorAuthorization ? { supervisorAuthorization } : {}),
-		...(bridge?.active && bridge.orchestratorTarget ? { orchestratorIntercomTarget: bridge.orchestratorTarget } : {}),
+		...(bridge?.active && bridge.orchestratorTarget && !redispatch
+			? { orchestratorIntercomTarget: bridge.orchestratorTarget }
+			: {}),
 		...(intercomGroup ? { intercomGroup } : {}),
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
 		knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),

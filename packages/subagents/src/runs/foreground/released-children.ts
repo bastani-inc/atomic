@@ -11,7 +11,7 @@ import {
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
-import { ReleasedChildError } from "./released-child-errors.js";
+import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
 	recordSubagentChildHeldToolResults,
@@ -45,6 +45,49 @@ export function subagentWakeNamespace(ownerSessionId: string): string {
 /** The wake key of one child, `subagents/<owner session id>:<child id>`. */
 export function subagentWakeKey(ownerSessionId: string, childId: string): string {
 	return `${subagentWakeNamespace(ownerSessionId)}:${childId}`;
+}
+
+export const SUBAGENT_OWNER_GENERATION = randomUUID();
+
+const REDISPATCH_WAKE_PREFIX = "redispatch:";
+
+function isRedispatchWake(wake: AgentWake): boolean {
+	return wake.id.startsWith(REDISPATCH_WAKE_PREFIX);
+}
+
+function waitsOnHeldResult(record: SubagentChildRecord): boolean {
+	return (record.waitingOn ?? []).some((call) =>
+		(record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId),
+	);
+}
+
+function releasedByEarlierProcess(record: SubagentChildRecord): boolean {
+	return (
+		record.state === "terminal" &&
+		record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS &&
+		record.ownerGeneration !== SUBAGENT_OWNER_GENERATION
+	);
+}
+
+export function needsRedispatch(record: SubagentChildRecord): boolean {
+	return releasedByEarlierProcess(record) && (record.waitingOn?.length ?? 0) > 0 && !waitsOnHeldResult(record);
+}
+
+export function wakeReleasedChildrenOfEarlierProcess(
+	dispatcher: AgentWakeDispatcher,
+	ownerSessionId: string,
+	records: readonly SubagentChildRecord[],
+): void {
+	for (const record of records) {
+		if (!releasedByEarlierProcess(record)) continue;
+		const wakeKey = subagentWakeKey(ownerSessionId, record.childId);
+		if (needsRedispatch(record))
+			void dispatcher
+				.deliver(wakeKey, { id: `${REDISPATCH_WAKE_PREFIX}${SUBAGENT_OWNER_GENERATION}`, kind: "tool-result" })
+				.catch((error) => dispatcher.reportUnobservedFailure(error));
+		else if (waitsOnHeldResult(record))
+			wakeReleasedChildWithHeldResults(dispatcher, wakeKey, SUBAGENT_OWNER_GENERATION);
+	}
 }
 
 /**
@@ -209,29 +252,71 @@ export function decideReleasedChildWake(
 	return toolResults.length === 0 ? { kind: "ignore" } : { kind: "wake", toolResults, prompt: false };
 }
 
-/** Wakes this owner's children through `wake`; returns the function that stops handling them. */
+export interface ReleasedChildWakeActions {
+	readonly wake: (
+		record: SubagentChildRecord,
+		decision: Extract<ReleasedChildWakeDecision, { kind: "wake" }>,
+	) => Promise<void>;
+	readonly hold: (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void>;
+	readonly redispatch?: (record: SubagentChildRecord) => Promise<void>;
+	readonly fail?: (
+		record: SubagentChildRecord,
+		toolResults: readonly DetachedToolResult[],
+		failure: ReleasedChildError,
+	) => Promise<void>;
+}
+
+function wakeFailureOf(error: Error, childId: string): ReleasedChildError {
+	return isReleasedChildError(error)
+		? error
+		: new ReleasedChildError("wake-failed", { childId, reason: error.message }, { cause: error });
+}
+
+/**
+ * Wakes this owner's children through `actions`; returns the function that stops handling them. A wake that fails
+ * hands the batch's results and the failure to `actions.fail` before it fails, so nothing it carried is lost.
+ */
 export function handleReleasedChildWakes(
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
-	wake: (record: SubagentChildRecord, decision: Extract<ReleasedChildWakeDecision, { kind: "wake" }>) => Promise<void>,
-	hold: (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void>,
+	actions: ReleasedChildWakeActions,
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
+	maxConcurrent?: number,
 ): () => void {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
+	const latest = async (childId: string): Promise<SubagentChildRecord> => {
+		await subagentChildRecordsAppended(ownerSessionId);
+		indexSubagentChildOwner(ctx);
+		const record = subagentChildRecordOf(ownerSessionId, childId);
+		if (record === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
+		return record;
+	};
 	// A reload's newer extension generation takes the owner's children over before the older one shuts down.
 	return dispatcher.handle(
 		namespace,
 		async (wakeKey, wakes) => {
 			const childId = wakeKey.slice(namespace.length + 1);
-			await subagentChildRecordsAppended(ownerSessionId);
-			indexSubagentChildOwner(ctx);
-			const record = subagentChildRecordOf(ownerSessionId, childId);
-			if (record === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
-			const decision = decideReleasedChildWake(record, wakes);
-			if (decision.kind === "hold") await hold(record, decision.toolResults);
-			else if (decision.kind === "wake") await wake(record, decision);
+			const record = await latest(childId);
+			try {
+				const redispatch =
+					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);
+				if (redispatch) await actions.redispatch?.(record);
+				const others = wakes.filter((wake) => !isRedispatchWake(wake));
+				if (others.length === 0) return;
+				const current = redispatch ? await latest(childId) : record;
+				const decision = decideReleasedChildWake(current, others);
+				if (decision.kind === "hold") await actions.hold(current, decision.toolResults);
+				else if (decision.kind === "wake") await actions.wake(current, decision);
+			} catch (error) {
+				const results = wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
+				await actions.fail?.(record, results, wakeFailureOf(error as Error, childId)).catch((secondary: Error) => {
+					subagentChildRecordFailures.count += 1;
+					subagentChildRecordFailures.last = wakeFailureOf(secondary, childId);
+				});
+				throw error;
+			}
 		},
-		{ replace: true },
+		{ replace: true, ...(maxConcurrent === undefined ? {} : { maxConcurrent }) },
 	);
 }
 

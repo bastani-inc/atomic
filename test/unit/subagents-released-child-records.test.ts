@@ -51,6 +51,7 @@ test("each released-child error carries its class, code, safe fields, hint and r
 				/session store/,
 			],
 			["hold-failed", { childName: "subagent-worker-run-1" }, true, /Intercom is connected/],
+			["wake-failed", { childId: "run:0", reason: "the store is closed" }, true, /results are kept/],
 		];
 	for (const [code, fields, retryable, hint] of cases) {
 		const cause = new Error("lower level");

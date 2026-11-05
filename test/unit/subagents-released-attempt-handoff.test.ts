@@ -172,3 +172,56 @@ test(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+test(
+	"a child reopened after its owner restarted starts its detached call again under the same id and is released again without a model request (#4326)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
+		env.faux.setResponses([waitCall()]);
+		const released = await runSingleInProcess(env.root, agent, "watch CI", {
+			...env.options("release-redispatch", {
+				sessionManager: childSession,
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+			}),
+		});
+		assert.ok(released.released);
+		assert.equal(env.answers.length, 1);
+		const roles = async () =>
+			(await SessionManager.open(store, childSession.getSessionId()))
+				.buildSessionProjection()
+				.messages.map((message) => message.role)
+				.filter((role) => role !== "system");
+		const before = await roles();
+		env.faux.setResponses([fauxAssistantMessage("never requested")]);
+
+		const again = await runSingleInProcess(env.root, agent, "unused", {
+			...env.options("release-redispatch", {
+				sessionManager: await SessionManager.open(store, childSession.getSessionId()),
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+				redispatchDetachedCalls: true,
+				resumeFollowUps: ["Check the flaky test too."],
+				resumeTaskLiteral: true,
+			}),
+		});
+
+		assert.equal(again.status, "interrupted");
+		assert.deepEqual(again.released?.waitingOn, [{ toolCallId: "ci-1", toolName: "wait_for_ci" }]);
+		assert.equal(env.answers.length, 2, "the call ran again");
+		assert.equal(env.faux.getPendingResponseCount(), 1, "no model request was made");
+		assert.deepEqual(await roles(), before, "nothing was added to the transcript");
+		assert.deepEqual(again.pendingMessages, ["Check the flaky test too."], "held messages are kept for its wake");
+		env.answers[1]?.({ content: [{ type: "text", text: "green" }], details: undefined });
+		const [call] = again.released?.calls ?? [];
+		assert.ok(call);
+		const result: DetachedToolResult = await call.result;
+		assert.deepEqual(
+			[result.toolCallId, result.isError, result.result.content],
+			["ci-1", false, [{ type: "text", text: "green" }]],
+		);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);

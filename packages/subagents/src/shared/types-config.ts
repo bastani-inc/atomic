@@ -148,6 +148,7 @@ export interface RunSyncOptions {
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
 	wakeToolResultIds?: readonly string[];
+	redispatchDetachedCalls?: boolean;
 	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
 	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;
 	/** Told the model and thinking level the child's session started on, and its leaf entry then, as `onChildSession`. */

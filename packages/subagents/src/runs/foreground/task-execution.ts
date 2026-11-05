@@ -29,6 +29,7 @@ import { reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
+	SUBAGENT_OWNER_GENERATION,
 	subagentReleasePolicy,
 	subagentWakeKey,
 	wakeReleasedChildWithHeldResults,
@@ -435,6 +436,7 @@ export async function runAgentTask(input: {
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(waitingOn ? { waitingOn } : {}),
 			...(releasedIntercomId === undefined ? {} : { releasedIntercomId }),
+			...(terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ? { ownerGeneration: SUBAGENT_OWNER_GENERATION } : {}),
 			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
 			...(launch
 				? { launch }

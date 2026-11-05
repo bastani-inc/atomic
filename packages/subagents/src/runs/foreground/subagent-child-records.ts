@@ -10,7 +10,7 @@ import type { AgentSource } from "../../agents/agent-types.js";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
-import { ReleasedChildError } from "./released-child-errors.js";
+import { ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	isSubagentChildRecord,
@@ -156,6 +156,20 @@ export interface SubagentChildRecord {
 	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
 	 */
 	readonly heldToolResults?: readonly DetachedToolResult[];
+	readonly ownerGeneration?: string;
+	readonly wakeFailure?: SubagentChildWakeFailure;
+}
+
+export interface SubagentChildWakeFailure {
+	readonly taskId?: string;
+	readonly code: ReleasedChildErrorCode;
+	readonly reason: string;
+	readonly hint: string;
+	readonly reported?: true;
+}
+
+export function currentWakeFailure(record: SubagentChildRecord): SubagentChildWakeFailure | undefined {
+	return record.wakeFailure?.taskId === record.taskId ? record.wakeFailure : undefined;
 }
 
 /**
@@ -614,13 +628,10 @@ export async function recordSubagentChildHeldToolResults(
 	await inOrder(ownerSessionId, async () => {
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
-		const held = latest.heldToolResults ?? [];
-		const added = heldToolResults.filter(
-			(result, index) =>
-				!held.some((kept) => kept.toolCallId === result.toolCallId) &&
-				heldToolResults.findIndex((other) => other.toolCallId === result.toolCallId) === index,
-		);
-		const record: SubagentChildRecord = { ...latest, heldToolResults: [...held, ...added] };
+		const record: SubagentChildRecord = {
+			...latest,
+			heldToolResults: withHeldToolResults(latest.heldToolResults, heldToolResults),
+		};
 		observeSubagentChildRecord(record);
 		try {
 			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
@@ -653,6 +664,75 @@ export async function clearSubagentChildHeldToolResults(
 	}).catch((error: ReleasedChildError) => {
 		subagentChildRecordFailures.count += 1;
 		subagentChildRecordFailures.last = error;
+	});
+}
+
+function withHeldToolResults(
+	held: readonly DetachedToolResult[] | undefined,
+	added: readonly DetachedToolResult[],
+): DetachedToolResult[] {
+	const kept = [...(held ?? [])];
+	for (const result of added)
+		if (!kept.some((existing) => existing.toolCallId === result.toolCallId)) kept.push(result);
+	return kept;
+}
+
+async function appendInTurn(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	next: (latest: SubagentChildRecord) => SubagentChildRecord | undefined,
+): Promise<SubagentChildRecord | undefined> {
+	let written: SubagentChildRecord | undefined;
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
+		const record = next(latest);
+		if (record === undefined) return;
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		written = record;
+	});
+	return written;
+}
+
+export async function recordSubagentChildWakeFailure(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	toolResults: readonly DetachedToolResult[],
+	failure: ReleasedChildError,
+): Promise<void> {
+	await appendInTurn(pi, ownerSessionId, childId, (latest) => {
+		const reported = currentWakeFailure(latest)?.reported;
+		return {
+			...latest,
+			heldToolResults: withHeldToolResults(latest.heldToolResults, toolResults),
+			wakeFailure: {
+				...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
+				code: failure.code,
+				reason: failure.fields.reason ?? failure.message,
+				hint: failure.hint,
+				...(reported ? { reported } : {}),
+			},
+		};
+	});
+}
+
+export function reportSubagentChildWakeFailure(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+): Promise<SubagentChildRecord | undefined> {
+	return appendInTurn(pi, ownerSessionId, childId, (latest) => {
+		const failure = currentWakeFailure(latest);
+		return failure === undefined || failure.reported
+			? undefined
+			: { ...latest, wakeFailure: { ...failure, reported: true } };
 	});
 }
 

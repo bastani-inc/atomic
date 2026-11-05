@@ -206,6 +206,7 @@ export interface ChildSpec {
 	readonly resumeToolResults?: readonly DetachedToolResult[];
 	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
 	readonly skipTaskPrompt?: boolean;
+	readonly redispatchDetachedCalls?: boolean;
 }
 
 /** When a child is released: see {@link ChildSpec.releaseWhenWaiting}. */
@@ -1751,40 +1752,45 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
-			if (!termination && admitted.spec.resumeToolResults?.length) {
-				await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
-				taskHooks?.toolResultsSaved?.(admitted.spec.resumeToolResults.map((result) => result.toolCallId));
-			}
-			for (const followUp of admitted.spec.resumeFollowUps ?? []) {
-				if (termination) break;
-				// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
-				await session.followUp(followUp, undefined, LITERAL_TEXT);
-				unsent.splice(1, 1);
-			}
-			if (!termination) {
-				unsent.splice(0, 1);
-				if (admitted.spec.skipTaskPrompt) startBudget.end();
-				else {
-					const prompting = session.prompt(
-						admitted.spec.task,
-						admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-					);
-					// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
-					// extension, ends dispatch too.
-					void prompting.then(markTaskDispatched, markTaskDispatched);
-					await beforeStartDeadline(taskDispatched);
-					startBudget.end();
-					await prompting;
+			const redispatched =
+				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
+			if (redispatched !== undefined) unsent.splice(0, 1);
+			else {
+				if (!termination && admitted.spec.resumeToolResults?.length) {
+					await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
+					taskHooks?.toolResultsSaved?.(admitted.spec.resumeToolResults.map((result) => result.toolCallId));
+				}
+				for (const followUp of admitted.spec.resumeFollowUps ?? []) {
+					if (termination) break;
+					// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
+					await session.followUp(followUp, undefined, LITERAL_TEXT);
+					unsent.splice(1, 1);
+				}
+				if (!termination) {
+					unsent.splice(0, 1);
+					if (admitted.spec.skipTaskPrompt) startBudget.end();
+					else {
+						const prompting = session.prompt(
+							admitted.spec.task,
+							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
+						);
+						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
+						// extension, ends dispatch too.
+						void prompting.then(markTaskDispatched, markTaskDispatched);
+						await beforeStartDeadline(taskDispatched);
+						startBudget.end();
+						await prompting;
+					}
 				}
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
 			// Only a session given a release policy detaches calls.
-			const detached = release === undefined ? [] : session.takeDetachedToolCalls();
+			const detached = redispatched ?? (release === undefined ? [] : session.takeDetachedToolCalls());
 			// A stopped child is not waiting on anything: what it detached ends with it.
 			if (termination !== undefined) for (const call of detached) call.abort(termination);
-			else if (detached.length > 0) {
+			else if (detached.length > 0 || redispatched !== undefined) {
 				releasedAttempt = true;
 				const waitingOn = detached.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName }));
 				this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));

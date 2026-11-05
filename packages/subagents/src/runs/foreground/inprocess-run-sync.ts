@@ -407,6 +407,7 @@ export async function runSingleInProcess(
 		...(options.releaseWhenWaiting ? { releaseWhenWaiting: options.releaseWhenWaiting } : {}),
 		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
 		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),
+		...(options.redispatchDetachedCalls ? { redispatchDetachedCalls: true } : {}),
 		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),
 		...(options.onChildLaunch ? { onChildLaunch: options.onChildLaunch } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),

@@ -3,7 +3,8 @@ export type ReleasedChildErrorCode =
 	| "child-unrestorable"
 	| "record-append-failed"
 	| "hold-failed"
-	| "completion-not-held";
+	| "completion-not-held"
+	| "wake-failed";
 
 /** Ids and reasons only, so an error can be logged, serialized and shown without exposing prompts or results. */
 export interface ReleasedChildErrorFields {
@@ -23,9 +24,14 @@ const RELEASED_CHILD_ERROR_CODES: ReadonlySet<string> = new Set<ReleasedChildErr
 	"record-append-failed",
 	"hold-failed",
 	"completion-not-held",
+	"wake-failed",
 ]);
 
-const RETRYABLE_CODES: ReadonlySet<ReleasedChildErrorCode> = new Set(["record-append-failed", "hold-failed"]);
+const RETRYABLE_CODES: ReadonlySet<ReleasedChildErrorCode> = new Set([
+	"record-append-failed",
+	"hold-failed",
+	"wake-failed",
+]);
 
 function describeChild(fields: ReleasedChildErrorFields): string {
 	return fields.childId ?? fields.childName ?? "the subagent";
@@ -43,6 +49,8 @@ function hintFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields)
 			return "Check that Intercom is connected; until the reservation exists, sends to this subagent are answered as not found.";
 		case "completion-not-held":
 			return "Nothing to do: the session that launched the subagent receives the task's completion notice instead.";
+		case "wake-failed":
+			return `Its results are kept: resume it with { action: "resume", id: "${describeChild(fields)}", message? } to try again.`;
 	}
 }
 
@@ -58,6 +66,8 @@ function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFiel
 			return `Sends to released subagent ${fields.childName} cannot be held`;
 		case "completion-not-held":
 			return `Subagent ${fields.childId} runs again or has ended, so it does not hold the completion of a task it launched`;
+		case "wake-failed":
+			return `Waking subagent ${fields.childId} failed: ${fields.reason}`;
 	}
 }
 

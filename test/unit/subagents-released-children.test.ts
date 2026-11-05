@@ -10,7 +10,10 @@ import { test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
-import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
+import {
+	isReleasedChildError,
+	type ReleasedChildError,
+} from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
 	releasedChildHoldFailures,
 	reserveReleasedChildTargets,
@@ -392,11 +395,13 @@ test("the owner's handler wakes, holds or ignores by the child's latest record, 
 	const held: Array<[string, readonly DetachedToolResult[]]> = [];
 	const stop = handleReleasedChildWakes(
 		ctx,
-		async (child, decision) => {
-			woken.push([child.childId, decision.toolResults, decision.prompt]);
-		},
-		async (child, results) => {
-			held.push([child.childId, results]);
+		{
+			wake: async (child, decision) => {
+				woken.push([child.childId, decision.toolResults, decision.prompt]);
+			},
+			hold: async (child, results) => {
+				held.push([child.childId, results]);
+			},
 		},
 		dispatcher,
 	);
@@ -418,6 +423,42 @@ test("the owner's handler wakes, holds or ignores by the child's latest record, 
 	);
 	stop();
 	assert.equal(dispatcher.stats().handlers, 0);
+});
+
+test("a wake that fails hands every result of its batch and a typed failure to the owner before it fails, and still fails with its own error (#4326)", async () => {
+	const { sessionManager, ctx, ownerSessionId } = owner();
+	await sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, childRecord(ownerSessionId));
+	const dispatcher = new AgentWakeDispatcher();
+	const failures: Array<[string, readonly DetachedToolResult[], ReleasedChildError]> = [];
+	const boom = new Error("the store is closed");
+	const stop = handleReleasedChildWakes(
+		ctx,
+		{
+			wake: async () => {
+				throw boom;
+			},
+			hold: async () => {},
+			fail: async (child, results, failure) => {
+				failures.push([child.childId, results, failure]);
+			},
+		},
+		dispatcher,
+	);
+	await assert.rejects(
+		dispatcher.deliver(subagentWakeKey(ownerSessionId, "run:0"), toolWake("ci-1")),
+		(error: AgentRehydrateError) => error.code === "wake-failed" && error.cause === boom,
+	);
+	assert.equal(failures.length, 1);
+	const [childId, results, failure] = failures[0] ?? [];
+	assert.equal(childId, "run:0");
+	assert.deepEqual(results, [result("ci-1")]);
+	assert.ok(failure && isReleasedChildError(failure));
+	assert.deepEqual(
+		[failure.code, failure.retryable, failure.fields],
+		["wake-failed", true, { childId: "run:0", reason: "the store is closed" }],
+	);
+	assert.equal(failure.cause, boom);
+	stop();
 });
 
 test("a broker notice for a released child becomes an intercom wake on its key (#4326)", async () => {

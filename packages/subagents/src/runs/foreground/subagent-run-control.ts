@@ -16,6 +16,7 @@ import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
+	currentWakeFailure,
 	findSubagentChildRecord,
 	readSubagentChildRecords,
 	recordSubagentChildStatus,
@@ -401,10 +402,15 @@ async function resumeChild(
 		},
 	);
 }
+function wakeFailureText(record: SubagentChildRecord): string {
+	const failure = currentWakeFailure(record);
+	return failure === undefined ? "" : ` Its last wake failed: ${failure.reason} (${failure.code}). ${failure.hint}`;
+}
+
 /** How `status` shows a released child: what it waits on, and what wakes it. */
 function releasedLine(record: SubagentChildRecord): string {
 	const calls = (record.waitingOn ?? []).map((call) => `${call.toolName} (${call.toolCallId})`).join(", ");
-	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}; it holds nothing and wakes on a result, a message or resume. Resume it now with { action: "resume", id: "${record.childId}", message? }.`;
+	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}; it holds nothing and wakes on a result, a message or resume. Resume it now with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
 /** How `status` shows a child pause or quit stopped: paused and awaiting resume, as a quit workflow run shows. */
@@ -415,7 +421,17 @@ function awaitingResumeLine(record: SubagentChildRecord): string {
 			: record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
 				? "paused with its workflow stage · awaiting resume"
 				: "paused · awaiting resume";
-	return `${label(record)} ${how}. Resume it with { action: "resume", id: "${record.childId}", message? }.`;
+	return `${label(record)} ${how}. Resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
+}
+
+function wakeFailedLine(record: SubagentChildRecord): string {
+	return `${label(record)} keeps results its wake could not deliver. Resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
+}
+
+function statusLines(record: SubagentChildRecord): string[] {
+	if (isReleased(record)) return [releasedLine(record)];
+	if (stoppedAs(record)) return [awaitingResumeLine(record)];
+	return currentWakeFailure(record) ? [wakeFailedLine(record)] : [];
 }
 
 /**
@@ -426,13 +442,9 @@ export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: strin
 	const records = ownedRecords(ctx);
 	if (id?.trim()) {
 		const resolved = resolveRecord(records, id);
-		if (typeof resolved !== "object") return [];
-		if (isReleased(resolved)) return [releasedLine(resolved)];
-		return stoppedAs(resolved) ? [awaitingResumeLine(resolved)] : [];
+		return typeof resolved === "object" ? statusLines(resolved) : [];
 	}
-	return [...records.values()].flatMap((record) =>
-		isReleased(record) ? [releasedLine(record)] : stoppedAs(record) ? [awaitingResumeLine(record)] : [],
-	);
+	return [...records.values()].flatMap(statusLines);
 }
 
 /** `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. */
