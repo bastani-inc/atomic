@@ -506,6 +506,12 @@ async function fence(
  * Lifts the fence of any consolidation, this one or a crashed one, from a run's lease in the journal that now holds it. A
  * lease a resume holds is never touched.
  */
+/** Whether `holder`, a consolidation, still holds the lease of a run in a journal: no resume took it over. */
+async function fenceIsOurs(database: SqliteDatabase, runId: string, holder: string): Promise<boolean> {
+	const lease = await database.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+	return lease?.holder_id === holder;
+}
+
 async function liftFence(database: SqliteDatabase, runId: string): Promise<void> {
 	await database.transaction(
 		(tx) =>
@@ -610,13 +616,14 @@ async function copy(
 }
 
 /** Deletes a journal's copy of a run, only while `holder` still holds its lease: a compare-and-set on the fence. */
-async function removeRun(database: SqliteDatabase, runId: string, holder: string): Promise<void> {
-	await database.transaction(async (tx) => {
+async function removeRun(database: SqliteDatabase, runId: string, holder: string): Promise<boolean> {
+	return database.transaction(async (tx) => {
 		const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
-		if (lease?.holder_id !== holder) return;
+		if (lease?.holder_id !== holder) return false;
 		await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
 		await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
 		await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		return true;
 	}, CONSOLIDATION_TRANSACTION);
 }
 
@@ -684,10 +691,23 @@ async function settleMove(
 	sourceEpoch: number,
 ): Promise<JournalConsolidationRun> {
 	const moved = { runId, from: from.id, to: destination.id, outcome: "moved" } as const;
+	// A resume that took the destination's fence may already have written there, so the run stays where it is written
+	// and is reported leased, or as a conflict when the source gained events the destination lacks.
+	const keptOnDestination = async (): Promise<JournalConsolidationRun> => {
+		const left = await readRun(source, runId);
+		const there = await readRun(database, runId);
+		if (left !== undefined && there !== undefined && !holdsSnapshot(left, there))
+			return conflictRun(catalog, from.id, destination, runId);
+		return { runId, from: from.id, to: destination.id, outcome: "skipped", reason: "leased" };
+	};
 	const undo = async (): Promise<JournalConsolidationRun> => {
+		if (!(await fenceIsOurs(database, runId, holder))) return keptOnDestination();
 		await catalog.moveRun(runId, destination.id, from.id);
-		await removeRun(database, runId, holder);
-		return { runId, from: from.id, outcome: "skipped", reason: "leased" };
+		if (await removeRun(database, runId, holder))
+			return { runId, from: from.id, outcome: "skipped", reason: "leased" };
+		// A resume took the destination's fence between the check and the delete: the run belongs there again.
+		await catalog.moveRun(runId, from.id, destination.id);
+		return keptOnDestination();
 	};
 	const snapshot = await readRun(source, runId);
 	if (snapshot === undefined) {

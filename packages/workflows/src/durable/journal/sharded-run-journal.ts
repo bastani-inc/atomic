@@ -148,7 +148,7 @@ export class ShardedRunJournal implements RunJournal {
 			const saved = (await journal?.getRun(run.runId))?.status;
 			if (saved === undefined || saved === run.status) continue;
 			try {
-				await this.catalog.setStatus(run.runId, saved);
+				await this.catalog.reconcileStatus(run, saved);
 			} catch (error) {
 				if (!isJournalCatalogError(error)) throw error;
 				this.statusFailure = error;

@@ -483,6 +483,27 @@ export class JournalCatalog {
 		);
 	}
 
+	/**
+	 * Records a status a shard saved for a root, only while the catalog's entry is still the one that was read: the same
+	 * status and the same update time, so a status recorded since, by a resume for instance, is not written over.
+	 * Whether it was recorded.
+	 */
+	async reconcileStatus(run: JournalCatalogRun, status: string): Promise<boolean> {
+		const result = await this.write(
+			"recording-status",
+			(tx) =>
+				tx.run(
+					`UPDATE catalog_runs SET status = ?, updated_at = ${STORE_NOW} WHERE run_id = ? AND status = ? AND updated_at = ?`,
+					status,
+					run.runId,
+					run.status ?? null,
+					run.updatedAt,
+				),
+			run.runId,
+		);
+		return result.changes === 1;
+	}
+
 	async remove(runId: string): Promise<void> {
 		await this.write("removing-run", (tx) => tx.run("DELETE FROM catalog_runs WHERE run_id = ?", runId), runId);
 	}

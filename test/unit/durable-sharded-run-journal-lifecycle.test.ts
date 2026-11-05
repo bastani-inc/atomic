@@ -1217,12 +1217,12 @@ test("the reconciliation runs once per process, writes only a status that differ
 	catalogFile.close();
 	const journal = await open();
 	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
-	const calls = countCalls(catalog, ["busyRuns", "setStatus"]);
+	const calls = countCalls(catalog, ["busyRuns", "reconcileStatus"]);
 	await journal.createRun({ runId: "n1", name: "wf", cwd: "/p", createdAt: 1, status: "running" });
 	await journal.createRun({ runId: "n2", name: "wf", cwd: "/p", createdAt: 1, status: "running" });
 	await journal.journalFor("n3");
 	assert.equal(calls.busyRuns, 1, "the busy roots are read once");
-	assert.equal(calls.setStatus, 1, "only the root whose saved status differs is written");
+	assert.equal(calls.reconcileStatus, 1, "only the root whose saved status differs is written");
 });
 
 for (const [failure, outcome] of [
@@ -1240,7 +1240,7 @@ for (const [failure, outcome] of [
 		catalogFile.close();
 		const journal = await open();
 		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
-		Reflect.set(catalog, "setStatus", async () => {
+		Reflect.set(catalog, "reconcileStatus", async () => {
 			throw failure;
 		});
 		const placed = journal.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 1, status: "running" });
@@ -1284,10 +1284,10 @@ for (const [label, unreadable] of [
 		const journal = await open();
 		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
 		const written: unknown[][] = [];
-		const setStatus = catalog.setStatus.bind(catalog);
-		Reflect.set(catalog, "setStatus", async (...args: [string, string]) => {
-			written.push(args);
-			return setStatus(...args);
+		const reconcileStatus = catalog.reconcileStatus.bind(catalog);
+		Reflect.set(catalog, "reconcileStatus", async (...args: Parameters<JournalCatalog["reconcileStatus"]>) => {
+			written.push([args[0].runId, args[1]]);
+			return reconcileStatus(...args);
 		});
 		assert.equal(
 			await journal.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 3, status: "running" }),
@@ -1298,3 +1298,40 @@ for (const [label, unreadable] of [
 		assert.equal((await catalog.locate("z-finished"))?.run.status, "completed");
 		assert.equal((await catalog.locate("a-unreadable"))?.run.status, "running", "the unreadable root is unchanged");
 	});
+
+test("the reconciliation does not write a saved status over one recorded since it read the catalog, even when the status is the same (#4325)", async () => {
+	const first = await open();
+	const finished = await start(first, "z-finished");
+	await first.append(finished, { type: "StatusChanged", payload: { status: "completed" } });
+	await first.release(finished);
+	await first.close();
+	const catalogFile = new DatabaseSync(join(store, "catalog.sqlite"));
+	catalogFile.exec("UPDATE catalog_runs SET status = 'running' WHERE run_id = 'z-finished'");
+	catalogFile.close();
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const shard = catalog.shard.bind(catalog);
+	let resumed = false;
+	Reflect.set(catalog, "shard", async (id: number) => {
+		if (!resumed) {
+			resumed = true;
+			// A resume records the root as running again after the reconciliation read it: the same status, a newer time.
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			await catalog.setStatus("z-finished", "running");
+		}
+		return shard(id);
+	});
+	const shardsBefore = (await catalog.shards()).length;
+	assert.equal(
+		await journal.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 3, status: "running" }),
+		"created",
+	);
+	assert.equal(resumed, true);
+	assert.equal((await catalog.locate("z-finished"))?.run.status, "running", "the newer status is kept");
+	assert.equal(
+		(await catalog.shards()).length,
+		shardsBefore + 1,
+		"the resumed root keeps its shard busy: the new root gets another",
+	);
+	assert.notEqual(journal.shardOf("next")?.id, (await catalog.locate("z-finished"))?.shard.id);
+});

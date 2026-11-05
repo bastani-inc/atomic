@@ -1449,3 +1449,124 @@ test("recovery follows where the catalog names a run when it settles, not where 
 	);
 	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
 });
+
+const APPEND_EVENT =
+	"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('r', ?, 9, ?, 'SummaryRecorded', 'null', 0)";
+
+/**
+ * A consolidation of run `r` whose moveRun is wrapped: `before` runs ahead of the n-th call, `after` behind it. The
+ * source file and its destination are returned with the report and the catalog's final place for the run.
+ */
+async function consolidateWithInterference(
+	interference: {
+		readonly before?: Record<number, (files: { source: string; destination: string }) => void>;
+		readonly after?: Record<number, (files: { source: string; destination: string }) => void>;
+	},
+	setup?: (source: string) => void,
+) {
+	const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	setup?.(source);
+	await adoptJournals(store, [source]);
+	const destination = (await withCatalog((catalog) => catalog.homeShard("r"))).path;
+	let calls = 0;
+	const report = await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			const call = ++calls;
+			interference.before?.[call]?.({ source, destination });
+			const moved = await moveRun(runId, from, to);
+			interference.after?.[call]?.({ source, destination });
+			return moved;
+		});
+		return consolidateJournalStore(catalog);
+	});
+	const named = (await withCatalog((catalog) => catalog.locate("r")))!.shard.path;
+	return { source, destination, report, named, moveRuns: calls };
+}
+
+test("a move whose destination a resume took over and wrote to stays there, reported leased, and loses nothing (#4325)", async () => {
+	const events = { value: 0 };
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source, destination }) => {
+				events.value = Number(scalar(source, EVENTS));
+				raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+				raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'");
+				raw(destination, APPEND_EVENT, events.value + 1, "p2-new");
+			},
+		},
+	});
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason, run.to !== undefined]),
+		[["r", "skipped", "leased", true]],
+	);
+	assert.equal(result.named, result.destination, "the catalog names the copy the resume wrote to");
+	assert.equal(scalar(result.destination, EVENTS), events.value + 1, "its checkpoint is in that copy");
+	assert.equal(scalar(result.destination, HOLDER), "p2", "and its lease is intact");
+	assert.equal(result.moveRuns, 1, "the move was not undone");
+	assert.equal((await consolidateJournalStore(store)).moved, 0, "a second consolidation moves nothing");
+});
+
+test("a move both a resume on the source and a resume on the destination changed is a conflict that keeps both copies (#4325)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source, destination }) => {
+				const events = Number(scalar(source, EVENTS));
+				raw(source, APPEND_EVENT, events + 1, "p1-new");
+				raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'");
+			},
+		},
+	});
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	const error = result.report.runs[0]?.error;
+	assert.ok(error instanceof JournalCatalogError && error.code === "run-conflict");
+	assert.equal(result.named, result.destination, "the catalog stays on the copy a resume holds");
+	assert.equal(
+		scalar(result.source, "SELECT count(*) FROM wf_events WHERE key = 'p1-new'"),
+		1,
+		"the source copy is kept",
+	);
+});
+
+test("a destination fence taken between the check and the undo's delete leaves the run on the destination (#4325)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source }) => {
+				const events = Number(scalar(source, EVENTS));
+				raw(source, APPEND_EVENT, events + 1, "p1-new");
+			},
+		},
+		after: {
+			2: ({ destination }) => {
+				raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'");
+			},
+		},
+	});
+	assert.equal(result.moveRuns, 3, "the undo repointed back, found the fence stolen, and repointed forward again");
+	assert.equal(result.named, result.destination);
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "skipped"]],
+	);
+	assert.equal(scalar(result.destination, HOLDER), "p2");
+});
+
+test("an undo with the destination fence still held is a plain undo: the catalog goes back and the destination copy is removed (#4325)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source }) => {
+				const events = Number(scalar(source, EVENTS));
+				raw(source, APPEND_EVENT, events + 1, "p1-new");
+			},
+		},
+	});
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(result.named, result.source);
+	assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_runs"), 0, "the destination copy is gone");
+});
