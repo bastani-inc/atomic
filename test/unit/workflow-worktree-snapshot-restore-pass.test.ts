@@ -253,6 +253,10 @@ test("a rollback that cannot remove a worktree keeps the original error and atta
 		assert.ok(isWorkspaceRestoreError(cleanup));
 		assert.equal(cleanup.code, "unsafe-target");
 		assert.equal(cleanup.reason, "not-restored");
+		assert.doesNotThrow(
+			() => Object.defineProperty(error, "cleanupCause", { value: cleanup, configurable: true }),
+			"a later cleanup layer can attach its own failure without throwing over the primary error",
+		);
 		return true;
 	});
 });
@@ -278,6 +282,12 @@ test("several cleanup failures are attached together (#4245)", async () => {
 		assert.ok(cleanup instanceof AggregateError);
 		assert.equal(cleanup.errors.length, 2);
 		assert.ok(cleanup.errors.every((entry) => isWorkspaceRestoreError(entry) && entry.code === "unsafe-target"));
+		assert.equal(sabotage.restoredInOrder.length, 2);
+		assert.deepEqual(
+			cleanup.errors.map((entry) => (entry as { target?: string }).target),
+			[...sabotage.restoredInOrder].reverse(),
+			"cleanup failures are reported newest worktree first, the order the rollback removed them in",
+		);
 		return true;
 	});
 });
