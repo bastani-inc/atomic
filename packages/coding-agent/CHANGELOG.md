@@ -44,6 +44,7 @@
 - The grep tool's ripgrep search (literal patterns, custom operations, or when native search is unavailable) no longer reads every matched file into memory when `context`, `contextBefore` or `contextAfter` is set, which ran out of memory on large files. Context lines come from ripgrep, so overlapping context prints once, UTF-16 and non-UTF-8 files show correctly, and the match limit notice no longer appears when exactly `limit` matches exist. A fractional `limit` or a huge context value is clamped to a whole number (upstream [#11705](https://github.com/earendil-works/pi/pull/11705))
 - The ls tool with `limit: 0` no longer lists nothing and reports `(empty directory)`; limits below 1 now mean 1 and fractional limits are rounded down (upstream [#11747](https://github.com/earendil-works/pi/pull/11747))
 - On Windows and WSL, `ctrl+v` pastes again: `app.clipboard.pasteImage` defaults to both `alt+v` and `ctrl+v` there, instead of only `alt+v` (upstream [#11780](https://github.com/earendil-works/pi/pull/11780))
+- Dart (`.dart`), Nix (`.nix`), Groovy (`.groovy`) and Gradle (`.gradle`) files are syntax-highlighted in read and write views (upstream [#11790](https://github.com/earendil-works/pi/pull/11790))
 
 ## [0.9.71] - 2026-11-03
 
