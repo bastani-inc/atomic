@@ -93,6 +93,19 @@ function validateRequest(request: DecisionRequest<DecisionQuestions>): void {
 		refuse("model", "invalid-model");
 }
 
+/** A question's own fields, copied, so a change the caller makes later cannot change how its answer is typed. */
+function copyQuestion(question: DecisionQuestion): DecisionQuestion {
+	if (question.type === "bool")
+		return {
+			type: "bool",
+			instructions: question.instructions,
+			criteria: { true: question.criteria.true, false: question.criteria.false },
+		};
+	if (question.type === "score")
+		return { type: "score", instructions: question.instructions, criteria: [...question.criteria] };
+	return { type: "choice", instructions: question.instructions, criteria: { ...question.criteria } };
+}
+
 function snapshotRequest<R extends DecisionRequest<DecisionQuestions>>(request: R): R {
 	validateRequest(request);
 	let state: unknown;
@@ -101,7 +114,10 @@ function snapshotRequest<R extends DecisionRequest<DecisionQuestions>>(request: 
 	} catch (cause) {
 		throw new DecisionRequestError({ field: "state", reason: "invalid-state" }, { cause });
 	}
-	const snapshot = { ...request, state: state as R["state"] };
+	const questions = Object.fromEntries(
+		Object.entries(request.questions).map(([id, question]) => [id, copyQuestion(question)]),
+	) as R["questions"];
+	const snapshot = { ...request, state: state as R["state"], questions };
 	validateRequest(snapshot);
 	return snapshot;
 }

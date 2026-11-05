@@ -387,6 +387,29 @@ test("state changed by the caller while credentials are screened never reaches t
 	assert.ok(!JSON.stringify(requests[0]).includes("Bearer"));
 });
 
+test("questions changed by the caller while credentials are screened keep the asked types in the answers (#4358)", async () => {
+	const { requests } = recordedClassifier(fixture("typesafe-readiness-advance.json"));
+	const { request: decision } = await request({ questions: READINESS_QUESTIONS });
+	const shared = structuredClone(READINESS_QUESTIONS);
+	let release: (found: boolean) => void = () => {};
+	const screen = vi.fn((_text: string) => new Promise<boolean>((resolve) => (release = resolve)));
+	const outcome = decide({ ...decision, questions: shared, modelRegistry: screening(decision.modelRegistry, screen) });
+	await vi.waitFor(() => assert.equal(screen.mock.calls.length, 1));
+	Object.assign(shared.reply_addresses_message, { type: "score", criteria: ["Not at all.", "Fully."] });
+	Object.assign(shared.next_action, { type: "bool", criteria: { true: "Move on.", false: "Stay." } });
+	release(false);
+	const result = await outcome;
+	assert.equal(requests.length, 1);
+	assert.equal((requests[0]!.body.questions.reply_addresses_message as { type: string }).type, "noul");
+	assert.deepEqual(result.answers.reply_addresses_message, { type: "bool", value: true, probability: 0.91 });
+	assert.deepEqual(result.answers.next_action, {
+		type: "choice",
+		choice: "advance",
+		probabilities: { advance: 0.93, stay: 0.07 },
+		confidence: 0.93,
+	});
+});
+
 test("state with a configured credential, or a failed screen, is refused before any model is asked", async () => {
 	const { transport, chat, decision } = await pendingScreen();
 	await assert.rejects(
