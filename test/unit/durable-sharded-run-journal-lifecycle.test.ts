@@ -10,9 +10,12 @@ import {
 	JournalCatalog,
 	JournalCatalogError,
 	openNodeSqliteDatabase,
+	rehydrateJournalStoreError,
 	type SqliteDatabase,
+	serializeJournalStoreError,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
+import { JOURNAL_READ_PAGE_SIZE } from "../../packages/workflows/src/durable/journal/internal.js";
 import {
 	isShardedRunJournal,
 	ShardedRunJournal,
@@ -693,4 +696,113 @@ test("a root whose shard refuses it is only reserved, then recorded once its sha
 	const counts = countCalls(catalog, ["place"]);
 	await journal.createRun(header);
 	assert.equal(counts.place, 1, "an existing root is looked up once, and its status is not written again");
+});
+
+const PAGED_EVENTS = 2 * JOURNAL_READ_PAGE_SIZE + 88;
+
+/** A finished run in an adopted journal, with `PAGED_EVENTS` events: more than two pages of the journal's reads. */
+async function adoptedPagedRun(): Promise<string> {
+	const legacy = join(root, "paged", "journal.sqlite");
+	mkdirSync(join(legacy, ".."), { recursive: true });
+	const seed = await openSqlRunJournal(legacy);
+	const lease = await start(seed, "paged");
+	await seed.append(lease, { type: "RunStarted", payload: { snapshot: 1 } });
+	await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	await seed.release(lease);
+	await seed.close();
+	const database = new DatabaseSync(legacy);
+	database.exec(
+		`WITH RECURSIVE n(i) AS (SELECT 3 UNION ALL SELECT i + 1 FROM n WHERE i < ${PAGED_EVENTS})
+		INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at)
+		SELECT 'paged', i, 1, 'k' || i, 'SummaryRecorded', 'null', 0 FROM n`,
+	);
+	database.close();
+	await adoptJournals(store, [legacy]);
+	return legacy;
+}
+
+async function readAll(
+	journal: RunJournal,
+	runId: string,
+	onEntry?: (count: number) => Promise<void>,
+): Promise<number[]> {
+	const seqs: number[] = [];
+	for await (const entry of journal.read(runId)) {
+		seqs.push(entry.seq);
+		await onEntry?.(seqs.length);
+	}
+	return seqs;
+}
+
+test("a read that a consolidation interrupts between pages continues on the new shard without a gap or a repeat (#4325)", async () => {
+	await adoptedPagedRun();
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const counts = countCalls(catalog, ["locate"]);
+	let moved = 0;
+	const seqs = await readAll(journal, "paged", async (count) => {
+		if (count === JOURNAL_READ_PAGE_SIZE) moved = (await consolidateJournalStore(store)).moved;
+	});
+	assert.equal(moved, 1);
+	assert.deepEqual(
+		seqs,
+		Array.from({ length: PAGED_EVENTS }, (_, index) => index + 1),
+	);
+	assert.ok(counts.locate! <= 3, `the catalog was asked ${counts.locate} times`);
+	assert.deepEqual(
+		await readAll(await open(), "paged"),
+		seqs,
+		"after the move a fresh store reads it all from its new shard",
+	);
+});
+
+test("a read whose continuation does not follow on fails with the retryable run-moved, never a short read (#4325)", async () => {
+	await adoptedPagedRun();
+	const journal = await open();
+	const failure = await readAll(journal, "paged", async (count) => {
+		if (count !== JOURNAL_READ_PAGE_SIZE) return;
+		await consolidateJournalStore(store);
+		const destination = (await (Reflect.get(journal, "catalog") as JournalCatalog).locate("paged"))!.shard.path;
+		const database = new DatabaseSync(destination);
+		database.exec("DELETE FROM wf_events WHERE run_id = 'paged' AND seq = 257");
+		database.close();
+	}).catch((error: Error) => error);
+	assert.ok(isJournalCatalogError(failure));
+	assert.deepEqual(
+		[failure.code, failure.retryable, failure.runId, failure.fields.lastSeq],
+		["run-moved", true, "paged", JOURNAL_READ_PAGE_SIZE],
+	);
+	const back = rehydrateJournalStoreError(serializeJournalStoreError(failure));
+	assert.ok(isJournalCatalogError(back) && back.code === "run-moved" && back.retryable);
+	assert.equal(back.fields.lastSeq, JOURNAL_READ_PAGE_SIZE);
+});
+
+test("a read whose run moved to a shard that is gone fails with shard-missing, not a short read (#4325)", async () => {
+	await adoptedPagedRun();
+	const journal = await open();
+	const failure = await readAll(journal, "paged", async (count) => {
+		if (count !== JOURNAL_READ_PAGE_SIZE) return;
+		await consolidateJournalStore(store);
+		const destination = (await (Reflect.get(journal, "catalog") as JournalCatalog).locate("paged"))!.shard.path;
+		for (const suffix of ["", "-wal", "-shm"]) rmSync(`${destination}${suffix}`, { force: true });
+	}).catch((error: Error) => error);
+	assert.ok(isJournalShardUnavailableError(failure));
+	assert.equal(failure.code, "shard-missing");
+});
+
+test("a read is followed through at most three moves of its run (#4325)", async () => {
+	await adoptedPagedRun();
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const shards = [1, 2, 3, 4, 5];
+	const locate = catalog.locate.bind(catalog);
+	let calls = 0;
+	Reflect.set(catalog, "locate", async (runId: string) => {
+		const found = await locate(runId);
+		return found === undefined || calls++ === 0
+			? found
+			: { ...found, shard: { ...found.shard, id: shards[calls % shards.length]! + 100 } };
+	});
+	const failure = await readAll(journal, "paged").catch((error: Error) => error);
+	assert.ok(isJournalCatalogError(failure) && failure.code === "run-moved");
 });

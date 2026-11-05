@@ -381,6 +381,7 @@ export const JOURNAL_CATALOG_ERROR_CODES = [
 	"write-failed",
 	"run-conflict",
 	"run-not-found",
+	"run-moved",
 ] as const;
 export type JournalCatalogErrorCode = (typeof JOURNAL_CATALOG_ERROR_CODES)[number];
 
@@ -477,6 +478,8 @@ export interface JournalCatalogErrorInit {
 	readonly selection?: string;
 	/** `run-not-found`: whether this machine's storage is local only, so a run of another machine cannot be here. */
 	readonly localOnly?: boolean;
+	/** `run-moved`: the last sequence number a read returned before the run moved. */
+	readonly lastSeq?: number;
 	readonly retryable?: boolean;
 	readonly cause?: StorageFailureCause | Error;
 }
@@ -513,6 +516,11 @@ function catalogText(init: JournalCatalogErrorInit, detail: string | null): { me
 			return {
 				message: `Journal run conflict: run ${init.runId ?? "unknown"} already has a different copy in ${init.shardPath ?? `shard ${String(init.shardId)}`} (run-conflict).`,
 				hint: "Compare the two copies before moving the run; nothing was changed for this run.",
+			};
+		case "run-moved":
+			return {
+				message: `Journal run moved while it was read: run ${init.runId ?? "unknown"} left ${init.shardPath ?? `shard ${String(init.shardId)}`} after sequence ${String(init.lastSeq)} and its new shard did not continue the history (run-moved).`,
+				hint: "A consolidation moved this run while it was read; read it again.",
 			};
 		case "run-not-found":
 			return {
@@ -551,9 +559,10 @@ export class JournalCatalogError extends JournalStoreError {
 				rule: init.rule,
 				selection: init.selection,
 				localOnly: init.localOnly,
+				lastSeq: init.lastSeq,
 				detail: detail ?? undefined,
 			}),
-			retryable: init.retryable ?? busyCause(init.cause),
+			retryable: init.retryable ?? (init.code === "run-moved" || busyCause(init.cause)),
 			cause: init.cause,
 		});
 		this.catalogPath = init.catalogPath;
@@ -1035,6 +1044,7 @@ function rebuild(serialized: SerializedJournalStoreError): JournalStoreError {
 			rule: text(fields, "rule"),
 			selection: text(fields, "selection"),
 			localOnly: typeof fields.localOnly === "boolean" ? fields.localOnly : undefined,
+			lastSeq: numeric(fields, "lastSeq"),
 			retryable: serialized.retryable,
 			cause,
 		});

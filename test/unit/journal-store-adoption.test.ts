@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -640,10 +640,6 @@ test("consolidation into a new shard records its schema version once (#4325)", a
 });
 
 for (const [label, change] of [
-	[
-		"an extra event",
-		"INSERT INTO wf_events SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
-	],
 	["another second event", "UPDATE wf_events SET payload = '\"other\"' WHERE key = 'second'"],
 ] as const)
 	test(`consolidation treats a destination copy with ${label} after a matching first one as a conflict (#4325)`, async () => {
@@ -881,4 +877,173 @@ test("a batch with a registered journal and a copy of a run written to it since 
 		);
 		assert.equal(await catalog.locate("late"), undefined, "the copy did not claim the run");
 	});
+});
+
+/** Runs a consolidation whose process "crashes" right after the copy, or after it repointed the catalog. */
+async function crashDuring(moment: "copy" | "repoint"): Promise<void> {
+	await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			if (moment === "repoint") await moveRun(runId, from, to);
+			throw new Error("crashed");
+		});
+		await assert.rejects(consolidateJournalStore(catalog), /crashed/);
+	});
+}
+
+function removeDatabaseFiles(path: string): void {
+	for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+}
+
+function scalar(path: string, sql: string): unknown {
+	const database = new DatabaseSync(path, { readOnly: true });
+	try {
+		return Object.values(database.prepare(sql).get() ?? {})[0];
+	} finally {
+		database.close();
+	}
+}
+
+const EVENTS = "SELECT count(*) FROM wf_events WHERE run_id = 'r'";
+const HOLDER = "SELECT holder_id FROM wf_leases WHERE run_id = 'r'";
+
+async function interrupted(moment: "copy" | "repoint") {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [path]);
+	await crashDuring(moment);
+	const destination = (await withCatalog((catalog) => catalog.homeShard("r"))).path;
+	return { path, destination, events: Number(scalar(path, EVENTS)) };
+}
+
+test("recovery keeps the source copy while the destination file is missing, reports it, and finishes once it is back (#4325)", async () => {
+	const { path, destination, events } = await interrupted("repoint");
+	const backup = join(root, "destination.backup");
+	copyFileSync(destination, backup);
+	removeDatabaseFiles(destination);
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "shard-unavailable"]],
+	);
+	assert.ok(isJournalShardUnavailableError(report.runs[0]?.error));
+	assert.equal(report.runs[0].error.code, "shard-missing");
+	assert.equal(scalar(path, EVENTS), events, "the only copy is still in the source");
+	copyFileSync(backup, destination);
+	assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+	assert.equal(
+		scalar(path, "SELECT count(*) FROM wf_runs"),
+		0,
+		"the source copy is gone once the destination is checked",
+	);
+	assert.deepEqual([scalar(destination, EVENTS), scalar(destination, HOLDER)], [events, null]);
+});
+
+test("recovery copies the run again when its destination lost it, and keeps what a resume added there (#4325)", async () => {
+	const lost = await interrupted("repoint");
+	removeDatabaseFiles(lost.destination);
+	await journal(lost.destination, []);
+	await consolidateJournalStore(store);
+	assert.equal(scalar(lost.path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.deepEqual([scalar(lost.destination, EVENTS), scalar(lost.destination, HOLDER)], [lost.events, null]);
+});
+
+test("recovery keeps a resume's events and lease on the destination and deletes the source (#4325)", async () => {
+	const { path, destination, events } = await interrupted("repoint");
+	raw(destination, "UPDATE wf_leases SET holder_id = 'resumer', epoch = 9 WHERE run_id = 'r'");
+	raw(
+		destination,
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('r', ?, 9, 'resumed', 'SummaryRecorded', 'null', 0)",
+		events + 1,
+	);
+	assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.deepEqual(
+		[scalar(destination, EVENTS), scalar(destination, HOLDER), scalar(destination, "SELECT epoch FROM wf_leases")],
+		[events + 1, "resumer", 9],
+	);
+});
+
+test("recovery reports a conflict and keeps the source when the destination's copy differs (#4325)", async () => {
+	const { path, destination, events } = await interrupted("repoint");
+	raw(destination, "UPDATE wf_events SET payload = '\"other\"' WHERE run_id = 'r'");
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	assert.equal(scalar(path, EVENTS), events, "the source copy stays");
+});
+
+test("a second consolidation of a run whose destination copy a resume already leased never overwrites that lease (#4325)", async () => {
+	const { path, destination, events } = await interrupted("copy");
+	raw(destination, "UPDATE wf_leases SET holder_id = 'resumer', epoch = 3 WHERE run_id = 'r'");
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+	);
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.deepEqual(
+		[scalar(destination, EVENTS), scalar(destination, HOLDER), scalar(destination, "SELECT epoch FROM wf_leases")],
+		[events, "resumer", 3],
+	);
+});
+
+test("a resume that takes over the fence during a move and adds events is not lost: the move is undone (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [path]);
+	const events = Number(scalar(path, EVENTS));
+	await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		let tookOver = false;
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			if (!tookOver) {
+				tookOver = true;
+				raw(path, "UPDATE wf_leases SET holder_id = 'resumer', epoch = epoch + 1 WHERE run_id = ?", runId);
+				raw(
+					path,
+					"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, 9, 'resumed', 'SummaryRecorded', 'null', 0)",
+					runId,
+					events + 1,
+				);
+			}
+			return moveRun(runId, from, to);
+		});
+		const report = await consolidateJournalStore(catalog);
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["r", "skipped", "leased"]],
+		);
+		assert.equal(
+			(await catalog.locate("r"))?.shard.path,
+			path,
+			"the catalog names the file that holds the resume's events",
+		);
+		const destination = (await catalog.homeShard("r")).path;
+		assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0, "the stale destination copy is gone");
+	});
+	assert.deepEqual([scalar(path, EVENTS), scalar(path, HOLDER)], [events + 1, "resumer"]);
+});
+
+test("a destination copy that holds the source's events and more, as after a resume, is kept and the source deleted (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "copy" }]);
+	await appendEvent(path, ["copy"]);
+	await adoptJournals(store, [path]);
+	const target = await withCatalog((catalog) => catalog.homeShard("copy"));
+	await journal(target.path, []);
+	const copy = new DatabaseSync(target.path);
+	copy.exec(`ATTACH DATABASE '${path}' AS source`);
+	for (const table of ["wf_runs", "wf_events"]) copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
+	copy.exec(
+		"INSERT INTO wf_events SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
+	);
+	copy.close();
+	const events = Number(scalar(target.path, "SELECT count(*) FROM wf_events WHERE run_id = 'copy'"));
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.outcome, run.to]),
+		[["moved", target.id]],
+	);
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.equal(scalar(target.path, "SELECT count(*) FROM wf_events WHERE run_id = 'copy'"), events);
 });

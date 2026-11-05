@@ -4,7 +4,7 @@ import {
 	isJournalCatalogError,
 	isJournalShardUnavailableError,
 	JournalCatalog,
-	type JournalCatalogError,
+	JournalCatalogError,
 	type JournalShardRecord,
 	JournalShardUnavailableError,
 	type StorageDescriptor,
@@ -31,6 +31,8 @@ import {
 import { serializeJson, validateText } from "./values.js";
 
 const SHARDED_RUN_JOURNAL = Symbol.for("@bastani/workflows/sharded-run-journal");
+/** A read follows its run to another shard at most this often: a consolidation moves it once, a rollback moves it back. */
+const READ_FOLLOW_LIMIT = 3;
 
 export interface ShardedRunJournalOptions {
 	/** The store's directory: its `catalog.sqlite` and native shard files. */
@@ -504,20 +506,40 @@ export class ShardedRunJournal implements RunJournal {
 		});
 	}
 
-	async *read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry> {
+	/**
+	 * A run's entries in order. The shard pages through them, so a consolidation can move the run between two pages: when
+	 * the shard's entries end, the catalog is asked again, and a read that finds the run elsewhere continues there with the
+	 * next sequence number. A continuation that does not follow on fails with the retryable `run-moved`, never a short read.
+	 */
+	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
 		this.assertOpen();
 		validateText("runId", runId);
 		let current = await this.operation(() => this.locate(runId));
-		let yielded = false;
-		while (current !== undefined) {
-			for await (const entry of current.journal.read(runId, fromSeq)) {
+		let next = fromSeq;
+		for (let follows = 0; current !== undefined; follows++) {
+			let continues = follows > 0;
+			for await (const entry of current.journal.read(runId, next)) {
 				this.assertOpen();
-				yielded = true;
+				if (continues && entry.seq !== next) throw this.runMoved(runId, current.record, next - 1);
+				continues = false;
+				next = entry.seq + 1;
 				yield entry;
 			}
 			const from = current.record;
-			current = yielded ? undefined : await this.operation(() => this.relocated(runId, from));
+			current = await this.operation(() => this.relocated(runId, from));
+			if (current !== undefined && follows + 1 > READ_FOLLOW_LIMIT) throw this.runMoved(runId, from, next - 1);
 		}
+	}
+
+	private runMoved(runId: string, record: JournalShardRecord, lastSeq: number): JournalCatalogError {
+		return new JournalCatalogError({
+			code: "run-moved",
+			catalogPath: this.catalog.path,
+			runId,
+			shardId: record.id,
+			shardPath: record.path,
+			lastSeq,
+		});
 	}
 
 	async readKey(runId: string, key: string): Promise<JournalEntry | undefined> {

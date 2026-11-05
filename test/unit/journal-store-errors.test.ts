@@ -398,3 +398,24 @@ test("a schema version is recorded JSON-safe: numbers and null as they are, othe
 	assert.deepEqual(recorded(new Uint8Array([1, 2])), ["1,2", true]);
 	assert.deepEqual(recorded(undefined), [undefined, false]);
 });
+
+test("run-moved is retryable, renders its fields and crosses a process boundary intact (UX contract, #4325)", () => {
+	const error = new JournalCatalogError({
+		code: "run-moved",
+		catalogPath,
+		runId: "r1",
+		shardId: 2,
+		shardPath: "/s/shard-0002.sqlite",
+		lastSeq: 256,
+	});
+	assert.deepEqual([error.retryable, error.runId, error.fields.lastSeq], [true, "r1", 256]);
+	assert.equal(
+		error.message,
+		"Journal run moved while it was read: run r1 left /s/shard-0002.sqlite after sequence 256 and its new shard did not continue the history (run-moved).",
+	);
+	assert.equal(error.hint, "A consolidation moved this run while it was read; read it again.");
+	const back = rehydrateJournalStoreError(serializeJournalStoreError(error));
+	assert.ok(isJournalCatalogError(back) && back.code === "run-moved");
+	assert.deepEqual([back.retryable, back.fields], [true, error.fields]);
+	assert.ok(isRetryableJournalStoreError(new Error("outer", { cause: error })));
+});
