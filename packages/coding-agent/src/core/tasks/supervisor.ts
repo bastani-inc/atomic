@@ -5,7 +5,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSessionEvent } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
-import type { ResourcePermit } from "../sdk-types.ts";
+import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
@@ -78,7 +78,7 @@ export type TrustedTaskHost = {
 	/** The existing host/tool refusal throws here, before native admission. */
 	authorizeCommandLaunch?(intent: C.CommandIntent): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
-	resourceAdmission?: import("../sdk-types.ts").ResourceAdmission;
+	resourceAdmission?: ResourceAdmission;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
 	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
 	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
@@ -86,6 +86,7 @@ export type TrustedTaskHost = {
 	defaultHeartbeatMs?(): number | undefined;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
 };
+type HeldPermit = { readonly admission: ResourceAdmission; readonly release: ResourcePermit };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
 type OwnerState = {
 	id: C.OwnerId;
@@ -97,7 +98,7 @@ type OwnerState = {
 	quarantinedTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
 	closing: AbortController;
-	permits: Map<C.TaskId, ResourcePermit>;
+	permits: Map<C.TaskId, HeldPermit>;
 	unconfirmedCleanups: Map<C.TaskId, C.ResourceFailure[]>;
 	admissionWatchers: Set<() => void>;
 	releases: Set<Promise<void>>;
@@ -771,9 +772,10 @@ export class TaskSupervisor {
 		);
 	}
 	#releasePermit(state: OwnerState, taskId: C.TaskId): void {
-		const release = state.permits.get(taskId);
-		if (!release) return;
+		const held = state.permits.get(taskId);
+		if (!held) return;
 		state.permits.delete(taskId);
+		const release = held.release;
 		const pending: Promise<void> = release()
 			.catch((error) => {
 				state.releaseFailures.push(new Error(rejectionMessage(error)));
@@ -785,16 +787,16 @@ export class TaskSupervisor {
 	#notifyAdmissionWatchers(state: OwnerState): void {
 		for (const watcher of [...state.admissionWatchers]) watcher();
 	}
-	#unconfirmedPermitHolders(state: OwnerState): TaskCleanupFailure[] {
+	#unconfirmedPermitHolders(state: OwnerState, admission: ResourceAdmission): TaskCleanupFailure[] {
 		return [...state.unconfirmedCleanups].flatMap(([taskId, resources]) =>
-			state.permits.has(taskId) ? [{ taskId, resources }] : [],
+			state.permits.get(taskId)?.admission === admission ? [{ taskId, resources }] : [],
 		);
 	}
 	async #acquireProcessPermit(
 		state: OwnerState,
-		admission: import("../sdk-types.ts").ResourceAdmission | undefined,
+		admission: ResourceAdmission | undefined,
 		signal: AbortSignal | undefined,
-	): Promise<ResourcePermit | undefined> {
+	): Promise<HeldPermit | undefined> {
 		if (!admission) return undefined;
 		const external = signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal;
 		const refusal = new AbortController();
@@ -802,7 +804,7 @@ export class TaskSupervisor {
 		const outcome: { blocked?: { holders: TaskCleanupFailure[]; elapsedMs: number } } = {};
 		const watch = () => {
 			if (external.aborted || refusal.signal.aborted) return;
-			if (this.#unconfirmedPermitHolders(state).length === 0) {
+			if (this.#unconfirmedPermitHolders(state, admission).length === 0) {
 				clearTimeout(timer);
 				timer = undefined;
 				return;
@@ -811,7 +813,7 @@ export class TaskSupervisor {
 			const startedAt = performance.now();
 			timer = setTimeout(() => {
 				timer = undefined;
-				const holders = this.#unconfirmedPermitHolders(state);
+				const holders = this.#unconfirmedPermitHolders(state, admission);
 				if (external.aborted || holders.length === 0) return watch();
 				outcome.blocked = { holders, elapsedMs: Math.round(performance.now() - startedAt) };
 				refusal.abort();
@@ -820,7 +822,7 @@ export class TaskSupervisor {
 		state.admissionWatchers.add(watch);
 		try {
 			watch();
-			return await admission.acquire("process", AbortSignal.any([external, refusal.signal]));
+			return { admission, release: await admission.acquire("process", AbortSignal.any([external, refusal.signal])) };
 		} catch (error) {
 			const { blocked } = outcome;
 			if (external.aborted) throw external.reason;
@@ -884,9 +886,9 @@ export class TaskSupervisor {
 			finishAdmission = resolve;
 		});
 		state.commandAdmissions.add(admission);
-		let release: ResourcePermit | undefined;
+		let held: HeldPermit | undefined;
 		try {
-			release = await this.#acquireProcessPermit(
+			held = await this.#acquireProcessPermit(
 				state,
 				currentResourceAdmission() ?? state.host.binding.resourceAdmission,
 				signal,
@@ -901,13 +903,13 @@ export class TaskSupervisor {
 			try {
 				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
 			} catch (error) {
-				release = undefined;
+				held = undefined;
 				throw new Error(`Command cleanup unconfirmed; process permit retained: ${rejectionMessage(error)}`, {
 					cause: error,
 				});
 			}
 			if (!started.ok && !startErrors.some((code) => code === started.error.code)) {
-				release = undefined;
+				held = undefined;
 				throw new Error(
 					`Command cleanup unconfirmed; process permit retained: ${started.error.code}: ${started.error.message}`,
 				);
@@ -923,19 +925,20 @@ export class TaskSupervisor {
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
 			let bindFailure: Error | undefined;
-			if (release?.bindProcess) {
+			if (held?.release.bindProcess) {
 				try {
 					const group = this.#native.taskProcessGroup(admitted.value);
 					if (!group.ok) throw new Error(group.error.message);
-					if (group.value !== null) await release.bindProcess({ kind: "unix-process-group", id: group.value });
+					if (group.value !== null)
+						await held.release.bindProcess({ kind: "unix-process-group", id: group.value });
 				} catch (error) {
 					bindFailure = new Error(rejectionMessage(error));
 				}
 			}
-			if (release) {
-				state.permits.set(id, release);
+			if (held) {
+				state.permits.set(id, held);
 				this.#notifyAdmissionWatchers(state);
-				release = undefined;
+				held = undefined;
 			}
 			const task = new TaskCapability();
 			this.#tasks.set(task, {
@@ -962,6 +965,7 @@ export class TaskSupervisor {
 			return { ok: true, value: task };
 		} finally {
 			try {
+				const release = held?.release;
 				await release?.();
 			} finally {
 				state.commandAdmissions.delete(admission);

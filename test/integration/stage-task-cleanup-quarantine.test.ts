@@ -566,6 +566,7 @@ function holderHost(dir: string, admission?: ResourceAdmission, onQuarantine?: (
 	});
 	const cleanup = async () => {
 		await settle(ready);
+		writeTextSync(`${dir}/release`, "");
 		const holder = pidFile(dir, "holder");
 		if (holder !== undefined && processExists(holder)) process.kill(holder, "SIGKILL");
 		const closed = await host.close("session-close");
@@ -786,9 +787,13 @@ test.runIf(process.platform === "linux")(
 				reportRefusal();
 				await cleanupFinished;
 			};
+			const otherPool = new PermitAdmission(1);
 			const controller = new AbortController();
 			const waiting = settle(launch("echo SECOND", blockedLaunchSignal(controller.signal)));
+			for (const command of ["echo ACTIVITY-1", "echo ACTIVITY-2", "echo ACTIVITY-3"])
+				assert.ok((await withResourceAdmission(otherPool, () => launch(command))).ok);
 			await within(refused, BLOCKED_LAUNCH_LIMIT_MS, "the admission was never refused");
+			assert.ok((await withResourceAdmission(otherPool, () => launch("echo AFTER-REFUSAL"))).ok);
 			await sleep(QUARANTINE_OBSERVATION_MS);
 			assert.equal(timers.mock.calls.filter(([, delay]) => delay === QUARANTINED_ADMISSION_WAIT_MS).length, 1);
 			const cancellation = new Error("caller cancelled while admission cleanup was pending");

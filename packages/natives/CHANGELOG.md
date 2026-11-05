@@ -9,6 +9,7 @@
 ### Fixed
 
 - A command that exits while a process outside its group still holds its output open, or (on Linux) whose group is slow to exit, now settles with its output and exit status after the drain window instead of failing with `CleanupFailed` and losing both. Its cleanup is quarantined and confirmed in the background; only cleanup still unconfirmed 15 seconds after its owner starts closing, or after a stop, fails, and the settled result stays as it was. On macOS, a process group the system still refuses to probe after the drain window fails as before ([#4338](https://github.com/bastani-inc/atomic/issues/4338)).
+- A command that settles ahead of quarantined cleanup closes its output spool descriptor immediately. Its saved output remains readable without keeping a file handle open for the rest of the quarantine ([#4338](https://github.com/bastani-inc/atomic/issues/4338)).
 
 ## [0.9.71] - 2026-11-03
 

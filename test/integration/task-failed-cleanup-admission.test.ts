@@ -6,7 +6,14 @@ import type { ResourceAdmission, ResourcePermit } from "../../packages/coding-ag
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { QUARANTINED_ADMISSION_WAIT_MS } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
-import { fileExistsSync, makeTempDirectory, readTextSync, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import {
+	fileExistsSync,
+	makeTempDirectory,
+	readTextSync,
+	removeTempDirectory,
+	sleep,
+	writeTextSync,
+} from "../helpers/runtime.js";
 
 const TERM_AND_DRAIN_GRACE_MS = 2_250;
 const STOP_QUARANTINE_BOUND_MS = 15_000;
@@ -166,6 +173,7 @@ test.runIf(process.platform === "linux")(
 			assert.equal(admission.releaseCalls, 0);
 			assert.equal(admission.acquired, 1);
 		} finally {
+			writeTextSync(`${dir}/release`, "");
 			killIfAlive(pidFile(dir, "holder"));
 			const group = pidFile(dir, "group");
 			if (group !== undefined && processExists(-group)) process.kill(-group, "SIGKILL");
