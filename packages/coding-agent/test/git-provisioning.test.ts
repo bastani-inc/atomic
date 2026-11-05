@@ -1957,18 +1957,28 @@ describe("git install command on this machine (#4322)", () => {
 			});
 			vi.resetModules();
 			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
-			const statuses: string[] = [];
+			const statuses: { type: string; message: string }[] = [];
 			const git = await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () =>
-				fresh.resolveGit({ onStatus: (status) => statuses.push(status.message) }),
+				fresh.resolveGit({ onStatus: (status) => statuses.push(status) }),
 			);
 			assert.equal(git.source, "provisioned");
 			assert.deepEqual(statuses, [
-				`Could not remove abandoned git installs from ${binDir}: Error: EIO: sweep failed`,
+				{
+					type: "warning",
+					message: `Could not remove abandoned git installs from ${binDir}: Error: EIO: sweep failed`,
+				},
 			]);
 			await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () =>
-				fresh.resolveGit({ onStatus: (status) => statuses.push(status.message) }),
+				fresh.resolveGit({ onStatus: (status) => statuses.push(status) }),
 			);
 			assert.equal(statuses.length, 1);
+
+			vi.resetModules();
+			const quiet: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const silent = await quiet.withGitProvisionSettingsForTest({ release: fake.release }, () =>
+				quiet.resolveGit(),
+			);
+			assert.equal(silent.source, "provisioned");
 		});
 
 		it("sweeps replaced installs left by exited processes only", async () => {
@@ -2130,6 +2140,18 @@ describe("git install command on this machine (#4322)", () => {
 		assert.equal(tools.resolveGitSync().version, "2.56.0");
 		tools.resetGitProvisionStateForTest();
 		assert.equal(tools.resolveGitSync().version, "2.57.0");
+
+		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+		const leftover = join(agentDir, "bin", `.git-staging-${hostTag()}-${exitedPid}-1`);
+		mkdirSync(leftover, { recursive: true });
+		await tools.resolveGit();
+		assert.equal(existsSync(leftover), false);
+		mkdirSync(leftover, { recursive: true });
+		await tools.resolveGit();
+		assert.equal(existsSync(leftover), true);
+		tools.resetGitProvisionStateForTest();
+		await tools.resolveGit();
+		assert.equal(existsSync(leftover), false);
 
 		rmSync(installDir, { recursive: true });
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("gone", { status: 404 }));

@@ -56,25 +56,29 @@ function isOlderThan(versionId: string | undefined, minimum: number): boolean {
 	return Number.isFinite(major) && major < minimum;
 }
 
-const LINUX_COMMANDS: readonly (readonly [readonly string[], (osRelease: OsRelease) => string])[] = [
-	[["alpine"], () => "apk add git"],
-	[["void"], () => "xbps-install git"],
-	[["arch", "manjaro"], () => "pacman -S git"],
-	[["gentoo"], () => "emerge --ask --verbose dev-vcs/git"],
-	[["mageia"], () => "urpmi git"],
-	[["nixos"], () => "nix-env -i git"],
-	[["opensuse", "opensuse-leap", "opensuse-tumbleweed", "sles", "suse"], () => "zypper install git"],
-	[["amzn"], (osRelease) => (osRelease.versionId === "2" ? "yum install git" : "dnf install git")],
-	[
-		["ubuntu"],
-		(osRelease) =>
-			isOlderThan(osRelease.versionId, 22)
-				? "add-apt-repository ppa:git-core/ppa && apt update && apt install git"
-				: "apt-get install git",
-	],
-	[["debian"], () => "apt-get install git"],
-	[["fedora", "rhel", "centos", "rocky", "almalinux", "ol"], () => "dnf install git"],
-];
+type LinuxCommandRule = readonly [readonly string[], (osRelease: OsRelease) => string];
+
+function linuxCommandRules(): readonly LinuxCommandRule[] {
+	return [
+		[["alpine"], () => "apk add git"],
+		[["void"], () => "xbps-install git"],
+		[["arch", "manjaro"], () => "pacman -S git"],
+		[["gentoo"], () => "emerge --ask --verbose dev-vcs/git"],
+		[["mageia"], () => "urpmi git"],
+		[["nixos"], () => "nix-env -i git"],
+		[["opensuse", "opensuse-leap", "opensuse-tumbleweed", "sles", "suse"], () => "zypper install git"],
+		[["amzn"], (osRelease) => (osRelease.versionId === "2" ? "yum install git" : "dnf install git")],
+		[
+			["ubuntu"],
+			(osRelease) =>
+				isOlderThan(osRelease.versionId, 22)
+					? "add-apt-repository ppa:git-core/ppa && apt update && apt install git"
+					: "apt-get install git",
+		],
+		[["debian"], () => "apt-get install git"],
+		[["fedora", "rhel", "centos", "rocky", "almalinux", "ol"], () => "dnf install git"],
+	];
+}
 
 const OTHER_PLATFORM_COMMANDS: Readonly<Record<string, string>> = {
 	darwin: "xcode-select --install",
@@ -99,7 +103,7 @@ export function gitInstallCommand(
 	if (osRelease !== undefined) {
 		const identities = [osRelease.id, ...osRelease.idLike];
 		for (const identity of identities) {
-			const entry = LINUX_COMMANDS.find(([ids]) => ids.includes(identity));
+			const entry = linuxCommandRules().find(([ids]) => ids.includes(identity));
 			if (entry !== undefined)
 				return entry[1](identity === osRelease.id ? osRelease : { id: identity, idLike: osRelease.idLike });
 		}
