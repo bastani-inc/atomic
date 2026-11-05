@@ -757,7 +757,9 @@ test("a waiting writer refreshes its ticket every 500 ms, recreates it if it was
 	const notice = join(wakes(writers), name!);
 	fs.unlinkSync(path);
 	fs.unlinkSync(notice);
-	await vi.advanceTimersByTimeAsync(2 * WATCHED_RECHECK_MS);
+	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+	await untilWaiting();
+	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
 	await untilWaiting();
 	assert.ok(existsSync(path), "recreated under its old name, keeping its place");
 	assert.ok(existsSync(notice), "with its release notice");
@@ -940,8 +942,14 @@ test("a waiting writer whose own clock is off the system clock refreshes its tic
 		const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", String(offsetMs)));
 		const [name] = await untilTickets(writers, 1);
 		await untilWaiting();
-		await vi.advanceTimersByTimeAsync(2 * WATCHED_RECHECK_MS);
-		const ageMs = databaseNow() - statSync(join(writers, name!)).mtimeMs;
+		const path = join(writers, name!);
+		touch(path, -1_500);
+		assert.ok(databaseNow() - statSync(path).mtimeMs >= 1_400, "the ticket starts stale");
+		await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+		await untilWaiting();
+		await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+		await untilWaiting();
+		const ageMs = databaseNow() - statSync(path).mtimeMs;
 		assert.ok(Math.abs(ageMs) < 1_000, `with its clock ${offsetMs} ms off, refreshed ${ageMs} ms from now`);
 		holder.exec("COMMIT");
 		touch(join(wakes(writers), name!));
