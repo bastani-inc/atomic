@@ -12,7 +12,7 @@ import { isDecisionConfigError } from "../../packages/coding-agent/src/core/deci
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+
 import type { JsonObject } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	classifierResult,
@@ -20,6 +20,7 @@ import {
 	decisionMessage,
 	decisionRequest,
 	messageStream,
+	routeModel,
 } from "../helpers/structured-output.js";
 
 afterEach(() => {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { ClassifierResult } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import { chatRouter } from "../helpers/model-routing.js";
 import {
 	classifierResult,
@@ -11,6 +11,7 @@ import {
 	decisionMessage,
 	decisionRequest,
 	messageStream,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 

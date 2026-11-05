@@ -754,13 +754,3 @@ export async function runDecision<T extends TSchema>(
 	);
 	return { ...result, source: model.kind === "classifier" && result.fallback === undefined ? "classifier" : "chat" };
 }
-
-/** A schema-shaped decision on the configured decision model; see {@link runDecision}. */
-export async function routeModel<T extends TSchema>(
-	request: DecisionModelRequest<T>,
-	/** Pure correlated-field validation against original candidates, never live admission checks. */
-	validateDecision?: (value: Static<T>) => boolean,
-): Promise<StructuredOutputResult<Static<T>>> {
-	const { classifierAnswers: _answers, source: _source, ...result } = await runDecision(request, validateDecision);
-	return result;
-}

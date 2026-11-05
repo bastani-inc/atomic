@@ -3,8 +3,8 @@ import type { Api, AssistantMessage, JsonObject, Model, SimpleStreamOptions } fr
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionChatModel, decisionMessage, messageStream } from "../helpers/structured-output.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { decisionChatModel, decisionMessage, messageStream, routeModel } from "../helpers/structured-output.js";
 
 const FORMER_FIXED_CAP = 4096;
 const CHARS_PER_TOKEN = 4;

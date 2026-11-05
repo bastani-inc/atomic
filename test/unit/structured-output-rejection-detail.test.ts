@@ -3,12 +3,18 @@ import type { Api, JsonObject, Model } from "@bastani/pi-ai";
 import { type TSchema, Type } from "typebox";
 import { test, vi } from "vitest";
 import type { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	formatStructuredOutputCorrectionPrompt,
 	isStructuredOutputContractFailure,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-structured-output.js";
-import { decisionChatModel, decisionMessage, decisionRequest, messageStream } from "../helpers/structured-output.js";
+import {
+	decisionChatModel,
+	decisionMessage,
+	decisionRequest,
+	messageStream,
+	routeModel,
+} from "../helpers/structured-output.js";
 
 const REJECTED_SECRET = "private-rejected-value";
 const REPAIR_ATTEMPTS = 4;

@@ -3,8 +3,14 @@ import assert from "node:assert/strict";
 import type { ClassifierApi, ClassifierModel, JsonObject } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionChatModel, decisionMessage, decisionRequest, messageStream } from "../helpers/structured-output.js";
+
+import {
+	decisionChatModel,
+	decisionMessage,
+	decisionRequest,
+	messageStream,
+	routeModel,
+} from "../helpers/structured-output.js";
 
 const pairs = Array.from({ length: 1997 }, (_, index) => ({
 	model: `provider/model-${index}`,

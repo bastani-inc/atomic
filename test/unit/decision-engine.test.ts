@@ -15,7 +15,6 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import {
 	ClassifierDecisionError,
 	generateStructuredOutput,
-	routeModel,
 	runDecision,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
@@ -34,6 +33,7 @@ import {
 	decisionRequest,
 	messageStream,
 	registeredDecisionRuntime,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 

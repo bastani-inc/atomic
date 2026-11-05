@@ -4,7 +4,7 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import type { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { SETTINGS_DEFAULTS } from "../../packages/coding-agent/src/core/settings-defaults.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import { createStructuredOutputTool } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	classifierResult,
@@ -12,6 +12,7 @@ import {
 	decisionClassifier,
 	decisionMessage,
 	decisionRequest,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 import { toolContext } from "../helpers/tool-context.js";

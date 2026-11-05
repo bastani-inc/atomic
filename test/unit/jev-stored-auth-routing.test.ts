@@ -8,7 +8,6 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import {
 	generateStructuredOutput,
 	resolveDecisionModel,
-	routeModel,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	decisionChatModel,
@@ -16,6 +15,7 @@ import {
 	decisionMessage,
 	decisionRequest,
 	messageStream,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 

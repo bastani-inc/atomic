@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	classifierResult,
 	decisionChatModel,
@@ -9,6 +9,7 @@ import {
 	decisionMessage,
 	decisionRequest,
 	messageStream,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 

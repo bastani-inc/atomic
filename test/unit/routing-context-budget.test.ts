@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+
 import {
 	classifierResult,
 	decisionChatModel,
@@ -9,6 +9,7 @@ import {
 	decisionRequest,
 	messageStream,
 	parseInferenceUserPayload,
+	routeModel,
 } from "../helpers/structured-output.js";
 
 function largeDecision() {

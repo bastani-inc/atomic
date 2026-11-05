@@ -10,7 +10,7 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	createStructuredOutputCapture,
 	createStructuredOutputTool,
@@ -25,6 +25,7 @@ import {
 	messageStream,
 	parseInferenceUserPayload,
 	registeredDecisionRuntime,
+	routeModel,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 

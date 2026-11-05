@@ -10,14 +10,16 @@ import type {
 	TranscriptContext,
 } from "@bastani/pi-ai";
 import { createAssistantMessageEventStream, getCurrentTools } from "@bastani/pi-ai";
-import { Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import type {
-	DecisionModelRequest,
-	StructuredOutputRequest,
+import {
+	type DecisionModelRequest,
+	runDecision,
+	type StructuredOutputRequest,
+	type StructuredOutputResult,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 
 /** 0.86 folds systemPrompt/tools into a leading system message before provider streamSimple. */
@@ -187,4 +189,13 @@ export async function registeredDecisionRuntime(
 		streamSimple,
 	});
 	return { runtime, registry: new ModelRegistry(runtime) };
+}
+
+/** One schema-shaped decision through the decision engine, without the answer source and classifier answers. */
+export async function routeModel<T extends TSchema>(
+	request: DecisionModelRequest<T>,
+	validateDecision?: (value: Static<T>) => boolean,
+): Promise<StructuredOutputResult<Static<T>>> {
+	const { classifierAnswers: _answers, source: _source, ...result } = await runDecision(request, validateDecision);
+	return result;
 }

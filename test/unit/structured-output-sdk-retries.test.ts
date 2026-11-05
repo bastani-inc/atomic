@@ -4,8 +4,8 @@ import { Readable } from "node:stream";
 import { normalizeContext } from "@bastani/pi-ai";
 import type { HttpRequest } from "@smithy/types";
 import { afterEach, test, vi } from "vitest";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionChatModel, decisionRequest } from "../helpers/structured-output.js";
+
+import { decisionChatModel, decisionRequest, routeModel } from "../helpers/structured-output.js";
 
 const { handle, bedrockSdkPath } = await vi.hoisted(async () => {
 	const { createRequire } = await import("node:module");

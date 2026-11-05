@@ -17,7 +17,7 @@ import {
 	isDecisionModelUnavailableError,
 } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+
 import { resolveDecisionModel } from "../../packages/coding-agent/src/core/structured-output/resolver.js";
 import {
 	decisionMessage,
@@ -25,6 +25,7 @@ import {
 	decisionSchema,
 	messageStream,
 	registeredDecisionRuntime,
+	routeModel,
 } from "../helpers/structured-output.js";
 
 const FAST_RETRY = { enabled: true, maxRetries: 3, baseDelayMs: 1 };

@@ -6,8 +6,8 @@ import { resolveRestoredModelReference } from "../../packages/coding-agent/src/c
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { resolveDecisionModel, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionRequest } from "../helpers/structured-output.js";
+import { resolveDecisionModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import { decisionRequest, routeModel } from "../helpers/structured-output.js";
 
 const OPENROUTER_KEY = "mock-openrouter-key";
 const ALLOWED_CHAT_MODEL = "~anthropic/claude-sonnet-latest";
