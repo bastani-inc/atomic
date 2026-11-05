@@ -382,7 +382,7 @@ test("atomic storage status lists a native shard whose file was deleted or canno
 		],
 	);
 	assert.ok(unavailable.every((shard) => shard.message.includes(shard.path) && shard.hint.length > 0));
-	assert.equal(unavailable[0]?.detail, undefined);
+	assert.equal("detail" in unavailable[0]!, false, "a missing file has no driver reason");
 	assert.equal(typeof unavailable[1]?.detail, "string", "a file that cannot be opened carries the driver's reason");
 	const lines = formatStorageStatus(status);
 	assert.ok(lines.includes(`  unavailable: ${first} (native, no longer exists: shard-missing)`));

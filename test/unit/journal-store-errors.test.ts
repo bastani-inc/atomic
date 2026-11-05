@@ -236,6 +236,9 @@ test("the family base keeps a given name and defaults to JournalStoreError; guar
 		{ name: 1, code: "c", fields: {}, retryable: true },
 		{ name: "x", code: 1, fields: {}, retryable: true },
 		{ name: "JournalCatalogError", code: "c", fields: null, retryable: true },
+		{ name: "JournalCatalogError", code: 7, fields: {}, retryable: true },
+		{ name: "JournalCatalogError", code: "c", fields: {}, retryable: "yes" },
+		{ name: "JournalCatalogError", code: "c", fields: "text", retryable: true },
 		{ name: "x", code: "c", fields: {}, retryable: false },
 		{ name: "Whatever", code: "x", fields: {}, retryable: true },
 	])

@@ -1204,3 +1204,50 @@ test("the first new root placed after a reopen reconciles a root the catalog sti
 	assert.equal((await catalog.shards()).length, shardsBefore, "the idle shard takes the new root, no shard is added");
 	assert.equal(reopened.shardOf("next")?.id, (await catalog.locate("finished"))?.shard.id);
 });
+
+test("the reconciliation runs once per process, writes only a status that differs, and reports a failed write (#4325)", async () => {
+	const first = await open();
+	await start(first, "running-root");
+	const finished = await start(first, "finished-root");
+	await first.append(finished, { type: "StatusChanged", payload: { status: "completed" } });
+	await first.release(finished);
+	await first.close();
+	const catalogFile = new DatabaseSync(join(store, "catalog.sqlite"));
+	catalogFile.exec("UPDATE catalog_runs SET status = 'running' WHERE run_id = 'finished-root'");
+	catalogFile.close();
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const calls = countCalls(catalog, ["busyRuns", "setStatus"]);
+	await journal.createRun({ runId: "n1", name: "wf", cwd: "/p", createdAt: 1, status: "running" });
+	await journal.createRun({ runId: "n2", name: "wf", cwd: "/p", createdAt: 1, status: "running" });
+	await journal.journalFor("n3");
+	assert.equal(calls.busyRuns, 1, "the busy roots are read once");
+	assert.equal(calls.setStatus, 1, "only the root whose saved status differs is written");
+});
+
+for (const [failure, outcome] of [
+	[new JournalCatalogError({ code: "write-failed", catalogPath: "/c", phase: "recording-status" }), "is reported"],
+	[new Error("not a catalog error"), "is thrown"],
+] as const)
+	test(`a reconciliation write that fails with ${failure.name} ${outcome} (#4325)`, async () => {
+		const first = await open();
+		const finished = await start(first, "finished-root");
+		await first.append(finished, { type: "StatusChanged", payload: { status: "completed" } });
+		await first.release(finished);
+		await first.close();
+		const catalogFile = new DatabaseSync(join(store, "catalog.sqlite"));
+		catalogFile.exec("UPDATE catalog_runs SET status = 'running' WHERE run_id = 'finished-root'");
+		catalogFile.close();
+		const journal = await open();
+		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+		Reflect.set(catalog, "setStatus", async () => {
+			throw failure;
+		});
+		const placed = journal.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 1, status: "running" });
+		if (outcome === "is thrown") {
+			await assert.rejects(placed, failure);
+			return;
+		}
+		assert.equal(await placed, "created", "the failed write does not stop the new root");
+		assert.equal(journal.catalogBacklog().failure, failure);
+	});
