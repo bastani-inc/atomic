@@ -724,6 +724,11 @@ function settledTranscript(manager: SessionManager): TranscriptSource {
 	return { getSessionId: () => sessionId, getEntries: () => [...entries] };
 }
 
+/** What a released child keeps for task inspection: only its session id. Its history is in its session store. */
+function releasedTranscript(sessionId: string): TranscriptSource {
+	return { getSessionId: () => sessionId, getEntries: () => [] };
+}
+
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
 	return value === "killed" ? "interrupted" : value;
 }
@@ -1210,6 +1215,7 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
+		let releasedAttempt = false;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
@@ -1720,6 +1726,7 @@ export class SubagentControlRuntime {
 			// A stopped child is not waiting on anything: what it detached ends with it.
 			if (termination !== undefined) for (const call of detached) call.abort(termination);
 			else if (detached.length > 0 && release !== undefined) {
+				releasedAttempt = true;
 				release.onReleased(detached);
 				const waitingOn = detached.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName }));
 				this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
@@ -1866,7 +1873,12 @@ export class SubagentControlRuntime {
 			const settleTranscript = (): void => {
 				statusesOpen = false;
 				taskHooks?.clearExtensionStatuses?.();
-				if (transcriptManager !== undefined) taskHooks?.bindTranscript?.(settledTranscript(transcriptManager));
+				if (transcriptManager === undefined) return;
+				taskHooks?.bindTranscript?.(
+					releasedAttempt
+						? releasedTranscript(transcriptManager.getSessionId())
+						: settledTranscript(transcriptManager),
+				);
 			};
 			onDisposal(
 				(async (): Promise<SessionDisposal> => {

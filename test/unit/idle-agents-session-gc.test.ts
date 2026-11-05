@@ -7,17 +7,25 @@ import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
+import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
 	subagentReleasePolicy,
 	subagentWakeNamespace,
 } from "../../packages/subagents/src/runs/foreground/released-children.ts";
+import {
+	createSubagentChildRecordSink,
+	readSubagentChildRecords,
+	SUBAGENT_CHILD_RELEASED_STATUS,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { collectGarbage, trackCollection } from "../helpers/collect-garbage.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
-import { trackSessions } from "../helpers/track-sessions.js";
+import { trackLastEntry, trackSessions } from "../helpers/track-sessions.js";
 
 const CHILD_LOAD_TIMEOUT_MS = 120_000;
 const CHILDREN = 12;
@@ -79,7 +87,7 @@ test(
 		for (let turn = 0; turn < 20 && woken.length < CHILDREN; turn++)
 			await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(woken.length, CHILDREN, "the live operations were real: each result woke its child");
-		assert.deepEqual({ created: tracked.created, stillReachable }, { created: 2 * CHILDREN, stillReachable: 0 });
+		assert.deepEqual({ created: tracked.created, stillReachable }, { created: 4 * CHILDREN, stillReachable: 0 });
 	},
 	CHILD_LOAD_TIMEOUT_MS,
 );
@@ -100,6 +108,7 @@ async function releaseSdkSession(
 	const calls = harness.session.takeDetachedToolCalls();
 	tracked.track(harness.session);
 	tracked.track(harness.sessionManager);
+	trackLastEntry(tracked, harness.sessionManager);
 	await harness.session.release();
 	await harness.cleanup();
 	return calls;
@@ -127,7 +136,83 @@ test(
 		for (const answer of answers) answer({ content: [{ type: "text", text: "green" }], details: undefined });
 		const results = await Promise.all(heldCalls.map((call) => call.result));
 		assert.equal(results.length, CHILDREN, "the held calls settled with the results the operations gave");
-		assert.deepEqual({ created: tracked.created, stillReachable }, { created: 2 * CHILDREN, stillReachable: 0 });
+		assert.deepEqual({ created: tracked.created, stillReachable }, { created: 3 * CHILDREN, stillReachable: 0 });
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
+async function launchReleasedTask(
+	index: number,
+	env: Awaited<ReturnType<typeof liveChildEnvironment>>,
+	host: AgentTaskHost,
+	owner: SessionManager,
+	policy: ReturnType<typeof subagentReleasePolicy>,
+): Promise<void> {
+	env.faux.setResponses([
+		{
+			role: "assistant",
+			content: [{ type: "toolCall", id: `ci-${index}`, name: "wait_for_ci", arguments: { run: String(index) } }],
+			stopReason: "toolUse",
+		} as never,
+	]);
+	const response = await runAgentTask({
+		host,
+		cwd: env.root,
+		agents: [agent],
+		agent: "waiter",
+		task: "watch CI",
+		options: {
+			...env.options(`gct-${index}`, {
+				sessionManager: await SessionManager.create(new MemorySessionStore(), env.root),
+				resumeSession: true,
+				releaseWhenWaiting: policy,
+			}),
+			index: 0,
+		},
+		wait: { kind: "background" },
+		recordChild: createSubagentChildRecordSink(
+			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
+			{ sessionManager: owner, orchestrationContext: undefined },
+		),
+		runtime: { runSync },
+	});
+	assert.equal(response.kind, "admitted");
+	for (let turn = 0; turn < 2000; turn++) {
+		const record = readSubagentChildRecords(owner.getEntries()).get(`gct-${index}:0`);
+		if (record?.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) return;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error(`child gct-${index} was never recorded released`);
+}
+
+test(
+	"released subagent children launched as tasks can be collected while their calls run: no transcript or route stays behind (#4326)",
+	async () => {
+		const tracked = trackCollection();
+		cleanups.push(trackSessions(tracked));
+		const env = await liveChildEnvironment(cleanups);
+		const dispatcher = new AgentWakeDispatcher();
+		dispatcher.handle(subagentWakeNamespace(OWNER_SESSION_ID), async () => {});
+		const owner = SessionManager.inMemory(env.root);
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: OWNER_SESSION_ID },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		for (let index = 0; index < CHILDREN; index++)
+			await launchReleasedTask(
+				index,
+				env,
+				host,
+				owner,
+				subagentReleasePolicy(OWNER_SESSION_ID, `gct-${index}:0`, dispatcher, 0),
+			);
+		assert.equal(env.answers.length, CHILDREN, "every call is still a live operation");
+		await collectGarbage();
+		assert.deepEqual(
+			{ created: tracked.created, stillReachable: tracked.created - tracked.collected() },
+			{ created: 4 * CHILDREN, stillReachable: 0 },
+		);
 	},
 	CHILD_LOAD_TIMEOUT_MS,
 );

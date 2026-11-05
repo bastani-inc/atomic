@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	type AgentWake,
 	type AgentWakeDispatcher,
@@ -44,6 +45,31 @@ export function subagentWakeKey(ownerSessionId: string, childId: string): string
 }
 
 /**
+ * The async context of this module's load, outside every task and session. A promise reaction keeps the async context
+ * it was created in alive, so a reaction made inside a child's task would keep that task's launch input reachable for
+ * as long as the call it waits on runs.
+ */
+const outsideAnyTask = AsyncLocalStorage.snapshot();
+
+function deliverToolResult(
+	dispatcher: AgentWakeDispatcher,
+	wakeKey: string,
+	toolResult: DetachedToolResult,
+): Promise<void> {
+	return dispatcher.deliver(wakeKey, {
+		id: `tool-result:${toolResult.toolCallId}`,
+		kind: "tool-result",
+		toolResult,
+	});
+}
+
+function forwardDetachedResult(dispatcher: AgentWakeDispatcher, wakeKey: string, call: DetachedToolCall): void {
+	void call.result
+		.then((toolResult) => deliverToolResult(dispatcher, wakeKey, toolResult))
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
+}
+
+/**
  * Hand each detached call's result to the dispatcher as a `tool-result` wake for the child, once, when it settles.
  * Nothing waits per child: each call's own operation carries its delivery.
  */
@@ -52,16 +78,7 @@ export function forwardDetachedResults(
 	wakeKey: string,
 	calls: readonly DetachedToolCall[],
 ): void {
-	for (const call of calls)
-		void call.result
-			.then((toolResult) =>
-				dispatcher.deliver(wakeKey, {
-					id: `tool-result:${toolResult.toolCallId}`,
-					kind: "tool-result",
-					toolResult,
-				}),
-			)
-			.catch((error) => dispatcher.reportUnobservedFailure(error));
+	for (const call of calls) outsideAnyTask(forwardDetachedResult, dispatcher, wakeKey, call);
 }
 
 /** The release policy of one background child: release after `afterMs`, and wake it with its calls' results. */

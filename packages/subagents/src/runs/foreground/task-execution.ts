@@ -12,6 +12,7 @@ import type {
 	YieldError,
 	YieldReason,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
+import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
 import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
@@ -281,6 +282,24 @@ export function takeStoppedQueuedSubagentChild(taskId: string): QueuedSubagentCh
 	return queued.start;
 }
 
+/**
+ * The transcript a task keeps. It is built here, outside `runAgentTask`: a closure made inside it would keep the
+ * whole launch input reachable for as long as the task exists, a released child's session manager included.
+ */
+function taskTranscriptSource(
+	session: TaskTranscriptSource,
+	runId: string,
+	intercomTarget: string | undefined,
+): TaskTranscriptSource {
+	return {
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getEntries(),
+		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
+		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
+		...(intercomTarget === undefined ? {} : { completionSource: { runId, intercomTarget } }),
+	};
+}
+
 type ExecutionSchedule = (dispatch: () => Promise<void>) => void;
 
 /** The scheduler each child's run dispatched it on, by child id, so a resumed child waits for a slot in that run. */
@@ -501,22 +520,9 @@ export async function runAgentTask(input: {
 							signal: context.signal,
 							reportActivity: context.reportActivity,
 							bindTranscript: (session) =>
-								context.bindTranscript({
-									getSessionId: () => session.getSessionId(),
-									getEntries: () => session.getEntries(),
-									...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
-									...(session.getStreamingMessage
-										? { getStreamingMessage: session.getStreamingMessage.bind(session) }
-										: {}),
-									...(input.options.intercomSessionName
-										? {
-												completionSource: {
-													runId: input.options.runId,
-													intercomTarget: input.options.intercomSessionName,
-												},
-											}
-										: {}),
-								}),
+								context.bindTranscript(
+									taskTranscriptSource(session, input.options.runId, input.options.intercomSessionName),
+								),
 							setExtensionStatus: context.setExtensionStatus,
 							clearExtensionStatuses: context.clearExtensionStatuses,
 							bindChildSession: (session) => {
