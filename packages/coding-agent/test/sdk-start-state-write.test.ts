@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel, type Model } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { AuthStorage, ModelRuntime } from "../src/index.ts";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { AuthStorage, ModelRuntime } from "../src/index.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 

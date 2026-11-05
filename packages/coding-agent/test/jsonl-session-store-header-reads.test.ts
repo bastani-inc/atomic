@@ -5,7 +5,7 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.ts";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 
 /**
  * The fs requests one append may make: locate (open, one header read, close, stat), the lock, the write and its

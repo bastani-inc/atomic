@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
-import { createAgentSession } from "../src/core/sdk.ts";
-import type { CreateAgentSessionOptions, ResourceAdmission, ResourceAdmissionRequest } from "../src/core/sdk-types.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createAgentSession } from "../src/core/sdk.js";
+import type { CreateAgentSessionOptions, ResourceAdmission, ResourceAdmissionRequest } from "../src/core/sdk-types.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 

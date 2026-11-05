@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
-import { SessionManager } from "../../src/core/session-manager.ts";
-import { JsonlSessionStore } from "../../src/core/storage/session/jsonl-session-store.ts";
+import { SessionManager } from "../../src/core/session-manager.js";
+import { JsonlSessionStore } from "../../src/core/storage/session/jsonl-session-store.js";
 
 const directories: string[] = [];
 /** Ids `randomUUID` returns next, before it returns random ones again. */
