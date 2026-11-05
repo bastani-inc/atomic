@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import {
 	findInCauseChain,
 	hasErrorIdentity,
@@ -200,6 +200,51 @@ describe("redactUrlCredentials", () => {
 			redactUrlCredentials("http://host/a@b and http://host/@path"),
 			"http://host/a@b and http://host/@path",
 		);
+	});
+
+	it("bounds regex work on adversarial error details (#4323)", () => {
+		const scheme = "a.".repeat(5_000);
+		const cases = [
+			[scheme, scheme],
+			[`a://${scheme}`, `a://${scheme}`],
+			[`${scheme}://user:secret@host`, `${scheme}://host`],
+			["a://".repeat(5_000), "a://".repeat(5_000)],
+		] as const;
+		const exec = RegExp.prototype.exec;
+		let regexCharacters = 0;
+		let largestRegexInput = 0;
+		const spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (this: RegExp, input: string) {
+			regexCharacters += input.length;
+			largestRegexInput = Math.max(largestRegexInput, input.length);
+			return exec.call(this, input);
+		});
+		try {
+			for (const [input, expected] of cases) assert.equal(redactUrlCredentials(input), expected);
+		} finally {
+			spy.mockRestore();
+		}
+		assert.ok(largestRegexInput <= 1, `regex received ${largestRegexInput} characters`);
+		assert.ok(regexCharacters <= 4 * cases.reduce((sum, [input]) => sum + input.length, 0));
+	});
+
+	it("preserves scheme boundaries and authority delimiters in error details", () => {
+		const cases = [
+			["1a://u:p@h x", "1a://u:p@h x"],
+			["1ſa://u:p@h x", "1ſa://u:p@h x"],
+			["1Ka://u:p@h x", "1Ka://u:p@h x"],
+			["a+1://u:p@h x", "a+1://h x"],
+			["a-1://u:p@h x", "a-1://h x"],
+			["+.-://u:p@h x", "+.-://u:p@h x"],
+			["a://no-user b://u:p@h x", "a://no-user b://h x"],
+			["a://u/p@h x", "a://u/p@h x"],
+			["a://u?x@h", "a://u?x@h"],
+			["a://u#x@h", "a://u#x@h"],
+			["a://u p@h", "a://u p@h"],
+			["ſ://u:p@h x", "ſ://h x"],
+			["K://u:p@h x", "K://h x"],
+			["a://u:p@@h x", "a://h x"],
+		] as const;
+		for (const [input, expected] of cases) assert.equal(redactUrlCredentials(input), expected, input);
 	});
 
 	it("removes credentials from every serialized cause message", () => {

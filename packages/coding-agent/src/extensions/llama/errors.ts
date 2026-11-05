@@ -33,12 +33,6 @@ const UNREACHABLE_HINT =
 const REQUEST_REJECTED_HINT =
 	"Check the server URL in /login llama.cpp or LLAMA_BASE_URL: use a plain http or https address without a user name or password (give an API key separately), on a port that fetch does not block, such as the default 8080.";
 
-/**
- * User information of a string known to be one URL, up to the last `@` before its path, query or fragment. Whitespace
- * may precede the scheme or sit inside the user information, because the string did not parse as a URL.
- */
-const WHOLE_URL_USER_INFO = /([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/iu;
-
 /** The server URL without user information, so it can go into messages and fields. */
 function displayServerUrl(serverUrl: string): string {
 	try {
@@ -47,7 +41,7 @@ function displayServerUrl(serverUrl: string): string {
 		url.password = "";
 		return url.toString().replace(/\/$/u, "");
 	} catch {
-		return serverUrl.replace(WHOLE_URL_USER_INFO, "$1");
+		return redactUrlCredentials(serverUrl, "server-url");
 	}
 }
 

@@ -32,12 +32,48 @@ export const MAX_SERIALIZED_CAUSE_DEPTH = 5;
 /** How many links of a cause chain a guard inspects. */
 export const MAX_GUARDED_CAUSE_DEPTH = 8;
 
-/** User information of a URL in free text: up to the last `@` before its path, query, fragment or whitespace. */
-const URL_USER_INFO = /\b([a-z][a-z\d+.-]*:\/\/)[^\s/?#]*@/giu;
+const SCHEME_LETTER = /[a-z]/iu;
+const SCHEME_CHARACTER = /[a-z\d+.-]/iu;
+const WORD_CHARACTER = /\w/iu;
+const WHITESPACE = /\s/u;
 
-/** Removes the user name and password from every URL in `text`, so they never reach a message or a relay. */
-export function redactUrlCredentials(text: string): string {
-	return text.replace(URL_USER_INFO, "$1");
+export function redactUrlCredentials(text: string, context: "text" | "server-url" = "text"): string {
+	const parts: string[] = [];
+	let copiedThrough = 0;
+	let from = 0;
+	for (;;) {
+		const schemeEnd = text.indexOf("://", from);
+		if (schemeEnd === -1) return parts.join("") + text.slice(copiedThrough);
+		let hasScheme = false;
+		for (let index = schemeEnd - 1; index >= 0 && SCHEME_CHARACTER.test(text[index]!); index--) {
+			if (
+				SCHEME_LETTER.test(text[index]!) &&
+				(context === "server-url" || index === 0 || !WORD_CHARACTER.test(text[index - 1]!))
+			) {
+				hasScheme = true;
+			}
+		}
+		const authorityStart = schemeEnd + 3;
+		let lastAt = -1;
+		for (let index = authorityStart; index < text.length; index++) {
+			const character = text[index]!;
+			if (
+				character === "/" ||
+				character === "?" ||
+				character === "#" ||
+				(context === "text" && WHITESPACE.test(character))
+			) {
+				break;
+			}
+			if (character === "@") lastAt = index;
+		}
+		if (hasScheme && lastAt !== -1) {
+			if (context === "server-url") return text.slice(0, authorityStart) + text.slice(lastAt + 1);
+			parts.push(text.slice(copiedThrough, authorityStart));
+			copiedThrough = lastAt + 1;
+		}
+		from = authorityStart;
+	}
 }
 
 /**

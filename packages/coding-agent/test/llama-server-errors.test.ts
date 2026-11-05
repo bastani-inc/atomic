@@ -242,6 +242,52 @@ describe("llama.cpp server errors (pi #11779)", () => {
 		}
 	});
 
+	it("preserves malformed scheme prefixes and authority delimiters while redacting the server URL", () => {
+		const cases = [
+			["1a://u:p@h x", "1a://h x"],
+			["+.-://u:p@h x", "+.-://u:p@h x"],
+			["!a://no-user b://u:p@h x", "!a://no-user b://h x"],
+			["!a://u/p@h x", "!a://u/p@h x"],
+			["!a://u?x@h", "!a://u?x@h"],
+			["!a://u#x@h", "!a://u#x@h"],
+			["ſ://u:p@h x", "ſ://h x"],
+			["K://u:p@h x", "K://h x"],
+			["a://u:p@@h x", "a://h x"],
+			["!a://u:p@h/x/b://user@other", "!a://h/x/b://user@other"],
+		] as const;
+		for (const [serverUrl, expected] of cases) {
+			assert.equal(new LlamaServerRequestError(serverUrl, "rejected").serverUrl, expected, serverUrl);
+		}
+	});
+
+	it("bounds credential-redaction regex work on adversarial server URLs (#4323)", () => {
+		const scheme = "a.".repeat(5_000);
+		const cases = [
+			[scheme, scheme],
+			[`!a://${scheme}`, `!a://${scheme}`],
+			[`${scheme}://user:secret@h x`, `${scheme}://h x`],
+			[`!${"a://".repeat(5_000)}`, `!${"a://".repeat(5_000)}`],
+		] as const;
+		const exec = RegExp.prototype.exec;
+		let regexCharacters = 0;
+		let largestRegexInput = 0;
+		const spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (this: RegExp, input: string) {
+			regexCharacters += input.length;
+			largestRegexInput = Math.max(largestRegexInput, input.length);
+			return exec.call(this, input);
+		});
+		try {
+			for (const [serverUrl, expected] of cases) {
+				const error = new LlamaServerUnreachableError(serverUrl, "");
+				assert.equal(error.serverUrl, expected);
+			}
+		} finally {
+			spy.mockRestore();
+		}
+		assert.ok(largestRegexInput <= 1, `regex received ${largestRegexInput} characters`);
+		assert.ok(regexCharacters <= 4 * cases.reduce((sum, [input]) => sum + input.length, 0));
+	});
+
 	it("removes a password that contains a raw @ from the server URL and the detail", () => {
 		const error = new LlamaServerRequestError("http://user:p@ss@host:8080", "bad url http://user:p@ss@host:8080/x");
 		assert.equal(error.serverUrl, "http://host:8080");
