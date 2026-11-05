@@ -46,6 +46,7 @@ export interface SettingsConfig {
 	mermaidRenderingMode: MermaidRenderingMode;
 	latexRenderingEnabled: boolean;
 	collapseChangelog: boolean;
+	debug: boolean;
 	enableInstallTelemetry: boolean;
 	doubleEscapeAction: DoubleEscapeAction;
 	treeFilterMode: TreeFilterMode;
@@ -88,6 +89,7 @@ export interface SettingsCallbacks {
 	onMermaidRenderingModeChange: (mode: MermaidRenderingMode) => void;
 	onLatexRenderingEnabledChange: (enabled: boolean) => void;
 	onCollapseChangelogChange: (collapsed: boolean) => void;
+	onDebugChange: (enabled: boolean) => void;
 	onEnableInstallTelemetryChange: (enabled: boolean) => void;
 	onDoubleEscapeActionChange: (action: DoubleEscapeAction) => void;
 	onTreeFilterModeChange: (mode: TreeFilterMode) => void;

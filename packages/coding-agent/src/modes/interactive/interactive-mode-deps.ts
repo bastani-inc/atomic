@@ -66,6 +66,7 @@ export { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../.
 export { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 export { formatNoModelsAvailableMessage } from "../../core/auth-guidance.ts";
 export type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+export { setDebugSetting } from "../../core/debug-setting.ts";
 export type {
 	AutocompleteProviderFactory,
 	EditorFactory,

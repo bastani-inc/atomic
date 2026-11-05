@@ -539,6 +539,21 @@ Response:
 
 An Atomic without this command answers it with an error, so a client can send it at startup and keep its previous behavior when it fails.
 
+### Debug
+
+#### set_debug
+
+Turn the engine's [debug mode](/development#debugging) on or off for this process. Work the engine starts afterwards, and child processes it starts afterwards, follow it. It does not change the saved `debug` setting. An `enabled` that is not `true` or `false` is refused with an error response, and nothing changes.
+
+```json
+{"type": "set_debug", "enabled": true}
+```
+
+Response:
+```json
+{"type": "response", "command": "set_debug", "success": true}
+```
+
 ### Retry
 
 #### set_auto_retry

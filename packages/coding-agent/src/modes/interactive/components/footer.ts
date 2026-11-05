@@ -3,6 +3,7 @@ import type { Usage } from "@bastani/pi-ai/compat";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { SessionStats } from "../../../core/agent-session-types.js";
+import { isDebugEnabled } from "../../../core/debug.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -330,6 +331,7 @@ export class FooterComponent implements Component {
 		let statusText =
 			liveState ?? `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 		if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
+		if (isDebugEnabled()) statusText += ` ${this.renderStyle.warning("debug")}`;
 		const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);

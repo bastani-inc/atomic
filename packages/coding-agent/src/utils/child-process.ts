@@ -14,6 +14,7 @@ import { constants as osConstants } from "node:os";
 import { basename } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
+import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
 import { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
@@ -27,7 +28,9 @@ export function createChildProcessEnvironment(
 	overrides?: NodeJS.ProcessEnv,
 	baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	return { ...baseEnv, ...overrides, AI_AGENT: ATOMIC_AI_AGENT };
+	const env = { ...baseEnv, ...overrides, AI_AGENT: ATOMIC_AI_AGENT };
+	applyDebugSettingToChildEnvironment(env);
+	return env;
 }
 
 type WaitForChildProcessOptions = {

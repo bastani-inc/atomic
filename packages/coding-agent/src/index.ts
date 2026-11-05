@@ -278,6 +278,27 @@ export {
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
 } from "./core/compaction/index.ts";
+export {
+	appendDebugRecord,
+	DEBUG_AREA_VARIABLES,
+	type DebugArea,
+	type DebugFields,
+	type DebugValue,
+	getDebugLogFailure,
+	isDebugEnabled,
+	reportDebug,
+} from "./core/debug.ts";
+export {
+	DebugConfigError,
+	DebugError,
+	type DebugErrorCode,
+	DebugLogUnwritableError,
+	type DebugSettingSource,
+	isDebugConfigError,
+	isDebugError,
+	isDebugLogUnwritableError,
+} from "./core/debug-errors.ts";
+export { onDebugSettingChange, setDebugSetting } from "./core/debug-setting.ts";
 export type {
 	ErrorFieldValue,
 	SerializedErrorCause,
@@ -383,11 +404,7 @@ export {
 	parseModelConstraints,
 	setsProviders,
 } from "./core/model-routing-constraints.js";
-export {
-	isModelRoutingDebugEnabled,
-	MODEL_ROUTING_DEBUG_ENV,
-	reportModelRoutingDebug,
-} from "./core/model-routing-debug.js";
+export { reportModelRoutingDebug } from "./core/model-routing-debug.js";
 export {
 	DIFFICULTY_LEVELS,
 	type Difficulty,

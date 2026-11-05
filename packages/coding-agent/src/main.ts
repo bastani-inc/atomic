@@ -29,6 +29,7 @@ import {
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
 import {
+	ENV_DEBUG,
 	ENV_OFFLINE,
 	ENV_SESSION_DIR,
 	ENV_SKIP_VERSION_CHECK,
@@ -47,6 +48,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
+import { setDebugSetting } from "./core/debug-setting.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
@@ -329,6 +331,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		setEnvValue(ENV_OFFLINE, "1");
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
+	if (args.includes("--debug")) setEnvValue(ENV_DEBUG, "1");
 	if (process.platform === "win32") cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	let cwd: string;
 	try {
@@ -344,6 +347,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 	if (await handlePackageCommand(args, { extensionFactories })) {

@@ -90,7 +90,7 @@ A failed explicit classifier routing attempt switches to the current chat model 
 
 A classifier `routerModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`routerModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
 
-Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection.
+Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection, or turn on [debug mode](#debug-mode) to write them to the debug log.
 
 This setting selects inference for [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection). It does not directly select the child execution model or change the selected chat model, `structured_output` tool, or general structured-output inference. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The selected router provider receives the routing context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
@@ -231,6 +231,16 @@ Transient notices stack while visible.
 The alternate screen normally restores the terminal's prior contents on exit, so an interactive transcript does not remain in terminal scrollback. The `fullscreenExitOutput` setting changes what exiting prints: `"transcript"` (the default) paints the final transcript plus a session resume hint on the main screen, while `"resume-hint"` restores the previous screen and prints only the resume hint. Use `/export` before exit for an HTML copy, or resume the saved session later to review it in Atomic.
 
 Ctrl+G uses `externalEditor`, then `$VISUAL`, then `$EDITOR`, then Notepad on Windows or `nano` elsewhere. This applies in main chat, embedded chat, and extension editor dialogs. Saving an empty edit clears the text; editor failure leaves the original unchanged. Atomic restores its interface after the editor exits.
+
+### Debug mode
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `debug` | boolean | `false` | Turn on every debug output and write it to the debug log that `/debug` shows. Shown as **Debug mode** in `/settings`. Global setting only |
+
+`--debug` and `ATOMIC_DEBUG=1` turn debug mode on for one run without changing the setting. While debug mode is on, the footer shows a `debug` badge.
+
+Toggling **Debug mode** in `/settings` applies to new work at once, without a restart. Workers, the Intercom broker and other child processes that are already running keep the state they started with, and pick up the change the next time they start. See [Debugging](/development#debugging) for what each area writes.
 
 ### Telemetry and update checks
 

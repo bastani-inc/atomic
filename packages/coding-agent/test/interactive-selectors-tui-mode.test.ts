@@ -8,7 +8,9 @@ import {
 	stripTerminalSequences,
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { isDebugEnabled } from "../src/core/debug.ts";
+import { setDebugSetting } from "../src/core/debug-setting.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.ts";
 import {
@@ -136,6 +138,28 @@ test("settings selector searches and saves the compaction model without changing
 		assert.equal(session.model, chatModel);
 		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Compaction model\s+openai\/gpt-4\.1-mini/);
 	} finally {
+		mode.ui.stop();
+	}
+});
+
+test("toggling Debug mode saves it and turns debug mode on for this process at once (#4360)", () => {
+	const { mode, selector, settingsManager } = openSettingsSelector();
+	try {
+		const list = selector.getSettingsList();
+		const requestRender = vi.spyOn(Reflect.get(mode, "renderer") as TUI, "requestRender");
+		for (const character of "Debug mode") list.handleInput(character);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Debug mode\s+false/);
+		const before = requestRender.mock.calls.length;
+		list.handleInput("\r");
+		assert.equal(requestRender.mock.calls.length, before + 1, "the footer repaints with the badge");
+		assert.equal(settingsManager.getDebug(), true);
+		assert.equal(isDebugEnabled(undefined, {}), true);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Debug mode\s+true/);
+		list.handleInput("\r");
+		assert.equal(settingsManager.getDebug(), false);
+		assert.equal(isDebugEnabled(undefined, {}), false);
+	} finally {
+		setDebugSetting(false);
 		mode.ui.stop();
 	}
 });

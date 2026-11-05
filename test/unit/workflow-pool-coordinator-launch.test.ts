@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
+import type { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { INTERNAL_WORKFLOW_WORKER_ARG } from "../../packages/coding-agent/src/bun/internal-workflow-worker.js";
+import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { POOL_COORDINATOR_ROLE } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 interface Launch {
@@ -16,6 +19,7 @@ interface Launch {
 	readonly args: readonly string[];
 	readonly options: ForkOptions;
 	readonly sent: Record<string, unknown>[];
+	child?: unknown;
 }
 
 const FAKE_COORDINATOR_PID = 424_242;
@@ -57,6 +61,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 					return true;
 				},
 			});
+			launch.child = child;
 			return child;
 		},
 	};
@@ -115,6 +120,78 @@ test("in the compiled binary a pool launches its coordinator, and has it launch 
 		assert.equal(pool.coordinatorPid, FAKE_COORDINATOR_PID);
 	} finally {
 		await pool.close();
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a pool's coordinator starts with the debug setting, hears later changes, and its counts reach the debug log (#4360)", async () => {
+	await withDebugLog("off", async (log) => {
+		const directory = makeTempDirectory("pool-coordinator-debug-");
+		const path = join(directory, "journal.sqlite");
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 1, definitions: [] });
+		try {
+			await backend.commitWorkflowRegistration({
+				workflowId: "root",
+				name: "root",
+				inputs: {},
+				createdAt: 0,
+				status: "running",
+			});
+			const lease = await journal.leaseState("root");
+			assert.ok(lease);
+			await (await openSqlPoolQueue(journal)).initialize(
+				{ runId: "root", holderId: lease.holderId, epoch: lease.epoch },
+				3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS,
+			);
+			setDebugSetting(true);
+			await pool.prepare("root");
+			const [launch] = launches;
+			assert.equal(launch!.options.env?.ATOMIC_DEBUG_SETTING, "1", "the coordinator starts with the setting");
+			assert.equal(launch!.options.env?.AI_AGENT, "atomic");
+			const debugNotices = () => launch!.sent.filter((message) => message.kind === "debug");
+			assert.deepEqual(debugNotices(), [], "nothing to tell a coordinator that started with the current setting");
+			setDebugSetting(false);
+			setDebugSetting(true);
+			assert.deepEqual(debugNotices(), [
+				{ kind: "debug", enabled: false },
+				{ kind: "debug", enabled: true },
+			]);
+			const stats = { since: 0, requests: { claim: { count: 2, perSecond: 1 } }, writes: {} };
+			(launch!.child as EventEmitter).emit("message", { kind: "coordination", stats });
+			await vi.waitFor(() => assert.equal(log.records().length, 1));
+			assert.deepEqual(areaRecords(log, "pool"), [
+				{
+					event: "coordination",
+					data: { root: "root", summary: "pool: requests 1.0/s (claim 1.0) · writes 0.00/s" },
+				},
+			]);
+			assert.deepEqual(pool.coordinationStats(), stats);
+		} finally {
+			await pool.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+		const sentBefore = launches[0]!.sent.length;
+		setDebugSetting(false);
+		assert.equal(launches[0]!.sent.length, sentBefore, "a closed pool stops following the setting");
+	});
+});
+
+test("a pool that never started its coordinator closes without one (#4360)", async () => {
+	const directory = makeTempDirectory("pool-coordinator-unstarted-");
+	const path = join(directory, "journal.sqlite");
+	const journal = await resolveRunJournal({ journal: { path } });
+	const backend = await JournalDurableBackend.open(journal);
+	try {
+		const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 1, definitions: [] });
+		await pool.close();
+		setDebugSetting(true);
+		assert.equal(launches.length, 0, "neither closing nor a setting change starts a coordinator");
+	} finally {
+		setDebugSetting(false);
 		await backend.close();
 		removeTempDirectory(directory);
 	}

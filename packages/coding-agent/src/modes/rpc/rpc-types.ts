@@ -133,6 +133,9 @@ export type RpcCommand =
 	// Extension UI
 	| { id?: string; type: "set_extension_ui_capabilities"; questionnaire?: boolean }
 
+	// Debug
+	| { id?: string; type: "set_debug"; enabled: boolean }
+
 	// Retry
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
 	| { id?: string; type: "abort_retry" }
@@ -371,6 +374,9 @@ export type RpcResponse =
 
 	// Extension UI
 	| { id?: string; type: "response"; command: "set_extension_ui_capabilities"; success: true }
+
+	// Debug
+	| { id?: string; type: "response"; command: "set_debug"; success: true }
 
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }

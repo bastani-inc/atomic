@@ -4,13 +4,13 @@ import {
 	type CreateAgentSessionOptions,
 	convertToLlm,
 	isExtensionStartupFailure,
-	isModelRoutingDebugEnabled,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
 	type PromptOptions,
 	parseModelConstraints,
+	reportDebug,
 	type SessionManager,
 	type SessionStore,
 	type StructuredOutputCapture,
@@ -560,10 +560,10 @@ export class StageSessionController {
 					// current chat model that satisfies every routing constraint.
 					if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
 					this.modelRoute = error.currentModelRoute;
-					if (isModelRoutingDebugEnabled())
-						this.modelCatalog?.recordWarning?.(
-							`workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${this.modelRoute.modelOverride}.`,
-						);
+					const warning = `workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${this.modelRoute.modelOverride}.`;
+					reportDebug("model-routing", "stage-routing-fallback", { message: warning }, () =>
+						this.modelCatalog?.recordWarning?.(warning),
+					);
 				}
 				this.modelRoute.assertCurrent();
 				this.meta.stageOptions = { ...options, model: this.modelRoute.modelOverride };

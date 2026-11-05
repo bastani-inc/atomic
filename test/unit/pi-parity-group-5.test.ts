@@ -184,6 +184,7 @@ describe("Group 5 parity", () => {
 				mermaidRenderingMode: "streaming",
 				latexRenderingEnabled: true,
 				collapseChangelog: false,
+				debug: false,
 				enableInstallTelemetry: true,
 				doubleEscapeAction: "tree",
 				treeFilterMode: "default",

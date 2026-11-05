@@ -1,6 +1,10 @@
+const PRIVATE_KEY_BLOCK =
+	/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z]+ )?PRIVATE KEY-----|$)/gu;
+
 const CREDENTIAL_SHAPES: readonly RegExp[] = [
 	/\bBearer\s+[\w.~+/-]+=*/giu,
 	/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+/gu,
+	/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,})/gu,
 	/\b(?:sk|pk|rk|api|key|tok|token|secret)[-_][\w-]{12,}/giu,
 ];
 
@@ -21,7 +25,7 @@ export function redactCredentialShapes(text: string): string {
 				const separator = /[:=]/u.exec(match);
 				return separator ? `${match.slice(0, separator.index + 1)} [redacted]` : "[redacted]";
 			}),
-		text,
+		text.replace(PRIVATE_KEY_BLOCK, "[redacted]"),
 	);
 	return CREDENTIAL_SHAPES.reduce((masked, shape) => masked.replace(shape, "[redacted]"), byContext);
 }

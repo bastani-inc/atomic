@@ -408,6 +408,11 @@
       "description": "Show the condensed changelog after update; use /changelog for the full changelog.",
       "default": false
     },
+    "debug": {
+      "type": "boolean",
+      "description": "Debug mode: turn on every debug output and write it to the debug log that /debug shows. Global setting only.",
+      "default": false
+    },
     "enableInstallTelemetry": {
       "type": "boolean",
       "description": "Send an anonymous version-adoption ping on eligible interactive launches.",

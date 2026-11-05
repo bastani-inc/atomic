@@ -223,6 +223,10 @@ export abstract class RpcClientApi {
 	async setExtensionUiCapabilities(capabilities: { questionnaire?: boolean }): Promise<void> {
 		await this.request({ type: "set_extension_ui_capabilities", ...capabilities });
 	}
+	/** Set the engine's `debug` setting; later work and child processes it starts follow it. */
+	async setDebug(enabled: boolean): Promise<void> {
+		await this.request({ type: "set_debug", enabled });
+	}
 	async setAutoRetry(enabled: boolean): Promise<void> {
 		await this.request({ type: "set_auto_retry", enabled });
 	}

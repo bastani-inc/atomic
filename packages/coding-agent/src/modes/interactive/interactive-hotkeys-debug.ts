@@ -184,7 +184,7 @@ InteractiveModeBase.prototype.handleDebugCommand = function (this: InteractiveMo
 	].join("\n");
 
 	fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
-	fs.writeFileSync(debugLogPath, debugData);
+	fs.appendFileSync(debugLogPath, debugData);
 
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(

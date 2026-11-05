@@ -576,6 +576,8 @@ describe("settings.json schema", () => {
 		assert.equal(settings.getSearchContextBefore(), defaults.search.contextBefore);
 		assert.equal(settings.getSearchContextAfter(), defaults.search.contextAfter);
 		assert.equal(settings.getCollapseChangelog(), defaults.collapseChangelog);
+		assert.equal(settings.getDebug(), defaults.debug);
+		assert.equal(defaults.debug, false);
 		assert.equal(settings.getEnableInstallTelemetry(), defaults.enableInstallTelemetry);
 		assert.equal(settings.getEnableSkillCommands(), defaults.enableSkillCommands);
 		assert.equal(settings.getShowImages(), defaults.terminal.showImages);

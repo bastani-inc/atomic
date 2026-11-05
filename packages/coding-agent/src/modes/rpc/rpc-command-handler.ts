@@ -2,6 +2,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { runCallback } from "../../core/callback-activity.ts";
+import { setDebugSetting } from "../../core/debug-setting.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
@@ -60,6 +61,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "resume_queued_messages":
 		case "set_auto_compaction":
 		case "set_auto_retry":
+		case "set_debug":
 		case "set_extension_ui_capabilities":
 		case "set_follow_up_mode":
 		case "set_steering_mode":
@@ -383,6 +385,10 @@ export function createRpcCommandHandler({
 				if (extensionUICapabilities && command.questionnaire !== undefined)
 					extensionUICapabilities.questionnaire = command.questionnaire === true;
 				return createRpcSuccessResponse(id, "set_extension_ui_capabilities");
+
+			case "set_debug":
+				setDebugSetting(command.enabled, "rpc");
+				return createRpcSuccessResponse(id, "set_debug");
 
 			case "set_auto_retry":
 				session.setAutoRetryEnabled(command.enabled);

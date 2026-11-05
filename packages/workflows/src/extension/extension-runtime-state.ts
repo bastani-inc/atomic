@@ -1,4 +1,4 @@
-import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
+import { registerExtensionContextRetirementEffect, reportDebug } from "@bastani/atomic";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
@@ -653,10 +653,11 @@ export function createWorkflowExtensionRuntimeState(
 			isWorkflowDiscoveryCurrent(discoveryStart);
 		void pending
 			.catch((error) => {
-				if (isCurrentWarmup() && process.env.ATOMIC_WORKFLOW_DEBUG === "1") {
-					const message = error instanceof Error ? error.message : String(error);
-					console.warn(`Workflow background discovery failed: ${message}`);
-				}
+				if (!isCurrentWarmup()) return;
+				const message = error instanceof Error ? error.message : String(error);
+				reportDebug("workflow", "background-discovery-failed", { message }, () =>
+					console.warn(`Workflow background discovery failed: ${message}`),
+				);
 			})
 			.finally(() => {
 				const current = isCurrentWarmup();
@@ -665,10 +666,10 @@ export function createWorkflowExtensionRuntimeState(
 				try {
 					onSettled?.();
 				} catch (error) {
-					if (process.env.ATOMIC_WORKFLOW_DEBUG === "1") {
-						const message = error instanceof Error ? error.message : String(error);
-						console.warn(`Workflow background discovery callback failed: ${message}`);
-					}
+					const message = error instanceof Error ? error.message : String(error);
+					reportDebug("workflow", "background-discovery-callback-failed", { message }, () =>
+						console.warn(`Workflow background discovery callback failed: ${message}`),
+					);
 				}
 			})
 			.catch(() => {});

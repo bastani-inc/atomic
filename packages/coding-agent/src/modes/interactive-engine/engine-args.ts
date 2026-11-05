@@ -64,6 +64,7 @@ export function buildInteractiveEngineArgs(
 	appendValue(args, "--no-themes", parsed.noThemes);
 	appendValue(args, "--no-context-files", parsed.noContextFiles);
 	appendValue(args, "--offline", parsed.offline);
+	appendValue(args, "--debug", parsed.debug);
 	appendValue(args, "--verbose", parsed.verbose);
 	if (parsed.projectTrustOverride !== undefined) {
 		args.push(parsed.projectTrustOverride ? "--approve" : "--no-approve");
