@@ -131,12 +131,14 @@ const GUARDS = {
 	changed: isIntercomRoutingChangedError,
 } as const;
 
-const INSTANCES = {
-	mismatch: new IntercomRoutingMismatchError("implicit-default-on-remote-broker", "default"),
-	unavailable: new IntercomRoutingUnavailableError("unsupported", "broker_status"),
-	timeout: new IntercomRoutingTimeoutError({ timeoutMs: 1, elapsedMs: 1, phase: "broker_status" }),
-	changed: new IntercomRoutingChangedError(true),
-} as const;
+function routingInstances() {
+	return {
+		mismatch: new IntercomRoutingMismatchError("implicit-default-on-remote-broker", "default"),
+		unavailable: new IntercomRoutingUnavailableError("unsupported", "broker_status"),
+		timeout: new IntercomRoutingTimeoutError({ timeoutMs: 1, elapsedMs: 1, phase: "broker_status" }),
+		changed: new IntercomRoutingChangedError(true),
+	} as const;
+}
 
 test("the family base is named for the family and records a cause only when it was given one (#4320)", () => {
 	const options = { hint: "Inspect it.", retryable: false };
@@ -184,6 +186,7 @@ test("a foreign object is not in the family unless both its name and its code be
 });
 
 test("a concrete guard rejects the other concrete classes and a wrong name or code (#4320)", () => {
+	const INSTANCES = routingInstances();
 	const concrete = ["mismatch", "unavailable", "timeout", "changed"] as const;
 	for (const target of concrete) {
 		for (const other of concrete) {
@@ -219,6 +222,7 @@ test("the retry helper stops at a cause that is null or not an object, without t
 });
 
 test("each routing error renders what failed, the code and one hint, as the UX contract (#4320)", () => {
+	const INSTANCES = routingInstances();
 	const hintOnce = (error: IntercomRoutingError) => error.message.split(error.hint).length - 1;
 	const mismatch = new IntercomRoutingMismatchError("implicit-default-on-remote-broker", "default");
 	assert.equal(

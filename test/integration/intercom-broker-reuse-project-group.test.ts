@@ -108,11 +108,11 @@ function sharedStorage(): string {
 }
 
 /** A broker started the way an Atomic process starts one, by a process launched with `ATOMIC_STORAGE`. */
-function startBrokerWithStorage(selection: string): SpawnedProcess {
+function startBrokerWithStorage(selection: string, stderr: "ignore" | "pipe" = "ignore"): SpawnedProcess {
 	const broker = spawnProcess(["bun", join(extensionDir, "broker/broker.ts")], {
 		stdin: "ignore",
 		stdout: "ignore",
-		stderr: "ignore",
+		stderr,
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_STORAGE: selection },
 	});
 	cleanups.push(async () => {
@@ -622,3 +622,115 @@ for (const [override, select] of [
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+interface RawFrames {
+	readonly frames: unknown[];
+	readonly closed: Promise<void>;
+}
+
+function sendRawFrame(frame: Record<string, unknown>): RawFrames {
+	const frames: unknown[] = [];
+	const socket = net.connect(getBrokerSocketPath(process.platform, agentDir));
+	const closed = new Promise<void>((resolve) => {
+		socket.on("close", () => resolve());
+		socket.on("error", () => {});
+	});
+	socket.on("connect", () => writeMessage(socket, frame as never));
+	socket.on(
+		"data",
+		createMessageReader(
+			(message) => frames.push(message),
+			() => {},
+		),
+	);
+	cleanups.push(() => {
+		socket.destroy();
+	});
+	return { frames, closed };
+}
+
+async function stopBrokerAndReadStderr(broker: SpawnedProcess): Promise<string> {
+	const errors = new Response(broker.stderr as ReadableStream<Uint8Array>).text();
+	broker.kill("SIGKILL");
+	await broker.exited;
+	return errors;
+}
+
+const RAW_SESSION = { cwd: "/raw", model: "raw-model", pid: process.pid, startedAt: 1, lastActivity: 1 };
+
+const UNSAFE_BEFORE_REGISTER: ReadonlyArray<Record<string, unknown>> = [
+	{ type: "join_group", requestId: "r", group: "reviewers" },
+	{ type: "leave_group", requestId: "r" },
+	{ type: "presence", status: "thinking" },
+	{ type: "release_restoring_recipient", requestId: "r", capability: "c" },
+	{ type: "send", to: "someone", message: { id: "m", timestamp: 1, content: { text: "t" } } },
+	{ type: "unregister" },
+	{ type: "received", messageId: "m" },
+	{ type: "saving", messageId: "m" },
+];
+
+test(
+	"a connection that sends a session operation before registering is dropped without a reply or a registry entry (#4320)",
+	async () => {
+		const broker = startBrokerWithStorage("", "pipe");
+		await brokerRouting("off");
+		for (const operation of UNSAFE_BEFORE_REGISTER) {
+			const raw = sendRawFrame(operation);
+			await raw.closed;
+			assert.deepEqual(raw.frames, [], String(operation.type));
+		}
+		assert.equal(await sessionsOnBroker(), 0);
+		assert.equal(broker.exitCode, null);
+		const errors = await stopBrokerAndReadStderr(broker);
+		for (const operation of UNSAFE_BEFORE_REGISTER) {
+			assert.ok(errors.includes(`Received ${operation.type} before register`), String(operation.type));
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+const MALFORMED_EXPECTED_ROUTING: ReadonlyArray<readonly [string, unknown, boolean]> = [
+	["missing", undefined, true],
+	["null", null, true],
+	["array", [], false],
+	["string", "off", false],
+	["number", 0, false],
+	["boolean", false, false],
+	["empty object", {}, true],
+	["non-boolean acrossMachines", { acrossMachines: "false" }, true],
+];
+
+test(
+	"a verified registration with malformed expected routing is refused with the validation error before it registers (#4320)",
+	async () => {
+		const broker = startBrokerWithStorage("", "pipe");
+		await brokerRouting("off");
+		const verified = (expectedRouting: unknown) => ({
+			type: "register_verified",
+			session: RAW_SESSION,
+			...(expectedRouting === undefined ? {} : { expectedRouting }),
+		});
+		for (const [label, expectedRouting] of MALFORMED_EXPECTED_ROUTING) {
+			const raw = sendRawFrame(verified(expectedRouting));
+			await raw.closed;
+			assert.deepEqual(raw.frames, [], label);
+		}
+		assert.equal(await sessionsOnBroker(), 0);
+
+		const valid = sendRawFrame(verified({ acrossMachines: false }));
+		await vi.waitFor(() => assert.equal((valid.frames[0] as { type?: string } | undefined)?.type, "registered"), {
+			timeout: BROKER_WAIT_MS,
+			interval: 25,
+		});
+		assert.equal(await sessionsOnBroker(), 1);
+		assert.equal(broker.exitCode, null);
+
+		const errors = await stopBrokerAndReadStderr(broker);
+		assert.equal(
+			errors.split("Failed to handle intercom message: Invalid expected routing").length - 1,
+			MALFORMED_EXPECTED_ROUTING.length,
+		);
+		assert.equal(errors.includes("is not an object"), false);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
