@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { type SessionEntry, SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -23,7 +23,7 @@ const MULTI_READ_CWD_CHARACTERS = 70_000;
 const SMALL_FILESYSTEM = process.env.ATOMIC_CHAOS_SMALL_FS_DIR;
 
 function cwdOf(tag: string, characters: number): string {
-	return `/${tag}/${"é".repeat(characters)}`;
+	return resolve(`/${tag}/${"é".repeat(characters)}`);
 }
 
 function writer(directory: string, tag: string, cwdCharacters: number, sessions?: number): SpawnedProcess {
@@ -38,6 +38,13 @@ function writer(directory: string, tag: string, cwdCharacters: number, sessions?
 		],
 		{ stdout: "pipe", stderr: "pipe" },
 	);
+}
+
+async function stopWriters(writers: readonly SpawnedProcess[]): Promise<void> {
+	for (const child of writers) {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	}
+	await Promise.all(writers.map((child) => child.exited));
 }
 
 const pendingOutput = new WeakMap<SpawnedProcess, string>();
@@ -113,36 +120,41 @@ test(
 	"writers SIGKILLed mid-write leave every session readable, its start state whole (#4319)",
 	async () => {
 		const directory = scratchDirectory("jsonl-chaos-kill-");
+		const writers: SpawnedProcess[] = [];
 		try {
 			// One directory per writer: a writer killed holding its directory's lock leaves it for the next round's
 			// writer to take over once stale, without several takers racing for one stale lock.
 			const tags = ["k0", "k1", "k2", "k3"];
 			for (const tag of tags) mkdirSync(join(directory, tag));
 			for (let round = 0; round < 3; round++) {
-				const writers = tags.map((tag) => writer(join(directory, tag), tag, 300));
-				for (const child of writers) assert.equal(await readLine(child), "ready");
+				const roundWriters = tags.map((tag) => writer(join(directory, tag), tag, 300));
+				writers.push(...roundWriters);
+				for (const child of roundWriters) assert.equal(await readLine(child), "ready");
 				await sleep(50 + round * 70);
-				for (const child of writers) child.kill("SIGKILL");
-				for (const child of writers) await child.exited;
-				assert.ok(writers.every((child) => child.signalCode === "SIGKILL"));
+				for (const child of roundWriters) child.kill("SIGKILL");
+				for (const child of roundWriters) await child.exited;
+				assert.ok(roundWriters.every((child) => child.signalCode === "SIGKILL"));
 			}
 			for (const tag of tags) {
 				const counts = await assertSessionsIntact(join(directory, tag), [tag], 300);
 				assert.ok((counts.get(tag) ?? 0) >= 3, `${tag} wrote sessions in every round`);
 			}
 		} finally {
+			await stopWriters(writers);
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},
 	CHAOS_TEST_TIMEOUT_MS,
 );
 
-test(
+test.skipIf(process.platform === "win32")(
 	"a writer SIGSTOPped mid-write never blocks reading the directory's headers, and finishes once continued (#4319)",
 	async () => {
 		const directory = scratchDirectory("jsonl-chaos-stop-");
+		const writers: SpawnedProcess[] = [];
 		try {
 			const child = writer(directory, "stopped", 300, 40);
+			writers.push(child);
 			assert.equal(await readLine(child), "ready");
 			for (let pause = 0; pause < 5; pause++) {
 				child.kill("SIGSTOP");
@@ -154,6 +166,7 @@ test(
 			assert.equal(await child.exited, 0, await readStreamText(child.stderr));
 			assert.equal((await assertSessionsIntact(directory, ["stopped"], 300)).get("stopped"), 40);
 		} finally {
+			await stopWriters(writers);
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},
@@ -164,9 +177,10 @@ test(
 	"many writers sharing a directory each read back their own multi-read headers while readers scan it (#4319)",
 	async () => {
 		const directory = scratchDirectory("jsonl-chaos-many-");
+		const writers: SpawnedProcess[] = [];
 		try {
 			const tags = Array.from({ length: 16 }, (_, index) => `w${index}`);
-			const writers = tags.map((tag) => writer(directory, tag, MULTI_READ_CWD_CHARACTERS, 6));
+			writers.push(...tags.map((tag) => writer(directory, tag, MULTI_READ_CWD_CHARACTERS, 6)));
 			const settled = Promise.all(writers.map((child) => child.exited));
 			let scans = 0;
 			for (let done = false; !done; ) {
@@ -189,6 +203,7 @@ test(
 			const counts = await assertSessionsIntact(directory, tags, MULTI_READ_CWD_CHARACTERS);
 			for (const tag of tags) assert.equal(counts.get(tag), 6, tag);
 		} finally {
+			await stopWriters(writers);
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},
@@ -199,9 +214,10 @@ test.skipIf(SMALL_FILESYSTEM === undefined)(
 	"writers that fill the disk leave every session readable, its start state whole (#4319)",
 	async () => {
 		const directory = scratchDirectory("jsonl-chaos-full-", SMALL_FILESYSTEM);
+		const writers: SpawnedProcess[] = [];
 		try {
 			const tags = ["f0", "f1", "f2", "f3"];
-			const writers = tags.map((tag) => writer(directory, tag, 2_000));
+			writers.push(...tags.map((tag) => writer(directory, tag, 2_000)));
 			const finals = await Promise.all(
 				writers.map(async (child) => {
 					const first = await readLine(child);
@@ -216,6 +232,7 @@ test.skipIf(SMALL_FILESYSTEM === undefined)(
 			);
 			await assertSessionsIntact(directory, tags, 2_000);
 		} finally {
+			await stopWriters(writers);
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},

@@ -5,11 +5,12 @@
  *
  * argv: <directory> <tag> <cwd characters> [sessions]
  */
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { resolve } from "node:path";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 
 const [directory, tag, cwdCharacters, sessionCount] = process.argv.slice(2);
 if (!directory || !tag || !cwdCharacters) throw new Error("usage: <directory> <tag> <cwd characters> [sessions]");
-const cwd = `/${tag}/${"é".repeat(Number(cwdCharacters))}`;
+const cwd = resolve(`/${tag}/${"é".repeat(Number(cwdCharacters))}`);
 const limit = sessionCount === undefined ? Number.POSITIVE_INFINITY : Number(sessionCount);
 
 function isDiskFull(error: unknown): boolean {
