@@ -165,7 +165,7 @@ export class WriteSelectorError extends Error {
 }
 
 /**
- * An `edit` or `write` stopped because its signal aborted. This is a cancellation, not a failure: `cause` is the
+ * A `read`, `edit` or `write` stopped because its signal aborted. This is a cancellation, not a failure: `cause` is the
  * signal's `reason`, and `name` is `AbortError` so generic cancellation checks recognise it.
  */
 export class FileToolAbortedError extends Error {

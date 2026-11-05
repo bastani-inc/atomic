@@ -20,9 +20,17 @@ import {
 	type DirectoryTreeResult,
 } from "./directory-tree.ts";
 import { isReadableUrlPath } from "./fetch-url.ts";
+import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
+import {
+	type ReadLinePlan,
+	readLocalFileChunks,
+	type SelectedReadLines,
+	selectReadLinesFromChunks,
+	selectReadLinesFromList,
+} from "./read-line-stream.ts";
 import {
 	formatSelectedLines,
 	isReadResourceSelector,
@@ -105,12 +113,22 @@ export interface ReadOperations {
 	stat?: (absolutePath: string) => Promise<{ isFile: boolean; isDirectory: boolean } | undefined>;
 	listDir?: (absolutePath: string) => Promise<DirectoryTreeEntry[] | undefined>;
 	detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
+	/**
+	 * Stream file contents in chunks. When present, text files are read through it and only the lines a read shows
+	 * are kept in memory; otherwise `readFile` loads the whole file. Stop reading when the signal aborts; `read` also
+	 * stops consuming the stream then.
+	 */
+	createReadStream?: (absolutePath: string, options: { signal?: AbortSignal }) => AsyncIterable<Uint8Array>;
 }
 const defaultReadOperations: ReadOperations = {
 	readFile: (path) => fsReadFile(path),
+	createReadStream: readLocalFileChunks,
 	access: (path) => fsAccess(path, constants.R_OK),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 };
+async function* readWholeFile(ops: ReadOperations, absolutePath: string): AsyncGenerator<Uint8Array> {
+	yield await ops.readFile(absolutePath);
+}
 export interface ReadToolOptions {
 	/** Whether to auto-resize images. Default: true */
 	autoResizeImages?: boolean;
@@ -355,13 +373,13 @@ export function createReadToolDefinition(
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
 				(resolve, reject) => {
 					if (signal?.aborted) {
-						reject(new Error("Operation aborted"));
+						reject(new FileToolAbortedError(signal.reason));
 						return;
 					}
 					let aborted = false;
 					const onAbort = () => {
 						aborted = true;
-						reject(new Error("Operation aborted"));
+						reject(new FileToolAbortedError(signal?.reason));
 					};
 					signal?.addEventListener("abort", onAbort, { once: true });
 					(async () => {
@@ -715,92 +733,79 @@ export function createReadToolDefinition(
 									];
 								}
 							} else {
-								const buffer = await ops.readFile(absolutePath);
-								const textContent =
-									isNotebookPath(absolutePath) && !rawOutput
+								const offsetStartLine = effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
+								const plan: ReadLinePlan = effectiveRanges?.length
+									? { ranges: effectiveRanges, exact: rawOutput === true }
+									: { firstLine: offsetStartLine + 1 };
+								const notebookView = isNotebookPath(absolutePath) && !rawOutput;
+								let selection: SelectedReadLines;
+								if (conflictsOnly || notebookView) {
+									const buffer = await ops.readFile(absolutePath);
+									const textContent = notebookView
 										? readEditableNotebookText(absolutePath, effectivePath)
 										: buffer.toString("utf-8");
-								// Formatted output reads LF-normalized lines. Keep raw reads on the source bytes so
-								// :raw preserves CRLF and terminal-newline bytes exactly.
-								const lineTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
-								const sourceLines = lineTextContent.split("\n");
-								// A terminal newline separates real lines; omit only its synthetic split item.
-								let allLines =
-									rawOutput || !lineTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
-								if (conflictsOnly) {
-									registerConflictBlocks(executionCwd, parseConflictBlocks(absolutePath, textContent));
-									const conflictLines: string[] = [];
-									let inConflict = false;
-									for (const line of allLines) {
-										if (line.startsWith("<<<<<<<")) inConflict = true;
-										if (inConflict) conflictLines.push(line);
-										if (line.startsWith(">>>>>>>")) inConflict = false;
+									// Formatted output reads LF-normalized lines. Keep raw reads on the source bytes so
+									// :raw preserves CRLF and terminal-newline bytes exactly.
+									const lineTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
+									const sourceLines = lineTextContent.split("\n");
+									// A terminal newline separates real lines; omit only its synthetic split item.
+									let allLines =
+										rawOutput || !lineTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
+									if (conflictsOnly) {
+										registerConflictBlocks(executionCwd, parseConflictBlocks(absolutePath, textContent));
+										const conflictLines: string[] = [];
+										let inConflict = false;
+										for (const line of allLines) {
+											if (line.startsWith("<<<<<<<")) inConflict = true;
+											if (inConflict) conflictLines.push(line);
+											if (line.startsWith(">>>>>>>")) inConflict = false;
+										}
+										if (conflictLines.length > 0) allLines = conflictLines;
+										else {
+											signal?.removeEventListener("abort", onAbort);
+											resolve({
+												content: [{ type: "text", text: "No conflict markers found" }],
+												details: undefined,
+											});
+											return;
+										}
 									}
-									if (conflictLines.length > 0) allLines = conflictLines;
-									else {
-										signal?.removeEventListener("abort", onAbort);
-										resolve({
-											content: [{ type: "text", text: "No conflict markers found" }],
-											details: undefined,
-										});
-										return;
-									}
+									selection = selectReadLinesFromList(allLines, plan, READ_TOOL_MAX_RESULT_CHARS);
+								} else {
+									// Stream plain text: only the selected lines are kept, so memory does not grow with the file.
+									selection = await selectReadLinesFromChunks(
+										ops.createReadStream?.(absolutePath, { signal }) ?? readWholeFile(ops, absolutePath),
+										plan,
+										{ raw: rawOutput === true, maxChars: READ_TOOL_MAX_RESULT_CHARS, signal },
+									);
 								}
-								const totalFileLines = allLines.length;
-								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
-									allLines,
-									effectiveRanges,
-								);
-								const startLine = rangeSelection
-									? rangeSelection.firstLine - 1
-									: effectiveOffset
-										? Math.max(0, effectiveOffset - 1)
-										: 0;
+								const totalFileLines = selection.totalLines;
+								const startLine = "ranges" in plan ? selection.firstLineNumber - 1 : offsetStartLine;
 								const startLineDisplay = startLine + 1;
-								if (
-									startLine >= allLines.length ||
-									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
-								) {
+								if (startLine >= totalFileLines || ("ranges" in plan && selection.count === 0)) {
 									const requested = effectiveRanges?.[0]?.start ?? startLineDisplay;
 									resolve({
 										content: [
 											{
 												type: "text",
-												text: `Requested line ${requested} is beyond end of file (${allLines.length} lines total). Use ${effectivePath}:${Math.max(1, allLines.length)} to read the final line.`,
+												text: `Requested line ${requested} is beyond end of file (${totalFileLines} lines total). Use ${effectivePath}:${Math.max(1, totalFileLines)} to read the final line.`,
 											},
 										],
 										details: undefined,
 									});
 									return;
 								}
-								let selectedContent: string;
-								let selectedLines: string[];
-								let userLimitedLines: number | undefined;
-								if (rangeSelection) {
-									selectedLines = rangeSelection.selectedLines;
-									selectedContent = rangeSelection.selectedContent;
-									userLimitedLines = rangeSelection.userLimitedLines;
-								} else if (effectiveLimit !== undefined) {
-									const endLine = Math.min(startLine + effectiveLimit, allLines.length);
-									selectedLines = allLines.slice(startLine, endLine);
-									selectedContent = selectedLines.join("\n");
-									userLimitedLines = endLine - startLine;
-								} else {
-									selectedLines = allLines.slice(startLine);
-									selectedContent = selectedLines.join("\n");
-								}
-								if (selectedContent.length > READ_TOOL_MAX_RESULT_CHARS) {
-									const firstSelectedLine = allLines[startLine] ?? "";
-									const firstLineBytes = Buffer.byteLength(firstSelectedLine, "utf-8");
-									const selectedLineCount = trimTrailingEmptyLines(selectedLines).length;
-									const byteGuidance = selectedLineCount <= 1 || firstLineBytes > DEFAULT_MAX_BYTES;
+								const selectedLines = selection.lines;
+								if (selection.chars > READ_TOOL_MAX_RESULT_CHARS) {
+									const firstLineBytes = selection.firstLineBytes;
+									const byteGuidance =
+										selection.countBeforeTrailingEmpty <= 1 || firstLineBytes > DEFAULT_MAX_BYTES;
 									const oversizedRead: OversizedReadDetails = {
 										blocked: true,
 										path: absolutePath,
-										chars: selectedContent.length,
+										chars: selection.chars,
 										maxChars: READ_TOOL_MAX_RESULT_CHARS,
 										startLine: startLineDisplay,
-										...(effectiveLimit !== undefined ? { requestedLimit: effectiveLimit } : {}),
 										totalFileLines,
 										firstLineBytes,
 										byteGuidance,
@@ -808,9 +813,10 @@ export function createReadToolDefinition(
 									details = { oversizedRead, meta: readSourceMeta(absolutePath).meta };
 									content = [{ type: "text", text: buildOversizedReadMessage(oversizedRead) }];
 								} else {
-									const truncation = truncateHead(selectedContent);
+									const truncation = truncateHead(selectedLines.join("\n"));
 									const shownLines = truncation.truncated ? truncation.outputLines : selectedLines.length;
-									const shownLineNumbers = rangeSelection?.lineNumbers.slice(0, shownLines);
+									const shownLineNumbers =
+										"ranges" in plan ? selection.lineNumbers.slice(0, shownLines) : undefined;
 									const lastShownLine = shownLineNumbers?.at(-1) ?? startLine + shownLines;
 									let outputText =
 										shownLineNumbers && !rawOutput
@@ -821,7 +827,7 @@ export function createReadToolDefinition(
 												)
 											: truncation.content;
 									if (truncation.firstLineExceedsLimit) {
-										const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
+										const firstLineSize = formatSize(selection.firstLineBytes);
 										outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${effectivePath} | head -c ${DEFAULT_MAX_BYTES}]`;
 										details = {
 											truncation,
@@ -837,8 +843,8 @@ export function createReadToolDefinition(
 											truncation,
 											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
 										};
-									} else if (!rawOutput && userLimitedLines !== undefined && lastShownLine < allLines.length) {
-										const remaining = allLines.length - lastShownLine;
+									} else if (!rawOutput && lastShownLine < totalFileLines) {
+										const remaining = totalFileLines - lastShownLine;
 										outputText += `\n\n[${remaining} more lines in file. Continue with path selector :${lastShownLine + 1}.]`;
 									}
 									content = [{ type: "text", text: outputText }];

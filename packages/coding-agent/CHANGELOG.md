@@ -133,6 +133,10 @@
 - A disposed workflow stage session is no longer kept reachable by the stage that opened it: the stage's message admission, the reason it closed its generation and its task host used to hold the first session for as long as the stage lived ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 - When a tool call's message could not be saved, the call's blocked result is no longer saved either, so a session never holds a tool result without its call ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 
+### Fixed
+
+- `read` no longer loads a whole file to show some of its lines, which took several times the file's size in memory and failed on files over 2 GB. It streams plain-text files and keeps only the lines it shows, with the same output as before. Custom `ReadOperations` can stream too by providing the new optional `createReadStream`. A cancelled `read` stops reading and throws `FileToolAbortedError` with the signal's reason as `cause` ([#4353](https://github.com/bastani-inc/atomic/issues/4353))
+
 ## [0.9.71] - 2026-11-03
 
 Readable model discovery, faster commands, and broader Markdown customization come with the move to pi 1.5.0.

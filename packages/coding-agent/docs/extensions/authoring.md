@@ -512,6 +512,8 @@ pi.registerTool({
 
 `ReadOperations` may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. The Harness factory supplies both. A custom read backend without both members keeps the existing file-only remote behavior. Archive, SQLite, internal-resource, notebook, and path-variant helpers still use Atomic's local filesystem unless the tool gains dedicated remote seams.
 
+`ReadOperations.createReadStream` is optional. When it returns the file as an async iterable of `Uint8Array` chunks (a Node `Readable` without an encoding works), `read` keeps only the lines it shows in memory, so a line range of a large file stays small, and it stops consuming the stream when the call is cancelled. Without it, `read` loads the whole file through `readFile`. `:conflicts` views and notebooks still read the whole file.
+
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
 `GrepOperations` only covers the directory check: grep always searches the local filesystem with its native search or `rg`. To search a remote system, override grep's `execute()` instead.
