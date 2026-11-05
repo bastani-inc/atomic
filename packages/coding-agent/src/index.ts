@@ -890,7 +890,6 @@ export {
 	isGitUnavailableError,
 	isRetryableGitProvisionError,
 	rehydrateGitProvisionError,
-	type SerializedErrorCause,
 	type SerializedGitProvisionError,
 } from "./utils/git-errors.ts";
 export { convertToPng } from "./utils/image-convert.ts";
