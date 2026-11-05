@@ -554,6 +554,13 @@ Response:
 {"type": "response", "command": "set_debug", "success": true}
 ```
 
+A refused value names only its type, never the value:
+```json
+{"type": "response", "command": "set_debug", "success": false, "error": "Invalid debug setting: enabled is string, not a boolean (invalid-setting). Pass true or false.", "errorCode": "debug_error", "errorDetails": {"name": "DebugConfigError", "code": "invalid-setting", "message": "Invalid debug setting: enabled is string, not a boolean (invalid-setting). Pass true or false.", "hint": "Pass true or false.", "retryable": false, "fields": {"source": "rpc", "field": "enabled", "received": "string"}}}
+```
+
+`errorDetails` is a serialized [debug error](/sdk/reference#debug-errors); the SDK `RpcClient` rehydrates it.
+
 ### Retry
 
 #### set_auto_retry

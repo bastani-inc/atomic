@@ -4,6 +4,11 @@ import { DebugConfigError, type DebugSettingSource } from "./debug-errors.ts";
 export const DEBUG_SETTING_ENV = "ATOMIC_DEBUG_SETTING";
 
 let debugSetting = process.env[DEBUG_SETTING_ENV] === "1";
+
+/** Whether a parent Atomic process passed its debug setting down; only a process without one uses its saved setting. */
+export function inheritsDebugSetting(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env[DEBUG_SETTING_ENV] !== undefined;
+}
 const settingListeners = new Set<(enabled: boolean) => void>();
 
 /** This process's `debug` setting: its saved value, a toggle in `/settings`, or what its parent passed down. */
@@ -16,7 +21,8 @@ export function isDebugSettingOn(): boolean {
  * changing nothing, when `enabled` is not a boolean.
  */
 export function setDebugSetting(enabled: boolean, source: DebugSettingSource = "sdk"): void {
-	if (typeof enabled !== "boolean") throw new DebugConfigError(source, enabled);
+	if (typeof enabled !== "boolean")
+		throw new DebugConfigError({ source, received: enabled === null ? "null" : typeof enabled });
 	if (enabled === debugSetting) return;
 	debugSetting = enabled;
 	for (const listener of settingListeners) listener(enabled);
@@ -30,6 +36,5 @@ export function onDebugSettingChange(listener: (enabled: boolean) => void): () =
 
 /** Writes this process's `debug` setting into `env`, the environment of a child process about to start. */
 export function applyDebugSettingToChildEnvironment(env: NodeJS.ProcessEnv): void {
-	if (debugSetting) env[DEBUG_SETTING_ENV] = "1";
-	else delete env[DEBUG_SETTING_ENV];
+	env[DEBUG_SETTING_ENV] = debugSetting ? "1" : "0";
 }

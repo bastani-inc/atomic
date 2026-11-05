@@ -290,6 +290,7 @@ export {
 } from "./core/debug.ts";
 export {
 	DebugConfigError,
+	type DebugConfigErrorFields,
 	DebugError,
 	type DebugErrorCode,
 	DebugLogUnwritableError,
@@ -297,6 +298,10 @@ export {
 	isDebugConfigError,
 	isDebugError,
 	isDebugLogUnwritableError,
+	rehydrateDebugError,
+	type SerializedDebugError,
+	type SerializedErrorCause,
+	serializeDebugError,
 } from "./core/debug-errors.ts";
 export { onDebugSettingChange, setDebugSetting } from "./core/debug-setting.ts";
 export type {

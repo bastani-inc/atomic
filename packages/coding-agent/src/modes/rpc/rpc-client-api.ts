@@ -225,7 +225,7 @@ export abstract class RpcClientApi {
 	}
 	/** Set the engine's `debug` setting; later work and child processes it starts follow it. */
 	async setDebug(enabled: boolean): Promise<void> {
-		await this.request({ type: "set_debug", enabled });
+		this.data<void>(await this.request({ type: "set_debug", enabled }));
 	}
 	async setAutoRetry(enabled: boolean): Promise<void> {
 		await this.request({ type: "set_auto_retry", enabled });

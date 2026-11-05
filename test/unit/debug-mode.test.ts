@@ -17,6 +17,9 @@ import {
 	isDebugConfigError,
 	isDebugError,
 	isDebugLogUnwritableError,
+	rehydrateDebugError,
+	type SerializedDebugError,
+	serializeDebugError,
 } from "../../packages/coding-agent/src/core/debug-errors.js";
 import { onDebugSettingChange, setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
 import { reportModelRoutingDebug } from "../../packages/coding-agent/src/core/model-routing-debug.js";
@@ -56,6 +59,8 @@ describe("isDebugEnabled (#4360)", () => {
 		assert.equal(isDebugEnabled(area, { PI_DEBUG: "1" }), true, "the legacy alias");
 		assert.equal(isDebugEnabled(area, { ATOMIC_DEBUG: "0" }), false);
 		assert.equal(isDebugEnabled(area, { ATOMIC_DEBUG: "" }), false);
+		assert.equal(isDebugEnabled(area, { ATOMIC_DEBUG: "0", PI_DEBUG: "1" }), false, "the Atomic name wins");
+		assert.equal(isDebugEnabled(area, { ATOMIC_DEBUG: "1", PI_DEBUG: "0" }), true);
 		setDebugSetting(true);
 		assert.equal(isDebugEnabled(area, {}), true);
 		setDebugSetting(false);
@@ -141,7 +146,7 @@ describe("the debug setting (#4360)", () => {
 						error.hint === "Pass true or false.",
 				);
 				assert.equal(isDebugEnabled(undefined, {}), false);
-				assert.equal(createChildProcessEnvironment(undefined, {}).ATOMIC_DEBUG_SETTING, undefined);
+				assert.equal(createChildProcessEnvironment(undefined, {}).ATOMIC_DEBUG_SETTING, "0");
 			}
 			assert.throws(
 				() => setDebugSetting("true" as unknown as boolean, "rpc"),
@@ -153,9 +158,9 @@ describe("the debug setting (#4360)", () => {
 		}
 	});
 
-	test("reaches every child process environment, and is taken out again when it is off", () => {
+	test("reaches every child process environment, on or off, whatever the base environment held", () => {
 		const inherited = { PATH: "/bin", ATOMIC_DEBUG_SETTING: "1" };
-		assert.equal(createChildProcessEnvironment(undefined, inherited).ATOMIC_DEBUG_SETTING, undefined);
+		assert.equal(createChildProcessEnvironment(undefined, inherited).ATOMIC_DEBUG_SETTING, "0");
 		assert.equal(inherited.ATOMIC_DEBUG_SETTING, "1", "the base is not changed");
 		setDebugSetting(true);
 		const child = createChildProcessEnvironment({ ATOMIC_DEBUG_SETTING: "0" }, { PATH: "/bin" });
@@ -174,7 +179,7 @@ describe("the debug setting (#4360)", () => {
 	});
 
 	test("reaches the Intercom broker through the environment it starts with", () => {
-		assert.equal(getBrokerSpawnOptions("/extension").env.ATOMIC_DEBUG_SETTING, undefined);
+		assert.equal(getBrokerSpawnOptions("/extension").env.ATOMIC_DEBUG_SETTING, "0");
 		setDebugSetting(true);
 		assert.equal(getBrokerSpawnOptions("/extension").env.ATOMIC_DEBUG_SETTING, "1");
 	});
@@ -479,6 +484,127 @@ describe("debug log failures (#4360)", () => {
 		});
 	});
 
+	test("every debug error survives a round trip across a process boundary as the same class", () => {
+		const through = (error: DebugError) =>
+			rehydrateDebugError(JSON.parse(JSON.stringify(serializeDebugError(error))));
+		const unwritable = through(
+			new DebugLogUnwritableError("/logs/atomic-debug.log", { cause: new TypeError("EACCES") }),
+		);
+		assert.ok(unwritable instanceof DebugLogUnwritableError);
+		assert.equal(isDebugLogUnwritableError(unwritable), true);
+		assert.deepEqual(
+			{ code: unwritable.code, path: unwritable.path, hint: unwritable.hint, retryable: unwritable.retryable },
+			{
+				code: "debug-log-unwritable",
+				path: "/logs/atomic-debug.log",
+				hint: "Make /logs writable, or turn debug mode off.",
+				retryable: false,
+			},
+		);
+		assert.ok(unwritable.cause instanceof Error);
+		assert.deepEqual(
+			{ name: unwritable.cause.name, message: unwritable.cause.message },
+			{ name: "TypeError", message: "EACCES" },
+		);
+		const config = through(new DebugConfigError({ source: "rpc", received: "string" }));
+		assert.ok(config instanceof DebugConfigError);
+		assert.equal(isDebugConfigError(config), true);
+		assert.deepEqual(
+			{
+				code: config.code,
+				source: config.source,
+				field: config.field,
+				received: config.received,
+				hint: config.hint,
+			},
+			{ code: "invalid-setting", source: "rpc", field: "enabled", received: "string", hint: "Pass true or false." },
+		);
+		assert.deepEqual(config.fields(), { source: "rpc", field: "enabled", received: "string" });
+		assert.equal(config.cause, undefined);
+		assert.deepEqual(new DebugError("invalid-setting", "m", "h").fields(), {});
+		const plainCause = through(new DebugLogUnwritableError("/x/log", { cause: "disk gone" }));
+		assert.deepEqual(
+			{ name: (plainCause.cause as Error).name, message: (plainCause.cause as Error).message },
+			{ name: "Error", message: "disk gone" },
+		);
+	});
+
+	test("an unknown debug error arrives as the family base with its name, code, fields and retryability kept", () => {
+		const foreign = rehydrateDebugError({
+			name: "DebugQuotaError",
+			code: "quota",
+			message: "Quota (quota). Wait.",
+			hint: "Wait.",
+			retryable: true,
+			fields: { limit: "3" },
+			cause: {
+				name: "DebugLogUnwritableError",
+				code: "debug-log-unwritable",
+				message: "m",
+				hint: "h",
+				retryable: false,
+				fields: { path: "/a/b" },
+			},
+		});
+		assert.ok(foreign instanceof DebugError);
+		assert.equal(isDebugError(foreign), true);
+		assert.deepEqual(
+			{
+				name: foreign.name,
+				code: foreign.code,
+				message: foreign.message,
+				hint: foreign.hint,
+				retryable: foreign.retryable,
+			},
+			{ name: "DebugQuotaError", code: "quota", message: "Quota (quota). Wait.", hint: "Wait.", retryable: true },
+		);
+		assert.deepEqual(foreign.fields(), { limit: "3" });
+		assert.ok(foreign.cause instanceof DebugLogUnwritableError);
+		for (const [name, fields] of [
+			["DebugLogUnwritableError", {}],
+			["DebugConfigError", { source: "cli", received: "string" }],
+			["DebugConfigError", { source: "rpc" }],
+		] as const) {
+			const malformed = rehydrateDebugError({ name, code: "x", message: "m", hint: "h", retryable: false, fields });
+			assert.equal(
+				malformed instanceof DebugLogUnwritableError || malformed instanceof DebugConfigError,
+				false,
+				name,
+			);
+			assert.equal(malformed.name, name, "kept as the family base");
+		}
+		assert.ok(
+			rehydrateDebugError({
+				name: "DebugConfigError",
+				code: "invalid-setting",
+				message: "m",
+				hint: "h",
+				retryable: false,
+				fields: { source: "sdk", received: "number" },
+			}) instanceof DebugConfigError,
+		);
+	});
+
+	test("a serialized cause chain stops after eight errors", () => {
+		let error = new DebugLogUnwritableError("/0/log");
+		for (let index = 1; index < 12; index += 1)
+			error = new DebugLogUnwritableError(`/${index}/log`, { cause: error });
+		let serialized: SerializedDebugError | undefined = serializeDebugError(error);
+		let depth = 0;
+		while (serialized !== undefined) {
+			depth += 1;
+			serialized = serialized.cause as SerializedDebugError | undefined;
+		}
+		assert.equal(depth, 8);
+		let rehydrated: unknown = rehydrateDebugError(serializeDebugError(error));
+		let count = 0;
+		while (rehydrated instanceof DebugLogUnwritableError) {
+			count += 1;
+			rehydrated = rehydrated.cause;
+		}
+		assert.equal(count, 8);
+	});
+
 	test("guards match by class and, across a process boundary, by name and code", () => {
 		const error = new DebugLogUnwritableError("/x/atomic-debug.log");
 		assert.equal(isDebugError(error), true);
@@ -493,7 +619,7 @@ describe("debug log failures (#4360)", () => {
 		assert.equal(isDebugError(crossed), true);
 		assert.equal(isDebugLogUnwritableError(crossed), true);
 		assert.equal(isDebugConfigError(crossed), false);
-		const config = new DebugConfigError("rpc", "x");
+		const config = new DebugConfigError({ source: "rpc", received: "string" });
 		assert.equal(
 			config.message,
 			"Invalid debug setting: enabled is string, not a boolean (invalid-setting). Pass true or false.",

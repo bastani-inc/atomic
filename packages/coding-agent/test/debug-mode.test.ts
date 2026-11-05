@@ -6,7 +6,7 @@ import { afterEach, describe, it, vi } from "vitest";
 import { parseArgs, printHelp } from "../src/cli/args.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import { isDebugEnabled } from "../src/core/debug.ts";
-import { isDebugConfigError } from "../src/core/debug-errors.ts";
+import { DebugConfigError, isDebugConfigError } from "../src/core/debug-errors.ts";
 import { setDebugSetting } from "../src/core/debug-setting.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
@@ -18,6 +18,7 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { buildInteractiveEngineArgs } from "../src/modes/interactive-engine/engine-args.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { RpcClientApi } from "../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.ts";
@@ -97,6 +98,16 @@ describe("--debug (#4360)", () => {
 	});
 });
 
+/** An RPC client whose engine answered `response`; nothing is started. */
+class RefusingRpcClient extends RpcClient {
+	constructor(private readonly response: RpcResponse) {
+		super();
+	}
+	protected override async request(): Promise<RpcResponse> {
+		return this.response;
+	}
+}
+
 class RecordingRpcClient extends RpcClientApi {
 	readonly commands: RpcCommandBody[] = [];
 	protected async request(command: RpcCommandBody): Promise<RpcResponse> {
@@ -169,17 +180,35 @@ describe("set_debug RPC (#4360)", () => {
 			handleCommand: handler,
 			checkShutdownRequested: async () => {},
 		});
-		await handleLine(JSON.stringify({ id: "text", type: "set_debug", enabled: "false" }));
-		assert.deepEqual(responses, [
-			{
-				id: "text",
-				type: "response",
-				command: "set_debug",
-				success: false,
-				error: "Invalid debug setting: enabled is string, not a boolean (invalid-setting). Pass true or false.",
+		await handleLine(JSON.stringify({ id: "text", type: "set_debug", enabled: "secret-looking value" }));
+		assert.equal(responses.length, 1);
+		assert.deepEqual(responses[0], {
+			id: "text",
+			type: "response",
+			command: "set_debug",
+			success: false,
+			error: "Invalid debug setting: enabled is string, not a boolean (invalid-setting). Pass true or false.",
+			errorCode: "debug_error",
+			errorDetails: {
+				name: "DebugConfigError",
+				code: "invalid-setting",
+				message: "Invalid debug setting: enabled is string, not a boolean (invalid-setting). Pass true or false.",
+				hint: "Pass true or false.",
+				retryable: false,
+				fields: { source: "rpc", field: "enabled", received: "string" },
 			},
-		]);
+		});
+		assert.equal(JSON.stringify(responses).includes("secret-looking value"), false, "only the value's type is sent");
 		assert.equal(isDebugEnabled(undefined, {}), false);
+		const client = new RefusingRpcClient(responses[0] as RpcResponse);
+		await assert.rejects(
+			client.setDebug(true),
+			(error: unknown) =>
+				error instanceof DebugConfigError &&
+				error.source === "rpc" &&
+				error.field === "enabled" &&
+				error.received === "string",
+		);
 	});
 
 	it("the interactive host sends each change to its engine until it is disposed", async () => {
@@ -222,6 +251,7 @@ describe("startup (#4360)", () => {
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 			vi.stubEnv("ATOMIC_DEBUG", undefined);
 			vi.stubEnv("PI_DEBUG", undefined);
+			vi.stubEnv("ATOMIC_DEBUG_SETTING", undefined);
 			vi.spyOn(console, "log").mockImplementation(() => {});
 			vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
 				throw new Error(`process.exit(${code})`);
@@ -237,6 +267,15 @@ describe("startup (#4360)", () => {
 			await assert.rejects(version(), /process\.exit\(0\)/);
 			assert.equal(isDebugEnabled(undefined, {}), true, "the saved setting");
 			assert.equal(process.env.ATOMIC_DEBUG, undefined);
+			vi.stubEnv("ATOMIC_DEBUG_SETTING", "0");
+			setDebugSetting(false);
+			await assert.rejects(version(), /process\.exit\(0\)/);
+			assert.equal(isDebugEnabled(undefined, {}), false, "an inherited off wins over a saved on");
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ debug: false }));
+			vi.stubEnv("ATOMIC_DEBUG_SETTING", "1");
+			setDebugSetting(true);
+			await assert.rejects(version(), /process\.exit\(0\)/);
+			assert.equal(isDebugEnabled(undefined, {}), true, "an inherited on wins over a saved off");
 		} finally {
 			rmSync(agentDir, { recursive: true, force: true });
 		}

@@ -18,6 +18,10 @@ export class DebugError extends Error {
 		this.code = code;
 		this.hint = hint;
 	}
+	/** The facts this error carries, as JSON-safe text. */
+	fields(): Readonly<Record<string, string>> {
+		return {};
+	}
 }
 
 /** A debug log file could not be written. Atomic keeps running; that debug output is lost. */
@@ -36,6 +40,16 @@ export class DebugLogUnwritableError extends DebugError {
 		);
 		this.path = path;
 	}
+	override fields(): Readonly<Record<string, string>> {
+		return { path: this.path };
+	}
+}
+
+/** The facts a {@link DebugConfigError} carries. */
+export interface DebugConfigErrorFields {
+	readonly source: DebugSettingSource;
+	/** The type of the value received, never the value itself. */
+	readonly received: string;
 }
 
 /** The debug setting was given something other than `true` or `false`. Nothing changed. */
@@ -47,8 +61,7 @@ export class DebugConfigError extends DebugError {
 	readonly field = "enabled" as const;
 	/** The type of the value received, never the value itself. */
 	readonly received: string;
-	constructor(source: DebugSettingSource, value: unknown) {
-		const received = value === null ? "null" : typeof value;
+	constructor({ source, received }: DebugConfigErrorFields) {
 		const hint = "Pass true or false.";
 		super(
 			"invalid-setting",
@@ -58,6 +71,79 @@ export class DebugConfigError extends DebugError {
 		this.source = source;
 		this.received = received;
 	}
+	override fields(): Readonly<Record<string, string>> {
+		return { source: this.source, field: this.field, received: this.received };
+	}
+}
+
+/** A cause outside the {@link DebugError} family, as it crosses a process boundary: its name and message only. */
+export interface SerializedErrorCause {
+	readonly name: string;
+	readonly message: string;
+}
+
+/** A {@link DebugError} as it crosses a process boundary. */
+export interface SerializedDebugError {
+	readonly name: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint: string;
+	readonly retryable: boolean;
+	readonly fields: Readonly<Record<string, string>>;
+	readonly cause?: SerializedDebugError | SerializedErrorCause;
+}
+
+const MAX_CAUSE_DEPTH = 8;
+
+/** `error` as JSON-safe data, its cause chain cut after eight errors. {@link rehydrateDebugError} reverses it. */
+export function serializeDebugError(error: DebugError, depth = 0): SerializedDebugError {
+	const serialized = {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		retryable: error.retryable,
+		fields: error.fields(),
+	};
+	const { cause } = error;
+	if (cause === undefined || depth + 1 >= MAX_CAUSE_DEPTH) return serialized;
+	if (cause instanceof DebugError) return { ...serialized, cause: serializeDebugError(cause, depth + 1) };
+	const other = cause instanceof Error ? cause : new Error(String(cause));
+	return { ...serialized, cause: { name: other.name, message: other.message } };
+}
+
+/** A {@link DebugError} whose class this process does not know; it keeps the name, code and fields it arrived with. */
+class ForeignDebugError extends DebugError {
+	override readonly name: string;
+	override readonly retryable: boolean;
+	private readonly carried: Readonly<Record<string, string>>;
+	constructor(serialized: SerializedDebugError, options?: ErrorOptions) {
+		super(serialized.code as DebugErrorCode, serialized.message, serialized.hint, options);
+		this.name = serialized.name;
+		this.retryable = serialized.retryable;
+		this.carried = serialized.fields;
+	}
+	override fields(): Readonly<Record<string, string>> {
+		return this.carried;
+	}
+}
+
+function rehydrateCause(cause: SerializedDebugError | SerializedErrorCause): Error {
+	if ("code" in cause) return rehydrateDebugError(cause);
+	const error = new Error(cause.message);
+	error.name = cause.name;
+	return error;
+}
+
+/** The error {@link serializeDebugError} described, as the same class with the same fields. */
+export function rehydrateDebugError(serialized: SerializedDebugError): DebugError {
+	const options = serialized.cause === undefined ? undefined : { cause: rehydrateCause(serialized.cause) };
+	const { path, source, received } = serialized.fields;
+	if (serialized.name === "DebugLogUnwritableError" && path !== undefined)
+		return new DebugLogUnwritableError(path, options);
+	if (serialized.name === "DebugConfigError" && (source === "rpc" || source === "sdk") && received !== undefined)
+		return new DebugConfigError({ source, received });
+	return new ForeignDebugError(serialized, options);
 }
 
 const DEBUG_ERROR_NAMES: ReadonlySet<unknown> = new Set(["DebugError", "DebugLogUnwritableError", "DebugConfigError"]);

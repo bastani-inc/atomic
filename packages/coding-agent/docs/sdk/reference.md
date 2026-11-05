@@ -954,7 +954,9 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 | `DebugLogUnwritableError` | `debug-log-unwritable` | The debug log or a trace file cannot be created or appended to. It is not thrown: it is recorded once per process, shown as one warning, and returned by `getDebugLogFailure()`. | `path`, `hint`, `retryable: false`, `cause` | Make the directory writable, or turn debug mode off. |
 | `DebugConfigError` | `invalid-setting` | `setDebugSetting()` or the RPC `set_debug` command received something other than `true` or `false`. It is thrown before anything changes. | `source` (`"sdk"` or `"rpc"`), `field` (`"enabled"`), `received` (the value's type, never the value), `hint`, `retryable: false` | Pass `true` or `false`. |
 
-Both extend `DebugError`, whose `code` is a `DebugErrorCode`. Branch on the class or `code`, not the message. `isDebugError`, `isDebugLogUnwritableError` and `isDebugConfigError` recognize them, including an error that crossed a process boundary as a plain object with the same `name` and `code`.
+Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()` returns the fields above. Branch on the class or `code`, not the message. `isDebugError`, `isDebugLogUnwritableError` and `isDebugConfigError` recognize them, including an error that crossed a process boundary as a plain object with the same `name` and `code`.
+
+To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when the engine refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
 
 ## Exports
 
@@ -1070,6 +1072,11 @@ DebugConfigError
 isDebugError
 isDebugLogUnwritableError
 isDebugConfigError
+serializeDebugError
+rehydrateDebugError
+type SerializedDebugError
+type SerializedErrorCause
+type DebugConfigErrorFields
 type DebugArea
 type DebugFields
 type DebugValue

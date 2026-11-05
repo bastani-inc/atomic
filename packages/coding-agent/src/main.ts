@@ -48,7 +48,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
-import { setDebugSetting } from "./core/debug-setting.ts";
+import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
@@ -347,7 +347,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	setDebugSetting(bootstrapSettingsManager.getDebug());
+	if (!inheritsDebugSetting()) setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 	if (await handlePackageCommand(args, { extensionFactories })) {

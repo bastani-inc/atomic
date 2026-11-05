@@ -458,7 +458,7 @@ test("workers start with the root's debug setting, and a change reaches the work
 	const f = await coordinatorFixture({ workers: 1 });
 	try {
 		const [first] = f.workers as [FakeWorker];
-		assert.equal(first.options.env?.ATOMIC_DEBUG_SETTING, undefined, "debug mode was off when it started");
+		assert.equal(first.options.env?.ATOMIC_DEBUG_SETTING, "0", "debug mode was off when it started");
 		assert.equal(first.options.env?.AI_AGENT, "atomic", "a worker gets Atomic's child environment");
 		assert.equal(
 			POOL_DURABLE_JOURNAL_ENV in (first.options.env ?? {}),
@@ -467,7 +467,7 @@ test("workers start with the root's debug setting, and a change reaches the work
 		);
 		f.notice({ kind: "debug", enabled: true });
 		assert.equal(isDebugEnabled(), true, "the coordinator takes the root's setting");
-		assert.equal(first.options.env?.ATOMIC_DEBUG_SETTING, undefined, "a running worker keeps what it started with");
+		assert.equal(first.options.env?.ATOMIC_DEBUG_SETTING, "0", "a running worker keeps what it started with");
 		first.kill("SIGKILL");
 		while (forked.length < 2) await delay(5);
 		assert.equal(forked[1]!.options.env?.ATOMIC_DEBUG_SETTING, "1", "its replacement starts in debug mode");

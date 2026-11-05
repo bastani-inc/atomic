@@ -33,7 +33,10 @@ function areaVariableValue(area: DebugArea, env: NodeJS.ProcessEnv): string | un
 }
 
 function isDebugModeOn(env: NodeJS.ProcessEnv): boolean {
-	return isDebugSettingOn() || getEnvNames(ENV_DEBUG).some((name) => env[name] === "1");
+	const debug = getEnvNames(ENV_DEBUG)
+		.map((name) => env[name])
+		.find((value) => value !== undefined);
+	return isDebugSettingOn() || debug === "1";
 }
 
 /**
