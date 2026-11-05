@@ -1455,6 +1455,27 @@ Parse errors:
 }
 ```
 
+A command rejected with a background compaction error, such as `set_background_compaction_threshold` with a value outside 0–100, also carries `errorCode: "background_compaction"` and the serialized error in `errorDetails`. Branch on `errorDetails.code`, not on the message. `RpcClient` rethrows it as the same class, for example `BackgroundCompactionConfigError` with `source: "sdk"`:
+
+```json
+{
+  "type": "response",
+  "command": "set_background_compaction_threshold",
+  "success": false,
+  "error": "Background compaction failed: compaction.backgroundThresholdPercent from sdk is not above 0 and below 100 (invalid-setting). Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
+  "errorCode": "background_compaction",
+  "errorDetails": {
+    "name": "BackgroundCompactionConfigError",
+    "code": "invalid-setting",
+    "message": "Background compaction failed: …",
+    "hint": "Set compaction.backgroundThresholdPercent to a percentage above 0 and below 100, for example 75",
+    "retryable": false,
+    "phase": "config",
+    "fields": { "source": "sdk", "field": "compaction.backgroundThresholdPercent", "reason": "out-of-range" }
+  }
+}
+```
+
 ## Types
 
 Source files and installed definitions:

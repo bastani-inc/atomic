@@ -276,6 +276,7 @@ export {
 	isBackgroundCompactionPersistError,
 	isBackgroundCompactionPlanningError,
 	isRetryableBackgroundCompactionError,
+	isSerializedBackgroundCompactionError,
 	rehydrateBackgroundCompactionError,
 	type SerializedBackgroundCompactionError,
 	serializeBackgroundCompactionError,

@@ -1,6 +1,10 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
+import {
+	isSerializedBackgroundCompactionError,
+	rehydrateBackgroundCompactionError,
+} from "../../core/compaction/background-compaction-errors.ts";
 import { rehydrateDebugError } from "../../core/debug-errors.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -664,6 +668,12 @@ export class RpcClient extends RpcClientApi {
 				undefined,
 				{ cause: new Error(response.error) },
 			);
+		}
+		if (
+			response.errorCode === "background_compaction" &&
+			isSerializedBackgroundCompactionError(response.errorDetails)
+		) {
+			throw rehydrateBackgroundCompactionError(response.errorDetails);
 		}
 		throw new Error(response.error);
 	}

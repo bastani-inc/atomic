@@ -589,6 +589,22 @@ describe("background compaction (#4330)", () => {
 		assert.equal(compactionEntries(harness.sessionManager)[0].coveredThroughEntryId, undefined);
 	});
 
+	test("a window whose reserveTokens threshold lies below the background threshold compacts only in the foreground (#4330)", async () => {
+		const planner = new Planner(true);
+		const harness = await createBackgroundHarness(
+			[SEED, { text: "past the reserve threshold", usage: { input: 650, output: 10 } }, "after"],
+			planner,
+			{ settings: settingsWith({ reserveTokens: 400 }) },
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+		assert.equal(planner.calls.filter((call) => !call.foreground).length, 0, "no background task");
+		assert.equal(planner.calls.filter((call) => call.foreground).length, 1, "one blocking compaction");
+		assert.deepEqual(backgroundStates(harness), []);
+	});
+
 	test("the threshold percentage is configurable (#4330)", async () => {
 		const planner = new Planner(true);
 		const harness = await createBackgroundHarness(
@@ -2065,7 +2081,7 @@ describe("background compaction while it is off (#4330)", () => {
 		await harness.session.awaitBackgroundCompaction();
 	});
 
-	test("a task that finishes after background compaction was switched off does not announce its result", async () => {
+	test("a task that finishes while background compaction is off is announced once it is turned back on", async () => {
 		const planner = new Planner();
 		const wakes: CompactionReadyWake[] = [];
 		const harness = await createBackgroundHarness(TRIGGER, planner, {
@@ -2078,9 +2094,40 @@ describe("background compaction while it is off (#4330)", () => {
 		harness.settingsManager.setCompactionBackground(false);
 		planner.release();
 		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
-		assert.equal(resultEntries(harness.sessionManager).length, 1, "the result is kept for later");
+		const [stored] = resultEntries(harness.sessionManager);
+		assert.ok(stored, "the result is kept for later");
 		assert.deepEqual(listened, []);
 		assert.deepEqual(wakes, []);
 		assert.equal(backgroundStates(harness).at(-1), "idle");
+
+		const events = backgroundStates(harness).length;
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.deepEqual(listened, ["ready"]);
+		assert.deepEqual(wakes, [
+			{
+				sessionId: harness.sessionManager.getSessionId(),
+				resultEntryId: stored.id,
+				upToEntryId: stored.data?.upToEntryId,
+			},
+		]);
+		assert.deepEqual(backgroundStates(harness).slice(events), ["ready"], "one state event");
+
+		harness.session.setBackgroundCompactionEnabled(false);
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.equal(listened.length, 1, "an announced result is not announced again");
+		assert.equal(wakes.length, 1);
+	});
+
+	test("turning background compaction on with no saved result announces nothing", async () => {
+		const planner = new Planner(true);
+		const wakes: CompactionReadyWake[] = [];
+		const harness = await createBackgroundHarness(TRIGGER, planner, {
+			compactionWake: { compactionReady: (wake) => wakes.push(wake) },
+		});
+		harnesses.push(harness);
+		harness.session.setBackgroundCompactionEnabled(false);
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.deepEqual(wakes, []);
+		assert.equal(harness.session.compaction.state, "idle");
 	});
 });

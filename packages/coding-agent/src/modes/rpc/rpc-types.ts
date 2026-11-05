@@ -25,6 +25,7 @@ import type {
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { SerializedBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
+import type { SerializedBackgroundCompactionError } from "../../core/compaction/background-compaction-errors.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -497,7 +498,9 @@ export type RpcErrorDetails =
 			errorCode: "credential_synchronization";
 			errorDetails: { providerId: string; operation: CredentialSynchronizationOperation };
 	  }
-	| { errorCode: "debug_error"; errorDetails: SerializedDebugError };
+	| { errorCode: "debug_error"; errorDetails: SerializedDebugError }
+	// A rejected background compaction command keeps its typed error (#4330)
+	| { errorCode: "background_compaction"; errorDetails: SerializedBackgroundCompactionError };
 
 // ============================================================================
 // RPC Events (stdout)

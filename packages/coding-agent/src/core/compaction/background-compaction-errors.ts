@@ -387,15 +387,48 @@ export function serializeBackgroundCompactionError(
 	return serializeAt(error, 0);
 }
 
-function isSerializedBackgroundCompactionError(
-	value: SerializedErrorCause,
-): value is SerializedBackgroundCompactionError {
+function isFamilyCause(value: SerializedErrorCause): value is SerializedBackgroundCompactionError {
 	return "code" in value;
+}
+
+const PHASES: ReadonlySet<unknown> = new Set<BackgroundCompactionPhase>(["plan", "persist", "commit", "config"]);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSerializedCause(value: unknown, depth: number): boolean {
+	if (value === undefined) return true;
+	if (depth >= MAX_BACKGROUND_COMPACTION_CAUSE_DEPTH || !isPlainObject(value)) return false;
+	if ("code" in value) return isEnvelope(value, depth);
+	return (
+		typeof value.name === "string" && typeof value.message === "string" && isSerializedCause(value.cause, depth + 1)
+	);
+}
+
+function isEnvelope(value: Record<string, unknown>, depth: number): boolean {
+	const fields = value.fields;
+	return (
+		typeof value.name === "string" &&
+		ANY_CODE.has(value.code) &&
+		typeof value.message === "string" &&
+		typeof value.hint === "string" &&
+		typeof value.retryable === "boolean" &&
+		PHASES.has(value.phase) &&
+		isPlainObject(fields) &&
+		Object.values(fields).every((field) => ["string", "number", "boolean"].includes(typeof field)) &&
+		isSerializedCause(value.cause, depth + 1)
+	);
+}
+
+/** Whether `value` is a well-formed serialized background compaction error, for example from an RPC peer. */
+export function isSerializedBackgroundCompactionError(value: unknown): value is SerializedBackgroundCompactionError {
+	return isPlainObject(value) && isEnvelope(value, 0);
 }
 
 function rehydrateCause(cause: SerializedErrorCause | undefined): Error | undefined {
 	if (cause === undefined) return undefined;
-	if (isSerializedBackgroundCompactionError(cause)) return rehydrateBackgroundCompactionError(cause);
+	if (isFamilyCause(cause)) return rehydrateBackgroundCompactionError(cause);
 	const nested = rehydrateCause(cause.cause);
 	const error = new Error(cause.message, nested === undefined ? undefined : { cause: nested });
 	error.name = cause.name;

@@ -121,7 +121,7 @@ Resume uses the saved compacted text without rerunning planning. The TUI shows a
 
 ### Errors
 
-All background compaction errors extend `BackgroundCompactionError`, exported from `@bastani/atomic` with an `is…` guard for each class, `isRetryableBackgroundCompactionError`, and `serializeBackgroundCompactionError`/`rehydrateBackgroundCompactionError`. Cancellation (session disposal, `/compact`, a foreground compaction, an extension cancelling `session_before_compact`) is not an error: the state returns to `idle`.
+All background compaction errors extend `BackgroundCompactionError`, exported from `@bastani/atomic` with an `is…` guard for each class, `isRetryableBackgroundCompactionError`, `serializeBackgroundCompactionError`/`rehydrateBackgroundCompactionError`, and `isSerializedBackgroundCompactionError` to validate an envelope from another process. An RPC command rejected with one of these errors carries the same envelope (see [RPC error handling](/rpc/protocol#error-handling)); settings commands report `source: "sdk"`. Cancellation (session disposal, `/compact`, a foreground compaction, an extension cancelling `session_before_compact`) is not an error: the state returns to `idle`.
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
@@ -290,7 +290,7 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
 | `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. It is an **input-side** reserve only and never caps planner output. |
 | `background` | `true` | Compact older context in the background once usage passes `backgroundThresholdPercent`, and apply the result at the next turn boundary. `false` restores blocking compaction at the `reserveTokens` threshold. Requires `enabled`. |
-| `backgroundThresholdPercent` | `75` | Percentage of the context window at which background compaction starts. Must be above 0 and below 100; another value is a `BackgroundCompactionConfigError`. |
+| `backgroundThresholdPercent` | `75` | Percentage of the context window at which background compaction starts. Must be above 0 and below 100; another value is a `BackgroundCompactionConfigError`. It only takes effect while it is below the `reserveTokens` threshold (context window minus `reserveTokens`); with the default reserve that means windows above 65,536 tokens, and smaller windows compact in the foreground only. |
 
 An invalid `background` or `backgroundThresholdPercent` in a settings file is reported as a settings warning when settings load or reload; the session still starts. Until it is fixed, background compaction stays off: `session.compaction` and RPC `get_state` report `failed` with the `invalid-setting` error, and `session.backgroundCompactionEnabled` and `session.backgroundCompactionThresholdPercent` read `false` and `75`. Writing a valid value through `/settings` or the SDK setters clears the failure.
 

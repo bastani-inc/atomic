@@ -171,7 +171,7 @@ function stateKey(session: AgentSession): string {
 /**
  * Write a setting that decides whether background compaction runs, then bring the runtime in line: while
  * background compaction is off, cancel a running task and forget task failures and their backoff, so turning it
- * on again starts fresh. Reports the state once if it changed.
+ * on again starts fresh. Reports the state once if it changed, announcing a saved result that was never announced.
  */
 export function _writeBackgroundCompactionSetting(this: AgentSession, write: () => void): void {
 	const before = stateKey(this);
@@ -185,7 +185,14 @@ export function _writeBackgroundCompactionSetting(this: AgentSession, write: () 
 		runtime.consecutiveFailures = 0;
 		runtime.nextAttemptAt = 0;
 	}
-	if (stateKey(this) !== before) emitBackgroundCompactionState(this);
+	if (stateKey(this) === before) return;
+	const ready =
+		backgroundCompactionState(this).state === "ready"
+			? selectReadyBackgroundCompaction(this.sessionManager.getBranch())
+			: undefined;
+	if (ready && ready.entry.id !== runtime.announcedResultEntryId)
+		announceReady(this, ready.entry.id, ready.record.upToEntryId);
+	else emitBackgroundCompactionState(this);
 }
 
 /**
