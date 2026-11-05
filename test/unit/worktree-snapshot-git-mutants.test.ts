@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { existsSync, writeFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -147,17 +147,22 @@ describe("the environment and input of a Git command", () => {
 			process.off("uncaughtException", record);
 		}
 	});
+});
 
-	test("Windows disables hooks through its NUL device", async () => {
+describe("Git on Windows", () => {
+	let windowsGit: typeof import("../../packages/coding-agent/src/core/worktree-snapshot/git.ts");
+	beforeAll(async () => {
 		const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 		vi.resetModules();
 		Object.defineProperty(process, "platform", { ...platform, value: "win32" });
-		let windowsGit: typeof import("../../packages/coding-agent/src/core/worktree-snapshot/git.ts");
 		try {
 			windowsGit = await import("../../packages/coding-agent/src/core/worktree-snapshot/git.ts");
 		} finally {
 			Object.defineProperty(process, "platform", platform);
 		}
+	});
+
+	test("disables hooks through its NUL device", async () => {
 		const executable = sandbox.executable;
 		windowsGit.setWorktreeSnapshotGit(async () => executable);
 		assert.equal(await windowsGit.gitText(["config", "--get", "core.hooksPath"], { cwd: sandbox.root }), "NUL");
