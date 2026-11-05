@@ -25,6 +25,7 @@ import {
 	wrapNodeSqliteDatabase,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
+import { databaseNow, freezeDatabaseClock } from "../helpers/database-clock.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** The adapter's recheck period for a writer that watches its release notice; a release nobody announces waits for it. */
@@ -113,8 +114,16 @@ async function untilWaiting(): Promise<void> {
 	while (vi.getTimerCount() === 0) await turn();
 }
 
+/** Freezes the database clock every connection reads at `nowMs` until the test ends; see `freezeDatabaseClock`. */
+function setDatabaseClock(nowMs: number): (nowMs: number) => void {
+	const clock = freezeDatabaseClock(nowMs);
+	cleanups.push(() => clock.restore());
+	return (next) => clock.set(next);
+}
+
+/** Stamps `path` `offsetMs` from now on the database clock, as a ticket's owner refreshes it. */
 function touch(path: string, offsetMs = 0): void {
-	const time = new Date(Date.now() + offsetMs);
+	const time = new Date(databaseNow() + offsetMs);
 	utimesSync(path, time, time);
 }
 
@@ -581,15 +590,15 @@ test("a writer that lets go of the lock wakes the oldest live ticket through its
 
 test("a release does not keep a dead waiter's ticket alive: it goes stale 2 s after its owner last refreshed it (#4316)", async () => {
 	const { database, writers } = await fixture();
-	const now = Math.floor(Date.now() / 1000) * 1000 + 1000;
-	vi.useFakeTimers({ toFake: ["Date"], now });
+	const now = Math.floor(databaseNow() / 1000) * 1000 + 1000;
+	const setClock = setDatabaseClock(now);
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('released past a dead waiter')");
 		// The ticket of a waiter that died 1.5 s ago, first in line.
 		ticket(writers, now - 1_600, 999_999_988, -1_500);
 	});
 	assert.equal(getWriterQueueStats(database).waiters, 1);
-	vi.setSystemTime(now + 600);
+	setClock(now + 600);
 	assert.equal(
 		getWriterQueueStats(database).waiters,
 		0,
@@ -653,7 +662,7 @@ test("a waiting writer refreshes its ticket every 500 ms, recreates it if it was
 	const [name] = await untilTickets(writers, 1);
 	const path = join(writers, name!);
 	await untilWaiting();
-	const age = () => Date.now() - statSync(path).mtimeMs;
+	const age = () => databaseNow() - statSync(path).mtimeMs;
 	touch(path, -1_500);
 	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
 	assert.ok(age() >= 1_400, "not refreshed before 500 ms");
@@ -777,8 +786,8 @@ test("a writer names its ticket <15-digit time>-<pid>-<sequence> and ignores fil
 
 test("a ticket is live strictly within 2 s of now and removed strictly beyond 20 s, in either direction (#4316)", async () => {
 	const { database, writers } = await fixture();
-	const now = Math.floor(Date.now() / 1000) * 1000 + 1000;
-	vi.useFakeTimers({ toFake: ["Date"], now });
+	const now = Math.floor(databaseNow() / 1000) * 1000 + 1000;
+	setDatabaseClock(now);
 	let pid = 999_999_900;
 	const at = (offsetMs: number) => {
 		pid += 1;
@@ -798,6 +807,75 @@ test("a ticket is live strictly within 2 s of now and removed strictly beyond 20
 	assert.equal(getWriterQueueStats(database).waiters, 2, "only the two within 2 s are live");
 	assert.ok(existsSync(join(writers, keptPast)), "20 s old is not yet removed");
 	assert.equal(existsSync(join(writers, removedPast)), false, "older than 20 s is removed");
+});
+
+/** How far a running process's own clock can sit from the system clock: on Windows, until V8 renews its reading. */
+const PROCESS_CLOCK_OFFSETS_MS = [-30_000, 30_000];
+
+test("a writer whose own clock is off the system clock by seconds still finds the live tickets, and removes none of them (#4387)", async () => {
+	const { database, writers } = await fixture();
+	const live = ticket(writers, Date.now(), 999_999_870);
+	const stale = ticket(writers, Date.now(), 999_999_871, -5_000);
+	for (const offsetMs of PROCESS_CLOCK_OFFSETS_MS) {
+		vi.useFakeTimers({ toFake: ["Date"], now: databaseNow() + offsetMs });
+		assert.equal(getWriterQueueStats(database).waiters, 1, `with its clock ${offsetMs} ms off`);
+		vi.useRealTimers();
+	}
+	assert.deepEqual(readdirSync(writers).sort(), [live, stale].sort(), "neither ticket was taken for abandoned");
+});
+
+test("a waiting writer whose own clock is off the system clock refreshes its ticket on the database clock, so other writers keep it live (#4387)", async () => {
+	const { database, holder, writers } = await fixture();
+	holder.exec("BEGIN IMMEDIATE");
+	for (const offsetMs of PROCESS_CLOCK_OFFSETS_MS) {
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "performance", "Date"],
+			now: databaseNow() + offsetMs,
+		});
+		const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", String(offsetMs)));
+		const [name] = await untilTickets(writers, 1);
+		await untilWaiting();
+		await vi.advanceTimersByTimeAsync(2 * WATCHED_RECHECK_MS);
+		const ageMs = databaseNow() - statSync(join(writers, name!)).mtimeMs;
+		assert.ok(Math.abs(ageMs) < 1_000, `with its clock ${offsetMs} ms off, refreshed ${ageMs} ms from now`);
+		holder.exec("COMMIT");
+		touch(join(wakes(writers), name!));
+		await write;
+		holder.exec("BEGIN IMMEDIATE");
+		vi.useRealTimers();
+	}
+	holder.exec("ROLLBACK");
+	assert.deepEqual(await values(database), PROCESS_CLOCK_OFFSETS_MS.map(String));
+});
+
+/** Counts the database clock reads of every connection until the test ends. */
+function countDatabaseClockReads(): { readonly reads: number } {
+	const counted = { reads: 0 };
+	const prepare = DatabaseSync.prototype.prepare;
+	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+		if (sql.includes("unixepoch(")) counted.reads += 1;
+		return prepare.call(this, sql);
+	} as typeof prepare;
+	cleanups.push(() => {
+		DatabaseSync.prototype.prepare = prepare;
+	});
+	return counted;
+}
+
+test("the database clock is read once per look at a queue with tickets, and never for an absent or empty queue (#4387)", async () => {
+	const { database, writers } = await fixture();
+	const clock = countDatabaseClockReads();
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));
+	assert.equal(getWriterQueueStats(database).waiters, 0);
+	mkdirSync(writers, { recursive: true });
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('after contention')"));
+	assert.equal(getWriterQueueStats(database).waiters, 0);
+	assert.equal(clock.reads, 0, "no tickets, no clock");
+	ticket(writers, Date.now(), 999_999_872);
+	ticket(writers, Date.now(), 999_999_873);
+	const before = clock.reads;
+	assert.equal(getWriterQueueStats(database).waiters, 2);
+	assert.equal(clock.reads - before, 1, "one read for both tickets");
 });
 
 test("an uncontended transaction neither creates a writers' queue nor takes a ticket (#4316)", async () => {

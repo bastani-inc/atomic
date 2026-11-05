@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, vi } from "vitest";
@@ -9,6 +10,7 @@ import {
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { databaseNow, freezeDatabaseClock } from "../helpers/database-clock.js";
 import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -25,6 +27,13 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
+// The adapter asks `platform()` whether it runs on Windows; this file's copy can be told so without touching the
+// process-wide `process.platform`.
+vi.mock("node:os", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:os")>();
+	return { ...actual, platform: vi.fn(actual.platform) };
+});
+
 // The setup files already loaded the adapter with the real node:fs; load a copy that imports the mocked one.
 vi.resetModules();
 const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, wrapNodeSqliteDatabase } = await import(
@@ -37,12 +46,14 @@ await import("../../packages/coding-agent/src/core/debug.js");
 /** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
 const DEBUG_RECORD_WAIT_MS = 10_000;
 const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
 const watch = vi.mocked(fs.watch);
 const utimesSync = vi.mocked(fs.utimesSync);
 const writeFileSync = vi.mocked(fs.writeFileSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
 const unlinkSync = vi.mocked(fs.unlinkSync);
+const platform = vi.mocked(os.platform);
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -54,6 +65,7 @@ afterEach(async () => {
 	readdirSync.mockImplementation(actual.readdirSync);
 	statSync.mockImplementation(actual.statSync);
 	unlinkSync.mockImplementation(actual.unlinkSync);
+	platform.mockImplementation(actualOs.platform);
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -90,7 +102,7 @@ function failUnlink(writers: string, code: string): void {
 /** A ticket its writer abandoned long ago: stale for longer than the queue keeps tickets before removing them. */
 function abandonedTicket(writers: string, pid: number): string {
 	const name = liveTicket(writers, pid);
-	const old = new Date(Date.now() - 30_000);
+	const old = new Date(databaseNow() - 30_000);
 	actual.utimesSync(join(writers, name), old, old);
 	return name;
 }
@@ -105,38 +117,45 @@ function wakes(writers: string): string {
 	return writers.replace(/-writers$/, "-wakes");
 }
 
+/** When every release notice a test makes was last touched, until a releasing writer touches it. */
+const NOTICE_UNTOUCHED_MS = Date.UTC(2000, 0, 1);
+
+/** Whether a releasing writer has touched the release notice of the ticket `name` since it was made. */
+function noticeTouched(writers: string, name: string): boolean {
+	return actual.statSync(join(wakes(writers), name)).mtimeMs > NOTICE_UNTOUCHED_MS;
+}
+
+/** A ticket its writer has just refreshed, on the database clock, and a notice nobody has touched. */
 function liveTicket(writers: string, pid: number, offsetMs = 0): string {
 	fs.mkdirSync(writers, { recursive: true });
 	fs.mkdirSync(wakes(writers), { recursive: true });
 	const name = `${String(Date.now() + offsetMs).padStart(15, "0")}-${pid}-1`;
 	fs.writeFileSync(join(writers, name), "");
 	fs.writeFileSync(join(wakes(writers), name), "");
-	const refreshedAt = new Date(Date.now());
-	actual.utimesSync(join(writers, name), refreshedAt, refreshedAt);
-	const aged = new Date(Date.now() - 3_600_000);
-	actual.utimesSync(join(wakes(writers), name), aged, aged);
+	const refreshed = new Date(databaseNow());
+	actual.utimesSync(join(writers, name), refreshed, refreshed);
+	const untouched = new Date(NOTICE_UNTOUCHED_MS);
+	actual.utimesSync(join(wakes(writers), name), untouched, untouched);
 	return name;
 }
 
-/** Runs the test body as if on `platform`, whatever the real one: on Windows a deleted file still held open reads as EPERM. */
-async function onPlatform(platform: NodeJS.Platform, body: () => Promise<void>): Promise<void> {
-	const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-	Object.defineProperty(process, "platform", { ...original, value: platform });
-	try {
-		await body();
-	} finally {
-		Object.defineProperty(process, "platform", original);
-	}
-}
-
+/**
+ * A database and a raw connection to it. The database clock stands still for the test, so a ticket's age is whatever
+ * the test sets: neither a loaded runner nor a step of the system clock can age a live ticket into a stale one.
+ */
 async function fixture() {
+	const clock = freezeDatabaseClock(Math.floor(databaseNow() / 1000) * 1000);
+	cleanups.push(() => clock.restore());
 	const directory = makeTempDirectory("atomic-writer-queue-degraded-");
 	const path = join(directory, "queue.sqlite");
 	const database = await openNodeSqliteDatabase(path);
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
 	const holder = new DatabaseSync(path);
-	const warnings: Error[] = [];
-	const onWarning = (warning: Error) => warnings.push(warning);
+	// Only this database's warnings: any other connection in the process may emit its own, and emits them later.
+	const warnings: StorageWriterQueueDegradedError[] = [];
+	const onWarning = (warning: Error) => {
+		if (isStorageWriterQueueDegradedError(warning) && warning.location === path) warnings.push(warning);
+	};
 	process.on("warning", onWarning);
 	cleanups.push(async () => {
 		process.off("warning", onWarning);
@@ -177,10 +196,6 @@ async function untilWaiting(): Promise<void> {
 	while (vi.getTimerCount() === 0) await turn();
 }
 
-function degradations(warnings: readonly Error[]): StorageWriterQueueDegradedError[] {
-	return warnings.filter((warning) => isStorageWriterQueueDegradedError(warning));
-}
-
 test("a writer that cannot watch its release notice polls for the lock and reports the fallback once (#4316)", async () => {
 	const { database, holder, warnings } = await fixture();
 	watch.mockImplementation(() => {
@@ -196,7 +211,7 @@ test("a writer that cannot watch its release notice polls for the lock and repor
 		await write;
 	}
 	await turn();
-	const [degraded, ...more] = degradations(warnings);
+	const [degraded, ...more] = warnings;
 	assert.ok(degraded, "the fallback was reported");
 	assert.deepEqual(more, [], "once per connection");
 	assert.equal(degraded.reason, "watch-unavailable");
@@ -219,13 +234,13 @@ test("a watch that fails while the writer waits leaves it polling instead (#4316
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('after error')"));
 	await untilWaiting();
-	while (degradations(warnings).length === 0) await turn();
+	while (warnings.length === 0) await turn();
 	// The wait in progress still ends at its 250 ms recheck; from then on the writer retries every 20 ms.
 	await vi.advanceTimersByTimeAsync(250);
 	holder.exec("COMMIT");
 	await vi.advanceTimersByTimeAsync(20);
 	await write;
-	assert.equal(degradations(warnings)[0]!.reason, "watch-unavailable");
+	assert.equal(warnings[0]!.reason, "watch-unavailable");
 });
 
 test("a writer keeps one watch on its release notice for its whole wait and closes it once it holds the lock (#4316)", async () => {
@@ -265,7 +280,7 @@ test("connections without a writers' queue report no fallback when they let go o
 	await memory.transaction((tx) => tx.exec("CREATE TABLE items (value TEXT)"));
 	await memory.close();
 	await turn();
-	assert.deepEqual(degradations(warnings), []);
+	assert.deepEqual(warnings, []);
 });
 
 test("a writer that cannot hand the turn on still commits, and reports the fallback once (#4316)", async () => {
@@ -281,7 +296,7 @@ test("a writer that cannot hand the turn on still commits, and reports the fallb
 		ticket = liveTicket(writers, 999_999_984);
 	});
 	await turn();
-	const [degraded, ...more] = degradations(warnings);
+	const [degraded, ...more] = warnings;
 	assert.ok(degraded, "the fallback was reported");
 	assert.equal(degraded.reason, "wake-failed");
 	assert.equal((degraded.cause as NodeJS.ErrnoException).code, "EACCES");
@@ -303,14 +318,14 @@ test("a releasing writer whose oldest waiter left as it looked hands the turn to
 		await tx.run("INSERT INTO items VALUES ('handed on')");
 		gone = liveTicket(writers, 999_999_985);
 		next = liveTicket(writers, 999_999_986, 1);
-		const old = new Date(Date.now() - 1_000);
+		const old = new Date(databaseNow() - 1_000);
 		for (const name of [gone, next]) actual.utimesSync(join(writers, name), old, old);
 		mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
 	});
 	await turn();
-	assert.ok(Date.now() - actual.statSync(join(wakes(writers), next)).mtimeMs < 500, "the next notice was touched");
+	assert.ok(noticeTouched(writers, next), "the next notice was touched");
 	assert.equal(actual.statSync(join(writers, next)).mtimeMs, mtimeMs, "and its ticket left with its owner's liveness");
-	assert.deepEqual(degradations(warnings), []);
+	assert.deepEqual(warnings, []);
 });
 
 test("a waiting writer that cannot refresh its own ticket fails the transaction as an unusable writers' queue (#4316)", async () => {
@@ -347,7 +362,7 @@ test("a release that cannot list the queue still commits and reports one wake-fa
 		readdirSync.mockImplementation(actual.readdirSync);
 	}
 	await turn();
-	const [degraded, ...more] = degradations(warnings);
+	const [degraded, ...more] = warnings;
 	assert.ok(degraded, "the failed handoff was reported");
 	assert.deepEqual(more, [], "once per connection");
 	assert.equal(degraded.reason, "wake-failed");
@@ -369,7 +384,7 @@ test("a release that cannot read the queue's entries reports the wake-failed fal
 	statSync.mockImplementation(actual.statSync);
 	fs.unlinkSync(join(writers, waiting));
 	await turn();
-	const [degraded] = degradations(warnings);
+	const [degraded] = warnings;
 	assert.ok(degraded, "the failed handoff was reported");
 	assert.equal(degraded.reason, "wake-failed");
 	assert.equal((degraded.cause as NodeJS.ErrnoException).code, "EACCES");
@@ -432,7 +447,7 @@ test("a queue directory or ticket that vanishes while it is read counts as absen
 	failTicketStat(writers, "ENOENT", [gone]);
 	assert.equal(getWriterQueueStats(database).waiters, 1);
 	await turn();
-	assert.deepEqual(degradations(warnings), []);
+	assert.deepEqual(warnings, []);
 });
 
 test("on Windows a ticket deleted while another process holds it open (EPERM) counts as gone, elsewhere EPERM is a failure (#4316)", async () => {
@@ -440,22 +455,20 @@ test("on Windows a ticket deleted while another process holds it open (EPERM) co
 	const going = liveTicket(writers, 999_999_975);
 	liveTicket(writers, 999_999_976, 1);
 	failTicketStat(writers, "EPERM", [going]);
-	await onPlatform("win32", async () => {
-		assert.equal(getWriterQueueStats(database).waiters, 1);
-		failTicketStat(writers, "EACCES", [going]);
-		assert.throws(
-			() => getWriterQueueStats(database),
-			(error: Error) => (error.cause as NodeJS.ErrnoException).code === "EACCES",
-			"only EPERM means a deleted ticket on Windows",
-		);
-		failTicketStat(writers, "EPERM", [going]);
-	});
-	await onPlatform("linux", async () => {
-		assert.throws(
-			() => getWriterQueueStats(database),
-			(error: Error) => isStorageWriterQueueUnusableError(error) && error.errno === "EPERM",
-		);
-	});
+	platform.mockReturnValue("win32");
+	assert.equal(getWriterQueueStats(database).waiters, 1);
+	failTicketStat(writers, "EACCES", [going]);
+	assert.throws(
+		() => getWriterQueueStats(database),
+		(error: Error) => (error.cause as NodeJS.ErrnoException).code === "EACCES",
+		"only EPERM means a deleted ticket on Windows",
+	);
+	failTicketStat(writers, "EPERM", [going]);
+	platform.mockReturnValue("linux");
+	assert.throws(
+		() => getWriterQueueStats(database),
+		(error: Error) => isStorageWriterQueueUnusableError(error) && error.errno === "EPERM",
+	);
 	statSync.mockImplementation(actual.statSync);
 	for (const name of fs.readdirSync(writers)) fs.unlinkSync(join(writers, name));
 });
@@ -469,20 +482,19 @@ test("on Windows a release passes over a ticket deleted while another process ho
 		if (going !== "" && basename(String(path)) === going) throw failure("EPERM");
 		actual.utimesSync(path, atime, mtime);
 	}) as typeof fs.utimesSync);
-	await onPlatform("win32", async () => {
-		await database.transaction(async (tx) => {
-			await tx.run("INSERT INTO items VALUES ('handed past a deleted ticket')");
-			going = liveTicket(writers, 999_999_977);
-			next = liveTicket(writers, 999_999_978, 1);
-			const old = new Date(Date.now() - 1_000);
-			actual.utimesSync(join(writers, next), old, old);
-			mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
-		});
+	platform.mockReturnValue("win32");
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('handed past a deleted ticket')");
+		going = liveTicket(writers, 999_999_977);
+		next = liveTicket(writers, 999_999_978, 1);
+		const old = new Date(databaseNow() - 1_000);
+		actual.utimesSync(join(writers, next), old, old);
+		mtimeMs = actual.statSync(join(writers, next)).mtimeMs;
 	});
-	assert.ok(Date.now() - actual.statSync(join(wakes(writers), next)).mtimeMs < 500, "the notice after it was touched");
+	assert.ok(noticeTouched(writers, next), "the notice after it was touched");
 	assert.equal(actual.statSync(join(writers, next)).mtimeMs, mtimeMs, "its ticket kept its owner's liveness");
 	await turn();
-	assert.deepEqual(degradations(warnings), []);
+	assert.deepEqual(warnings, []);
 });
 
 test("a release wakes the oldest live ticket whatever order the directory lists them in (#4316)", async () => {
@@ -492,27 +504,22 @@ test("a release wakes the oldest live ticket whatever order the directory lists 
 		return String(path) === writers ? names.reverse() : names;
 	};
 	readdirSync.mockImplementation(listing as typeof fs.readdirSync);
-	const events = new Map<string, number>();
-	const watchers: fs.FSWatcher[] = [];
 	let oldest = "";
 	let later = "";
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('listed backwards')");
 		oldest = liveTicket(writers, 999_999_979);
 		later = liveTicket(writers, 999_999_980, 1);
-		for (const name of [oldest, later]) {
-			events.set(name, 0);
-			watchers.push(actual.watch(join(wakes(writers), name), () => events.set(name, events.get(name)! + 1)));
-		}
+		utimesSync.mockClear();
 	});
-	cleanups.push(() => {
-		for (const watcher of watchers) watcher.close();
-	});
-	while (events.get(oldest) === 0 && events.get(later) === 0) await turn();
-	for (let index = 0; index < 20; index++) await turn();
 	assert.deepEqual(
-		[events.get(oldest)! > 0, events.get(later)],
-		[true, 0],
+		utimesSync.mock.calls.map(([path]) => String(path)),
+		[join(wakes(writers), oldest)],
+		"the release touched the oldest ticket's notice, and nothing else",
+	);
+	assert.deepEqual(
+		[noticeTouched(writers, oldest), noticeTouched(writers, later)],
+		[true, false],
 		"the oldest was woken, not the one listed first",
 	);
 });
@@ -607,17 +614,15 @@ test("an abandoned ticket that another writer removed first, or that is going, r
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('raced')"));
 	assert.ok(fs.existsSync(join(writers, racing)), "the failed removal left it, as the race would have removed it");
 	failUnlink(writers, "EPERM");
-	await onPlatform("win32", async () => {
-		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('deleted while open')"));
-	});
+	platform.mockReturnValue("win32");
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('deleted while open')"));
 	assert.deepEqual(getWriterQueueDegradation(database), []);
-	await onPlatform("linux", async () => {
-		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('elsewhere')"));
-	});
+	platform.mockReturnValue("linux");
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('elsewhere')"));
 	const [degraded] = getWriterQueueDegradation(database);
 	assert.equal(degraded?.reason, "stale-ticket-kept", "EPERM is a failure to remove anywhere but Windows");
 	await turn();
-	assert.equal(degradations(warnings).length, 1);
+	assert.equal(warnings.length, 1);
 });
 
 test("each degradation is recorded once, in the order it first happened, and emitted once as a process warning (#4316)", async () => {
@@ -638,7 +643,7 @@ test("each degradation is recorded once, in the order it first happened, and emi
 	);
 	await turn();
 	assert.deepEqual(
-		degradations(warnings).map((degraded) => degraded.reason),
+		warnings.map((degraded) => degraded.reason),
 		["stale-ticket-kept", "wake-failed"],
 		"one warning per reason",
 	);
@@ -682,7 +687,7 @@ test("a release does not roll back the refresh a waiting writer made between the
 	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (waiter !== "" && basename(String(path)) === waiter && refreshes === 0) {
 			refreshes += 1;
-			const now = new Date();
+			const now = new Date(databaseNow());
 			actual.utimesSync(join(writers, waiter), now, now);
 			refreshedMs = actual.statSync(join(writers, waiter)).mtimeMs;
 		}
@@ -691,16 +696,16 @@ test("a release does not roll back the refresh a waiting writer made between the
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('released mid-refresh')");
 		waiter = liveTicket(writers, 999_999_959);
-		const earlier = new Date(Date.now() - 1_500);
+		const earlier = new Date(databaseNow() - 1_500);
 		actual.utimesSync(join(writers, waiter), earlier, earlier);
 	});
 	await turn();
 	assert.equal(refreshes, 1, "the release reached the waiter");
 	assert.equal(actual.statSync(join(writers, waiter)).mtimeMs, refreshedMs, "its refresh was not rolled back");
-	assert.ok(Date.now() - refreshedMs < 1_000);
-	assert.ok(Date.now() - actual.statSync(join(wakes(writers), waiter)).mtimeMs < 1_000, "and its notice was sent");
+	assert.ok(databaseNow() - refreshedMs < 1_000);
+	assert.ok(noticeTouched(writers, waiter), "and its notice was sent");
 	assert.equal(getWriterQueueStats(database).waiters, 1, "other writers still see it as live");
-	assert.deepEqual(degradations(warnings), []);
+	assert.deepEqual(warnings, []);
 });
 
 test("removing an abandoned ticket removes its release notice with it, so no sidecar outlives its ticket (#4316)", async () => {
@@ -767,9 +772,9 @@ test("a release passes over a live ticket that has no release notice to the next
 		next = liveTicket(writers, 999_999_956, 1);
 	});
 	await turn();
-	assert.ok(Date.now() - actual.statSync(join(wakes(writers), next)).mtimeMs < 500, "the next notice was touched");
+	assert.ok(noticeTouched(writers, next), "the next notice was touched");
 	assert.equal(fs.existsSync(join(wakes(writers), bare)), false, "no notice was made for the bare ticket");
-	assert.deepEqual(degradations(warnings), []);
+	assert.deepEqual(warnings, []);
 });
 
 test("an uncontended transaction does not list a queue directory that does not exist (#4316)", async () => {

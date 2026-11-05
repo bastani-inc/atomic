@@ -14,6 +14,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
+import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type {
@@ -62,7 +63,8 @@ function reportDegradationInDebugMode(degradation: StorageWriterQueueDegradedErr
 
 /**
  * A ticket its owner has not refreshed for this long belongs to a process that died or stopped waiting. A ticket
- * refreshed this far in the future is stale too: its owner's clock, or the system clock since, jumped.
+ * refreshed this far in the future is stale too: the system clock stepped back since, or its owner stamped it from a
+ * clock of its own.
  */
 const TICKET_STALE_MS = 2_000;
 /** Stale tickets older than this are removed by whichever writer notices them. */
@@ -70,6 +72,8 @@ const TICKET_REMOVE_AFTER_MS = 10 * TICKET_STALE_MS;
 /** How often a waiting writer refreshes its ticket: well within `TICKET_STALE_MS`, even for a writer short of CPU. */
 const TICKET_REFRESH_MS = TICKET_STALE_MS / 4;
 const TICKET_TIME = /^(\d{15})-/;
+/** Now on the database's clock, in milliseconds: the clock tickets are stamped and aged on (see `SqliteWriteQueue`). */
+const DATABASE_NOW = "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now";
 
 let ticketSequence = 0;
 
@@ -93,7 +97,7 @@ function isMissingFile(error: unknown): boolean {
  * touch it) as EPERM until that handle closes.
  */
 function isVanishedTicket(error: unknown): boolean {
-	return isMissingFile(error) || ((error as NodeJS.ErrnoException).code === "EPERM" && process.platform === "win32");
+	return isMissingFile(error) || ((error as NodeJS.ErrnoException).code === "EPERM" && platform() === "win32");
 }
 
 /**
@@ -111,17 +115,30 @@ function isVanishedTicket(error: unknown): boolean {
  * notice neither keeps a dead or stopped waiter's ticket alive nor, sent late, rolls a live one back to an older
  * time. A writer also rechecks on a timer, for the releases nobody announces: a holder killed with the lock, a
  * ticket ahead whose owner died, a raw SQLite client, an older Atomic.
+ *
+ * Tickets are stamped and aged on the database's clock, the system clock SQLite reads for `unixepoch()`, which also
+ * stamps the files: every process shares it. A process's own clock can differ from it by seconds. On Windows, V8
+ * extrapolates `Date.now()` from a reading of the system clock it renews once a minute, so after the system clock is
+ * set (a virtual machine's time synchronization, say) a running process stays off by the step until then, and
+ * processes aging tickets on their own clocks took live tickets for stale and overtook their writers (#4387).
  */
 class SqliteWriteQueue {
 	private readonly directory: string;
 	private readonly noticeDirectory: string;
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
+	/** Now on the database's clock, in milliseconds. */
+	readonly now: () => number;
 
 	/** `degraded` records what the queue had to give up on without failing the transaction that met it. */
-	constructor(databasePath: string, degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void) {
+	constructor(
+		databasePath: string,
+		degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void,
+		now: () => number,
+	) {
 		this.directory = `${databasePath}-writers`;
 		this.noticeDirectory = `${databasePath}-wakes`;
 		this.degraded = degraded;
+		this.now = now;
 	}
 
 	join(live = this.liveTickets()): SqliteWriteTicket {
@@ -196,7 +213,9 @@ class SqliteWriteQueue {
 			if (!isMissingFile(error)) throw error;
 			return [];
 		}
-		const now = Date.now();
+		// An empty queue, as contention leaves it, is read without the clock.
+		if (names.length === 0) return [];
+		const now = this.now();
 		const live: { readonly name: string; readonly mtimeMs: number }[] = [];
 		for (const name of names.sort()) {
 			if (name === except) continue;
@@ -241,7 +260,7 @@ class SqliteWriteTicket {
 	keepLive(): boolean {
 		if (performance.now() - this.refreshed < TICKET_REFRESH_MS) return false;
 		this.refreshed = performance.now();
-		const now = new Date();
+		const now = new Date(this.queue.now());
 		try {
 			utimesSync(this.path, now, now);
 			return false;
@@ -675,7 +694,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.descriptor = descriptor;
 		this.executor = this.createExecutor(() => true);
 		if (typeof transactionIdentity === "string") {
-			this.writeQueue = new SqliteWriteQueue(transactionIdentity, (reason, cause) => this.degraded(reason, cause));
+			this.writeQueue = new SqliteWriteQueue(
+				transactionIdentity,
+				(reason, cause) => this.degraded(reason, cause),
+				() => this.databaseNow(),
+			);
 			this.holderRecord = new SqliteHolderRecord(transactionIdentity);
 		}
 	}
@@ -723,6 +746,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
 	private dataVersion(): number {
 		return this.driver(() => Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0));
+	}
+
+	/** Now on the clock SQLite reads, the system clock every process shares, whatever this process's own says. */
+	private databaseNow(): number {
+		return Number(this.connection.prepare(DATABASE_NOW).get()!.now);
 	}
 
 	/**
