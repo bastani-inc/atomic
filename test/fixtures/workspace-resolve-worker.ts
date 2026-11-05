@@ -14,7 +14,9 @@ const [mode, first, second] = process.argv.slice(2);
 try {
 	if (mode === "bind" && first !== undefined && second !== undefined) {
 		const binding = await resolveWorkspace(workspace({ repo: first, branch: second }));
-		process.stdout.write(`${JSON.stringify({ outcome: "bound", worktree: binding.worktree, head: binding.head })}\n`);
+		process.stdout.write(
+			`${JSON.stringify({ outcome: "bound", worktree: binding.worktree, head: binding.head, tree: binding.tree })}\n`,
+		);
 	} else if (mode === "restore" && first !== undefined) {
 		const worktree = await restoreWorkspace(JSON.parse(readFileSync(first, "utf-8")));
 		process.stdout.write(`${JSON.stringify({ outcome: "bound", worktree })}\n`);

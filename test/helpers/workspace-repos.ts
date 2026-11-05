@@ -161,6 +161,9 @@ case "$FAKE_GIT_MODE:$5 $6" in
 "read-tree:read-tree HEAD")
 	echo "injected read-tree failure" >&2
 	exit 1 ;;
+"remove-fails:worktree remove")
+	echo "injected remove failure" >&2
+	exit 1 ;;
 "slow-worktree-add:worktree add")
 	if [ "$7" = "-b" ]; then target="$9"; else target="$7"; fi
 	mkdir -p "$target"
@@ -171,6 +174,33 @@ exec "$real" "$@"
 	);
 	chmodSync(path, 0o755);
 	return path;
+}
+
+/**
+ * Leave `path` the way a killed `git worktree add` does: registered and locked with `marker`, and unless `checkedOut`,
+ * with nothing checked out and the index still locked. Returns the worktree's admin directory.
+ */
+export function interruptedWorktree(
+	repo: string,
+	path: string,
+	branch: string,
+	marker: string,
+	{ checkedOut = false, newBranch = true }: { readonly checkedOut?: boolean; readonly newBranch?: boolean } = {},
+): string {
+	git(
+		repo,
+		"worktree",
+		"add",
+		"-q",
+		"--lock",
+		"--reason",
+		marker,
+		...(checkedOut ? [] : ["--no-checkout"]),
+		...(newBranch ? ["-b", branch, path, "HEAD"] : [path, branch]),
+	);
+	const adminDir = git(path, "rev-parse", "--absolute-git-dir");
+	if (!checkedOut) writeFileSync(join(adminDir, "index.lock"), "");
+	return adminDir;
 }
 
 /** Run `body` with workspace git commands going through the fake git under `env`. POSIX only. */

@@ -3,10 +3,12 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -35,7 +37,7 @@ import {
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
-import { sharedStorePath } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
+import { sharedStorePath, WORKTREE_ADDING_REASON } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
 import {
 	commitFile,
@@ -44,6 +46,7 @@ import {
 	createRepository,
 	git,
 	gitTranscript,
+	interruptedWorktree,
 	type WorkspaceSandboxDirs,
 	withInjectedGit,
 	workspaceSandbox,
@@ -837,7 +840,139 @@ describe("workspace git runner (#3109)", () => {
 			}
 		},
 	);
+
+	// POSIX: the stand-in gits are shell scripts.
+	test.skipIf(process.platform === "win32")(
+		"fails fast on a git too old to lock a worktree while adding it, before any other work (#3109)",
+		async () => {
+			const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
+			const gitReporting = (name: string, version: string): string => {
+				const path = join(dirs.root, name);
+				writeFileSync(
+					path,
+					`#!/bin/sh\ncase "$*" in *--version) echo "${version}"; exit 0 ;; esac\nexec '${realGit}' "$@"\n`,
+				);
+				chmodSync(path, 0o755);
+				return path;
+			};
+			const old = gitReporting("old-git", "git version 2.32.7");
+			const restore = setWorkspaceGitExecutableResolver(async () => ({ path: old, env: {} }));
+			try {
+				const remote = createRemote(dirs.root, "needs-new-git");
+				const { result: error, commands } = await countGitCommands(() =>
+					rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" }))),
+				);
+				assert.ok(isWorkspaceBindingError(error));
+				assert.equal(error.code, "git-unavailable");
+				assert.equal(error.reason, "outdated");
+				assert.deepEqual(
+					{ ...error.fields, installCommand: typeof error.fields.installCommand },
+					{ gitPath: old, version: "2.32.7", minimumVersion: "2.33", installCommand: "string" },
+				);
+				assert.match(error.message, /is git 2\.32\.7, and workspaces need git 2\.33 or later/);
+				assert.equal(commands.length, 1, "only the version probe ran");
+				assert.equal(existsSync(join(dirs.home, "repos")), false, "nothing was created");
+			} finally {
+				restore();
+			}
+			for (const [name, version] of [
+				["windows-git", "git version 2.33.0.windows.1"],
+				["next-git", "git version 3.0.0"],
+				["odd-git", "a git whose version line reads differently"],
+			] as const) {
+				const path = gitReporting(name, version);
+				const accept = setWorkspaceGitExecutableResolver(async () => ({ path, env: {} }));
+				try {
+					await assertWorkspaceGitAvailable();
+				} finally {
+					accept();
+				}
+			}
+		},
+	);
+
+	// POSIX: the stand-in commands run under sh and report their pid.
+	test.skipIf(process.platform === "win32")(
+		"a timeout stops the commands git started too, before the call fails (#3109)",
+		async () => {
+			const pidFile = join(dirs.root, "child.pid");
+			const error = await rejection(
+				runWorkspaceGit({
+					cwd: tmpdir(),
+					args: ["-c", `alias.slow=!echo $$ > '${pidFile}'; exec sleep 30`, "slow"],
+					phase: "fetch",
+					timeoutMs: 300,
+				}),
+			);
+			assert.ok(isWorkspaceTimeoutError(error));
+			assert.equal(processAlive(Number(readFileSync(pidFile, "utf-8"))), false);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a git that will not stop is killed with everything it started once the grace is over (#3109)",
+		async () => {
+			const pidFile = join(dirs.root, "stubborn.pid");
+			const error = await rejection(
+				runWorkspaceGit({
+					cwd: tmpdir(),
+					args: [
+						"-c",
+						`alias.stubborn=!trap '' TERM; echo $$ > '${pidFile}'; while :; do sleep 1; done`,
+						"stubborn",
+					],
+					phase: "fetch",
+					timeoutMs: 300,
+				}),
+			);
+			assert.ok(isWorkspaceTimeoutError(error));
+			assert.equal(processAlive(Number(readFileSync(pidFile, "utf-8"))), false);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"cancelling a worktree addition lets git remove the half-added worktree before the call rejects (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "slow-checkout");
+			git(repo, "config", "filter.slow.smudge", "sleep 0.05; cat");
+			writeFileSync(join(repo, ".gitattributes"), "*.txt filter=slow\n");
+			for (let index = 0; index < 60; index++) writeFileSync(join(repo, `file-${index}.txt`), `${index}\n`);
+			git(repo, "add", ".");
+			git(repo, "commit", "-q", "-m", "slow to check out");
+			const path = join(dirs.root, "slow-worktree");
+			const controller = new AbortController();
+			const reason = new Error("stop adding");
+			const pending = runWorkspaceGit({
+				cwd: repo,
+				args: ["worktree", "add", "--lock", "--reason", WORKTREE_ADDING_REASON, "-b", "feat/slow", path, "main"],
+				phase: "worktree-add",
+				signal: controller.signal,
+			});
+			const admin = join(repo, ".git", "worktrees");
+			while (!(existsSync(admin) && readdirSync(admin).some((id) => existsSync(join(admin, id, "locked")))))
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			controller.abort(reason);
+			assert.equal(await rejection(pending), reason);
+			assert.equal(existsSync(path), false, "git removed the worktree it was adding");
+			assert.deepEqual(existsSync(admin) ? readdirSync(admin) : [], [], "and its admin directory");
+			assert.equal(git(repo, "branch", "--list", "feat/slow"), "feat/slow", "the new branch stays");
+		},
+	);
 });
+
+/** Whether `pid` is alive, waiting briefly for a process that was just killed to be gone. */
+function processAlive(pid: number): boolean {
+	const deadline = Date.now() + 2_000;
+	for (;;) {
+		try {
+			process.kill(pid, 0);
+		} catch {
+			return false;
+		}
+		if (Date.now() > deadline) return true;
+		execFileSync("sleep", ["0.05"]);
+	}
+}
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 const SHA = /\b[0-9a-f]{40}\b/g;
@@ -1004,6 +1139,172 @@ describe("shared stores follow the remote (#3109)", () => {
 	});
 });
 
+/** Atomic's own worktree path of `branch` in the local repository `repo`. */
+function autoWorktree(repo: string, branch: string): string {
+	const digest = createHash("sha256").update(realpathSync(repo)).digest("hex").slice(0, 12);
+	return join(dirs.home, "worktrees", "local", `${basename(repo)}-${digest}`, ...branch.split("/"));
+}
+
+function countOf(commands: readonly (readonly string[])[], ...prefix: string[]): number {
+	return commands.filter((args) => prefix.every((part, index) => args[index] === part)).length;
+}
+
+/** A worktree is complete: its recorded tree is its HEAD's, nothing differs, and no lock or index lock is left. */
+function assertCompleteWorktree(worktree: string, tree?: string): void {
+	if (tree !== undefined) assert.equal(tree, git(worktree, "rev-parse", "HEAD^{tree}"));
+	assert.equal(git(worktree, "status", "--porcelain"), "");
+	const adminDir = git(worktree, "rev-parse", "--absolute-git-dir");
+	assert.equal(existsSync(join(adminDir, "locked")), false, "no lock is left");
+	assert.equal(existsSync(join(adminDir, "index.lock")), false, "no index lock is left");
+}
+
+describe("interrupted worktree additions (#3109)", () => {
+	test("locks a worktree while adding it and unlocks it once it is checked out (#3109)", async () => {
+		const repo = createRepository(dirs.root, "marked");
+		const { result, commands } = await countGitCommands(() =>
+			resolveWorkspace(workspace({ repo, branch: "feat/marked" })),
+		);
+		const add = commands.find((args) => args[0] === "worktree" && args[1] === "add");
+		assert.deepEqual(add?.slice(2, 5), ["--lock", "--reason", WORKTREE_ADDING_REASON]);
+		assert.equal(countOf(commands, "worktree", "unlock", result.worktree), 1);
+		assertCompleteWorktree(result.worktree, result.tree);
+	});
+
+	for (const [marker, checkedOut] of [
+		[WORKTREE_ADDING_REASON, false],
+		["initializing", false],
+		["initializing", true],
+	] as const)
+		test(`removes and adds again an addition interrupted under the "${marker}" lock${checkedOut ? " after its checkout" : ""} (#3109)`, async () => {
+			const repo = createRepository(dirs.root, "interrupted");
+			commitFile(repo, "app.txt", "app\n");
+			const path = autoWorktree(repo, "feat/cut");
+			interruptedWorktree(repo, path, "feat/cut", marker, { checkedOut });
+			const { result, commands } = await countGitCommands(() =>
+				resolveWorkspace(workspace({ repo, branch: "feat/cut" })),
+			);
+			assert.deepEqual(
+				[
+					countOf(commands, "worktree", "remove", "--force", "--force", path),
+					countOf(commands, "worktree", "prune"),
+					countOf(commands, "worktree", "add"),
+					countOf(commands, "worktree", "unlock"),
+				],
+				[1, 1, 1, 1],
+			);
+			assert.equal(result.worktree, realpathSync(path));
+			assert.equal(readFileSync(join(path, "app.txt"), "utf-8"), "app\n");
+			assertCompleteWorktree(path, result.tree);
+		});
+
+	test("repairs an interrupted addition when a recorded binding is restored (#3109)", async () => {
+		const repo = createRepository(dirs.root, "resumed");
+		const binding = await resolveWorkspace(workspace({ repo, branch: "feat/resume" }));
+		git(repo, "worktree", "remove", "--force", binding.worktree);
+		interruptedWorktree(repo, binding.worktree, "feat/resume", WORKTREE_ADDING_REASON, { newBranch: false });
+		const { result, commands } = await countGitCommands(() => restoreWorkspace(binding));
+		assert.equal(result, binding.worktree);
+		assert.equal(countOf(commands, "worktree", "remove", "--force", "--force", binding.worktree), 1);
+		assertCompleteWorktree(binding.worktree);
+	});
+
+	test("binds a worktree the user locked for another reason and leaves it locked (#3109)", async () => {
+		const repo = createRepository(dirs.root, "user-locked");
+		const path = join(dirs.root, "removable", "feat-user");
+		git(repo, "worktree", "add", "-q", "--lock", "--reason", "on a removable drive", "-b", "feat/user", path, "main");
+		const { result, commands } = await countGitCommands(() =>
+			resolveWorkspace(workspace({ repo, branch: "feat/user", worktree: path })),
+		);
+		assert.equal(result.worktree, realpathSync(path));
+		assert.equal(countOf(commands, "worktree", "remove"), 0);
+		assert.equal(countOf(commands, "worktree", "add"), 0);
+		const adminDir = git(path, "rev-parse", "--absolute-git-dir");
+		assert.equal(readFileSync(join(adminDir, "locked"), "utf-8").trim(), "on a removable drive");
+	});
+
+	test("adds again over an orphaned directory at Atomic's path, and refuses one at a caller's path (#3109)", async () => {
+		const repo = createRepository(dirs.root, "orphans");
+		const commonDir = realpathSync(join(repo, ".git"));
+		const ghost = join(commonDir, "worktrees", "ghost");
+		const orphan = (path: string): void => {
+			mkdirSync(path, { recursive: true });
+			writeFileSync(join(path, ".git"), `gitdir: ${ghost}\n`);
+			writeFileSync(join(path, "leftover.txt"), "half a checkout\n");
+		};
+		const atomicPath = autoWorktree(repo, "feat/orphan");
+		orphan(atomicPath);
+		const repaired = await resolveWorkspace(workspace({ repo, branch: "feat/orphan" }));
+		assert.equal(repaired.worktree, realpathSync(atomicPath));
+		assert.equal(existsSync(join(atomicPath, "leftover.txt")), false);
+		assertCompleteWorktree(atomicPath, repaired.tree);
+
+		const callers = join(dirs.root, "mine");
+		orphan(callers);
+		const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/mine", worktree: callers })));
+		assert.ok(error instanceof WorkspaceBindingError);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.code, "incomplete-worktree");
+		assert.equal(error.reason, "orphaned-directory");
+		assert.equal(error.retryable, false);
+		assert.deepEqual(error.fields, {
+			repo,
+			repository: realpathSync(repo),
+			branch: "feat/mine",
+			worktree: callers,
+			adminDir: ghost,
+			marker: "",
+		});
+		assert.match(error.hint, new RegExp(`worktree remove --force --force ${callers.replaceAll("\\", "\\\\")}`));
+		assert.equal(existsSync(join(callers, "leftover.txt")), true, "a caller's directory is never deleted");
+	});
+
+	test("refuses git's own interrupted addition at a caller's path and names the fix (#3109)", async () => {
+		const repo = createRepository(dirs.root, "callers-cut");
+		const path = join(dirs.root, "callers-cut-worktree");
+		const adminDir = interruptedWorktree(repo, path, "feat/cut", "initializing");
+		const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/cut", worktree: path })));
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.code, "incomplete-worktree");
+		assert.equal(error.reason, "interrupted-add");
+		assert.equal(error.fields.adminDir, adminDir);
+		assert.equal(error.fields.marker, "initializing");
+		const root = realpathSync(repo);
+		assert.equal(
+			error.message,
+			`Workspace worktree is incomplete: ${path} was left by an interrupted checkout (${adminDir} is locked: initializing) (incomplete-worktree). Remove it with git -C ${root} worktree remove --force --force ${path} and git -C ${root} worktree prune, or delete the directory if git no longer lists it, then bind again.`,
+		);
+		assert.equal(existsSync(join(adminDir, "locked")), true, "left for the user to inspect");
+	});
+
+	test("an addition Atomic interrupted at a caller's path is never handed out, so it is added again (#3109)", async () => {
+		const repo = createRepository(dirs.root, "callers-ours");
+		const path = join(dirs.root, "callers-ours-worktree");
+		interruptedWorktree(repo, path, "feat/ours", WORKTREE_ADDING_REASON);
+		const binding = await resolveWorkspace(workspace({ repo, branch: "feat/ours", worktree: path }));
+		assertCompleteWorktree(path, binding.tree);
+	});
+
+	test.skipIf(process.platform === "win32")(
+		"reports a removal git refuses as repair-failed, with git's error as the cause (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "stuck");
+			const path = autoWorktree(repo, "feat/stuck");
+			interruptedWorktree(repo, path, "feat/stuck", WORKTREE_ADDING_REASON);
+			const error = await withInjectedGit(dirs.root, { FAKE_GIT_MODE: "remove-fails" }, () =>
+				rejection(resolveWorkspace(workspace({ repo, branch: "feat/stuck" }))),
+			);
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "incomplete-worktree");
+			assert.equal(error.reason, "repair-failed");
+			assert.equal(error.fields.worktree, path);
+			assert.ok(isWorkspaceBindingError(error.cause));
+			assert.equal(error.cause.code, "git-failed");
+			assert.match(String(error.cause.fields.detail), /injected remove failure/);
+			assert.equal(existsSync(path), true);
+		},
+	);
+});
+
 describe("workspace git phases (#3109)", () => {
 	test("runs every git command of a binding in its phase, network ones as clone or fetch (#3109)", async () => {
 		const remote = createRemote(dirs.root, "phases");
@@ -1037,7 +1338,8 @@ describe("workspace git phases (#3109)", () => {
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/feat/x^{commit}",
 			"probe: rev-parse --verify refs/remotes/origin/feat/x^{commit}",
-			"worktree-add: worktree add -b feat/x <feat/x> <sha>",
+			"worktree-add: worktree add --lock --reason atomic workspace: adding -b feat/x <feat/x> <sha>",
+			"worktree-add: worktree unlock <feat/x>",
 			...snapshot,
 		]);
 		const existing = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "main" })));
@@ -1049,7 +1351,8 @@ describe("workspace git phases (#3109)", () => {
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
 			"probe: rev-parse --verify refs/remotes/origin/main^{commit}",
-			"worktree-add: worktree add -b main <main> <sha>",
+			"worktree-add: worktree add --lock --reason atomic workspace: adding -b main <main> <sha>",
+			"worktree-add: worktree unlock <main>",
 			...snapshot,
 		]);
 		const fetched = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/y" })));
@@ -1077,7 +1380,8 @@ describe("workspace git phases (#3109)", () => {
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
 			"probe: rev-parse --verify refs/remotes/origin/main^{commit}",
-			"worktree-add: worktree add <worktree> main",
+			"worktree-add: worktree add --lock --reason atomic workspace: adding <worktree> main",
+			"worktree-add: worktree unlock <worktree>",
 			"probe: rev-parse --show-toplevel --git-common-dir",
 			"probe: symbolic-ref --short HEAD",
 			"validate: merge-base --is-ancestor <sha> HEAD",

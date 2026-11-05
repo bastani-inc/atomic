@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { resolveWorkspace, workspace } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import {
+	isWorkspaceTimeoutError,
+	resolveWorkspace,
+	workspace,
+} from "../../packages/coding-agent/src/core/workspace/index.ts";
+import { withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
+import { WORKTREE_ADDING_REASON } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 import {
 	commitFile,
@@ -178,6 +184,7 @@ interface BinderOutcome {
 	readonly outcome: string;
 	readonly worktree?: string;
 	readonly head?: string;
+	readonly tree?: string;
 	readonly code?: string;
 	readonly message?: string;
 }
@@ -210,19 +217,79 @@ function allBound(outcomes: readonly BinderOutcome[]): void {
 	);
 }
 
+/**
+ * Every binder got the one worktree, fully checked out: the tree each recorded is its HEAD's, every file of HEAD is
+ * there unchanged, and no lock is left. A binder that used a worktree another process was still adding fails this.
+ */
+function assertOneCompleteWorktree(outcomes: readonly BinderOutcome[]): string {
+	allBound(outcomes);
+	const worktrees = new Set(outcomes.map((outcome) => outcome.worktree));
+	assert.equal(worktrees.size, 1, "one worktree for the branch");
+	const [worktree] = worktrees as Set<string>;
+	const tree = git(worktree, "rev-parse", "HEAD^{tree}");
+	assert.deepEqual(
+		new Set(outcomes.map((outcome) => outcome.tree)),
+		new Set([tree]),
+		"every binder recorded HEAD's tree",
+	);
+	assert.equal(git(worktree, "status", "--porcelain"), "", "every file of HEAD is checked out");
+	assert.equal(existsSync(join(git(worktree, "rev-parse", "--absolute-git-dir"), "locked")), false);
+	return worktree;
+}
+
+/** Files that take a while to check out: each one passes a smudge filter that sleeps. */
+const SLOW_FILES = 60;
+
+function slowCheckoutRepository(name: string): string {
+	const repo = createRepository(dirs.root, name);
+	git(repo, "config", "filter.slow.smudge", "sleep 0.05; cat");
+	writeFileSync(join(repo, ".gitattributes"), "*.txt filter=slow\n");
+	for (let index = 0; index < SLOW_FILES; index++) writeFileSync(join(repo, `file-${index}.txt`), `${index}\n`);
+	git(repo, "add", ".");
+	git(repo, "commit", "-q", "-m", "slow to check out");
+	return repo;
+}
+
+/** Wait until Atomic has started adding a worktree to `repo`: git wrote Atomic's lock into its admin directory. */
+async function additionStarted(repo: string): Promise<void> {
+	const admin = join(repo, ".git", "worktrees");
+	const marked = (): boolean =>
+		existsSync(admin) &&
+		readdirSync(admin).some((id) => {
+			const lock = join(admin, id, "locked");
+			return existsSync(lock) && readFileSync(lock, "utf-8").trim() === WORKTREE_ADDING_REASON;
+		});
+	while (!marked()) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+/** SIGKILL every git process group whose command line names `path`, as a machine crash would. */
+function killGitGroups(path: string): void {
+	const pids = spawnSync("pgrep", ["-f", "--", path], { encoding: "utf-8" })
+		.stdout.split("\n")
+		.filter((line) => line.trim() !== "")
+		.map(Number);
+	assert.ok(pids.length > 0, "git is still adding the worktree");
+	for (const pid of pids)
+		for (const target of [-pid, pid]) {
+			try {
+				process.kill(target, "SIGKILL");
+				break;
+			} catch (error) {
+				if ((error as { readonly code?: string }).code !== "ESRCH") throw error;
+			}
+		}
+}
+
 describe("workspace binding across processes (#3109)", () => {
 	test(
 		"processes binding one new branch at once all get its one worktree (#3109)",
 		async () => {
-			const remote = createRemote(dirs.root, "shared-branch");
+			const repo = slowCheckoutRepository("shared-branch");
 			const outcomes = await Promise.all(
-				Array.from({ length: BINDERS }, () => binder(["bind", remote.url, "together"]).first),
+				Array.from({ length: BINDERS }, () => binder(["bind", repo, "together"]).first),
 			);
-			allBound(outcomes);
-			const worktrees = new Set(outcomes.map((outcome) => outcome.worktree));
-			assert.equal(worktrees.size, 1, "one worktree for the branch");
-			const [worktree] = worktrees;
-			assert.equal(git(worktree!, "symbolic-ref", "--short", "HEAD"), "together");
+			const worktree = assertOneCompleteWorktree(outcomes);
+			assert.equal(git(worktree, "symbolic-ref", "--short", "HEAD"), "together");
 		},
 		CHAOS_TIMEOUT_MS,
 	);
@@ -270,6 +337,79 @@ describe("workspace binding across processes (#3109)", () => {
 			allBound(outcomes);
 			assert.deepEqual(new Set(outcomes.map((outcome) => outcome.worktree)), new Set([binding.worktree]));
 			assert.equal(git(binding.worktree, "symbolic-ref", "--short", "HEAD"), "restored");
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+});
+
+// POSIX: the crash is a SIGKILL of the binder and of git's own process group, found with pgrep.
+describe.skipIf(process.platform === "win32")("worktree additions under process chaos (#3109)", () => {
+	test(
+		"binders after a SIGKILL in the middle of an addition repair it and all get one complete worktree (#3109)",
+		async () => {
+			const repo = slowCheckoutRepository("killed-mid-add");
+			const first = binder(["bind", repo, "cut"]);
+			await additionStarted(repo);
+			first.child.kill("SIGKILL");
+			killGitGroups(join(dirs.home, "worktrees"));
+			assert.equal((await first.first).outcome, "silent", "the first binder died before binding");
+			const admin = join(repo, ".git", "worktrees");
+			assert.equal(readdirSync(admin).length, 1, "the killed addition left its worktree behind");
+			const outcomes = await Promise.all(Array.from({ length: BINDERS }, () => binder(["bind", repo, "cut"]).first));
+			const worktree = assertOneCompleteWorktree(outcomes);
+			assert.equal(readdirSync(worktree).filter((name) => name.endsWith(".txt")).length, SLOW_FILES);
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
+	test(
+		"binders wait while the process adding a worktree is stopped, then all get it complete (#3109)",
+		async () => {
+			const repo = slowCheckoutRepository("stopped-mid-add");
+			const first = binder(["bind", repo, "paused"]);
+			await additionStarted(repo);
+			first.child.kill("SIGSTOP");
+			const others = Array.from({ length: BINDERS }, () => binder(["bind", repo, "paused"]).first);
+			const early = await Promise.race([
+				Promise.race(others).then(() => "a binder finished"),
+				new Promise((resolve) => setTimeout(() => resolve("all waiting"), 1_500)),
+			]);
+			assert.equal(early, "all waiting", "nobody binds a worktree whose addition has not finished");
+			first.child.kill("SIGCONT");
+			assertOneCompleteWorktree([await first.first, ...(await Promise.all(others))]);
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
+	test(
+		"a wait for a repository lock that a stopped process holds ends with a timeout naming that process (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "held-lock");
+			const commonDir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+			const holder = binder(["hold-lock", commonDir]);
+			assert.equal((await holder.first).outcome, "locked");
+			holder.child.kill("SIGSTOP");
+			let ran = false;
+			const error = await withRepositoryLock(
+				commonDir,
+				async () => {
+					ran = true;
+				},
+				400,
+			).then(
+				() => undefined,
+				(failure: unknown) => failure,
+			);
+			holder.child.kill("SIGCONT");
+			assert.ok(isWorkspaceTimeoutError(error), String(error));
+			assert.equal(ran, false);
+			assert.equal(error.phase, "repository-lock");
+			assert.equal(error.timeoutMs, 400);
+			assert.ok(error.elapsedMs >= 400);
+			assert.equal(error.fields.holderPid, holder.child.pid);
+			assert.equal(error.fields.command, join(commonDir, "atomic-repository-lock.sqlite"));
+			assert.match(error.message, new RegExp(`process ${holder.child.pid} held .* for \\d+ms, limit 400ms`));
+			assert.match(error.hint, new RegExp(`Wait for process ${holder.child.pid} to finish`));
 		},
 		CHAOS_TIMEOUT_MS,
 	);

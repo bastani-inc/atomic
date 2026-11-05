@@ -264,6 +264,73 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(config.field, "workspace.sandbox");
 	});
 
+	test("an interrupted worktree, an outdated git and a held repository lock round-trip with their fields (#3109)", () => {
+		const lockWait = new Error("database is locked; gave up after 600000 ms");
+		const originals = [
+			new WorkspaceBindingError({
+				code: "incomplete-worktree",
+				reason: "repair-failed",
+				fields: {
+					repo: "/repos/api",
+					repository: "/repos/api",
+					branch: "feat/x",
+					worktree: "/wt/api",
+					adminDir: "/repos/api/.git/worktrees/api",
+					marker: "atomic workspace: adding",
+				},
+				cause: new WorkspaceBindingError({ code: "git-failed", fields: { phase: "worktree-add", status: 128 } }),
+			}),
+			new WorkspaceBindingError({
+				code: "git-unavailable",
+				reason: "outdated",
+				fields: { gitPath: "git", version: "2.30.2", minimumVersion: "2.33", installCommand: "brew install git" },
+			}),
+			new WorkspaceTimeoutError({
+				phase: "repository-lock",
+				timeoutMs: 600_000,
+				elapsedMs: 600_012,
+				command: "/repos/api/.git/atomic-repository-lock.sqlite",
+				holderPid: 4242,
+				cause: lockWait,
+			}),
+			new WorkspaceTimeoutError({
+				phase: "repository-lock",
+				timeoutMs: 1_000,
+				elapsedMs: 1_003,
+				command: "/repos/api/.git/atomic-repository-lock.sqlite",
+				holderPid: null,
+			}),
+		];
+		for (const original of originals) {
+			const rehydrated = rehydrateWorkspaceError(JSON.parse(JSON.stringify(serializeWorkspaceError(original))));
+			assert.equal(rehydrated.constructor, original.constructor);
+			assert.equal(rehydrated.code, original.code);
+			assert.equal(rehydrated.reason, original.reason);
+			assert.equal(rehydrated.message, original.message);
+			assert.equal(rehydrated.hint, original.hint);
+			assert.equal(rehydrated.retryable, original.retryable);
+			assert.deepEqual(rehydrated.fields, original.fields);
+			assert.equal((rehydrated.cause as Error | undefined)?.message, (original.cause as Error | undefined)?.message);
+		}
+		const [incomplete, outdated, held, unknownHolder] = originals;
+		assert.equal(incomplete!.retryable, false);
+		assert.equal(outdated!.retryable, false);
+		assert.equal(held!.retryable, true);
+		assert.equal(
+			held!.message,
+			"Workspace repository lock wait timed out: process 4242 held /repos/api/.git/atomic-repository-lock.sqlite for 600012ms, limit 600000ms (timeout). Wait for process 4242 to finish its fetch or worktree change, or stop it if it is stuck, then retry.",
+		);
+		assert.match(unknownHolder!.message, /another process held/);
+		const checkout = new WorkspaceTimeoutError({
+			phase: "worktree-add",
+			timeoutMs: 600_000,
+			elapsedMs: 600_001,
+			command: "git worktree add x",
+		});
+		assert.match(checkout.hint, /disk space and the repository's checkout size/);
+		assert.equal("holderPid" in checkout.fields, false);
+	});
+
 	test("an unknown serialized name rehydrates into WorkspaceError keeping its name and code (#3109)", () => {
 		const wire = {
 			name: "WorkspaceFutureError",
@@ -394,6 +461,8 @@ describe("workspace() validates its options before any work (#3109)", () => {
 			[{ repo: "/r", worktree: "relative" }, "workspace.worktree", "invalid-value", "an unsupported string"],
 			[{ repo: "/r", sandbox: "full" }, "workspace.sandbox", "invalid-value", "an unsupported string"],
 			[{ repo: "/r", label: 3 }, "workspace.label", "invalid-type", "number"],
+			[{ repo: "/r", branch: [] }, "workspace.branch", "invalid-type", "an array"],
+			[{ repo: "/r", base: null }, "workspace.base", "invalid-type", "null"],
 		];
 		const expectations: Record<string, string> = {
 			"workspace.repo": "an absolute repository path or a remote URL",
@@ -413,13 +482,22 @@ describe("workspace() validates its options before any work (#3109)", () => {
 			assert.equal(error.fields.received, received);
 			assert.equal(error.code, "invalid-setting");
 		}
-		for (const notObject of [null, "repo", 3]) {
+		for (const [notObject, received] of [
+			[null, "null"],
+			["repo", "an unsupported string"],
+			[3, "number"],
+		] as const) {
 			const error = thrown(() => workspace(notObject as never));
 			assert.ok(isWorkspaceConfigError(error));
 			assert.equal(error.field, "workspace");
 			assert.equal(error.source, "sdk");
 			assert.equal(error.fields.expected, "an object");
+			assert.equal(error.fields.received, received);
 		}
+		assert.equal(
+			(thrown(() => workspace(null as never)) as WorkspaceConfigError).message,
+			"Invalid workspace option: workspace from sdk is null, expected an object (invalid-setting). Set workspace to an object.",
+		);
 		assert.equal(isWorkspace(workspace({ repo: "/r" })), true);
 		for (const value of [null, undefined, "workspace", { kind: "workspace" }, { kind: "other", repo: "/r" }])
 			assert.equal(isWorkspace(value), false);

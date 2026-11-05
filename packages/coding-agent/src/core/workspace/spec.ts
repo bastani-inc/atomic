@@ -75,6 +75,13 @@ export function classifyRepository(repo: string): WorkspaceRepository | undefine
 	return undefined;
 }
 
+function describeReceived(value: unknown): string {
+	if (value === undefined) return "undefined";
+	if (value === null) return "null";
+	if (typeof value === "string") return "an unsupported string";
+	return Array.isArray(value) ? "an array" : typeof value;
+}
+
 function configError(
 	source: WorkspaceConfigSource,
 	field: string,
@@ -86,7 +93,7 @@ function configError(
 		field,
 		reason: value === undefined ? "missing" : typeof value === "string" ? "invalid-value" : "invalid-type",
 		expected,
-		received: value === undefined ? "undefined" : typeof value === "string" ? "an unsupported string" : typeof value,
+		received: describeReceived(value),
 	});
 }
 

@@ -21,7 +21,8 @@ export type WorkspaceBindingErrorCode =
 	| "git-failed"
 	| "filesystem-failed"
 	| "drift"
-	| "writer-conflict";
+	| "writer-conflict"
+	| "incomplete-worktree";
 
 export type WorkspaceBindingErrorReason =
 	| "not-a-worktree"
@@ -33,7 +34,11 @@ export type WorkspaceBindingErrorReason =
 	| "not-a-repository-root"
 	| "history-rewritten"
 	| "remote-changed"
-	| "branch-diverged";
+	| "branch-diverged"
+	| "interrupted-add"
+	| "orphaned-directory"
+	| "repair-failed"
+	| "outdated";
 
 export type WorkspaceConfigErrorCode = "invalid-setting";
 export type WorkspaceConfigSource = "sdk" | "cli" | "env" | "settings";
@@ -61,7 +66,7 @@ export type WorkspaceErrorCode =
 	| WorkspaceTimeoutErrorCode
 	| WorkspaceSandboxErrorCode;
 
-/** Git step that was running when a workspace operation failed or timed out. */
+/** Step that was running when a workspace operation failed or timed out: a git step, or waiting for the repository lock. */
 export type WorkspaceGitPhase =
 	| "probe"
 	| "clone"
@@ -71,7 +76,8 @@ export type WorkspaceGitPhase =
 	| "snapshot"
 	| "change-set"
 	| "push"
-	| "lease";
+	| "lease"
+	| "repository-lock";
 
 interface WorkspaceErrorInit {
 	/** Set only for the family base; each subclass declares its own literal name. */
@@ -196,6 +202,12 @@ function describeBinding(
 				hint: "Use a cwd inside the workspace worktree, or a relative path.",
 			};
 		case "git-unavailable":
+			if (reason === "outdated")
+				return {
+					what: "Git is too old",
+					subject: `${text(fields, "gitPath")} is git ${text(fields, "version")}, and workspaces need git ${text(fields, "minimumVersion")} or later to lock worktrees while adding them`,
+					hint: `Install a newer git (${text(fields, "installCommand")}) and make sure it is first on PATH.`,
+				};
 			return {
 				what: "Git is unavailable",
 				subject: `${text(fields, "gitPath")} could not be started, and workspaces need git to bind repositories`,
@@ -231,6 +243,17 @@ function describeBinding(
 						? `${text(fields, "worktree")} no longer has the recorded remote ${text(fields, "expected")}`
 						: `${text(fields, "branch")} in ${text(fields, "worktree")} no longer contains the recorded commit ${text(fields, "expected")}`,
 				hint: "Restore the recorded repository state, or start a new run instead of resuming.",
+			};
+		case "incomplete-worktree":
+			return {
+				what: "Workspace worktree is incomplete",
+				subject:
+					reason === "orphaned-directory"
+						? `${text(fields, "worktree")} points at ${text(fields, "adminDir")}, which ${text(fields, "repository")} no longer has`
+						: reason === "repair-failed"
+							? `${text(fields, "worktree")} was left by an interrupted checkout and could not be removed`
+							: `${text(fields, "worktree")} was left by an interrupted checkout (${text(fields, "adminDir")} is locked: ${text(fields, "marker")})`,
+				hint: `Remove it with git -C ${text(fields, "repository")} worktree remove --force --force ${text(fields, "worktree")} and git -C ${text(fields, "repository")} worktree prune, or delete the directory if git no longer lists it, then bind again.`,
 			};
 		case "writer-conflict":
 			return {
@@ -397,7 +420,31 @@ export interface WorkspaceTimeoutErrorInit {
 	readonly phase: WorkspaceGitPhase;
 	readonly timeoutMs: number;
 	readonly elapsedMs: number;
+	/** The git command that ran, or for `repository-lock` the lock file waited for. */
 	readonly command: string;
+	/** For `repository-lock`: the process holding the lock, when known. */
+	readonly holderPid?: number | null;
+	readonly cause?: unknown;
+}
+
+function describeTimeout(init: WorkspaceTimeoutErrorInit): { what: string; subject: string; hint: string } {
+	const limit = `limit ${init.timeoutMs}ms`;
+	if (init.phase === "repository-lock") {
+		const holder = init.holderPid == null ? "another process" : `process ${init.holderPid}`;
+		return {
+			what: "Workspace repository lock wait timed out",
+			subject: `${holder} held ${init.command} for ${init.elapsedMs}ms, ${limit}`,
+			hint: `Wait for ${holder} to finish its fetch or worktree change, or stop it if it is stuck, then retry.`,
+		};
+	}
+	return {
+		what: "Workspace git command timed out",
+		subject: `${init.command} ran ${init.elapsedMs}ms during ${init.phase}, ${limit}`,
+		hint:
+			init.phase === "worktree-add"
+				? "Check free disk space and the repository's checkout size, then retry; the interrupted worktree is repaired on the next bind."
+				: "Check network access to the remote, then retry.",
+	};
 }
 
 /** A git step of a workspace operation exceeded its time limit. */
@@ -409,17 +456,19 @@ export class WorkspaceTimeoutError extends WorkspaceError {
 	readonly elapsedMs: number;
 
 	constructor(init: WorkspaceTimeoutErrorInit) {
-		const hint = "Check network access to the remote, then retry.";
+		const { what, subject, hint } = describeTimeout(init);
 		super({
 			code: "timeout",
-			message: message(
-				"Workspace git command timed out",
-				`${init.command} ran ${init.elapsedMs}ms during ${init.phase}, limit ${init.timeoutMs}ms`,
-				"timeout",
-				hint,
-			),
+			message: message(what, subject, "timeout", hint),
 			hint,
-			fields: { phase: init.phase, timeoutMs: init.timeoutMs, elapsedMs: init.elapsedMs, command: init.command },
+			fields: {
+				phase: init.phase,
+				timeoutMs: init.timeoutMs,
+				elapsedMs: init.elapsedMs,
+				command: init.command,
+				...(init.holderPid === undefined ? {} : { holderPid: init.holderPid }),
+			},
+			cause: init.cause,
 			retryable: true,
 		});
 		this.phase = init.phase;
@@ -660,6 +709,8 @@ function construct(record: SerializedWorkspaceError, cause: unknown): WorkspaceE
 				timeoutMs: Number(fields.timeoutMs),
 				elapsedMs: Number(fields.elapsedMs),
 				command: text(fields, "command"),
+				...(fields.holderPid === undefined ? {} : { holderPid: fields.holderPid as number | null }),
+				cause,
 			});
 		case "WorkspaceSandboxError":
 			return new WorkspaceSandboxError({ tool: text(fields, "tool"), worktree: text(fields, "worktree") });

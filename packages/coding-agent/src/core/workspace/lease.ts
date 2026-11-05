@@ -3,9 +3,10 @@ import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { SqliteExecutor } from "../storage/database.js";
+import { findStorageWriteLockTimeoutError } from "../storage/errors.js";
 import { openNodeSqliteDatabase } from "../storage/node-sqlite.js";
 import { isSqliteBusy } from "../storage/write-ahead-log.js";
-import { attachCleanupCause, WorkspaceBindingError } from "./errors.ts";
+import { attachCleanupCause, isWorkspaceError, WorkspaceBindingError, WorkspaceTimeoutError } from "./errors.ts";
 import { gitOutput } from "./git.ts";
 import type { BoundWorkspace } from "./resolve.ts";
 
@@ -121,10 +122,30 @@ export async function closeAfter<T>(database: { close(): Promise<void> }, body: 
 /**
  * Run `body` holding the repository's lock: a SQLite write transaction in its git directory, so processes on this host
  * fetch a shared store and add worktrees to one repository one at a time. A lock whose process dies is released with it.
+ * A holder that keeps it for `waitMs` without anyone else committing, such as a stopped process, fails the wait with a
+ * `WorkspaceTimeoutError` naming that holder.
  */
-export async function withRepositoryLock<T>(commonDir: string, body: () => Promise<T>): Promise<T> {
-	const database = await openLeaseDatabase(join(commonDir, REPOSITORY_LOCK_DATABASE), REPOSITORY_LOCK_WAIT_MS);
-	return closeAfter(database, () => database.transaction(body));
+export async function withRepositoryLock<T>(
+	commonDir: string,
+	body: () => Promise<T>,
+	waitMs = REPOSITORY_LOCK_WAIT_MS,
+): Promise<T> {
+	const lockFile = join(commonDir, REPOSITORY_LOCK_DATABASE);
+	try {
+		const database = await openLeaseDatabase(lockFile, waitMs);
+		return await closeAfter(database, () => database.transaction(body));
+	} catch (error) {
+		const timeout = isWorkspaceError(error) ? undefined : findStorageWriteLockTimeoutError(error);
+		if (timeout === undefined) throw error;
+		throw new WorkspaceTimeoutError({
+			phase: "repository-lock",
+			timeoutMs: timeout.timeoutMs,
+			elapsedMs: timeout.elapsedMs,
+			command: lockFile,
+			holderPid: timeout.holderPid ?? null,
+			cause: timeout,
+		});
+	}
 }
 
 /**

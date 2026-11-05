@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
 import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
@@ -351,9 +351,10 @@ async function checkoutBranch(
 ): Promise<void> {
 	const local = await commitOf(repository, `refs/heads/${branch}`);
 	const remote = await commitOf(repository, `refs/remotes/origin/${branch}`);
+	const lockWhileAdding = ["--lock", "--reason", WORKTREE_ADDING_REASON];
 	if (local === undefined) {
 		const start = remote ?? (await missingBranchStart());
-		await git(repository.root, ["worktree", "add", "-b", branch, path, start], "worktree-add");
+		await git(repository.root, ["worktree", "add", ...lockWhileAdding, "-b", branch, path, start], "worktree-add");
 		return;
 	}
 	if (repository.spec.kind === "remote" && remote !== undefined && remote !== local) {
@@ -366,7 +367,86 @@ async function checkoutBranch(
 				fields: { repo, repository: repository.root, branch, worktree: path, expected: remote, actual: local },
 			});
 	}
-	await git(repository.root, ["worktree", "add", path, branch], "worktree-add");
+	await git(repository.root, ["worktree", "add", ...lockWhileAdding, path, branch], "worktree-add");
+}
+
+/**
+ * The reason Atomic locks a worktree with while adding it. Git writes it before the worktree's `.git` file and Atomic
+ * unlocks only after the checkout finished, so a worktree still locked with it was never handed to anyone.
+ */
+export const WORKTREE_ADDING_REASON = "atomic workspace: adding";
+/** The lock git itself writes while adding a worktree without `--lock` (untranslated). */
+const GIT_ADDING_MARKER = "initializing";
+
+type WorktreeState =
+	| { readonly kind: "missing" }
+	/** Settled: a worktree, or a directory `verifyWorktree` reports on. */
+	| { readonly kind: "complete" }
+	/** The directory exists but has no `.git` yet: an addition may be starting. */
+	| { readonly kind: "unsettled" }
+	| { readonly kind: "interrupted"; readonly adminDir: string; readonly marker: string }
+	| { readonly kind: "orphaned"; readonly adminDir: string };
+
+/** What is at `path`, judged by its `.git` link into `repository` and that worktree's lock. */
+async function worktreeState(repository: OpenRepository, path: string): Promise<WorktreeState> {
+	if (!existsSync(path)) return { kind: "missing" };
+	const link = join(path, ".git");
+	if (!existsSync(link)) return { kind: "unsettled" };
+	if (statSync(link).isDirectory()) return { kind: "complete" };
+	const gitdir = /^gitdir: (.+)$/m.exec(await readFile(link, "utf-8"))?.[1];
+	if (gitdir === undefined) return { kind: "complete" };
+	const adminDir = resolve(path, gitdir.trim());
+	const parent = (await canonical(dirname(adminDir))) ?? dirname(adminDir);
+	if (parent !== join(repository.commonDir, "worktrees")) return { kind: "complete" };
+	if (!existsSync(adminDir)) return { kind: "orphaned", adminDir };
+	const lock = join(adminDir, "locked");
+	if (!existsSync(lock)) return { kind: "complete" };
+	const marker = (await readFile(lock, "utf-8")).trim();
+	return marker === WORKTREE_ADDING_REASON || marker === GIT_ADDING_MARKER
+		? { kind: "interrupted", adminDir, marker }
+		: { kind: "complete" };
+}
+
+function isAtomicWorktreePath(path: string): boolean {
+	const inside = relative(join(atomicHome(), "worktrees"), path);
+	return inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+}
+
+/**
+ * Remove what an interrupted addition left at `path`, so it can be added again. Atomic's own interrupted additions are
+ * always removed; git's, and orphaned directories, only under Atomic's worktree directory, never at a caller's path.
+ */
+async function removeIncompleteWorktree(
+	repository: OpenRepository,
+	repo: string,
+	path: string,
+	branch: string,
+	state: Extract<WorktreeState, { kind: "interrupted" | "orphaned" }>,
+): Promise<void> {
+	const fields = {
+		repo,
+		repository: repository.root,
+		branch,
+		worktree: path,
+		adminDir: state.adminDir,
+		marker: state.kind === "interrupted" ? state.marker : "",
+	};
+	const ours = state.kind === "interrupted" && state.marker === WORKTREE_ADDING_REASON;
+	if (!ours && !isAtomicWorktreePath(path))
+		throw new WorkspaceBindingError({
+			code: "incomplete-worktree",
+			reason: state.kind === "orphaned" ? "orphaned-directory" : "interrupted-add",
+			fields,
+		});
+	if (state.kind === "orphaned") {
+		await filesystem("remove orphaned worktree", path, () => rm(path, { recursive: true, force: true }));
+		return;
+	}
+	try {
+		await git(repository.root, ["worktree", "remove", "--force", "--force", path], "worktree-add");
+	} catch (error) {
+		throw new WorkspaceBindingError({ code: "incomplete-worktree", reason: "repair-failed", fields, cause: error });
+	}
 }
 
 export interface EnsureWorktreeSteps {
@@ -379,7 +459,9 @@ export interface EnsureWorktreeSteps {
 /**
  * Make `path` a verified worktree of `repository` on `branch`, adding it when it is missing. One addition per path runs
  * in this process, and one repository change at a time across processes: the repository lock is held while a shared
- * store is fetched and the worktree is added, and a path another process added meanwhile is used as it is.
+ * store is fetched and the worktree is added, and a path another process finished adding meanwhile is used as it is.
+ * A worktree is locked while it is added, so one that is still being added, or whose addition was interrupted, is
+ * never used: the first waits for the lock, the second is removed and added again.
  */
 export async function ensureWorktree(
 	repository: OpenRepository,
@@ -390,17 +472,20 @@ export async function ensureWorktree(
 	signal?: AbortSignal,
 ): Promise<string> {
 	const pending = pendingWorktrees.get(path);
-	if (pending !== undefined || !existsSync(path))
+	if (pending !== undefined || (await worktreeState(repository, path)).kind !== "complete")
 		await waitFor(
 			pending ??
 				shared(pendingWorktrees, path, () =>
 					withRepositoryLock(repository.commonDir, async () => {
-						if (existsSync(path)) return;
+						const state = await worktreeState(repository, path);
+						if (state.kind === "complete" || state.kind === "unsettled") return;
+						if (state.kind !== "missing") await removeIncompleteWorktree(repository, repo, path, branch, state);
 						if (repository.spec.kind === "remote" && repository.fresh !== true)
 							await git(repository.root, ["fetch", "origin"], "fetch");
 						await steps.prepare?.();
 						await git(repository.root, ["worktree", "prune"], "worktree-add");
 						await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart);
+						await git(repository.root, ["worktree", "unlock", path], "worktree-add");
 					}),
 				),
 			signal,
