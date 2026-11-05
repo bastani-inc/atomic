@@ -1,4 +1,5 @@
 import type { PoolControl } from "../durable/journal/sql-pool-queue.js";
+import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 
 export interface WorkerControlHandlers {
 	/** Brings the worker's runs to the control's state: pauses or resumes their tools and stages. */
@@ -42,4 +43,53 @@ export class WorkerControl {
 	settled(): Promise<void> {
 		return this.applying;
 	}
+}
+
+/** A run's tools or stages, as pool control pauses and resumes them. */
+export interface PausableRunControl {
+	pause(): Promise<void> | Promise<readonly object[]>;
+	resume(): Promise<void> | Promise<readonly object[]>;
+}
+
+/** What a worker's pool control acts on. */
+export interface WorkerControlTargets {
+	/** The runs of the attempt the worker holds, or of the last one it held. */
+	runs(): readonly { readonly id: string }[];
+	/** A run's tool controls, while the run has them. */
+	tools(runId: string): PausableRunControl | undefined;
+	stages(runId: string): PausableRunControl;
+	/** The running attempt's controller; undefined between attempts. */
+	attempt(): AbortController | undefined;
+	/** The root the worker serves: the run a quit names when the attempt has registered none yet. */
+	readonly root: string;
+	acknowledge(revision: number): Promise<void>;
+}
+
+/**
+ * How a worker applies pool control. Pause and resume reach every run's tools and stages, and a quit leaves them as
+ * they are. A running attempt ends on a quit through a graceful-quit abort naming its run, and acknowledges the quit
+ * once it stopped; any other control is acknowledged as soon as it is applied.
+ */
+export function workerControlHandlers(targets: WorkerControlTargets): WorkerControlHandlers {
+	return {
+		async apply(next) {
+			for (const run of targets.runs()) {
+				if (next.state === "paused") {
+					await targets.tools(run.id)?.pause();
+					await targets.stages(run.id).pause();
+				} else if (next.state === "running") {
+					await targets.tools(run.id)?.resume();
+					await targets.stages(run.id).resume();
+				}
+			}
+		},
+		async applied(next) {
+			const attempt = targets.attempt();
+			if (next.state === "quit" && attempt) {
+				attempt.abort(new WorkflowGracefulQuitError(targets.runs()[0]?.id ?? targets.root, "root worker control"));
+				return;
+			}
+			await targets.acknowledge(next.revision);
+		},
+	};
 }

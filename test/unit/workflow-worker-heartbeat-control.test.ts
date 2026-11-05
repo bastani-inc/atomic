@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { PoolControl } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { WorkerControl } from "../../packages/workflows/src/workers/worker-control.js";
+import {
+	findWorkflowGracefulQuit,
+	WorkflowGracefulQuitError,
+} from "../../packages/workflows/src/engine/workflow-tool-abort.js";
+import {
+	WorkerControl,
+	type WorkerControlTargets,
+	workerControlHandlers,
+} from "../../packages/workflows/src/workers/worker-control.js";
 import { startWorkerHeartbeat, tolerantHeartbeat } from "../../packages/workflows/src/workers/worker-heartbeat.js";
 
 const INTERVAL_MS = 1_000;
@@ -212,4 +220,82 @@ test("a tolerant heartbeat passes expected refusals silently and reports the fir
 	await beat();
 	assert.equal(reported.length, 1, "a later failure is not reported again");
 	assert.equal(sent, 4, "every beat is sent");
+});
+
+/** Targets that record what pool control did to them. */
+function recordedTargets(options: { readonly runs: readonly string[]; readonly attempt?: AbortController }) {
+	const calls: string[] = [];
+	const control = (scope: string, runId: string) => ({
+		async pause() {
+			calls.push(`${scope} pause ${runId}`);
+		},
+		async resume() {
+			calls.push(`${scope} resume ${runId}`);
+		},
+	});
+	const targets: WorkerControlTargets = {
+		runs: () => options.runs.map((id) => ({ id })),
+		tools: (runId) => (runId === "unregistered" ? undefined : control("tools", runId)),
+		stages: (runId) => control("stages", runId),
+		attempt: () => options.attempt,
+		root: "root",
+		acknowledge: async (revision) => {
+			calls.push(`acknowledge ${revision}`);
+		},
+	};
+	return { calls, handlers: workerControlHandlers(targets) };
+}
+
+test("pause and resume reach every run's tools and stages, and are acknowledged (#4313)", async () => {
+	const attempt = new AbortController();
+	const { calls, handlers } = recordedTargets({ runs: ["child", "unregistered"], attempt });
+	const paused: PoolControl = { state: "paused", revision: 1 };
+	await handlers.apply(paused);
+	await handlers.applied(paused);
+	const resumed: PoolControl = { state: "running", revision: 2 };
+	await handlers.apply(resumed);
+	await handlers.applied(resumed);
+	assert.deepEqual(calls, [
+		"tools pause child",
+		"stages pause child",
+		"stages pause unregistered",
+		"acknowledge 1",
+		"tools resume child",
+		"stages resume child",
+		"stages resume unregistered",
+		"acknowledge 2",
+	]);
+	assert.equal(attempt.signal.aborted, false, "a pause or resume leaves the running attempt running");
+});
+
+test("a quit ends a running attempt as a graceful quit of its run, without resuming a paused one (#4313)", async () => {
+	const attempt = new AbortController();
+	const { calls, handlers } = recordedTargets({ runs: ["child"], attempt });
+	await handlers.apply({ state: "paused", revision: 1 });
+	const quit: PoolControl = { state: "quit", revision: 2 };
+	await handlers.apply(quit);
+	await handlers.applied(quit);
+	assert.deepEqual(
+		calls,
+		["tools pause child", "stages pause child"],
+		"the quit resumes nothing and is not acknowledged yet",
+	);
+	assert.ok(attempt.signal.aborted, "the attempt ends");
+	const reason = attempt.signal.reason as unknown;
+	assert.ok(reason instanceof WorkflowGracefulQuitError);
+	assert.equal(findWorkflowGracefulQuit(reason), reason);
+	assert.equal(reason.runId, "child", "the quit names the attempt's run");
+	assert.equal(reason.message, "atomic-workflows: root worker control suspended by workflow quit");
+});
+
+test("a quit before the attempt's run registers names the root, and a quit between attempts is acknowledged (#4313)", async () => {
+	const attempt = new AbortController();
+	const early = recordedTargets({ runs: [], attempt });
+	await early.handlers.applied({ state: "quit", revision: 3 });
+	assert.equal((attempt.signal.reason as WorkflowGracefulQuitError).runId, "root");
+	assert.deepEqual(early.calls, []);
+	const idle = recordedTargets({ runs: ["finished"] });
+	await idle.handlers.apply({ state: "quit", revision: 4 });
+	await idle.handlers.applied({ state: "quit", revision: 4 });
+	assert.deepEqual(idle.calls, ["acknowledge 4"], "a worker with no attempt acknowledges the quit at once");
 });

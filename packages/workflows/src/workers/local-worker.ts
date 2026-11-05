@@ -18,7 +18,6 @@ import "../durable/journal/workflows-host-module.js";
 import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
 import { createToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../extension/wiring.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { StageQuestionnaireInput } from "../extension/workflow-human-input.js";
@@ -58,7 +57,7 @@ import { AdmissionHolderStoppedError, QuarantinedCapacityError, SqlResourceAdmis
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
-import { WorkerControl } from "./worker-control.js";
+import { WorkerControl, workerControlHandlers } from "./worker-control.js";
 import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
 
 /** Stamps each published stage with its handle's queued message count, for the root's graph. */
@@ -436,28 +435,18 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		const stageControls = trackTurnStarts(createStageControlRegistry(), turnStarted);
 		let heldAttempt: PoolWork | undefined;
 		let prompts: WorkerStagePrompts | undefined;
-		const control = new WorkerControl({
-			async apply(next) {
-				for (const run of currentStore.runs()) {
-					if (next.state === "paused") {
-						await toolControls.runControl(run.id)?.pause();
-						await stageControls.run(run.id).pause();
-					} else if (next.state === "running") {
-						await toolControls.runControl(run.id)?.resume();
-						await stageControls.run(run.id).resume();
-					}
-				}
-			},
-			async applied(next) {
-				if (next.state === "quit" && activeController) {
-					activeController.abort(
-						new WorkflowGracefulQuitError(currentStore.runs()[0]?.id ?? start.root, "root worker control"),
-					);
-					return;
-				}
-				await request({ kind: "controlled", revision: next.revision });
-			},
-		});
+		const control = new WorkerControl(
+			workerControlHandlers({
+				runs: () => currentStore.runs(),
+				tools: (runId) => toolControls.runControl(runId),
+				stages: (runId) => stageControls.run(runId),
+				attempt: () => activeController,
+				root: start.root,
+				acknowledge: async (revision) => {
+					await request({ kind: "controlled", revision });
+				},
+			}),
+		);
 		stageWatches = new WorkerStageWatches(
 			stageControls,
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
