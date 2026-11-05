@@ -165,6 +165,11 @@ case "$FAKE_GIT_MODE:$5 $6" in
 "remove-fails:worktree remove")
 	echo "injected remove failure" >&2
 	exit 1 ;;
+"add-dies:worktree add")
+	"$real" "$@"
+	for admin in "$PWD"/.git/worktrees/*/; do [ -e "$admin/locked" ] && : > "$admin/index.lock"; done
+	echo "injected death after the checkout" >&2
+	exit 1 ;;
 "slow-worktree-add:worktree add")
 	if [ "$7" = "-b" ]; then target="$9"; else target="$7"; fi
 	mkdir -p "$target"

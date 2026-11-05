@@ -49,6 +49,8 @@ export interface DurableChildInvocation {
 	readonly recordedWorkspace?: BoundWorkspace;
 	/** Whether an earlier attempt recorded any checkpoint inside the child, so its worktree may hold work to keep. */
 	recordedChildProgress(): boolean;
+	/** Heads of the changes that steps completed inside the child recorded on `binding`'s branch; resume needs them. */
+	recordedChildHeads(binding: Pick<BoundWorkspace, "repo" | "branch">): readonly string[];
 	/** Workspace binding of this attempt, recorded with the boundary start. */
 	readonly workspace?: BoundWorkspace;
 	/** Writer lease this attempt holds on the bound worktree, released when the child settles. */
@@ -120,6 +122,8 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		recordedWorkspace,
 		recordedChildProgress: () =>
 			hasScopedChildCheckpoints(input.backend.listCheckpoints(input.workflowId), input.replayKey),
+		recordedChildHeads: (binding) =>
+			scopedChildHeads(input.backend.listCheckpoints(input.workflowId), input.replayKey, binding),
 		get workspace() {
 			return workspace;
 		},
@@ -444,6 +448,34 @@ function hasPriorInvocationData(checkpoints: readonly DurableCheckpoint[], repla
 function hasScopedChildCheckpoints(checkpoints: readonly DurableCheckpoint[], replayKey: string): boolean {
 	const prefix = `${replayKey}:`;
 	return checkpoints.some((checkpoint) => checkpoint.checkpointId.startsWith(prefix));
+}
+
+function changeSetOf(
+	output: WorkflowSerializableValue | undefined,
+): { readonly repo: string; readonly branch: string; readonly headCommit: string } | undefined {
+	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
+	const changeSet = (output as { readonly changeSet?: WorkflowSerializableValue }).changeSet;
+	if (typeof changeSet !== "object" || changeSet === null || Array.isArray(changeSet)) return undefined;
+	const { repo, branch, headCommit } = changeSet as Readonly<Record<string, WorkflowSerializableValue>>;
+	return typeof repo === "string" && typeof branch === "string" && typeof headCommit === "string"
+		? { repo, branch, headCommit }
+		: undefined;
+}
+
+/** The `changeSet` heads that completed steps inside a child recorded on one repository's branch. */
+function scopedChildHeads(
+	checkpoints: readonly DurableCheckpoint[],
+	replayKey: string,
+	binding: Pick<BoundWorkspace, "repo" | "branch">,
+): string[] {
+	const prefix = `${replayKey}:`;
+	const heads = new Set<string>();
+	for (const checkpoint of checkpoints) {
+		if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith(prefix)) continue;
+		const changeSet = changeSetOf(checkpoint.output);
+		if (changeSet?.repo === binding.repo && changeSet.branch === binding.branch) heads.add(changeSet.headCommit);
+	}
+	return [...heads];
 }
 
 function invalid(input: Pick<DurableBoundaryDescriptor, "replayKey">, message: string): DurableNestedTopologyError {

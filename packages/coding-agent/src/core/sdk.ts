@@ -66,6 +66,7 @@ import { createToolNameMatcher } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 import {
+	assertSessionManagerInWorktree,
 	bindSessionWorkspace,
 	recordSessionWorkspace,
 	WORKSPACE_WRITE_TOOL_NAMES,
@@ -241,6 +242,7 @@ async function constructAgentSession(
 		options.workspace === undefined
 			? undefined
 			: await bindSessionWorkspace(options.workspace, options.sessionManager, options.resourceAdmissionSignal);
+	if (workspace !== undefined) assertSessionManagerInWorktree(workspace, options.sessionManager);
 	const cwd =
 		workspace === undefined
 			? resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd())

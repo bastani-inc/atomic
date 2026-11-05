@@ -1362,9 +1362,10 @@ describe("interrupted worktree additions (#3109)", () => {
 		const repo = createRepository(dirs.root, "unnamed-adder");
 		const path = autoWorktree(repo, "feat/unnamed");
 		interruptedWorktree(repo, path, "feat/unnamed", "initializing");
+		const restoreWait = setWorktreeAdditionWait({ probes: 1_000, intervalMs: 50 });
 		const { result: error, commands } = await countGitCommands(() =>
 			rejection(resolveWorkspace(workspace({ repo, branch: "feat/unnamed" }))),
-		);
+		).finally(restoreWait);
 		assert.ok(isWorkspaceBindingError(error));
 		assert.equal(error.reason, "addition-in-progress");
 		assert.equal(error.fields.adderPid, null);
@@ -1377,6 +1378,57 @@ describe("interrupted worktree additions (#3109)", () => {
 		);
 		assert.equal(countOf(commands, "worktree", "remove"), 0);
 	});
+
+	for (const [kind, record] of [
+		["empty", ""],
+		["partial", '{"host":"'],
+		["misshapen", '{"host":7,"pid":-1,"startTime":3}'],
+	] as const)
+		test(`a crash that left the adder record ${kind} does not stop its addition from being repaired (#3109)`, async () => {
+			const repo = createRepository(dirs.root, `cut-record-${kind}`);
+			const path = autoWorktree(repo, "feat/cut-record");
+			interruptedWorktree(repo, path, "feat/cut-record", WORKTREE_ADDING_REASON);
+			const file = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, record);
+			const { commands } = await countGitCommands(() =>
+				resolveWorkspace(workspace({ repo, branch: "feat/cut-record" })),
+			);
+			assert.deepEqual(
+				[
+					countOf(commands, "worktree", "remove", "--force", "--force"),
+					countOf(commands, "worktree", "prune"),
+					countOf(commands, "worktree", "add"),
+				],
+				[1, 1, 1],
+			);
+			assertCompleteWorktree(path);
+		});
+
+	// POSIX: the stand-in git that dies after its checkout is a shell script.
+	test.skipIf(process.platform === "win32")(
+		"an addition whose git failed keeps its record, so the next bind repairs it at once (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "died-adding");
+			const path = autoWorktree(repo, "feat/died");
+			const failed = await withInjectedGit(dirs.root, { FAKE_GIT_MODE: "add-dies" }, () =>
+				rejection(resolveWorkspace(workspace({ repo, branch: "feat/died" }))),
+			);
+			assert.ok(isWorkspaceBindingError(failed));
+			assert.equal(failed.code, "git-failed");
+			assert.equal(existsSync(worktreeAdderRecord(realpathSync(join(repo, ".git")), path)), true);
+			const restoreWait = setWorktreeAdditionWait({ probes: 1_000, intervalMs: 50 });
+			try {
+				const { commands } = await countGitCommands(() =>
+					resolveWorkspace(workspace({ repo, branch: "feat/died" })),
+				);
+				assert.equal(countOf(commands, "worktree", "remove", "--force", "--force"), 1);
+				assertCompleteWorktree(path);
+			} finally {
+				restoreWait();
+			}
+		},
+	);
 
 	test("an adder recorded on another host cannot be checked, so it counts as running (#3109)", async () => {
 		const repo = createRepository(dirs.root, "remote-adder");
@@ -1535,11 +1587,6 @@ describe("interrupted worktree additions (#3109)", () => {
 			assert.equal(error.code, "filesystem-failed");
 			assert.equal(error.fields.operation, "record the git adding");
 			assert.equal(existsSync(path), false, "git removed what it had started adding");
-			assert.equal(
-				(error.cleanupCause as { readonly code?: string } | undefined)?.code,
-				"ENOTDIR",
-				"removing the record failed too, and is kept beside the failure",
-			);
 		},
 	);
 

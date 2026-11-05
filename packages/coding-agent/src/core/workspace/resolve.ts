@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -440,7 +440,13 @@ function recordAdder(record: string, pid: number): void {
 	const staging = `${record}.${randomUUID()}.tmp`;
 	try {
 		mkdirSync(dirname(record), { recursive: true });
-		writeFileSync(staging, JSON.stringify(adder));
+		const file = openSync(staging, "w");
+		try {
+			writeSync(file, JSON.stringify(adder));
+			fsyncSync(file);
+		} finally {
+			closeSync(file);
+		}
 		renameSync(staging, record);
 	} catch (error) {
 		const errno = (error as { readonly code?: unknown }).code;
@@ -454,9 +460,30 @@ function recordAdder(record: string, pid: number): void {
 }
 
 /**
+ * A recorded adder, or undefined for a record that is not one. Records are renamed into place whole, so only a crash
+ * in the middle of writing one leaves it empty or partial, and the process that wrote it is then gone.
+ */
+function parseAdder(text: string): WorktreeAdder | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch (error) {
+		if (error instanceof SyntaxError) return undefined;
+		throw error;
+	}
+	const { host, pid, startTime } = (value ?? {}) as Partial<Record<keyof WorktreeAdder, unknown>>;
+	return typeof host === "string" &&
+		Number.isInteger(pid) &&
+		(pid as number) > 0 &&
+		(typeof startTime === "string" || startTime === null)
+		? { host, pid: pid as number, startTime }
+		: undefined;
+}
+
+/**
  * The addition still running at `path`: its recorded adder while that process lives (one on another host cannot be
  * checked, so it counts as running), `null` when nothing names the adder but the checkout's index lock is still there,
- * or undefined when no addition can be running.
+ * or undefined when no addition can be running, including when its record is unreadable.
  */
 async function runningAddition(
 	repository: OpenRepository,
@@ -466,7 +493,8 @@ async function runningAddition(
 	const recorded = await readState(worktreeAdderRecord(repository.commonDir, path));
 	if (recorded === undefined || recorded === "directory")
 		return existsSync(join(adminDir, "index.lock")) ? null : undefined;
-	const adder = JSON.parse(recorded) as WorktreeAdder;
+	const adder = parseAdder(recorded);
+	if (adder === undefined) return undefined;
 	if (adder.host !== hostname()) return adder;
 	if (!processAlive(adder.pid)) return undefined;
 	const startTime = processStartTime(adder.pid);
@@ -573,24 +601,18 @@ async function addWorktree(
 				await git(repository.root, ["fetch", "origin"], "fetch");
 			await steps.prepare?.();
 			await git(repository.root, ["worktree", "prune"], "worktree-add");
+			// A failed addition keeps its record: its git has exited, so a later bind sees the adder gone and repairs it.
 			const record = worktreeAdderRecord(repository.commonDir, path);
-			try {
-				await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, (pid) =>
-					recordAdder(record, pid),
-				);
-				await git(repository.root, ["worktree", "unlock", path], "worktree-add");
-			} catch (error) {
-				const cleanupCause = await rm(record, { force: true }).then(
-					() => undefined,
-					(cause: unknown) => cause,
-				);
-				throw attachCleanupCause(error, cleanupCause);
-			}
+			await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, (pid) =>
+				recordAdder(record, pid),
+			);
+			await git(repository.root, ["worktree", "unlock", path], "worktree-add");
 			await filesystem("remove the record of the git adding", record, () => rm(record, { force: true }));
 			return undefined;
 		});
 		if (busy === undefined) return;
-		if (probe >= additionWait.probes) throw additionInProgress(busy);
+		// An unnamed adder cannot be watched, so the bind fails at once rather than waiting on a lock that may be stale.
+		if (busy.adder === null || probe >= additionWait.probes) throw additionInProgress(busy);
 		await new Promise((resolveWait) => setTimeout(resolveWait, additionWait.intervalMs));
 	}
 }

@@ -15,6 +15,7 @@ import {
 	isWorkspaceConfigError,
 	resolveWorkspace,
 	WORKSPACE_BINDING_ENTRY_TYPE,
+	WorkspaceConfigError,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import {
@@ -145,7 +146,7 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		]);
 		const reviewer = workspace({ repo }).readOnly();
 		const { session } = await createAgentSession(
-			sessionOptions({ workspace: reviewer, sessionManager: SessionManager.inMemory() }),
+			sessionOptions({ workspace: reviewer, sessionManager: SessionManager.inMemory(repo) }),
 		);
 		try {
 			const active = session.getActiveToolNames();
@@ -184,7 +185,7 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 			fauxAssistantMessage("done"),
 		]);
 		const { session } = await createAgentSession(
-			sessionOptions({ workspace: workspace({ repo }), sessionManager: SessionManager.inMemory() }),
+			sessionOptions({ workspace: workspace({ repo }), sessionManager: SessionManager.inMemory(repo) }),
 		);
 		try {
 			await session.prompt("write it");
@@ -204,7 +205,7 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 				sessionOptions({
 					workspace: workspace({ repo }),
 					cwd: "../escape",
-					sessionManager: SessionManager.inMemory(),
+					sessionManager: SessionManager.inMemory(repo),
 				}),
 			),
 		);
@@ -217,8 +218,9 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		const repo = createRepository(dirs.root, "resumed");
 		const sessionDir = join(dirs.root, "sessions");
 		const api = workspace({ repo, branch: "resumed-work", label: "nightly" });
+		const { worktree } = await resolveWorkspace(api);
 		const first = await createAgentSession(
-			sessionOptions({ workspace: api, sessionManager: await SessionManager.create(dirs.root, sessionDir) }),
+			sessionOptions({ workspace: api, sessionManager: await SessionManager.create(worktree, sessionDir) }),
 		);
 		const sessionFile = first.session.sessionManager.getSessionFile();
 		const recorded = first.workspace!;
@@ -246,10 +248,11 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		const repo = createRepository(dirs.root, "stage-resume");
 		const store = new MemorySessionStore();
 		const meta = { runId: "run-1", stageId: "stage-1", stageName: "work" };
+		const stageWork = workspace({ repo, branch: "stage-work", label: "first" });
 		const first = await createAgentSession(
 			sessionOptions({
-				workspace: workspace({ repo, branch: "stage-work", label: "first" }),
-				sessionManager: await SessionManager.create(store, dirs.root),
+				workspace: stageWork,
+				sessionManager: await SessionManager.create(store, (await resolveWorkspace(stageWork)).worktree),
 			}),
 		);
 		const sessionId = first.session.sessionManager.getSessionId();
@@ -314,11 +317,12 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 	});
 
 	test("a read-only session leaves file-writing tools out of an explicit tools list (#3109)", async () => {
+		const listed = createRepository(dirs.root, "listed");
 		const { session } = await createAgentSession(
 			sessionOptions({
-				workspace: workspace({ repo: createRepository(dirs.root, "listed") }).readOnly(),
+				workspace: workspace({ repo: listed }).readOnly(),
 				tools: ["read", "write", "edit", "bash"],
-				sessionManager: SessionManager.inMemory(),
+				sessionManager: SessionManager.inMemory(listed),
 			}),
 		);
 		try {
@@ -568,9 +572,48 @@ describe("sessions without a workspace (#3109)", () => {
 		resumed.session.dispose();
 	});
 
+	test("a session manager working outside the worktree fails fast, naming it (#3109)", async () => {
+		const repo = createRepository(dirs.root, "elsewhere-manager");
+		const bound = await resolveWorkspace(workspace({ repo, branch: "feat/manager" }));
+		const outside = SessionManager.inMemory(dirs.root);
+		const { result: error, commands } = await countGitCommands(() =>
+			rejection(
+				createAgentSession(
+					sessionOptions({ workspace: workspace({ repo, branch: "feat/manager" }), sessionManager: outside }),
+				),
+			),
+		);
+		assert.ok(error instanceof WorkspaceConfigError);
+		assert.ok(isWorkspaceConfigError(error));
+		assert.equal(error.field, "sessionManager");
+		assert.equal(error.source, "sdk");
+		assert.equal(error.reason, "invalid-value");
+		assert.equal(error.fields.received, `a session manager in ${resolve(dirs.root)}`);
+		assert.equal(
+			error.message,
+			`Invalid workspace option: sessionManager from sdk is a session manager in ${resolve(dirs.root)}, expected a session manager whose cwd is inside ${bound.worktree} (invalid-setting). Set sessionManager to a session manager whose cwd is inside ${bound.worktree}.`,
+		);
+		assert.equal(
+			outside
+				.getEntries()
+				.some((entry) => entry.type === "custom" && entry.customType === WORKSPACE_BINDING_ENTRY_TYPE),
+			false,
+			"nothing was recorded in the session",
+		);
+		assert.ok(commands.length > 0, "the workspace was bound before the manager was checked");
+		const inside = await createAgentSession(
+			sessionOptions({
+				workspace: workspace({ repo, branch: "feat/manager" }),
+				sessionManager: SessionManager.inMemory(join(bound.worktree, "sub")),
+			}),
+		);
+		assert.equal(inside.workspace?.worktree, bound.worktree, "a manager inside the worktree is accepted");
+		inside.session.dispose();
+	});
+
 	test("an unstarted host mirror does not write the binding entry (#3109)", async () => {
 		const repo = createRepository(dirs.root, "mirror");
-		const sessionManager = SessionManager.inMemory(dirs.root);
+		const sessionManager = SessionManager.inMemory(repo);
 		const mirror = await createUnstartedAgentSession(
 			sessionOptions({ workspace: workspace({ repo }), sessionManager }),
 			false,

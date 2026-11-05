@@ -46,7 +46,7 @@ export type WorkspaceConfigSource = "sdk" | "cli" | "env" | "settings";
 export type WorkspaceConfigErrorReason = "missing" | "invalid-type" | "invalid-value";
 
 export type WorkspaceRestoreErrorCode = "restore-failed";
-export type WorkspaceRestoreErrorReason = "repository-missing" | "branch-missing";
+export type WorkspaceRestoreErrorReason = "repository-missing" | "branch-missing" | "commits-unavailable";
 
 export type WorkspacePublicationErrorCode = "publication-failed";
 export type WorkspacePublicationErrorReason =
@@ -361,27 +361,42 @@ export interface WorkspaceRestoreErrorInit {
 }
 
 /** A recorded binding could not be restored on resume. */
+function describeRestore(
+	reason: WorkspaceRestoreErrorReason,
+	fields: WorkspaceErrorFields,
+): { subject: string; hint: string } {
+	switch (reason) {
+		case "repository-missing":
+			return {
+				subject: `repository ${text(fields, "repository")} is gone`,
+				hint: `Restore the repository at ${text(fields, "repository")}, or start a new run.`,
+			};
+		case "branch-missing":
+			return {
+				subject: `branch ${text(fields, "branch")} for ${text(fields, "worktree")} is gone`,
+				hint: `Recreate branch ${text(fields, "branch")} or push it to the remote, then resume.`,
+			};
+		case "commits-unavailable": {
+			const commits = (fields.missingCommits as readonly string[]).join(", ");
+			return {
+				subject: `${commits}, which completed steps recorded on ${text(fields, "branch")}, are neither in ${text(fields, "repository")} nor on its remote`,
+				hint: `Push ${text(fields, "branch")} from the machine that made those commits (git -C <its worktree> push origin ${text(fields, "branch")}), then resume; resuming without them would skip their work.`,
+			};
+		}
+	}
+}
+
 export class WorkspaceRestoreError extends WorkspaceError {
 	override readonly name = "WorkspaceRestoreError" as const;
 	declare readonly code: WorkspaceRestoreErrorCode;
 	declare readonly reason: WorkspaceRestoreErrorReason;
 
 	constructor(init: WorkspaceRestoreErrorInit) {
-		const hint =
-			init.reason === "repository-missing"
-				? `Restore the repository at ${text(init.fields, "repository")}, or start a new run.`
-				: `Recreate branch ${text(init.fields, "branch")} or push it to the remote, then resume.`;
+		const { subject, hint } = describeRestore(init.reason, init.fields);
 		super({
 			code: "restore-failed",
 			reason: init.reason,
-			message: message(
-				"Workspace restore failed",
-				init.reason === "repository-missing"
-					? `repository ${text(init.fields, "repository")} is gone`
-					: `branch ${text(init.fields, "branch")} for ${text(init.fields, "worktree")} is gone`,
-				"restore-failed",
-				hint,
-			),
+			message: message("Workspace restore failed", subject, "restore-failed", hint),
 			hint,
 			fields: init.fields,
 			retryable: false,

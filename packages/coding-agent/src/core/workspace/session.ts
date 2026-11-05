@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { WorkspaceBindingError, WorkspaceSandboxError } from "./errors.ts";
+import { WorkspaceBindingError, WorkspaceConfigError, WorkspaceSandboxError } from "./errors.ts";
 import { adoptWorkspaceBinding, type BoundWorkspace, isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
 import { restoreRecordedWorkspace } from "./restore.ts";
 import { assertWorkspace, isWorkspace, recordedRepo, type Workspace } from "./spec.ts";
@@ -29,14 +29,39 @@ function canonical(path: string): string {
 export function workspaceSessionCwd(binding: Pick<BoundWorkspace, "worktree">, cwd?: string): string {
 	if (cwd === undefined) return binding.worktree;
 	const requested = isAbsolute(cwd) ? cwd : resolve(binding.worktree, cwd);
-	const root = canonical(binding.worktree);
-	const target = canonical(requested);
-	const path = relative(root, target);
-	// `relative` returns an absolute path only across Windows drives.
-	if (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)) return target;
+	const target = insideWorktree(binding, requested);
+	if (target !== undefined) return target;
 	throw new WorkspaceBindingError({
 		code: "cwd-outside-worktree",
 		fields: { worktree: binding.worktree, cwd: requested },
+	});
+}
+
+/** `path` resolved through symbolic links when it lies inside the worktree, else undefined. */
+function insideWorktree(binding: Pick<BoundWorkspace, "worktree">, path: string): string | undefined {
+	const target = canonical(path);
+	const inside = relative(canonical(binding.worktree), target);
+	// `relative` returns an absolute path only across Windows drives.
+	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) ? target : undefined;
+}
+
+/**
+ * A session manager given together with a workspace must already work inside its worktree: its directory is where
+ * shell commands and exports run, so one elsewhere fails with `WorkspaceConfigError` before the session is created.
+ */
+export function assertSessionManagerInWorktree(
+	binding: Pick<BoundWorkspace, "worktree">,
+	sessionManager: { getCwd(): string } | undefined,
+): void {
+	if (sessionManager === undefined) return;
+	const managerCwd = resolve(sessionManager.getCwd());
+	if (insideWorktree(binding, managerCwd) !== undefined) return;
+	throw new WorkspaceConfigError({
+		source: "sdk",
+		field: "sessionManager",
+		reason: "invalid-value",
+		expected: `a session manager whose cwd is inside ${binding.worktree}`,
+		received: `a session manager in ${managerCwd}`,
 	});
 }
 

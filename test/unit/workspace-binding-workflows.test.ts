@@ -15,9 +15,11 @@ import {
 	findWorkspaceError,
 	GitUnavailableError,
 	isWorkspaceBindingError,
+	isWorkspaceRestoreError,
 	rehydrateWorkspaceError,
 	type Workspace,
 	WorkspaceBindingError,
+	WorkspaceRestoreError,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { AuthStorage, ModelRuntime, SettingsManager } from "../../packages/coding-agent/src/index.ts";
@@ -43,8 +45,10 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	commitFile,
 	countGitCommands,
+	createRemote,
 	createRepository,
 	git,
+	gitTranscript,
 	type WorkspaceSandboxDirs,
 	withInjectedGit,
 	workspaceSandbox,
@@ -784,6 +788,130 @@ describe("workspace bindings across resume (#3109)", () => {
 		assert.equal(resumed.workspaceError?.code, "wrong-branch");
 		assert.equal(resumed.workspaceError?.fields.actual, "somebody-else");
 		await resumedBackend.close();
+	});
+
+	/** A child that commits in its `step` task, then fails until `stepper.failFirst` is cleared, so a resume replays the step. */
+	function stepperParent(api: Workspace) {
+		const state = { failFirst: true };
+		const child = workflow({
+			name: "stepper",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("step", { prompt: "commit a step" });
+				if (state.failFirst) throw new Error("interrupted after the step");
+				await ctx.task("next", { prompt: "build on the step" });
+				return {};
+			},
+		});
+		const parent = workflow({
+			name: "stepper-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(child, { workspace: api });
+				return {};
+			},
+		});
+		return { parent, state };
+	}
+
+	async function interruptedAfterStep(api: Workspace, journalPath: string) {
+		const { parent, state } = stepperParent(api);
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const first = recordingAdapter({ commitIn: (stage) => stage === "step" });
+		const failed = await run(
+			parent,
+			{},
+			{ store: createStore(), durableBackend: firstBackend, adapters: first.adapters },
+		);
+		assert.equal(failed.status, "failed");
+		const [start] = boundaryStarts(firstBackend.listCheckpoints(failed.runId));
+		const binding = start?.topology?.boundary?.workspace as BoundWorkspace;
+		const stepHead = git(binding.worktree, "rev-parse", "HEAD");
+		assert.notEqual(stepHead, binding.head, "the step committed after the boundary recorded its head");
+		await firstBackend.close();
+		state.failFirst = false;
+		const resume = async () => {
+			const backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+			const second = recordingAdapter();
+			try {
+				const { result, transcript } = await gitTranscript(() =>
+					run(
+						parent,
+						{},
+						{ runId: failed.runId, store: createStore(), durableBackend: backend, adapters: second.adapters },
+					),
+				);
+				return { resumed: result, transcript, sessions: second.sessions };
+			} finally {
+				await backend.close();
+			}
+		};
+		return { binding, stepHead, resume };
+	}
+
+	test("a resume fails closed when the commit a completed step recorded is gone from the branch (#3109)", async () => {
+		const repo = createRepository(dirs.root, "reset-step");
+		const { binding, stepHead, resume } = await interruptedAfterStep(
+			workspace({ repo, branch: "feat/step" }),
+			join(dirs.root, "journal.sqlite"),
+		);
+		git(binding.worktree, "reset", "-q", "--hard", binding.head);
+		const { resumed, sessions } = await resume();
+		assert.equal(resumed.status, "failed");
+		assert.equal(resumed.workspaceError?.name, "WorkspaceBindingError");
+		assert.equal(resumed.workspaceError?.code, "drift");
+		assert.equal(resumed.workspaceError?.reason, "history-rewritten");
+		assert.equal(resumed.workspaceError?.fields.expected, stepHead, "names the step's commit");
+		assert.deepEqual(sessions, [], "no step ran on the tree without the step's work");
+	});
+
+	test("a resume elsewhere fails closed when a completed step's commit was never pushed, naming it (#3109)", async () => {
+		const remote = createRemote(dirs.root, "unpushed-step");
+		git(remote.seed, "push", "-q", remote.url.replace(/^file:\/\//, ""), "HEAD:refs/heads/feat/step");
+		const { stepHead, resume } = await interruptedAfterStep(
+			workspace({ repo: remote.url, branch: "feat/step" }),
+			join(dirs.root, "journal.sqlite"),
+		);
+		rmSync(join(dirs.home, "repos"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		rmSync(join(dirs.home, "worktrees"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const { resumed, sessions } = await resume();
+		assert.equal(resumed.status, "failed");
+		const error = rehydrateWorkspaceError(resumed.workspaceError!);
+		assert.ok(error instanceof WorkspaceRestoreError);
+		assert.ok(isWorkspaceRestoreError(error));
+		assert.equal(error.code, "restore-failed");
+		assert.equal(error.reason, "commits-unavailable");
+		assert.equal(error.retryable, false);
+		assert.deepEqual(error.fields.missingCommits, [stepHead]);
+		assert.equal(
+			error.message,
+			`Workspace restore failed: ${stepHead}, which completed steps recorded on feat/step, are neither in ${error.fields.repository} nor on its remote (restore-failed). Push feat/step from the machine that made those commits (git -C <its worktree> push origin feat/step), then resume; resuming without them would skip their work.`,
+		);
+		assert.deepEqual(sessions, []);
+	});
+
+	test("a resume checks each recorded step commit once and continues when they are all there (#3109)", async () => {
+		const repo = createRepository(dirs.root, "kept-step");
+		const { stepHead, resume } = await interruptedAfterStep(
+			workspace({ repo, branch: "feat/kept" }),
+			join(dirs.root, "journal.sqlite"),
+		);
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.equal(transcript.filter((line) => line === `probe: rev-parse --verify ${stepHead}^{commit}`).length, 1);
+		assert.equal(
+			transcript.filter((line) => line === `validate: merge-base --is-ancestor ${stepHead} HEAD`).length,
+			1,
+		);
+		assert.deepEqual(
+			sessions.map((session) => session.stage),
+			["next"],
+			"the completed step replays from the journal; only the next one runs",
+		);
 	});
 });
 
