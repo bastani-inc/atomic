@@ -70,6 +70,8 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import { releasedChildWaitingCalls } from "../foreground/released-child-replies.js";
+import type { SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
 import { readPreviousIntercomId } from "../foreground/subagent-child-session.js";
 import {
 	lastNonEmptyAssistantText,
@@ -199,6 +201,7 @@ export interface ChildSpec {
 	 * can wake the child later. Without it detachable calls run inline.
 	 */
 	readonly releaseWhenWaiting?: SubagentReleasePolicy;
+	readonly onBeforeRelease?: () => Promise<void>;
 	/**
 	 * Results for the detached calls the reopened transcript ends on, recorded as those calls' results before any
 	 * follow-up or prompt; the turn that issued them continues.
@@ -215,10 +218,7 @@ export interface SubagentReleasePolicy {
 }
 
 /** A detached call a released child waits on. */
-export interface SubagentWaitingCall {
-	readonly toolCallId: string;
-	readonly toolName: string;
-}
+export type SubagentWaitingCall = SubagentChildWaitingCall;
 
 /** What a released attempt hands back: the calls the child waits on, still running, and how to name them. */
 export interface SubagentReleased {
@@ -1791,8 +1791,9 @@ export class SubagentControlRuntime {
 			// A stopped child is not waiting on anything: what it detached ends with it.
 			if (termination !== undefined) for (const call of detached) call.abort(termination);
 			else if (detached.length > 0 || redispatched !== undefined) {
+				await admitted.spec.onBeforeRelease?.();
 				releasedAttempt = true;
-				const waitingOn = detached.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName }));
+				const waitingOn = releasedChildWaitingCalls(sessionManager, detached);
 				this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
 				this.native.finishChildAttempt(token, nativeStatus("interrupted"));
 				return {

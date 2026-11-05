@@ -428,3 +428,91 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+test(
+	"an ask open to a released child survives release and receives one reply after the child reconnects (#4326)",
+	async () => {
+		const owner = await connect("incoming-owner", { ownerToken: randomUUID() });
+		const asker = await connect("incoming-asker");
+		const childName = "subagent-incoming-question";
+		const firstAuthorization = await owner.authorizeSupervisorChild(childName);
+		const child = await connect(childName, { supervisor: firstAuthorization });
+		const originalId = child.sessionId;
+		assert.ok(originalId);
+		const received: string[] = [];
+		const disconnected: string[] = [];
+		const rebound: Array<{ replyTo: string; previousSessionId: string; sessionId: string }> = [];
+		asker.on("message", (_from: object, message: { id: string }) => received.push(message.id));
+		asker.on("peer_disconnected", (notice: { replyTo: string }) => disconnected.push(notice.replyTo));
+		asker.on("peer_rebound", (notice: { replyTo: string; previousSessionId: string; sessionId: string }) =>
+			rebound.push(notice),
+		);
+		const question = await asker.send(childName, { text: "question", expectsReply: true });
+		assert.equal(question.delivered, true);
+		await owner.reserveReleasedChildren([{ childName, wake: false }]);
+		await child.disconnect();
+		await vi.waitFor(async () =>
+			assert.equal(
+				(await owner.listSessions()).some((session) => session.id === originalId),
+				false,
+			),
+		);
+		assert.deepEqual(disconnected, []);
+		await owner.reserveReleasedChildren([{ childName, wake: true }]);
+		const authorization = await owner.authorizeSupervisorChild(childName);
+		const restored = await connect(childName, { supervisor: authorization });
+		assert.ok(restored.sessionId);
+		await vi.waitFor(() =>
+			assert.deepEqual(rebound, [
+				{ replyTo: question.id, previousSessionId: originalId, sessionId: restored.sessionId },
+			]),
+		);
+		const reply = await restored.send(asker.sessionId!, {
+			text: "answer",
+			replyTo: question.id,
+			requirePendingReply: true,
+		});
+		assert.equal(reply.delivered, true, reply.reason);
+		await vi.waitFor(() => assert.deepEqual(received, [reply.id]));
+		const duplicate = await restored.send(asker.sessionId!, {
+			text: "again",
+			replyTo: question.id,
+			requirePendingReply: true,
+		});
+		assert.equal(duplicate.delivered, false);
+		assert.deepEqual(received, [reply.id]);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"dropping a released child's reservation fails its open ask with peer_disconnected (#4326)",
+	async () => {
+		const owner = await connect("drop-question-owner", { ownerToken: randomUUID() });
+		const asker = await connect("drop-question-asker");
+		const childName = "subagent-dropped-question";
+		const authorization = await owner.authorizeSupervisorChild(childName);
+		const child = await connect(childName, { supervisor: authorization });
+		const originalId = child.sessionId;
+		const notices: Array<{ replyTo: string; peerSessionId: string }> = [];
+		asker.on("peer_disconnected", (notice: { replyTo: string; peerSessionId: string }) => notices.push(notice));
+		const question = await asker.send(childName, { text: "question", expectsReply: true });
+		assert.equal(question.delivered, true);
+		await owner.reserveReleasedChildren([{ childName, wake: true }]);
+		await child.disconnect();
+		await vi.waitFor(async () =>
+			assert.equal(
+				(await owner.listSessions()).some((session) => session.id === originalId),
+				false,
+			),
+		);
+		assert.equal(notices.length, 0);
+		await owner.dropReleasedChildren([childName], { gone: "gone" });
+		await vi.waitFor(() => assert.equal(notices.length, 1));
+		assert.deepEqual(
+			{ replyTo: notices[0]?.replyTo, peerSessionId: notices[0]?.peerSessionId },
+			{ replyTo: question.id, peerSessionId: originalId },
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);

@@ -405,6 +405,7 @@ export async function runSingleInProcess(
 		...(options.resumeFollowUps?.length ? { resumeFollowUps: options.resumeFollowUps } : {}),
 		...(options.resumeTaskLiteral ? { resumeTaskLiteral: true } : {}),
 		...(options.releaseWhenWaiting ? { releaseWhenWaiting: options.releaseWhenWaiting } : {}),
+		...(options.onBeforeRelease ? { onBeforeRelease: options.onBeforeRelease } : {}),
 		...(options.resumeToolResults?.length ? { resumeToolResults: options.resumeToolResults } : {}),
 		...(options.skipTaskPrompt ? { skipTaskPrompt: true } : {}),
 		...(options.redispatchDetachedCalls ? { redispatchDetachedCalls: true } : {}),

@@ -27,6 +27,10 @@ import {
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
+	resumeReleasedChild,
+	resumeWaiterCount,
+} from "../../packages/subagents/src/runs/foreground/released-child-resume.js";
+import {
 	bindReleasedChildWakes,
 	RELEASED_CHILD_WAKE_FAILURE_LABEL,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -57,6 +61,7 @@ import {
 	WORKFLOW_STAGE_END_CHILDREN_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	restoreSubagentChild,
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
@@ -3605,6 +3610,31 @@ function bindProcessWakes(h: Harness): AgentWakeDispatcher {
 	return dispatcher;
 }
 
+for (const toolName of ["intercom", "contact_supervisor"] as const) {
+	test(`an owner restart keeps a released ${toolName} question and wakes it at its original deadline (#4326)`, async () => {
+		const h = harness();
+		const runId = `restart-${toolName}`;
+		await releasedByEarlierProcess(h, runId, {
+			waitingOn: [
+				{
+					toolCallId: "ask-1",
+					toolName,
+					replyWait: { questionId: "question-1", deadline: Date.now() - 1, from: "peer" },
+				},
+			],
+		});
+		const dispatcher = bindProcessWakes(h);
+		await h.waitForLatest(`${runId}:0`, clearedOk);
+		await dispatcher.whenIdle();
+		assert.equal(
+			h.runs.filter((run) => run.options.redispatchDetachedCalls).length,
+			0,
+			"the question is not sent again",
+		);
+		assert.equal(h.runs.filter((run) => run.task.includes('No reply from "peer" within 10 minutes')).length, 1);
+	});
+}
+
 test("an owner that restarts starts each call its released children waited on again, once, releases them again on this process, and the new call's result wakes them (#4326)", async () => {
 	const h = harness();
 	const earlier = await releasedByEarlierProcess(h, "restart1");
@@ -3679,4 +3709,138 @@ test("an owner restart starts the calls of its earlier released children at most
 		await h.waitForLatest(childId, (record) => record.ownerGeneration === SUBAGENT_OWNER_GENERATION);
 	assert.equal(h.redispatching.most, 1);
 	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 2);
+});
+
+test("status reports a failed child-record append to its owner, not another owner (#4326)", async () => {
+	const owner = harness();
+	const other = harness();
+	const sink = createSubagentChildRecordSink(
+		{
+			appendEntry: async () => {
+				throw new Error("disk full");
+			},
+		},
+		owner.ctx,
+	);
+	sink.record({ runId: "record-failure", index: 0, agent: "worker", state: "running", cwd: "/repo" });
+	await sink.flushed?.();
+	const otherSink = createSubagentChildRecordSink(
+		{
+			appendEntry: async () => {
+				throw new Error("disk full");
+			},
+		},
+		other.ctx,
+	);
+	otherSink.record({ runId: "other-record-failure", index: 0, agent: "worker", state: "running", cwd: "/repo" });
+	await otherSink.flushed?.();
+	const lines = subagentChildrenAwaitingResume(owner.ctx);
+	assert.equal(lines.length, 1);
+	assert.match(lines[0] ?? "", /record-append-failed/);
+	assert.match(lines[0] ?? "", /record-failure:0/);
+	assert.match(lines[0] ?? "", /session store/);
+	assert.match(subagentChildrenAwaitingResume(other.ctx)[0] ?? "", /other-record-failure:0/);
+	assert.deepEqual(subagentChildrenAwaitingResume(owner.ctx), []);
+	assert.deepEqual(subagentChildrenAwaitingResume(other.ctx), []);
+});
+
+test("a resume arriving during a released child's wake is queued and delivered after that wake (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "race-resume");
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", gate);
+	const green = waitResult("CI green");
+	const wake = dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "race-resume:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: green,
+	});
+	await h.waitForLatest("race-resume:0", (record) => record.state === "running" && record.taskId !== undefined);
+	const resume = h.call({ action: "resume", id: "race-resume:0", message: "follow up after CI" });
+	gate.resolve();
+	await wake;
+	const response = await resume;
+	assert.equal(response.isError, undefined);
+	assert.equal(resumeWaiterCount(), 0);
+	await settled(h, resumedTaskId(response));
+	assert.equal(h.runs.filter((run) => run.task.includes("CI green")).length, 1);
+	assert.equal(h.runs.filter((run) => run.task.includes("follow up after CI")).length, 1);
+});
+
+test("resume messages batched behind a wake are delivered once in arrival order (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "batch-resume");
+	const owner = h.sessionManager.getSessionId();
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", gate);
+	const wake = dispatcher.deliver(subagentWakeKey(owner, "batch-resume:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+	await h.waitForLatest("batch-resume:0", (record) => record.state === "running" && record.taskId !== undefined);
+	const first = resumeReleasedChild(owner, "batch-resume:0", { prompt: "first note", message: "first note" });
+	const second = resumeReleasedChild(owner, "batch-resume:0", { prompt: "second note", message: "second note" });
+	assert.ok(first && second);
+	assert.equal(resumeWaiterCount(), 2);
+	gate.resolve();
+	await wake;
+	const [a, b] = await Promise.all([first, second]);
+	assert.equal(a.kind, "restored");
+	assert.equal(b.kind, "restored");
+	assert.equal(resumeWaiterCount(), 0);
+	const run = h.runs.find((item) => item.task === "first note");
+	assert.ok(run);
+	assert.deepEqual(run.options.resumeFollowUps, ["second note"]);
+});
+
+test("a failed released-child resume rejects with a typed error and leaves no admission waiter (#4326)", async () => {
+	const h = harness();
+	await releasedWithWakes(h, "resume-fails");
+	h.agentDefined = false;
+	const pending = resumeReleasedChild(h.sessionManager.getSessionId(), "resume-fails:0", { prompt: "continue" });
+	assert.ok(pending);
+	await assert.rejects(pending, (error: Error) => isReleasedChildError(error) && error.code === "child-unrestorable");
+	assert.equal(resumeWaiterCount(), 0);
+});
+
+test("a concurrent direct restoration preserves the later resume message and tool result (#4326)", async () => {
+	const h = harness();
+	await releasedWithWakes(h, "restore-race");
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("first wake", gate);
+	const first = await restoreSubagentChild(h.deps, h.ctx, "restore-race:0", { prompt: "first wake" });
+	assert.equal(first.kind, "restored");
+	const green = waitResult("CI green");
+	const second = restoreSubagentChild(h.deps, h.ctx, "restore-race:0", {
+		prompt: "later resume",
+		message: "later resume",
+		toolResults: [green],
+	});
+	gate.resolve();
+	const result = await second;
+	assert.equal(result.kind, "restored");
+	if (result.kind === "restored") await settled(h, result.taskId);
+	assert.equal(h.runs.filter((run) => run.task.includes("first wake")).length, 1);
+	assert.equal(h.runs.filter((run) => run.task.includes("CI green")).length, 1);
+	assert.equal(
+		h.runs.filter((run) => run.options.resumeFollowUps?.includes("later resume") || run.task === "later resume")
+			.length,
+		1,
+	);
+});
+
+test("disposing an older extension generation leaves the newer resume handler bound (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "reload-resume");
+	const owner = h.sessionManager.getSessionId();
+	const old = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	const current = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	old();
+	cleanups.push(async () => current());
+	const pending = resumeReleasedChild(owner, "reload-resume:0", { prompt: "continue after reload" });
+	assert.ok(pending);
+	const outcome = await pending;
+	assert.equal(outcome.kind, "restored");
+	assert.equal(resumeWaiterCount(), 0);
 });

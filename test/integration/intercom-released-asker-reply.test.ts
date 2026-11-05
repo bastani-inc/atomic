@@ -15,17 +15,13 @@ brokerFixture.overrideAgentDir();
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-const { ReplyWaiterRegistry } = await import("../../packages/intercom/reply-waiter.js");
-const { answerReleasedChildReplies, releasedReplyMailbox } = await import(
-	"../../packages/intercom/released-reply-mailbox.js"
-);
 
 type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
 type ReleasedChildReply = import("../../packages/intercom/broker/client.js").ReleasedChildReply;
+const pendingAnswers = new Map<string, { resolve(message: Message): void; reject(error: Error): void }>();
 
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
-const ASK_TIMEOUT_MS = 600_000;
 const WAIT = { timeout: 10_000, interval: 20 };
 
 let broker: ChildProcess | undefined;
@@ -68,8 +64,15 @@ function recordMessages(client: Client): Message[] {
 
 function recordReplies(owner: Client): ReleasedChildReply[] {
 	const replies: ReleasedChildReply[] = [];
-	owner.on("released_child_reply", (notice: ReleasedChildReply) => replies.push(notice));
-	answerReleasedChildReplies(owner);
+	owner.on("released_child_reply", (notice: ReleasedChildReply) => {
+		replies.push(notice);
+		const pending = pendingAnswers.get(notice.replyTo);
+		if (pending !== undefined) {
+			pendingAnswers.delete(notice.replyTo);
+			pending.resolve(notice.message);
+		}
+		owner.acknowledgeReleasedChildReply(notice.message.id, pending !== undefined);
+	});
 	return replies;
 }
 
@@ -112,20 +115,28 @@ async function releaseAsker(
 	const child = await connect(childName, { supervisor: { capability, supervisorSessionId } });
 	const childSessionId = sessionIdOf(child);
 	const replier = await replierOf(owner);
-	const registry = new ReplyWaiterRegistry(ASK_TIMEOUT_MS, 6, releasedReplyMailbox());
 	const call = new AbortController();
 	const questionId = randomUUID();
-	const admission = registry.begin(replier.sessionId, questionId, call.signal);
-	assert.ok(admission.ok);
+	const answer = Promise.withResolvers<Message>();
+	void answer.promise.catch(() => undefined);
+	if (keepWait) pendingAnswers.set(questionId, answer);
+	else answer.reject(new Error("Session shutting down"));
+	call.signal.addEventListener(
+		"abort",
+		() => {
+			pendingAnswers.delete(questionId);
+			answer.reject(new Error("Cancelled"));
+		},
+		{ once: true },
+	);
 	assert.equal((await ask(child, questionId)).delivered, true);
 	await vi.waitFor(() => assert.ok(replier.received.some((message) => message.id === questionId)), WAIT);
-	if (keepWait) assert.equal(registry.releaseRunningWaits(new Error("Session shutting down")), 1);
-	else registry.rejectAll(new Error("Session shutting down"));
+	// The production owner persists the reply before acknowledging it; this broker fixture models that acknowledgement.
 	if (order === "reserve-first") await owner.reserveReleasedChildren([{ childName, wake: true }]);
 	await child.disconnect();
 	await waitUntilGone(owner, childName);
 	if (order === "disconnect-first") await owner.reserveReleasedChildren([{ childName, wake: true }]);
-	return { owner, childName, childSessionId, questionId, wait: admission.wait.promise, call };
+	return { owner, childName, childSessionId, questionId, wait: answer.promise, call };
 }
 
 function peerAsk(replierName: string) {
@@ -173,7 +184,7 @@ afterAll(() => brokerFixture.cleanup());
 
 for (const order of ["disconnect-first", "reserve-first"] as const) {
 	test(
-		`a released child's ask is answered through its owner exactly once, resolving the original wait (${order}) (#4326)`,
+		`a released child's ask is routed to its owner exactly once (${order}) (#4326)`,
 		async () => {
 			const replierName = `replier-${order}`;
 			let replierClient: Client | undefined;
@@ -289,6 +300,12 @@ test(
 		assert.match(refused.reason ?? "", /is released and no longer waiting for this reply/);
 		assert.equal(replies.length, 1);
 		assert.equal(await outcome(unwaited.wait), "rejected:Session shutting down");
+		const retry = Promise.withResolvers<Message>();
+		pendingAnswers.set(unwaited.questionId, retry);
+		const accepted = await replyTo(replierClient, unwaited, "saved on retry");
+		assert.equal(accepted.delivered, true, accepted.reason);
+		assert.equal((await retry.promise).content.text, "saved on retry");
+		assert.equal(replies.length, 2);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

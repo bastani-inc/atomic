@@ -28,7 +28,7 @@ function clock(): { now: () => number; advance(ms: number): void } {
 
 describe("released asker reply routes (#4326)", () => {
 	test("a route kept after the owner reserved the child is taken once, by the question's replier, and then is gone (#4326)", () => {
-		const routes = new ReleasedAskerReplies();
+		const routes = new ReleasedAskerReplies(() => 1_000);
 		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER), 1);
 		assert.deepEqual(routes.take("q1", REPLIER, ASKER), {
 			questionId: "q1",
@@ -36,6 +36,7 @@ describe("released asker reply routes (#4326)", () => {
 			childName: CHILD,
 			replierSessionId: REPLIER,
 			ownerSessionId: OWNER,
+			expiresAt: 1_000 + TTL_MS,
 		});
 		assert.equal(routes.take("q1", REPLIER, ASKER), undefined);
 		assert.deepEqual(routes.sizes(), EMPTY);
@@ -72,7 +73,7 @@ describe("released asker reply routes (#4326)", () => {
 		assert.equal(routes.take("q2", REPLIER, OTHER), undefined);
 	});
 
-	test("dropping the child or its owner ends its routes; another owner's drop leaves them (#4326)", () => {
+	test("dropping a child ends its route, while an owner restart can reattach the remaining route (#4326)", () => {
 		const routes = new ReleasedAskerReplies();
 		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
 		routes.keep({ sessionId: OTHER, childName: "subagent-other-1" }, [question("q2", REPLIER, OTHER)], OWNER);
@@ -87,6 +88,23 @@ describe("released asker reply routes (#4326)", () => {
 		assert.equal(routes.dropChild("subagent-parked-1", OWNER), 1, "a route no owner holds yet ends with its child");
 		assert.equal(routes.dropOwner(OWNER), 1);
 		assert.equal(routes.take("q2", REPLIER, OTHER), undefined);
+		assert.deepEqual(routes.sizes(), { routes: 1, questions: 1, children: 1, owners: 0 });
+		assert.equal(routes.attach("subagent-other-1", "new-owner"), 1);
+		assert.equal(routes.take("q2", REPLIER, OTHER)?.ownerSessionId, "new-owner");
+		assert.deepEqual(routes.sizes(), EMPTY);
+	});
+
+	test("a refused reply can retry without extending the question deadline (#4326)", () => {
+		const time = clock();
+		const routes = new ReleasedAskerReplies(time.now, TTL_MS);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
+		const route = routes.take("q1", REPLIER, ASKER);
+		assert.ok(route);
+		time.advance(TTL_MS - 1);
+		routes.restore(route, OWNER);
+		assert.equal(routes.take("q1", REPLIER, ASKER)?.questionId, "q1");
+		time.advance(1);
+		routes.restore(route, OWNER);
 		assert.deepEqual(routes.sizes(), EMPTY);
 	});
 

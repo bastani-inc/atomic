@@ -225,3 +225,33 @@ test(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+test(
+	"a released child's reservation is confirmed before its session disconnects (#4326)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const childSession = await SessionManager.create(new MemorySessionStore(), env.root);
+		const order: string[] = [];
+		cleanups.push(
+			registerSessionResourceCleanup((id) => {
+				if (id === childSession.getSessionId()) order.push("disconnect");
+			}),
+		);
+		env.faux.setResponses([waitCall()]);
+		await runSingleInProcess(
+			env.root,
+			agent,
+			"watch CI",
+			env.options("reservation-before-close", {
+				sessionManager: childSession,
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+				onBeforeRelease: async () => {
+					order.push("reserved");
+				},
+			}),
+		);
+		assert.deepEqual(order, ["reserved", "disconnect"]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);

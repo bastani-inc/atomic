@@ -54,3 +54,15 @@ test("pending question index retains the same message ID on distinct routes inde
 	assert.deepEqual(index.takeForTarget("target-b"), [route("asker-a", "target-b", "reused")]);
 	assert.deepEqual(index.takeForTarget("unknown"), []);
 });
+
+test("parked questions stay scoped to their owner and are removed when the asker disconnects (#4326)", () => {
+	const index = new PendingQuestionIndex();
+	index.record("asker-a", "child-a", "question-a");
+	index.record("asker-a2", "child-a", "question-a2");
+	index.record("asker-b", "child-b", "question-b");
+	index.parkTarget("child-a", "same-name", "owner-a");
+	index.parkTarget("child-b", "same-name", "owner-b");
+	assert.deepEqual(index.takeParked("same-name", "owner-b"), [route("asker-b", "child-b", "question-b")]);
+	index.pruneSender("asker-a");
+	assert.deepEqual(index.takeParked("same-name", "owner-a"), [route("asker-a2", "child-a", "question-a2")]);
+});

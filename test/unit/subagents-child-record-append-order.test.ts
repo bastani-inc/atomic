@@ -84,7 +84,7 @@ describe("appending child records of one owner", () => {
 describe("a record that could not be appended", () => {
 	function failingSink() {
 		const sessionManager = SessionManager.inMemory("/repo");
-		return createSubagentChildRecordSink(
+		const sink = createSubagentChildRecordSink(
 			{
 				appendEntry: async () => {
 					throw new Error("disk full");
@@ -92,15 +92,17 @@ describe("a record that could not be appended", () => {
 			},
 			{ sessionManager, orchestrationContext: undefined },
 		);
+		return { sink, ownerSessionId: sessionManager.getSessionId() };
 	}
 
 	test("is counted with the child, its state and its terminal status when it has one (#4326)", async () => {
-		const sink = failingSink();
+		const { sink, ownerSessionId } = failingSink();
 		const before = subagentChildRecordFailures.count;
 		sink.record(input("fail-a", { terminalStatus: "ok" }));
 		await sink.flushed?.();
 		assert.equal(subagentChildRecordFailures.count, before + 1);
 		assert.deepEqual(subagentChildRecordFailures.last?.fields, {
+			ownerSessionId,
 			childId: "fail-a:0",
 			state: "terminal",
 			terminalStatus: "ok",
@@ -109,9 +111,13 @@ describe("a record that could not be appended", () => {
 	});
 
 	test("names no terminal status when the record has none (#4326)", async () => {
-		const sink = failingSink();
+		const { sink, ownerSessionId } = failingSink();
 		sink.record(input("fail-b", { state: "running" }));
 		await sink.flushed?.();
-		assert.deepEqual(subagentChildRecordFailures.last?.fields, { childId: "fail-b:0", state: "running" });
+		assert.deepEqual(subagentChildRecordFailures.last?.fields, {
+			ownerSessionId,
+			childId: "fail-b:0",
+			state: "running",
+		});
 	});
 });

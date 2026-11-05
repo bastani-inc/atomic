@@ -10,6 +10,7 @@ export interface ReleasedAskerReplyRoute {
 	readonly childName: string;
 	readonly replierSessionId: string;
 	readonly ownerSessionId: string;
+	readonly expiresAt: number;
 }
 
 export interface ReleasedAskerReplySizes {
@@ -112,11 +113,23 @@ export class ReleasedAskerReplies {
 				childName: entry.childName,
 				replierSessionId: entry.replierSessionId,
 				ownerSessionId: entry.ownerSessionId,
+				expiresAt: entry.expiresAt,
 			};
 			this.remove(entry);
 			return route;
 		}
 		return undefined;
+	}
+
+	/** A definitely refused handoff may be tried again; it keeps its original deadline. */
+	restore(route: ReleasedAskerReplyRoute, ownerSessionId: string | undefined): void {
+		this.expire();
+		if (route.expiresAt <= this.now() || this.entries.size >= this.maxRoutes) return;
+		const entry: Entry = { ...route, ownerSessionId, childKey: normalizeReservationTarget(route.childName) };
+		this.entries.add(entry);
+		addTo(this.byQuestion, entry.questionId, entry);
+		addTo(this.byChild, entry.childKey, entry);
+		if (ownerSessionId !== undefined) addTo(this.byOwner, ownerSessionId, entry);
 	}
 
 	dropChild(childName: string, ownerSessionId: string): number {
@@ -131,7 +144,10 @@ export class ReleasedAskerReplies {
 
 	dropOwner(ownerSessionId: string): number {
 		const owned = [...(this.byOwner.get(ownerSessionId) ?? [])];
-		for (const entry of owned) this.remove(entry);
+		for (const entry of owned) {
+			removeFrom(this.byOwner, ownerSessionId, entry);
+			entry.ownerSessionId = undefined;
+		}
 		return owned.length;
 	}
 

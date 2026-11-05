@@ -48,6 +48,21 @@ import {
 	type ToolRenderResultArgs,
 } from "./lazy-heavy-proxy.js";
 
+export {
+	IntercomReleasedChildError,
+	type IntercomReleasedChildErrorCode,
+	isIntercomReleasedChildError,
+	isReleasedChildErrorCode,
+	isReleasedChildReservationError,
+	isUnknownReleasedChildError,
+	RELEASED_CHILD_ERROR_CODES,
+	ReleasedChildReservationError,
+	rehydrateIntercomReleasedChildError,
+	type SerializedIntercomReleasedChildError,
+	serializeIntercomReleasedChildError,
+	UnknownReleasedChildError,
+} from "./broker/released-child-errors.js";
+
 type LifecycleSnapshot<K extends keyof ForwardedEventMap> = {
 	event: ForwardedEventMap[K];
 	ctx: ExtensionContext;
@@ -269,6 +284,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
   let heavyAttempt: HeavyAttempt | null = null;
   let loadedHeavy: IntercomHeavyHandle | null = null;
+  const heavyReplyWaitMayDetach = (name: string, params: { action?: string; reason?: string }): boolean => {
+    const predicate = loadedHeavy?.heavy.tools.get(name)?.detachable;
+    return typeof predicate === "function" ? predicate(params) : predicate === true;
+  };
   let sessionSnapshot: SessionSnapshot | null = null;
 	// Event subscriptions outlive shutdown replay state; never use this owner to load heavy state.
 	let shutdownDiagnosticRoute: DiagnosticRoute | undefined;
@@ -533,6 +552,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
       pi.registerTool({
         name: "contact_supervisor",
         exposure: "model-only",
+        detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
+        detachmentRequiresReady: true,
         label: "Contact Supervisor",
         description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
         promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
@@ -941,7 +962,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	pi.registerTool({
 		name: "intercom",
 		exposure: "model-only",
-		detachable: intercomCallMayDetach,
+		detachable: (params) => intercomCallMayDetach(params) && heavyReplyWaitMayDetach("intercom", params),
+		detachmentRequiresReady: true,
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
@@ -993,7 +1015,8 @@ Usage:
 		pi.registerTool({
 			name: "contact_supervisor",
 			exposure: "model-only",
-			detachable: contactSupervisorCallMayDetach,
+			detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
+			detachmentRequiresReady: true,
 			label: "Contact Supervisor",
 			description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
 			promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",

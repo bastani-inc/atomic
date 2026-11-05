@@ -374,6 +374,8 @@ export type BrokerMessage =
 			claimsWorkflowInvocations?: true;
 			/** #3983: this broker accepts `saving`; absent on older brokers, which drop a client that sends it. */
 			extendsSaves?: true;
+			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
+			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }
@@ -413,6 +415,7 @@ export type BrokerMessage =
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }
   | { type: "peer_disconnected"; replyTo: string; peerSessionId: string; peerName?: string }
+  | { type: "peer_rebound"; replyTo: string; previousSessionId: string; sessionId: string }
   | { type: "presence_ack"; requestId: string; group: string }
   | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }

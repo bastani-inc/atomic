@@ -25,6 +25,7 @@ import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
+import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
 	forwardDetachedResults,
@@ -588,6 +589,8 @@ export async function runAgentTask(input: {
 						input.wait?.kind !== "foreground"
 							? { releaseWhenWaiting: subagentReleasePolicy() }
 							: {}),
+						onBeforeRelease: () =>
+							reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
 						signal: context.signal,
 						taskExecution: {
 							signal: context.signal,
@@ -662,12 +665,12 @@ export async function runAgentTask(input: {
 							child.released.waitingOn,
 							child.released.intercomId,
 						);
-						if (ownerSessionId !== undefined)
-							forwardDetachedResults(
-								input.wakeDispatcher ?? agentWakeDispatcher(),
-								subagentWakeKey(ownerSessionId, childId),
-								child.released.calls,
-							);
+						if (ownerSessionId !== undefined) {
+							const dispatcher = input.wakeDispatcher ?? agentWakeDispatcher();
+							const wakeKey = subagentWakeKey(ownerSessionId, childId);
+							scheduleReleasedReplyTimeouts(dispatcher, wakeKey, child.released.waitingOn);
+							forwardDetachedResults(dispatcher, wakeKey, child.released.calls, child.released.waitingOn);
+						}
 						void reserveReleasedChildTargets(
 							input.options,
 							childSession.childSessionId,

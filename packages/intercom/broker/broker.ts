@@ -95,7 +95,7 @@ import {
 	validateReleasedChildFrame,
 } from "./released-children.js";
 import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
-import { ReleasedAskerReplies } from "./released-asker-replies.js";
+import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -104,7 +104,7 @@ import {
 	setSessionGroups,
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
-import { PendingQuestionIndex } from "./pending-question-index.js";
+import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
@@ -224,6 +224,7 @@ interface PendingReleasedReplyAck {
   readonly ownerSessionId: string;
   readonly questionId: string;
   readonly childName: string;
+  readonly route: ReleasedAskerReplyRoute;
 }
 
 function releasedAskerReplyRefusal(childName: string): string {
@@ -1805,6 +1806,7 @@ class IntercomBroker {
             brokerStatus: true as const,
             claimsWorkflowInvocations: true as const,
             extendsSaves: true as const,
+            multiNodeRouting: this.multiNodeStatus,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -1819,6 +1821,15 @@ class IntercomBroker {
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
+          if (registered !== undefined && supervisorId !== undefined) {
+            for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
+              this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
+              const asker = this.sessions.get(question.senderSessionId);
+              if (asker !== undefined) writeMessageIfOpen(asker.socket, {
+                type: "peer_rebound", replyTo: question.messageId, previousSessionId: question.targetSessionId, sessionId: id,
+              });
+            }
+          }
           for (const send of this.restoringRecipients.consume(
             consumedCapability,
             registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
@@ -2003,6 +2014,7 @@ class IntercomBroker {
         }
         for (const childName of childNames) {
           this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
+          this.failParkedQuestions(this.pendingQuestions.takeParked(childName, currentId), childName);
           this.releasedAskerReplies.dropChild(childName, currentId);
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -2431,6 +2443,7 @@ class IntercomBroker {
       ownerSessionId: route.ownerSessionId,
       questionId: route.questionId,
       childName: route.childName,
+      route,
     };
     this.releasedReplyAcks.set(message.id, pending);
     const written =
@@ -2455,6 +2468,12 @@ class IntercomBroker {
       this.deliveredMessages.settleQuestion(pending.questionId);
       writeMessageIfOpen(pending.socket, { type: "delivered", messageId, ...attempt });
       return;
+    }
+    if (outcome === "uncertain") {
+      // The owner may have saved the reply before disconnecting; its record will deduplicate a later retry.
+      this.releasedAskerReplies.restore(pending.route, undefined);
+    } else if (this.restoringRecipients.releasedOwner(pending.childName) === pending.ownerSessionId) {
+      this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
     }
     writeMessageIfOpen(pending.socket, {
       type: "delivery_failed",
@@ -2741,6 +2760,17 @@ class IntercomBroker {
     });
   }
 
+  private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
+    for (const question of questions) {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (asker === undefined) continue;
+      writeMessageIfOpen(asker.socket, {
+        type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
+        ...(peerName === undefined ? {} : { peerName }),
+      });
+    }
+  }
+
   private disconnectSession(sessionId: string): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
@@ -2748,6 +2778,7 @@ class IntercomBroker {
     this.restoringRecipients.dropSender(sessionId);
     // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
     const unreserved = this.restoringRecipients.dropOwner(sessionId);
+    this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
     const unanswered = this.pendingQuestions.takeForSender(sessionId);
     if (unanswered.length > 0 && departed.supervisorId !== undefined && departed.registrationName !== undefined) {
@@ -2761,15 +2792,12 @@ class IntercomBroker {
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
       if (pending.ownerSessionId === sessionId) this.settleReleasedReply(messageId, "uncertain");
     }
-    for (const question of this.pendingQuestions.takeForTarget(sessionId)) {
-      const asker = this.sessions.get(question.senderSessionId);
-      if (!asker) continue;
-      writeMessageIfOpen(asker.socket, {
-        type: "peer_disconnected",
-        replyTo: question.messageId,
-        peerSessionId: departed.info.id,
-        ...(departed.info.name !== undefined ? { peerName: departed.info.name } : {}),
-      });
+    const childName = departed.registrationName;
+    const releasedOwner = childName === undefined ? undefined : this.restoringRecipients.releasedOwner(childName);
+    if (childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId) {
+      this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
+    } else {
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
     }
 
     for (const [runId, owner] of this.pendingStageRoutes) {

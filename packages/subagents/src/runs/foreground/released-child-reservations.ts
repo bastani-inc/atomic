@@ -109,6 +109,7 @@ export function reserveReleasedChildTargets(
 	options: Pick<RunSyncOptions, "intercomEvents" | "intercomSessionName" | "intercomGroup">,
 	childSessionId: string | undefined,
 	intercomId: string | undefined,
+	wake = true,
 ): Promise<void> {
 	const events = options.intercomEvents;
 	const childName = options.intercomSessionName;
@@ -118,7 +119,7 @@ export function reserveReleasedChildTargets(
 			childName,
 			...(options.intercomGroup === undefined ? {} : { group: options.intercomGroup }),
 			aliases: [childSessionId, intercomId].filter((id): id is string => id !== undefined),
-			wake: true,
+			wake,
 		},
 	]);
 }

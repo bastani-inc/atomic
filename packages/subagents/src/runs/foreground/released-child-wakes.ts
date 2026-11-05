@@ -8,14 +8,20 @@ import {
 	isStaleExtensionContextError,
 	type TaskId,
 } from "@bastani/atomic";
+import {
+	RELEASED_CHILD_REPLY_EVENT,
+	type ReleasedChildReplyRequest,
+} from "../../../../intercom/released-reply-wait.js";
 import { type IntercomEventBus, resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { deliverLocalCompletionNotification } from "./completion-notification.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
+import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-child-replies.js";
 import {
 	acknowledgeReleasedChildWake,
 	INTERCOM_CONNECTED_EVENT,
 	reserveReleasedChildrenOf,
 } from "./released-child-reservations.js";
+import { bindResumeDispatcher } from "./released-child-resume.js";
 import {
 	handleReleasedChildWakes,
 	holdToolResultsInRecord,
@@ -23,6 +29,7 @@ import {
 	subagentWakeKey,
 	subagentWakeNamespace,
 	wakeReleasedChildrenOfEarlierProcess,
+	wakeReleasedChildWithHeldResults,
 } from "./released-children.js";
 import {
 	indexSubagentChildOwner,
@@ -31,11 +38,13 @@ import {
 } from "./subagent-child-card-state.js";
 import {
 	currentWakeFailure,
+	observeChildRecordFailure,
+	recordSubagentChildReply,
 	recordSubagentChildWakeFailure,
 	reportSubagentChildWakeFailure,
 	type SubagentChildRecord,
 	subagentChildOwner,
-	subagentChildRecordFailures,
+	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
 import {
 	restoreSubagentChild,
@@ -109,6 +118,12 @@ export function bindReleasedChildWakes(
 				});
 			},
 			hold: holdToolResultsInRecord(deps.pi),
+			resume: async (record, request) => {
+				const outcome = await restoreSubagentChild(deps, ctx, record.childId, request);
+				if (outcome.kind === "unrestorable")
+					throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
+				return outcome;
+			},
 			redispatch: (record) => restore(record, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, redispatch: true }),
 			fail: (record, toolResults, failure) =>
 				recordSubagentChildWakeFailure(deps.pi, ownerSessionId, record.childId, toolResults, failure),
@@ -116,6 +131,7 @@ export function bindReleasedChildWakes(
 		dispatcher,
 		resolveTopLevelParallelRunningCapacity(deps.config?.parallel?.runningCapacity),
 	);
+	const unbindResume = bindResumeDispatcher(ownerSessionId, dispatcher);
 	const report = (error: AgentRehydrateError) => {
 		const wakeKey = error.fields.wakeKey;
 		if (error.code !== "wake-failed" || !wakeKey?.startsWith(`${namespace}:`)) return;
@@ -133,10 +149,12 @@ export function bindReleasedChildWakes(
 			.catch((failure: Error) => {
 				if (isStaleExtensionContextError(failure)) return;
 				if (isReleasedChildError(failure) && failure.code === "child-record-missing") return;
-				subagentChildRecordFailures.count += 1;
-				subagentChildRecordFailures.last = isReleasedChildError(failure)
-					? failure
-					: new ReleasedChildError("wake-failed", { childId, reason: failure.message }, { cause: failure });
+				observeChildRecordFailure(
+					ownerSessionId,
+					isReleasedChildError(failure)
+						? failure
+						: new ReleasedChildError("wake-failed", { childId, reason: failure.message }, { cause: failure }),
+				);
 			});
 	};
 	const stopReporting = dispatcher.onUnobservedFailure(report);
@@ -151,11 +169,38 @@ export function bindReleasedChildWakes(
 			.deliver(subagentWakeKey(ownerSessionId, record.childId), { id: `intercom:${randomUUID()}`, kind: "intercom" })
 			.catch((error) => dispatcher.reportUnobservedFailure(error));
 	});
+	const unsubscribeReply = events.on(RELEASED_CHILD_REPLY_EVENT, (payload) => {
+		const request = payload as ReleasedChildReplyRequest;
+		const arrivedAt = Date.now();
+		request.completion = (async () => {
+			await subagentChildRecordsAppended(ownerSessionId);
+			indexSubagentChildOwner(ctx);
+			const record = subagentChildRecordForTarget(ownerSessionId, request.childName);
+			const call = record?.waitingOn?.find((item) => item.replyWait?.questionId === request.replyTo);
+			if (record === undefined || call === undefined) return false;
+			const result = releasedReplyToolResult(call, request.message);
+			const accepted = await recordSubagentChildReply(
+				deps.pi,
+				ownerSessionId,
+				record.childId,
+				request.replyTo,
+				result,
+				arrivedAt,
+			);
+			if (!accepted) return false;
+			const wakeKey = subagentWakeKey(ownerSessionId, record.childId);
+			dispatcher.cancel(wakeKey, releasedReplyTimeoutId(request.replyTo));
+			wakeReleasedChildWithHeldResults(dispatcher, wakeKey, request.message.id);
+			return true;
+		})();
+	});
 	const unsubscribeConnected = events.on(INTERCOM_CONNECTED_EVENT, reserveAll);
 	return () => {
 		disposeHandler();
+		unbindResume();
 		stopReporting();
 		unsubscribe();
+		unsubscribeReply();
 		unsubscribeConnected();
 	};
 }

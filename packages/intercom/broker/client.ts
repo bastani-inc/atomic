@@ -9,6 +9,7 @@ import type {
 	Message,
 	Attachment,
 	BrokerStatusReport,
+	BrokerMultiNodeStatus,
 	GroupSummary,
 	SupervisorRegistration,
 	SessionDirectory,
@@ -338,6 +339,7 @@ export class IntercomClient extends EventEmitter {
 	/** #3906: the broker of the current registration refuses a pending-stage route without ending the connection. */
 	private brokerRefusesPendingStageRoutesInPlace = false;
 	private brokerAnswersStatus = false;
+	private _multiNodeRouting: BrokerMultiNodeStatus["status"] | undefined;
 	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
 	private brokerClaimsWorkflowInvocations = false;
 	/** #3904: the connect attempt in progress, which `disconnect()` cancels. */
@@ -452,6 +454,10 @@ export class IntercomClient extends EventEmitter {
   }
   get supervisorSessionId(): string | null {
     return this._supervisorSessionId;
+  }
+  /** Routing mode of this registration; absent when the broker predates this capability. */
+  get multiNodeRouting(): BrokerMultiNodeStatus["status"] | undefined {
+    return this._multiNodeRouting;
   }
   get groups(): string[] {
     return [...this._groups];
@@ -596,6 +602,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerAcknowledgesPendingStageRoutes = false;
         this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
+        this._multiNodeRouting = undefined;
         this.brokerClaimsWorkflowInvocations = false;
         this.brokerExtendsSaves = false;
         this._messageSource = undefined;
@@ -725,6 +732,9 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
           || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)
           || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)
+          || (brokerMessage.multiNodeRouting !== undefined && brokerMessage.multiNodeRouting !== "off"
+            && brokerMessage.multiNodeRouting !== "starting" && brokerMessage.multiNodeRouting !== "on"
+            && brokerMessage.multiNodeRouting !== "unavailable")
           || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)) {
           throw new Error("Invalid registered message");
         }
@@ -741,6 +751,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
         this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
+        this._multiNodeRouting = brokerMessage.multiNodeRouting as BrokerMultiNodeStatus["status"] | undefined;
         this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
         this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
@@ -1174,6 +1185,14 @@ export class IntercomClient extends EventEmitter {
           peerSessionId,
           ...(peerName !== undefined ? { peerName } : {}),
         });
+        break;
+      }
+      case "peer_rebound": {
+        const { replyTo, previousSessionId, sessionId } = brokerMessage;
+        if (typeof replyTo !== "string" || typeof previousSessionId !== "string" || typeof sessionId !== "string") {
+          throw new Error("Invalid peer_rebound message");
+        }
+        this.emit("peer_rebound", { replyTo, previousSessionId, sessionId });
         break;
       }
       case "error": {

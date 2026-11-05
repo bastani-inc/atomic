@@ -4,6 +4,8 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
+import { ReleasedReplyHandoff } from "./reply-waiter.js";
+import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
 import { appendEntryUnlessReleased, contactSupervisorCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import { renderContactSupervisorResult } from "./result-renderers.js";
@@ -27,6 +29,7 @@ interface ContactSupervisorDeps {
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
 	/** Atomically reserves one correlation-keyed reply waiter from the shared capacity. */
 	beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
+	mayDetachReplyWait?: () => boolean;
 }
 
 export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSupervisorDeps): void {
@@ -42,7 +45,8 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
     pi.registerTool({
       name: "contact_supervisor",
       exposure: "model-only",
-      detachable: contactSupervisorCallMayDetach,
+      detachable: (params) => deps.mayDetachReplyWait?.() === true && contactSupervisorCallMayDetach(params),
+      detachmentRequiresReady: true,
       label: "Contact Supervisor",
       description: "Subagent-only tool for contacting the supervisor agent that delegated this task. In a live foreground child, need_decision and interview_request end the child and return a fresh-subagent handoff to the supervisor; fallback Intercom delivery waits for a reply when no foreground owner claims the request. One blocking supervisor request is allowed per child and may coexist with ordinary intercom asks. progress_update is fire-and-forget. Do not use for routine completion handoffs.",
       promptSnippet: "Subagent-only: yield decisions or structured interviews to the supervisor for a fresh-child follow-up, or send meaningful plan-changing progress updates.",
@@ -72,7 +76,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           })),
         }, { description: "Structured interview request for reason='interview_request'" })),
       }),
-      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      async execute(toolCallId, params, signal, _onUpdate, ctx) {
         const reason = params.reason as ContactSupervisorReason;
         if (reason !== "need_decision" && reason !== "progress_update" && reason !== "interview_request") {
           return {
@@ -279,6 +283,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             timestamp: Date.now(),
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
+          await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 });
           const replyMessage = await wait.promise;
           const replyText = replyMessage.content.text;
           const replyAttachments = replyMessage.content.attachments?.length
@@ -302,6 +307,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
               : {},
           };
         } catch (error) {
+          if (error instanceof ReleasedReplyHandoff) return releasedReplyHandoffResult();
           // Settle only this call's own waiter; a concurrent call's
           // reservation must never be torn down from this failure path.
           wait?.cancel(toError(error));

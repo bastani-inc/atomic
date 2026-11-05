@@ -12,6 +12,8 @@ import { subagentChildIdOfPath } from "../inprocess/control-registry.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
 import { releasedChildReservation, reserveReleasedChildren } from "./released-child-reservations.js";
+import { isReleasedChildWakeActive, resumeReleasedChild } from "./released-child-resume.js";
+import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
@@ -29,6 +31,7 @@ import {
 	type SubagentChildStopStatus,
 	subagentChildOwner,
 	subagentChildRecordsAppended,
+	takeChildRecordFailure,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { restoreSubagentChild, type SubagentChildRestoreDeps } from "./subagent-child-restore.js";
@@ -348,7 +351,10 @@ async function resumeChild(
 			action,
 			`${label(record)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
 		);
+	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	const waking = isReleasedChildWakeActive(subagentWakeKey(ownerSessionId, record.childId));
 	if (
+		!waking &&
 		record.taskId !== undefined &&
 		(liveTaskIds(ctx.getAgentTaskHost?.()).has(record.taskId) || isLiveOwnerlessChild(record.taskId))
 	)
@@ -358,14 +364,15 @@ async function resumeChild(
 		);
 	const message = request.message?.trim() ? request.message : undefined;
 	const interrupted = record.state === "running" || INTERRUPTED_STATUSES.has(record.terminalStatus ?? "");
-	const outcome = await restoreSubagentChild(
-		deps,
-		ctx,
-		record.childId,
+	const resumeRequest =
 		message && interrupted
 			? { prompt: message, continuation: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, message }
-			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, ...(message ? { message } : {}) },
-	);
+			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, ...(message ? { message } : {}) };
+	const queued =
+		waking || isReleased(record) || ((record.waitingOn?.length ?? 0) > 0 && stoppedAs(record))
+			? resumeReleasedChild(ownerSessionId, record.childId, resumeRequest)
+			: undefined;
+	const outcome = await (queued ?? restoreSubagentChild(deps, ctx, record.childId, resumeRequest));
 	if (outcome.kind === "terminal") return errorResult(action, `${label(record)} is terminal and cannot be resumed.`);
 	if (outcome.kind === "unrestorable")
 		return errorResult(action, `${label(record)} could not be resumed: ${outcome.reason}.`);
@@ -440,11 +447,16 @@ function statusLines(record: SubagentChildRecord): string[] {
  */
 export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: string): string[] {
 	const records = ownedRecords(ctx);
+	const failure = takeChildRecordFailure(subagentChildOwner(ctx).sessionId, id?.trim() ? id : undefined);
+	const failureLine =
+		failure === undefined
+			? undefined
+			: `Subagent ${failure.childId}: ${failure.message} (${failure.code}). ${failure.hint}`;
 	if (id?.trim()) {
 		const resolved = resolveRecord(records, id);
-		return typeof resolved === "object" ? statusLines(resolved) : [];
+		return [...(typeof resolved === "object" ? statusLines(resolved) : []), ...(failureLine ? [failureLine] : [])];
 	}
-	return [...records.values()].flatMap(statusLines);
+	return [...[...records.values()].flatMap(statusLines), ...(failureLine ? [failureLine] : [])];
 }
 
 /** `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. */

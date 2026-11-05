@@ -116,7 +116,7 @@ The background subagents that the run's stages launched stay addressable too. Wh
 
 A [released subagent](/subagents#released-subagents) stays addressable through the session that launched it: that session asks the broker to hold sends to the child's name and ids, and the broker tells it to wake the child when one arrives. Only that session owns the child's hold. The owner is the session that reserved the child first, or the one that authorized it as its supervisor when launching it. A session that reconnects with the same Intercom session id stays the owner. Another session cannot reserve, drop or acknowledge the child.
 
-A background subagent waiting on an `ask`, or on `contact_supervisor` with `need_decision` or `interview_request`, is released like any other waiting subagent. Its question stays open while it holds no session.
+A background subagent waiting on an `ask`, or on `contact_supervisor` with `need_decision` or `interview_request`, is released like any other waiting subagent when its broker uses local routing. Its question stays open while it holds no session.
 
 - **How the reply arrives:** reply as usual, with `reply` or a send with `replyTo`. The reply reaches the session that launched the subagent, and the subagent wakes with it as the result of its `ask` or `contact_supervisor` call.
 - **Exactly once:** each question takes one reply. The first is delivered once and reported `delivered` to you. A later reply to the same question is refused, and no reply is also queued as an ordinary message for the subagent.
@@ -125,10 +125,12 @@ A background subagent waiting on an `ask`, or on `contact_supervisor` with `need
   - that session ended or dropped the subagent's hold;
   - the subagent's call is no longer waiting, for example because it was stopped.
 - **How long a question stays open:** the usual 10-minute reply wait, counted from when the question was asked.
-- **Where it works:** both the replier and the subagent's launching session must be connected to the same broker on the same machine. With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, a reply from a session on another machine is not delivered to a released subagent, which keeps waiting until its reply wait ends.
-- **After a restart:** if the process that launched the subagent restarts, the open question is lost. A reply to it is refused, and the subagent has to ask again.
+- **Where it works:** both the replier and the subagent's launching session must be connected to the same broker on the same machine. With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, the subagent stays live while it waits for the reply.
+- **After a restart:** when the launching session reopens, the same question remains open until its original deadline; a reply wakes the child. If the broker itself restarts, its question route is lost, and the child receives the timeout instead.
 
 A refused request changes nothing: when one child in a request is refused, no child in it is reserved or dropped. Requests to reserve, drop or acknowledge a released child are refused with these typed errors. Each carries `code`, `childName` when one child caused it, a `hint`, and `retryable: false`. Check `isIntercomReleasedChildError` or the class, never the message.
+
+SDK integrations can import these classes, their guards, `IntercomReleasedChildErrorCode`, and `serializeIntercomReleasedChildError` / `rehydrateIntercomReleasedChildError` from `@bastani/intercom`.
 
 | Class | `code` | When | What to do |
 | --- | --- | --- | --- |

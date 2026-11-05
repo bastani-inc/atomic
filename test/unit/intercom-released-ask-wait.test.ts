@@ -21,13 +21,11 @@ afterAll(() => {
 import { IntercomClient, type SendOptions } from "../../packages/intercom/broker/client.js";
 import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
-import { releasedReplyMailbox } from "../../packages/intercom/released-reply-mailbox.js";
-import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import type { SessionInfo } from "../../packages/intercom/types.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 
 type LifecycleHandler = (event: object, ctx: ExtensionContext) => void | Promise<void>;
-type ToolResult = Awaited<ReturnType<ToolDefinition["execute"]>>;
 
 const SESSION_ID = "019f0000-aaaa-7bbb-8ccc-eeeeeeeeeeee";
 const REPLIER: SessionInfo = {
@@ -108,42 +106,8 @@ function startHeavy() {
 	};
 }
 
-describe("an ask that outlives its released session (#4326)", () => {
-	test("the ask's wait survives the session's shutdown and resolves with the reply delivered to the process mailbox (#4326)", async () => {
-		const harness = startHeavy();
-		await harness.fire("session_start");
-		const tool = harness.tools.get("intercom");
-		assert.ok(tool);
-		const call = new AbortController();
-		const pending: Promise<ToolResult> = tool.execute(
-			"call-1",
-			{ action: "ask", to: "replier", message: "Which file?" },
-			call.signal,
-			undefined,
-			ctx as never,
-		);
-		await vi.waitFor(() => assert.equal(questions.length, 1));
-		const questionId = questions[0]?.options.messageId;
-		assert.ok(questionId);
-		assert.equal(questions[0]?.options.expectsReply, true);
-		await vi.waitFor(() => assert.ok(harness.appended.includes("intercom_sent")));
-		const appendedBeforeRelease = [...harness.appended];
-		const before = releasedReplyMailbox().size;
-
-		await harness.fire("session_shutdown");
-		harness.release();
-		assert.equal(releasedReplyMailbox().size, before + 1, "the running wait is kept, not rejected");
-
-		const reply: Message = { id: "reply-1", timestamp: 2, replyTo: questionId, content: { text: "src/config.ts" } };
-		assert.equal(releasedReplyMailbox().deliver(REPLIER, reply), true);
-		const result = await pending;
-		assert.equal(result.isError, false);
-		assert.deepEqual(result.content, [{ type: "text", text: "**Reply from replier:**\nsrc/config.ts" }]);
-		assert.equal(releasedReplyMailbox().size, before);
-		assert.deepEqual(harness.appended, appendedBeforeRelease, "nothing is written to the released session");
-	});
-
-	test("a cancelled ask is rejected at shutdown as before and leaves nothing in the mailbox (#4326)", async () => {
+describe("an ask during session shutdown (#4326)", () => {
+	test("a cancelled ask is rejected at shutdown (#4326)", async () => {
 		const harness = startHeavy();
 		await harness.fire("session_start");
 		const tool = harness.tools.get("intercom");
@@ -157,11 +121,9 @@ describe("an ask that outlives its released session (#4326)", () => {
 			ctx as never,
 		);
 		await vi.waitFor(() => assert.equal(questions.length, 1));
-		const before = releasedReplyMailbox().size;
 		call.abort();
 		await harness.fire("session_shutdown");
 		const result = await pending;
 		assert.equal(result.isError, true);
-		assert.equal(releasedReplyMailbox().size, before);
 	});
 });

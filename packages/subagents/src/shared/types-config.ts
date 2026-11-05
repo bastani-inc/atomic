@@ -143,6 +143,8 @@ export interface RunSyncOptions {
 	resumeTaskLiteral?: boolean;
 	/** Release the child while it waits on detachable tool calls, and hand those calls to `onReleased` (#4326). */
 	releaseWhenWaiting?: import("../runs/inprocess/runner.js").SubagentReleasePolicy;
+	/** Reserve the child's address before its released session disconnects. */
+	onBeforeRelease?: () => Promise<void>;
 	/** Results for the detached calls the reopened child's transcript ends on; its interrupted turn continues with them. */
 	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */

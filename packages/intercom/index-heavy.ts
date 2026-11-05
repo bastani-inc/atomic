@@ -42,6 +42,7 @@ import {
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type PendingStageNotificationRequest,
+	type ReleasedChildReply,
 	type StickyLiveDeliveredNotice,
 } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
@@ -52,7 +53,7 @@ import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
-import { answerReleasedChildReplies } from "./released-reply-mailbox.js";
+import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./released-reply-wait.js";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
 import { registerIntercomTool } from "./intercom-tool.js";
 import { registerIntercomOverlay } from "./overlay.js";
@@ -966,7 +967,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
       handlePendingStageMessage(nextClient, request, () => client === nextClient);
     });
-    answerReleasedChildReplies(nextClient);
+    nextClient.on("released_child_reply", (notice: ReleasedChildReply) => {
+      const request: ReleasedChildReplyRequest = { childName: notice.childName, replyTo: notice.replyTo, message: notice.message };
+      if (client === nextClient && getLiveContext()) pi.events.emit(RELEASED_CHILD_REPLY_EVENT, request);
+      void (request.completion ?? Promise.resolve(false)).then(
+        (accepted) => nextClient.acknowledgeReleasedChildReply(notice.message.id, accepted),
+        () => nextClient.acknowledgeReleasedChildReply(notice.message.id, false),
+      );
+    });
     // #4326: a send waits at the broker for a released child of this session; Subagents wakes it.
     nextClient.on("restoring_recipient_wake", (notice: { childName: string }) => {
       const wake: ReleasedChildWakeNotice = { childName: notice.childName };
@@ -983,6 +991,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         return;
       }
       routePeerDisconnect(replyWaiters.pending(), notice);
+    });
+    nextClient.on("peer_rebound", (notice: { replyTo: string; previousSessionId: string; sessionId: string }) => {
+      if (client !== nextClient) return;
+      replyWaiters.rebind(notice.replyTo, notice.previousSessionId, notice.sessionId);
     });
     nextClient.on("disconnected", (error: Error) => {
       if (client !== nextClient) {
@@ -1846,12 +1858,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
+    mayDetachReplyWait: () => client?.isConnected() === true && client.multiNodeRouting === "off",
   });
   registerIntercomTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
+    mayDetachReplyWait: () => client?.isConnected() === true && client.multiNodeRouting === "off",
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
     multiNodeRouting,

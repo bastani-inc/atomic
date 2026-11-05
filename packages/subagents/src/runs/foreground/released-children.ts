@@ -10,10 +10,14 @@ import {
 	type SessionManager,
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
+import { isReleasedReplyHandoffResult } from "../../../../intercom/released-reply-wait.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
+import { releasedReplyTimeoutId, scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
+import { type ReleasedChildResumeWake, setReleasedChildWakeActive, settleResumeWake } from "./released-child-resume.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
+	observeChildRecordFailure,
 	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -21,10 +25,11 @@ import {
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
+	type SubagentChildWaitingCall,
 	subagentChildOwner,
-	subagentChildRecordFailures,
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
+import type { SubagentChildRestoreOutcome, SubagentChildResumeRequest } from "./subagent-child-restore.js";
 
 /** How long a background child waits on a detachable tool call inline before it is released (#4326). */
 export const SUBAGENT_RELEASE_AFTER_MS = 60_000;
@@ -70,7 +75,12 @@ function releasedByEarlierProcess(record: SubagentChildRecord): boolean {
 }
 
 export function needsRedispatch(record: SubagentChildRecord): boolean {
-	return releasedByEarlierProcess(record) && (record.waitingOn?.length ?? 0) > 0 && !waitsOnHeldResult(record);
+	return (
+		releasedByEarlierProcess(record) &&
+		(record.waitingOn?.length ?? 0) > 0 &&
+		!(record.waitingOn ?? []).some((call) => call.replyWait !== undefined) &&
+		!waitsOnHeldResult(record)
+	);
 }
 
 export function wakeReleasedChildrenOfEarlierProcess(
@@ -79,8 +89,15 @@ export function wakeReleasedChildrenOfEarlierProcess(
 	records: readonly SubagentChildRecord[],
 ): void {
 	for (const record of records) {
-		if (!releasedByEarlierProcess(record)) continue;
 		const wakeKey = subagentWakeKey(ownerSessionId, record.childId);
+		scheduleReleasedReplyTimeouts(
+			dispatcher,
+			wakeKey,
+			(record.waitingOn ?? []).filter(
+				(call) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === call.toolCallId),
+			),
+		);
+		if (!releasedByEarlierProcess(record)) continue;
 		if (needsRedispatch(record))
 			void dispatcher
 				.deliver(wakeKey, { id: `${REDISPATCH_WAKE_PREFIX}${SUBAGENT_OWNER_GENERATION}`, kind: "tool-result" })
@@ -105,9 +122,19 @@ function deliverToolResult(
 	return dispatcher.deliver(wakeKey, { id: `tool-result:${toolResult.toolCallId}`, kind: "tool-result", toolResult });
 }
 
-function forwardDetachedResult(dispatcher: AgentWakeDispatcher, wakeKey: string, call: DetachedToolCall): void {
+function forwardDetachedResult(
+	dispatcher: AgentWakeDispatcher,
+	wakeKey: string,
+	call: DetachedToolCall,
+	waitingOn: readonly SubagentChildWaitingCall[],
+): void {
 	void call.result
-		.then((toolResult) => deliverToolResult(dispatcher, wakeKey, toolResult))
+		.then((toolResult) => {
+			if (isReleasedReplyHandoffResult(toolResult.result.details)) return;
+			const wait = waitingOn.find((item) => item.toolCallId === call.toolCallId)?.replyWait;
+			if (wait !== undefined) dispatcher.cancel(wakeKey, releasedReplyTimeoutId(wait.questionId));
+			return deliverToolResult(dispatcher, wakeKey, toolResult);
+		})
 		.catch((error) => dispatcher.reportUnobservedFailure(error));
 }
 
@@ -119,8 +146,9 @@ export function forwardDetachedResults(
 	dispatcher: AgentWakeDispatcher,
 	wakeKey: string,
 	calls: readonly DetachedToolCall[],
+	waitingOn: readonly SubagentChildWaitingCall[] = [],
 ): void {
-	for (const call of calls) outsideAnyTask(forwardDetachedResult, dispatcher, wakeKey, call);
+	for (const call of calls) outsideAnyTask(forwardDetachedResult, dispatcher, wakeKey, call, waitingOn);
 }
 
 function wakeWithHeldResults(dispatcher: AgentWakeDispatcher, wakeKey: string, id: string): void {
@@ -258,6 +286,10 @@ export interface ReleasedChildWakeActions {
 		decision: Extract<ReleasedChildWakeDecision, { kind: "wake" }>,
 	) => Promise<void>;
 	readonly hold: (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void>;
+	readonly resume?: (
+		record: SubagentChildRecord,
+		request: SubagentChildResumeRequest,
+	) => Promise<SubagentChildRestoreOutcome>;
 	readonly redispatch?: (record: SubagentChildRecord) => Promise<void>;
 	readonly fail?: (
 		record: SubagentChildRecord,
@@ -297,23 +329,50 @@ export function handleReleasedChildWakes(
 		async (wakeKey, wakes) => {
 			const childId = wakeKey.slice(namespace.length + 1);
 			const record = await latest(childId);
+			setReleasedChildWakeActive(wakeKey, true);
 			try {
 				const redispatch =
 					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);
 				if (redispatch) await actions.redispatch?.(record);
-				const others = wakes.filter((wake) => !isRedispatchWake(wake));
-				if (others.length === 0) return;
 				const current = redispatch ? await latest(childId) : record;
+				const others = wakes.filter((wake) => {
+					if (isRedispatchWake(wake)) return false;
+					if (!wake.id.startsWith("reply-timeout:")) return true;
+					const questionId = wake.id.slice("reply-timeout:".length);
+					const call = current.waitingOn?.find((item) => item.replyWait?.questionId === questionId);
+					return (
+						call !== undefined &&
+						!(current.heldToolResults ?? []).some((item) => item.toolCallId === call.toolCallId)
+					);
+				});
+				if (others.length === 0) return;
+				const resumes = others.filter((wake): wake is ReleasedChildResumeWake => wake.id.startsWith("resume:"));
+				if (resumes.length > 0 && actions.resume !== undefined) {
+					const first = resumes[0];
+					if (first === undefined) return;
+					const extraMessages = resumes
+						.slice(1)
+						.flatMap((wake) => (wake.resume.message ? [wake.resume.message] : []));
+					const toolResults = others.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
+					const outcome = await actions.resume(current, {
+						...first.resume,
+						toolResults,
+						followUps: extraMessages,
+					});
+					for (const wake of resumes) settleResumeWake(wake.id, outcome);
+					return;
+				}
 				const decision = decideReleasedChildWake(current, others);
 				if (decision.kind === "hold") await actions.hold(current, decision.toolResults);
 				else if (decision.kind === "wake") await actions.wake(current, decision);
 			} catch (error) {
 				const results = wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
 				await actions.fail?.(record, results, wakeFailureOf(error as Error, childId)).catch((secondary: Error) => {
-					subagentChildRecordFailures.count += 1;
-					subagentChildRecordFailures.last = wakeFailureOf(secondary, childId);
+					observeChildRecordFailure(ownerSessionId, wakeFailureOf(secondary, childId));
 				});
 				throw error;
+			} finally {
+				setReleasedChildWakeActive(wakeKey, false);
 			}
 		},
 		{ replace: true, ...(maxConcurrent === undefined ? {} : { maxConcurrent }) },
@@ -381,11 +440,9 @@ export function routeReleasedChildShellCompletions(
 	try {
 		released.routeShellCompletions?.(releasedChildShellRoute(holdMessages, ownerSessionId, childId, dispatcher));
 	} catch (error) {
-		subagentChildRecordFailures.count += 1;
-		subagentChildRecordFailures.last = new ReleasedChildError(
-			"completion-not-held",
-			{ ownerSessionId, childId },
-			{ cause: error as Error },
+		observeChildRecordFailure(
+			ownerSessionId,
+			new ReleasedChildError("completion-not-held", { ownerSessionId, childId }, { cause: error as Error }),
 		);
 	}
 }
