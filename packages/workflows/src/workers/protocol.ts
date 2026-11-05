@@ -41,7 +41,13 @@ export type WorkerStageDelivery = NonNullable<
 export type WorkerDeliver = Parameters<WorkerStageDelivery["deliverPending"]>[0];
 export type WorkerRecipient = Parameters<WorkerStageDelivery["deliverPending"]>[1];
 export interface WorkerStart {
-	readonly journalPath: string;
+	/** The SQLite database holding the pool's tables; absent for a shared pool, opened by its durable selection. */
+	readonly journalPath?: string;
+	/**
+	 * Set for a shared pool (#4310). `routes: false` is a worker on a host that does not run the root: its stages start
+	 * without the root's Intercom routes, which only the root's host announces.
+	 */
+	readonly shared?: { readonly host: string; readonly routes: boolean };
 	readonly root: string;
 	readonly definitions: readonly WorkerDefinitionSource[];
 	/**
@@ -81,6 +87,8 @@ export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "controlled"; readonly revision: number }
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
 	| { readonly kind: "route"; readonly runId: string }
+	/** A stage of the attempt started its session: the pool records where it runs (shared pools only, #4310). */
+	| { readonly kind: "stage-workspace"; readonly runId: string; readonly stageId: string }
 	| {
 			readonly kind: "delivery" | "delivery-ready";
 			readonly runId: string;

@@ -18,6 +18,7 @@ import type { DurableStageCheckpoint } from "../durable/types.js";
 import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import type { SerializedWorkerPlacementError } from "./placement-errors.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
@@ -67,13 +68,20 @@ export interface PoolRootProjection {
 	readonly stages: RunSnapshot["stages"];
 }
 
-export interface PoolCoordinatorOptions {
-	/** The SQLite database holding the pool's tables: the root's journal itself, or its coordination database beside it. */
-	readonly journalPath: string;
-	/** The catalog shard id of `journalPath` when it is the root's shard in the journal store, which must exist. */
-	readonly journalShard?: number;
-	/** Where the root's durable journal is when it is not the database at `journalPath`. */
-	readonly durable?: PoolDurableJournal;
+/**
+ * How a pool whose tables live in the root's shared journal runs on this host (shared placement, #4310): every pool
+ * process opens the journal by its durable selection, and worker hosts on other machines serve the same queue.
+ */
+export interface SharedPoolCoordination {
+	/** This host's directory of local pool state: worker logs and diagnostics. */
+	readonly stateDirectory: string;
+	/** This host's id in the pool's host registry; its worker ids are `<host>/<id>`. */
+	readonly host: string;
+	/** Bound work that no capable live host claims within this window fails, typed (the root's coordinator only). */
+	readonly claimWindowMs: number;
+}
+
+interface PoolCoordinatorCommonOptions {
 	readonly workers: number;
 	readonly leaseMs: number;
 	/** How often each worker's heartbeat renews its attempt's lease (`localWorkers.heartbeatMs`, resolved). */
@@ -87,6 +95,27 @@ export interface PoolCoordinatorOptions {
 	/** Module forked for each worker; undefined forks the coordinator's own entry module. */
 	readonly workerEntry?: string;
 }
+
+export type PoolCoordinatorOptions = PoolCoordinatorCommonOptions &
+	(
+		| {
+				/** The SQLite database holding the pool's tables: the root's journal itself, or its coordination database. */
+				readonly journalPath: string;
+				/** The catalog shard id of `journalPath` when it is the root's shard in the journal store, which must exist. */
+				readonly journalShard?: number;
+				/** Where the root's durable journal is when it is not the database at `journalPath`. */
+				readonly durable?: PoolDurableJournal;
+				readonly shared?: undefined;
+		  }
+		| {
+				readonly journalPath?: undefined;
+				readonly journalShard?: undefined;
+				/** The root's journal, which also holds the pool's tables. */
+				readonly durable: PoolDurableJournal;
+				/** The pool's tables live in the root's shared journal (`workers.placement: "shared"`). */
+				readonly shared: SharedPoolCoordination;
+		  }
+	);
 
 export type CoordinatorCommandBody =
 	| {
@@ -257,8 +286,13 @@ export type CoordinatorEvent =
 			readonly usage?: PoolUsage;
 	  }
 	| { readonly kind: "failure"; readonly error: string }
-	/** One child failed without failing the pool. */
-	| { readonly kind: "work-failure"; readonly workId: string; readonly error: string }
+	/** One child failed without failing the pool; `placement` carries a typed placement error across the boundary. */
+	| {
+			readonly kind: "work-failure";
+			readonly workId: string;
+			readonly error: string;
+			readonly placement?: SerializedWorkerPlacementError;
+	  }
 	/**
 	 * A worker's cleanup could not be confirmed (it outlived SIGKILL, or its tool process groups did): a health event of
 	 * the pool, which retires and replaces the worker. It fails no child. Also sent once when `maxWorkerRssBytes` is

@@ -2,7 +2,7 @@
 
 Issue #3869 enables an explicit public opt-in to local workers through SDK options and workflow settings. Without `localWorkers`, ordinary runs create no pool tables, worker processes, or polling loops. The public usage boundary is documented in the [workflow operations guide](../packages/coding-agent/docs/workflows/operations.md#local-workflow-workers).
 
-Placement is limited to local Linux and macOS processes with native process identity and boot identity. Windows and hosts without those identities refuse activation, even when no process admission limit is configured. This prevents treating an expired lease as proof that an old process tree stopped. Remote workers are not supported.
+Placement is limited to local Linux and macOS processes with native process identity and boot identity. Windows and hosts without those identities refuse activation, even when no process admission limit is configured. This prevents treating an expired lease as proof that an old process tree stopped. Workers on other machines are an opt-in for roots on a shared journal (#4310): `workers: { placement: "shared" }` keeps the pool's queue, leases, admission state and pooled-stage sessions in the journal itself, and worker hosts started with `startWorkflowWorkerHost` claim the root's children there. Worker hosts have the same Linux and macOS containment requirement.
 
 ## Execution and persistence
 

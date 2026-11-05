@@ -3,10 +3,15 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+import { currentResourceAdmission } from "../../packages/coding-agent/src/core/resource-admission-scope.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import type { RunOpts } from "../../packages/workflows/src/authoring.js";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import { admitWorkflowSessions } from "../../packages/workflows/src/workers/admission-binding.js";
 import { isWorkflowAdmissionConfigError } from "../../packages/workflows/src/workers/admission-errors.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import {
@@ -253,6 +258,141 @@ test("expired work retains live resources and fenced waiters cannot relaunch (#3
 		await admission.releaseStoppedSessions("worker");
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
 		await release();
+	} finally {
+		await f.close();
+	}
+});
+
+test("a shared pool releases the session permit of an owner on another host once its attempt is replaced, and only then (#4310)", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "coordinator");
+		if (acquired.status !== "acquired") assert.fail("no lease");
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(acquired.lease, 60_000);
+		const fixture = poolWorkFixture();
+		await pool.enqueue(acquired.lease, fixture.work, fixture.boundary);
+		const work = await pool.claim(acquired.lease, "host-a/worker", [fixture.work], 60_000);
+		assert.ok(work);
+		const options = { root: "root", limits: { session: 1 } };
+		const remote = await SqlResourceAdmission.open(journal, {
+			...options,
+			holder: "host-a/worker",
+			attempt: work,
+			crossHost: true,
+		});
+		await remote.acquire("session");
+		// Its owner is a process on another host that stopped renewing: this host cannot probe it.
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET host = 'host-a.invalid', expires_at = 0 WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE holder = 'host-a/worker')",
+		);
+		const granted = async () =>
+			(await remote.inspect()).filter((row) => row.kind === "session").map((row) => [row.state, row.reason]);
+		const local = await SqlResourceAdmission.open(journal, { ...options, holder: "host-b/worker", crossHost: true });
+		await local.reconcile();
+		assert.deepEqual(
+			await granted(),
+			[["granted", "owner expired; cleanup unconfirmed"]],
+			"a current attempt keeps it",
+		);
+		await pool.releaseExited(acquired.lease, work);
+		const unshared = await SqlResourceAdmission.open(journal, {
+			...options,
+			holder: "local",
+			rootLimits: "unchanged",
+		});
+		await unshared.reconcile();
+		assert.deepEqual(
+			await granted(),
+			[["granted", "owner expired; cleanup unconfirmed"]],
+			"an admission that is not shared across hosts never releases it",
+		);
+		await local.reconcile();
+		assert.deepEqual(await granted(), [["released", "owner on another host expired; attempt replaced"]]);
+		const release = await local.acquire("session");
+		await release();
+	} finally {
+		await f.close();
+	}
+});
+
+test("a shared pool releases only an expired remote owner's session permits of a replaced attempt (#4310)", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "coordinator");
+		if (acquired.status !== "acquired") assert.fail("no lease");
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(acquired.lease, 60_000);
+		const fixture = poolWorkFixture();
+		await pool.enqueue(acquired.lease, fixture.work, fixture.boundary);
+		const work = await pool.claim(acquired.lease, "host-a/worker", [fixture.work], 60_000);
+		assert.ok(work);
+		const open = (holder: string, attempt?: typeof work) =>
+			SqlResourceAdmission.open(journal, {
+				root: "root",
+				holder,
+				limits: { session: 4, process: 4 },
+				crossHost: true,
+				...(attempt === undefined ? {} : { attempt }),
+			});
+		// A session permit of the replaced attempt on another host whose owner stopped renewing is released. Kept: a
+		// session permit on this host, a process permit and an attempt-less session permit on another host of owners that
+		// stopped renewing, and a session permit on another host that is still renewing.
+		const replaced = await open("replaced", work);
+		await replaced.acquire("session");
+		const local = await open("local", work);
+		await local.acquire("session");
+		const processes = await open("processes", work);
+		await processes.acquire("process");
+		const unbound = await open("unbound");
+		await unbound.acquire("session");
+		const live = await open("live", work);
+		await live.acquire("session");
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET host = 'host-a.invalid', expires_at = 0 WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE holder IN ('replaced', 'processes', 'unbound'))",
+		);
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET expires_at = 0 WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE holder = 'local')",
+		);
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET host = 'host-a.invalid' WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE holder = 'live')",
+		);
+		await pool.releaseExited(acquired.lease, work);
+		const observer = await open("observer");
+		await observer.reconcile();
+		const states = Object.fromEntries(
+			(await observer.inspect()).map((permit) => [permit.holder, [permit.kind, permit.state, permit.reason]]),
+		);
+		assert.deepEqual(states.replaced, ["session", "released", "owner on another host expired; attempt replaced"]);
+		assert.deepEqual(
+			[states.local, states.processes, states.unbound, states.live].map((state) => state?.slice(0, 2)),
+			[
+				["session", "granted"],
+				["process", "granted"],
+				["session", "granted"],
+				["session", "granted"],
+			],
+		);
+		// Once the expired owners are marked, nothing is left to fence: a reconcile takes no write lock.
+		const storage = sqlPoolStorage(journal)!;
+		const { transaction } = storage;
+		let transactions = 0;
+		Object.assign(storage, {
+			transaction: (body: Parameters<typeof transaction>[0]) => {
+				transactions++;
+				return transaction(body);
+			},
+		});
+		try {
+			await observer.reconcile();
+		} finally {
+			Object.assign(storage, { transaction });
+		}
+		assert.equal(transactions, 0);
 	} finally {
 		await f.close();
 	}
@@ -807,3 +947,174 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+test("only a cross-host admission releases another host's expired permits of a replaced attempt; a current attempt's stay (#4310)", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "coordinator");
+		if (acquired.status !== "acquired") assert.fail("no lease");
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(acquired.lease, 60_000);
+		const first = poolWorkFixture("first");
+		const second = poolWorkFixture("second");
+		await pool.enqueue(acquired.lease, first.work, first.boundary);
+		await pool.enqueue(acquired.lease, second.work, second.boundary);
+		const replacedWork = await pool.claim(acquired.lease, "host-a/worker-1", [first.work, second.work], 60_000);
+		const currentWork = await pool.claim(acquired.lease, "host-a/worker-2", [first.work, second.work], 60_000);
+		assert.ok(replacedWork && currentWork);
+		const open = (holder: string, crossHost: boolean, attempt?: typeof replacedWork) =>
+			SqlResourceAdmission.open(journal, {
+				root: "root",
+				holder,
+				limits: { session: 4, process: 4 },
+				...(crossHost ? { crossHost: true } : {}),
+				...(attempt === undefined ? {} : { attempt }),
+			});
+		await (await open("replaced", true, replacedWork)).acquire("session");
+		await (await open("current", true, currentWork)).acquire("session");
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET host = 'host-a.invalid', expires_at = 0 WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE holder IN ('replaced', 'current'))",
+		);
+		await pool.releaseExited(acquired.lease, replacedWork);
+		const states = async (observer: SqlResourceAdmission) =>
+			Object.fromEntries((await observer.inspect()).map((permit) => [permit.holder, permit.state]));
+		const local = await open("local-observer", false);
+		await local.reconcile();
+		assert.deepEqual(
+			await states(local),
+			{ replaced: "granted", current: "granted" },
+			"one host's pool never releases them",
+		);
+		const cross = await open("cross-observer", true);
+		await cross.reconcile();
+		assert.deepEqual(await states(cross), { replaced: "released", current: "granted" });
+		const storage = sqlPoolStorage(journal)!;
+		const { transaction } = storage;
+		let transactions = 0;
+		Object.assign(storage, {
+			transaction: (body: Parameters<typeof transaction>[0]) => {
+				transactions++;
+				return transaction(body);
+			},
+		});
+		try {
+			await cross.reconcile();
+		} finally {
+			Object.assign(storage, { transaction });
+		}
+		assert.equal(transactions, 0, "a current attempt's expired permit needs no fencing");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a shared root's own sessions are released by another host once the root resumed there under a newer epoch (#4310)", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const first = await journal.acquire("root", "incarnation-1");
+		if (first.status !== "acquired") assert.fail("no lease");
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(first.lease, 60_000);
+		const roots = await SqlResourceAdmission.open(journal, {
+			root: "root",
+			holder: "root-sessions",
+			limits: { session: 2, process: 2 },
+			crossHost: true,
+			rootEpoch: first.lease.epoch,
+		});
+		await roots.acquire("session");
+		// The root's host stops renewing: its owner is on another host and expired.
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET host = 'host-a.invalid', expires_at = 0 WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE holder = 'root-sessions')",
+		);
+		const observer = await SqlResourceAdmission.open(journal, {
+			root: "root",
+			holder: "observer",
+			limits: { session: 2, process: 2 },
+			crossHost: true,
+		});
+		const state = async () =>
+			(await observer.inspect()).filter((permit) => permit.holder === "root-sessions").map((permit) => permit.state);
+		await observer.reconcile();
+		assert.deepEqual(await state(), ["granted"], "the root still holds its lease: its sessions may still run");
+		const resumed = await journal.takeover("root", "incarnation-2", first.lease.holderId);
+		assert.equal(resumed.status, "acquired");
+		await observer.reconcile();
+		const [permit] = (await observer.inspect()).filter((entry) => entry.holder === "root-sessions");
+		assert.deepEqual(
+			[permit?.state, permit?.reason],
+			["released", "owner on another host expired; root resumed elsewhere"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a shared root's sessions carry its lease epoch, so its resume on another host gets their capacity back (#4310)", async () => {
+	const f = await fixture();
+	const journal = f.journals[0]!;
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	try {
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const first = await journal.acquire("root", "incarnation-1");
+		if (first.status !== "acquired") assert.fail("no lease");
+		await (await openSqlPoolQueue(journal)).initialize(first.lease, 60_000);
+		const admitSession = (opts: Pick<RunOpts, "workers" | "parentRun"> & { runId: string }) =>
+			admitWorkflowSessions(backend, { ...opts, admission: { limits: { session: 8, process: 8 } } }, async () => {
+				await currentResourceAdmission()!.acquire("session");
+				return { runId: opts.runId, status: "completed", stages: [], toolNodes: [] };
+			});
+		const permits = () =>
+			f.databases[0]!.all<{ root: string; root_epoch: number | null; state: string; reason: string | null }>(
+				"SELECT root, root_epoch, state, reason FROM wf_runs_resource_permits ORDER BY ticket",
+			);
+		// A shared child, even one holding a lease of its own, never marks the root's sessions.
+		await journal.createRun({ runId: "child", name: "child", cwd: "", createdAt: 0, status: "running" });
+		if ((await journal.acquire("child", "child-owner")).status !== "acquired") assert.fail("no child lease");
+		await admitSession({ runId: "root", workers: { placement: "shared" } });
+		await admitSession({ runId: "root" });
+		await admitSession({
+			runId: "child",
+			workers: { placement: "shared" },
+			parentRun: { runId: "root", stageId: "stage", rootRunId: "root" },
+		});
+		await admitSession({ runId: "unleased", workers: { placement: "shared" } });
+		assert.deepEqual(
+			(await permits()).map((permit) => [permit.root, permit.root_epoch]),
+			[
+				["root", first.lease.epoch],
+				["root", null],
+				["root", null],
+				["unleased", null],
+			],
+			"only a shared root holding its lease marks its own sessions",
+		);
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_owners SET host = 'host-a.invalid', expires_at = 0 WHERE id IN (SELECT owner FROM wf_runs_resource_permits WHERE root_epoch IS NOT NULL)",
+		);
+		const resumed = await journal.takeover("root", "incarnation-2", first.lease.holderId);
+		if (resumed.status !== "acquired") assert.fail("no takeover");
+		await admitSession({ runId: "root", workers: { placement: "shared" } });
+		const [moved, ...rest] = await permits();
+		assert.deepEqual(
+			[moved?.state, moved?.reason],
+			["released", "owner on another host expired; root resumed elsewhere"],
+		);
+		assert.deepEqual(
+			rest.map((permit) => [permit.root_epoch, permit.state]),
+			[
+				[null, "granted"],
+				[null, "granted"],
+				[null, "granted"],
+				[resumed.lease.epoch, "granted"],
+			],
+		);
+	} finally {
+		await backend.close();
+		await f.close();
+	}
+});

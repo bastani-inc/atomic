@@ -96,10 +96,16 @@ export async function admitWorkflowSessions(
 	if (!(rootBackend instanceof JournalDurableBackend))
 		throw new Error("Resource admission requires a journal backend");
 	const root = opts.parentRun?.rootRunId ?? opts.runId;
+	// A shared pool's root marks its sessions with its lease's epoch, so a resume on another host can release them (#4310).
+	const rootEpoch =
+		opts.parentRun === undefined && opts.workers?.placement === "shared"
+			? (await rootBackend.journal.leaseState(opts.runId))?.epoch
+			: undefined;
 	const admission = await SqlResourceAdmission.open(poolJournalFor(await rootRunJournal(rootBackend.journal, root)), {
 		...config,
 		root,
 		holder: randomUUID(),
+		...(rootEpoch === undefined ? {} : { crossHost: true, rootEpoch }),
 		// The root admits its sessions while it holds its lease, so it saves its limits here: a resume may have changed
 		// them, and its workers and children admit against what the root saved (#4196).
 		...(opts.parentRun === undefined ? { rootLimits: "replace" as const } : {}),

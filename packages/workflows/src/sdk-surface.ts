@@ -139,6 +139,7 @@ export { registerRunJournalConformance } from "./durable/journal/conformance.js"
 export { MemoryRunJournal } from "./durable/journal/memory-run-journal.js";
 export type { RunJournalOption, RunJournalSettings } from "./durable/journal/resolution.js";
 export { resolveRunJournal } from "./durable/journal/resolution.js";
+export type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./durable/journal/shared-pool-types.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
 export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "./durable/types.js";
@@ -278,7 +279,53 @@ export {
 	LocalWorkerOptionsError,
 	LocalWorkerPoolError,
 } from "./workers/local-worker-pool-errors.js";
-export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
+export type {
+	SerializedWorkerPlacementError,
+	SharedPoolOperation,
+	SharedPoolSetupErrorCode,
+	SharedPoolSetupProblem,
+	StaleStageLeaseReason,
+	WorkerPlacementConfigErrorCode,
+	WorkerPlacementConfigSource,
+	WorkerPlacementErrorCode,
+	WorkspaceBindingIdentity,
+	WorkspaceRestoreUnavailableReason,
+} from "./workers/placement-errors.js";
+export {
+	isSharedPoolSetupError,
+	isStaleStageLeaseError,
+	isWorkerPlacementConfigError,
+	isWorkerPlacementError,
+	isWorkspaceRestoreUnavailableError,
+	rehydrateWorkerPlacementError,
+	SharedPoolSetupError,
+	StaleStageLeaseError,
+	serializeWorkerPlacementError,
+	WorkerPlacementConfigError,
+	WorkerPlacementError,
+	WorkspaceRestoreUnavailableError,
+} from "./workers/placement-errors.js";
+export type {
+	LocalWorkerOptions,
+	WorkflowAdmissionOptions,
+	WorkflowWorkerPlacementOptions,
+} from "./workers/public-options.js";
+export { DEFAULT_PLACEMENT_CLAIM_WINDOW_MS } from "./workers/public-options.js";
+export { startWorkflowWorkerHost } from "./workers/worker-host.js";
+export type {
+	SharedJournalSelection,
+	WorkerHostFailure,
+	WorkerHostGit,
+	WorkflowWorkerHost,
+	WorkflowWorkerHostOptions,
+	WorkflowWorkerHostStats,
+} from "./workers/worker-host-types.js";
+export type {
+	WorkspaceBinding,
+	WorkspaceHookOptions,
+	WorkspacePreference,
+	WorkspaceRestore,
+} from "./workers/workspace-binding.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 export { createRegistry } from "./workflows/registry.js";

@@ -187,6 +187,8 @@ interface BunSpawnOptions {
 	stdout?: StdioOption;
 	stderr?: StdioOption;
 	timeout?: number;
+	/** Start the process in its own process group, which a test can then kill as a whole. */
+	detached?: boolean;
 }
 
 function isStdinData(value: StdinOption): value is Buffer | Uint8Array | string {
@@ -329,7 +331,7 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 		cwd: options.cwd,
 		env: environment(options.env),
 		timeout: options.timeout,
-		detached: (options as { detached?: boolean }).detached,
+		detached: options.detached,
 		shell: isShim,
 		stdio: [
 			stdio(options.stdin as StdioOption, "ignore"),

@@ -1,3 +1,5 @@
+import type { WorkspaceBinding } from "./workspace-binding.js";
+
 export interface WorkflowAdmissionOptions {
 	readonly limits?: { readonly session?: number; readonly process?: number };
 	readonly userLimits?: { readonly session?: number; readonly process?: number };
@@ -36,8 +38,34 @@ export interface LocalWorkerOptions {
 /** Load per CPU above which pooled stages wait to start, unless `localWorkers.maxLoadPerCpu` says otherwise. */
 export const DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU = 3;
 
+/** How long bound work may wait unclaimed before it fails, unless `workers.claimWindowMs` says otherwise. */
+export const DEFAULT_PLACEMENT_CLAIM_WINDOW_MS = 60_000;
+
+/**
+ * Where a root's pooled children run (#4310). `placement: "shared"` keeps the pool's work queue, leases, admission state
+ * and stage inputs in the root's journal, which must be a shared journal every host opens through a storage adapter
+ * (libSQL/Turso), so worker hosts started with `startWorkflowWorkerHost` on other machines run the root's children, and
+ * the root can resume on any host that opens the journal. Requires `localWorkers`. Saved with the root.
+ */
+export interface WorkflowWorkerPlacementOptions {
+	readonly placement: "shared";
+	/**
+	 * The repository state the root's pooled children run against. Work with a binding runs only on a host that has its
+	 * tree warm or can restore it, never in the root's directory on another host. Unset: no affinity, and any host runs
+	 * the children in the root's recorded working directory.
+	 */
+	readonly workspace?: WorkspaceBinding;
+	/**
+	 * How long, in milliseconds, bound work may wait unclaimed while no live host can restore it, before the child fails
+	 * with `WorkspaceRestoreUnavailableError`. Default {@link DEFAULT_PLACEMENT_CLAIM_WINDOW_MS}.
+	 */
+	readonly claimWindowMs?: number;
+}
+
 export interface WorkflowExecutionResources {
 	readonly localWorkers?: LocalWorkerOptions;
+	/** Shared placement of the root's pooled children (#4310). */
+	readonly workers?: WorkflowWorkerPlacementOptions;
 	/**
 	 * Set when the root's journal is in another database than the pool's: the machine whose pool database holds the
 	 * root's work queue and leases, which only that machine's coordinator can see, and the name of that database.

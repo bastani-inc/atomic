@@ -137,7 +137,7 @@ test("requests that take or end an attempt are barriers, and commits and heartbe
 			(kind) => WORKER_REQUEST_LANES[kind] === lane,
 		);
 	assert.deepEqual(lanes("barrier"), ["ready", "claim", "fenced", "recycle", "complete"]);
-	assert.deepEqual(lanes("commits"), ["commit"]);
+	assert.deepEqual(lanes("commits"), ["commit", "stage-workspace"]);
 	assert.deepEqual(lanes("heartbeats"), ["heartbeat", "control"]);
 	assert.deepEqual(lanes("acknowledgements"), ["controlled"]);
 	assert.deepEqual(lanes("free"), ["budget", "route"]);

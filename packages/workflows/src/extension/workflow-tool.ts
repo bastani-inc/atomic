@@ -12,6 +12,7 @@ import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { isFullRunId } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
+import { sharedPoolStatus } from "../workers/shared-pool-status.js";
 import type { ExtensionAPI, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -255,7 +256,12 @@ export function makeExecuteWorkflowTool(
 									runId: durable.detail.runId,
 									summary: buildWorkflowRunStatusDigest(durable.detail),
 								}
-							: { action: "statusDetail", runId: durable.detail.runId, detail: durable.detail };
+							: {
+									action: "statusDetail",
+									runId: durable.detail.runId,
+									detail: durable.detail,
+									...(await sharedPoolStatus(availableStoreDurableBackend(store), durable.detail.runId)),
+								};
 					}
 					if (!isResolvedRunId(resolved)) {
 						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
@@ -276,6 +282,7 @@ export function makeExecuteWorkflowTool(
 						action: "statusDetail" as const,
 						runId: inspected.runId,
 						detail: inspected.detail,
+						...(await sharedPoolStatus(availableStoreDurableBackend(store), inspected.runId)),
 					};
 					setWorkflowStatusRenderRuns(detailResult, store.graphSnapshot().runs);
 					return detailResult;

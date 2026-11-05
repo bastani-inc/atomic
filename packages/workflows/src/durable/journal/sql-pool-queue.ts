@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow, StorageError } from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
+import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
 import { durableHash } from "../durable-hash.js";
 import { ForkError, ForkSessionClaimError, type ForkSessionClaimReason } from "../fork-errors.js";
@@ -111,6 +112,27 @@ type WorkRow = SqliteRow & {
 	fingerprint: string;
 };
 type WorkLease = Pick<PoolWork, "id" | "generation" | "worker" | "epoch">;
+/** The workspace binding a child carries in its execution, as SQL reads it from a work row's descriptor. */
+const WORKSPACE_BINDING = "json_extract(descriptor, '$.execution.workspaceBinding')";
+function compatibleClause(definitions: number): string {
+	return Array.from(
+		{ length: definitions },
+		() => "(json_extract(descriptor, '$.definition') = ? AND json_extract(descriptor, '$.digest') = ?)",
+	).join(" OR ");
+}
+/**
+ * Which ready work a claim may take (shared placement, #4310): only work without a workspace binding, as the root's
+ * own workers take it, or exactly one ready item a worker host chose by its binding. Unset: any ready work.
+ */
+export type PoolClaimPlacement =
+	| { readonly kind: "unbound" }
+	| { readonly kind: "work"; readonly id: string; readonly generation: number };
+/** A ready work item a worker host may choose, with the workspace binding its child carries, if any. */
+export interface PoolClaimCandidate {
+	readonly id: string;
+	readonly generation: number;
+	readonly workspace?: WorkspaceBinding;
+}
 type OutboxRow = SqliteRow & {
 	work: string;
 	generation: number;
@@ -339,6 +361,10 @@ export class SqlPoolQueue {
 			)) !== undefined
 		);
 	}
+	/**
+	 * The root's control state for its workers. A read: every idle worker asks on each loop, and a write lock per ask
+	 * would queue every host of a shared journal behind it (#4310).
+	 */
 	async control(lease: Lease): Promise<PoolControl> {
 		return this.storage.read(async (executor) => {
 			await this.authority(executor, lease);
@@ -661,14 +687,13 @@ export class SqlPoolQueue {
 		worker: string,
 		definitions: readonly Pick<PoolWorkDescriptor, "definition" | "digest">[],
 		durationMs: number,
+		placement?: PoolClaimPlacement,
 	): Promise<PoolWork | undefined> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
 		const compatibleDefinitions = definitions.flatMap((d) => [d.definition, d.digest]);
 		validateText("holderId", worker);
-		const compatible = definitions
-			.map(() => "(json_extract(descriptor, '$.definition') = ? AND json_extract(descriptor, '$.digest') = ?)")
-			.join(" OR ");
+		const compatible = compatibleClause(definitions.length);
 		if (this.remote) {
 			await this.remote.fresh(lease);
 			// No work is handed out while an event this root's workers were told is committed is missing from the
@@ -682,6 +707,12 @@ export class SqlPoolQueue {
 				return undefined;
 			}
 		}
+		const placed =
+			placement === undefined
+				? { clause: "", args: [] }
+				: placement.kind === "unbound"
+					? { clause: `AND ${WORKSPACE_BINDING} IS NULL`, args: [] }
+					: { clause: "AND id = ? AND generation = ?", args: [placement.id, placement.generation] };
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const control = await tx.get(`SELECT state FROM ${this.roots}_control WHERE root = ?`, lease.runId);
@@ -690,11 +721,12 @@ export class SqlPoolQueue {
 			// Only work this root incarnation enqueued: the root cannot accept an attempt of a child it has not
 			// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
 			const row = await tx.get<WorkRow>(
-				`SELECT * FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ? AND (${compatible}) ORDER BY ready_at, rowid LIMIT 1`,
+				`SELECT * FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ? AND (${compatible}) ${placed.clause} ORDER BY ready_at, rowid LIMIT 1`,
 				lease.runId,
 				lease.epoch,
 				now,
 				...compatibleDefinitions,
+				...placed.args,
 			);
 			if (!row) return undefined;
 			const generation = journalCounter(lease.runId, "epoch", Number(row.generation) + 1, "overflow");
@@ -710,6 +742,78 @@ export class SqlPoolQueue {
 			);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, row.id))!);
 		});
+	}
+	/**
+	 * The oldest work this root incarnation may hand out now, up to `limit` items, with each item's workspace binding:
+	 * what a worker host chooses from before it claims one item by id (shared placement only). Read without the write
+	 * lock; a claim re-checks everything.
+	 */
+	async readyCandidates(
+		lease: Lease,
+		definitions: readonly Pick<PoolWorkDescriptor, "definition" | "digest">[],
+		limit: number,
+	): Promise<readonly PoolClaimCandidate[]> {
+		if (definitions.length === 0) return [];
+		const rows = await this.storage.read((executor) =>
+			executor.all<SqliteRow & { id: string; generation: number; workspace: string | null }>(
+				`SELECT id, generation, ${WORKSPACE_BINDING} AS workspace FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${STORE_NOW} AND (${compatibleClause(definitions.length)}) ORDER BY ready_at, rowid LIMIT ?`,
+				lease.runId,
+				lease.epoch,
+				...definitions.flatMap((d) => [d.definition, d.digest]),
+				limit,
+			),
+		);
+		return rows.map((row) => ({
+			id: row.id,
+			generation: Number(row.generation),
+			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
+		}));
+	}
+	/**
+	 * Fails ready work of this root incarnation that no worker may take, as bound work no capable host claimed within
+	 * its claim window: no worker claims it again in this incarnation. False when it is no longer that ready work.
+	 */
+	async failUnclaimed(lease: Lease, token: Pick<PoolWork, "id" | "generation">): Promise<boolean> {
+		lease = snapshotLease(lease);
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const failed = await tx.run(
+				`UPDATE ${this.work} SET state = 'failed', worker = NULL, expires_at = 0 WHERE id = ? AND root = ? AND state = 'ready' AND generation = ? AND epoch = ?`,
+				token.id,
+				lease.runId,
+				token.generation,
+				lease.epoch,
+			);
+			return failed.changes === 1;
+		});
+	}
+	/**
+	 * In `tx`: whether `token` still holds its unexpired work lease in the incarnation that holds the root's lease
+	 * `lease`, as every write of an attempt checks it. Returns the database time, or undefined when another attempt,
+	 * epoch or nothing holds the work. A root lease that is not `lease` throws {@link StaleLeaseError}. A per-stage lease
+	 * is fenced by it: whatever an attempt writes for a stage, it writes only while it holds the stage's work.
+	 */
+	async attemptStanding(tx: SqliteExecutor, lease: Lease, token: WorkLease): Promise<number | undefined> {
+		const { now } = await this.authority(tx, snapshotLease(lease));
+		const row = await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`, token.id, lease.runId);
+		return row?.state === "leased" &&
+			row.epoch === token.epoch &&
+			row.epoch === lease.epoch &&
+			row.generation === token.generation &&
+			row.worker === token.worker &&
+			row.expires_at >= now
+			? now
+			: undefined;
+	}
+	/** {@link attemptStanding}, refusing a replaced attempt as every other attempt write does. */
+	async assertAttemptIn(tx: SqliteExecutor, lease: Lease, token: WorkLease): Promise<number> {
+		const now = await this.attemptStanding(tx, lease, token);
+		if (now === undefined) throw new Error(STALE_WORK_LEASE);
+		return now;
+	}
+	/** In `tx`: that the root's lease is `lease` and current; the database time. */
+	async assertRootIn(tx: SqliteExecutor, lease: Lease): Promise<number> {
+		return (await this.authority(tx, snapshotLease(lease))).now;
 	}
 	private async admitsAttemptWrites(tx: SqliteExecutor, lease: Lease, status: string): Promise<boolean> {
 		if (status === "running") return true;
@@ -1243,6 +1347,7 @@ export class SqlPoolQueue {
 			return released.changes;
 		});
 	}
+	/** Every work item of `root`. A read: each coordinator's recovery asks every half second. */
 	async inspect(root: string): Promise<readonly PoolWork[]> {
 		return this.storage.read(async (executor) =>
 			(await executor.all<WorkRow>(`SELECT * FROM ${this.work} WHERE root = ? ORDER BY ready_at, rowid`, root)).map(

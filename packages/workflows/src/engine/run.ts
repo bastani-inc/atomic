@@ -213,7 +213,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		}
 		const publicResources =
 			opts.parentRun === undefined &&
-			(opts.localWorkers || opts.admission || backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
+			(opts.localWorkers ||
+				opts.admission ||
+				opts.workers ||
+				backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
 		if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
 		const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
 		try {

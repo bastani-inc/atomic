@@ -315,6 +315,11 @@ export interface RunOpts {
 	readonly localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
 	readonly admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
 	/**
+	 * Shared placement of the root's pooled children (#4310): with `placement: "shared"` and a journal every host opens
+	 * through a storage adapter, worker hosts on other machines run the children too. Requires `localWorkers`.
+	 */
+	readonly workers?: import("../workers/public-options.js").WorkflowWorkerPlacementOptions;
+	/**
 	 * Resume a root whose local worker definitions' entry modules were edited since it last ran (#4200). Without it that
 	 * resume is refused, naming each edited module. With it the recorded steps of the root and its children replay from
 	 * the journal, and its queued children that have not finished run the edited modules. Replay compatibility then
