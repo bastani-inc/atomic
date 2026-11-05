@@ -119,8 +119,10 @@ test("every released and parked child of an owner is reserved in one request, wh
 	await reserveReleasedChildrenOf(events, ownerSessionId);
 
 	assert.equal(emitted.length, 1, "one request, not one per child");
-	const children = (emitted[0]?.data as { children: ReleasedChildReservation[] }).children;
-	assert.equal(emitted[0]?.channel, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
+	const [request] = emitted;
+	assert.ok(request);
+	const children = (request.data as { children: ReleasedChildReservation[] }).children;
+	assert.equal(request.channel, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
 	assert.equal(children.length, 1_202);
 	assert.equal(children.filter((child) => child.wake).length, 1_201);
 	assert.equal(children.filter((child) => !child.wake).length, 1);
@@ -133,7 +135,9 @@ test("a binding reserves the owner's released children when it starts and again 
 
 	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
 	assert.equal(reserves().length, 1, "at start");
-	assert.equal((reserves()[0]?.data as { children: unknown[] }).children.length, 2, ownerSessionId);
+	const [atStart] = reserves();
+	assert.ok(atStart);
+	assert.equal((atStart.data as { children: unknown[] }).children.length, 2, ownerSessionId);
 
 	for (const handler of listeners.get(INTERCOM_CONNECTED_EVENT) ?? []) handler({ sessionId: "icom" });
 	assert.equal(reserves().length, 2, "after a reconnect the broker has forgotten them");

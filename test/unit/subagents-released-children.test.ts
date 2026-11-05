@@ -325,7 +325,9 @@ test("a released child's name and ids are reserved for waking in one request, an
 	);
 	const requests = events.emitted.filter((entry) => entry.channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
 	assert.equal(requests.length, 1);
-	assert.deepEqual((requests[0]?.data as { children: unknown[] }).children, [
+	const [request] = requests;
+	assert.ok(request);
+	assert.deepEqual((request.data as { children: unknown[] }).children, [
 		{ childName: "child-1", group: "lane", aliases: ["session-1", "intercom-id-1"], wake: true },
 	]);
 
