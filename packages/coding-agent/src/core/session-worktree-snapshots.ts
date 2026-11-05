@@ -232,7 +232,6 @@ export async function resumeSessionWorktree(
 	try {
 		restored = await restoreWorktree(snapshot, {
 			blobs: sessionSnapshotBlobs(sessionManager.getSessionStore().snapshotBlobs, sessionManager.getEntries()),
-			settings: options.settings,
 			storeDir: options.storeDir,
 			signal: options.signal,
 		});
@@ -291,6 +290,8 @@ export function formatWorktreeRestoreWarning(warning: WorktreeRestoreWarning): s
 				.join(", ")}); the restore holds Git's stored content with LF line endings`;
 		case "lfs-objects-unavailable":
 			return `Git LFS objects could not be fetched; these files hold LFS pointers: ${warning.paths.join(", ")}`;
+		case "stale-restore-retained":
+			return `A restore interrupted earlier left ${warning.path}; remove it with removeRestoredWorktree or delete the directory`;
 	}
 }
 
@@ -524,7 +525,15 @@ export async function openSessionInWorktree(
 	const opened = moved
 		? await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, options.sessionDirectory)
 		: sessionManager;
-	return { sessionManager: opened, notices: worktreeRestoreNotices(opened, startedAt) };
+	const notices = worktreeRestoreNotices(opened, startedAt);
+	if (resume.status === "restored") {
+		for (const warning of resume.warnings) {
+			if (warning.code === "stale-restore-retained" || warning.code === "lfs-objects-unavailable") {
+				notices.push({ type: "warning", message: formatWorktreeRestoreWarning(warning) });
+			}
+		}
+	}
+	return { sessionManager: opened, notices };
 }
 
 /**

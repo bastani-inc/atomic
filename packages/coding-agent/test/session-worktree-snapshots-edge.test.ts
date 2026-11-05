@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
@@ -81,7 +91,7 @@ async function repoHarness(
 ): Promise<{ harness: Harness; cwd: string }> {
 	const harness = await harnessFor(manager, options);
 	const cwd = harness.tempDir;
-	const remote = sandbox.path("session-remote.git");
+	const remote = sandbox.path(`session-${manager.getSessionId()}.git`);
 	await sandbox.git(sandbox.root, "init", "-q", "--bare", remote);
 	await sandbox.git(cwd, "init", "-q", "-b", "main");
 	sandbox.write(join(cwd, "README.md"), "session repo\n");
@@ -351,6 +361,33 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		assert.equal(different.status, "restored");
 	});
 
+	test("resuming twice on a host that excludes a recorded file reuses the first restored worktree (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "notes.log"), "recorded\n");
+		const store = await sqlStore();
+		const capture = await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+		assert.equal(capture.status, "captured");
+		if (capture.status !== "captured") return;
+		const manager = await SessionManager.create(store, clone);
+		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+		renameSync(clone, sandbox.path("original-away"));
+		const excludes = sandbox.path("excludes");
+		writeFileSync(excludes, "*.log\n");
+		writeFileSync(
+			sandbox.globalConfig,
+			`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\texcludesFile = ${excludes}\n`,
+		);
+		const storeDir = sandbox.path("host");
+		const first = await resumeSessionWorktree(manager, { settings, storeDir });
+		assert.equal(first.status, "restored");
+		if (first.status !== "restored") return;
+		assert.equal(readFileSync(join(first.mapping.to, "notes.log"), "utf8"), "recorded\n");
+		const second = await resumeSessionWorktree(manager, { settings, storeDir });
+		assert.equal(second.status, "verified");
+		assert.deepEqual(readdirSync(join(storeDir, "worktrees")), [first.mapping.to.split(/[\\/]/).at(-1)]);
+		assert.equal(manager.getWorktreeRootMappings().length, 1);
+	});
+
 	test("a checkout that no longer exists is restored from its snapshot, keeping the working subdirectory", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "src/a.txt": "a\n" });
 		const store = await sqlStore();
@@ -485,6 +522,33 @@ describe("opening a session where it continues", () => {
 		assert.equal(verifiedElsewhere.sessionManager.getCwd(), mapping.to);
 		assert.deepEqual(verifiedElsewhere.notices, []);
 	});
+
+	test("a stale-restore warning appears once when a session resumes without duplicating snapshot warnings (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const store = await sqlStore();
+		sandbox.write(join(clone, "x.txt"), "recorded\n");
+		sandbox.write(join(clone, ".env"), "omitted secret\n");
+		const capture = await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+		assert.equal(capture.status, "captured");
+		if (capture.status !== "captured") return;
+		const manager = await SessionManager.create(store, clone);
+		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+		writeFileSync(join(clone, "x.txt"), "drift\n");
+		const storeDir = sandbox.path("host");
+		mkdirSync(join(storeDir, "restores"), { recursive: true });
+		const brokenRecord = join(storeDir, "restores", `${randomUUID()}.json`);
+		writeFileSync(brokenRecord, "{");
+		const resumed = await openSessionInWorktree(manager, { settings, storeDir });
+		assert.deepEqual(resumed.notices, [
+			{ type: "info", message: formatWorktreeRestoreNotice(manager.getWorktreeRootMappings()[0]!) },
+			{ type: "warning", message: "The restored snapshot left out 1 item(s): .env (denied)" },
+			{
+				type: "warning",
+				message: `A restore interrupted earlier left ${brokenRecord}; remove it with removeRestoredWorktree or delete the directory`,
+			},
+		]);
+		assert.equal(existsSync(brokenRecord), true);
+	});
 });
 
 describe("restore notices", () => {
@@ -563,6 +627,10 @@ describe("restore notices", () => {
 		assert.equal(
 			formatWorktreeRestoreWarning({ code: "lfs-objects-unavailable", paths: ["a.bin", "docs/b.bin"] }),
 			"Git LFS objects could not be fetched; these files hold LFS pointers: a.bin, docs/b.bin",
+		);
+		assert.equal(
+			formatWorktreeRestoreWarning({ code: "stale-restore-retained", path: "/work/unfinished" }),
+			"A restore interrupted earlier left /work/unfinished; remove it with removeRestoredWorktree or delete the directory",
 		);
 	});
 });

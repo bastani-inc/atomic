@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, mkdir, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import lockfile from "proper-lockfile";
 import { getAgentDir } from "../../config.js";
 import { locateCheckout, readRepositoryConfig, withScratchDirectory, writeWorkingTree } from "./capture.ts";
 import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
@@ -11,6 +12,7 @@ import {
 	unwritablePathError,
 	WorkspaceConfigError,
 	WorkspaceDriftError,
+	WorkspaceGitError,
 	WorkspaceRestoreError,
 	type WorkspaceRestoreErrorFields,
 } from "./errors.ts";
@@ -29,8 +31,6 @@ export interface RestoreWorktreeSnapshotOptions {
 	readonly snapshots?: readonly WorktreeSnapshot[];
 	/** Host directory for the shared per-repository object stores and default worktrees. Default ~/.atomic/agent/worktree-snapshots. */
 	readonly storeDir?: string;
-	/** Settings the snapshot was captured with; verification applies the same exclusions. */
-	readonly settings?: WorktreeSnapshotSettingsInput;
 	readonly onWarning?: (warning: WorktreeRestoreWarning) => void;
 	readonly signal?: AbortSignal;
 }
@@ -129,6 +129,252 @@ async function withRepositoryLock<T>(store: string, action: () => Promise<T>): P
 	} finally {
 		release();
 		if (repositoryLocks.get(store) === chained) repositoryLocks.delete(store);
+	}
+}
+
+/** A stopped process loses its restore lock after 30 seconds; active processes refresh it every 10 seconds. */
+const RESTORE_LOCK_STALE_MS = 30_000;
+const RESTORE_LOCK_UPDATE_MS = 10_000;
+
+interface RestoreRecord {
+	readonly staging: string;
+	readonly target: string;
+	readonly store: string;
+	readonly createdTarget: boolean;
+}
+
+/** Validate crash records before using their paths. Only Atomic's staging name and per-repository store are valid. */
+function isRestoreRecord(value: unknown, storeDir: string, id: string): value is RestoreRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as Partial<RestoreRecord>;
+	if (
+		typeof record.staging !== "string" ||
+		typeof record.target !== "string" ||
+		typeof record.store !== "string" ||
+		typeof record.createdTarget !== "boolean" ||
+		resolve(record.target) !== record.target ||
+		resolve(record.staging) !== record.staging ||
+		resolve(record.store) !== record.store ||
+		dirname(record.store) !== join(storeDir, "repositories") ||
+		!/^[0-9a-f]{24}\.git$/.test(basename(record.store))
+	)
+		return false;
+	const defaultStaging = join(storeDir, "worktrees", `.staging-${id}`);
+	const siblingStaging = join(dirname(record.target), `.${basename(record.target)}.atomic-restore-${id}`);
+	return (
+		record.staging === siblingStaging ||
+		(record.staging === defaultStaging && dirname(record.target) === join(storeDir, "worktrees"))
+	);
+}
+
+/** Git's registered worktree paths, without shell quoting or newline ambiguity. */
+async function registeredWorktrees(git: GitRunOptions): Promise<string[]> {
+	return nulFields((await runGit(["worktree", "list", "--porcelain", "-z"], git)).stdout)
+		.filter((field) => field.startsWith("worktree "))
+		.map((field) => field.slice("worktree ".length));
+}
+
+function includesPath(paths: readonly string[], target: string): boolean {
+	const normalized = resolve(target);
+	return paths.some((path) => {
+		const candidate = resolve(path);
+		return process.platform === "win32"
+			? candidate.toLowerCase() === normalized.toLowerCase()
+			: candidate === normalized;
+	});
+}
+
+async function physicalPath(path: string): Promise<string> {
+	try {
+		return await realpath(path);
+	} catch (error) {
+		throw unreadablePathError(path, error);
+	}
+}
+
+/** Remove a registered or partially initialized staging worktree, then restore a previously empty target if needed. */
+async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): Promise<void> {
+	const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store }, signal };
+	let entry: Stats | undefined;
+	let registeredPath = record.staging;
+	try {
+		entry = await lstat(record.staging);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(record.staging, error);
+	}
+	if (entry) {
+		if (entry.isDirectory()) registeredPath = await physicalPath(record.staging);
+		if (!entry.isDirectory() || !includesPath(await registeredWorktrees(git), registeredPath)) {
+			throw new WorkspaceRestoreError("unsafe-target", {
+				snapshotId: null,
+				target: record.staging,
+				reason: "not-restored",
+			});
+		}
+	}
+	const removed = await runGit(["worktree", "remove", "--force", "--force", record.staging], {
+		...git,
+		allowExitCodes: [128],
+	});
+	if (entry && removed.exitCode !== 0) {
+		throw new WorkspaceGitError({
+			operation: "worktree remove",
+			cwd: git.cwd,
+			exitCode: removed.exitCode,
+			detail: "could not remove the staging worktree",
+		});
+	}
+	await writing(record.staging, null, () => rm(record.staging, { recursive: true, force: true }));
+	if (!record.createdTarget && (await statIfPresent(record.target)) === undefined) {
+		await writing(record.target, null, () => mkdir(record.target, { recursive: true }));
+	}
+	await runGit(["worktree", "prune"], git);
+	if (includesPath(await registeredWorktrees(git), registeredPath)) {
+		throw new WorkspaceGitError({
+			operation: "worktree prune",
+			cwd: git.cwd,
+			exitCode: null,
+			detail: "the staging worktree is still registered",
+		});
+	}
+}
+
+/** Sweep only unlocked or stale records, leaving active processes' staging worktrees alone. */
+async function sweepRestoreRecords(
+	storeDir: string,
+	warn: (warning: WorktreeRestoreWarning) => void,
+	signal?: AbortSignal,
+): Promise<void> {
+	signal?.throwIfAborted();
+	const recordsDir = join(storeDir, "restores");
+	let names: string[];
+	try {
+		names = await readdir(recordsDir);
+	} catch (error) {
+		signal?.throwIfAborted();
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		warn({ code: "stale-restore-retained", path: recordsDir });
+		return;
+	}
+	for (const name of names) {
+		signal?.throwIfAborted();
+		const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/.exec(name);
+		if (!match) continue;
+		const recordPath = join(recordsDir, name);
+		let release: (() => Promise<void>) | undefined;
+		let compromised: Error | undefined;
+		let warningPath = recordPath;
+		try {
+			release = await lockfile.lock(recordPath, {
+				realpath: false,
+				stale: RESTORE_LOCK_STALE_MS,
+				update: RESTORE_LOCK_UPDATE_MS,
+				retries: 0,
+				onCompromised: (error) => {
+					compromised = error;
+				},
+			});
+			const record: unknown = JSON.parse(await readFile(recordPath, "utf8"));
+			if (!isRestoreRecord(record, storeDir, match[1]!)) throw new Error("Invalid restore crash record");
+			warningPath = record.staging;
+			await withRepositoryLock(record.store, () => cleanRestoreRecord(record, signal));
+			if (compromised) throw compromised;
+			await rm(recordPath);
+		} catch (error) {
+			signal?.throwIfAborted();
+			const code = (error as NodeJS.ErrnoException).code;
+			if (!(release === undefined && code === "ELOCKED") && !(warningPath === recordPath && code === "ENOENT")) {
+				warn({ code: "stale-restore-retained", path: warningPath });
+			}
+		} finally {
+			if (release) {
+				try {
+					await release();
+				} catch {
+					if (!compromised) warn({ code: "stale-restore-retained", path: warningPath });
+				}
+			}
+		}
+	}
+}
+
+/** Hold a crash record lock throughout staging and publication; preserve the primary failure if cleanup fails. */
+async function withRestoreRecord(
+	storeDir: string,
+	id: string,
+	record: RestoreRecord,
+	snapshotId: string | null,
+	warn: (warning: WorktreeRestoreWarning) => void,
+	signal: AbortSignal | undefined,
+	action: (assertActive: () => void) => Promise<void>,
+): Promise<void> {
+	const recordsDir = join(storeDir, "restores");
+	const recordPath = join(recordsDir, `${id}.json`);
+	await writing(recordsDir, snapshotId, () => mkdir(recordsDir, { recursive: true }));
+	let compromised: Error | undefined;
+	const release = await writing(recordPath, snapshotId, () =>
+		lockfile.lock(recordPath, {
+			realpath: false,
+			stale: RESTORE_LOCK_STALE_MS,
+			update: RESTORE_LOCK_UPDATE_MS,
+			retries: 0,
+			onCompromised: (error) => {
+				compromised = error;
+			},
+		}),
+	);
+	let recorded = false;
+	let primary: unknown;
+	const assertActive = () => {
+		signal?.throwIfAborted();
+		if (compromised) {
+			throw new WorkspaceGitError(
+				{
+					operation: "worktree restore",
+					cwd: record.staging,
+					exitCode: null,
+					detail: "the staging lock was lost",
+				},
+				compromised,
+			);
+		}
+	};
+	try {
+		await writing(recordPath, snapshotId, () =>
+			writeFile(recordPath, JSON.stringify(record), { flag: "wx", mode: 0o600 }),
+		);
+		recorded = true;
+		assertActive();
+		await action(assertActive);
+		assertActive();
+		try {
+			await rm(recordPath);
+		} catch {
+			warn({ code: "stale-restore-retained", path: record.staging });
+		}
+	} catch (error) {
+		primary = error;
+		if (recorded) {
+			try {
+				await cleanRestoreRecord(record);
+				await rm(recordPath);
+			} catch (cleanupCause) {
+				if (error instanceof Error)
+					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
+				warn({ code: "stale-restore-retained", path: record.staging });
+			}
+		}
+		throw error;
+	} finally {
+		try {
+			await release();
+		} catch (error) {
+			if (primary instanceof Error && !Object.hasOwn(primary, "cleanupCause")) {
+				Object.defineProperty(primary, "cleanupCause", { value: error, configurable: true });
+			} else if (primary === undefined) {
+				warn({ code: "stale-restore-retained", path: record.staging });
+			}
+		}
 	}
 }
 
@@ -357,7 +603,7 @@ export async function restoreWorktree(
 	if (options.into !== undefined && (typeof options.into !== "string" || options.into.length === 0)) {
 		throw new WorkspaceConfigError("sdk", "into", "a directory path");
 	}
-	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
+	const settings = resolveWorktreeSnapshotSettings(undefined, "sdk", "settings");
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
 	assertUsableSnapshotRecord(target, snapshot);
@@ -378,10 +624,16 @@ export async function restoreWorktree(
 			)
 		: [];
 	const warnings: WorktreeRestoreWarning[] = [];
+	const retained = new Set<string>();
 	const warn = (warning: WorktreeRestoreWarning) => {
+		if (warning.code === "stale-restore-retained") {
+			if (retained.has(warning.path)) return;
+			retained.add(warning.path);
+		}
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
+	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
 		const store = await ensureObjectStore(storeDir, target.remotes, snapshotId, signal);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
@@ -403,13 +655,19 @@ export async function restoreWorktree(
 				await reconstructTree(git, snapshot, patches, scratch);
 			}
 		});
-		const created = (await statIfPresent(path)) === undefined;
-		let failure: Error | undefined;
-		try {
-			await writing(path, snapshotId, () => mkdir(path, { recursive: true }));
-			await materialize(git, path, target.head, target.tree, scratch, snapshotId, signal);
+		await checkTarget(path, snapshotId);
+		const createdTarget = (await statIfPresent(path)) === undefined;
+		const id = randomUUID();
+		const staging =
+			options.into === undefined
+				? join(storeDir, "worktrees", `.staging-${id}`)
+				: join(dirname(path), `.${basename(path)}.atomic-restore-${id}`);
+		const record: RestoreRecord = { staging, target: path, store, createdTarget };
+		await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
+			await materialize(git, staging, target.head, target.tree, scratch, snapshotId, signal);
+			assertActive();
 			if (snapshot?.filters?.drivers.includes("lfs")) {
-				const worktree: GitRunOptions = { cwd: path, signal };
+				const worktree: GitRunOptions = { cwd: staging, signal };
 				try {
 					await runGit(["lfs", "pull"], worktree);
 				} catch (error) {
@@ -417,11 +675,16 @@ export async function restoreWorktree(
 					warn({ code: "lfs-objects-unavailable", paths: await lfsPaths(worktree) });
 				}
 			}
-			const checkout = await locateCheckout(path, signal);
+			const checkout = await locateCheckout(staging, signal);
 			if (checkout instanceof Error) throw checkout;
-			const policy = await loadSnapshotPathPolicy(path);
+			const policy = await loadSnapshotPathPolicy(staging);
 			const actual = await withScratchDirectory((verifyScratch) =>
-				writeWorkingTree(checkout, settings, policy, verifyScratch, { signal, neutral: true }),
+				writeWorkingTree(checkout, settings, policy, verifyScratch, {
+					signal,
+					neutral: true,
+					seedTree: target.tree,
+					attributesFile: join(scratch, "empty-attributes"),
+				}),
 			);
 			if (checkout.head !== target.head || actual.tree !== target.tree) {
 				throw new WorkspaceRestoreError("tree-mismatch", {
@@ -431,15 +694,34 @@ export async function restoreWorktree(
 					actualTree: actual.tree,
 				});
 			}
-		} catch (error) {
-			failure = error as Error;
-			try {
-				await removeWorktree(git, path, created, snapshotId);
-			} catch (cleanupCause) {
-				Object.defineProperty(failure, "cleanupCause", { value: cleanupCause, configurable: true });
+			assertActive();
+			if (createdTarget) {
+				if ((await statIfPresent(path)) !== undefined) {
+					throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+				}
+			} else {
+				await writing(path, snapshotId, () => rmdir(path));
 			}
-			throw failure;
-		}
+			await runGit(["worktree", "move", staging, path], git);
+			// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
+			// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone.
+			const registered = await registeredWorktrees(git);
+			const destination = await physicalPath(path);
+			if (!includesPath(registered, destination)) {
+				const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+				const nested = join(destination, basename(staging));
+				if (includesPath(registered, nested)) {
+					try {
+						await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
+					} catch (cleanupCause) {
+						Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
+						warn({ code: "stale-restore-retained", path: nested });
+					}
+				}
+				throw error;
+			}
+			assertActive();
+		});
 		if (snapshot) for (const warning of snapshotRestoreWarnings(snapshot)) warn(warning);
 		return {
 			path,
@@ -467,12 +749,31 @@ async function statIfPresent(path: string): Promise<Stats | undefined> {
  */
 export async function removeRestoredWorktree(
 	path: string,
-	options: { readonly storeDir?: string; readonly signal?: AbortSignal } = {},
+	options: {
+		readonly storeDir?: string;
+		readonly signal?: AbortSignal;
+		readonly onWarning?: (warning: WorktreeRestoreWarning) => void;
+	} = {},
 ): Promise<void> {
 	const target = resolve(path);
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	const warned = new Set<string>();
+	await sweepRestoreRecords(
+		storeDir,
+		(warning) => {
+			if (warning.code !== "stale-restore-retained" || warned.has(warning.path)) return;
+			warned.add(warning.path);
+			if (options.onWarning) options.onWarning(warning);
+			else
+				process.emitWarning(
+					`A restore interrupted earlier left ${warning.path}; remove the directory and retry cleanup.`,
+				);
+		},
+		options.signal,
+	);
 	const entry = await statIfPresent(target);
 	if (entry === undefined) return;
-	const repositories = join(resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir()), "repositories");
+	const repositories = join(storeDir, "repositories");
 	const common = entry.isDirectory()
 		? await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
 				cwd: target,
@@ -509,7 +810,7 @@ export async function restoreWorktreeSnapshot(
 }
 
 export interface VerifyWorktreeOptions {
-	/** Settings the binding's snapshot was captured with, so the same paths are excluded. */
+	/** Snapshot settings that decide whether a file the recorded tree does not hold counts as drift. */
 	readonly settings?: WorktreeSnapshotSettingsInput;
 	readonly signal?: AbortSignal;
 }
@@ -529,9 +830,19 @@ export async function verifyWorktree(
 	assertUsableSnapshotRecord(binding, isSnapshot(binding) ? binding : null);
 	const checkout = await locateCheckout(dir, options.signal);
 	if (checkout instanceof Error) throw checkout;
+	if (!(await hasObject({ cwd: checkout.root, signal: options.signal }, `${binding.tree}^{tree}`))) {
+		throw new WorkspaceDriftError({
+			root: checkout.root,
+			expectedHead: binding.head,
+			actualHead: checkout.head,
+			expectedTree: binding.tree,
+			actualTree: null,
+			snapshotId: isSnapshot(binding) ? binding.id : null,
+		});
+	}
 	const policy = await loadSnapshotPathPolicy(checkout.root);
 	const state = await withScratchDirectory((scratch) =>
-		writeWorkingTree(checkout, settings, policy, scratch, { signal: options.signal }),
+		writeWorkingTree(checkout, settings, policy, scratch, { signal: options.signal, seedTree: binding.tree }),
 	);
 	if (checkout.head !== binding.head || state.tree !== binding.tree) {
 		throw new WorkspaceDriftError({

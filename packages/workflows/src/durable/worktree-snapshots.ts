@@ -146,7 +146,6 @@ export async function resolveWorkflowSnapshotFrontier(
 				worktree = await restoreWorktree(snapshot, {
 					blobs: journal.snapshotBlobs,
 					storeDir: options.storeDir,
-					settings: options.settings,
 					signal: options.signal,
 				});
 			} catch (cause) {
@@ -178,7 +177,7 @@ export async function resolveWorkflowSnapshotFrontier(
 		const cleanupFailures: unknown[] = [];
 		for (const mapping of restored.reverse()) {
 			try {
-				await removeRestoredWorktree(mapping.to, { storeDir: options.storeDir });
+				await removeRestoredWorktree(mapping.to, { storeDir: options.storeDir, onWarning: options.onWarning });
 			} catch (cleanupCause) {
 				cleanupFailures.push(cleanupCause);
 			}

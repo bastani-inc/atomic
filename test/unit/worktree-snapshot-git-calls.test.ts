@@ -186,13 +186,15 @@ describe("restore operation counts", () => {
 		await restoreWorktreeSnapshot(snapshot, { blobs, storeDir });
 		assert.equal(count("fetch"), 1);
 		assert.equal(count("apply"), 1);
-		assert.equal(count("worktree"), 1);
+		assert.equal(count("worktree add"), 1);
+		assert.equal(count("worktree move"), 1);
 		reset();
 		await restoreWorktreeSnapshot(snapshot, { blobs, storeDir });
 		assert.equal(count("fetch"), 0);
 		assert.equal(count("apply"), 0);
 		assert.equal(count("bundle"), 0);
-		assert.equal(count("worktree"), 1);
+		assert.equal(count("worktree add"), 1);
+		assert.equal(count("worktree move"), 1);
 		assert.equal(count("cat-file"), 2, "the head and the tree are each checked once");
 	});
 
@@ -208,7 +210,8 @@ describe("restore operation counts", () => {
 		assert.equal(new Set(paths).size, 4);
 		assert.equal(count("fetch"), 1);
 		assert.equal(count("apply"), 1);
-		assert.equal(count("worktree"), 4);
+		assert.equal(count("worktree add"), 4);
+		assert.equal(count("worktree move"), 4);
 	});
 
 	test("each distinct remote list gets its own shared store, named from a hash of the list", async () => {
@@ -277,7 +280,7 @@ describe("cleanup failures never replace the primary error", () => {
 		for (const directory of seen) assert.equal(existsSync(directory), false);
 	});
 
-	test("a worktree that cannot be removed after a failed restore is attached to the restore error", async () => {
+	test("a staging worktree that cannot be removed after a failed restore is attached to the restore error", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { ".gitattributes": "*.txt filter=mangle\n" });
 		sandbox.write(join(clone, "note.txt"), "alpha\n");
 		const blobs = new MemorySnapshotBlobStore();
@@ -296,8 +299,11 @@ describe("cleanup failures never replace the primary error", () => {
 				const cleanup = error.cleanupCause;
 				assert.ok(isWorkspaceRestoreError(cleanup));
 				assert.equal(cleanup.code, "unwritable-path");
-				assert.equal(cleanup.target, into);
-				assert.equal(cleanup.snapshotId, snapshot.id);
+				assert.ok(
+					cleanup.target?.startsWith(join(sandbox.root, ".restored-target.atomic-restore-")),
+					cleanup.target,
+				);
+				assert.equal(cleanup.snapshotId, null);
 				assert.equal((cleanup.cause as NodeJS.ErrnoException).code, "EBUSY");
 				return true;
 			},
