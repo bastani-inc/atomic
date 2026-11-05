@@ -1,4 +1,4 @@
-import type { BoundWorkspace } from "@bastani/atomic";
+import type { BoundWorkspace, WorkspaceWriterLease } from "@bastani/atomic";
 import type { WorkflowChildResult, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { boundaryTransitionError, resolveBoundaryLifecycle } from "./boundary-lifecycle.js";
@@ -49,7 +49,9 @@ export interface DurableChildInvocation {
 	readonly recordedWorkspace?: BoundWorkspace;
 	/** Workspace binding of this attempt, recorded with the boundary start. */
 	readonly workspace?: BoundWorkspace;
-	bindWorkspace(binding: BoundWorkspace): void;
+	/** Writer lease this attempt holds on the bound worktree, released when the child settles. */
+	readonly workspaceLease?: WorkspaceWriterLease;
+	bindWorkspace(binding: BoundWorkspace, lease: WorkspaceWriterLease | undefined): void;
 	/** Align a new boundary with an ordinary continuation result before recording its start. */
 	adoptReplayedChildRunId(runId: string): void;
 	recordStart(parentIds: readonly string[], sourceOrder: number): Promise<void>;
@@ -96,6 +98,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 	let terminalRecorded = false;
 	const recordedWorkspace = start?.topology?.boundary?.workspace;
 	let workspace: BoundWorkspace | undefined;
+	let workspaceLease: WorkspaceWriterLease | undefined;
 	const identity: DurableBoundaryRuntimeIdentity = {
 		boundaryId,
 		get childRunId() {
@@ -116,8 +119,12 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		get workspace() {
 			return workspace;
 		},
-		bindWorkspace(binding): void {
+		get workspaceLease() {
+			return workspaceLease;
+		},
+		bindWorkspace(binding, lease): void {
 			workspace = binding;
+			workspaceLease = lease;
 		},
 		adoptReplayedChildRunId(runId): void {
 			if (topology !== undefined && childRunId !== runId) {
