@@ -32,7 +32,10 @@ function forkFailure(sourceRunId: string, error: ForkError): ForkResult {
  * session's directory, optionally from a stage with replacement inputs, and run the fork in the
  * background. A failure is the typed fork error's code, message and hint; nothing is written.
  */
-export async function workflowForkAction(args: WorkflowToolArgs, deps: WorkflowForkActionDeps): Promise<ForkResult> {
+export async function workflowForkAction(
+	args: Pick<WorkflowToolArgs, "runId" | "fromStage" | "inputs" | "carryMessages">,
+	deps: WorkflowForkActionDeps,
+): Promise<ForkResult> {
 	const sourceRunId = args.runId?.trim() ?? "";
 	try {
 		validateForkOptions(deps.source, sourceRunId, {

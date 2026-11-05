@@ -209,11 +209,7 @@ async function workflowSlashHandler(
 		if (parsed instanceof ForkConfigError) return fail(parsed.message);
 		await ensureWorkflowResourcesVisible();
 		const result = await workflowForkAction(
-			{
-				action: "fork",
-				runId: parsed.runId,
-				...(parsed.fromStage === undefined ? {} : { fromStage: parsed.fromStage }),
-			},
+			{ runId: parsed.runId, fromStage: parsed.fromStage },
 			{ getRuntime: () => deps.runtimeForContext(ctx), policy, source: "cli" },
 		);
 		if (result.status === "failed") return fail(result.message);

@@ -19,7 +19,7 @@ import { configureCurrentTestStoreBackend as setDurableBackend } from "../helper
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const READ_ONLY_ACTIONS = ["models", "list", "get", "inputs", "status", "stages", "stage", "transcript"] as const;
-const MUTATING_ACTIONS = ["reload", "run", "answer", "pause", "resume", "quit"] as const;
+const MUTATING_ACTIONS = ["reload", "run", "answer", "pause", "resume", "fork", "quit"] as const;
 const ALL_ACTIONS = [...READ_ONLY_ACTIONS, ...MUTATING_ACTIONS] as const;
 
 type WorkflowToolExecutor = (

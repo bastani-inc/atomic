@@ -241,7 +241,17 @@ test("the workflow tool schema accepts the fork action and its options (#4321)",
 			inputs: { objective: "corrected" },
 		}),
 	);
+	assert.ok(Value.Check(WorkflowParametersSchema, { action: "fork", carryMessages: "before" }));
 	assert.ok(!Value.Check(WorkflowParametersSchema, { action: "fork", carryMessages: "later" }));
+	const { action, runId, inputs, fromStage, carryMessages } = WorkflowParametersSchema.properties as Record<
+		string,
+		{ readonly description?: string }
+	>;
+	assert.match(action?.description ?? "", /fork a durable run into a new run \(optionally re-running from fromStage/);
+	assert.match(runId?.description ?? "", /quit\/fork \(for fork, the source run\)/);
+	assert.match(inputs?.description ?? "", /replacement inputs for action 'fork'/);
+	assert.match(fromStage?.description ?? "", /^Fork-only: dot path of the completed stage the fork re-runs from/);
+	assert.match(carryMessages?.description ?? "", /^Fork-only: .*\('before', default\) or all of them \('all'\)/);
 });
 
 const RUN_ISSUE = {
