@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import {
@@ -706,4 +709,131 @@ test("TeamProfileConfigError keeps cause, path and missing only when given (#432
 	);
 	assert.equal(isTeamProfileConfigError({ name: "TeamProfileConfigError", code: 3 }), false);
 	assert.equal(isTeamProfileError(new StorageConfigError("sdk", "f", "r")), false);
+});
+
+describe("result shapes and edge paths (#4320)", () => {
+	test(
+		"a token-less file join reports only what it did, and a fresh join replaces nothing (#4320)",
+		async () => {
+			writeSettings({ packages: [packageRoot] });
+			const joined = await joinSharedDatabase(
+				{ url: databaseUrl, agentDir, cwd: project, pinLocalSessions: true },
+				"sdk",
+			);
+			assert.deepStrictEqual(joined, {
+				settingsPath: join(agentDir, "settings.json"),
+				storage: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: databaseUrl } },
+				sessionsStorage: LOCAL_SESSIONS_STORAGE,
+				token: "none",
+			});
+			writeSettings({ packages: [packageRoot], storage: { path: "" } });
+			assert.equal(
+				(await joinSharedDatabase({ url: databaseUrl, agentDir, cwd: project, pinLocalSessions: false }, "sdk"))
+					.replaced,
+				"SQLite ",
+			);
+			writeSettings({ packages: [packageRoot] });
+			vi.spyOn(FileSettingsStorage.prototype, "withPrimaryWriteLock").mockImplementation(() => {
+				throw Object.assign(new Error("EIO"), { code: "EIO" });
+			});
+			const failed = await joinSharedDatabase(
+				{ url: databaseUrl, agentDir, cwd: project, pinLocalSessions: true },
+				"sdk",
+			).then(
+				() => assert.fail("joined"),
+				(error: Error) => error,
+			);
+			assert.ok(isTeamProfileError(failed));
+			assert.equal(
+				failed.hint,
+				"Nothing was changed: the previous selection and its token are kept. Check that the file and its directory are writable and the disk has space, then run the command again.",
+			);
+			assert.equal((failed as { cleanupCause?: Error }).cleanupCause, undefined);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test("a database that refuses the token fails the join before anything is written (#4320)", async () => {
+		writeSettings({ packages: [packageRoot] });
+		const before = readFileSync(join(agentDir, "settings.json"), "utf8");
+		const refusing = createServer((_request, response) => {
+			response.writeHead(401, { "content-type": "text/plain" });
+			response.end("Unauthorized");
+		});
+		await new Promise<void>((listening) => refusing.listen(0, "127.0.0.1", listening));
+		const { port } = refusing.address() as AddressInfo;
+		try {
+			const error = await joinSharedDatabase(
+				{ url: `http://127.0.0.1:${port}`, token: "wrong-token", agentDir, cwd: project, pinLocalSessions: true },
+				"sdk",
+			).then(
+				() => assert.fail("joined a database that refused the token"),
+				(caught: Error) => caught,
+			);
+			assert.ok(isTeamProfileError(error));
+			assert.deepEqual([error.code, error.retryable], ["connection-failed", true]);
+			assert.equal(
+				error.hint,
+				"Nothing was changed. Check the URL, the token and the network, then run the command again.",
+			);
+			assert.doesNotMatch(`${error.message}${JSON.stringify(error)}`, /wrong-token/);
+		} finally {
+			refusing.close();
+		}
+		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
+		assert.deepEqual(tokenFiles(), []);
+	});
+
+	test("leave keeps an untouched settings file byte for byte and tolerates an already deleted token file (#4320)", async () => {
+		writeFileSync(join(agentDir, "settings.json"), '{"theme":"dark"}');
+		const nothing = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
+		assert.deepStrictEqual(nothing, {
+			settingsPath: join(agentDir, "settings.json"),
+			removed: [],
+			kept: [],
+			deletedTokenFiles: [],
+			keptTokenFiles: [],
+		});
+		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), '{"theme":"dark"}');
+		const storage = {
+			adapter: LIBSQL_ADAPTER_PACKAGE,
+			options: { url: "libsql://team.example" },
+			secrets: { authToken: { file: "agent/storage-token.gone" } },
+		};
+		writeSettings({ storage });
+		const gone = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
+		assert.deepEqual(gone.deletedTokenFiles, [join(agentDir, "storage-token.gone")]);
+		writeSettings({ sessions: { storage: LOCAL_SESSIONS_STORAGE } });
+		assert.deepStrictEqual(await leaveTeamWith({ agentDir, cwd: project }, noBroker as never), {
+			settingsPath: join(agentDir, "settings.json"),
+			removed: ["sessions.storage"],
+			kept: [],
+			deletedTokenFiles: [],
+			keptTokenFiles: [],
+		});
+	});
+
+	test("the profile ignores untrusted project settings and reports a held lock as retryable (#4320)", () => {
+		mkdirSync(join(project, ".atomic"), { recursive: true });
+		writeFileSync(join(project, ".atomic", "settings.json"), JSON.stringify({ sessions: { storage: { dir: "s" } } }));
+		new ProjectTrustStore(agentDir).set(project, false);
+		assert.equal(selectTeamProfile({ agentDir, cwd: project }).profile, "individual");
+		new ProjectTrustStore(agentDir).set(project, true);
+		assert.equal(selectTeamProfile({ agentDir, cwd: project }).profile, "custom");
+		writeSettings({ theme: "dark" });
+		const release = lockfile.lockSync(join(agentDir, "settings.json"), { realpath: false });
+		try {
+			const locked = failure(() => selectTeamProfile({ agentDir, cwd: project })) as TeamProfileError;
+			assert.deepEqual(
+				[locked.code, locked.subject, locked.retryable],
+				["settings-locked", "global settings", true],
+			);
+			assert.equal(
+				locked.hint,
+				"Nothing was read. Run the command again in a few seconds; a lock left by a killed process expires after 10 seconds.",
+			);
+		} finally {
+			release();
+		}
+	});
 });

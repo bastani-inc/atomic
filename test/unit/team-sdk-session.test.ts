@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
+import { StorageConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** createAgentSession composes the session's extension runtime before it returns. */
@@ -71,6 +72,24 @@ test(
 		} finally {
 			await plain.dispose();
 		}
+	},
+	SESSION_CREATION_TIMEOUT_MS,
+);
+
+test(
+	"an invalid createAgentSession({ storage }) is a config error naming the option (#4320)",
+	async () => {
+		const error = await createAgentSession({
+			cwd: join(root, "project"),
+			agentDir,
+			storage: { adapter: "" },
+			builtins: NO_BUILTINS,
+		}).then(
+			() => assert.fail("created a session with an invalid storage selection"),
+			(caught: Error) => caught,
+		);
+		assert.ok(error instanceof StorageConfigError);
+		assert.deepEqual([error.source, error.field, error.reason], ["sdk", "storage", "invalid-adapter"]);
 	},
 	SESSION_CREATION_TIMEOUT_MS,
 );

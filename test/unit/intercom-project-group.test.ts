@@ -321,6 +321,13 @@ describe("a session's home group (#4320)", () => {
 	});
 });
 
+test("the default-group warning says who can address it (#4320)", () => {
+	assert.equal(
+		DEFAULT_GROUP_WARNING,
+		'Warning: multi-node routing is on, so every teammate\'s sessions on the shared database can address the "default" group.',
+	);
+});
+
 describe("joining a group directly (#4320)", () => {
 	function tool(multiNodeRouting?: () => boolean) {
 		const tools = new Map<string, IntercomTool>();

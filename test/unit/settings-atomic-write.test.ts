@@ -37,12 +37,12 @@ test("a settings file is replaced whole, keeps its mode, and leaves no temporary
 	assert.deepEqual(readdirSync(root), ["settings.json"]);
 });
 
-test.skipIf(!posix)("group-writable settings keep their mode, which the usual umask would strip (#4320)", () => {
+test.skipIf(!posix)("a mode any common umask would strip is kept (#4320)", () => {
 	const path = join(root, "settings.json");
 	writeFileSync(path, "{}");
-	chmodSync(path, 0o664);
+	chmodSync(path, 0o646);
 	writeSettingsFile(path, '{"shared":true}');
-	assert.equal(statSync(path).mode & 0o777, 0o664);
+	assert.equal(statSync(path).mode & 0o777, 0o646);
 });
 
 test.skipIf(!posix)("a symbolic link stays a link and its target is replaced (#4320)", () => {

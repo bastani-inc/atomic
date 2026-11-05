@@ -387,6 +387,10 @@ describe("atomic team join, status and leave (#4320)", () => {
 				);
 				assert.ok(isTeamProfileError(failure));
 				assert.deepEqual([failure.code, failure.retryable], ["settings-locked", true]);
+				assert.equal(
+					failure.hint,
+					"Nothing was changed. Run the command again in a few seconds; a lock left by a killed process expires after 10 seconds.",
+				);
 				assert.equal(failure.subject, join(agentDir, "settings.json"));
 				assert.equal(settingsText(), before);
 				assert.deepEqual(tokenFiles(), []);
@@ -453,6 +457,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 		);
 		assert.ok(isTeamProfileError(failure));
 		assert.deepEqual([failure.code, failure.subject], ["token-delete-failed", tokenDirectory]);
+		assert.equal(failure.hint, "The team settings were removed. Delete the token file yourself.");
 		assert.deepEqual(savedSettings(), {});
 	});
 

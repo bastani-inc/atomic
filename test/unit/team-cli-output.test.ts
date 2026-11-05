@@ -394,6 +394,7 @@ describe("atomic storage join and broker reports (#4320)", () => {
 				"Kept the token in <root>/agent/storage-token.<id>; it already holds this token.",
 				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
 			]);
+			assert.doesNotMatch(again.out, /It replaces/);
 			const fileOnly = await storage(["join", databaseUrl]);
 			assert.deepEqual(fileOnly.out.split("\n").slice(1, 3), [
 				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
@@ -464,6 +465,25 @@ describe("atomic storage join and broker reports (#4320)", () => {
 			loadControl: async () => running("settings"),
 		});
 		assert.equal(lines[1], "Storage: differs from the current selection; run `atomic intercom restart`");
+		lines.length = 0;
+		const unreported: IntercomBrokerControl = {
+			...running("env"),
+			queryIntercomBroker: async () => ({
+				state: "running",
+				report: { pid: 78, sessions: 0, multiNode: { status: "off" } },
+			}),
+		};
+		await runIntercomCommand(["status"], {
+			agentDir,
+			log: (line) => lines.push(line),
+			loadControl: async () => unreported,
+		});
+		assert.equal(lines[1], "Storage: differs from the current selection; run `atomic intercom restart`");
+		mkdirSync(join(project, ".atomic"), { recursive: true });
+		writeFileSync(join(project, ".atomic", "settings.json"), "{ broken");
+		new ProjectTrustStore(agentDir).set(project, true);
+		const untyped = await storage(["status"], running("settings"));
+		assert.match(untyped.err, /^Error: Cannot load settings: project settings: /);
 	});
 
 	test("team status reads the given directories, reports the broker, and fails when any domain fails (#4320)", async () => {
@@ -492,6 +512,10 @@ describe("atomic storage join and broker reports (#4320)", () => {
 			],
 		);
 		const left = await team(["leave"], control({ status: "not-running" }));
+		assert.match(
+			left.out,
+			/^Removed `sessions\.storage` from <root>\/agent\/settings\.json; other settings are unchanged\.$/m,
+		);
 		assert.match(left.out, /^Profile: custom /m);
 		const usage = (() => {
 			try {
