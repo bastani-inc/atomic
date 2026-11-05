@@ -6,7 +6,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Added
 
-- While multi-node routing is on, a session with no explicit group joins a project group, `project:<owner>/<repo>` from its `origin` remote (the repository or directory name otherwise), instead of `default`, so sessions of different repositories sharing one database cannot see or message each other. Explicit groups still win, joining `default` explicitly warns that every teammate's sessions can address it, and a missing or failing Git inside a repository fails fast with `ProjectGroupError` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
+- While multi-node routing is on, a session with no explicit group joins a project group, `project:<owner>/<repo>` from its `origin` remote (the repository or directory name otherwise), instead of `default`, so sessions of different repositories sharing one database cannot see or message each other. Explicit groups still win, joining `default` explicitly warns that every teammate's sessions can address it (a session without a UI, such as a print run or a workflow stage, writes the warning to stderr once per process), and a missing or failing Git inside a repository fails fast with `ProjectGroupError` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 - The broker follows `ATOMIC_PROFILE=ci` like `ATOMIC_STORAGE` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 
 ## [0.9.59] - 2026-11-01

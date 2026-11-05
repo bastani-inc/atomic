@@ -14,6 +14,23 @@ export const PROJECT_GROUP_PREFIX = "project:";
 export const DEFAULT_GROUP_WARNING =
   'Multi-node routing is on, so every teammate\'s sessions on the shared database can address the "default" group.';
 
+let headlessWarningWritten = false;
+
+/**
+ * Write {@link DEFAULT_GROUP_WARNING} to stderr for a session without a UI, at most once per process. Print and JSON
+ * runs, workflow stages and subagents have no place to show a notice, and stdout stays the answer's.
+ */
+export function warnDefaultGroupWithoutUi(write: (line: string) => void = (line) => console.error(line)): void {
+  if (headlessWarningWritten) return;
+  headlessWarningWritten = true;
+  write(`Warning: ${DEFAULT_GROUP_WARNING}`);
+}
+
+/** Allow {@link warnDefaultGroupWithoutUi} to write again, for tests that share one process. */
+export function resetDefaultGroupWarningWithoutUi(): void {
+  headlessWarningWritten = false;
+}
+
 const projects = new Map<string, string>();
 /** `git remote get-url` exits with 2 when the remote does not exist. */
 const NO_SUCH_REMOTE = 2;

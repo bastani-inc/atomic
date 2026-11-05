@@ -82,7 +82,7 @@ import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
 import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { getIntercomDirPath } from "./broker/paths.js";
-import { DEFAULT_GROUP_WARNING, multiNodeSelected, projectHomeGroup } from "./project-group.js";
+import { DEFAULT_GROUP_WARNING, multiNodeSelected, projectHomeGroup, warnDefaultGroupWithoutUi } from "./project-group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import {
   BROKER_RETIRING_RETRY_WINDOW_MS,
@@ -318,6 +318,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     } catch {
       // The UI can disappear during session shutdown/reload while async overlay work is settling.
     }
+  }
+  function warnExplicitDefaultGroup(ctx: ExtensionContext): void {
+    const liveContext = getLiveContext(ctx);
+    if (liveContext === null) return;
+    if (liveContext.hasUI) notifyIfLive(liveContext, DEFAULT_GROUP_WARNING, "warning");
+    else warnDefaultGroupWithoutUi();
   }
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
@@ -1642,7 +1648,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       runtimeContext = value;
       if (value !== null && explicitHomeGroup(config, value) === DEFAULT_GROUP && multiNodeRouting()) {
-        notifyIfLive(value, DEFAULT_GROUP_WARNING, "warning");
+        warnExplicitDefaultGroup(value);
       }
     },
     setCurrentSessionId: (value) => { currentSessionId = value; },

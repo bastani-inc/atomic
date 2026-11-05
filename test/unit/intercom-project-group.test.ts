@@ -18,6 +18,8 @@ import {
 	projectHomeGroup,
 	projectName,
 	remoteRepositoryPath,
+	resetDefaultGroupWarningWithoutUi,
+	warnDefaultGroupWithoutUi,
 } from "../../packages/intercom/project-group.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -28,6 +30,7 @@ let root: string;
 let agentDir: string;
 
 beforeEach(() => {
+	resetDefaultGroupWarningWithoutUi();
 	root = realpathSync(makeTempDirectory("intercom-project-group-"));
 	agentDir = join(root, "agent");
 	mkdirSync(agentDir, { recursive: true });
@@ -213,9 +216,14 @@ interface IntercomTool {
 	): Promise<ToolResult>;
 }
 
-function sessionContext(cwd: string, notices: string[]): ExtensionContext {
+function sessionContext(
+	cwd: string,
+	notices: string[],
+	extra: { hasUI?: boolean; orchestrationContext?: { intercomGroup: string } } = {},
+): ExtensionContext {
 	return {
-		hasUI: true,
+		hasUI: extra.hasUI ?? true,
+		...(extra.orchestrationContext === undefined ? {} : { orchestrationContext: extra.orchestrationContext }),
 		cwd,
 		isIdle: () => true,
 		ui: { notify: (message: string, level: string) => notices.push(`${level}: ${message}`), setStatus() {} },
@@ -318,6 +326,87 @@ describe("a session's home group (#4320)", () => {
 		assert.deepEqual(notices, [`warning: ${DEFAULT_GROUP_WARNING}`]);
 	});
 
+	test("a session without a UI writes the explicit-default warning to stderr once per process (#4320)", async () => {
+		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
+		selectSharedStorage();
+		recordRegistrations();
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const notices: string[] = [];
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "default");
+		for (const start of [1, 2]) {
+			const extension = loadExtension();
+			const ctx = sessionContext(alpha, notices, { hasUI: false });
+			await extension.fire("session_start", "startup", ctx);
+			await extension.run({ action: "status" }, ctx);
+			await extension.fire("session_shutdown", "quit", ctx);
+			assert.equal(stderr.mock.calls.length, 1, `after start ${start}`);
+		}
+		assert.deepEqual(stderr.mock.calls, [[`Warning: ${DEFAULT_GROUP_WARNING}`]]);
+		assert.deepEqual(notices, []);
+	});
+
+	test("a workflow stage whose group is default warns on stderr, and a stage in another group does not (#4320)", async () => {
+		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
+		selectSharedStorage();
+		recordRegistrations();
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		for (const [group, writes] of [
+			["workflow:run-1", 0],
+			["default", 1],
+		] as const) {
+			const extension = loadExtension();
+			const ctx = sessionContext(alpha, [], { hasUI: false, orchestrationContext: { intercomGroup: group } });
+			await extension.fire("session_start", "startup", ctx);
+			await extension.run({ action: "status" }, ctx);
+			await extension.fire("session_shutdown", "quit", ctx);
+			assert.equal(stderr.mock.calls.length, writes, group);
+		}
+	});
+
+	test("a session context that can no longer be read starts without a warning or an error (#4320)", async () => {
+		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
+		selectSharedStorage();
+		recordRegistrations();
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "default");
+		const unreadable = sessionContext(alpha, [], { hasUI: false });
+		Object.defineProperty(unreadable, "hasUI", {
+			get() {
+				throw new Error("the session is gone");
+			},
+		});
+		const extension = loadExtension();
+		await extension.fire("session_start", "startup", unreadable);
+		assert.equal(stderr.mock.calls.length, 0);
+	});
+
+	test("no stderr warning without multi-node routing, without an explicit default, or with a UI (#4320)", async () => {
+		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
+		recordRegistrations();
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const run = async (hasUI: boolean, notices: string[]) => {
+			const extension = loadExtension();
+			const ctx = sessionContext(alpha, notices, { hasUI });
+			await extension.fire("session_start", "startup", ctx);
+			await extension.run({ action: "status" }, ctx);
+			await extension.fire("session_shutdown", "quit", ctx);
+		};
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "default");
+		await run(false, []);
+		selectSharedStorage();
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "reviewers");
+		await run(false, []);
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "");
+		await run(false, []);
+		assert.equal(stderr.mock.calls.length, 0);
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "default");
+		const notices: string[] = [];
+		await run(true, notices);
+		await run(true, notices);
+		assert.deepEqual(notices, [`warning: ${DEFAULT_GROUP_WARNING}`, `warning: ${DEFAULT_GROUP_WARNING}`]);
+		assert.equal(stderr.mock.calls.length, 0);
+	});
+
 	test("a running session keeps the home group it started with when its environment changes (#4320)", async () => {
 		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
 		selectSharedStorage();
@@ -339,6 +428,16 @@ describe("a session's home group (#4320)", () => {
 		assert.equal(left.details?.group, "project:acme/alpha");
 		assert.deepEqual(presence, [["project:acme/alpha"]]);
 	});
+});
+
+test("the headless warning writes one labelled line, then nothing until reset (#4320)", () => {
+	const lines: string[] = [];
+	warnDefaultGroupWithoutUi((line) => lines.push(line));
+	warnDefaultGroupWithoutUi((line) => lines.push(line));
+	assert.deepEqual(lines, [`Warning: ${DEFAULT_GROUP_WARNING}`]);
+	resetDefaultGroupWarningWithoutUi();
+	warnDefaultGroupWithoutUi((line) => lines.push(line));
+	assert.equal(lines.length, 2);
 });
 
 test('the default-group warning says who can address it and leaves the "Warning:" label to the UI (#4320)', () => {

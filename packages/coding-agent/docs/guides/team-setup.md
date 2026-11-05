@@ -57,7 +57,7 @@ While multi-node routing is on, a session that has no explicit group joins a pro
 
 Sessions of different repositories on the same database cannot see or message each other unless they share a group. An explicit group still wins: `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `group`, a workflow stage's group, or a subagent's inherited group. With one machine and no shared storage, sessions keep using `default`.
 
-Joining `default` explicitly while multi-node routing is on prints a one-line warning, because every teammate's sessions on the database can address that group.
+Joining `default` explicitly while multi-node routing is on prints a one-line warning, because every teammate's sessions on the database can address that group. A session without a UI, such as `atomic -p` in CI, writes it to stderr once per process.
 
 Inside a Git repository, Atomic runs `git` to read the origin. If Git is not installed or fails there, the session's Intercom start fails with an error that names the install command or the failing `git` command. Setting `ATOMIC_INTERCOM_GROUP` avoids the lookup.
 
