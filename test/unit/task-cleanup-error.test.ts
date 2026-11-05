@@ -471,6 +471,17 @@ test("other infrastructure faults, and a process cleanup fault with a malformed 
 	assert.equal(broken.constructor, WorkflowInfrastructureError);
 	assert.deepEqual({ code: broken.code, message: broken.message }, { code: process.code, message: process.message });
 	assert.equal(broken.cause, undefined);
+	const copy = { ...JSON.parse(JSON.stringify(new ProcessCleanupUnconfirmedError(cleanupError()))), message: "m" };
+	assert.ok(isProcessCleanupUnconfirmedError(copy), "a structural copy without its cause still matches");
+	const uncaused = serializeWorkflowInfrastructureError(copy);
+	assert.equal("cause" in uncaused, false, "a copy that lost its cause serializes without one");
+	assert.deepEqual(uncaused.fields, { phase: copy.phase, resources: copy.resources });
+	const rebuilt = rehydrateWorkflowInfrastructureError(uncaused);
+	assert.equal(rebuilt.constructor, WorkflowInfrastructureError);
+	assert.deepEqual(
+		{ code: rebuilt.code, message: rebuilt.message },
+		{ code: "process_cleanup_unconfirmed", message: "m" },
+	);
 	const recode = rehydrateWorkflowInfrastructureError({ ...process, code: "worker_lost" });
 	assert.equal(recode.constructor, WorkflowInfrastructureError);
 	assert.ok(recode.cause instanceof TaskCleanupError, "a well-formed cause is kept on the base class");

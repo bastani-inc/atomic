@@ -1,4 +1,5 @@
 import {
+	isTaskCleanupError,
 	type ResourceFailure,
 	rehydrateTaskCleanupError,
 	type TaskCleanupError,
@@ -118,14 +119,26 @@ export function serializeWorkflowInfrastructureError(
 	error: WorkflowInfrastructureError,
 ): SerializedWorkflowInfrastructureError {
 	if (!isProcessCleanupUnconfirmedError(error)) return { name: error.name, code: error.code, message: error.message };
-	const { name, code, retryable, hint, phase, failures } = error.cause;
+	const cause: unknown = error.cause;
 	return {
 		name: error.name,
 		code: error.code,
 		message: error.message,
 		hint: error.hint,
 		fields: { phase: error.phase, resources: error.resources },
-		cause: { name, code, retryable, hint, phase, failures },
+		// A copy that kept the class's fields but lost its cause still serializes, without one.
+		...(isTaskCleanupError(cause)
+			? {
+					cause: {
+						name: cause.name,
+						code: cause.code,
+						retryable: cause.retryable,
+						hint: cause.hint,
+						phase: cause.phase,
+						failures: cause.failures,
+					},
+				}
+			: {}),
 	};
 }
 
