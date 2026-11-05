@@ -74,6 +74,11 @@ function detachmentState(session: AgentSession): DetachmentState {
 	return state;
 }
 
+/** Whether the host set a detachment policy on this session, so its detachable calls may outlive its runs. */
+export function hasToolDetachment(session: AgentSession): boolean {
+	return states.get(session)?.policy !== undefined;
+}
+
 export function isDetachedToolCall(session: AgentSession, toolCallId: string): boolean {
 	return states.get(session)?.detached.has(toolCallId) === true;
 }

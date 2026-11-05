@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
+import { hasToolDetachment, waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
@@ -241,7 +241,7 @@ function releaseDeliveredTaskRecord(
  * so they appear in the parent's `/tasks` and outlive the child.
  */
 export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner | undefined {
-	if (!isSubagentChildSession(this)) return this.getAgentTaskHost().ownerBinding;
+	if (!isSubagentChildSession(this)) return waitingUntilSettled(this, this.getAgentTaskHost().ownerBinding);
 	if (!this._parentCommandTaskOwner || this._disposed) return undefined;
 	const route: ChildTaskCompletionRoute = {
 		isOpen: () => !this._disposed && this._subagentPolicy?.messageAdmission?.isOpen() === true,
@@ -251,7 +251,32 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 			await admission.run(() => this.sendCustomMessage(message, { triggerTurn: true, persistWhenStreaming: true }));
 		},
 	};
-	return this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits);
+	return waitingUntilSettled(
+		this,
+		this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits),
+	);
+}
+
+/**
+ * In a session whose detachable calls may outlive its runs, a shell wait without a budget waits until its task
+ * settles instead of yielding at the owner's default budget, so the call can detach and the session be released while
+ * the task runs. A wait that yields for any other reason, such as a message for the session, still returns.
+ */
+export function waitingUntilSettled(session: AgentSession, owner: SupervisedCommandOwner): SupervisedCommandOwner {
+	const wait: NonNullable<SupervisedCommandOwner["waitForTask"]> =
+		owner.waitForTask ??
+		((taskId, budgetMs, onRegistered) => owner.supervisor.waitForTaskId(owner.owner, taskId, budgetMs, onRegistered));
+	return {
+		...owner,
+		waitForTask: async (taskId, budgetMs, onRegistered) => {
+			if (budgetMs !== undefined || !hasToolDetachment(session)) return wait(taskId, budgetMs, onRegistered);
+			for (;;) {
+				const observed = await wait(taskId, undefined, onRegistered);
+				if (!observed.ok || observed.value.kind !== "yielded" || observed.value.reason !== "elapsed")
+					return observed;
+			}
+		},
+	};
 }
 
 export async function closeSessionTasks(this: AgentSession): Promise<void> {

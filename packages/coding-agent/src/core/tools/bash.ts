@@ -433,6 +433,7 @@ export function createBashToolDefinition(
 	return {
 		name: "bash",
 		concurrency: (args) => (args.pty === true ? "exclusive" : "shared"),
+		detachable: (args) => args.action === "wait" && args.budgetMs === undefined,
 		label: "bash",
 		description:
 			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). Observation never changes execution timeout. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
