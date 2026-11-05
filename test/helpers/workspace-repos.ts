@@ -1,11 +1,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
 	observeWorkspaceGitCommands,
 	setWorkspaceGitExecutableResolver,
 } from "../../packages/coding-agent/src/core/workspace/git.ts";
+import { worktreeAdderRecord } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 
 /** Run git for test setup only; product code goes through the workspace git runner. */
 export function git(cwd: string, ...args: string[]): string {
@@ -201,6 +202,14 @@ export function interruptedWorktree(
 	const adminDir = git(path, "rev-parse", "--absolute-git-dir");
 	if (!checkedOut) writeFileSync(join(adminDir, "index.lock"), "");
 	return adminDir;
+}
+
+/** Record a git that is no longer running as the adder of `path`, as a crash of both Atomic and git leaves it. */
+export function recordExitedAdder(repo: string, path: string): void {
+	const exited = spawnSync(process.execPath, ["-e", ""]).pid!;
+	const record = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
+	mkdirSync(dirname(record), { recursive: true });
+	writeFileSync(record, JSON.stringify({ host: hostname(), pid: exited, startTime: null }));
 }
 
 /** Run `body` with workspace git commands going through the fake git under `env`. POSIX only. */

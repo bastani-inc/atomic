@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { setWorkspaceGhCommand } from "../../packages/coding-agent/src/core/workspace/change-set.ts";
@@ -12,6 +12,7 @@ import {
 	workspace,
 	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import { sharedStorePath } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
 import { moduleDir } from "../helpers/runtime.js";
 import {
@@ -53,8 +54,8 @@ function ghLog(): { args: string[]; prompt: string | null; pid: number }[] {
 		.map((line) => JSON.parse(line) as { args: string[]; prompt: string | null; pid: number });
 }
 
-/** Generous for a loaded Windows runner; a cancelled gh normally exits within milliseconds. */
-const GH_EXIT_WAIT_MS = 10_000;
+/** Generous for a loaded Windows runner; gh normally starts within milliseconds. */
+const GH_START_WAIT_MS = 10_000;
 
 function processAlive(pid: number): boolean {
 	try {
@@ -268,15 +269,17 @@ describe("publishPullRequest (#3109)", () => {
 		const reason = new Error("stop publishing");
 		const calls = ghLog().length;
 		const pending = publishPullRequest(changeSet, { signal: controller.signal });
-		const started = Date.now() + GH_EXIT_WAIT_MS;
+		const started = Date.now() + GH_START_WAIT_MS;
 		while (ghLog().length === calls && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 20));
 		const hung = ghLog().at(calls)?.pid;
 		assert.ok(hung !== undefined, "gh started and is hanging on auth status");
 		controller.abort(reason);
 		assert.equal(await rejection(pending), reason);
-		const deadline = Date.now() + GH_EXIT_WAIT_MS;
-		while (processAlive(hung) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal(processAlive(hung), false, "cancellation terminates the gh process");
+		assert.equal(processAlive(hung), false, "the call rejects only once gh has exited");
+		const remote = classifyRepository(changeSet.repo);
+		assert.ok(remote?.kind === "remote");
+		rmSync(sharedStorePath(remote), { recursive: true });
+		assert.equal(existsSync(sharedStorePath(remote)), false, "nothing gh ran in still holds the store");
 	});
 
 	test("publishes under a live signal, running origin lookup and push as network commands (#3109)", async () => {

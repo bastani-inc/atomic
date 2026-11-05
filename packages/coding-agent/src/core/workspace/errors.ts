@@ -38,6 +38,7 @@ export type WorkspaceBindingErrorReason =
 	| "interrupted-add"
 	| "orphaned-directory"
 	| "repair-failed"
+	| "addition-in-progress"
 	| "outdated";
 
 export type WorkspaceConfigErrorCode = "invalid-setting";
@@ -245,6 +246,18 @@ function describeBinding(
 				hint: "Restore the recorded repository state, or start a new run instead of resuming.",
 			};
 		case "incomplete-worktree":
+			if (reason === "addition-in-progress")
+				return {
+					what: "Workspace worktree is still being added",
+					subject:
+						fields.adderPid === null
+							? `${text(fields, "worktree")} may still be checking out: ${text(fields, "adminDir")} holds an index lock, and no record names the git adding it`
+							: `git (pid ${text(fields, "adderPid")} on ${text(fields, "adderHost")}) is still adding ${text(fields, "worktree")}`,
+					hint:
+						fields.adderPid === null
+							? `Wait for that checkout to finish, then bind again. If no git is running, remove the worktree with git -C ${text(fields, "repository")} worktree remove --force --force ${text(fields, "worktree")}.`
+							: `Wait for it to finish, or stop it with kill -TERM -${text(fields, "adderPid")} (Windows: taskkill /T /PID ${text(fields, "adderPid")}), then bind again.`,
+				};
 			return {
 				what: "Workspace worktree is incomplete",
 				subject:
@@ -291,6 +304,7 @@ export class WorkspaceBindingError extends WorkspaceError {
 			fields: init.fields,
 			retryable:
 				RETRYABLE_BINDING_CODES.has(init.code) ||
+				init.reason === "addition-in-progress" ||
 				(init.code === "git-failed" && RETRYABLE_GIT_PHASES.has(String(init.fields.phase))) ||
 				(init.code === "filesystem-failed" && RETRYABLE_ERRNOS.has(String(init.fields.errno))),
 			cause: init.cause,
@@ -630,6 +644,8 @@ export interface SerializedWorkspaceErrorCause {
 	readonly retryable?: boolean;
 	readonly reason?: string;
 	readonly cause?: SerializedWorkspaceErrorCause;
+	/** A cleanup that also failed, recorded beside the failure rather than replacing it. */
+	readonly cleanupCause?: SerializedWorkspaceErrorCause;
 }
 
 /** Wire form of a workspace error, for crossing worker and IPC boundaries. */
@@ -653,6 +669,7 @@ function serializeCause(value: unknown, depth: number): SerializedWorkspaceError
 		retryable: candidate.retryable,
 		reason: candidate.reason,
 		cause: serializeCause(candidate.cause, depth + 1),
+		cleanupCause: serializeCause(candidate.cleanupCause, depth + 1),
 	};
 }
 
@@ -662,6 +679,13 @@ export function serializeWorkspaceError(error: WorkspaceError): SerializedWorksp
 
 function rehydrateCause(record: SerializedWorkspaceErrorCause | undefined): unknown {
 	if (record === undefined) return undefined;
+	if (record.name !== "GitUnavailableError" && record.hint !== undefined)
+		return rehydrateWorkspaceError(record as SerializedWorkspaceError);
+	return attachCleanupCause(rehydrateOther(record), rehydrateCause(record.cleanupCause));
+}
+
+/** A cause that is not a workspace error: git provisioning's error, or any other error kept by name and message. */
+function rehydrateOther(record: SerializedWorkspaceErrorCause): unknown {
 	if (record.name === "GitUnavailableError") {
 		const error = new GitUnavailableError({
 			gitPath: String(record.fields?.gitPath ?? "git"),
@@ -671,7 +695,6 @@ function rehydrateCause(record: SerializedWorkspaceErrorCause | undefined): unkn
 		Object.defineProperty(error, "message", { value: record.message, writable: true, configurable: true });
 		return error;
 	}
-	if (record.hint !== undefined) return rehydrateWorkspaceError(record as SerializedWorkspaceError);
 	const error = new Error(record.message, { cause: rehydrateCause(record.cause) });
 	error.name = record.name;
 	return error;
@@ -733,5 +756,5 @@ export function rehydrateWorkspaceError(record: SerializedWorkspaceError): Works
 	const error = construct(record, rehydrateCause(record.cause));
 	// The sender's message wins, so a sender on another version renders the same text.
 	Object.defineProperty(error, "message", { value: record.message, writable: true, configurable: true });
-	return error;
+	return attachCleanupCause(error, rehydrateCause(record.cleanupCause)) as WorkspaceError;
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
 import {
@@ -14,7 +14,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
@@ -22,7 +22,6 @@ import {
 	observeWorkspaceGitCommands,
 	runWorkspaceGit,
 	setWorkspaceGitExecutableResolver,
-	WORKSPACE_GIT_STOP_GRACE_MS,
 } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	GitUnavailableError,
@@ -37,8 +36,14 @@ import {
 	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
+import { WORKSPACE_PROCESS_STOP_GRACE_MS } from "../../packages/coding-agent/src/core/workspace/process.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
-import { sharedStorePath, WORKTREE_ADDING_REASON } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
+import {
+	setWorktreeAdditionWait,
+	sharedStorePath,
+	WORKTREE_ADDING_REASON,
+	worktreeAdderRecord,
+} from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
 import {
 	commitFile,
@@ -48,18 +53,22 @@ import {
 	git,
 	gitTranscript,
 	interruptedWorktree,
+	recordExitedAdder,
 	type WorkspaceSandboxDirs,
 	withInjectedGit,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 
 let dirs: WorkspaceSandboxDirs;
+let restoreAdditionWait: () => void;
 
 beforeEach(() => {
 	dirs = workspaceSandbox("atomic-workspace-resolve-");
+	restoreAdditionWait = setWorktreeAdditionWait({ probes: 3, intervalMs: 10 });
 });
 
 afterEach(() => {
+	restoreAdditionWait();
 	dirs.cleanup();
 });
 
@@ -904,6 +913,40 @@ describe("workspace git runner (#3109)", () => {
 		},
 	);
 
+	// POSIX: the stand-in git is a shell script.
+	test.skipIf(process.platform === "win32")(
+		"a caller cancelled during the shared git check stops waiting, while the check finishes for the others (#3109)",
+		async () => {
+			const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
+			const slow = join(dirs.root, "slow-version-git");
+			writeFileSync(
+				slow,
+				`#!/bin/sh\ncase "$*" in *--version) sleep 1; echo "git version 2.45.0"; exit 0 ;; esac\nexec '${realGit}' "$@"\n`,
+			);
+			chmodSync(slow, 0o755);
+			const restore = setWorkspaceGitExecutableResolver(async () => ({ path: slow, env: {} }));
+			try {
+				const { result, transcript } = await gitTranscript(async () => {
+					const controller = new AbortController();
+					const reason = new Error("caller went away");
+					const startedAt = Date.now();
+					const cancelled = assertWorkspaceGitAvailable(controller.signal);
+					const patient = assertWorkspaceGitAvailable();
+					setTimeout(() => controller.abort(reason), 50);
+					const outcome = await rejection(cancelled);
+					const cancelledAfterMs = Date.now() - startedAt;
+					await patient;
+					return { outcome, reason, cancelledAfterMs };
+				});
+				assert.equal(result.outcome, result.reason);
+				assert.ok(result.cancelledAfterMs < 1_000, "the cancelled caller did not wait for the check");
+				assert.deepEqual(transcript, ["probe: --version"], "one check served both callers");
+			} finally {
+				restore();
+			}
+		},
+	);
+
 	// POSIX: the stand-in commands run under sh and report their pid.
 	test.skipIf(process.platform === "win32")(
 		"a timeout stops the commands git started too, before the call fails (#3109)",
@@ -933,7 +976,7 @@ describe("workspace git runner (#3109)", () => {
 			);
 			assert.ok(isWorkspaceTimeoutError(background));
 			assert.ok(
-				Date.now() - startedAt < WORKSPACE_GIT_STOP_GRACE_MS,
+				Date.now() - startedAt < WORKSPACE_PROCESS_STOP_GRACE_MS,
 				"the whole group stopped at once, without waiting out the grace",
 			);
 			assert.equal(processAlive(Number(readFileSync(backgroundFile, "utf-8"))), false);
@@ -1169,6 +1212,32 @@ describe("shared stores follow the remote (#3109)", () => {
 	});
 });
 
+/** A process that stays alive until stopped, standing in for a git that is still adding a worktree. */
+function liveProcess(): Promise<ChildProcess> {
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	return new Promise((resolveSpawn, reject) => {
+		child.once("spawn", () => resolveSpawn(child));
+		child.once("error", reject);
+	});
+}
+
+async function stopProcess(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	const exited = new Promise((resolveExit) => child.once("exit", resolveExit));
+	child.kill("SIGKILL");
+	await exited;
+}
+
+function recordAdder(
+	repo: string,
+	path: string,
+	adder: { readonly host: string; readonly pid: number; readonly startTime: string | null },
+): void {
+	const record = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
+	mkdirSync(dirname(record), { recursive: true });
+	writeFileSync(record, JSON.stringify(adder));
+}
+
 /** Atomic's own worktree path of `branch` in the local repository `repo`. */
 function autoWorktree(repo: string, branch: string): string {
 	const digest = createHash("sha256").update(realpathSync(repo)).digest("hex").slice(0, 12);
@@ -1202,7 +1271,6 @@ describe("interrupted worktree additions (#3109)", () => {
 
 	for (const [marker, checkedOut] of [
 		[WORKTREE_ADDING_REASON, false],
-		["initializing", false],
 		["initializing", true],
 	] as const)
 		test(`removes and adds again an addition interrupted under the "${marker}" lock${checkedOut ? " after its checkout" : ""} (#3109)`, async () => {
@@ -1210,6 +1278,7 @@ describe("interrupted worktree additions (#3109)", () => {
 			commitFile(repo, "app.txt", "app\n");
 			const path = autoWorktree(repo, "feat/cut");
 			interruptedWorktree(repo, path, "feat/cut", marker, { checkedOut });
+			if (marker === WORKTREE_ADDING_REASON) recordExitedAdder(repo, path);
 			const { result, commands } = await countGitCommands(() =>
 				resolveWorkspace(workspace({ repo, branch: "feat/cut" })),
 			);
@@ -1232,11 +1301,171 @@ describe("interrupted worktree additions (#3109)", () => {
 		const binding = await resolveWorkspace(workspace({ repo, branch: "feat/resume" }));
 		git(repo, "worktree", "remove", "--force", binding.worktree);
 		interruptedWorktree(repo, binding.worktree, "feat/resume", WORKTREE_ADDING_REASON, { newBranch: false });
+		recordExitedAdder(repo, binding.worktree);
 		const { result, commands } = await countGitCommands(() => restoreWorkspace(binding));
 		assert.equal(result, binding.worktree);
 		assert.equal(countOf(commands, "worktree", "remove", "--force", "--force"), 1);
 		assertCompleteWorktree(binding.worktree);
 	});
+
+	test("an addition whose git still runs is left alone and fails retryable naming that git (#3109)", async () => {
+		const repo = createRepository(dirs.root, "still-adding");
+		const path = autoWorktree(repo, "feat/busy");
+		const adminDir = resolvePath(interruptedWorktree(repo, path, "feat/busy", WORKTREE_ADDING_REASON));
+		const adder = await liveProcess();
+		try {
+			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
+			const { result: error, commands } = await countGitCommands(() =>
+				rejection(resolveWorkspace(workspace({ repo, branch: "feat/busy" }))),
+			);
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "incomplete-worktree");
+			assert.equal(error.reason, "addition-in-progress");
+			assert.equal(error.retryable, true);
+			assert.deepEqual(
+				{ ...error.fields, adminDir: resolvePath(String(error.fields.adminDir)) },
+				{
+					repo,
+					repository: realpathSync(repo),
+					branch: "feat/busy",
+					worktree: path,
+					adminDir,
+					marker: WORKTREE_ADDING_REASON,
+					adderPid: adder.pid!,
+					adderHost: hostname(),
+					adderStartTime: null,
+				},
+			);
+			assert.equal(
+				error.message,
+				`Workspace worktree is still being added: git (pid ${adder.pid} on ${hostname()}) is still adding ${path} (incomplete-worktree). Wait for it to finish, or stop it with kill -TERM -${adder.pid} (Windows: taskkill /T /PID ${adder.pid}), then bind again.`,
+			);
+			assert.equal(countOf(commands, "worktree", "remove"), 0, "a running addition is never removed");
+			assert.equal(existsSync(join(adminDir, "locked")), true);
+			await stopProcess(adder);
+			const { commands: repair } = await countGitCommands(() =>
+				resolveWorkspace(workspace({ repo, branch: "feat/busy" })),
+			);
+			assert.equal(countOf(repair, "worktree", "remove", "--force", "--force"), 1, "repaired once its git is gone");
+			assertCompleteWorktree(path);
+		} finally {
+			await stopProcess(adder);
+		}
+	});
+
+	test("an index lock with no recorded adder counts as a checkout still running (#3109)", async () => {
+		const repo = createRepository(dirs.root, "unnamed-adder");
+		const path = autoWorktree(repo, "feat/unnamed");
+		interruptedWorktree(repo, path, "feat/unnamed", "initializing");
+		const { result: error, commands } = await countGitCommands(() =>
+			rejection(resolveWorkspace(workspace({ repo, branch: "feat/unnamed" }))),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.reason, "addition-in-progress");
+		assert.equal(error.fields.adderPid, null);
+		assert.equal(error.fields.adderHost, null);
+		assert.match(
+			error.message,
+			/may still be checking out: .* holds an index lock, and no record names the git adding it/,
+		);
+		assert.match(
+			error.hint,
+			/If no git is running, remove the worktree with git -C .* worktree remove --force --force /,
+		);
+		assert.equal(countOf(commands, "worktree", "remove"), 0);
+	});
+
+	test("an adder recorded on another host cannot be checked, so it counts as running (#3109)", async () => {
+		const repo = createRepository(dirs.root, "remote-adder");
+		const path = autoWorktree(repo, "feat/remote");
+		interruptedWorktree(repo, path, "feat/remote", WORKTREE_ADDING_REASON);
+		recordAdder(repo, path, { host: "another-host.invalid", pid: process.pid, startTime: null });
+		const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/remote" })));
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.reason, "addition-in-progress");
+		assert.equal(error.fields.adderHost, "another-host.invalid");
+	});
+
+	// Linux: only /proc gives a process's start time cheaply.
+	test.skipIf(process.platform !== "linux")(
+		"a recorded pid now used by a later process is not the adder, so the addition is repaired (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "reused-pid");
+			const path = autoWorktree(repo, "feat/reused");
+			interruptedWorktree(repo, path, "feat/reused", WORKTREE_ADDING_REASON);
+			recordAdder(repo, path, { host: hostname(), pid: process.pid, startTime: "0" });
+			const { commands } = await countGitCommands(() =>
+				resolveWorkspace(workspace({ repo, branch: "feat/reused" })),
+			);
+			assert.equal(countOf(commands, "worktree", "remove", "--force", "--force"), 1);
+			assertCompleteWorktree(path);
+		},
+	);
+
+	test("a bind cancelled while another git still adds the worktree rejects with the signal's reason (#3109)", async () => {
+		const repo = createRepository(dirs.root, "cancelled-wait");
+		const path = autoWorktree(repo, "feat/wait");
+		interruptedWorktree(repo, path, "feat/wait", WORKTREE_ADDING_REASON);
+		const adder = await liveProcess();
+		const restoreWait = setWorktreeAdditionWait({ probes: 1_000, intervalMs: 10 });
+		try {
+			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
+			const controller = new AbortController();
+			const reason = new Error("caller went away");
+			const pending = resolveWorkspace(workspace({ repo, branch: "feat/wait" }), { signal: controller.signal });
+			setTimeout(() => controller.abort(reason), 100);
+			assert.equal(await rejection(pending), reason);
+			assert.equal(existsSync(join(path, ".git")), true, "the running addition was not touched");
+			await stopProcess(adder);
+			const binding = await resolveWorkspace(workspace({ repo, branch: "feat/wait" }));
+			assertCompleteWorktree(binding.worktree);
+		} finally {
+			restoreWait();
+			await stopProcess(adder);
+		}
+	});
+
+	test("records the git adding a worktree while it runs, and removes the record once the worktree is added (#3109)", async () => {
+		const repo = createRepository(dirs.root, "recorded");
+		git(repo, "config", "filter.slow.smudge", "sleep 0.05; cat");
+		writeFileSync(join(repo, ".gitattributes"), "*.txt filter=slow\n");
+		for (let index = 0; index < 20; index++) writeFileSync(join(repo, `file-${index}.txt`), `${index}\n`);
+		git(repo, "add", ".");
+		git(repo, "commit", "-q", "-m", "slow to check out");
+		const path = autoWorktree(repo, "feat/recorded");
+		const record = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
+		const binding = resolveWorkspace(workspace({ repo, branch: "feat/recorded" }));
+		while (!existsSync(record)) await new Promise((resolve) => setTimeout(resolve, 10));
+		const recorded = JSON.parse(readFileSync(record, "utf-8")) as {
+			host: string;
+			pid: number;
+			startTime: string | null;
+		};
+		assert.equal(recorded.host, hostname());
+		assert.equal(processAlive(recorded.pid), true, "the recorded pid is the git still adding the worktree");
+		assert.equal(recorded.startTime === null, process.platform !== "linux");
+		await binding;
+		assert.equal(existsSync(record), false);
+	});
+
+	test.skipIf(process.platform === "win32")(
+		"a git whose adder cannot be recorded is stopped before it adds anything (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "unrecordable");
+			writeFileSync(join(realpathSync(join(repo, ".git")), "atomic-worktree-adders"), "in the way\n");
+			const path = autoWorktree(repo, "feat/unrecorded");
+			const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/unrecorded" })));
+			assert.ok(isWorkspaceBindingError(error));
+			assert.equal(error.code, "filesystem-failed");
+			assert.equal(error.fields.operation, "record the git adding");
+			assert.equal(existsSync(path), false, "git removed what it had started adding");
+			assert.equal(
+				(error.cleanupCause as { readonly code?: string } | undefined)?.code,
+				"ENOTDIR",
+				"removing the record failed too, and is kept beside the failure",
+			);
+		},
+	);
 
 	test("binds a worktree the user locked for another reason and leaves it locked (#3109)", async () => {
 		const repo = createRepository(dirs.root, "user-locked");
@@ -1412,6 +1641,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		const repo = createRepository(dirs.root, "callers-ours");
 		const path = join(dirs.root, "callers-ours-worktree");
 		interruptedWorktree(repo, path, "feat/ours", WORKTREE_ADDING_REASON);
+		recordExitedAdder(repo, path);
 		const binding = await resolveWorkspace(workspace({ repo, branch: "feat/ours", worktree: path }));
 		assertCompleteWorktree(path, binding.tree);
 	});
@@ -1422,6 +1652,7 @@ describe("interrupted worktree additions (#3109)", () => {
 			const repo = createRepository(dirs.root, "stuck");
 			const path = autoWorktree(repo, "feat/stuck");
 			interruptedWorktree(repo, path, "feat/stuck", WORKTREE_ADDING_REASON);
+			recordExitedAdder(repo, path);
 			const error = await withInjectedGit(dirs.root, { FAKE_GIT_MODE: "remove-fails" }, () =>
 				rejection(resolveWorkspace(workspace({ repo, branch: "feat/stuck" }))),
 			);

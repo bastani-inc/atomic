@@ -264,6 +264,39 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(config.field, "workspace.sandbox");
 	});
 
+	test("a cleanup failure crosses the wire beside the failure it accompanied (#3109)", () => {
+		const leftover = new WorkspaceBindingError({
+			code: "filesystem-failed",
+			fields: { operation: "remove", path: "/home/u/.atomic/repos/x.git.tmp-1", errno: "EBUSY" },
+		});
+		const primary = attachCleanupCause(
+			new WorkspaceBindingError({
+				code: "git-failed",
+				fields: { command: "git fetch origin", phase: "fetch", status: 128 },
+				cause: attachCleanupCause(new Error("connection reset"), new Error("database is closed")),
+			}),
+			leftover,
+		) as WorkspaceBindingError;
+		const wire = JSON.parse(JSON.stringify(serializeWorkspaceError(primary)));
+		const rehydrated = rehydrateWorkspaceError(wire);
+		assert.ok(isWorkspaceBindingError(rehydrated));
+		assert.equal(rehydrated.code, "git-failed");
+		assert.deepEqual(rehydrated.fields, primary.fields);
+		const cleanup = rehydrated.cleanupCause;
+		assert.ok(cleanup instanceof WorkspaceBindingError, "the cleanup failure keeps its class");
+		assert.equal(cleanup.code, "filesystem-failed");
+		assert.deepEqual(cleanup.fields, leftover.fields);
+		assert.equal(cleanup.message, leftover.message);
+		const cause = rehydrated.cause as Error & { readonly cleanupCause?: Error };
+		assert.equal(cause.message, "connection reset");
+		assert.ok(cause.cleanupCause instanceof Error);
+		assert.equal(cause.cleanupCause.message, "database is closed", "a plain cause keeps its own cleanup failure");
+		assert.equal(
+			serializeWorkspaceError(new WorkspaceBindingError({ code: "drift", fields: {} })).cleanupCause,
+			undefined,
+		);
+	});
+
 	test("an interrupted worktree, an outdated git and a held repository lock round-trip with their fields (#3109)", () => {
 		const lockWait = new Error("database is locked; gave up after 600000 ms");
 		const originals = [

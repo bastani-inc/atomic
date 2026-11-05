@@ -1,9 +1,7 @@
-import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
-import { killProcessTree } from "../../utils/shell.ts";
 import {
 	GitUnavailableError,
 	gitInstallCommand,
@@ -12,6 +10,7 @@ import {
 	type WorkspaceGitPhase,
 	WorkspaceTimeoutError,
 } from "./errors.ts";
+import { runWorkspaceProcess, waitFor } from "./process.ts";
 import { redactCredentials } from "./redact.ts";
 
 /** The git executable every workspace git command runs, and the environment it needs. */
@@ -47,6 +46,8 @@ export interface WorkspaceGitCommand {
 	/** Return a non-zero exit instead of throwing `git-failed`. */
 	readonly allowFailure?: boolean;
 	readonly timeoutMs?: number;
+	/** Called with git's pid once it started; a throw stops git and fails the command. */
+	readonly onSpawn?: (pid: number) => void;
 }
 
 export interface WorkspaceGitResult {
@@ -73,10 +74,6 @@ const LONG_TIMEOUT_MS = 10 * 60_000;
 const LOCAL_TIMEOUT_MS = 60_000;
 /** Network transfers and checkouts can take minutes on a large repository; other steps are local and quick. */
 const LONG_PHASES: ReadonlySet<WorkspaceGitPhase> = new Set(["clone", "fetch", "push", "worktree-add"]);
-/** How long a stopped git gets to remove what it created before its process group is killed. */
-export const WORKSPACE_GIT_STOP_GRACE_MS = 5_000;
-/** On POSIX git runs in its own process group, so stopping it also stops the checkout it spawned. */
-const OWN_PROCESS_GROUP = process.platform !== "win32";
 const DISABLED_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
 const WINDOWS_LONG_PATHS: readonly string[] = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
 const MAX_DETAIL_LENGTH = 400;
@@ -88,23 +85,6 @@ function commandLabel(args: readonly string[]): string {
 function errnoCode(error: Error): string | undefined {
 	const code = (error as Error & { readonly code?: string }).code;
 	return typeof code === "string" ? code : undefined;
-}
-
-/**
- * Ask git and the processes it started to stop. On POSIX the group gets SIGTERM, which git catches to remove a
- * half-added worktree; Windows has no such signal, so the tree is killed and a later bind repairs what is left.
- */
-function terminate(child: ChildProcess): void {
-	if (child.pid === undefined) return;
-	if (!OWN_PROCESS_GROUP) {
-		killProcessTree(child.pid);
-		return;
-	}
-	try {
-		process.kill(-child.pid, "SIGTERM");
-	} catch (error) {
-		if (errnoCode(error as Error) !== "ESRCH") child.kill("SIGTERM");
-	}
 }
 
 async function executable(): Promise<WorkspaceGitExecutable> {
@@ -146,113 +126,48 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 		),
 		...command.env,
 	};
-	const startedAt = Date.now();
-	return new Promise<WorkspaceGitResult>((resolvePromise, reject) => {
-		const child = spawn(git.path, argv, {
+	const outcome = await runWorkspaceProcess({
+		path: git.path,
+		args: argv,
+		cwd: command.cwd,
+		env,
+		signal: command.signal,
+		timeoutMs,
+		timeoutError: (elapsedMs) =>
+			new WorkspaceTimeoutError({ phase: command.phase, timeoutMs, elapsedMs, command: commandLabel(command.args) }),
+		onSpawn: command.onSpawn,
+	});
+	if (outcome.kind === "not-started") {
+		const error = outcome.error;
+		if (errnoCode(error) === "ENOENT" && existsSync(command.cwd))
+			throw new WorkspaceBindingError({
+				code: "git-unavailable",
+				fields: { gitPath: git.path, installCommand: gitInstallCommand() },
+				cause: new GitUnavailableError({ gitPath: git.path, cause: error }),
+			});
+		throw new WorkspaceBindingError({
+			code: "git-failed",
+			fields: {
+				command: commandLabel(command.args),
+				cwd: command.cwd,
+				phase: command.phase,
+				status: null,
+				detail: redactCredentials(error.message).slice(-MAX_DETAIL_LENGTH),
+			},
+			cause: error,
+		});
+	}
+	const result = { stdout: outcome.stdout, stderr: outcome.stderr, status: outcome.status ?? -1 };
+	if (result.status === 0 || command.allowFailure === true) return result;
+	throw new WorkspaceBindingError({
+		code: "git-failed",
+		fields: {
+			command: commandLabel(command.args),
 			cwd: command.cwd,
-			env,
-			stdio: ["ignore", "pipe", "pipe"],
-			detached: OWN_PROCESS_GROUP,
-		});
-		const stdout: Buffer[] = [];
-		const stderr: Buffer[] = [];
-		let escalation: NodeJS.Timeout | undefined;
-		/** Set once git is being stopped: how the call fails once git has exited, or after the grace. */
-		let stopped: (() => void) | undefined;
-		// A promise settles once, so a late `close` after an error, abort or timeout changes nothing.
-		const settle = (finish: () => void): void => {
-			clearTimeout(timer);
-			clearTimeout(escalation);
-			command.signal?.removeEventListener("abort", onAbort);
-			finish();
-		};
-		const stop = (failure: () => void): void => {
-			if (stopped !== undefined) return;
-			stopped = failure;
-			terminate(child);
-			escalation = setTimeout(() => {
-				killProcessTree(child.pid!);
-				settle(failure);
-			}, WORKSPACE_GIT_STOP_GRACE_MS);
-		};
-		const onAbort = (): void => stop(() => reject(command.signal!.reason));
-		const timer = setTimeout(() => {
-			const elapsedMs = Date.now() - startedAt;
-			stop(() =>
-				reject(
-					new WorkspaceTimeoutError({
-						phase: command.phase,
-						timeoutMs,
-						elapsedMs,
-						command: commandLabel(command.args),
-					}),
-				),
-			);
-		}, timeoutMs);
-		command.signal?.addEventListener("abort", onAbort, { once: true });
-		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-		child.on("error", (error) => {
-			settle(() => {
-				if (stopped !== undefined) {
-					stopped();
-					return;
-				}
-				if (errnoCode(error) === "ENOENT" && existsSync(command.cwd)) {
-					const unavailable = new GitUnavailableError({ gitPath: git.path, cause: error });
-					reject(
-						new WorkspaceBindingError({
-							code: "git-unavailable",
-							fields: { gitPath: git.path, installCommand: gitInstallCommand() },
-							cause: unavailable,
-						}),
-					);
-					return;
-				}
-				reject(
-					new WorkspaceBindingError({
-						code: "git-failed",
-						fields: {
-							command: commandLabel(command.args),
-							cwd: command.cwd,
-							phase: command.phase,
-							status: null,
-							detail: redactCredentials(error.message).slice(-MAX_DETAIL_LENGTH),
-						},
-						cause: error,
-					}),
-				);
-			});
-		});
-		child.on("close", (code) => {
-			settle(() => {
-				if (stopped !== undefined) {
-					stopped();
-					return;
-				}
-				const result = {
-					stdout: Buffer.concat(stdout).toString("utf-8"),
-					stderr: Buffer.concat(stderr).toString("utf-8"),
-					status: code ?? -1,
-				};
-				if (result.status === 0 || command.allowFailure === true) {
-					resolvePromise(result);
-					return;
-				}
-				reject(
-					new WorkspaceBindingError({
-						code: "git-failed",
-						fields: {
-							command: commandLabel(command.args),
-							cwd: command.cwd,
-							phase: command.phase,
-							status: result.status,
-							detail: redactCredentials(result.stderr.trim() || result.stdout.trim()).slice(-MAX_DETAIL_LENGTH),
-						},
-					}),
-				);
-			});
-		});
+			phase: command.phase,
+			status: result.status,
+			detail: redactCredentials(result.stderr.trim() || result.stdout.trim()).slice(-MAX_DETAIL_LENGTH),
+		},
 	});
 }
 
@@ -298,6 +213,5 @@ export async function assertWorkspaceGitAvailable(signal?: AbortSignal): Promise
 		availableExecutables.set(path, check);
 		check.catch(() => availableExecutables.delete(path));
 	}
-	signal?.throwIfAborted();
-	await check;
+	await waitFor(check, signal);
 }

@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { WorkspacePublicationError } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
+import { runWorkspaceProcess } from "./process.ts";
 import { redactCredentials } from "./redact.ts";
 import { type BoundWorkspace, openWorkspaceRepository } from "./resolve.ts";
 import { classifyRepository } from "./spec.ts";
@@ -89,39 +89,28 @@ export function setWorkspaceGhCommand(command: WorkspaceGhCommand): () => void {
 	};
 }
 
-function runGh(
+/** Run gh to its end. Cancellation stops gh and everything it started, and rejects with `signal.reason` once they exited. */
+async function runGh(
 	args: readonly string[],
 	cwd: string,
 	signal: AbortSignal | undefined,
 	fields: Readonly<Record<string, string>>,
 ): Promise<ProcessResult> {
 	signal?.throwIfAborted();
-	return new Promise((resolvePromise, reject) => {
-		const child = spawn(ghCommand.path, [...ghCommand.args, ...args], {
-			cwd,
-			env: createChildProcessEnvironment({ GH_PROMPT_DISABLED: "1" }),
-			stdio: ["ignore", "pipe", "pipe"],
-			signal,
-		});
-		const stdout: Buffer[] = [];
-		const stderr: Buffer[] = [];
-		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-		child.on("error", (error: Error & { readonly code?: string }) => {
-			if (signal?.aborted === true) reject(signal.reason);
-			else if (error.code === "ENOENT")
-				reject(new WorkspacePublicationError({ reason: "gh-unavailable", fields, cause: error }));
-			else reject(new WorkspacePublicationError({ reason: "gh-failed", fields, cause: error }));
-		});
-		child.on("close", (code) => {
-			if (signal?.aborted === true) return;
-			resolvePromise({
-				stdout: Buffer.concat(stdout).toString("utf-8"),
-				stderr: Buffer.concat(stderr).toString("utf-8"),
-				status: code ?? -1,
-			});
-		});
+	const outcome = await runWorkspaceProcess({
+		path: ghCommand.path,
+		args: [...ghCommand.args, ...args],
+		cwd,
+		env: createChildProcessEnvironment({ GH_PROMPT_DISABLED: "1" }),
+		signal,
 	});
+	if (outcome.kind === "not-started")
+		throw new WorkspacePublicationError({
+			reason: outcome.error.code === "ENOENT" ? "gh-unavailable" : "gh-failed",
+			fields,
+			cause: outcome.error,
+		});
+	return { stdout: outcome.stdout, stderr: outcome.stderr, status: outcome.status ?? -1 };
 }
 
 function processFailure(

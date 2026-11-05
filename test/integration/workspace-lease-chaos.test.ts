@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { observeWorkspaceGitCommands } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	isWorkspaceTimeoutError,
 	resolveWorkspace,
@@ -262,6 +263,15 @@ async function additionStarted(repo: string): Promise<void> {
 	while (!marked()) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as { readonly code?: unknown }).code === "EPERM";
+	}
+}
+
 /** SIGKILL every git process group whose command line names `path`, as a machine crash would. */
 function killGitGroups(path: string): void {
 	const pids = spawnSync("pgrep", ["-f", "--", path], { encoding: "utf-8" })
@@ -358,6 +368,44 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 			const outcomes = await Promise.all(Array.from({ length: BINDERS }, () => binder(["bind", repo, "cut"]).first));
 			const worktree = assertOneCompleteWorktree(outcomes);
 			assert.equal(readdirSync(worktree).filter((name) => name.endsWith(".txt")).length, SLOW_FILES);
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
+	test(
+		"a bind after only the binder is SIGKILLed waits for its still-running git, then gets the worktree complete (#3109)",
+		async () => {
+			const repo = slowCheckoutRepository("orphaned-git");
+			const first = binder(["bind", repo, "orphan"]);
+			await additionStarted(repo);
+			const records = join(
+				git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"),
+				"atomic-worktree-adders",
+			);
+			while (!existsSync(records) || readdirSync(records).filter((name) => name.endsWith(".json")).length === 0)
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			const [recordName] = readdirSync(records).filter((name) => name.endsWith(".json"));
+			const orphan = (JSON.parse(readFileSync(join(records, recordName!), "utf-8")) as { pid: number }).pid;
+			first.child.kill("SIGKILL");
+			assert.equal((await first.first).outcome, "silent");
+			assert.equal(alive(orphan), true, "only the binder died; its git is still checking out");
+			const removals: boolean[] = [];
+			const stop = observeWorkspaceGitCommands((command) => {
+				if (command.args[0] === "worktree" && command.args[1] === "remove") removals.push(alive(orphan));
+			});
+			try {
+				const binding = await resolveWorkspace(workspace({ repo, branch: "orphan" }));
+				assert.equal(binding.tree, git(binding.worktree, "rev-parse", "HEAD^{tree}"));
+				assert.equal(git(binding.worktree, "status", "--porcelain"), "");
+				assert.equal(readdirSync(binding.worktree).filter((name) => name.endsWith(".txt")).length, SLOW_FILES);
+			} finally {
+				stop();
+			}
+			assert.deepEqual(
+				removals.filter((orphanAlive) => orphanAlive),
+				[],
+				"nothing was removed while the orphaned git was still adding it",
+			);
 		},
 		CHAOS_TIMEOUT_MS,
 	);

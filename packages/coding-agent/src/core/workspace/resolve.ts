@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
 import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
-import { withRepositoryLock } from "./lease.ts";
+import { processAlive, withRepositoryLock } from "./lease.ts";
+import { waitFor } from "./process.ts";
 import { redactCredentials } from "./redact.ts";
 import {
 	assertWorkspace,
@@ -200,26 +201,6 @@ async function createStore(spec: Extract<WorkspaceRepository, { kind: "remote" }
 	}
 }
 
-/** Shared work keeps running for other waiters; each waiter stops waiting when its own signal aborts. */
-function waitFor<T>(shared: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-	if (signal === undefined) return shared;
-	signal.throwIfAborted();
-	return new Promise<T>((resolvePromise, reject) => {
-		const onAbort = (): void => reject(signal.reason);
-		signal.addEventListener("abort", onAbort, { once: true });
-		shared.then(
-			(value) => {
-				signal.removeEventListener("abort", onAbort);
-				resolvePromise(value);
-			},
-			(error: unknown) => {
-				signal.removeEventListener("abort", onAbort);
-				reject(error);
-			},
-		);
-	});
-}
-
 function shared<T>(pending: Map<string, Promise<T>>, key: string, start: () => Promise<T>): Promise<T> {
 	let current = pending.get(key);
 	if (current === undefined) {
@@ -348,13 +329,19 @@ async function checkoutBranch(
 	path: string,
 	branch: string,
 	missingBranchStart: () => Promise<string>,
+	onSpawn: (pid: number) => void,
 ): Promise<void> {
 	const local = await commitOf(repository, `refs/heads/${branch}`);
 	const remote = await commitOf(repository, `refs/remotes/origin/${branch}`);
-	const lockWhileAdding = ["--lock", "--reason", WORKTREE_ADDING_REASON];
+	const add = (args: readonly string[]) =>
+		runWorkspaceGit({
+			cwd: repository.root,
+			args: ["worktree", "add", "--lock", "--reason", WORKTREE_ADDING_REASON, ...args],
+			phase: "worktree-add",
+			onSpawn,
+		});
 	if (local === undefined) {
-		const start = remote ?? (await missingBranchStart());
-		await git(repository.root, ["worktree", "add", ...lockWhileAdding, "-b", branch, path, start], "worktree-add");
+		await add(["-b", branch, path, remote ?? (await missingBranchStart())]);
 		return;
 	}
 	if (repository.spec.kind === "remote" && remote !== undefined && remote !== local) {
@@ -367,7 +354,7 @@ async function checkoutBranch(
 				fields: { repo, repository: repository.root, branch, worktree: path, expected: remote, actual: local },
 			});
 	}
-	await git(repository.root, ["worktree", "add", ...lockWhileAdding, path, branch], "worktree-add");
+	await add([path, branch]);
 }
 
 /**
@@ -420,6 +407,79 @@ async function worktreeState(repository: OpenRepository, path: string): Promise<
 		: { kind: "complete" };
 }
 
+/** The git process adding a worktree, recorded so a later bind can tell whether that addition is still running. */
+interface WorktreeAdder {
+	readonly host: string;
+	readonly pid: number;
+	/** When the platform reports it cheaply (Linux), so a later process given the same pid is not mistaken for it. */
+	readonly startTime: string | null;
+}
+
+/** Where the adder of `path` is recorded: beside the repository's other locks, one file per worktree path. */
+export function worktreeAdderRecord(commonDir: string, path: string): string {
+	return join(commonDir, "atomic-worktree-adders", `${shortDigest(resolve(path))}.json`);
+}
+
+function processStartTime(pid: number): string | null {
+	if (process.platform !== "linux") return null;
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+		return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
+	} catch (error) {
+		if ((error as { readonly code?: unknown }).code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+function recordAdder(record: string, pid: number): void {
+	const adder: WorktreeAdder = { host: hostname(), pid, startTime: processStartTime(pid) };
+	const staging = `${record}.${randomUUID()}.tmp`;
+	try {
+		mkdirSync(dirname(record), { recursive: true });
+		writeFileSync(staging, JSON.stringify(adder));
+		renameSync(staging, record);
+	} catch (error) {
+		const errno = (error as { readonly code?: unknown }).code;
+		if (typeof errno !== "string") throw error;
+		throw new WorkspaceBindingError({
+			code: "filesystem-failed",
+			fields: { operation: "record the git adding", path: record, errno },
+			cause: error,
+		});
+	}
+}
+
+/**
+ * The addition still running at `path`: its recorded adder while that process lives (one on another host cannot be
+ * checked, so it counts as running), `null` when nothing names the adder but the checkout's index lock is still there,
+ * or undefined when no addition can be running.
+ */
+async function runningAddition(
+	repository: OpenRepository,
+	path: string,
+	adminDir: string,
+): Promise<WorktreeAdder | null | undefined> {
+	const recorded = await readState(worktreeAdderRecord(repository.commonDir, path));
+	if (recorded === undefined || recorded === "directory")
+		return existsSync(join(adminDir, "index.lock")) ? null : undefined;
+	const adder = JSON.parse(recorded) as WorktreeAdder;
+	if (adder.host !== hostname()) return adder;
+	if (!processAlive(adder.pid)) return undefined;
+	const startTime = processStartTime(adder.pid);
+	return adder.startTime === null || startTime === null || startTime === adder.startTime ? adder : undefined;
+}
+
+let additionWait = { probes: 2_400, intervalMs: 250 };
+
+/** Internal seam: how often, and how many times, a bind looks again at an addition another git is still running. */
+export function setWorktreeAdditionWait(wait: { readonly probes: number; readonly intervalMs: number }): () => void {
+	const previous = additionWait;
+	additionWait = wait;
+	return () => {
+		additionWait = previous;
+	};
+}
+
 function isAtomicWorktreePath(path: string): boolean {
 	const inside = relative(join(atomicHome(), "worktrees"), path);
 	return inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
@@ -435,7 +495,7 @@ async function removeIncompleteWorktree(
 	path: string,
 	branch: string,
 	state: Extract<WorktreeState, { kind: "interrupted" | "orphaned" }>,
-): Promise<void> {
+): Promise<WorktreeBusy | undefined> {
 	const fields = {
 		repo,
 		repository: repository.root,
@@ -450,6 +510,10 @@ async function removeIncompleteWorktree(
 			reason: state.kind === "orphaned" ? "orphaned-directory" : "interrupted-add",
 			fields,
 		});
+	if (state.kind === "interrupted") {
+		const adder = await runningAddition(repository, path, state.adminDir);
+		if (adder !== undefined) return { fields, adder };
+	}
 	if (state.kind === "orphaned") {
 		await filesystem("remove orphaned worktree", path, () => rm(path, { recursive: true }));
 		return;
@@ -458,6 +522,72 @@ async function removeIncompleteWorktree(
 		await git(repository.root, ["worktree", "remove", "--force", "--force", path], "worktree-add");
 	} catch (error) {
 		throw new WorkspaceBindingError({ code: "incomplete-worktree", reason: "repair-failed", fields, cause: error });
+	}
+	return undefined;
+}
+
+/** An interrupted addition that may still be running, so it must not be repaired yet. */
+interface WorktreeBusy {
+	readonly fields: Readonly<Record<string, string>>;
+	readonly adder: WorktreeAdder | null;
+}
+
+function additionInProgress(busy: WorktreeBusy): WorkspaceBindingError {
+	return new WorkspaceBindingError({
+		code: "incomplete-worktree",
+		reason: "addition-in-progress",
+		fields: {
+			...busy.fields,
+			adderPid: busy.adder?.pid ?? null,
+			adderHost: busy.adder?.host ?? null,
+			adderStartTime: busy.adder?.startTime ?? null,
+		},
+	});
+}
+
+/**
+ * Add `path` under the repository lock, removing an interrupted addition first. An addition whose git may still be
+ * running is never removed: the lock is released, and the bind looks again until that git has exited or the wait
+ * runs out, which fails with a retryable `addition-in-progress`.
+ */
+async function addWorktree(
+	repository: OpenRepository,
+	repo: string,
+	path: string,
+	branch: string,
+	steps: EnsureWorktreeSteps,
+): Promise<void> {
+	for (let probe = 1; ; probe++) {
+		const busy = await withRepositoryLock(repository.commonDir, async () => {
+			const state = await worktreeState(repository, path);
+			if (state.kind === "complete" || state.kind === "unsettled") return undefined;
+			if (state.kind !== "missing") {
+				const running = await removeIncompleteWorktree(repository, repo, path, branch, state);
+				if (running !== undefined) return running;
+			}
+			if (repository.spec.kind === "remote" && repository.fresh !== true)
+				await git(repository.root, ["fetch", "origin"], "fetch");
+			await steps.prepare?.();
+			await git(repository.root, ["worktree", "prune"], "worktree-add");
+			const record = worktreeAdderRecord(repository.commonDir, path);
+			try {
+				await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart, (pid) =>
+					recordAdder(record, pid),
+				);
+				await git(repository.root, ["worktree", "unlock", path], "worktree-add");
+			} catch (error) {
+				const cleanupCause = await rm(record, { force: true }).then(
+					() => undefined,
+					(cause: unknown) => cause,
+				);
+				throw attachCleanupCause(error, cleanupCause);
+			}
+			await filesystem("remove the record of the git adding", record, () => rm(record, { force: true }));
+			return undefined;
+		});
+		if (busy === undefined) return;
+		if (probe >= additionWait.probes) throw additionInProgress(busy);
+		await new Promise((resolveWait) => setTimeout(resolveWait, additionWait.intervalMs));
 	}
 }
 
@@ -486,20 +616,7 @@ export async function ensureWorktree(
 	const pending = pendingWorktrees.get(path);
 	if (pending !== undefined || (await worktreeState(repository, path)).kind !== "complete")
 		await waitFor(
-			pending ??
-				shared(pendingWorktrees, path, () =>
-					withRepositoryLock(repository.commonDir, async () => {
-						const state = await worktreeState(repository, path);
-						if (state.kind === "complete" || state.kind === "unsettled") return;
-						if (state.kind !== "missing") await removeIncompleteWorktree(repository, repo, path, branch, state);
-						if (repository.spec.kind === "remote" && repository.fresh !== true)
-							await git(repository.root, ["fetch", "origin"], "fetch");
-						await steps.prepare?.();
-						await git(repository.root, ["worktree", "prune"], "worktree-add");
-						await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart);
-						await git(repository.root, ["worktree", "unlock", path], "worktree-add");
-					}),
-				),
+			pending ?? shared(pendingWorktrees, path, () => addWorktree(repository, repo, path, branch, steps)),
 			signal,
 		);
 	await verifyWorktree(repository, repo, path, branch, signal);
