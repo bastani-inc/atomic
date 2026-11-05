@@ -49,10 +49,6 @@ for (let index = 0; index < appends; index++) {
 }
 const elapsedMs = performance.now() - started;
 const queue = await sqlPoolStorage(journal)!.read(async (database) => getWriterQueueStats(database as SqliteDatabase));
-await journal.release(held.lease);
-if (owner === undefined) await journal.close();
-else await owner.close();
-const lockWait = { p50: queue.p50WaitMs, p95: queue.p95WaitMs };
 // The database files of the store this process took the write lock on, read from the records each connection keeps
 // next to a database while it holds that database's lock; a store writer holds its root's shard and no other.
 const holders =
@@ -62,4 +58,8 @@ const holders =
 				.filter((name) => readdirSync(join(path, name)).some((record) => record.startsWith(`${process.pid}-`)))
 				.map((name) => name.slice(0, -"-holders".length))
 		: [];
+await journal.release(held.lease);
+if (owner === undefined) await journal.close();
+else await owner.close();
+const lockWait = { p50: queue.p50WaitMs, p95: queue.p95WaitMs };
 process.stdout.write(`${JSON.stringify({ root, worker, pid: process.pid, waits, elapsedMs, lockWait, holders })}\n`);

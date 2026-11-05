@@ -351,7 +351,7 @@ test("adopt names the journals it adopted through references; consolidate counts
 	rmSync(join(root, "gone"), { recursive: true, force: true });
 	const missing = new JournalShardUnavailableError({ code: "shard-missing", shardId: 2, shardPath: gone });
 	assert.deepEqual(await storage(["consolidate"]), {
-		code: 0,
+		code: 1,
 		out: [
 			"Moved 2 finished runs into the journal store's shards.",
 			"Left 2 runs in place: unfinished.",

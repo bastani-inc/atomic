@@ -105,6 +105,7 @@ export class ShardedRunJournal implements RunJournal {
 	private readonly located = new Map<string, JournalShardRecord>();
 	private readonly unavailable = new Map<number, JournalShardUnavailableError>();
 	private readonly pendingStatuses = new Map<string, string>();
+	private reconciled = false;
 	private statusFailure?: JournalCatalogError;
 	private closed = false;
 	private tail: Promise<void> = Promise.resolve();
@@ -129,24 +130,18 @@ export class ShardedRunJournal implements RunJournal {
 			});
 			throw error;
 		}
-		const journal = new ShardedRunJournal(catalog.directory, catalog, options.openShard);
-		try {
-			await journal.reconcileStatuses();
-		} catch (error) {
-			await journal.close().catch((cleanupCause: unknown) => {
-				Object.defineProperty(error as object, "cleanupCause", { value: cleanupCause, configurable: true });
-			});
-			throw error;
-		}
-		return journal;
+		return new ShardedRunJournal(catalog.directory, catalog, options.openShard);
 	}
 
 	/**
-	 * Brings the catalog's status of each root it counts as running up to the status its own shard saved. A status the
-	 * catalog could not record before its process ended is lost from memory, and left alone it would keep an idle shard
-	 * busy for placement; a root that is still running, or crashed while running, is unchanged.
+	 * Before this process places its first new root, brings the catalog's status of each root it counts as running up to
+	 * the status its own shard saved. A status the catalog could not record before its process ended is lost from
+	 * memory, and left alone it would keep an idle shard busy for placement; a root that is still running, or crashed
+	 * while running, is unchanged. Processes that only open existing roots, such as pool workers, never do this.
 	 */
 	private async reconcileStatuses(): Promise<void> {
+		if (this.reconciled) return;
+		this.reconciled = true;
 		for (const run of await this.catalog.busyRuns()) {
 			const record = await this.catalog.shard(run.shard);
 			const journal = record === undefined ? undefined : await this.listable(record);
@@ -294,6 +289,7 @@ export class ShardedRunJournal implements RunJournal {
 		return this.operation(async () => {
 			const located = await this.locate(rootRunId);
 			if (located !== undefined) return located.journal;
+			await this.reconcileStatuses();
 			const { shard } = await this.catalog.place({ runId: rootRunId });
 			this.located.set(rootRunId, shard);
 			return this.shardJournal(shard, rootRunId);
@@ -360,7 +356,8 @@ export class ShardedRunJournal implements RunJournal {
 		return this.operation(async () => {
 			// A run another writer added to an adopted file since the catalog last indexed it already exists: finding it
 			// indexes it, so the reservation below names that file and not a new, empty shard.
-			if ((await this.catalog.locate(header.runId)) === undefined) await this.locate(header.runId);
+			if ((await this.catalog.locate(header.runId)) === undefined && (await this.locate(header.runId)) === undefined)
+				await this.reconcileStatuses();
 			// The root is reserved first and gets its status once its shard has accepted it: a failure in between leaves
 			// a reservation that stops counting as busy, not a running root that does not exist.
 			const reserved = await this.catalog.place({ runId: header.runId });

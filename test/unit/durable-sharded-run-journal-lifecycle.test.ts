@@ -1138,29 +1138,33 @@ test("a lease operation on a run no shard holds is a stale lease, with nothing w
 	await assert.rejects(journal.acquire("ghost", "h"), (error: Error) => error instanceof RunNotFoundError);
 });
 
-test("a key or lease read on a cached native copy a move's undo deleted finds the run where the catalog now names it (#4325)", async () => {
-	const legacy = await adoptedFinishedRun("undone-reads");
-	const backup = join(root, "undone-reads.backup");
-	copyFileSync(legacy, backup);
-	const journal = await open();
-	assert.equal((await consolidateJournalStore(store)).moved, 1);
-	assert.equal((await journal.getRun("r"))?.runId, "r");
-	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
-	const native = (await catalog.locate("r"))!.shard;
-	const nativeFile = new DatabaseSync(native.path);
-	for (const table of ["wf_events", "wf_leases", "wf_runs"])
-		nativeFile.exec(`DELETE FROM ${table} WHERE run_id = 'r'`);
-	nativeFile.close();
-	for (const suffix of ["", "-wal", "-shm"]) rmSync(`${legacy}${suffix}`, { force: true });
-	copyFileSync(backup, legacy);
-	const adopted = (await catalog.shards()).find((shard) => shard.kind === "adopted")!;
-	assert.equal(await catalog.moveRun("r", native.id, adopted.id), true);
-	const locates = countCalls(catalog, ["locate"]);
-	assert.equal((await journal.readKey("r", "start"))?.event.type, "RunStarted");
-	assert.ok(locates.locate! <= 2, `the catalog was asked ${locates.locate} times`);
-	assert.equal(journal.shardOf("r")?.kind, "adopted");
-	assert.equal((await journal.leaseState("r"))?.runId, "r");
-});
+for (const read of ["readKey", "leaseState"] as const)
+	test(`${read} on a cached native copy a move's undo deleted finds the run where the catalog now names it (#4325)`, async () => {
+		const legacy = await adoptedFinishedRun(`undone-${read}`);
+		const backup = join(root, `undone-${read}.backup`);
+		copyFileSync(legacy, backup);
+		const journal = await open();
+		assert.equal((await consolidateJournalStore(store)).moved, 1);
+		assert.equal((await journal.getRun("r"))?.runId, "r");
+		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+		const native = (await catalog.locate("r"))!.shard;
+		const nativeFile = new DatabaseSync(native.path);
+		for (const table of ["wf_events", "wf_leases", "wf_runs"])
+			nativeFile.exec(`DELETE FROM ${table} WHERE run_id = 'r'`);
+		nativeFile.close();
+		for (const suffix of ["", "-wal", "-shm"]) rmSync(`${legacy}${suffix}`, { force: true });
+		copyFileSync(backup, legacy);
+		const resumed = new DatabaseSync(legacy);
+		resumed.exec("UPDATE wf_leases SET holder_id = 'held-by-a-resume' WHERE run_id = 'r'");
+		resumed.close();
+		const adopted = (await catalog.shards()).find((shard) => shard.kind === "adopted")!;
+		assert.equal(await catalog.moveRun("r", native.id, adopted.id), true);
+		const locates = countCalls(catalog, ["locate"]);
+		if (read === "readKey") assert.equal((await journal.readKey("r", "start"))?.event.type, "RunStarted");
+		else assert.equal((await journal.leaseState("r"))?.holderId, "held-by-a-resume");
+		assert.ok(locates.locate! <= 2, `the catalog was asked ${locates.locate} times`);
+		assert.equal(journal.shardOf("r")?.kind, "adopted");
+	});
 
 test("a key miss on a run its shard holds asks nothing of the catalog (#4325)", async () => {
 	const journal = await open();
@@ -1172,25 +1176,31 @@ test("a key miss on a run its shard holds asks nothing of the catalog (#4325)", 
 	assert.deepEqual([locates.locate, locates.shards], [0, 0]);
 });
 
-test("reopening the store reconciles a root the catalog still counts as running with the status its shard saved (#4325)", async () => {
+test("the first new root placed after a reopen reconciles a root the catalog still counts as running with its shard's status (#4325)", async () => {
 	const first = await open();
+	await start(first, "crashed");
 	const finished = await start(first, "finished");
 	await first.append(finished, { type: "StatusChanged", payload: { status: "completed" } });
 	await first.release(finished);
-	await start(first, "crashed");
+	assert.notEqual(first.shardOf("crashed")?.id, first.shardOf("finished")?.id);
 	await first.close();
 	const catalogFile = new DatabaseSync(join(store, "catalog.sqlite"));
 	catalogFile.exec("UPDATE catalog_runs SET status = 'running' WHERE run_id = 'finished'");
 	catalogFile.close();
 	const reopened = await open();
 	const catalog = Reflect.get(reopened, "catalog") as JournalCatalog;
-	assert.equal((await catalog.locate("finished"))?.run.status, "completed", "the saved status reaches the catalog");
-	assert.equal((await catalog.locate("crashed"))?.run.status, "running", "a root that is still running is unchanged");
+	assert.equal(
+		(await catalog.locate("finished"))?.run.status,
+		"running",
+		"opening reconciles nothing and opens no shard",
+	);
 	const shardsBefore = (await catalog.shards()).length;
 	assert.equal(
 		await reopened.createRun({ runId: "next", name: "wf", cwd: "/p", createdAt: 3, status: "running" }),
 		"created",
 	);
+	assert.equal((await catalog.locate("finished"))?.run.status, "completed", "the saved status reaches the catalog");
+	assert.equal((await catalog.locate("crashed"))?.run.status, "running", "a root that is still running is unchanged");
 	assert.equal((await catalog.shards()).length, shardsBefore, "the idle shard takes the new root, no shard is added");
-	assert.equal(reopened.shardOf("next")?.id, reopened.shardOf("finished")?.id);
+	assert.equal(reopened.shardOf("next")?.id, (await catalog.locate("finished"))?.shard.id);
 });
