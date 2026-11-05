@@ -12,6 +12,7 @@ import {
 	STORAGE_TOKEN_FILE,
 } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
+import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	checkSharedStorageAdapter,
 	collectStorageStatus,
@@ -106,11 +107,14 @@ describe("atomic storage and atomic intercom arguments", () => {
 	});
 
 	test("reject storage arguments that would join the wrong way (#3857)", () => {
-		assert.throws(() => parseStorageCommand(["join", "libsql://db.example.turso.io"]), /--token-file is required/);
-		assert.throws(
-			() => parseStorageCommand(["join", "postgres://db", "--token-file", "t"]),
-			/Unsupported database URL/,
-		);
+		const rejects = (args: string[], code: string, field: string) =>
+			assert.throws(
+				() => parseStorageCommand(args),
+				(error: Error) => isTeamProfileConfigError(error) && error.code === code && error.field === field,
+			);
+		rejects(["join", "libsql://db.example.turso.io"], "missing-token", "--token-file");
+		rejects(["join", "postgres://db", "--token-file", "t"], "unsupported-url", "<url>");
+		rejects(["join", "file:./shared.sqlite"], "relative-file-url", "<url>");
 		assert.throws(() => parseStorageCommand(["join"]), /Usage: .* storage join <url>/);
 		assert.throws(() => parseStorageCommand(["join", "file:/x", "--token-file"]), /--token-file needs a value/);
 		assert.throws(() => parseStorageCommand(["status", "--prefix", "x"]), /Unknown option --prefix/);

@@ -35,6 +35,9 @@ type ConsoleErrorCall = Parameters<Console["error"]>;
 type ConnectRegistration = Parameters<IntercomClient["connect"]>[0];
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
+vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false }),
+}));
 
 const EXTENSION_PATH = "<intercom>";
 const SESSION_START: SessionStartEvent = { type: "session_start", reason: "startup" };

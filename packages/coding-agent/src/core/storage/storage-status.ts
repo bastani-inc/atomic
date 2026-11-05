@@ -20,6 +20,7 @@ import { JOURNAL_CATALOG_FILE } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import {
 	processSharedStorageSelection,
+	processStorageEnvironment,
 	SESSIONS_STORAGE_ENV,
 	STORAGE_ENV,
 	selectProcessStorage,
@@ -33,7 +34,12 @@ import {
 	type StorageSelection,
 	storageSelectionKey,
 } from "./provider.js";
-import { type StorageSettingsSelection, selectStorage, selectsDefaultJournalStore } from "./selection.js";
+import {
+	type StorageSettingsSelection,
+	selectStorage,
+	selectsDefaultJournalStore,
+	TEAM_PROFILE_ENV,
+} from "./selection.js";
 
 /** A shard file the catalog registers that cannot be used: it is gone, or it exists and does not open as a database. */
 async function unavailableShardFiles(
@@ -384,8 +390,11 @@ function sourceOf(layers: readonly Layer[]): { source: string; overridden: strin
 	return { source: present[0] ?? "default", overridden: present.slice(1) };
 }
 
+/** The source label of the `ATOMIC_PROFILE=ci` team database. */
+export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
+
 /** The journal selection exactly as the workflows extension makes it from these settings. */
-function selectJournal(agentDir: string, settings: Settings): StorageSelection {
+export function selectJournal(agentDir: string, settings: Settings): StorageSelection {
 	const processChoice = selectProcessStorage("journal", agentDir);
 	if (processChoice !== undefined) return processChoice.selection;
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
@@ -404,15 +413,43 @@ function selectJournal(agentDir: string, settings: Settings): StorageSelection {
 		: selection;
 }
 
-/** The raw shared selection a broker started from this process would read: `ATOMIC_STORAGE`, else global `storage`. */
-function sharedSelection(globalStorage: StorageSettingsSelection | undefined): StorageSettingsSelection | undefined {
-	const processSelection = processSharedStorageSelection();
+/**
+ * The raw shared selection a broker started from this process would read: `--storage`, `ATOMIC_STORAGE` or the
+ * `ATOMIC_PROFILE=ci` team database, else global `storage`.
+ */
+function sharedSelection(
+	globalStorage: StorageSettingsSelection | undefined,
+	processSelection: string | undefined = processSharedStorageSelection(),
+): StorageSettingsSelection | undefined {
 	if (processSelection === undefined) return globalStorage;
 	const parsed: StorageSettingsSelection | null = JSON.parse(processSelection);
 	return parsed === null || typeof parsed !== "object" || Array.isArray(parsed) ? undefined : parsed;
 }
 
-function projectTrust(cwd: string, agentDir: string): boolean {
+/**
+ * The shared selection Intercom's multi-node routing would use, resolved like the broker resolves it; `undefined`
+ * when there is none or it is in memory, which leaves multi-node routing off.
+ */
+export function selectIntercomStorage(
+	agentDir: string,
+	globalStorage: StorageSettingsSelection | undefined,
+): StorageSelection | undefined {
+	const processSelection = processSharedStorageSelection();
+	const value = sharedSelection(globalStorage, processSelection);
+	if (value === undefined) return undefined;
+	const selection = selectStorage(
+		value,
+		processSelection === undefined ? "settings" : "env",
+		"storage",
+		join(dirname(agentDir), "storage.sqlite"),
+	);
+	if (selection.kind === "memory" || (selection.kind === "sqlite" && selection.path === ":memory:")) return undefined;
+	return selection.kind === "sqlite" && !isAbsolute(selection.path)
+		? { ...selection, path: resolvePath(selection.path, dirname(agentDir)) }
+		: selection;
+}
+
+export function projectTrust(cwd: string, agentDir: string): boolean {
 	if (!hasProjectTrustInputs(cwd)) return true;
 	return (
 		new ProjectTrustStore(agentDir).get(cwd) ??
@@ -461,6 +498,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		);
 	}
 	const env = (name: string): Layer => ({ label: name, present: envSet(name) });
+	const teamProfile: Layer = { label: TEAM_PROFILE_SOURCE, present: envSet(TEAM_PROFILE_ENV) };
 	const sessionsSetting = (settings: Settings) => settings.sessions?.storage;
 	const storageSetting = (settings: Settings) => settings.storage;
 	const layers: Record<StorageStatusDomain, Layer[]> = {
@@ -468,6 +506,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 			env(SESSIONS_STORAGE_ENV),
 			env(ENV_SESSION_DIR),
 			env(STORAGE_ENV),
+			teamProfile,
 			...settingLayers(global, project, projectTrusted, sessionsSetting, "sessions.storage"),
 			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
 		],
@@ -475,10 +514,15 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 			env(WORKFLOWS_JOURNAL_ENV),
 			env(WORKFLOW_JOURNAL_PATH_ENV),
 			env(STORAGE_ENV),
+			teamProfile,
 			...settingLayers(global, project, projectTrusted, journalSetting, "workflows.journal"),
 			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
 		],
-		intercom: [env(STORAGE_ENV), { label: "global settings: storage", present: global.storage !== undefined }],
+		intercom: [
+			env(STORAGE_ENV),
+			teamProfile,
+			{ label: "global settings: storage", present: global.storage !== undefined },
+		],
 	};
 
 	const checked = new Map<string, { domain: StorageStatusDomain; probe: StorageProbe }>();
@@ -530,36 +574,19 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 
 	const intercom = sourceOf(layers.intercom);
 	try {
-		const value = sharedSelection(global.storage);
-		const selection =
-			value === undefined
-				? undefined
-				: selectStorage(
-						value,
-						intercom.source === STORAGE_ENV ? "env" : "settings",
-						"storage",
-						join(dirname(agentDir), "storage.sqlite"),
-					);
-		if (
-			selection === undefined ||
-			selection.kind === "memory" ||
-			(selection.kind === "sqlite" && selection.path === ":memory:")
-		) {
+		const resolved = selectIntercomStorage(agentDir, global.storage);
+		if (resolved === undefined) {
 			domains.push({
 				domain: "intercom",
 				selection: "off",
 				source: intercom.source,
 				overridden: intercom.overridden,
 				multiNode:
-					selection === undefined
-						? "off: no shared storage selection (top-level `storage` in global settings, or ATOMIC_STORAGE)"
+					sharedSelection(global.storage) === undefined
+						? "off: no shared storage selection (top-level `storage` in global settings, ATOMIC_STORAGE, or ATOMIC_PROFILE=ci)"
 						: "off: the shared storage selection is in memory",
 			});
 		} else {
-			const resolved =
-				selection.kind === "sqlite" && !isAbsolute(selection.path)
-					? { ...selection, path: resolvePath(selection.path, dirname(agentDir)) }
-					: selection;
 			let liveBrokers: string[] | undefined;
 			const control = options.control;
 			const probe = await probeOnce(
@@ -625,7 +652,7 @@ async function brokerSection(control: IntercomBrokerControl, agentDir: string): 
 		if (query.state === "legacy")
 			return query.pid === undefined ? { state: "legacy" } : { state: "legacy", pid: query.pid };
 		const { report } = query;
-		const expected = control.expectedBrokerStorage(agentDir, process.env);
+		const expected = control.expectedBrokerStorage(agentDir, processStorageEnvironment());
 		return {
 			state: "running",
 			pid: report.pid,

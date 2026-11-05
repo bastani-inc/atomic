@@ -23,7 +23,40 @@ export { renderStorageIdentifiers, validateStoragePrefix } from "./prefix.js";
 export * from "./provider.js";
 export * from "./run-journal.js";
 export { assertStorageSchemaVersion } from "./schema.js";
-export * from "./selection.js";
+export {
+	getTeamProfile,
+	type InMemorySecretRef,
+	inMemorySecret,
+	joinTeam,
+	LIBSQL_ADAPTER_PACKAGE,
+	LOCAL_SESSIONS_STORAGE,
+	leaveTeam,
+	REDACTED_SECRET,
+	type StorageInputSelection,
+	type StorageSettingsSelection,
+	selectStorage,
+	selectsDefaultJournalStore,
+	TEAM_PREFIX_ENV,
+	TEAM_PROFILE_ENV,
+	TEAM_TOKEN_ENV,
+	TEAM_TOKEN_FILE_ENV,
+	TEAM_URL_ENV,
+	type TeamProfileSelectionOptions,
+	type TeamStorageSelection,
+	teamProfileSelection,
+} from "./selection.js";
 export type { SessionStore } from "./session/types.js";
 export * from "./sqlite-facade.js";
+export type {
+	JoinTeamOptions,
+	LeaveTeamOptions,
+	TeamBrokerRestart,
+	TeamJoinResult,
+	TeamKeptSetting,
+	TeamLeaveResult,
+	TeamProfile,
+	TeamProfileName,
+	TeamProfileOptions,
+	TeamSettingKey,
+} from "./team.js";
 export { switchToWriteAheadLog } from "./write-ahead-log.js";

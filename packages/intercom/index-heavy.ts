@@ -21,9 +21,10 @@ import {
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, type ExtensionAPI, type ExtensionContext, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	IntercomClient,
@@ -79,7 +80,10 @@ import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
-import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
+import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
+import { getIntercomDirPath } from "./broker/paths.js";
+import { queryBrokerRouting } from "./broker/broker-routing.js";
+import { DEFAULT_GROUP_WARNING, multiNodeSelected, projectGroup, warnDefaultGroupWithoutUi } from "./project-group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import {
   BROKER_RETIRING_RETRY_WINDOW_MS,
@@ -224,6 +228,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let runtimeGeneration = 0;
   let agentRunning = false;
   let sessionHomeGroup: string | null = null;
+  let brokerRouting: boolean | null = null;
+  let homeRoutedAcrossMachines: boolean | null = null;
+  let defaultGroupWarned = false;
+  let terminalHomeGroupError: Error | null = null;
   let joinedGroups: Set<string> | null = null;
   const sessionMemberships = sessionScopedExtensionState<Map<string, readonly string[]>>(
     pi.lifecycleScope ?? pi.events ?? pi,
@@ -316,6 +324,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       // The UI can disappear during session shutdown/reload while async overlay work is settling.
     }
   }
+  function warnExplicitDefaultGroup(ctx: ExtensionContext): void {
+    if (defaultGroupWarned) return;
+    const liveContext = getLiveContext(ctx);
+    if (liveContext === null) return;
+    defaultGroupWarned = true;
+    if (liveContext.hasUI) notifyIfLive(liveContext, DEFAULT_GROUP_WARNING, "warning");
+    else warnDefaultGroupWithoutUi();
+  }
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
     const stage = getLiveContext()?.orchestrationContext;
@@ -324,8 +340,46 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       : activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
     return config.status ? `${lifecycleStatus} · ${config.status}` : lifecycleStatus;
   }
+  /** Whether this session's broker routes across machines: what the broker reported, else the storage selection it would start with. */
+  function multiNodeRouting(): boolean {
+    return brokerRouting ?? multiNodeSelected(dirname(getIntercomDirPath()), processStorageEnvironment());
+  }
+  /** The project group a session in this context joins by default while multi-node routing is on. */
+  function projectGroupOf(ctx: ExtensionContext | null): () => string | undefined {
+    return () => (multiNodeRouting() ? projectGroup(ctx?.cwd ?? process.cwd(), createGitEnvironment()) : undefined);
+  }
+  async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<boolean> {
+    const agentDir = dirname(getIntercomDirPath());
+    const routing = await queryBrokerRouting(agentDir);
+    if (!getLiveContext(ctx, generation)) throw new Error("Intercom runtime no longer active");
+    const actual = routing.acrossMachines;
+    brokerRouting = actual;
+    const explicit = explicitHomeGroup(config, ctx);
+    const selectedShared = multiNodeSelected(agentDir, processStorageEnvironment());
+    const strictSharedProfile = selectedShared && (process.env.ATOMIC_PROFILE ?? "").trim() === "ci";
+    const brokerLacksSelectedStorage = !routing.hasSharedStorage && selectedShared;
+    if (brokerLacksSelectedStorage || (strictSharedProfile && !actual)) {
+      throw new IntercomRoutingMismatchError("shared-storage-not-on-broker", resolveSessionHomeGroup());
+    }
+    if (homeRoutedAcrossMachines === null) {
+      homeRoutedAcrossMachines = actual;
+      const previousHome = sessionHomeGroup;
+      sessionHomeGroup = resolveHomeGroup(config, ctx, projectGroupOf(ctx));
+      if (sessionHomeGroup !== previousHome) clearJoinedGroups();
+      if (joinedGroups === null) {
+        const restored = persistedJoinedGroups(ctx);
+        if (restored) setJoinedGroups(restored);
+      }
+    } else if (actual && !homeRoutedAcrossMachines && explicit === undefined) {
+      throw new IntercomRoutingMismatchError("implicit-default-on-remote-broker", resolveSessionHomeGroup());
+    }
+    if (actual && explicit === DEFAULT_GROUP) warnExplicitDefaultGroup(ctx);
+    return actual;
+  }
   function resolveSessionHomeGroup(): string {
-    return sessionHomeGroup ?? resolveHomeGroup(config, getLiveContext());
+    if (sessionHomeGroup !== null) return sessionHomeGroup;
+    const liveContext = getLiveContext();
+    return resolveHomeGroup(config, liveContext, projectGroupOf(liveContext));
   }
   function currentIntercomGroups(): Set<string> {
     return joinedGroups === null
@@ -1293,6 +1347,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (client && client.isConnected()) {
       return client;
     }
+    if (terminalHomeGroupError !== null) throw terminalHomeGroupError;
     const contextAtStart = getLiveContext();
     const generationAtStart = runtimeGeneration;
     if (!contextAtStart || !currentSessionId || sessionStartedAt === null) {
@@ -1330,6 +1385,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
             await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
+            const verifiedRouting = await settleBrokerRouting(contextAtStart, generationAtStart);
             const childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
@@ -1340,6 +1396,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               readSubagentMessageSource(runtimeContext?.subagentPolicy),
               // Origin controls workflow authority, not membership or child inheritance.
               resolveSessionHomeGroup(),
+              { acrossMachines: verifiedRouting },
             );
             clientRegistrationGroup = resolveSessionHomeGroup();
             // Termination may have won while registration was in flight.
@@ -1417,7 +1474,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             // The broker retired while this session was registering with it (idle retirement, a restart, a
             // replacement): spawn its successor and register again, rather than failing the start-up or leaving
             // the retry to the one-second background timer.
-            if (isIntercomBrokerRetiring(error)) {
+            if (isIntercomBrokerRetiring(error) || isIntercomRoutingChangedError(error)) {
               retiringDeadline ??= Date.now() + BROKER_RETIRING_RETRY_WINDOW_MS;
               if (
                 Date.now() < retiringDeadline &&
@@ -1430,6 +1487,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 // replacement's and register a session that is gone, so the retry goes on only while it is still this one.
                 if (getLiveContext(contextAtStart, generationAtStart)) continue;
               }
+            }
+            if (isIntercomRoutingMismatchError(error) || isProjectGroupError(error)) {
+              terminalHomeGroupError = error;
+              throw error;
             }
             connectFailed = true;
             throw toError(error);
@@ -1620,11 +1681,22 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     resetReconnectAttempt: () => { reconnectAttempt = 0; },
     clearReconnectTimer,
     setRuntimeContext: (value) => {
+      brokerRouting = null;
+      homeRoutedAcrossMachines = null;
+      defaultGroupWarned = false;
+      terminalHomeGroupError = null;
       if (value === null) {
         releaseJoinedGroups();
         sessionHomeGroup = null;
       } else {
-        sessionHomeGroup = resolveHomeGroup(config, value);
+        try {
+          sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));
+        } catch (error) {
+          // Git could not name the project group. The session still starts; its first connection resolves the home
+          // group again after it verifies the broker's routing and reports this typed error before any registration.
+          if (!isProjectGroupError(error)) throw error;
+          sessionHomeGroup = null;
+        }
         inboundDeliveries.restore(value.sessionManager.getBranch());
       }
       runtimeContext = value;
@@ -1725,6 +1797,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
+    multiNodeRouting,
     setJoinedGroups: async (groups) => {
       setJoinedGroups(groups);
       await persistJoinedGroups(groups);

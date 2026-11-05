@@ -107,6 +107,9 @@ Once the complete credential reaches stdout, the command has succeeded. If the s
 ```bash
 atomic storage status [--json]                                       # Selection, source, adapter and connection per domain
 atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL / Turso database
+atomic team join <url> [--token-file <path>] [--prefix <prefix>]     # Share workflow runs and Intercom; sessions stay local
+atomic team status [--json]                                          # Profile in effect plus the storage report
+atomic team leave                                                    # Remove what team join wrote
 atomic storage adopt <path>... [--no-discover]                       # Register existing journal files in place
 atomic storage consolidate                                           # Move finished runs of adopted files into the store
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
@@ -116,6 +119,8 @@ atomic intercom restart                                              # Replace t
 `atomic storage status` reports, for sessions, workflow runs, and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, a database does not answer, or the journal store has a shard file that is missing or cannot be opened.
 
 `atomic storage join` checks the token and the connection with `@bastani/atomic-storage-libsql`, stores the trimmed token in a new `storage-token.<id>` file in the agent directory with mode 600, writes only the global `storage` setting, and lists the environment variables and settings that override it. Previous token files are never overwritten; a settings-write failure removes only the new token. It creates no tables. `--token-file` is required except for absolute `file:` URLs; relative file URLs and URLs that contain the token itself (a user name, a password, or an `authToken` parameter) are refused. When the package is not installed, it prints the install command. See [Storage](/storage#joining-a-machine-to-a-shared-database).
+
+`atomic team join` runs the same checks and token handling as `atomic storage join`, then writes the global `storage` setting (the team database) and `sessions.storage` (the local default store) in one update, restarts the Intercom broker, and prints the profile and the `atomic storage status` report. Nothing is written when a check fails. `atomic team status` adds the profile in effect (`individual`, `team`, `ci`, or `custom`) and the current project's Intercom group to that report. `atomic team leave` removes only the values `team join` wrote, deletes their token file unless another setting references it, and restarts the broker. See [Team and CI setup](/guides/team-setup).
 
 `atomic storage adopt` registers journal files in the workflow journal store in place, without copying them, so their runs resolve by ID and resume where they are. Each path is a journal `.sqlite` file or a directory holding `journal.sqlite`; every path is checked before the first is registered. It also adopts the journal files the adopted runs were written to, unless `--no-discover` is given. `atomic storage consolidate` moves finished runs from adopted files into the store's own shards and reports the runs it left in place with the reason, and exits `1`, printing each distinct error's message and hint, when a run was left because of an error (a missing shard file, a different copy in the destination). Both also exit `1` with the error's message and hint when they cannot proceed. See [The workflow journal store](/storage#the-workflow-journal-store).
 
@@ -296,6 +301,11 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_STORAGE` | Storage selection JSON for this process's sessions and workflow runs; overridden by `--storage` and the domain variables |
 | `ATOMIC_SESSIONS_STORAGE` | Session-only storage selection JSON; cannot be combined with `ATOMIC_CODING_AGENT_SESSION_DIR` |
 | `ATOMIC_WORKFLOWS_JOURNAL` | Workflow-run-only storage selection JSON; cannot be combined with `ATOMIC_WORKFLOW_JOURNAL_PATH` |
+| `ATOMIC_PROFILE` | `ci`: sessions, workflow runs, and Intercom use the team database from the variables below, without settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
+| `ATOMIC_TEAM_URL` | Team database URL for `ATOMIC_PROFILE=ci` |
+| `ATOMIC_TEAM_TOKEN` | Team database token for `ATOMIC_PROFILE=ci`; cannot be combined with `ATOMIC_TEAM_TOKEN_FILE` |
+| `ATOMIC_TEAM_TOKEN_FILE` | File holding the team database token for `ATOMIC_PROFILE=ci` |
+| `ATOMIC_TEAM_PREFIX` | Team table prefix for `ATOMIC_PROFILE=ci` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |

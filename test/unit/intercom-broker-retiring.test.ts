@@ -36,6 +36,9 @@ const {
 } = await import("../../packages/intercom/recoverable-disconnect.js");
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
+vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false }),
+}));
 
 /** The one `node:timers/promises` delay a test holds with `holdNextDelay`; every other delay runs as it always does. */
 const heldDelay = vi.hoisted(() => ({
@@ -97,7 +100,8 @@ async function fakeBroker(onRegister: OnRegister, onLiveRoute?: (socket: net.Soc
 			createMessageReader(
 				(frame) => {
 					const message = frame as Frame;
-					if (message.type === "register") onRegister(socket, server, ++registrations);
+					if (message.type === "register" || message.type === "register_verified")
+						onRegister(socket, server, ++registrations);
 					if (message.type === "register_live_workflow_stage_route") onLiveRoute?.(socket);
 					if (message.type === "list")
 						writeMessage(socket, { type: "sessions", requestId: message.requestId, sessions: [] });

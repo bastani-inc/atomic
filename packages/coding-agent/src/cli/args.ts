@@ -353,8 +353,9 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} mcp <command>             Configure MCP servers, check connections, and sign in
   ${APP_NAME} storage <command>         Show storage selections and connectivity, or join a shared database
+  ${APP_NAME} team <command>            Join or leave a team database (shared workflow runs and Intercom, private sessions)
   ${APP_NAME} intercom <command>        Show or restart this machine's Intercom broker
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/intercom
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/team/intercom
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider to search for --model (requires --model)
@@ -538,6 +539,11 @@ ${chalk.bold("Environment Variables:")}
   ATOMIC_SESSIONS_STORAGE          - Session-only storage selection JSON (cannot be combined with ${ENV_SESSION_DIR})
   ATOMIC_WORKFLOWS_JOURNAL         - Workflow-run-only storage selection JSON
   ATOMIC_WORKFLOW_JOURNAL_PATH     - Workflow journal SQLite path (cannot be combined with ATOMIC_WORKFLOWS_JOURNAL)
+  ATOMIC_PROFILE                   - ci: use the team database for sessions, workflow runs and Intercom without settings
+  ATOMIC_TEAM_URL                  - Team database URL for ATOMIC_PROFILE=ci
+  ATOMIC_TEAM_TOKEN                - Team database token for ATOMIC_PROFILE=ci (or ATOMIC_TEAM_TOKEN_FILE)
+  ATOMIC_TEAM_TOKEN_FILE           - File holding the team database token for ATOMIC_PROFILE=ci
+  ATOMIC_TEAM_PREFIX               - Team table prefix for ATOMIC_PROFILE=ci
 
 ${chalk.bold("Built-in Tool Names:")}
   read              - Read path selectors (files, dirs, archives, URLs)

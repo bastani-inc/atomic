@@ -7,6 +7,9 @@ import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
+vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false }),
+}));
 afterEach(() => vi.restoreAllMocks());
 
 for (const suspension of ["beforeConnect", "spawn"] as const) {

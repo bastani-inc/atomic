@@ -131,13 +131,15 @@ By default, each machine's broker serves only the sessions on that machine. With
 
 ### Turning it on
 
-Give every machine the same shared top-level `storage` selection, including the same `prefix`. To reach other machines, the selection must be an [adapter](/storage#selecting-an-adapter) whose module implements `openDatabase` and connects to a database that every machine can reach, as described in [Sharing storage across hosts](/storage#sharing-storage-across-hosts). Install the adapter on every machine, for example as an [Atomic package](/storage#adapters-from-atomic-packages) so that `atomic install` also brings its driver.
+For a team, `atomic team join <url> --token-file <path>` turns it on in one command: it selects the team database for workflow runs and Intercom, keeps sessions on the machine, and restarts the broker. CI runners use `ATOMIC_PROFILE=ci` instead. See [Team and CI setup](/guides/team-setup).
+
+To configure it by hand, give every machine the same shared top-level `storage` selection, including the same `prefix`. To reach other machines, the selection must be an [adapter](/storage#selecting-an-adapter) whose module implements `openDatabase` and connects to a database that every machine can reach, as described in [Sharing storage across hosts](/storage#sharing-storage-across-hosts). Install the adapter on every machine, for example as an [Atomic package](/storage#adapters-from-atomic-packages) so that `atomic install` also brings its driver.
 
 Both the npm installation and the standalone binary run multi-node routing and load storage adapters.
 
 The broker takes its selection from one of two places:
 
-- `--storage`, `--storage-file`, or `ATOMIC_STORAGE` on the Atomic process that starts the broker. See [Selecting storage per process](/storage#selecting-storage-per-process).
+- `--storage`, `--storage-file`, `ATOMIC_STORAGE`, or `ATOMIC_PROFILE=ci` on the Atomic process that starts the broker. See [Selecting storage per process](/storage#selecting-storage-per-process).
 - Otherwise, the top-level `storage` in the global settings file, `~/.atomic/agent/settings.json` (or `settings.json` in the agent directory under `ATOMIC_CODING_AGENT_DIR`).
 
 ```json
@@ -170,12 +172,29 @@ A `path` selection, including the default storage file, is a local SQLite file. 
 
 Intercom creates its own tables in the selected database, named with the selection's `prefix` like the session and workflow tables. Brokers that use different prefixes cannot see each other's sessions, so a prefix also separates teams or tenants that share one database.
 
+### Project groups
+
+While multi-node routing is on, a session with no explicit group joins `project:<owner>/<repo>`, named from its repository's `origin` remote (the repository's directory name without an `origin`, the working directory's name outside Git), instead of `default`. Sessions of different repositories on one database therefore cannot list or message each other, while sessions of one repository on any machine can. One broker serves every project of a machine, so groups, not prefixes, separate projects. An explicit `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` `group`, workflow stage group, or inherited subagent group still wins. Joining `default` explicitly, with the `join` action or through those settings, prints a one-line warning while the broker routes across machines, because every teammate's sessions can address it. The interactive TUI and RPC clients show it as a notice when the session registers with the broker. Print and JSON runs, workflow stages, and subagents have no UI, so they write the line to stderr, at most once per process, and leave stdout alone. A running session keeps the group it started with; it moves to its project group after it restarts or reloads.
+
+Inside a Git repository, the session runs `git` to read the origin. When Git is not installed or fails there, the session's Intercom start fails with `ProjectGroupError` (`code` `"git-unavailable"` or `"git-failed"`, with `cwd`, `detail`, and a `hint` naming the install command or the failing `git` command; exported from `@bastani/atomic` with the guard `isProjectGroupError()`); set `ATOMIC_INTERCOM_GROUP` to skip the lookup. The error is not retried in the background: the session keeps reporting it until it restarts.
+
+One broker serves every session of an agent directory and keeps the storage it started with, so a session decides its group from what that broker reports before it registers, not from its own environment. A session that reuses a broker started with `ATOMIC_PROFILE=ci`, `ATOMIC_STORAGE` or `--storage` joins its project group even though its own environment selects no storage. A session never registers when it cannot tell what the broker does, or when the broker's routing contradicts its group. It registers with the routing it verified, and the broker refuses the registration if its routing differs, so a broker that is replaced after the check cannot admit a `default` member. A broker that predates this registration fails the session with `IntercomRoutingUnavailableError` (`reason` `"unsupported"`, `phase` `"register"`); `atomic intercom restart` replaces it. These failures are `IntercomRoutingError`s, exported from `@bastani/atomic` with their guards, and each carries a `hint`:
+
+| Class | `code` | When it happens | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `IntercomRoutingMismatchError` | `broker-routing-mismatch` | The broker now routes across machines but this session joined it as an implicit `default` member (`reason` `"implicit-default-on-remote-broker"`), or this session selects shared storage but the running broker started without it, or, under `ATOMIC_PROFILE=ci`, does not route across machines for any reason (`reason` `"shared-storage-not-on-broker"`). Terminal: it is not retried in the background and is reported until the session restarts. | `reason`, `group`, `hint`, `retryable: false` | Restart the session so it joins its project group, or set `ATOMIC_INTERCOM_GROUP`. For `"shared-storage-not-on-broker"`, run `atomic intercom restart` first. |
+| `IntercomRoutingUnavailableError` | `broker-routing-unavailable` | The broker closed the status request without answering (it predates routing status) or answered with an unreadable report. | `reason` (`"unsupported"` or `"malformed"`), `phase`, `hint`, `retryable: true` | Run `atomic intercom restart` to replace the broker. The session retries on the normal reconnect backoff and never registers meanwhile. |
+| `IntercomRoutingTimeoutError` | `broker-routing-timeout` | The broker accepted the status request but did not answer in time. | `timeoutMs`, `elapsedMs`, `phase`, `hint`, `retryable: true` | Run `atomic intercom restart` if it persists. The session retries on the normal reconnect backoff and never registers meanwhile. |
+| `IntercomRoutingChangedError` | `broker-routing-changed` | The broker changed how it routes between the session's check and its registration. The broker refuses the registration before it takes effect, because the session sends the routing it verified with the registration itself. | `expectedAcrossMachines`, `hint`, `retryable: true` | Nothing: the session checks the broker again and retries. Run `atomic intercom restart` if it keeps failing. |
+
+The guards are `isIntercomRoutingError()`, `isIntercomRoutingMismatchError()`, `isIntercomRoutingUnavailableError()`, `isIntercomRoutingTimeoutError()`, `isIntercomRoutingChangedError()` and `isRetryableIntercomRoutingError()`. The `intercom` tool reports the message and `hint` once, with the `code` in the result details, and no stack trace.
+
 ### What works across machines
 
 A session connected to a broker on another machine appears in `intercom list` and is messaged exactly like a local one:
 
 - `send`, `ask`, and `reply` keep the same sender identity, reply threads, and `delivered` meaning: `delivered` still means the recipient saved the message.
-- Group isolation is the same. A session sees and reaches only sessions that share a group with it.
+- Group isolation is the same. A session sees and reaches only sessions that share a group with it, and by default that is its [project group](#project-groups).
 - Supervisor messages from `contact_supervisor` keep their supervisor routing.
 - A send to a subagent that its owner is restoring on another machine is held, and reports the same errors, exactly as on one machine. See the [connection states](#connection-states-and-recovery) table.
 - Duplicate protection still holds: Intercom's own retries reuse the message ID, and a recipient never shows a message twice.
@@ -206,7 +225,7 @@ When a whole machine or its broker stops, its sessions still look connected for 
 
 - Message text and attachments are stored in the shared database until they are delivered, together with the sender's identity. Delivered messages are deleted about 12 minutes later, which keeps duplicate protection for retries. Messages for an offline session stay until it reconnects.
 - Session names, session IDs, and group memberships are stored there too, so brokers can list and route to sessions on other machines.
-- Anyone who can read the database can read Intercom messages that cross machines, just as they can read sessions stored there. Protect it with the database's own credentials and transport security, and pass credentials through `secrets` (`{ "env": ... }` or `{ "file": ... }`) rather than `options`. The broker reads `env` secrets from the environment of the Atomic process that started it.
+- Anyone who can read the database can read Intercom messages that cross machines, just as they can read sessions stored there: database access means full read access. A session in `default` can be messaged by every teammate's sessions, which is a prompt-injection path between people; project groups keep that from happening by accident. Protect it with the database's own credentials and transport security, and pass credentials through `secrets` (`{ "env": ... }` or `{ "file": ... }`) rather than `options`. The broker reads `env` secrets, including `ATOMIC_TEAM_TOKEN` under `ATOMIC_PROFILE=ci`, from the environment of the Atomic process that started it.
 - Intercom opens no network port and no broker-to-broker connection. Its security across machines is the database's security.
 
 ### Troubleshooting multi-node

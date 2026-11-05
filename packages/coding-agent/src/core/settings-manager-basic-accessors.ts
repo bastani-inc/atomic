@@ -20,6 +20,12 @@ import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts"
 
 type CompactionModel = Pick<Model<string>, "provider" | "id">;
 
+/** The storage keys `setStorageLayout` replaces; an absent key is left as it is. */
+export interface StorageLayout {
+	readonly storage?: Settings["storage"];
+	readonly sessionsStorage?: NonNullable<Settings["sessions"]>["storage"];
+}
+
 const MODEL_ROUTING_ERROR =
 	'Invalid modelRouting: allowedProviders and excludedProviders must be arrays of provider IDs, such as ["github-copilot"], and allowedModels and excludedModels must be arrays of model IDs or glob patterns, such as ["anthropic/claude-*"].';
 
@@ -70,6 +76,11 @@ interface SettingsManagerBasicAccessors {
 	setLastChangelogVersion(version: string): void;
 	/** Replace the global top-level `storage` selection; other settings keep their values. */
 	setStorage(storage: Settings["storage"]): void;
+	/**
+	 * Replace the global top-level `storage` selection and the `sessions.storage` pin in one settings write; only the
+	 * keys present in `layout` change, and `undefined` removes one. An emptied `sessions` object is removed.
+	 */
+	setStorageLayout(layout: StorageLayout): void;
 	getFirstRunOnboardingStartedVersion(): string | undefined;
 	setFirstRunOnboardingStartedVersion(version: string): void;
 	getOnboardedVersion(): string | undefined;
@@ -190,6 +201,26 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.storage = storage;
 		state.markModified("storage");
+		state.save();
+	},
+
+	setStorageLayout(layout) {
+		const state = settingsInternals(this);
+		if (Object.hasOwn(layout, "storage")) {
+			state.globalSettings.storage = layout.storage;
+			state.markModified("storage");
+		}
+		if (Object.hasOwn(layout, "sessionsStorage")) {
+			const sessions = { ...state.globalSettings.sessions, storage: layout.sessionsStorage };
+			if (layout.sessionsStorage === undefined) delete sessions.storage;
+			if (Object.keys(sessions).length === 0) {
+				state.globalSettings.sessions = undefined;
+				state.markModified("sessions");
+			} else {
+				state.globalSettings.sessions = sessions;
+				state.markModified("sessions", "storage");
+			}
+		}
 		state.save();
 	},
 

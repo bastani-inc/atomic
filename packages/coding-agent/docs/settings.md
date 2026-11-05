@@ -213,6 +213,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `enableInstallTelemetry` | boolean | `true` | Send a version-adoption ping on the first interactive launch with fresh settings, and on the first interactive launch after an update whose version has changelog entries. This does not control update checks |
 | `firstRunOnboardingStartedVersion` | string | - | Managed onboarding state; leave unchanged |
 | `onboardedVersion` | string | - | Managed onboarding completion state; leave unchanged |
+| `teamJoin` | object | - | Managed record of the `storage` value `atomic team join` wrote. `atomic team leave` removes `storage` only while it still matches; leave unchanged |
 | `enableAnalytics` | boolean | `false` | Opt in to analytics during first-run setup |
 | `trackingId` | string | - | Locally generated analytics identifier when analytics is enabled |
 | `deviceId` | string | - | Managed global installation identity, created only when a provider sign-in needs it. Project values are ignored |

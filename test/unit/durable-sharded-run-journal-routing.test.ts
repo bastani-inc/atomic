@@ -487,7 +487,7 @@ test("run-not-found names the storage searched and whether it is local only, for
 				error.fields.selection,
 				error.fields.catalogPath,
 				error.fields.localOnly,
-				error.hint.includes("atomic storage join"),
+				error.hint.includes("atomic team join"),
 			];
 		});
 		assert.deepEqual(rows, [

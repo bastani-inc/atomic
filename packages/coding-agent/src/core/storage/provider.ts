@@ -16,10 +16,15 @@ import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { RunJournal } from "./run-journal.js";
+import type { InMemorySecretRef } from "./selection.js";
 import { selectStorage } from "./selection.js";
 import type { SessionStore } from "./session/types.js";
 
-export type SecretRef = { readonly env: string } | { readonly file: string };
+/**
+ * Where an adapter option's secret comes from: an environment variable, a file, or (SDK only) a value held in this
+ * process's memory, which is never serialized; see {@link inMemorySecret}.
+ */
+export type SecretRef = { readonly env: string } | { readonly file: string } | InMemorySecretRef;
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
 export type RunJournalOption =
 	| { path: string; prefix?: string }
@@ -82,6 +87,18 @@ export interface JournalFactories {
 
 const databaseIds = new WeakMap<SqliteDatabase, number>();
 let nextDatabaseId = 0;
+const secretIds = new WeakMap<InMemorySecretRef, number>();
+let nextSecretId = 0;
+
+/** An in-memory secret keys by identity, never by its value. */
+function secretId(secret: InMemorySecretRef): number {
+	let id = secretIds.get(secret);
+	if (id === undefined) {
+		id = ++nextSecretId;
+		secretIds.set(secret, id);
+	}
+	return id;
+}
 
 function storageOptionKey(
 	value: SqliteValue | boolean,
@@ -111,7 +128,9 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 		const options = Object.entries(selection.options ?? {})
 			.sort(([a], [b]) => a.localeCompare(b))
 			.map(([name, value]) => [name, storageOptionKey(value)]);
-		const secrets = Object.entries(selection.secrets ?? {}).sort(([a], [b]) => a.localeCompare(b));
+		const secrets = Object.entries(selection.secrets ?? {})
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([name, ref]) => [name, "value" in ref ? { value: secretId(ref) } : ref]);
 		return JSON.stringify(["adapter", agentDir, selection.module, options, secrets, selection.prefix ?? ""]);
 	}
 	return JSON.stringify(selection);
@@ -263,7 +282,9 @@ export async function resolveAdapterOptions(
 	const options = { ...selection.options };
 	for (const [name, ref] of Object.entries(selection.secrets ?? {})) {
 		let value: string;
-		if ("env" in ref) {
+		if ("value" in ref) {
+			value = ref.value;
+		} else if ("env" in ref) {
 			const environment = process.env[ref.env];
 			if (environment === undefined) throw new StorageConfigError("sdk", `secrets.${name}`, "secret-env-missing");
 			value = environment;

@@ -89,7 +89,12 @@ import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from 
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
-import { BROKER_RETIRING_CODE, BROKER_RETIRING_REASON } from "../recoverable-disconnect.js";
+import {
+  BROKER_RETIRING_CODE,
+  BROKER_RETIRING_REASON,
+  BROKER_ROUTING_CHANGED_CODE,
+  BROKER_ROUTING_CHANGED_REASON,
+} from "../recoverable-disconnect.js";
 import {
 	LIVE_WORKFLOW_STAGE_ROUTE_REFUSAL_REASONS,
 	type LiveWorkflowStageRouteRefusalCode,
@@ -112,6 +117,11 @@ const RETIRING_REFUSAL = {
   type: "registration_failed",
   reason: BROKER_RETIRING_REASON,
   code: BROKER_RETIRING_CODE,
+} as const;
+const ROUTING_CHANGED_REFUSAL = {
+  type: "registration_failed",
+  reason: BROKER_ROUTING_CHANGED_REASON,
+  code: BROKER_ROUTING_CHANGED_CODE,
 } as const;
 const NO_SHARED_STORAGE_REASON = "no shared storage selection (top-level `storage` in global settings, or ATOMIC_STORAGE)";
 /** The off reasons `resolveBrokerStateSource` reports without an error, as the log and `broker_status` state them. */
@@ -1634,18 +1644,30 @@ class IntercomBroker {
       return;
     }
 
-    if (currentId === null && clientMessage.type !== "register") {
+    if (currentId === null && clientMessage.type !== "register" && clientMessage.type !== "register_verified") {
       throw new Error(`Received ${clientMessage.type} before register`);
     }
 
     switch (clientMessage.type) {
-      case "register": {
+      case "register":
+      case "register_verified": {
         if (this.shuttingDown) {
           // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
           // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
           writeMessageIfOpen(socket, RETIRING_REFUSAL);
           socket.end();
           return;
+        }
+        if (clientMessage.type === "register_verified") {
+          const expected = clientMessage.expectedRouting;
+          if (typeof expected !== "object" || expected === null || Array.isArray(expected) || typeof expected.acrossMachines !== "boolean") {
+            throw new Error("Invalid expected routing");
+          }
+          if (expected.acrossMachines !== (this.multiNodeStatus !== "off")) {
+            writeMessageIfOpen(socket, ROUTING_CHANGED_REFUSAL);
+            socket.end();
+            return;
+          }
         }
         if (!isSessionRegistration(clientMessage.session)) {
           throw new Error("Invalid register message");

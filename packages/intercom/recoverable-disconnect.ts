@@ -71,6 +71,10 @@ export class IntercomBrokerTimeoutError extends Error implements RecoverableDisc
 export const BROKER_RETIRING_CODE = "broker_retiring";
 export const BROKER_RETIRING_REASON = "Intercom broker is retiring; connect to its replacement";
 
+export const BROKER_ROUTING_CHANGED_CODE = "broker_routing_changed";
+export const BROKER_ROUTING_CHANGED_REASON =
+	"Intercom broker routing changed since this session verified it; verify it again before registering";
+
 /**
  * Raised when the broker a client was registering with retired first: it answered `broker_retiring`, or it ended
  * the connection before answering and no longer answers on its socket. A replacement broker can be spawned and the

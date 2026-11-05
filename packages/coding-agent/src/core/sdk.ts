@@ -1,4 +1,4 @@
-import { basename, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { getOpenCodeSessionHeaders } from "@bastani/pi-ai";
 import { clampThinkingLevel, type Message, type ProviderHeaders, streamSimple } from "@bastani/pi-ai/compat";
 import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
@@ -57,7 +57,9 @@ import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { validateProcessStorage } from "./storage/process-selection.js";
+import { selectStorage } from "./storage/selection.js";
 import type { SessionStore } from "./storage/session/types.js";
+import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
@@ -74,6 +76,7 @@ export type {
 	ResourceAdmissionRequest,
 	ResourcePermit,
 	ResourceProcessIdentity,
+	SessionStorageOption,
 } from "./sdk-types.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
@@ -229,6 +232,11 @@ async function constructAgentSession(
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	validateProcessStorage(agentDir);
+	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
+	// `journal`; an unused selection needs no adapter, while the process's own profile is still checked.
+	const storageUsed =
+		(options.sessionManager === undefined && options.sessionStore === undefined) || options.journal === undefined;
+	await assertTeamAdapterInstalled(agentDir, storageUsed ? options.storage : undefined);
 	let resourceLoader = options.resourceLoader;
 	// The concrete default can rediscover into private storage (including deferred
 	// CLI configuration). Custom discovery stays delegated; composition instantiates
@@ -246,10 +254,15 @@ async function constructAgentSession(
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	let sessionManager = options.sessionManager;
 	if (!sessionManager) {
+		const sessionStore =
+			options.sessionStore ??
+			(options.storage === undefined
+				? undefined
+				: selectStorage(options.storage, "sdk", "storage", join(dirname(agentDir), "workflows", "journal.sqlite")));
 		const store = await resolveSessionStore(cwd, {
 			agentDir,
 			settings: settingsManager.getSettings(),
-			sessionStore: options.sessionStore,
+			sessionStore,
 		});
 		if (store !== options.sessionStore) acquisition.store = store;
 		sessionManager = await SessionManager.create(store, cwd);
@@ -712,7 +725,7 @@ async function constructAgentSession(
 			sessionManager,
 			settingsManager,
 			cwd,
-			workflowJournal: options.journal,
+			workflowJournal: options.journal ?? options.storage,
 			storageAgentDir: agentDir,
 			childSessionOptions: (child) =>
 				inheritChildSessionOptions(

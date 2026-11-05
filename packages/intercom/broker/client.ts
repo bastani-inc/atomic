@@ -26,11 +26,13 @@ import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
 import {
 	BROKER_RETIRING_CODE,
+	BROKER_ROUTING_CHANGED_CODE,
 	IntercomBrokerRetiringError,
 	IntercomBrokerTimeoutError,
 	IntercomClientDisconnectedError,
 } from "../recoverable-disconnect.js";
 import { isSocketAnswering } from "./socket-liveness.js";
+import { IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 
@@ -104,6 +106,10 @@ async function classifyRegistrationFailure(error: Error): Promise<Error> {
 }
 /** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
 const HELD_SEND_GRACE_MS = 5000;
+
+export interface ExpectedRouting {
+  readonly acrossMachines: boolean;
+}
 
 export interface SendOptions {
   text: string;
@@ -302,6 +308,7 @@ export class IntercomClient extends EventEmitter {
     groups?: string[];
   }>();
   private pendingMemberships = new Map<string, { resolve: (groups: string[]) => void; reject: (error: Error) => void }>();
+  private registrationExpectedRouting: ExpectedRouting | undefined;
   private pendingBrokerStatus = new Map<string, { resolve: (report: BrokerStatusReport) => void; reject: (error: Error) => void }>();
   private _groups = normalizeGroups();
   private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
@@ -434,6 +441,7 @@ export class IntercomClient extends EventEmitter {
     supervisorOwnerToken?: string,
     messageSource?: Message["source"],
     registrationGroup?: string,
+    expectedRouting?: ExpectedRouting,
   ): Promise<void> {
     // #3904: `disconnect()` aborts this attempt, its retry delay and any later retry, so a session that finished
     // its cleanup never ends up connected and registered by a retry still in flight.
@@ -443,7 +451,7 @@ export class IntercomClient extends EventEmitter {
       for (let retry = 0; ; retry++) {
         if (attempt.signal.aborted) throw connectAborted();
         try {
-          await this.connectOnce(attempt.signal, session, supervisor, supervisorOwnerToken, messageSource, registrationGroup);
+          await this.connectOnce(attempt.signal, session, supervisor, supervisorOwnerToken, messageSource, registrationGroup, expectedRouting);
           return;
         } catch (error) {
           if (attempt.signal.aborted) throw connectAborted();
@@ -451,6 +459,9 @@ export class IntercomClient extends EventEmitter {
           if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
             const classified = await classifyRegistrationFailure(error);
             if (attempt.signal.aborted) throw connectAborted();
+            if (expectedRouting !== undefined && classified instanceof ConnectionClosedBeforeRegistrationError) {
+              throw new IntercomRoutingUnavailableError("unsupported", "register");
+            }
             throw classified;
           }
           const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** retry;
@@ -469,12 +480,14 @@ export class IntercomClient extends EventEmitter {
     supervisorOwnerToken?: string,
     messageSource?: Message["source"],
     registrationGroup?: string,
+    expectedRouting?: ExpectedRouting,
   ): Promise<void> {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
     }
     this._messageSource = messageSource ?? readSubagentMessageSource();
     this._groups = normalizeGroups(session.groups, session.group);
+    this.registrationExpectedRouting = expectedRouting;
 
     return new Promise((resolve, reject) => {
       const socket = net.connect(BROKER_SOCKET);
@@ -586,7 +599,8 @@ export class IntercomClient extends EventEmitter {
         }
         try {
           writeMessage(socket, {
-            type: "register",
+            type: expectedRouting === undefined ? "register" : "register_verified",
+            ...(expectedRouting === undefined ? {} : { expectedRouting }),
             session,
             ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
@@ -690,6 +704,8 @@ export class IntercomClient extends EventEmitter {
           ? new IntercomLiveRouteRefusedError(brokerMessage.code, brokerMessage.reason)
           : brokerMessage.code === BROKER_RETIRING_CODE
           ? new IntercomBrokerRetiringError(brokerMessage.reason)
+          : brokerMessage.code === BROKER_ROUTING_CHANGED_CODE
+          ? new IntercomRoutingChangedError(this.registrationExpectedRouting?.acrossMachines ?? false)
           : new Error(brokerMessage.reason);
         if (this._sessionId === null) {
           // Still registering: `connect()` owns the failure and its own cleanup.

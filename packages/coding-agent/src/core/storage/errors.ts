@@ -88,8 +88,9 @@ export class StoragePrefixError extends StorageError {
 export type StorageConfigErrorCode = "invalid-config";
 
 export class StorageConfigError extends StorageError {
-	override readonly name = "StorageConfigError" as const;
-	readonly code: StorageConfigErrorCode = "invalid-config";
+	/** {@link TeamProfileConfigError} is the one subclass, with its own name and codes. */
+	override readonly name: "StorageConfigError" | "TeamProfileConfigError" = "StorageConfigError";
+	readonly code: StorageConfigErrorCode | TeamProfileConfigErrorCode = "invalid-config";
 	readonly source: "sdk" | "cli" | "env" | "settings";
 	readonly field: string;
 	readonly reason: string;
@@ -491,8 +492,8 @@ export interface JournalCatalogErrorInit {
 	readonly cause?: StorageFailureCause | Error;
 }
 
-/** The command that joins this machine to shared storage, named by errors whose remedy is joining it. */
-export const SHARED_STORAGE_JOIN_HINT = "atomic storage join <url> --token-file <path>";
+/** The command that joins this machine to the team's shared storage; error hints across Atomic name it. */
+export const SHARED_STORAGE_JOIN_HINT = "atomic team join <url> --token-file <path>";
 /** The command that registers an older journal file in the journal store. */
 export const JOURNAL_ADOPT_COMMAND = "atomic storage adopt <path>";
 
@@ -970,6 +971,407 @@ function rehydrateFailure(serialized: SerializedStorageError, depth: number): Er
  */
 export function rehydrateStorageError(serialized: SerializedStorageError): StorageError {
 	return rehydrateFailure(serialized, 0) as StorageError;
+}
+
+/** Why a team setup operation failed after its inputs were accepted. */
+export type TeamProfileErrorCode =
+	| "settings-unreadable"
+	| "adapter-not-installed"
+	| "connection-failed"
+	| "connection-timeout"
+	| "token-write-failed"
+	| "settings-write-failed"
+	| "settings-locked"
+	| "broker-restart-failed"
+	| "token-delete-failed";
+
+/** Which team input was rejected: an SDK option, a CLI argument, or an `ATOMIC_PROFILE` / `ATOMIC_TEAM_*` variable. */
+export type TeamProfileConfigErrorCode =
+	| "unknown-profile"
+	| "incomplete-profile"
+	| "missing-url"
+	| "unsupported-url"
+	| "relative-file-url"
+	| "credential-in-url"
+	| "missing-token"
+	| "conflicting-token"
+	| "unreadable-token-file"
+	| "relative-token-file"
+	| "empty-token"
+	| "invalid-prefix"
+	| "unknown-command"
+	| "unknown-option"
+	| "missing-value"
+	| "unexpected-argument";
+
+export const TEAM_PROFILE_ERROR_CODES: ReadonlySet<TeamProfileErrorCode> = new Set<TeamProfileErrorCode>([
+	"settings-unreadable",
+	"adapter-not-installed",
+	"connection-failed",
+	"connection-timeout",
+	"token-write-failed",
+	"settings-write-failed",
+	"settings-locked",
+	"broker-restart-failed",
+	"token-delete-failed",
+]);
+
+export const TEAM_PROFILE_CONFIG_ERROR_CODES: ReadonlySet<TeamProfileConfigErrorCode> =
+	new Set<TeamProfileConfigErrorCode>([
+		"unknown-profile",
+		"incomplete-profile",
+		"missing-url",
+		"unsupported-url",
+		"relative-file-url",
+		"credential-in-url",
+		"missing-token",
+		"conflicting-token",
+		"unreadable-token-file",
+		"relative-token-file",
+		"empty-token",
+		"invalid-prefix",
+		"unknown-command",
+		"unknown-option",
+		"missing-value",
+		"unexpected-argument",
+	]);
+
+const USAGE_CODES: ReadonlySet<TeamProfileConfigErrorCode> = new Set<TeamProfileConfigErrorCode>([
+	"unknown-command",
+	"unknown-option",
+	"missing-value",
+	"unexpected-argument",
+]);
+
+const RETRYABLE_CODES: ReadonlySet<TeamProfileErrorCode> = new Set<TeamProfileErrorCode>([
+	"connection-failed",
+	"connection-timeout",
+	"settings-locked",
+	"broker-restart-failed",
+]);
+
+const SUMMARIES: Readonly<Record<TeamProfileErrorCode, string>> = {
+	"settings-unreadable": "Cannot update the global settings",
+	"adapter-not-installed": "The libSQL storage adapter is not installed",
+	"connection-failed": "Could not connect to the team database",
+	"connection-timeout": "The team database did not answer in time",
+	"token-write-failed": "Could not store the database token",
+	"settings-write-failed": "Could not write the global settings",
+	"settings-locked": "Another process is writing the settings",
+	"broker-restart-failed": "Could not restart the Intercom broker",
+	"token-delete-failed": "Could not delete the token file",
+};
+
+/** The facts a {@link TeamProfileError} carries; every field is JSON-safe and holds no credential. */
+export interface TeamProfileErrorFields {
+	/** What the failure is about: the settings file, the adapter, the database URL, the token file or the agent directory. */
+	readonly subject: string;
+	readonly hint: string;
+	/** A short, credential-free description of the cause. */
+	readonly detail?: string;
+	readonly cause?: Error;
+}
+
+/**
+ * The family of team setup failures (`joinTeam`, `leaveTeam`, `getTeamProfile`, `atomic storage join`,
+ * `atomic team`) after the inputs were accepted. Branch on `code`, never on the message.
+ */
+export class TeamProfileError extends StorageError {
+	override readonly name: "TeamProfileError" | "TeamProfileTimeoutError" = "TeamProfileError";
+	readonly code: TeamProfileErrorCode;
+	readonly subject: string;
+	readonly hint: string;
+	declare readonly detail?: string;
+	/** Whether the same call can succeed later without a change on the caller's side. */
+	readonly retryable: boolean;
+
+	constructor(code: TeamProfileErrorCode, fields: TeamProfileErrorFields) {
+		super(
+			`${SUMMARIES[code]}: ${fields.subject} (${code})${fields.detail === undefined ? "" : `: ${fields.detail}`}. ${fields.hint}`,
+			fields.cause === undefined ? undefined : { cause: fields.cause },
+		);
+		this.code = code;
+		this.subject = fields.subject;
+		this.hint = fields.hint;
+		if (fields.detail !== undefined) this.detail = fields.detail;
+		this.retryable = RETRYABLE_CODES.has(code);
+	}
+}
+
+/** What a team operation was doing when it ran out of time. */
+export type TeamProfileTimeoutPhase = "connect";
+
+/** A team operation that did not finish in time (`code` `connection-timeout`); retryable. */
+export class TeamProfileTimeoutError extends TeamProfileError {
+	override readonly name = "TeamProfileTimeoutError" as const;
+	readonly timeoutMs: number;
+	readonly elapsedMs: number;
+	readonly phase: TeamProfileTimeoutPhase;
+
+	constructor(
+		fields: Omit<TeamProfileErrorFields, "detail" | "cause"> & {
+			readonly timeoutMs: number;
+			readonly elapsedMs: number;
+			readonly phase: TeamProfileTimeoutPhase;
+		},
+	) {
+		super("connection-timeout", {
+			subject: fields.subject,
+			hint: fields.hint,
+			detail: `no answer within ${fields.timeoutMs} ms (${fields.phase})`,
+		});
+		this.timeoutMs = fields.timeoutMs;
+		this.elapsedMs = fields.elapsedMs;
+		this.phase = fields.phase;
+	}
+}
+
+export interface TeamProfileConfigErrorFields {
+	readonly source: "sdk" | "cli" | "env";
+	/** The option, argument or variable, for example `tokenFile`, `--token-file` or `ATOMIC_TEAM_URL`. */
+	readonly field: string;
+	readonly hint: string;
+	/** The token file the input names, when the failure is about that file. */
+	readonly path?: string;
+	/** `incomplete-profile`: every variable that still has to be set, all reported at once. */
+	readonly missing?: readonly string[];
+	readonly cause?: Error;
+}
+
+/**
+ * An invalid team input. It is a {@link StorageConfigError} whose `reason` equals `code`, so hosts that already
+ * handle invalid `ATOMIC_STORAGE` values handle an invalid `ATOMIC_PROFILE=ci` setup the same way.
+ */
+export class TeamProfileConfigError extends StorageConfigError {
+	override readonly name = "TeamProfileConfigError" as const;
+	declare readonly source: "sdk" | "cli" | "env";
+	readonly code: TeamProfileConfigErrorCode;
+	readonly hint: string;
+	declare readonly path?: string;
+	declare readonly missing?: readonly string[];
+	readonly retryable = false;
+
+	constructor(code: TeamProfileConfigErrorCode, fields: TeamProfileConfigErrorFields) {
+		super(fields.source, fields.field, code);
+		this.message = `${USAGE_CODES.has(code) ? "Invalid team command" : "Invalid storage configuration"}: ${fields.field} (${code}). ${fields.hint}`;
+		if (fields.cause !== undefined) {
+			Object.defineProperty(this, "cause", { value: fields.cause, configurable: true, writable: true });
+		}
+		this.code = code;
+		this.hint = fields.hint;
+		if (fields.path !== undefined) this.path = fields.path;
+		if (fields.missing !== undefined) this.missing = [...fields.missing];
+	}
+}
+
+function hasNameAndCodeIn(value: unknown, name: string, codes: ReadonlySet<string>): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as { readonly name?: unknown; readonly code?: unknown };
+	return candidate.name === name && typeof candidate.code === "string" && codes.has(candidate.code);
+}
+
+/** Whether `error` is a {@link TeamProfileError}, also across realms and processes (by `name` and `code`). */
+export function isTeamProfileError(error: unknown): error is TeamProfileError {
+	return (
+		error instanceof TeamProfileError ||
+		hasNameAndCodeIn(error, "TeamProfileError", TEAM_PROFILE_ERROR_CODES) ||
+		isTeamProfileTimeoutError(error)
+	);
+}
+
+/** Whether `error` is a {@link TeamProfileTimeoutError}, also across realms and processes (by `name` and `code`). */
+export function isTeamProfileTimeoutError(error: unknown): error is TeamProfileTimeoutError {
+	return (
+		error instanceof TeamProfileTimeoutError ||
+		hasNameAndCodeIn(error, "TeamProfileTimeoutError", new Set(["connection-timeout"]))
+	);
+}
+
+/** Whether `error` is a {@link TeamProfileConfigError}, also across realms and processes (by `name` and `code`). */
+export function isTeamProfileConfigError(error: unknown): error is TeamProfileConfigError {
+	return (
+		error instanceof TeamProfileConfigError ||
+		hasNameAndCodeIn(error, "TeamProfileConfigError", TEAM_PROFILE_CONFIG_ERROR_CODES)
+	);
+}
+
+/** Whether `error` or one of its causes, up to eight levels deep, is a retryable {@link TeamProfileError}. */
+export function isRetryableTeamProfileError(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+		if (isTeamProfileError(current) && current.retryable) return true;
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	return false;
+}
+
+/**
+ * A cause of a serialized team error, at most eight deep. A team error cause, also one from another realm, is
+ * serialized like the error itself when its `message`, `hint`, `retryable` and its class's fields all have their
+ * documented types, so it rehydrates as its own class and keeps its `retryable`. Its message names files and
+ * settings but never their content or a token. Any other cause keeps only its `name` and `code`, and its `message`
+ * is that code, or else its name: a parser, driver or file-system message can quote the settings file or the
+ * server's answer, so it never crosses a process boundary.
+ */
+export interface SerializedTeamErrorCause {
+	readonly name: string;
+	readonly message: string;
+	readonly code?: string;
+	readonly hint?: string;
+	readonly fields?: SerializedTeamError["fields"];
+	readonly cause?: SerializedTeamErrorCause;
+}
+
+/** A {@link TeamProfileError} or {@link TeamProfileConfigError} as JSON, to cross a worker, coordinator or broker boundary. */
+export interface SerializedTeamError {
+	readonly name: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint: string;
+	/** The error's own facts: `subject`, `detail`, `timeoutMs`, `elapsedMs`, `phase`, `source`, `field`, `path`, `missing`, `retryable`. */
+	readonly fields: Readonly<Record<string, string | number | boolean | readonly string[]>>;
+	readonly cause?: SerializedTeamErrorCause;
+}
+
+const SAFE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+
+function safeIdentifier(value: unknown): string | undefined {
+	return typeof value === "string" && SAFE_IDENTIFIER.test(value) ? value : undefined;
+}
+
+function isText(value: unknown): value is string {
+	return typeof value === "string";
+}
+
+function canSerializeTeamCause(cause: unknown): cause is TeamProfileError | TeamProfileConfigError {
+	if (!isTeamProfileError(cause) && !isTeamProfileConfigError(cause)) return false;
+	const team = cause as unknown as Readonly<Record<string, unknown>>;
+	if (!isText(team.message) || !isText(team.hint) || typeof team.retryable !== "boolean") return false;
+	if (isTeamProfileConfigError(cause)) {
+		return (
+			isText(team.source) &&
+			isText(team.field) &&
+			(team.path === undefined || isText(team.path)) &&
+			(team.missing === undefined || (Array.isArray(team.missing) && team.missing.every(isText)))
+		);
+	}
+	if (!isText(team.subject) || (team.detail !== undefined && !isText(team.detail))) return false;
+	return (
+		!isTeamProfileTimeoutError(cause) ||
+		(typeof team.timeoutMs === "number" && typeof team.elapsedMs === "number" && isText(team.phase))
+	);
+}
+
+function serializeTeamErrorCause(cause: unknown, depth: number): SerializedTeamErrorCause | undefined {
+	if (depth >= MAX_CAUSE_DEPTH || cause === undefined || cause === null) return undefined;
+	if (canSerializeTeamCause(cause)) return serializeTeam(cause, depth + 1);
+	const error = cause instanceof Error ? cause : undefined;
+	const name = safeIdentifier(error?.name) ?? "Error";
+	const code = safeIdentifier(typeof cause === "object" ? (cause as { readonly code?: unknown }).code : undefined);
+	const next = serializeTeamErrorCause(error?.cause, depth + 1);
+	return {
+		name,
+		message: code ?? name,
+		...(code === undefined ? {} : { code }),
+		...(next === undefined ? {} : { cause: next }),
+	};
+}
+
+function rehydrateTeamErrorCause(cause: SerializedTeamErrorCause | undefined, depth: number): Error | undefined {
+	if (depth >= MAX_CAUSE_DEPTH || cause === undefined) return undefined;
+	const { code, hint, fields } = cause;
+	if (typeof code === "string" && typeof hint === "string" && typeof fields === "object" && fields !== null) {
+		return rehydrateTeam({ ...cause, code, hint, fields }, depth + 1);
+	}
+	const inner = rehydrateTeamErrorCause(cause.cause, depth + 1);
+	const error = new Error(cause.message, inner === undefined ? undefined : { cause: inner });
+	error.name = cause.name;
+	if (code !== undefined) Object.assign(error, { code });
+	return error;
+}
+
+function serializeTeam(error: TeamProfileError | TeamProfileConfigError, causeDepth: number): SerializedTeamError {
+	const fields: Record<string, string | number | boolean | readonly string[]> = { retryable: error.retryable };
+	if (isTeamProfileConfigError(error)) {
+		fields.source = error.source;
+		fields.field = error.field;
+		if (error.path !== undefined) fields.path = error.path;
+		if (error.missing !== undefined) fields.missing = [...error.missing];
+	} else {
+		fields.subject = error.subject;
+		if (error.detail !== undefined) fields.detail = error.detail;
+		if (isTeamProfileTimeoutError(error)) {
+			fields.timeoutMs = error.timeoutMs;
+			fields.elapsedMs = error.elapsedMs;
+			fields.phase = error.phase;
+		}
+	}
+	const cause = serializeTeamErrorCause(error.cause, causeDepth);
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		fields,
+		...(cause === undefined ? {} : { cause }),
+	};
+}
+
+/** The JSON form of a team error, with its cause chain bounded to eight levels; it holds no token. */
+export function serializeTeamError(error: TeamProfileError | TeamProfileConfigError): SerializedTeamError {
+	return serializeTeam(error, 0);
+}
+
+function rehydrateTeam(serialized: SerializedTeamError, causeDepth: number): TeamProfileError | TeamProfileConfigError {
+	const { fields } = serialized;
+	const text = (key: string): string | undefined =>
+		typeof fields[key] === "string" ? (fields[key] as string) : undefined;
+	const count = (key: string): number => (typeof fields[key] === "number" ? (fields[key] as number) : 0);
+	const cause = rehydrateTeamErrorCause(serialized.cause, causeDepth);
+	let error: TeamProfileError | TeamProfileConfigError;
+	if (serialized.name === "TeamProfileConfigError") {
+		const missing = Array.isArray(fields.missing) ? fields.missing : undefined;
+		error = new TeamProfileConfigError(serialized.code as TeamProfileConfigErrorCode, {
+			source: text("source") as TeamProfileConfigErrorFields["source"],
+			field: text("field") ?? "",
+			hint: serialized.hint,
+			...(text("path") === undefined ? {} : { path: text("path") }),
+			...(missing === undefined ? {} : { missing }),
+			...(cause === undefined ? {} : { cause }),
+		});
+	} else if (serialized.name === "TeamProfileTimeoutError") {
+		error = new TeamProfileTimeoutError({
+			subject: text("subject") ?? "",
+			hint: serialized.hint,
+			timeoutMs: count("timeoutMs"),
+			elapsedMs: count("elapsedMs"),
+			phase: (text("phase") ?? "connect") as TeamProfileTimeoutPhase,
+		});
+		if (cause !== undefined)
+			Object.defineProperty(error, "cause", { value: cause, configurable: true, writable: true });
+	} else {
+		error = new TeamProfileError(serialized.code as TeamProfileErrorCode, {
+			subject: text("subject") ?? "",
+			hint: serialized.hint,
+			...(text("detail") === undefined ? {} : { detail: text("detail") }),
+			...(cause === undefined ? {} : { cause }),
+		});
+		if (serialized.name !== error.name) Object.defineProperty(error, "name", { value: serialized.name });
+	}
+	Object.defineProperty(error, "message", { value: serialized.message, configurable: true, writable: true });
+	if (typeof fields.retryable === "boolean" && fields.retryable !== error.retryable) {
+		Object.defineProperty(error, "retryable", { value: fields.retryable });
+	}
+	return error;
+}
+
+/**
+ * The team error a {@link serializeTeamError} result describes, as an instance of its class, so `instanceof`, the
+ * guards and `isRetryableTeamProfileError` work on the receiving side. An unknown name becomes a
+ * {@link TeamProfileError} that keeps the original `name`, `code` and `retryable`.
+ */
+export function rehydrateTeamError(serialized: SerializedTeamError): TeamProfileError | TeamProfileConfigError {
+	return rehydrateTeam(serialized, 0);
 }
 
 /** A cause as it crosses a process boundary: its name, message and code, never its stack. */

@@ -48,9 +48,13 @@ function decodeOption(value: EncodedValue): AdapterOptions[string] {
 	return value;
 }
 
-/** Whether another process can open a journal chosen with `selection` by its own means. */
+/**
+ * Whether another process can open a journal chosen with `selection` by its own means: not one whose token is an
+ * in-memory `{ value }` secret, which never leaves this process.
+ */
 export function isReopenableSelection(selection: StorageSelection): selection is DurableSelection {
-	return selection.kind === "sqlite" || selection.kind === "adapter";
+	if (selection.kind === "sqlite") return true;
+	return selection.kind === "adapter" && !Object.values(selection.secrets ?? {}).some((secret) => "value" in secret);
 }
 
 export function encodeSelection(selection: DurableSelection): string {

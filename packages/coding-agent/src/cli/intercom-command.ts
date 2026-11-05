@@ -5,6 +5,7 @@
 
 import { APP_NAME } from "../config.js";
 import type { BrokerQuery, IntercomBrokerControl } from "../core/intercom-broker-control.js";
+import { processStorageEnvironment } from "../core/storage/process-selection.js";
 
 const HELP = `Usage:
   ${APP_NAME} intercom status
@@ -37,12 +38,12 @@ function describeBroker(
 		];
 	}
 	const { report } = query;
-	const expected = control.expectedBrokerStorage(agentDir, process.env);
+	const expected = control.expectedBrokerStorage(agentDir, processStorageEnvironment());
 	return [
 		`Intercom broker: running (pid ${report.pid}, ${report.sessions} session${report.sessions === 1 ? "" : "s"} connected)`,
 		report.storage?.digest === expected?.digest
 			? "Storage: matches the current selection"
-			: `Storage: differs from the current selection${report.storage?.source === "env" ? " (a session started it with ATOMIC_STORAGE or --storage)" : ""}; run \`${APP_NAME} intercom restart\``,
+			: `Storage: differs from the current selection${report.storage?.source === "env" ? " (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage)" : ""}; run \`${APP_NAME} intercom restart\``,
 		`Multi-node routing: ${control.describeMultiNodeStatus(report.multiNode)}`,
 	];
 }

@@ -497,6 +497,17 @@ export const SettingsSchema = Type.Object(
 		$schema: Type.Optional(Type.String({ description: "JSON Schema reference." })),
 		storage: Type.Optional(StorageSelectionSchema),
 		sessions: Type.Optional(Type.Object({ storage: Type.Optional(SessionStorageSelectionSchema) })),
+		teamJoin: Type.Optional(
+			Type.Object(
+				{
+					storage: Type.String({
+						pattern: "^sha256:[0-9a-f]{64}$",
+						description: "Fingerprint of the `storage` selection that `atomic team join` wrote.",
+					}),
+				},
+				{ description: "Managed team join record; leave unchanged." },
+			),
+		),
 		lastChangelogVersion: Type.Optional(Type.String()),
 		firstRunOnboardingStartedVersion: Type.Optional(
 			Type.String({ description: "Managed onboarding state; leave unchanged." }),

@@ -38,6 +38,7 @@ export * from "./core/storage/index.js";
 export {
 	type ProcessStorageChoice,
 	processSharedStorageSelection,
+	processStorageEnvironment,
 	type StorageDomain,
 	selectProcessStorage,
 } from "./core/storage/process-selection.js";
@@ -403,6 +404,28 @@ export {
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export {
+	isProjectGroupError,
+	ProjectGroupError,
+	type ProjectGroupErrorCode,
+} from "./core/intercom-project-group-error.ts";
+export {
+	IntercomRoutingChangedError,
+	IntercomRoutingError,
+	type IntercomRoutingErrorCode,
+	IntercomRoutingMismatchError,
+	type IntercomRoutingMismatchReason,
+	type IntercomRoutingPhase,
+	IntercomRoutingTimeoutError,
+	IntercomRoutingUnavailableError,
+	type IntercomRoutingUnavailableReason,
+	isIntercomRoutingChangedError,
+	isIntercomRoutingError,
+	isIntercomRoutingMismatchError,
+	isIntercomRoutingTimeoutError,
+	isIntercomRoutingUnavailableError,
+	isRetryableIntercomRoutingError,
+} from "./core/intercom-routing-error.ts";
+export {
 	RUNTIME_INTERCOM_GROUP_ENV,
 	readRuntimeIntercomGroup,
 	runtimeIntercomGroupEnvKey,
@@ -554,6 +577,7 @@ export {
 	type ResourceAdmissionRequest,
 	type ResourcePermit,
 	type ResourceProcessIdentity,
+	type SessionStorageOption,
 	STRUCTURED_OUTPUT_TOOL_NAME,
 	type StructuredOutputCapture,
 	type StructuredOutputFileCapture,
