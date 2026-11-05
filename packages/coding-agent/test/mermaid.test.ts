@@ -122,6 +122,19 @@ describe("Mermaid rendering", () => {
 		expect(pie).toContain("\x1b[1;38;5;45mPets");
 	});
 
+	it("keeps a dimmed theme color's faint attribute in the diagram", () => {
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			getFgAnsi: (color: string) => (color === "borderMuted" ? "\x1b[2m\x1b[38;5;240m" : "\x1b[38;5;255m"),
+		};
+		const rendered = transformMermaid("```mermaid\nflowchart LR\n  A[Start] --> B[Done]\n```", { theme });
+
+		expect(rendered).toContain("\x1b[2;38;5;240m");
+		expect(rendered).not.toContain("\x1b[2m\x1b[");
+		expect(stripAnsi(rendered)).not.toContain("\x1b");
+		expect(stripAnsi(rendered)).toContain("Start");
+	});
+
 	it("applies author class styles over the Atomic theme (pi #8158)", () => {
 		const theme = { fg: (_color: string, text: string) => text, getFgAnsi: () => "\x1b[39m" };
 		const rendered = transformMermaid(

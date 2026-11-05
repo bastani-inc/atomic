@@ -38,13 +38,14 @@ function codeSpan(line: string): string {
 }
 
 function themedLines(art: MermaidArt, theme: MermaidTheme): string[] {
-	const foreground = (color: ThemeColor) => theme.getFgAnsi(color).slice(2, -1);
+	const sgrParameters = (color: ThemeColor) =>
+		Array.from(theme.getFgAnsi(color).matchAll(/\x1b\[([0-9;]*)m/g), (match) => match[1]).join(";");
 	const ansiTheme: AnsiTheme = {
-		border: foreground("borderMuted"),
-		text: foreground("text"),
-		edge: foreground("accent"),
-		edgeLabel: foreground("text"),
-		title: `1;${foreground("accent")}`,
+		border: sgrParameters("borderMuted"),
+		text: sgrParameters("text"),
+		edge: sgrParameters("accent"),
+		edgeLabel: sgrParameters("text"),
+		title: `1;${sgrParameters("accent")}`,
 	};
 	const linkLabels = getCapabilities().hyperlinks;
 	const displayArt: MermaidArt = {
