@@ -470,7 +470,7 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 ### Readiness after a steer
 
-When you steer a stage that asked you a question — you type an answer into **Chat about this**, send the stage a message, or type an answer to the readiness question — the [decision model](/settings#decisionmodel) decides readiness after the stage replies, instead of always asking. It reads the stage's prompt, your message and the stage's reply, each truncated, and answers two questions: whether to `advance` or `stay`, and whether the reply fully addresses your message and leaves nothing you still need to answer. State that contains a credential is never sent.
+When you steer a stage that asked you a question — you type an answer into **Chat about this**, send the stage a message, or type an answer to the readiness question — the [decision model](/settings#decisionmodel) decides readiness after the stage replies, instead of always asking. It reads the stage's prompt, your message and the stage's reply, each truncated, and answers two questions: whether to `advance` or `stay`, and whether the reply fully addresses your message and leaves nothing you still need to answer. State that contains a credential is never sent. Only a message sent after the stage asked its question counts: picking one of the question's options asks the readiness question as before. If you send another message while the decision model is answering, its answer is discarded, and Atomic decides again once the stage has replied to your newer message.
 
 | Decision | When | What happens |
 | --- | --- | --- |

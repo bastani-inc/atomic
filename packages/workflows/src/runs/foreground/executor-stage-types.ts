@@ -29,6 +29,8 @@ export interface LiveStageMutableState {
 	readinessPauseVersion?: number;
 	/** The user's latest message to this stage (a steer, a typed chat answer, a follow-up) not yet judged for readiness. */
 	latestUserMessage?: string;
+	/** Counts user messages delivered through stage control; a readiness verdict reached before the latest is discarded. */
+	userMessageSeq: number;
 	waitingForStageChatTurn: boolean;
 	/** Wakes the executor so a paused idle stage-chat can drain released work. */
 	wakeWaitingForStageChatTurn: (() => void) | undefined;

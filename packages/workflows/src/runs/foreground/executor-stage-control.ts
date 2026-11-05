@@ -59,6 +59,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	const rememberUserMessage = (content: unknown): (() => void) => {
 		const previous = runtime.state.latestUserMessage;
 		runtime.state.latestUserMessage = userMessageText(content) ?? previous;
+		runtime.state.userMessageSeq += 1;
 		return () => {
 			runtime.state.latestUserMessage = previous;
 		};

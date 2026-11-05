@@ -249,6 +249,7 @@ export function createWorkflowStageFactory(input: {
 		const state: LiveStageMutableState = {
 			activeAskUserQuestionAnonymousCalls: 0,
 			askUserQuestionObservedThisTurn: false,
+			userMessageSeq: 0,
 			chatAnswerObservedThisTurn: false,
 			resumeContinuationPending: false,
 			suppressQueuedUserMessageContinuation: false,
@@ -270,6 +271,7 @@ export function createWorkflowStageFactory(input: {
 			if (!toolEvent) return;
 			if (toolEvent.phase === "start") {
 				state.askUserQuestionObservedThisTurn = true;
+				state.latestUserMessage = undefined;
 				if (toolEvent.callId !== undefined) activeAskUserQuestionCalls.add(toolEvent.callId);
 				else state.activeAskUserQuestionAnonymousCalls += 1;
 				provideStageQuestion(

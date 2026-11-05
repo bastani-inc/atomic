@@ -55,24 +55,36 @@ function readinessQuestionShown(): boolean {
 		.some((runSnapshot) => runSnapshot.stages.some((stage) => stage.inputRequest?.kind === "readiness_gate"));
 }
 
+interface SessionControl {
+	/** Holds the stage's first turn before it asks its question, so a steer can arrive mid-turn. */
+	readonly beforeQuestion?: Promise<void>;
+	/** How the question was answered: typed into "Chat about this", or by picking an option. */
+	readonly answerKind?: "chat" | "option";
+	/** Holds each later user turn while it streams. */
+	readonly userTurn?: () => Promise<void>;
+}
+
 /** A stage that asks the user a question, which the user answers by typing `answer` into "Chat about this". */
 function steeredSession(
 	events: string[],
 	answer: string,
 	history: readonly object[] = [],
 	recordMessages = true,
+	control: SessionControl = {},
 ): StageSessionRuntime {
 	const listeners = new Set<(event: { type: string; [key: string]: unknown }) => void>();
 	const emit = (event: { type: string; [key: string]: unknown }): void => {
 		for (const listener of [...listeners]) listener(event);
 	};
 	let lastAssistantText = "";
+	let streaming = false;
 	const messages: object[] = [...history];
 	return {
 		...mockSession(),
 		async prompt(text: string) {
 			if (recordMessages) messages.push({ role: "user", content: text });
 			if (text === "Ask which theme to use, then apply it.") {
+				await control.beforeQuestion;
 				emit({ type: "tool_execution_start", toolCallId: "ask", toolName: "ask_user_question" });
 				emit({
 					type: "tool_execution_end",
@@ -80,13 +92,18 @@ function steeredSession(
 					toolName: "ask_user_question",
 					result: {
 						details: {
-							answers: [{ questionIndex: 0, question: "Which theme?", kind: "chat", answer }],
+							answers: [
+								{ questionIndex: 0, question: "Which theme?", kind: control.answerKind ?? "chat", answer },
+							],
 							cancelled: false,
 						},
 					},
 				});
 				lastAssistantText = "Applied the blue theme.";
 			} else {
+				streaming = true;
+				await control.userTurn?.();
+				streaming = false;
 				events.push(`user-turn:${text}`);
 				lastAssistantText = `Handled: ${text}`;
 			}
@@ -100,6 +117,9 @@ function steeredSession(
 		},
 		get messages() {
 			return messages as never;
+		},
+		get isStreaming() {
+			return streaming;
 		},
 		getLastAssistantText() {
 			return lastAssistantText;
@@ -136,6 +156,7 @@ function launch(input: {
 	history?: readonly object[];
 	withoutDecide?: boolean;
 	recordMessages?: boolean;
+	control?: SessionControl;
 }) {
 	const events: string[] = [];
 	const registry = createStageControlRegistry();
@@ -170,7 +191,13 @@ function launch(input: {
 					async create() {
 						sessions += 1;
 						if (sessions === 1)
-							return steeredSession(events, input.answer ?? STEER, input.history, input.recordMessages);
+							return steeredSession(
+								events,
+								input.answer ?? STEER,
+								input.history,
+								input.recordMessages,
+								input.control,
+							);
 						return {
 							...mockSession(),
 							async prompt() {
@@ -334,6 +361,131 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		);
 		assert.equal((await result).status, "completed");
 	});
+
+	for (const [label, firstVerdict] of [
+		["an advance verdict", async () => classified(0.93, 0.07, 0.91)],
+		["a stay verdict", async () => classified(0.12, 0.88, 0.3)],
+		[
+			"a failed decision",
+			async (): Promise<DecisionResult<ReadinessDecisionQuestions>> => {
+				throw new DecisionTimeoutError({ timeoutMs: 10, elapsedMs: 10, phase: "classifier" });
+			},
+		],
+	] as const) {
+		test(`a message sent while the decision model answers makes ${label} stale, and the newer message is judged`, async () => {
+			store.clear();
+			let releaseFirst!: () => void;
+			let calls = 0;
+			const { result, decide, events, registry } = launch({
+				decide: async () => {
+					calls += 1;
+					if (calls > 1) return classified(0.93, 0.07, 0.91);
+					await new Promise<void>((resolve) => {
+						releaseFirst = resolve;
+					});
+					return firstVerdict();
+				},
+			});
+			const deadline = Date.now() + 2_000;
+			while (decide.mock.calls.length < 1 && Date.now() < deadline) await sleep(5);
+			const handle = registry.get(store.runs()[0]!.id, themeStage().id);
+			assert.ok(handle);
+			await handle.prompt("Also make the header bold.");
+			releaseFirst();
+			assert.equal((await result).status, "completed");
+			assert.equal(readinessQuestionShown(), false);
+			assert.deepEqual(events, ["user-turn:Also make the header bold.", "next:completed"]);
+			assert.equal(decide.mock.calls.length, 2);
+			assert.equal(decide.mock.calls[1]![0].state.user_message, "Also make the header bold.");
+			assert.equal(decide.mock.calls[1]![0].state.stage_reply, "Handled: Also make the header bold.");
+			assert.deepEqual(
+				themeStage()
+					.notices?.filter((notice) => notice.kind === "decision")
+					.map((notice) => notice.to),
+				["advanced"],
+			);
+		});
+	}
+
+	test("a verdict that arrives while the newer message's turn still runs waits for that turn before judging it", async () => {
+		store.clear();
+		let releaseFirst!: () => void;
+		let finishTurn!: () => void;
+		let calls = 0;
+		const { result, decide, events, registry } = launch({
+			decide: async () => {
+				calls += 1;
+				if (calls === 1)
+					await new Promise<void>((resolve) => {
+						releaseFirst = resolve;
+					});
+				return classified(0.93, 0.07, 0.91);
+			},
+			control: {
+				userTurn: () =>
+					new Promise<void>((resolve) => {
+						finishTurn = resolve;
+					}),
+			},
+		});
+		const deadline = Date.now() + 2_000;
+		while (decide.mock.calls.length < 1 && Date.now() < deadline) await sleep(5);
+		const handle = registry.get(store.runs()[0]!.id, themeStage().id);
+		assert.ok(handle);
+		const delivery = handle.prompt("Also make the header bold.");
+		while (finishTurn === undefined && Date.now() < deadline) await sleep(5);
+		releaseFirst();
+		await sleep(150);
+		assert.equal(decide.mock.calls.length, 1);
+		assert.equal(themeStage().status === "completed", false);
+		assert.equal(themeStage().readinessDecision, undefined);
+		finishTurn();
+		await delivery;
+		assert.equal((await result).status, "completed");
+		assert.deepEqual(events, ["user-turn:Also make the header bold.", "next:completed"]);
+		assert.equal(decide.mock.calls.length, 2);
+		assert.equal(decide.mock.calls[1]![0].state.stage_reply, "Handled: Also make the header bold.");
+	});
+
+	for (const [label, answerKind, answer] of [
+		["picking an option", "option", "Blue"],
+		["choosing to chat without typing", "chat", "Chat about this"],
+	] as const) {
+		test(`a steer sent before the question is not judged after ${label}; the question is asked`, async () => {
+			store.clear();
+			let startQuestion!: () => void;
+			const { result, decide, registry } = launch({
+				decide: async () => classified(0.99, 0.01, 0.99),
+				answer,
+				control: {
+					answerKind,
+					beforeQuestion: new Promise<void>((resolve) => {
+						startQuestion = resolve;
+					}),
+				},
+			});
+			const deadline = Date.now() + 2_000;
+			let handle = undefined as ReturnType<typeof registry.get>;
+			while (handle === undefined && Date.now() < deadline) {
+				const stage = store.runs()[0]?.stages.find((candidate) => candidate.name === "theme");
+				handle = stage === undefined ? undefined : registry.get(store.runs()[0]!.id, stage.id);
+				if (handle === undefined) await sleep(5);
+			}
+			assert.ok(handle);
+			await handle.steer("Prefer a dark palette.");
+			startQuestion();
+			const gate = await waitForReadiness();
+			assert.equal(decide.mock.calls.length, 0);
+			assert.equal(themeStage().readinessDecision, undefined);
+			assert.equal(
+				stageUiBroker.answerStagePrompt(gate.runId, gate.stage.id, {
+					optionLabels: [READINESS_GATE_ADVANCE_LABEL],
+				}),
+				true,
+			);
+			assert.equal((await result).status, "completed");
+		});
+	}
 
 	test("a pause during the decision keeps the user's message and decides again after resume", async () => {
 		store.clear();
