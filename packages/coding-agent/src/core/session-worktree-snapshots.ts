@@ -421,9 +421,16 @@ export function worktreeRestoreNotices(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
 	since: string,
 ): { readonly type: "info" | "warning"; readonly message: string }[] {
+	return restoreNotices(sessionManager, (restore) => restore.restoredAt >= since);
+}
+
+function restoreNotices(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
+	include: (restore: WorktreeRootMapping) => boolean,
+): { readonly type: "info" | "warning"; readonly message: string }[] {
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	return sessionManager.getBranch().flatMap((entry) => {
-		if (entry.type !== "worktree_snapshot" || !entry.restore || entry.restore.restoredAt < since) return [];
+		if (entry.type !== "worktree_snapshot" || !entry.restore || !include(entry.restore)) return [];
 		const snapshot = records.get(entry.snapshotId);
 		return [
 			{ type: "info" as const, message: formatWorktreeRestoreNotice(entry.restore) },
@@ -650,14 +657,14 @@ export async function openSessionInWorktree(
 	readonly sessionManager: SessionManager;
 	readonly notices: { readonly type: "info" | "warning"; readonly message: string }[];
 }> {
-	const startedAt = new Date().toISOString();
 	const resume = await resumeSessionWorktree(sessionManager, options);
 	const moved =
 		(resume.status === "restored" || resume.status === "verified") && resume.cwd !== sessionManager.getCwd();
 	const opened = moved
 		? await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, options.sessionDirectory)
 		: sessionManager;
-	return { sessionManager: opened, notices: worktreeRestoreNotices(opened, startedAt) };
+	const restoredHere = new Set(resume.status === "restored" ? resume.mappings.map((mapping) => mapping.to) : []);
+	return { sessionManager: opened, notices: restoreNotices(opened, (restore) => restoredHere.has(restore.to)) };
 }
 
 /**
