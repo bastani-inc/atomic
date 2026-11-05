@@ -17,6 +17,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { WorkerRequestLanes } from "../../packages/workflows/src/workers/worker-request-lanes.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExistsSync, makeTempDirectory, readTextSync, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -61,6 +62,7 @@ async function pipelinedWorker(name: string, fault: Fault) {
 	const events: string[] = [];
 	const hold = Promise.withResolvers<void>();
 	let held = false;
+	const scheduled = vi.spyOn(WorkerRequestLanes.prototype, "run");
 	// The pool journal's own validation is not under test: each commit is recorded and answered with a receipt.
 	vi.spyOn(SqlPoolQueue.prototype, "commit").mockImplementation(
 		async (_lease, _work, operation): Promise<PoolCommitReceipt> => {
@@ -119,6 +121,10 @@ async function pipelinedWorker(name: string, fault: Fault) {
 					.map((line) => JSON.parse(line) as { readonly label: string; readonly outcome: string })
 			: [];
 	await until("the first commit is in its transaction", () => events.includes("start first-operation"));
+	await until(
+		"the coordinator has scheduled both commit requests",
+		() => scheduled.mock.calls.filter(([lane]) => lane === "commits").length === 2,
+	);
 	const pid = pool.workerPids[0]!;
 	return {
 		events,
