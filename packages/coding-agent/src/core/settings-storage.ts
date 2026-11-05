@@ -2,15 +2,17 @@ import { randomUUID } from "crypto";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readFileSync,
+	readlinkSync,
 	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
@@ -65,14 +67,36 @@ export function settingsFilesWrittenInPlace(): ReadonlyMap<string, NodeJS.ErrnoE
 	return inPlaceWrites;
 }
 
+/** How many symbolic links a settings path may pass through, as the Linux kernel allows. */
+const MAX_SYMLINK_HOPS = 40;
+
+/**
+ * The file a settings path names: its real path, or, when the file does not exist yet, the end of its symbolic link
+ * chain, each link resolved against its own directory. A cycle or an overlong chain throws `ELOOP`, as writing through
+ * the link would.
+ */
+function settingsFileTarget(path: string): string {
+	if (existsSync(path)) return realpathSync(path);
+	let current = path;
+	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop += 1) {
+		if (!lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) return current;
+		current = resolve(dirname(current), readlinkSync(current));
+	}
+	throw Object.assign(new Error(`ELOOP: too many symbolic links encountered, write '${path}'`), {
+		code: "ELOOP",
+		path,
+	});
+}
+
 /**
  * Replace a settings file so readers and a killed or out-of-space writer only ever leave the old or the new content:
  * write a sibling temporary file with the same mode, then rename it over the file. A symbolic link stays a link; its
- * target is replaced. A file that cannot be replaced, such as a single file mounted into a container, is written in
- * place instead, under the caller's lock; that fallback is returned and recorded in {@link settingsFilesWrittenInPlace}.
+ * target is replaced, or created when it does not exist yet. A file that cannot be replaced, such as a single file
+ * mounted into a container, is written in place instead, under the caller's lock; that fallback is returned and
+ * recorded in {@link settingsFilesWrittenInPlace}.
  */
 export function writeSettingsFile(path: string, content: string): SettingsFileWrite {
-	const target = existsSync(path) ? realpathSync(path) : path;
+	const target = settingsFileTarget(path);
 	const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	try {
