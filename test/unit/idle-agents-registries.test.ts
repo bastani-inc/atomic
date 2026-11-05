@@ -42,6 +42,22 @@ function growth(before: Readonly<Record<string, number>>, after: Readonly<Record
 	return grown;
 }
 
+function assertPlainData(value: unknown): void {
+	assert.notEqual(typeof value, "function", "the index must not retain a function");
+	if (value === null || typeof value !== "object") return;
+	assert.ok(
+		Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype,
+		"only plain objects and arrays",
+	);
+	for (const key of Reflect.ownKeys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		assert.ok(descriptor);
+		assert.equal(descriptor.get, undefined, "the index must not retain a getter");
+		assert.equal(descriptor.set, undefined, "the index must not retain a setter");
+		assertPlainData(descriptor.value);
+	}
+}
+
 test(
 	"a released child keeps exactly one plain-data entry in its owner's registries, its latest record, and adds none to the rest (#4326)",
 	async () => {
@@ -68,7 +84,8 @@ test(
 		const entry = subagentChildRecordOf(owner.getSessionId(), childId);
 		assert.equal(entry?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
 		assert.deepEqual(entry, readSubagentChildRecords(owner.getEntries()).get(childId), "it is the saved record");
-		assert.deepEqual(JSON.parse(JSON.stringify(entry)), entry, "it is plain data");
+		assert.deepEqual(structuredClone(entry), entry, "the latest record is structured-cloneable");
+		assertPlainData(entry);
 		assert.equal(childCommandRouteCount(host), routes, "no completion route is left in the parent's command owner");
 	},
 	CHILD_LOAD_TIMEOUT_MS,
