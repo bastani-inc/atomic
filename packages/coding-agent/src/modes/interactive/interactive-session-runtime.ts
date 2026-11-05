@@ -3,7 +3,7 @@ import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
-import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
+import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
