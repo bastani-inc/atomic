@@ -17,6 +17,7 @@ import {
 	TeamProfileConfigError,
 	TeamProfileError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { setCliStorageSelection } from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import {
 	checkTeamPrefix,
 	checkTeamUrl,
@@ -713,6 +714,41 @@ describe("the team adapter check at startup (#4320)", () => {
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
+
+	test("the CI profile needs the adapter only while it selects a store: a memory override for everything starts without it (#4320)", async () => {
+		vi.stubEnv("ATOMIC_PROFILE", "ci");
+		vi.stubEnv("ATOMIC_TEAM_URL", "libsql://team.example.turso.io");
+		vi.stubEnv("ATOMIC_TEAM_TOKEN", "t");
+		const memory = JSON.stringify({ memory: true });
+		const startup = (): Promise<string> =>
+			Promise.resolve()
+				.then(() => assertTeamAdapterInstalled(agentDir))
+				.then(
+					() => "starts",
+					(error: Error) =>
+						isTeamProfileError(error) || isTeamProfileConfigError(error) ? error.code : `${error}`,
+				);
+
+		vi.stubEnv("ATOMIC_STORAGE", memory);
+		assert.equal(await startup(), "starts", "ATOMIC_STORAGE outranks the profile for every store");
+		vi.stubEnv("ATOMIC_STORAGE", "");
+		setCliStorageSelection({ flag: "--storage", value: memory });
+		try {
+			assert.equal(await startup(), "starts", "--storage outranks the profile for every store");
+		} finally {
+			setCliStorageSelection(undefined);
+		}
+
+		assert.equal(await startup(), "adapter-not-installed", "the profile alone selects every store");
+		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", memory);
+		assert.equal(await startup(), "adapter-not-installed", "workflow runs and Intercom still use the profile");
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", memory);
+		assert.equal(await startup(), "adapter-not-installed", "the Intercom broker still uses the profile");
+
+		vi.stubEnv("ATOMIC_TEAM_URL", "");
+		vi.stubEnv("ATOMIC_STORAGE", memory);
+		assert.equal(await startup(), "incomplete-profile", "an overridden profile is still validated");
+	});
 });
 
 test("TeamProfileConfigError keeps cause, path and missing only when given (#4320)", () => {

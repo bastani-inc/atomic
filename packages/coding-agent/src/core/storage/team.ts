@@ -32,6 +32,7 @@ import {
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "./errors.js";
+import { processSharedStorageSelection } from "./process-selection.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, storageSelectionKey } from "./provider.js";
 import {
 	checkTeamPrefix,
@@ -501,21 +502,30 @@ async function loadTeamAdapter(agentDir: string, reason: string): Promise<void> 
 }
 
 /**
+ * Whether `ATOMIC_PROFILE=ci` still selects the team database in this process. `--storage` and `ATOMIC_STORAGE`
+ * outrank it for sessions, workflow runs and the Intercom broker alike, while a domain variable outranks it only for
+ * its own store. So the profile selects some store exactly when it is the shared selection the broker receives.
+ */
+function teamProfileInEffect(): boolean {
+	const team = environmentTeamProfile();
+	return team !== undefined && processSharedStorageSelection() === JSON.stringify(team);
+}
+
+/**
  * Fail fast, before any store opens, when this process selects the team database but cannot load the libSQL
- * adapter: `ATOMIC_PROFILE=ci`, or an SDK `storage` selection naming the adapter. The adapter is loaded, not
- * opened, once per agent directory and process. The CLI checks at startup and `createAgentSession` before it
- * creates a session.
+ * adapter: `ATOMIC_PROFILE=ci` while it selects a store, or an SDK `storage` selection naming the adapter. The
+ * adapter is loaded, not opened, once per agent directory and process. The CLI checks at startup and
+ * `createAgentSession` before it creates a session.
  */
 export function assertTeamAdapterInstalled(
 	agentDir: string,
 	selection?: { readonly adapter?: string } | object,
 ): Promise<void> {
-	const reason =
-		environmentTeamProfile() !== undefined
-			? "ATOMIC_PROFILE=ci"
-			: selection !== undefined && "adapter" in selection && selection.adapter === LIBSQL_ADAPTER_PACKAGE
-				? "The storage selection"
-				: undefined;
+	const reason = teamProfileInEffect()
+		? "ATOMIC_PROFILE=ci"
+		: selection !== undefined && "adapter" in selection && selection.adapter === LIBSQL_ADAPTER_PACKAGE
+			? "The storage selection"
+			: undefined;
 	if (reason === undefined) return Promise.resolve();
 	const key = resolve(agentDir);
 	let check = installedAdapters.get(key);

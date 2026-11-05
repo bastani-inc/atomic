@@ -76,7 +76,7 @@ A CI runner needs no settings file. Set these variables for the process:
 
 With `ATOMIC_PROFILE=ci`, sessions, workflow runs, and Intercom all use the team database in that process and the processes it starts. Nothing is written to settings. The token is read from the variable or the file when a store opens; it is never copied into settings, logs, or the selection a child process receives.
 
-Atomic checks these variables when it starts, before any session starts. A team variable without `ATOMIC_PROFILE`, or the profile without its URL or token, fails with one error that names every missing variable. An unknown profile, a bad URL, an unreadable or empty token file, and an invalid prefix fail the same way. If the adapter cannot be loaded, startup fails with the `atomic install` command to run. More specific selections still win: `--storage`, `ATOMIC_STORAGE`, and the domain variables outrank the profile.
+Atomic checks these variables when it starts, before any session starts. A team variable without `ATOMIC_PROFILE`, or the profile without its URL or token, fails with one error that names every missing variable. An unknown profile, a bad URL, an unreadable or empty token file, and an invalid prefix fail the same way. More specific selections still win: `--storage`, `ATOMIC_STORAGE`, and the domain variables outrank the profile. `--storage` and `ATOMIC_STORAGE` outrank it for every store, Intercom included, while a domain variable outranks it only for its own store. As long as the profile still selects a store, startup fails with the `atomic install` command to run if the adapter cannot be loaded.
 
 ### GitHub Actions
 
