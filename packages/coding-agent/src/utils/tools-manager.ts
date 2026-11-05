@@ -767,6 +767,7 @@ let lastProvisionFailure: GitProvisionError | undefined;
 
 /** Forget probes and the last provisioning failure, as a new process would. Not part of the public API. */
 export function resetGitProvisionStateForTest(): void {
+	sweptAbandonedInstalls = false;
 	systemGitProbes.clear();
 	provisionedGitVersions.clear();
 	lastProvisionFailure = undefined;
@@ -943,9 +944,28 @@ function validateResolveGitOptions(options: ResolveGitOptions): void {
 		throw new GitProvisionConfigError({ source: "sdk", field: "onStatus", expected: "a function" });
 }
 
+let sweptAbandonedInstalls = false;
+
+/** Once per process, remove what exited installers left behind, so a killed upgrade's old tree does not linger. */
+function sweepAbandonedInstallsOnce(options: ResolveGitOptions): void {
+	if (sweptAbandonedInstalls) return;
+	sweptAbandonedInstalls = true;
+	const binDir = dirname(getGitInstallDir());
+	if (!existsSync(binDir)) return;
+	try {
+		removeAbandonedStagingDirectories(binDir);
+	} catch (error) {
+		options.onStatus?.({
+			type: "warning",
+			message: `Could not remove abandoned git installs from ${binDir}: ${firstLine(String(error))}`,
+		});
+	}
+}
+
 async function selectGit(options: ResolveGitOptions): Promise<GitSelection> {
 	validateResolveGitOptions(options);
 	options.signal?.throwIfAborted();
+	sweepAbandonedInstallsOnce(options);
 	const location = locateGit();
 	if (location.found)
 		return location.selection.layout === undefined

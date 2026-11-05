@@ -1921,6 +1921,52 @@ describe("git install command on this machine (#4322)", () => {
 			assert.deepEqual(leftovers(), []);
 		});
 
+		it("sweeps a killed upgrade's leftovers on the next resolve even when no install is needed", async () => {
+			const fake = releaseFor(bytes());
+			const fetchMock = serveArchive(fake.bytes);
+			await installAs(fake);
+			fetchMock.mockClear();
+			const binDir = join(agentDir, "bin");
+			const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+			const replaced = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
+			const staging = join(binDir, `.git-staging-${hostTag()}-${exitedPid}-1`);
+			const live = join(binDir, `.git-staging-${hostTag()}-${process.pid}-1`);
+			for (const dir of [replaced, staging, live]) mkdirSync(dir, { recursive: true });
+			vi.resetModules();
+			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+			await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () => fresh.resolveGit());
+			assert.equal(fetchMock.mock.calls.length, 0);
+			assert.equal(existsSync(replaced), false);
+			assert.equal(existsSync(staging), false);
+			assert.equal(existsSync(live), true);
+		});
+
+		it("reports a sweep that fails once and still resolves", async () => {
+			const fake = releaseFor(bytes());
+			serveArchive(fake.bytes);
+			await installAs(fake);
+			const binDir = join(agentDir, "bin");
+			const actualReaddir = mocks.actualFs!.readdirSync;
+			mocks.readdirSync.mockImplementation((path: string, options?: object) => {
+				if (path === binDir) throw Object.assign(new Error("EIO: sweep failed"), { code: "EIO" });
+				return actualReaddir(path, options as never);
+			});
+			vi.resetModules();
+			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const statuses: string[] = [];
+			const git = await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () =>
+				fresh.resolveGit({ onStatus: (status) => statuses.push(status.message) }),
+			);
+			assert.equal(git.source, "provisioned");
+			assert.deepEqual(statuses, [
+				`Could not remove abandoned git installs from ${binDir}: Error: EIO: sweep failed`,
+			]);
+			await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () =>
+				fresh.resolveGit({ onStatus: (status) => statuses.push(status.message) }),
+			);
+			assert.equal(statuses.length, 1);
+		});
+
 		it("sweeps replaced installs left by exited processes only", async () => {
 			const fake = releaseFor(bytes());
 			serveArchive(fake.bytes);
