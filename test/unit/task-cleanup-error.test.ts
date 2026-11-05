@@ -446,7 +446,7 @@ test("process_cleanup_unconfirmed survives a serialize, JSON and rehydrate round
 		assert.equal(isProcessCleanupUnconfirmedError(other), false);
 });
 
-test("other infrastructure faults, and a process cleanup fault with a malformed cause, rehydrate into the base class (#4338)", () => {
+test("other infrastructure faults, and a process cleanup fault without a valid cause or fields, rehydrate into the base class (#4338)", () => {
 	const lost = new WorkflowInfrastructureError("worker_lost", "Worker exited before delivery acknowledgement");
 	const serialized = serializeWorkflowInfrastructureError(lost);
 	assert.deepEqual(serialized, { name: "WorkflowInfrastructureError", code: "worker_lost", message: lost.message });
@@ -464,25 +464,76 @@ test("other infrastructure faults, and a process cleanup fault with a malformed 
 	});
 	assert.equal(unknown.code, "pool_gone");
 	const process = serializeWorkflowInfrastructureError(new ProcessCleanupUnconfirmedError(cleanupError()));
-	const broken = rehydrateWorkflowInfrastructureError({
-		...process,
-		cause: { ...process.cause!, phase: "lost" as never },
-	});
-	assert.equal(broken.constructor, WorkflowInfrastructureError);
-	assert.deepEqual({ code: broken.code, message: broken.message }, { code: process.code, message: process.message });
-	assert.equal(broken.cause, undefined);
-	const copy = { ...JSON.parse(JSON.stringify(new ProcessCleanupUnconfirmedError(cleanupError()))), message: "m" };
-	assert.ok(isProcessCleanupUnconfirmedError(copy), "a structural copy without its cause still matches");
-	const uncaused = serializeWorkflowInfrastructureError(copy);
-	assert.equal("cause" in uncaused, false, "a copy that lost its cause serializes without one");
-	assert.deepEqual(uncaused.fields, { phase: copy.phase, resources: copy.resources });
-	const rebuilt = rehydrateWorkflowInfrastructureError(uncaused);
-	assert.equal(rebuilt.constructor, WorkflowInfrastructureError);
-	assert.deepEqual(
-		{ code: rebuilt.code, message: rebuilt.message },
-		{ code: "process_cleanup_unconfirmed", message: "m" },
-	);
+	const brokenCause = { ...process.cause!, phase: "lost" as never };
+	for (const fields of [
+		undefined,
+		{ ...process.fields!, phase: "lost" as never },
+		{ ...process.fields!, resources: "none" as never },
+		{ ...process.fields!, resources: [{ ...process.fields!.resources[0]!, message: undefined as never }] },
+		{ ...process.fields!, resources: [{ ...process.fields!.resources[0]!, taskId: 7 as never }] },
+		{ ...process.fields!, resources: [null as never] },
+	]) {
+		const broken = rehydrateWorkflowInfrastructureError({ ...process, cause: brokenCause, fields });
+		assert.equal(broken.constructor, WorkflowInfrastructureError, JSON.stringify(fields));
+		assert.equal(isProcessCleanupUnconfirmedError(broken), false);
+		assert.deepEqual(
+			{ code: broken.code, message: broken.message },
+			{ code: process.code, message: process.message },
+		);
+		assert.equal(broken.cause, undefined);
+	}
 	const recode = rehydrateWorkflowInfrastructureError({ ...process, code: "worker_lost" });
 	assert.equal(recode.constructor, WorkflowInfrastructureError);
 	assert.ok(recode.cause instanceof TaskCleanupError, "a well-formed cause is kept on the base class");
+	const recodedFields = rehydrateWorkflowInfrastructureError({ ...process, code: "worker_lost", cause: undefined });
+	assert.equal(recodedFields.cause, undefined, "only a process cleanup fault is rebuilt from its fields");
+});
+
+test("a process cleanup error copy that lost its cause rehydrates from its fields, in order and with its message (#4338)", () => {
+	const third: ResourceFailure = { resource: "process-group:4444", code: "CleanupFailed", message: "third" };
+	const cause = new TaskCleanupError("stage-close", [
+		{ taskId: "task-1" as TaskId, resources: [drain, third] },
+		{ taskId: "task-2" as TaskId, resources: [exit] },
+		{ taskId: "task-1" as TaskId, resources: [exit] },
+	]);
+	const original = new ProcessCleanupUnconfirmedError(cause);
+	const copy = { ...JSON.parse(JSON.stringify(original)), message: "m" };
+	assert.ok(isProcessCleanupUnconfirmedError(copy), "a structural copy without its cause still matches");
+	const uncaused = JSON.parse(JSON.stringify(serializeWorkflowInfrastructureError(copy)));
+	assert.equal("cause" in uncaused, false, "a copy that lost its cause serializes without one");
+	assert.deepEqual(uncaused.fields, { phase: "stage-close", resources: original.resources });
+	const rebuilt = rehydrateWorkflowInfrastructureError(uncaused);
+	assert.ok(rebuilt instanceof ProcessCleanupUnconfirmedError);
+	assert.ok(isProcessCleanupUnconfirmedError(rebuilt));
+	assert.equal(isRetryableWorkflowError(rebuilt), true);
+	assert.equal(isRetryableTaskError(rebuilt), true);
+	assert.deepEqual(
+		{
+			code: rebuilt.code,
+			phase: rebuilt.phase,
+			resources: rebuilt.resources,
+			hint: rebuilt.hint,
+			message: rebuilt.message,
+		},
+		{
+			code: "process_cleanup_unconfirmed",
+			phase: "stage-close",
+			resources: original.resources,
+			hint: original.hint,
+			message: "m",
+		},
+	);
+	assert.ok(rebuilt.cause instanceof TaskCleanupError);
+	assert.deepEqual(rebuilt.cause.failures, cause.failures);
+	const empty = rehydrateWorkflowInfrastructureError({ ...uncaused, fields: { phase: "stage-pause", resources: [] } });
+	assert.ok(empty instanceof ProcessCleanupUnconfirmedError);
+	assert.deepEqual({ phase: empty.phase, failures: empty.cause.failures }, { phase: "stage-pause", failures: [] });
+	const serialized = serializeWorkflowInfrastructureError(original);
+	const preferred = rehydrateWorkflowInfrastructureError({
+		...serialized,
+		fields: { phase: "stage-pause", resources: [] },
+	});
+	assert.ok(preferred instanceof ProcessCleanupUnconfirmedError);
+	assert.deepEqual(preferred.cause.failures, cause.failures, "a valid cause wins over the fields");
+	assert.equal(preferred.phase, "stage-close");
 });

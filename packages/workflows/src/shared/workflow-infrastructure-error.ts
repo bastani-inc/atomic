@@ -79,14 +79,16 @@ export class ProcessCleanupUnconfirmedError extends WorkflowInfrastructureError 
 	readonly resources: readonly ProcessCleanupResource[];
 	declare readonly cause: TaskCleanupError;
 
-	constructor(cause: TaskCleanupError) {
+	/** `message` keeps the text of an error rebuilt from another process; otherwise it is built from the fields. */
+	constructor(cause: TaskCleanupError, message?: string) {
 		const resources = cause.failures.flatMap((failure) =>
 			failure.resources.map((resource) => ({ taskId: failure.taskId, ...resource })),
 		);
 		const subject = resources.length > 0 ? resources.map((resource) => resource.resource).join(", ") : "owned tasks";
 		super(
 			"process_cleanup_unconfirmed",
-			`Workflow stage task cleanup was not confirmed: ${subject} (process_cleanup_unconfirmed). ${cause.hint}.`,
+			message ??
+				`Workflow stage task cleanup was not confirmed: ${subject} (process_cleanup_unconfirmed). ${cause.hint}.`,
 			{ cause },
 		);
 		this.hint = cause.hint;
@@ -142,16 +144,44 @@ export function serializeWorkflowInfrastructureError(
 	};
 }
 
+/** The cause a serialized error's `fields` describe: the constructor's flattening undone, then validated. */
+function causeFromFields(fields: SerializedWorkflowInfrastructureError["fields"]): TaskCleanupError | undefined {
+	if (!Array.isArray(fields?.resources)) return undefined;
+	const failures: { taskId: unknown; resources: object[] }[] = [];
+	for (const entry of fields.resources as readonly (Partial<ProcessCleanupResource> | null)[]) {
+		const resource = { resource: entry?.resource, code: entry?.code, message: entry?.message };
+		const last = failures.at(-1);
+		if (last !== undefined && last.taskId === entry?.taskId) last.resources.push(resource);
+		else failures.push({ taskId: entry?.taskId, resources: [resource] });
+	}
+	return rehydrateTaskCleanupError({
+		name: "TaskCleanupError",
+		code: "task_cleanup_unconfirmed",
+		phase: fields.phase,
+		failures,
+	});
+}
+
 /**
- * Rebuilds a serialized error as the same class: `process_cleanup_unconfirmed` with a well-formed cause becomes a
- * {@link ProcessCleanupUnconfirmedError}; any other code, or a malformed cause, the base class with its code and message.
+ * Rebuilds a serialized error as the same class, keeping its message. `process_cleanup_unconfirmed` becomes a
+ * {@link ProcessCleanupUnconfirmedError} from its cause, or from its `fields` when the cause is lost or malformed;
+ * its `hint` is the cause's, which is fixed. Any other code, or no valid cause or fields, gives the base class with
+ * its code and message.
  */
 export function rehydrateWorkflowInfrastructureError(
 	value: SerializedWorkflowInfrastructureError,
 ): WorkflowInfrastructureError {
 	const cause = rehydrateTaskCleanupError(value.cause);
-	if (value.code === "process_cleanup_unconfirmed" && cause) return new ProcessCleanupUnconfirmedError(cause);
-	return new WorkflowInfrastructureError(value.code as WorkflowInfrastructureFault, value.message, cause && { cause });
+	if (value.code !== "process_cleanup_unconfirmed")
+		return new WorkflowInfrastructureError(
+			value.code as WorkflowInfrastructureFault,
+			value.message,
+			cause && { cause },
+		);
+	const rebuilt = cause ?? causeFromFields(value.fields);
+	return rebuilt
+		? new ProcessCleanupUnconfirmedError(rebuilt, value.message)
+		: new WorkflowInfrastructureError("process_cleanup_unconfirmed", value.message);
 }
 
 export function isRetryableWorkflowError(error: unknown): boolean {
