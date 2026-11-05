@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
+	currentWorktreeSnapshots,
 	formatWorktreeRestoreNotice,
 	openSessionInWorktree,
 	resumeSessionWorktree,
@@ -16,11 +17,13 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
 import {
+	GitUnavailableError,
 	isWorkspaceConfigError,
 	WorkspaceDriftError,
 	WorkspaceRestoreError,
 } from "../src/core/worktree-snapshot/errors.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
+import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { showSessionNotices } from "../src/modes/interactive/session-notices.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -186,6 +189,34 @@ describe("restore notices in the TUI (#4245)", () => {
 		assert.equal(host.sessionManager, manager);
 	});
 
+	test("/import keeps a missing Git on screen like a workspace failure, and treats any other failure as fatal", async () => {
+		const manager = await SessionManager.create(store, sandbox.root);
+		const missingGit = new GitUnavailableError("not-installed", "/opt/git/bin/git");
+		const unexpected = new Error("the session file could not be parsed");
+		for (const failure of [missingGit, unexpected]) {
+			const host = chatHost(manager) as ChatHost;
+			host.runtimeHost = {
+				importFromJsonl: async () => {
+					throw failure;
+				},
+			};
+			await handleImportCommand.call(host, "/import exported.jsonl");
+			if (failure === missingGit) {
+				assert.deepEqual(host.lines(), [`Error: ${missingGit.message}`]);
+				assert.deepEqual(host.fatal, []);
+			} else {
+				assert.deepEqual(host.lines(), []);
+				assert.deepEqual(host.fatal, ["Failed to import session"]);
+			}
+		}
+	});
+
+	test("no startup notices render nothing", () => {
+		const host = chatHost(undefined as never);
+		showSessionNotices(host as never, undefined);
+		assert.deepEqual(host.lines(), []);
+	});
+
 	test("startup notices each keep their own line when a later status arrives", () => {
 		const host = chatHost(undefined as never);
 		showSessionNotices(host as never, [
@@ -206,6 +237,24 @@ describe("restore notices in the TUI (#4245)", () => {
 });
 
 describe("restore warnings recorded with their restore (#4245)", () => {
+	test("a checkout whose latest snapshot record is missing is left out of the current snapshots", () => {
+		const entry = (root: string, snapshotId: string) => ({
+			type: "worktree_snapshot" as const,
+			id: `${root}-${snapshotId}`,
+			parentId: null,
+			timestamp: "t",
+			root,
+			snapshotId,
+		});
+		const recorded = { id: "kept" } as WorktreeSnapshot;
+		const current = currentWorktreeSnapshots({
+			getBranch: () => [entry("/work/a", "kept"), entry("/work/b", "ghost")],
+			getWorktreeRootMappings: () => [],
+			getWorktreeSnapshotRecords: () => new Map([["kept", recorded]]),
+		});
+		assert.deepEqual([...current], [["/work/a", recorded]]);
+	});
+
 	test("a reopened session still reports what each restore said, and startup shows it once", async () => {
 		const { manager, interrupted } = await twoDriftedRepositories();
 		const since = new Date().toISOString();

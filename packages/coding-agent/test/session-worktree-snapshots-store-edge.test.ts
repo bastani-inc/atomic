@@ -222,6 +222,11 @@ describe("validating persisted snapshot entries", () => {
 					["LFS paths that are not a list", restored, [{ code: "lfs-objects-unavailable", paths: "a.bin" }]],
 					["an LFS path that is not a string", restored, [{ code: "lfs-objects-unavailable", paths: ["a", 5] }]],
 					["a leftover without a path", restored, [{ code: "stale-restore-retained" }]],
+					[
+						"a valid warning beside a malformed one",
+						restored,
+						[{ code: "stale-restore-retained", path: "/p" }, { code: "stale-restore-retained" }],
+					],
 				] as const
 			).map(([name, restore, restoreWarnings]): [string, object] => [
 				name,

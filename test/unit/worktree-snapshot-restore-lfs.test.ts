@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -200,7 +210,11 @@ describe.skipIf(process.platform === "win32")("restoring real Git LFS content (#
 });
 
 /** A repository whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's object pushed. */
-async function lfsEditedSnapshot(extra: Record<string, string> = {}) {
+async function lfsEditedSnapshot(
+	extra: Record<string, string> = {},
+	pushed: readonly string[] = [],
+	prepare: (clone: string) => void = () => {},
+) {
 	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
 	const { clone } = await sandbox.remoteWithClone("repo", {
 		".gitattributes": "*.bin filter=lfs -text\n",
@@ -209,8 +223,10 @@ async function lfsEditedSnapshot(extra: Record<string, string> = {}) {
 	await sandbox.git(clone, "lfs", "push", "--all", "origin");
 	sandbox.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
 	for (const [file, content] of Object.entries(extra)) sandbox.write(join(clone, file), content);
+	prepare(clone);
 	await sandbox.git(clone, "add", "-A");
-	await sandbox.git(clone, "lfs", "push", "--object-id", "origin", sha256("EDITED-CONTENT\n"));
+	const objects = ["EDITED-CONTENT\n", ...pushed].map(sha256);
+	await sandbox.git(clone, "lfs", "push", "--object-id", "origin", ...objects);
 	await sandbox.git(clone, "reset", "-q");
 	const blobs = new MemorySnapshotBlobStore();
 	return { blobs, snapshot: await capture(clone, blobs) };
@@ -226,6 +242,25 @@ describe.skipIf(process.platform === "win32")("restoring LFS files that changed 
 			["filters"],
 		);
 		assert.equal((await verifyWorktree(snapshot, restored.path)).tree, snapshot.tree);
+		assert.equal(
+			await sandbox.git(restored.path, "diff-files", "--name-only"),
+			"data.bin",
+			"only the edit differs from a fresh index",
+		);
+	});
+
+	test("fetched content that only starts like a pointer is content, and a link named like an LFS file is left alone", async () => {
+		const lookalike = `${LFS_POINTER_PREFIX}\n`.padEnd(1024, "x");
+		const { blobs, snapshot } = await lfsEditedSnapshot({ "lookalike.bin": lookalike }, [lookalike], (clone) =>
+			symlinkSync("missing-target", join(clone, "link.bin")),
+		);
+		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+		assert.equal(readFileSync(join(restored.path, "lookalike.bin"), "utf8"), lookalike);
+		assert.equal(readlinkSync(join(restored.path, "link.bin")), "missing-target");
+		assert.deepEqual(
+			warnings.map((warning) => warning.code),
+			["filters"],
+		);
 	});
 
 	test("a new LFS file whose object was never pushed stays a pointer, and only it is reported", async () => {
