@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../../config.js";
 import { locateCheckout, readRepositoryConfig, withScratchDirectory, writeWorkingTree } from "./capture.ts";
@@ -556,6 +557,29 @@ async function lfsPaths(worktree: GitRunOptions): Promise<string[]> {
 	return paths;
 }
 
+/** The form of a recorded remote that Git LFS can find its server from: a local path needs to be a `file://` URL. */
+function lfsRemote(remote: string): string {
+	return isAbsolute(remote) ? pathToFileURL(remote).href : remote;
+}
+
+/**
+ * Downloads the Git LFS objects of the staged worktree from the first recorded remote that has them. The staging
+ * worktree belongs to a per-repository store that is created without remotes, so each recorded remote is named
+ * explicitly, after `--` so that a value can never be read as an option, and the download can never wait for a person.
+ * Resolves false when no remote supplied the objects, or none is recorded.
+ */
+async function pullLfsObjects(worktree: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
+	for (const remote of remotes) {
+		try {
+			await runGit(["lfs", "pull", "--", lfsRemote(remote)], { ...worktree, nonInteractive: true });
+			return true;
+		} catch (error) {
+			if (!isWorkspaceGitError(error)) throw error;
+		}
+	}
+	return false;
+}
+
 async function materialize(
 	git: GitRunOptions,
 	target: string,
@@ -672,10 +696,7 @@ export async function restoreWorktree(
 			assertActive();
 			if (snapshot?.filters?.drivers.includes("lfs")) {
 				const worktree: GitRunOptions = { cwd: staging, signal };
-				try {
-					await runGit(["lfs", "pull"], worktree);
-				} catch (error) {
-					if (!isWorkspaceGitError(error)) throw error;
+				if (!(await pullLfsObjects(worktree, snapshot.remotes))) {
 					warn({ code: "lfs-objects-unavailable", paths: await lfsPaths(worktree) });
 				}
 			}
