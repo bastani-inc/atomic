@@ -1,5 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,7 @@ import {
 	type QuestionnaireResult,
 	reportDebug,
 } from "@bastani/atomic";
-import { rehydrateJournalStoreError } from "@bastani/atomic/storage";
+import { JournalShardUnavailableError, rehydrateJournalStoreError } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
@@ -447,6 +448,15 @@ export class LocalWorkerPool {
 	}
 	async prepare(root: string, store?: Store): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
+		// Pool reads open their own read-only connection to the journal file, which fails untyped once the root's shard
+		// is gone: report the missing shard as the coordinator does, before any read.
+		if (this.options.journalShard !== undefined && !existsSync(this.options.journalPath))
+			throw new JournalShardUnavailableError({
+				code: "shard-missing",
+				shardId: this.options.journalShard,
+				shardPath: this.options.journalPath,
+				runId: root,
+			});
 		const poolJournal = await this.poolJournal(root);
 		if (this.root !== undefined && this.root !== root) throw new Error("Local worker pool belongs to another root");
 		this.root = root;
