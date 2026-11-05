@@ -1,11 +1,28 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import type { WorktreeSnapshotCapture } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
+import { isWorkspaceSnapshotError } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
 import {
 	type GitExecutable,
 	runGit,
 	setWorktreeSnapshotGit,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
+
+/** Asserts `error` is the typed `unreadable-path` snapshot error for `path`, caused by the filesystem error `errno`. */
+export function assertUnreadablePath(error: unknown, path: string, errno: string): void {
+	assert.ok(isWorkspaceSnapshotError(error), `expected an unreadable-path error, got ${String(error)}`);
+	assert.equal(error.code, "unreadable-path");
+	assert.equal(resolve(error.subject), resolve(path));
+	assert.equal((error.cause as NodeJS.ErrnoException).code, errno);
+}
+
+/** Asserts a capture was unavailable because `path` could not be read, with filesystem error `errno`. */
+export function assertCaptureUnreadable(result: WorktreeSnapshotCapture, path: string, errno: string): void {
+	assert.equal(result.status, "unavailable");
+	assertUnreadablePath((result as Extract<WorktreeSnapshotCapture, { status: "unavailable" }>).reason, path, errno);
+}
 
 /**
  * Disposable Git repositories whose commands all go through the snapshot runner with an isolated global config, so

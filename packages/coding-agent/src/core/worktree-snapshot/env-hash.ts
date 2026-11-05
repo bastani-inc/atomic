@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { unreadablePathError } from "./errors.ts";
 import type { SnapshotBlob } from "./types.ts";
 
 /** Root-relative files whose content decides a checkout's installed dependencies and toolchain. */
@@ -52,7 +53,7 @@ export async function computeEnvironmentHash(root: string): Promise<string> {
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") continue;
-			throw error;
+			throw unreadablePathError(join(root, path), error);
 		}
 		hash.update(`${path}\0${sha256Hex(content)}\n`);
 	}

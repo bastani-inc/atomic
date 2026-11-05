@@ -5,6 +5,8 @@ import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
 import {
 	type GitUnavailableError,
 	isGitUnavailableError,
+	isWorkspaceSnapshotError,
+	unreadablePathError,
 	WorkspaceConfigError,
 	WorkspaceSnapshotError,
 } from "./errors.ts";
@@ -79,7 +81,7 @@ export async function locateCheckout(
 		if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") {
 			return new WorkspaceSnapshotError("not-a-repository", dir, error as Error);
 		}
-		throw error;
+		throw unreadablePathError(dir, error);
 	}
 	try {
 		const top = await runGit(["rev-parse", "--show-toplevel"], { cwd: dir, signal, allowExitCodes: [128] });
@@ -149,7 +151,7 @@ export async function writeWorkingTree(
 		const { atime, mtimeMs } = await stat(userIndexPath);
 		await utimes(index, atime, new Date(mtimeMs));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
 	}
 	await runGit(["read-tree", "--reset", checkout.head], git);
 	const changed = nulFields((await runGit(["diff-files", "-z", "--name-only", "--no-renames"], git)).stdout);
@@ -201,7 +203,7 @@ async function fileBytes(path: string): Promise<number> {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") {
 			return 0;
 		}
-		throw error;
+		throw unreadablePathError(path, error);
 	}
 }
 
@@ -248,7 +250,7 @@ async function readFilters(
 			text = await readFile(join(root, file), "utf8");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-			throw error;
+			throw unreadablePathError(join(root, file), error);
 		}
 		for (const match of text.matchAll(FILTER_ATTRIBUTE)) drivers.add(match[1]!);
 	}
@@ -346,8 +348,9 @@ function snapshotId(fields: Omit<WorktreeSnapshot, "id" | "capturedAt" | "versio
 
 /**
  * Records the state of the Git checkout containing `dir`. Resolves `unavailable` (with the typed reason) when Git is
- * missing, `dir` is outside a work tree, or the repository has no commits, and `unchanged` with `previous` when HEAD
- * and the recomputed tree both equal it. Never changes the user's index, refs or files.
+ * missing, `dir` is outside a work tree, the repository has no commits, or a path the snapshot reads cannot be read,
+ * and `unchanged` with `previous` when HEAD and the recomputed tree both equal it. Never changes the user's index,
+ * refs or files.
  */
 export async function captureWorktreeSnapshot(
 	dir: string,
@@ -356,6 +359,19 @@ export async function captureWorktreeSnapshot(
 	if (typeof dir !== "string" || dir.length === 0) throw new WorkspaceConfigError("sdk", "dir", "a directory path");
 	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
 	if (!settings.enabled) return { status: "disabled" };
+	try {
+		return await captureCheckout(dir, settings, options);
+	} catch (error) {
+		if (isWorkspaceSnapshotError(error)) return { status: "unavailable", reason: error };
+		throw error;
+	}
+}
+
+async function captureCheckout(
+	dir: string,
+	settings: WorktreeSnapshotSettings,
+	options: CaptureWorktreeSnapshotOptions,
+): Promise<WorktreeSnapshotCapture> {
 	const { signal } = options;
 	const checkout = await locateCheckout(dir, signal);
 	if (checkout instanceof Error) return { status: "unavailable", reason: checkout };

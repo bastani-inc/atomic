@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 
 const recorded = vi.hoisted(() => ({
 	spawns: [] as { args: readonly string[]; cwd: string }[],
 	failRemovalOf: undefined as string | undefined,
+	/** Fail removing a restore's scratch directory, the one holding the empty attributes file it materializes with. */
+	failScratchRemoval: false,
+	/** Fail writing a file with this base name, as a full disk would. */
+	failWriteOf: undefined as string | undefined,
 	removals: [] as string[],
 }));
 
@@ -28,9 +32,22 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		rm: async (path: string, options?: object) => {
 			recorded.removals.push(String(path));
 			if (recorded.failRemovalOf !== undefined && String(path).includes(recorded.failRemovalOf)) {
-				throw Object.assign(new Error(`cannot remove ${path}`), { code: "EBUSY" });
+				throw Object.assign(new Error(`cannot remove ${path}`), { code: "EBUSY", syscall: "rm", path });
+			}
+			if (recorded.failScratchRemoval && existsSync(join(String(path), "empty-attributes"))) {
+				throw Object.assign(new Error(`cannot remove scratch ${path}`), { code: "EBUSY", syscall: "rm", path });
 			}
 			return actual.rm(path, options);
+		},
+		writeFile: async (path: string, ...rest: unknown[]) => {
+			if (recorded.failWriteOf !== undefined && basename(String(path)) === recorded.failWriteOf) {
+				throw Object.assign(new Error(`ENOSPC: no space left on device, open '${path}'`), {
+					code: "ENOSPC",
+					syscall: "open",
+					path,
+				});
+			}
+			return (actual.writeFile as (...parameters: unknown[]) => Promise<void>)(path, ...rest);
 		},
 	};
 });
@@ -40,6 +57,7 @@ import {
 	captureWorktreeSnapshot,
 	isWorkspaceRestoreError,
 	MemorySnapshotBlobStore,
+	removeRestoredWorktree,
 	restoreWorktree,
 	restoreWorktreeSnapshot,
 	type WorktreeSnapshot,
@@ -51,6 +69,8 @@ let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 	recorded.failRemovalOf = undefined;
+	recorded.failScratchRemoval = false;
+	recorded.failWriteOf = undefined;
 	recorded.removals.length = 0;
 });
 afterEach(() => sandbox.dispose());
@@ -173,6 +193,7 @@ describe("restore operation counts", () => {
 		assert.equal(count("apply"), 0);
 		assert.equal(count("bundle"), 0);
 		assert.equal(count("worktree"), 1);
+		assert.equal(count("cat-file"), 2, "the head and the tree are each checked once");
 	});
 
 	test("concurrent restores of one cold snapshot share one fetch and one reconstruction", async () => {
@@ -272,10 +293,59 @@ describe("cleanup failures never replace the primary error", () => {
 			(error: unknown) => {
 				assert.ok(isWorkspaceRestoreError(error));
 				assert.equal(error.code, "tree-mismatch");
-				assert.equal((error as { cleanupCause?: Error }).cleanupCause?.message, `cannot remove ${into}`);
+				const cleanup = error.cleanupCause;
+				assert.ok(isWorkspaceRestoreError(cleanup));
+				assert.equal(cleanup.code, "unwritable-path");
+				assert.equal(cleanup.target, into);
+				assert.equal(cleanup.snapshotId, snapshot.id);
+				assert.equal((cleanup.cause as NodeJS.ErrnoException).code, "EBUSY");
 				return true;
 			},
 		);
+	});
+
+	test("removing a restored worktree that resists removal is an unwritable path", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = captured(await captureWorktreeSnapshot(clone, { blobs }));
+		const storeDir = sandbox.path("host");
+		const into = sandbox.path("stuck-worktree");
+		await restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir });
+		recorded.failRemovalOf = "stuck-worktree";
+		await assert.rejects(removeRestoredWorktree(into, { storeDir }), (error: unknown) => {
+			assert.ok(isWorkspaceRestoreError(error));
+			assert.equal(error.code, "unwritable-path");
+			assert.equal(error.target, into);
+			assert.equal(error.snapshotId, null);
+			assert.equal((error.cause as NodeJS.ErrnoException).code, "EBUSY");
+			return true;
+		});
+	});
+
+	test("the primary error survives when the worktree and the scratch directory both resist removal", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { ".gitattributes": "*.txt filter=mangle\n" });
+		sandbox.write(join(clone, "note.txt"), "alpha\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = captured(await captureWorktreeSnapshot(clone, { blobs }));
+		writeFileSync(
+			sandbox.globalConfig,
+			`${(await import("node:fs")).readFileSync(sandbox.globalConfig, "utf8")}[filter "mangle"]\n\tsmudge = sed s/alpha/omega/\n`,
+		);
+		const into = sandbox.path("restored-target");
+		recorded.failRemovalOf = "restored-target";
+		recorded.failScratchRemoval = true;
+		await assert.rejects(
+			restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir: sandbox.path("host") }),
+			(error: unknown) => {
+				assert.ok(isWorkspaceRestoreError(error));
+				assert.equal(error.code, "tree-mismatch");
+				assert.match((error as { cleanupCause?: Error }).cleanupCause?.message ?? "", /^cannot remove scratch /);
+				return true;
+			},
+		);
+		for (const path of recorded.removals) {
+			if (existsSync(join(path, "empty-attributes"))) rmSync(path, { recursive: true, force: true });
+		}
 	});
 
 	test("a pre-existing empty target is left in place, empty and unregistered, after a failed restore", async () => {
@@ -300,5 +370,33 @@ describe("cleanup failures never replace the primary error", () => {
 		const store = join(storeDir, "repositories", readdirSync(join(storeDir, "repositories"))[0]!);
 		const listed = await sandbox.git(sandbox.root, "--git-dir", store, "worktree", "list", "--porcelain");
 		assert.doesNotMatch(listed, /existing-empty/);
+	});
+});
+
+describe("a full disk during a restore", () => {
+	test("each scratch file the restore writes reports an unwritable path naming it and the snapshot", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "feature.txt"), "feature\n");
+		await sandbox.commitAll(clone, "unpushed");
+		sandbox.write(join(clone, "edit.txt"), "edit\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = captured(await captureWorktreeSnapshot(clone, { blobs }));
+		assert.ok(snapshot.bundle);
+		for (const file of ["history.bundle", "delta-0.patch", "empty-attributes"]) {
+			recorded.failWriteOf = file;
+			const into = sandbox.path(`restored-${file}`);
+			await assert.rejects(
+				restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir: sandbox.path(`host-${file}`) }),
+				(error: unknown) => {
+					assert.ok(isWorkspaceRestoreError(error), `${file}: ${String(error)}`);
+					assert.equal(error.code, "unwritable-path");
+					assert.equal(basename(error.target ?? ""), file);
+					assert.equal(error.snapshotId, snapshot.id);
+					assert.equal((error.cause as NodeJS.ErrnoException).code, "ENOSPC");
+					return true;
+				},
+			);
+			assert.equal(existsSync(into), false);
+		}
 	});
 });

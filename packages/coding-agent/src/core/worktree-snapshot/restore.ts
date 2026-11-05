@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getAgentDir } from "../../config.js";
@@ -6,6 +7,8 @@ import { locateCheckout, readRepositoryConfig, withScratchDirectory, writeWorkin
 import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
 import {
 	isWorkspaceGitError,
+	unreadablePathError,
+	unwritablePathError,
 	WorkspaceConfigError,
 	WorkspaceDriftError,
 	WorkspaceRestoreError,
@@ -89,7 +92,7 @@ async function checkTarget(target: string, snapshotId: string | null): Promise<v
 		empty = (await stat(target)).isDirectory() && (await readdir(target)).length === 0;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-		throw error;
+		throw unreadablePathError(target, error);
 	}
 	if (!empty) throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target, reason: "not-empty" });
 }
@@ -97,6 +100,15 @@ async function checkTarget(target: string, snapshotId: string | null): Promise<v
 async function hasObject(git: GitRunOptions, object: string): Promise<boolean> {
 	const { exitCode } = await runGit(["cat-file", "-e", object], { ...git, allowExitCodes: [1, 128] });
 	return exitCode === 0;
+}
+
+/** Runs a filesystem write of `target`, reporting a filesystem failure as `unwritable-path`. */
+async function writing<T>(target: string, snapshotId: string | null, write: () => Promise<T>): Promise<T> {
+	try {
+		return await write();
+	} catch (error) {
+		throw unwritablePathError(target, snapshotId, error);
+	}
 }
 
 const repositoryLocks = new Map<string, Promise<void>>();
@@ -119,10 +131,15 @@ async function withRepositoryLock<T>(store: string, action: () => Promise<T>): P
 	}
 }
 
-async function ensureObjectStore(storeDir: string, remotes: readonly string[], signal?: AbortSignal): Promise<string> {
+async function ensureObjectStore(
+	storeDir: string,
+	remotes: readonly string[],
+	snapshotId: string | null,
+	signal?: AbortSignal,
+): Promise<string> {
 	const repositories = join(storeDir, "repositories");
 	const store = join(repositories, `${sha256Hex(remotes.join("\n")).slice(0, 24)}.git`);
-	await mkdir(repositories, { recursive: true });
+	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
 	await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
 	return store;
 }
@@ -169,7 +186,7 @@ async function ensureHead(
 			const data = await loadBlob(blobs, snapshot.bundle.blob, { snapshotId: snapshot.id, role: "bundle" });
 			failure = (await fetchCommits(git, snapshot.remotes, bundlePrerequisites(data))) ?? failure;
 			const file = join(scratch, "history.bundle");
-			await writeFile(file, data);
+			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
 				await runGit(["fetch", "-q", "--no-tags", "--no-write-fetch-head", file, "HEAD"], git);
 			} catch (error) {
@@ -226,7 +243,7 @@ async function reconstructTree(
 		let applyFailure: Error | undefined;
 		if (patch) {
 			const file = join(scratch, `delta-${deltaIndex}.patch`);
-			await writeFile(file, patch);
+			await writing(file, snapshot.id, () => writeFile(file, patch));
 			try {
 				await runGit(
 					["apply", "--cached", "--binary", "--whitespace=nowarn", "--no-ignore-whitespace", "--no-3way", file],
@@ -272,21 +289,27 @@ async function materialize(
 	head: string,
 	tree: string,
 	scratch: string,
+	snapshotId: string | null,
 	signal?: AbortSignal,
 ): Promise<void> {
 	await runGit(["worktree", "add", "-q", "--detach", "--no-checkout", target, head], git);
 	const attributes = join(scratch, "empty-attributes");
-	await writeFile(attributes, "");
+	await writing(attributes, snapshotId, () => writeFile(attributes, ""));
 	const neutral: GitRunOptions = { cwd: target, signal, neutral: true, env: { GIT_LFS_SKIP_SMUDGE: "1" } };
 	await runGit(["-c", `core.attributesFile=${attributes}`, "read-tree", "--reset", "-u", tree], neutral);
 	await runGit(["read-tree", head], neutral);
 	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
 }
 
-async function removeWorktree(git: GitRunOptions, target: string, created: boolean): Promise<void> {
+async function removeWorktree(
+	git: GitRunOptions,
+	target: string,
+	created: boolean,
+	snapshotId: string | null,
+): Promise<void> {
 	await runGit(["worktree", "remove", "--force", target], { ...git, signal: undefined, allowExitCodes: [128] });
-	await rm(target, { recursive: true, force: true });
-	if (!created) await mkdir(target, { recursive: true });
+	await writing(target, snapshotId, () => rm(target, { recursive: true, force: true }));
+	if (!created) await writing(target, snapshotId, () => mkdir(target, { recursive: true }));
 	await runGit(["worktree", "prune"], { ...git, signal: undefined });
 }
 
@@ -319,12 +342,13 @@ export async function restoreWorktree(
 	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
+	const snapshotId = snapshot?.id ?? null;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const path = resolve(
 		options.into ??
 			join(storeDir, "worktrees", `${(snapshot?.id ?? target.tree).slice(0, 12)}-${randomUUID().slice(0, 8)}`),
 	);
-	await checkTarget(path, snapshot?.id ?? null);
+	await checkTarget(path, snapshotId);
 	const patches = snapshot
 		? await Promise.all(
 				snapshot.chain.map((link, deltaIndex) =>
@@ -340,7 +364,7 @@ export async function restoreWorktree(
 		options.onWarning?.(warning);
 	};
 	return withScratchDirectory(async (scratch) => {
-		const store = await ensureObjectStore(storeDir, target.remotes, signal);
+		const store = await ensureObjectStore(storeDir, target.remotes, snapshotId, signal);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await withRepositoryLock(store, async () => {
 			await ensureHead(
@@ -360,11 +384,11 @@ export async function restoreWorktree(
 				await reconstructTree(git, snapshot, patches, scratch);
 			}
 		});
-		const created = !(await exists(path));
+		const created = (await statIfPresent(path)) === undefined;
 		let failure: Error | undefined;
 		try {
-			await mkdir(path, { recursive: true });
-			await materialize(git, path, target.head, target.tree, scratch, signal);
+			await writing(path, snapshotId, () => mkdir(path, { recursive: true }));
+			await materialize(git, path, target.head, target.tree, scratch, snapshotId, signal);
 			if (snapshot?.filters?.drivers.includes("lfs")) {
 				const worktree: GitRunOptions = { cwd: path, signal };
 				try {
@@ -382,7 +406,7 @@ export async function restoreWorktree(
 			);
 			if (checkout.head !== target.head || actual.tree !== target.tree) {
 				throw new WorkspaceRestoreError("tree-mismatch", {
-					snapshotId: snapshot?.id ?? null,
+					snapshotId,
 					target: path,
 					expectedTree: target.tree,
 					actualTree: actual.tree,
@@ -391,7 +415,7 @@ export async function restoreWorktree(
 		} catch (error) {
 			failure = error as Error;
 			try {
-				await removeWorktree(git, path, created);
+				await removeWorktree(git, path, created, snapshotId);
 			} catch (cleanupCause) {
 				Object.defineProperty(failure, "cleanupCause", { value: cleanupCause, configurable: true });
 			}
@@ -407,44 +431,46 @@ export async function restoreWorktree(
 	});
 }
 
-async function exists(path: string): Promise<boolean> {
+/** The entry at `path`, or undefined when there is none. */
+async function statIfPresent(path: string): Promise<Stats | undefined> {
 	try {
-		await stat(path);
-		return true;
+		return await stat(path);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-		throw error;
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw unreadablePathError(path, error);
 	}
 }
 
 /**
  * Removes a worktree that a restore created, for callers that roll back a multi-checkout restore; a path that no
- * longer exists is already removed. Refuses, with
- * `unsafe-target` (reason `not-restored`), any directory that is not a worktree of a shared store under `storeDir`,
- * so it can never touch a user's checkout.
+ * longer exists is already removed. Refuses, with `unsafe-target` (reason `not-restored`), any path that is not a
+ * worktree of a shared store under `storeDir`, including a file, so it can never touch a user's checkout.
  */
 export async function removeRestoredWorktree(
 	path: string,
 	options: { readonly storeDir?: string; readonly signal?: AbortSignal } = {},
 ): Promise<void> {
 	const target = resolve(path);
-	if (!(await exists(target))) return;
+	const entry = await statIfPresent(target);
+	if (entry === undefined) return;
 	const repositories = join(resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir()), "repositories");
-	const common = await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-		cwd: target,
-		signal: options.signal,
-		allowExitCodes: [128],
-	});
-	const store = common.stdout.toString("utf8").trim();
+	const common = entry.isDirectory()
+		? await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+				cwd: target,
+				signal: options.signal,
+				allowExitCodes: [128],
+			})
+		: undefined;
+	const store = common?.stdout.toString("utf8").trim() ?? "";
 	if (
-		common.exitCode !== 0 ||
+		common?.exitCode !== 0 ||
 		!isWithin(repositories, store) ||
 		relative(store, target) === "" ||
 		isWithin(store, target)
 	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
 	}
-	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target, true);
+	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target, true, null);
 }
 
 function isWithin(parent: string, child: string): boolean {

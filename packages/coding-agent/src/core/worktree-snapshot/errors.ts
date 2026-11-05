@@ -10,7 +10,11 @@ export type WorkspaceErrorFields = { readonly [key: string]: WorkspaceErrorField
 export type WorkspaceConfigErrorCode = "invalid-setting";
 export type GitUnavailableErrorCode = "not-installed" | "unsupported-platform" | "offline" | "checksum-mismatch";
 export type WorkspaceGitErrorCode = "git-failed";
-export type WorkspaceSnapshotErrorCode = "not-a-repository" | "unborn-head" | "blob-store-unsupported";
+export type WorkspaceSnapshotErrorCode =
+	| "not-a-repository"
+	| "unborn-head"
+	| "blob-store-unsupported"
+	| "unreadable-path";
 export type WorkspaceRestoreErrorCode =
 	| "snapshot-not-found"
 	| "blob-missing"
@@ -18,7 +22,8 @@ export type WorkspaceRestoreErrorCode =
 	| "commits-unavailable"
 	| "delta-failed"
 	| "tree-mismatch"
-	| "unsafe-target";
+	| "unsafe-target"
+	| "unwritable-path";
 export type WorkspaceDriftErrorCode = "tree-drift";
 export type WorkspaceErrorCode =
 	| WorkspaceConfigErrorCode
@@ -158,6 +163,10 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 		`Worktree snapshot unavailable: ${subject} storage cannot hold snapshot blobs`,
 		"Use local SQLite, JSONL, memory, or a database-backed storage adapter to record snapshots.",
 	],
+	"unreadable-path": (subject) => [
+		`Worktree snapshot unavailable: ${subject} cannot be read`,
+		`Make ${subject} readable by the current user (for example \`chmod u+rwX\` on it and its parent directories), replace a symbolic link that loops or points nowhere, or list the path in .gitignore or .atomic/snapshot-ignore, then retry.`,
+	],
 };
 
 /** A snapshot cannot be recorded for a directory or a store. Capture reports it once as the degrade reason. */
@@ -170,6 +179,15 @@ export class WorkspaceSnapshotError extends WorkspaceError {
 		const [summary, hint] = SNAPSHOT_SUMMARIES[code](subject);
 		super(code, summary, hint, { subject }, cause);
 	}
+}
+
+/**
+ * `error` as an `unreadable-path` snapshot error when it is a filesystem failure on `path`, so it carries a code and
+ * a hint and degrades capture instead of failing the caller; any other error is returned unchanged.
+ */
+export function unreadablePathError(path: string, error: unknown): unknown {
+	if (!(error instanceof Error) || typeof (error as NodeJS.ErrnoException).syscall !== "string") return error;
+	return new WorkspaceSnapshotError("unreadable-path", path, error);
 }
 
 export interface WorkspaceRestoreErrorFields {
@@ -249,6 +267,11 @@ function restoreMessage(
 						`Cannot restore into ${fields.target}: it is not an empty directory`,
 						"Choose a new or empty directory, or omit `into` to restore under Atomic home.",
 					];
+		case "unwritable-path":
+			return [
+				`Cannot write ${fields.target}${fields.snapshotId === null ? "" : ` while restoring snapshot ${fields.snapshotId}`}`,
+				`Free space on the volume that holds ${fields.target}, or make it and its parent directory writable by the current user (for example \`chmod u+rwX\`), then retry.`,
+			];
 	}
 }
 
@@ -275,6 +298,15 @@ export class WorkspaceRestoreError extends WorkspaceError implements WorkspaceRe
 		const [summary, hint] = restoreMessage(code, fields);
 		super(code, summary, hint, compactFields(fields), cause);
 	}
+}
+
+/**
+ * `error` as an `unwritable-path` restore error when it is a filesystem failure writing `target`, so it carries a code
+ * and a hint; any other error is returned unchanged.
+ */
+export function unwritablePathError(target: string, snapshotId: string | null, error: unknown): unknown {
+	if (!(error instanceof Error) || typeof (error as NodeJS.ErrnoException).syscall !== "string") return error;
+	return new WorkspaceRestoreError("unwritable-path", { snapshotId, target }, error);
 }
 
 export interface WorkspaceDriftErrorFields {
@@ -316,7 +348,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 	WorkspaceError: [],
 	WorkspaceConfigError: ["invalid-setting"],
 	WorkspaceGitError: ["git-failed"],
-	WorkspaceSnapshotError: ["not-a-repository", "unborn-head", "blob-store-unsupported"],
+	WorkspaceSnapshotError: ["not-a-repository", "unborn-head", "blob-store-unsupported", "unreadable-path"],
 	WorkspaceRestoreError: [
 		"snapshot-not-found",
 		"blob-missing",
@@ -325,6 +357,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 		"delta-failed",
 		"tree-mismatch",
 		"unsafe-target",
+		"unwritable-path",
 	],
 	WorkspaceDriftError: ["tree-drift"],
 };

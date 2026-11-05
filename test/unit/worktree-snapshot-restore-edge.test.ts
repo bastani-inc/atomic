@@ -70,6 +70,7 @@ describe("restore input validation", () => {
 		});
 		const good = { remotes: ["r"], head: "h", tree: "t", envHash: "e" };
 		const bad: unknown[] = [
+			undefined,
 			null,
 			"binding",
 			5,
