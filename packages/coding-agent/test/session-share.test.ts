@@ -22,7 +22,7 @@ type ShareProcess = EventEmitter & {
 };
 
 type ShareContext = {
-	session: { exportToJsonl: (path: string) => Promise<string> };
+	session: { exportToJsonl: (path: string, options?: object) => Promise<string> };
 	ui: { setFocus: () => void; requestRender: () => void };
 	editorContainer: Container;
 	editor: Container;
@@ -48,9 +48,11 @@ describe("InteractiveMode /share", () => {
 		});
 
 		const errors: string[] = [];
+		const exportOptions: Array<object | undefined> = [];
 		const context = (name: "A" | "B"): ShareContext => ({
 			session: {
-				exportToJsonl: async (path) => {
+				exportToJsonl: async (path, options) => {
+					exportOptions.push(options);
 					writeFileSync(path, name);
 					return path;
 				},
@@ -79,5 +81,9 @@ describe("InteractiveMode /share", () => {
 		}
 		await Promise.all([shareA, shareB]);
 		assert.deepEqual(errors, []);
+		assert.deepEqual(exportOptions, [
+			{ includeShareContext: true, snapshotContent: false },
+			{ includeShareContext: true, snapshotContent: false },
+		]);
 	});
 });

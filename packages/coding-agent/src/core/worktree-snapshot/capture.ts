@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
@@ -141,8 +141,13 @@ export async function writeWorkingTree(
 		neutral: options.neutral,
 	};
 	const userIndex = await gitText(["rev-parse", "--git-path", "index"], { cwd: root, signal: options.signal });
+	const userIndexPath = isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
 	try {
-		await copyFile(isAbsolute(userIndex) ? userIndex : resolve(root, userIndex), index);
+		await copyFile(userIndexPath, index);
+		// Git trusts a cached entry only when it is older than the index file. The copy keeps the original's time, so an
+		// entry written in the same instant as a later edit is still read from the file, not taken as unchanged.
+		const { atime, mtimeMs } = await stat(userIndexPath);
+		await utimes(index, atime, new Date(mtimeMs));
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
@@ -181,7 +186,7 @@ export async function writeWorkingTree(
 		admitted.push(path);
 	}
 	if (admitted.length > 0) {
-		await runGit(["update-index", "-z", "--add", "--remove", "--stdin"], {
+		await runGit(["update-index", "-z", "--add", "--remove", "--replace", "--stdin"], {
 			...git,
 			input: `${admitted.join("\0")}\0`,
 		});
@@ -225,7 +230,7 @@ export async function readRepositoryConfig(root: string, signal?: AbortSignal): 
 	return { remotes, autocrlf, eol };
 }
 
-const FILTER_ATTRIBUTE = /(?:^|\s)filter=(\S+)/gm;
+const FILTER_ATTRIBUTE = /^(?!\s*#).*?(?:^|\s)filter=(\S+)/gm;
 
 async function readFilters(
 	root: string,

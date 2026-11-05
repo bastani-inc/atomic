@@ -68,7 +68,7 @@ describe("WorkspaceError rendering", () => {
 				exitCode: 128,
 				detail: "fatal: repository not found",
 			}).message,
-			"Git fetch failed in /store: fatal: repository not found (git-failed). Check that the repository is readable and not locked by another Git process, then retry.",
+			"Git fetch failed in /store: fatal: repository not found (git-failed). Check that the repository is readable, its disk has free space, and no other Git process holds its lock, then retry.",
 		);
 		assert.equal(
 			new WorkspaceSnapshotError("not-a-repository", "/tmp/x").message,
