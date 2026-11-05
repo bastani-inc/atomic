@@ -1,7 +1,6 @@
 import type { JsonValue } from "@bastani/pi-ai";
 import { formatAttachments, parseStructuredSupervisorReply, validateSupervisorInterviewRequest } from "./intercom-utils.js";
-import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
-import { intercomRecoveryStoppedText } from "./tool-retry.js";
+import { ASK_REPLY_TIMEOUT_MS, intercomRecoveryStoppedText } from "./retry-policy.js";
 import type { Message } from "./types.js";
 
 /** Subagents → Intercom: turn a released asker's saved reply or deadline into the result its inline call returns. */

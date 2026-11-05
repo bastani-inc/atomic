@@ -1,17 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { RETRY_IDENTITY_MAX_REUSES, RETRY_IDENTITY_TTL_MS } from "./retry-identity.js";
-import { RECONNECT_DELAYS_MS } from "./retry-policy.js";
+import { intercomRecoveryStoppedText, RECONNECT_DELAYS_MS } from "./retry-policy.js";
 
 /** Private attempt results. Retry identity never crosses the registered tool boundary. */
 export interface IntercomAttemptResult {
 	content: Array<{ type: "text"; text: string }>;
 	isError: boolean;
 	details: Record<string, unknown>;
-}
-
-/** Wording shared with a released question that reaches the same timeout. */
-export function intercomRecoveryStoppedText(reason: string, retries: number): string {
-	return `${reason}\nIntercom recovery stopped after ${retries} automatic retries. Delivery may already have occurred. Do not repeat this operation automatically; check with the recipient before intentionally sending a new message.`;
 }
 
 /** One invocation owns all retries; separate invocations always start fresh. */
