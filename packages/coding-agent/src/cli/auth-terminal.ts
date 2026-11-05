@@ -17,7 +17,10 @@ export interface LoginTerminal extends AuthOutput {
 	openUrl(url: string): void;
 }
 
-/** Terminal I/O on stdin and stdout. `onInterrupt` runs on Ctrl+C or EOF in a question, or Ctrl+C in a secret. */
+/**
+ * Terminal I/O on stdin and stdout. `onInterrupt` runs on Ctrl+C or EOF in a question, and on Ctrl+C, Ctrl+D or EOF
+ * in a secret.
+ */
 export function createProcessLoginTerminal(onInterrupt: () => void): LoginTerminal {
 	return {
 		interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
@@ -39,6 +42,7 @@ function readSecret(message: string, signal: AbortSignal, onInterrupt: () => voi
 		let value = "";
 		const finish = () => {
 			stdin.off("data", onData);
+			stdin.off("end", onEnd);
 			signal.removeEventListener("abort", onAbort);
 			stdin.setRawMode(false);
 			stdin.pause();
@@ -48,6 +52,8 @@ function readSecret(message: string, signal: AbortSignal, onInterrupt: () => voi
 			finish();
 			reject(signal.reason);
 		};
+		// Raw mode turns Ctrl+D into a character, so only a closed stdin ends the stream.
+		const onEnd = () => onInterrupt();
 		const onData = (data: Buffer) => {
 			const chunk = data.toString("utf8");
 			// Ignore escape sequences such as arrow keys.
@@ -58,7 +64,7 @@ function readSecret(message: string, signal: AbortSignal, onInterrupt: () => voi
 					resolve(value);
 					return;
 				}
-				if (char === "\u0003") {
+				if (char === "\u0003" || char === "\u0004") {
 					onInterrupt();
 					return;
 				}
@@ -73,6 +79,7 @@ function readSecret(message: string, signal: AbortSignal, onInterrupt: () => voi
 		stdin.setRawMode(true);
 		stdin.resume();
 		stdin.on("data", onData);
+		stdin.once("end", onEnd);
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
 }

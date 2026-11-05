@@ -181,6 +181,39 @@ describe("auth terminal secrets", () => {
 		assert.deepEqual(written(stdout), ["API key: ", "\n"]);
 	});
 
+	test("Ctrl+D interrupts the login and rejects with the abort reason", async () => {
+		const { input, stdout, controller, interrupt, terminal } = setup();
+		const secret = terminal.secret("API key: ", controller.signal);
+		input.write("sk-\u0004ignored\n");
+		await assert.rejects(secret, (error) => error === controller.signal.reason);
+		assert.equal(interrupt.mock.calls.length, 1);
+		assert.deepEqual(input.setRawMode.mock.calls, [[true], [false]]);
+		assert.equal(input.isPaused(), true);
+		assert.equal(input.listenerCount("data"), 0);
+		assert.deepEqual(written(stdout), ["API key: ", "\n"]);
+	});
+
+	test("rejects and cancels the login when stdin closes before the secret is entered", async () => {
+		const { input, stdout, controller, interrupt, terminal } = setup();
+		const secret = terminal.secret("API key: ", controller.signal);
+		input.end("sk-");
+		await assert.rejects(secret, (error) => error === controller.signal.reason);
+		assert.equal(interrupt.mock.calls.length, 1);
+		assert.deepEqual(input.setRawMode.mock.calls, [[true], [false]]);
+		assert.equal(input.listenerCount("data"), 0);
+		assert.deepEqual(written(stdout), ["API key: ", "\n"]);
+	});
+
+	test("keeps a secret delivered immediately before EOF", async () => {
+		const { input, controller, interrupt, terminal } = setup();
+		const secret = terminal.secret("API key: ", controller.signal);
+		input.end("sk-test\n");
+		assert.equal(await secret, "sk-test");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(interrupt.mock.calls.length, 0);
+		assert.equal(controller.signal.aborted, false);
+	});
+
 	test("cancelling the prompt rejects with its reason without interrupting the login", async () => {
 		const { input, controller, interrupt, terminal } = setup();
 		const prompt = new AbortController();
