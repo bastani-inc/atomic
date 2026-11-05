@@ -160,7 +160,7 @@ InteractiveModeBase.prototype.setCustomEditorComponent = function (
 	this.editorComponentFactory = factory;
 
 	// Save text from current editor before switching
-	const currentText = this.editor.getText();
+	const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
 
 	// An open extension dialog keeps the editor slot; the new editor is shown when the last dialog closes.
 	const dialogOpen = this.extensionDialogs.length > 0;

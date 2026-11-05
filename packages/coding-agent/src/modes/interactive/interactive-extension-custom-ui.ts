@@ -69,7 +69,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		blocked?: BlockedStatus;
 	},
 ): Promise<T> {
-	const savedText = this.editor.getText();
+	const savedText = this.editor.getExpandedText?.() ?? this.editor.getText();
 	const isOverlay = options?.overlay ?? false;
 
 	const restoreEditor = (mount: ExtensionDialogComponent, focusEditor: boolean) => {

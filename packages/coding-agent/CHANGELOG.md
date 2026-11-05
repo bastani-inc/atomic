@@ -49,6 +49,7 @@
 - Truncated grep match lines, codemode output, compaction summaries of tool results, and MCP stderr tails and server summaries no longer cut an emoji or other non-BMP character in half, which left an invalid lone surrogate in the text (upstream [#11757](https://github.com/earendil-works/pi/pull/11757))
 - Extension selectors with more than 10 options show a window of 10 around the selection with a `(selected/total)` indicator, instead of rendering every option and pushing the selection off screen (upstream [#11072](https://github.com/earendil-works/pi/pull/11072))
 - The session tree's "Type to search" line shows a cursor while the tree has focus, like the resume picker's search; the cursor moves to the label input while you edit a label (upstream [#9157](https://github.com/earendil-works/pi/pull/9157))
+- A collapsed paste (`[paste #1 +12 lines]`) in the editor keeps its content when an extension replaces the editor, when an inline extension UI closes, and when queued messages are restored above the draft; before, the draft came back as the bare marker (upstream [#10146](https://github.com/earendil-works/pi/pull/10146))
 
 ## [0.9.71] - 2026-11-03
 
