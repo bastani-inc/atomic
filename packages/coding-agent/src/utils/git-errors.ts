@@ -152,17 +152,21 @@ export class GitProvisionError extends Error {
 	}
 
 	toJSON(): SerializedGitProvisionError {
-		const cause = serializeCause(this.cause, 1);
-		return {
-			name: this.name,
-			code: this.code,
-			message: this.message,
-			hint: this.hint,
-			retryable: this.retryable,
-			fields: this.fields,
-			...(cause === undefined ? {} : { cause }),
-		};
+		return serializeGitProvisionError(this, 1);
 	}
+}
+
+function serializeGitProvisionError(error: GitProvisionError, depth: number): SerializedGitProvisionError {
+	const cause = serializeCause(error.cause, depth);
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		retryable: error.retryable,
+		fields: error.fields,
+		...(cause === undefined ? {} : { cause }),
+	};
 }
 
 function systemGitClause(systemGit: GitRejectedSystemGit | undefined): string {
@@ -368,11 +372,15 @@ export function attachGitCleanupFailure(primary: unknown, cleanupFailure: unknow
 	});
 }
 
-function serializeCause(cause: unknown, depth: number): SerializedGitProvisionError | SerializedErrorCause | undefined {
-	if (depth >= MAX_CAUSE_DEPTH || typeof cause !== "object" || cause === null) return undefined;
-	if (cause instanceof GitProvisionError) return cause.toJSON();
+function serializeCause(
+	cause: unknown,
+	parentDepth: number,
+): SerializedGitProvisionError | SerializedErrorCause | undefined {
+	const depth = parentDepth + 1;
+	if (depth > MAX_CAUSE_DEPTH || typeof cause !== "object" || cause === null) return undefined;
+	if (cause instanceof GitProvisionError) return serializeGitProvisionError(cause, depth);
 	const candidate = cause as ErrorLike & { readonly cause?: unknown };
-	const nested = serializeCause(candidate.cause, depth + 1);
+	const nested = serializeCause(candidate.cause, depth);
 	return {
 		name: typeof candidate.name === "string" ? candidate.name : "Error",
 		message: typeof candidate.message === "string" ? candidate.message : String(cause),

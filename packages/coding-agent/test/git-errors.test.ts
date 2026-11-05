@@ -16,7 +16,7 @@ import {
 	isRetryableGitProvisionError,
 	rehydrateGitProvisionError,
 	type SerializedGitProvisionError,
-} from "../src/utils/git-errors.ts";
+} from "../src/utils/git-errors.js";
 
 const HOST = { platform: "linux", arch: "x64" } as const;
 
@@ -329,6 +329,32 @@ describe("git provisioning errors (#4322)", () => {
 			{ cause: { reason: 1 } },
 		);
 		assert.deepEqual(opaque.toJSON().cause, { name: "Error", message: "[object Object]" });
+	});
+
+	it("bounds serialized cause chains through nested git errors and cycles", () => {
+		const unavailable = (cause?: Error) =>
+			new GitUnavailableError(
+				{ ...HOST, code: "not-installed", installDir: "/d" },
+				cause === undefined ? undefined : { cause },
+			);
+		let typed: GitUnavailableError = unavailable();
+		for (let depth = 0; depth < 20; depth++) typed = unavailable(typed);
+		let levels = 0;
+		for (let current = typed.toJSON().cause; current !== undefined; current = current.cause) {
+			assert.equal(current.name, "GitUnavailableError");
+			levels++;
+		}
+		assert.equal(levels, 7);
+
+		const first = new Error("first");
+		const looped = unavailable(first);
+		Object.defineProperty(first, "cause", { value: unavailable(looped) });
+		Object.defineProperty(looped, "cause", { value: first });
+		const wire = unavailable(looped).toJSON();
+		levels = 0;
+		for (let current = wire.cause; current !== undefined; current = current.cause) levels++;
+		assert.equal(levels, 7);
+		assert.ok(isGitUnavailableError(rehydrateGitProvisionError(wire)));
 	});
 });
 
