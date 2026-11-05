@@ -836,7 +836,16 @@ describe("AgentSessionRuntime.rehydrate details (#4326)", () => {
 		await other.appendMessage({ role: "user", content: "x", timestamp: 1 });
 		const rehydrating = host.runtime.rehydrate(other.getSessionId());
 		const disposing = host.runtime.dispose();
-		await assert.rejects(rehydrating, (error: Error & { code?: string }) => error.code === "SessionClosed");
+		await assert.rejects(rehydrating, (error: Error & { code?: string }) => {
+			assert.equal(error.code, "SessionClosed");
+			assert.equal(error.message, "Session is closed");
+			assert.equal(
+				Object.hasOwn(error, "cleanupCause"),
+				false,
+				"the new session closed cleanly, so no cleanup failure",
+			);
+			return true;
+		});
 		await disposing;
 		assert.equal(host.runtime.rehydratedSessionCount, 0);
 	});
@@ -918,13 +927,13 @@ function nextSettled(session: AgentSession): Promise<void> {
 	});
 }
 
-async function backgroundTask(session: AgentSession) {
+async function backgroundTask(session: AgentSession, operation = "background-work") {
 	const host = session.getAgentTaskHost();
 	let dispatch!: () => Promise<void>;
 	let finish!: (result: TaskResult) => void;
 	const started = await host.startAgentTask(
 		{ kind: "agent", agent: "fixture", task: "background work" },
-		"background-work" as OperationId,
+		operation as OperationId,
 		() => ({
 			result: new Promise<TaskResult>((resolve) => {
 				finish = resolve;
@@ -1078,5 +1087,56 @@ describe("a session whose history could not be reopened is not released (#4326)"
 		});
 		assert.match(error.hint, /MemorySessionStore/);
 		assert.ok(!error.hint.includes(TEAM_JOIN_COMMAND));
+	});
+});
+
+describe("the liveness check of background tasks (#4326)", () => {
+	test("a settled task does not hide a running one: release stays refused until the last task settles", async () => {
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("noted"), fauxAssistantMessage("noted again")]);
+		const done = await backgroundTask(h.session, "done-work");
+		const running = await backgroundTask(h.session, "running-work");
+		const firstHandled = nextSettled(h.session);
+		const finishing = done.start();
+		await done.finish();
+		await finishing;
+		await firstHandled;
+		const stillRunning = running.start();
+		await assert.rejects(h.session.release(), (error: AgentRehydrateError) => {
+			assert.equal(error.code, "session-busy");
+			assert.deepEqual(error.fields, { sessionId: h.session.sessionId, activity: "background-tasks" });
+			return true;
+		});
+		const lastHandled = nextSettled(h.session);
+		await running.finish();
+		await stillRunning;
+		await lastHandled;
+		assert.equal((await h.session.release()).sessionId, h.session.sessionId);
+	});
+
+	test("every check of the tasks closes the watch it opened", async () => {
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("noted")]);
+		const host = h.session.getAgentTaskHost();
+		const original = host.watchOwnerTasks.bind(host);
+		let opened = 0;
+		let closed = 0;
+		Object.defineProperty(host, "watchOwnerTasks", {
+			configurable: true,
+			value: (...args: Parameters<typeof original>) => {
+				const watched = original(...args);
+				if (!watched.ok) return watched;
+				opened += 1;
+				const dispose = watched.value.dispose.bind(watched.value);
+				watched.value.dispose = () => {
+					closed += 1;
+					dispose();
+				};
+				return watched;
+			},
+		});
+		await h.session.release();
+		assert.ok(opened > 0, "release looked at the tasks");
+		assert.equal(closed, opened);
 	});
 });
