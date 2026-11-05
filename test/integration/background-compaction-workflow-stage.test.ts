@@ -78,8 +78,11 @@ async function stageHarness(
 	return harness;
 }
 
-/** Run one stage on `harness`'s session and record each distinct compaction state its status showed. */
-async function runStage(harness: Harness): Promise<{ store: Store; observed: string[]; text: string | undefined }> {
+/** Run one stage on `session` and record each distinct compaction state its status showed. */
+async function runStage(
+	harness: Harness,
+	session: object = harness.session,
+): Promise<{ store: Store; observed: string[]; text: string | undefined }> {
 	const store = createStore();
 	const observed: string[] = [];
 	const unsubscribe = store.subscribeInvalidation(() => {
@@ -109,7 +112,7 @@ async function runStage(harness: Harness): Promise<{ store: Store; observed: str
 				adapters: {
 					agentSession: {
 						async create() {
-							return harness.session as unknown as StageSessionRuntime;
+							return session as unknown as StageSessionRuntime;
 						},
 					},
 				},
@@ -207,4 +210,19 @@ test("a stage whose session already holds a saved result shows it as soon as the
 	assert.equal(text, "stage done");
 	assert.deepEqual(observed, ["ready", "idle"], "the saved result is reported from the start, then applied");
 	assert.deepEqual(finalStageCompaction(store), { stored: { state: "idle" }, summarized: { state: "idle" } });
+});
+
+test("a stage on a custom session runtime without background compaction shows no compaction state (#4330)", async () => {
+	const harness = await stageHarness([{ text: "stage done", usage: { input: 400, output: 10 } }], {}, () => {});
+	const withoutCompaction = new Proxy(harness.session, {
+		get(target, property) {
+			if (property === "compaction") return undefined;
+			const value = Reflect.get(target, property, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	const { store, observed, text } = await runStage(harness, withoutCompaction);
+	assert.equal(text, "stage done");
+	assert.deepEqual(observed, []);
+	assert.deepEqual(finalStageCompaction(store), { stored: undefined, summarized: undefined });
 });

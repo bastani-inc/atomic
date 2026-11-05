@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { BackgroundCompactionCommitError } from "../../packages/coding-agent/src/core/compaction/background-compaction-errors.js";
 import { summarizeStage } from "../../packages/workflows/src/extension/workflow-stage-results.js";
-import { stageSessionCompaction } from "../../packages/workflows/src/runs/foreground/stage-background-compaction.js";
+import {
+	recordStageSessionCompaction,
+	stageSessionCompaction,
+} from "../../packages/workflows/src/runs/foreground/stage-background-compaction.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
@@ -100,4 +103,19 @@ test("a stage session reports its current compaction state for stage status, whe
 	assert.equal(reported?.error?.code, "commit-failed");
 	assert.deepEqual(reported?.error?.fields, { upToEntryId: "e4", resultEntryId: "r4", attempt: 2 });
 	assert.equal(JSON.parse(JSON.stringify(reported)).error.cause.message, "disk full");
+});
+
+test("only a stage session with background compaction records a state (#4330)", () => {
+	const recorded: unknown[][] = [];
+	const store = {
+		recordStageCompaction: (...args: unknown[]) => {
+			recorded.push(args);
+			return true;
+		},
+	};
+	recordStageSessionCompaction(store, "run-1", "s1", { prompt() {} });
+	recordStageSessionCompaction(store, "run-1", "s1", undefined);
+	assert.deepEqual(recorded, []);
+	recordStageSessionCompaction(store, "run-1", "s1", { compaction: { state: "idle" } });
+	assert.deepEqual(recorded, [["run-1", "s1", { state: "idle" }]]);
 });

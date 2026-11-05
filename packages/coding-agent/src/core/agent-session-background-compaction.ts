@@ -129,7 +129,7 @@ function configuredBackgroundSettings(
 }
 
 function sameConfigError(left: BackgroundCompactionError | undefined, right: BackgroundCompactionConfigError): boolean {
-	return isBackgroundCompactionConfigError(left) && left.field === right.field && left.reason === right.reason;
+	return isBackgroundCompactionConfigError(left) && left.message === right.message;
 }
 
 /**
@@ -176,11 +176,12 @@ export function backgroundCompactionState(session: AgentSession): BackgroundComp
 	}
 	const ready = selectReadyBackgroundCompaction(session.sessionManager.getBranch());
 	const failure = runtime.failure;
-	const commitFailed = isBackgroundCompactionCommitError(failure?.error);
-	if (ready && !(commitFailed && failure?.error.resultEntryId === ready.entry.id)) {
+	const error = failure?.error;
+	const failedResultEntryId = isBackgroundCompactionCommitError(error) ? error.resultEntryId : undefined;
+	if (ready && failedResultEntryId !== ready.entry.id) {
 		return { state: "ready", upToEntryId: ready.record.upToEntryId, startedAt: ready.record.startedAt };
 	}
-	if (failure && (ready || !commitFailed)) {
+	if (failure && (ready || failedResultEntryId === undefined)) {
 		return {
 			state: "failed",
 			...(failure.upToEntryId === undefined ? {} : { upToEntryId: failure.upToEntryId }),
@@ -484,7 +485,7 @@ async function commitReady(
 			coveredThroughEntryId: ready.record.upToEntryId,
 		});
 	} catch (error) {
-		if (!session._disposed && !sessionLifetime(session).aborted) recordCommitFailure(session, ready, error);
+		if (!session._disposed) recordCommitFailure(session, ready, error);
 		return undefined;
 	}
 	const result = await finishVerbatimCommit.call(session, planned, appended, "threshold");

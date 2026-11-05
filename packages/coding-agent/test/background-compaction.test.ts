@@ -1621,6 +1621,23 @@ describe("background compaction commit failures (#4330)", () => {
 		assert.equal(harness.session.compaction.state, "idle");
 	});
 
+	test("a newer saved result is reported ready even while an older one failed to apply", async () => {
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		const [older] = resultEntries(harness.sessionManager);
+		failCommits(harness);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(harness.session.compaction.state, "failed");
+		await harness.sessionManager.appendMessage({ role: "user", content: "later", timestamp: 9 });
+		const laterId = harness.sessionManager.getLeafId() as string;
+		await harness.sessionManager.appendCustomEntry(BACKGROUND_COMPACTION_RESULT_TYPE, {
+			...older.data,
+			upToEntryId: laterId,
+		});
+		const state = harness.session.compaction;
+		assert.equal(state.state, "ready");
+		assert.equal(state.upToEntryId, laterId);
+	});
+
 	test("a commit failure during disposal is not recorded", async () => {
 		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
 		harness.sessionManager.appendCompaction = async () => {
@@ -1681,13 +1698,33 @@ describe("background compaction settings changed on disk (#4330)", () => {
 		const first = harness.session.compaction.error;
 		assert.ok(first instanceof BackgroundCompactionConfigError);
 		assert.equal(first.reason, "not-a-number");
+		const sameField = await reloadWith(harness, { backgroundThresholdPercent: 150 });
+		assert.equal(sameField.length, 1);
+		const second = harness.session.compaction.error;
+		assert.ok(second instanceof BackgroundCompactionConfigError);
+		assert.equal(second.reason, "out-of-range", "a new reason for the same setting is reported");
 		const errors = await reloadWith(harness, { background: "yes" });
 		assert.equal(errors.length, 1);
+		assert.ok(errors[0] instanceof BackgroundCompactionConfigError);
+		assert.equal(errors[0].source, "settings");
 		assert.equal(harness.session.backgroundCompactionEnabled, false);
 		const state = harness.session.compaction;
 		assert.ok(state.error instanceof BackgroundCompactionConfigError);
 		assert.equal(state.error.field, "compaction.background");
 		assert.equal(state.error.reason, "not-a-boolean");
-		assert.deepEqual(backgroundStates(harness), ["failed", "failed"]);
+		assert.deepEqual(backgroundStates(harness), ["failed", "failed", "failed"]);
+	});
+
+	test("a settings write leaves a failure that is not about settings in place", async () => {
+		const planner = new Planner(true);
+		planner.failures = 1;
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		await harness.session.awaitBackgroundCompaction();
+		const states = backgroundStates(harness).length;
+		harness.session.setBackgroundCompactionThresholdPercent(60);
+		assert.equal(harness.session.compaction.error?.code, "planner-failed");
+		assert.equal(backgroundStates(harness).length, states, "nothing to report");
 	});
 });

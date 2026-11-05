@@ -315,12 +315,32 @@ export function backgroundCompactionRetryDelayMs(failures: number): number {
 	return Math.min(BACKGROUND_COMPACTION_RETRY_MAX_MS, BACKGROUND_COMPACTION_RETRY_BASE_MS * 2 ** (failures - 1));
 }
 
+function backgroundEnabledError(
+	value: unknown,
+	source: BackgroundCompactionConfigSource,
+): BackgroundCompactionConfigError | undefined {
+	if (value === undefined || typeof value === "boolean") return undefined;
+	return new BackgroundCompactionConfigError({ source, field: "compaction.background", reason: "not-a-boolean" });
+}
+
+function backgroundThresholdError(
+	value: unknown,
+	source: BackgroundCompactionConfigSource,
+): BackgroundCompactionConfigError | undefined {
+	if (value === undefined) return undefined;
+	const field = "compaction.backgroundThresholdPercent";
+	if (typeof value !== "number" || Number.isNaN(value))
+		return new BackgroundCompactionConfigError({ source, field, reason: "not-a-number" });
+	if (!(value > 0 && value < 100))
+		return new BackgroundCompactionConfigError({ source, field, reason: "out-of-range" });
+	return undefined;
+}
+
 /** `compaction.background`, or its default when unset; anything but a boolean is a typed config error. */
 export function resolveBackgroundCompactionEnabled(value: unknown, source: BackgroundCompactionConfigSource): boolean {
-	if (value === undefined) return SETTINGS_DEFAULTS.compaction.background;
-	if (typeof value !== "boolean")
-		throw new BackgroundCompactionConfigError({ source, field: "compaction.background", reason: "not-a-boolean" });
-	return value;
+	const error = backgroundEnabledError(value, source);
+	if (error) throw error;
+	return (value as boolean | undefined) ?? SETTINGS_DEFAULTS.compaction.background;
 }
 
 /** `compaction.backgroundThresholdPercent`, or 75 when unset; it must be a number above 0 and below 100. */
@@ -328,30 +348,17 @@ export function resolveBackgroundCompactionThresholdPercent(
 	value: unknown,
 	source: BackgroundCompactionConfigSource,
 ): number {
-	if (value === undefined) return DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT;
-	const field = "compaction.backgroundThresholdPercent";
-	if (typeof value !== "number" || Number.isNaN(value))
-		throw new BackgroundCompactionConfigError({ source, field, reason: "not-a-number" });
-	if (!(value > 0 && value < 100))
-		throw new BackgroundCompactionConfigError({ source, field, reason: "out-of-range" });
-	return value;
+	const error = backgroundThresholdError(value, source);
+	if (error) throw error;
+	return (value as number | undefined) ?? DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT;
 }
 
 /** The typed errors for the background compaction values a settings file holds. Absent values are valid. */
 export function backgroundCompactionSettingErrors(
 	compaction: { readonly background?: unknown; readonly backgroundThresholdPercent?: unknown } | undefined,
 ): BackgroundCompactionConfigError[] {
-	const errors: BackgroundCompactionConfigError[] = [];
-	for (const resolve of [
-		() => resolveBackgroundCompactionEnabled(compaction?.background, "settings"),
-		() => resolveBackgroundCompactionThresholdPercent(compaction?.backgroundThresholdPercent, "settings"),
-	]) {
-		try {
-			resolve();
-		} catch (error) {
-			if (!(error instanceof BackgroundCompactionConfigError)) throw error;
-			errors.push(error);
-		}
-	}
-	return errors;
+	return [
+		backgroundEnabledError(compaction?.background, "settings"),
+		backgroundThresholdError(compaction?.backgroundThresholdPercent, "settings"),
+	].filter((error) => error !== undefined);
 }
