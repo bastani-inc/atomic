@@ -26,6 +26,8 @@ import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./durable-hash.js";
 import {
 	ForkClaimReleaseError,
+	ForkCleanupError,
+	type ForkCleanupStep,
 	ForkConfigError,
 	type ForkConfigIssue,
 	type ForkConfigSource,
@@ -385,7 +387,9 @@ export async function* durableForkPoints(
 ): AsyncGenerator<ForkPoint, void, undefined> {
 	const journalBackend = forkJournal(backend);
 	const source = await readForkSource(journalBackend, runId, options.rootRunOf);
+	const cleanup = new ForkCleanup(source.runId);
 	let sessions: SourceSessions | undefined;
+	let primary: unknown;
 	try {
 		for (const record of forkPointRecords(source.checkpoints)) {
 			if (record.sessionId === undefined) {
@@ -405,8 +409,55 @@ export async function* durableForkPoints(
 				completedAt: record.completedAt,
 			};
 		}
+	} catch (error) {
+		primary = error;
+		throw error;
 	} finally {
-		if (sessions?.owned === true) await sessions.store.close();
+		const opened = sessions;
+		if (opened?.owned === true) await cleanup.step("close-source-sessions", undefined, () => opened.store.close());
+		cleanup.settle(primary);
+	}
+}
+
+/**
+ * The cleanup failures of one fork or fork-point listing. A step never throws; `settle` attaches every
+ * failure to a primary `ForkError`, or logs each once when the outcome is a success, a cancellation or
+ * another error, so cleanup never replaces the outcome.
+ */
+class ForkCleanup {
+	readonly #runId: string;
+	readonly #failures: ForkError[] = [];
+
+	constructor(runId: string) {
+		this.#runId = runId;
+	}
+
+	async step(step: ForkCleanupStep, forkRunId: string | undefined, action: () => Promise<void>): Promise<void> {
+		try {
+			await action();
+		} catch (error) {
+			this.#failures.push(new ForkCleanupError({ runId: this.#runId, step, forkRunId }, { cause: error as Error }));
+		}
+	}
+
+	async releaseClaim(claim: SourceClaim): Promise<void> {
+		try {
+			await claim.release();
+		} catch (error) {
+			this.#failures.push(
+				new ForkClaimReleaseError(
+					{ runId: this.#runId, claimExpiresInMs: FOREIGN_LIVE_WORKFLOW_WINDOW_MS },
+					{ cause: error as Error },
+				),
+			);
+		}
+	}
+
+	settle(primary: unknown): void {
+		for (const failure of this.#failures) {
+			if (primary instanceof ForkError) primary.withCleanupCause(failure);
+			else console.warn(failure);
+		}
 	}
 }
 
@@ -806,9 +857,11 @@ function checkpointKey(checkpoint: DurableCheckpoint): string {
 interface CopiedSessions {
 	readonly store: SessionStore;
 	readonly ids: readonly string[];
+	/** Whether the fork opened the store, and so closes it. */
+	readonly owned: boolean;
 }
 
-async function removeSessions(copied: CopiedSessions): Promise<Error | undefined> {
+async function removeSessions(copied: CopiedSessions): Promise<void> {
 	const failures: Error[] = [];
 	for (const id of copied.ids) {
 		try {
@@ -817,15 +870,25 @@ async function removeSessions(copied: CopiedSessions): Promise<Error | undefined
 			failures.push(error as Error);
 		}
 	}
-	if (failures.length === 0) return undefined;
-	return failures.length === 1 ? failures[0] : new AggregateError(failures, "Copied fork sessions were not removed");
+	if (failures.length === 1) throw failures[0];
+	if (failures.length > 1)
+		throw new AggregateError(failures, `${failures.length} copied fork sessions were not removed`);
+}
+
+function removeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {
+	return cleanup.step("remove-copied-sessions", forkRunId, () => removeSessions(copied));
+}
+
+async function closeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {
+	if (copied.owned) await cleanup.step("close-destination-sessions", forkRunId, () => copied.store.close());
 }
 
 /**
  * Fork a durable run. Every precondition is checked before the first write: the options, the source
  * run, the claim, the definition and inputs, the fork point and the readability of every session to
  * copy. Then sessions are copied and the fork's journal events are written in one transaction. On a
- * failure nothing is left behind; on an abort the signal's reason is thrown.
+ * failure before that write nothing is left behind; on an abort the signal's reason is thrown. A failed
+ * cleanup step never replaces the outcome: it is attached to a `ForkError`, or logged once.
  */
 export async function forkDurableRun<
 	TInputs extends WorkflowInputValues,
@@ -845,7 +908,8 @@ export async function forkDurableRun<
 	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf);
 	request.signal?.throwIfAborted();
 	const claim = await claimSource(journalBackend, preview.runId, request);
-	let primary: Error | undefined;
+	const cleanup = new ForkCleanup(preview.runId);
+	let primary: unknown;
 	try {
 		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf);
 		request = { ...forkRequest, cwd: forkDestinationCwd(forkRequest.cwd, source.handle) };
@@ -857,7 +921,7 @@ export async function forkDurableRun<
 			const sessionId = checkpoint.kind === "stage" ? stageSessionId(checkpoint) : undefined;
 			return sessionId === undefined ? [] : [{ sessionId, checkpoint: checkpoint as DurableStageCheckpoint }];
 		});
-		const copied = await copySessions(source, sessionCheckpoints, ids, request);
+		const copied = await copySessions(source, sessionCheckpoints, ids, request, cleanup);
 		try {
 			request.signal?.throwIfAborted();
 			const checkpoints = selection.checkpoints.map((checkpoint) => forkCheckpoint(checkpoint, ids));
@@ -908,13 +972,10 @@ export async function forkDurableRun<
 					{ cause: new Error(`Run ${ids.forkRunId} already exists`) },
 				);
 		} catch (error) {
-			if (copied !== undefined) {
-				const cleanup = await removeSessions(copied);
-				if (cleanup !== undefined && error instanceof ForkError) error.withCleanupCause(cleanup);
-			}
+			if (copied !== undefined) await removeCopies(copied, ids.forkRunId, cleanup);
 			throw error;
 		} finally {
-			if (copied !== undefined && request.sessionStore === undefined) await copied.store.close();
+			if (copied !== undefined) await closeCopies(copied, ids.forkRunId, cleanup);
 		}
 		await inJournal(journalBackend.journal, { runId: source.runId, phase: "hydrate", forkRunId: ids.forkRunId }, () =>
 			backend.hydrateWorkflow(ids.forkRunId),
@@ -930,34 +991,27 @@ export async function forkDurableRun<
 			cwd: request.cwd,
 		};
 	} catch (error) {
-		primary = error as Error;
+		primary = error;
 		throw error;
 	} finally {
-		try {
-			await claim.release();
-		} catch (cleanup) {
-			const released = new ForkClaimReleaseError(
-				{ runId: preview.runId, claimExpiresInMs: FOREIGN_LIVE_WORKFLOW_WINDOW_MS },
-				{ cause: cleanup as Error },
-			);
-			if (primary instanceof ForkError) primary.withCleanupCause(released);
-			else console.warn(released);
-		}
+		await cleanup.releaseClaim(claim);
+		cleanup.settle(primary);
 	}
 }
 
-async function copySessions(
+type SessionSnapshots = Map<
+	string,
+	{ readonly entries: readonly SessionEntry[]; readonly checkpoint: DurableStageCheckpoint }
+>;
+
+async function readSessions(
 	source: ForkSource,
 	sessions: readonly { readonly sessionId: string; readonly checkpoint: DurableStageCheckpoint }[],
-	ids: ForkIdentities,
 	request: ResolvedForkRequest,
-): Promise<CopiedSessions | undefined> {
-	if (sessions.length === 0) return undefined;
+	cleanup: ForkCleanup,
+): Promise<SessionSnapshots> {
 	const sourceStore = await sourceSessionStoreFor(source.handle, request, request.cwd);
-	const snapshots = new Map<
-		string,
-		{ readonly entries: readonly SessionEntry[]; readonly checkpoint: DurableStageCheckpoint }
-	>();
+	const snapshots: SessionSnapshots = new Map();
 	try {
 		for (const { sessionId, checkpoint } of sessions) {
 			const known = snapshots.get(sessionId);
@@ -968,14 +1022,27 @@ async function copySessions(
 			const snapshot = await loadSession(sourceStore, sessionId, { runId: source.runId });
 			snapshots.set(sessionId, { entries: snapshot.entries, checkpoint });
 		}
+		return snapshots;
 	} finally {
-		if (sourceStore.owned) await sourceStore.store.close();
+		if (sourceStore.owned) await cleanup.step("close-source-sessions", undefined, () => sourceStore.store.close());
 	}
+}
+
+async function copySessions(
+	source: ForkSource,
+	sessions: readonly { readonly sessionId: string; readonly checkpoint: DurableStageCheckpoint }[],
+	ids: ForkIdentities,
+	request: ResolvedForkRequest,
+	cleanup: ForkCleanup,
+): Promise<CopiedSessions | undefined> {
+	if (sessions.length === 0) return undefined;
+	const snapshots = await readSessions(source, sessions, request, cleanup);
 	request.signal?.throwIfAborted();
-	const destination = request.sessionStore ?? (await stageSessionStore({ cwd: request.cwd }));
+	const owned = request.sessionStore === undefined;
 	const created: string[] = [];
-	const copied = { store: destination, ids: created };
+	let destination: SessionStore | undefined;
 	try {
+		destination = request.sessionStore ?? (await stageSessionStore({ cwd: request.cwd }));
 		for (const [sessionId, { entries, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			const id = randomUUID();
@@ -999,15 +1066,17 @@ async function copySessions(
 			const file = (await SessionManager.open(destination, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
-		return copied;
+		return { store: destination, ids: created, owned };
 	} catch (error) {
-		const cleanup = await removeSessions(copied);
-		if (request.sessionStore === undefined) await destination.close();
+		if (destination !== undefined) {
+			const partial = { store: destination, ids: created, owned };
+			await removeCopies(partial, ids.forkRunId, cleanup);
+			await closeCopies(partial, ids.forkRunId, cleanup);
+		}
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;
-		const failure = new ForkCopyFailedError(
+		throw new ForkCopyFailedError(
 			{ runId: source.runId, forkRunId: ids.forkRunId, phase: "sessions" },
 			{ cause: error as Error },
 		);
-		throw cleanup === undefined ? failure : failure.withCleanupCause(cleanup);
 	}
 }

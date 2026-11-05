@@ -931,6 +931,12 @@ test("a nested run id is reported as a nested run of its root, never as storage 
 	const unknown = await refused({ durableBackend: backend, definition: def, store: createStore() });
 	assert.ok(unknown instanceof ForkSourceNotFoundError);
 	assert.equal(unknown.reason, "not-found", "a store that never saw the nested run cannot tell it apart");
+	assert.deepEqual(unknown.storage, { adapter: "memory", scope: "local-only" });
+	assert.equal(
+		unknown.hint,
+		"This node uses a local-only journal and is not joined to the shared storage; run atomic team join <url> --token-file <path> to fork runs started on other nodes, or pass a root run id from /workflow list (a nested workflow's run is forked through its root run).",
+		"the hint names both remedies: joining the shared storage and forking the root run",
+	);
 	const unlistable = await (async () => {
 		for await (const point of listForkPoints(childId, { durableBackend: backend, store: createStore() }))
 			return point;
@@ -979,6 +985,43 @@ test("a failed claim release is attached to the primary fork error, never replac
 	assert.deepEqual(
 		[error.cleanupCause.code, error.cleanupCause.runId, error.cleanupCause.cause],
 		["claim-release-failed", runId, releaseFailure],
+	);
+});
+
+test("a fork without fromStage replays every recorded stage, so replacement inputs reach only tool calls whose arguments use them (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const counters = { fixed: 0, tagged: 0, completions: [] as string[] };
+	const def = workflow({
+		name: "fork-whole-run",
+		description: "",
+		inputs: { tag: Type.String({ default: "v1" }) },
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("fixed", {}, async () => {
+				counters.fixed++;
+				return "fixed";
+			});
+			const tagged = await ctx.tool("tagged", { tag: ctx.inputs.tag }, async () => {
+				counters.tagged++;
+				return `tagged ${ctx.inputs.tag}`;
+			});
+			await ctx.stage("build").complete(`build ${tagged}`);
+			return {};
+		},
+	});
+	const runId = testRunId("fork-whole-run");
+	const options = { durableBackend: backend, cwd: process.cwd(), adapters: complete(counters.completions) };
+	const source = await run(def, { tag: "v1" }, { ...options, runId, store: createStore() });
+	assert.equal(source.status, "completed", source.error);
+	const forked = await forkRun(runId, { ...options, inputs: { tag: "v2" }, definition: def, store: createStore() });
+	const result = await forked.result;
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(forked.forkedFrom, { runId });
+	assert.deepEqual(backend.getWorkflow(forked.runId)?.inputs, { tag: "v2" });
+	assert.deepEqual(
+		[counters.fixed, counters.tagged, counters.completions],
+		[1, 2, ["build tagged v1"]],
+		"no stage ran again; only the tool whose arguments changed did",
 	);
 });
 

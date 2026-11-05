@@ -11,6 +11,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	ForkClaimReleaseError,
+	ForkCleanupError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkSessionNotFoundError,
@@ -660,7 +661,11 @@ test("a failed journal copy attaches a failed session cleanup to its error and n
 	vi.spyOn(sessions, "delete").mockRejectedValue(deleteFailure);
 	const dirty = await forkDurableRun(backend, options).catch((problem: Error) => problem);
 	assert.ok(dirty instanceof ForkCopyFailedError);
-	assert.equal(dirty.cleanupCause, deleteFailure);
+	assert.ok(dirty.cleanupCause instanceof ForkCleanupError);
+	assert.deepEqual(
+		[dirty.cleanupCause.step, dirty.cleanupCause.forkRunId, dirty.cleanupCause.cause],
+		["remove-copied-sessions", dirty.forkRunId, deleteFailure],
+	);
 	const sessionsFailed = vi.spyOn(sessions, "create").mockRejectedValue(failure);
 	const noCleanup = await forkDurableRun(backend, options).catch((problem: Error) => problem);
 	assert.ok(noCleanup instanceof ForkCopyFailedError);
@@ -673,7 +678,7 @@ test("a failed journal copy attaches a failed session cleanup to its error and n
 	sessionsFailed.mockRestore();
 });
 
-test("an abort after the sessions were copied rejects with its reason even when removing the copies fails (#4321)", async () => {
+test("an abort after the sessions were copied rejects with its reason and logs a failed removal of the copies once (#4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sessions = new MemorySessionStore();
 	const session = await SessionManager.create(sessions, "/source");
@@ -691,7 +696,9 @@ test("an abort after the sessions were copied rejects with its reason even when 
 		controller.abort(reason);
 		return result;
 	});
-	const removal = vi.spyOn(sessions, "delete").mockRejectedValue(new Error("delete failed"));
+	const deleteFailure = new Error("delete failed");
+	const removal = vi.spyOn(sessions, "delete").mockRejectedValue(deleteFailure);
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 	const error = await forkDurableRun(backend, {
 		...request(sourceId),
 		sessionStore: sessions,
@@ -701,6 +708,13 @@ test("an abort after the sessions were copied rejects with its reason even when 
 	assert.equal(error, reason);
 	assert.equal(removal.mock.calls.length, 1);
 	assert.equal((await backend.journal.listRuns()).length, 1);
+	assert.equal(warn.mock.calls.length, 1);
+	const [warned, ...extra] = warn.mock.calls[0]!;
+	assert.ok(warned instanceof ForkCleanupError);
+	assert.deepEqual(
+		[warned.step, warned.runId, warned.cause, extra],
+		["remove-copied-sessions", sourceId, deleteFailure, []],
+	);
 });
 
 test("a session copy that fails while the signal is aborted is a ForkCopyFailedError unless it is the signal's reason (#4321)", async () => {

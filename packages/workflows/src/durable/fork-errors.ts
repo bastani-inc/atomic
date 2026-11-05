@@ -17,7 +17,8 @@ export type ForkErrorCode =
 	| "journal-unavailable"
 	| "copy-failed"
 	| "claim-release-failed"
-	| "session-unavailable";
+	| "session-unavailable"
+	| "cleanup-failed";
 
 export type ForkErrorName =
 	| "ForkTargetNotFoundError"
@@ -31,7 +32,8 @@ export type ForkErrorName =
 	| "ForkJournalUnavailableError"
 	| "ForkCopyFailedError"
 	| "ForkClaimReleaseError"
-	| "ForkSessionUnavailableError";
+	| "ForkSessionUnavailableError"
+	| "ForkCleanupError";
 
 export type ForkErrorFieldValue =
 	| string
@@ -51,14 +53,20 @@ export interface SerializedForkError {
 	readonly retryable: boolean;
 	readonly fields: ForkErrorFields;
 	readonly cause?: SerializedErrorCause;
+	/** The cleanup failures attached after this error; several are an `AggregateError` with `errors`. */
+	readonly cleanupCause?: SerializedErrorCause;
 }
 
-/** A cause in the wire form. Fork causes keep their fields; other causes keep only their name, message and code. */
+/**
+ * A cause in the wire form. Fork causes keep their fields; other causes keep only their name, message and
+ * code, and an `AggregateError` also keeps its `errors`.
+ */
 export interface SerializedErrorCause {
 	readonly name: string;
 	readonly message: string;
 	readonly code?: string;
 	readonly fork?: SerializedForkError;
+	readonly errors?: readonly SerializedErrorCause[];
 	readonly cause?: SerializedErrorCause;
 }
 
@@ -93,6 +101,7 @@ const FORK_ERROR_CODE_BY_NAME: Readonly<Record<ForkErrorName, ForkErrorCode>> = 
 	ForkCopyFailedError: "copy-failed",
 	ForkClaimReleaseError: "claim-release-failed",
 	ForkSessionUnavailableError: "session-unavailable",
+	ForkCleanupError: "cleanup-failed",
 };
 
 interface ForkErrorInit {
@@ -123,8 +132,12 @@ export class ForkError extends Error {
 	readonly hint: string;
 	readonly retryable: boolean;
 	readonly fields: ForkErrorFields;
-	/** A cleanup failure that happened after this error; never replaces it. */
+	/**
+	 * The cleanup failures that happened after this error; never replace it. One failure is itself, several
+	 * are an `AggregateError` whose `errors` are in the order they happened.
+	 */
 	declare readonly cleanupCause?: Error;
+	readonly #cleanupFailures: Error[] = [];
 
 	constructor(init: ForkErrorInit) {
 		super(
@@ -138,9 +151,14 @@ export class ForkError extends Error {
 		this.fields = defined(init.fields);
 	}
 
-	/** This error with a cleanup failure attached; the primary failure is unchanged. */
+	/** This error with one more cleanup failure attached; the primary failure is unchanged. */
 	withCleanupCause(cleanupCause: Error): this {
-		(this as { cleanupCause?: Error }).cleanupCause = cleanupCause;
+		const failures = this.#cleanupFailures;
+		failures.push(cleanupCause);
+		(this as { cleanupCause?: Error }).cleanupCause =
+			failures.length === 1
+				? cleanupCause
+				: new AggregateError([...failures], `${failures.length} fork cleanup steps failed`);
 		return this;
 	}
 
@@ -515,8 +533,8 @@ export class ForkSourceNotFoundError extends ForkError {
 		const hints: Record<ForkSourceNotFoundReason, string> = {
 			"not-found":
 				input.storage?.scope === "local-only"
-					? `This node uses a local-only journal and is not joined to the shared storage; run ${FORK_JOIN_SHARED_STORAGE_COMMAND} to fork runs started on other nodes, or pass a run id from /workflow list.`
-					: "Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.",
+					? `This node uses a local-only journal and is not joined to the shared storage; run ${FORK_JOIN_SHARED_STORAGE_COMMAND} to fork runs started on other nodes, or pass a root run id from /workflow list (a nested workflow's run is forked through its root run).`
+					: "Pass a root run id from /workflow list (a nested workflow's run is forked through its root run), or pass the journal that holds the run with the journal option.",
 			malformed:
 				"Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.",
 			ambiguous: "Pass the full run id.",
@@ -693,6 +711,56 @@ export class ForkClaimReleaseError extends ForkError {
 	}
 }
 
+export type ForkCleanupStep = "close-source-sessions" | "close-destination-sessions" | "remove-copied-sessions";
+
+/**
+ * A cleanup step failed after a fork or a fork-point listing: closing a session store it opened, or
+ * removing the stage sessions a failed fork had copied. Never thrown in place of the outcome: attached to
+ * a failed fork as `cleanupCause`, or logged once after one that succeeded or was cancelled.
+ */
+export class ForkCleanupError extends ForkError {
+	declare readonly name: "ForkCleanupError";
+	declare readonly code: "cleanup-failed";
+	declare readonly retryable: false;
+	readonly runId: string;
+	readonly step: ForkCleanupStep;
+	/** The fork the step belonged to; absent when listing fork points. */
+	readonly forkRunId?: string;
+
+	constructor(
+		input: { readonly runId: string; readonly step: ForkCleanupStep; readonly forkRunId?: string },
+		options: { readonly cause: Error },
+	) {
+		const owner =
+			input.forkRunId === undefined ? `run ${input.runId}` : `fork ${input.forkRunId} of run ${input.runId}`;
+		const subjects: Record<ForkCleanupStep, string> = {
+			"close-source-sessions": `the session store read for ${owner} was not closed`,
+			"close-destination-sessions": `the session store written for ${owner} was not closed`,
+			"remove-copied-sessions": `the stage sessions copied for ${owner} were not removed`,
+		};
+		const closeHint =
+			"Nothing to undo: the outcome and the source run are unaffected. If it repeats, check the session storage with atomic storage status.";
+		const hints: Record<ForkCleanupStep, string> = {
+			"close-source-sessions": closeHint,
+			"close-destination-sessions": closeHint,
+			"remove-copied-sessions": `The fork was not created and the source run is unchanged; the leftover copies are internal sessions of run ${input.forkRunId ?? input.runId} that nothing reads, so they can be deleted.`,
+		};
+		super({
+			name: "ForkCleanupError",
+			code: "cleanup-failed",
+			what: "Fork cleanup failed",
+			subject: subjects[input.step],
+			hint: hints[input.step],
+			retryable: false,
+			fields: { runId: input.runId, step: input.step, forkRunId: input.forkRunId },
+			cause: options.cause,
+		});
+		this.runId = input.runId;
+		this.step = input.step;
+		this.forkRunId = input.forkRunId;
+	}
+}
+
 export type KnownForkError =
 	| ForkTargetNotFoundError
 	| ForkDefinitionMismatchError
@@ -705,7 +773,8 @@ export type KnownForkError =
 	| ForkJournalUnavailableError
 	| ForkCopyFailedError
 	| ForkClaimReleaseError
-	| ForkSessionUnavailableError;
+	| ForkSessionUnavailableError
+	| ForkCleanupError;
 
 interface ForkErrorShape {
 	readonly name?: string;
@@ -748,6 +817,7 @@ export const isForkJournalUnavailableError = guard(ForkJournalUnavailableError, 
 export const isForkCopyFailedError = guard(ForkCopyFailedError, "ForkCopyFailedError");
 export const isForkClaimReleaseError = guard(ForkClaimReleaseError, "ForkClaimReleaseError");
 export const isForkSessionUnavailableError = guard(ForkSessionUnavailableError, "ForkSessionUnavailableError");
+export const isForkCleanupError = guard(ForkCleanupError, "ForkCleanupError");
 
 /** The first fork error in `value`'s cause chain, walking at most {@link FORK_ERROR_MAX_CAUSE_DEPTH} links. */
 export function findForkError(value: unknown): ForkError | undefined {
@@ -776,11 +846,16 @@ function serializeCause(cause: unknown, depth: number): SerializedErrorCause | u
 		return { name: fork.name, message: fork.message, code: fork.code, fork };
 	}
 	const code = (cause as Error & { readonly code?: unknown }).code;
+	const errors =
+		cause instanceof AggregateError
+			? cause.errors.flatMap((error: unknown) => serializeCause(error, depth + 1) ?? [])
+			: [];
 	const next = serializeCause(cause.cause, depth + 1);
 	return {
 		name: cause.name,
 		message: cause.message,
 		...(typeof code === "string" ? { code } : {}),
+		...(errors.length === 0 ? {} : { errors }),
 		...(next === undefined ? {} : { cause: next }),
 	};
 }
@@ -788,6 +863,7 @@ function serializeCause(cause: unknown, depth: number): SerializedErrorCause | u
 /** `depth` counts the causes already serialized above this error. */
 function serializeForkErrorAt(error: ForkError, depth: number): SerializedForkError {
 	const cause = serializeCause(error.cause, depth);
+	const cleanupCause = serializeCause(error.cleanupCause, depth);
 	return {
 		name: error.name,
 		code: error.code,
@@ -796,6 +872,7 @@ function serializeForkErrorAt(error: ForkError, depth: number): SerializedForkEr
 		retryable: error.retryable,
 		fields: error.fields,
 		...(cause === undefined ? {} : { cause }),
+		...(cleanupCause === undefined ? {} : { cleanupCause }),
 	};
 }
 
@@ -826,9 +903,16 @@ function storage(fields: WireFields): ForkStorage | undefined {
 }
 
 function rehydrateCause(cause: SerializedErrorCause | undefined): Error | undefined {
-	if (cause === undefined) return undefined;
+	return cause === undefined ? undefined : rehydrateSerializedCause(cause);
+}
+
+function rehydrateSerializedCause(cause: SerializedErrorCause): Error {
 	if (cause.fork !== undefined) return rehydrateForkError(cause.fork);
-	const error = new Error(cause.message, { cause: rehydrateCause(cause.cause) });
+	const next = rehydrateCause(cause.cause);
+	const error =
+		cause.errors === undefined
+			? new Error(cause.message, { cause: next })
+			: new AggregateError(cause.errors.map(rehydrateSerializedCause), cause.message, { cause: next });
 	error.name = cause.name;
 	if (cause.code !== undefined) Object.assign(error, { code: cause.code });
 	return error;
@@ -925,13 +1009,25 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 			{ runId: text(f, "runId"), claimExpiresInMs: Number(f.claimExpiresInMs ?? 0) },
 			{ cause: cause ?? new Error("The release failure's cause was not serialized.") },
 		),
+	ForkCleanupError: (f, cause) =>
+		new ForkCleanupError(
+			{ runId: text(f, "runId"), step: text(f, "step") as ForkCleanupStep, forkRunId: optionalText(f, "forkRunId") },
+			{ cause: cause ?? new Error("The cleanup failure's cause was not serialized.") },
+		),
 };
 
 /**
- * The fork error a {@link SerializedForkError} describes, as its own class. A name this version
- * does not know becomes a {@link ForkError} with the original name, code, message and fields.
+ * The fork error a {@link SerializedForkError} describes, as its own class, with its cleanup failures
+ * attached. A name this version does not know becomes a {@link ForkError} with the original name, code,
+ * message and fields.
  */
 export function rehydrateForkError(serialized: SerializedForkError): ForkError {
+	const error = rehydrateForkErrorClass(serialized);
+	const cleanupCause = rehydrateCause(serialized.cleanupCause);
+	return cleanupCause === undefined ? error : error.withCleanupCause(cleanupCause);
+}
+
+function rehydrateForkErrorClass(serialized: SerializedForkError): ForkError {
 	const cause = rehydrateCause(serialized.cause);
 	const rehydrate = Object.hasOwn(REHYDRATE, serialized.name)
 		? REHYDRATE[serialized.name as ForkErrorName]

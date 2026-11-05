@@ -3,6 +3,7 @@ import { test } from "vitest";
 import {
 	FORK_ERROR_MAX_CAUSE_DEPTH,
 	ForkClaimReleaseError,
+	ForkCleanupError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkDefinitionMismatchError,
@@ -18,6 +19,7 @@ import {
 	ForkTargetNotFoundError,
 	findForkError,
 	isForkClaimReleaseError,
+	isForkCleanupError,
 	isForkConfigError,
 	isForkCopyFailedError,
 	isForkDefinitionMismatchError,
@@ -308,8 +310,11 @@ test("ForkConfigError renders every invalid option at once as a stable message a
 });
 
 test("ForkSourceNotFoundError renders each reason, its journal and the join command (#4321)", () => {
-	const local = `This node uses a local-only journal and is not joined to the shared storage; run ${join} to fork runs started on other nodes, or pass a run id from /workflow list.`;
+	const nested = "pass a root run id from /workflow list (a nested workflow's run is forked through its root run)";
+	const local = `This node uses a local-only journal and is not joined to the shared storage; run ${join} to fork runs started on other nodes, or ${nested}.`;
 	const list = "Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.";
+	const rootList =
+		"Pass a root run id from /workflow list (a nested workflow's run is forked through its root run), or pass the journal that holds the run with the journal option.";
 	const matches = Array.from({ length: 12 }, (_, index) => `aaaaaaaa-0000-4000-8000-0000000000${10 + index}`);
 	assertCases([
 		{
@@ -328,14 +333,14 @@ test("ForkSourceNotFoundError renders each reason, its journal and the join comm
 				reason: "not-found",
 				storage: { adapter: "libsql", scope: "shared" },
 			}),
-			message: `Fork source not found: no durable root run ${runId} in the shared libsql journal (source-not-found). ${list}`,
-			hint: list,
+			message: `Fork source not found: no durable root run ${runId} in the shared libsql journal (source-not-found). ${rootList}`,
+			hint: rootList,
 			fields: { runId, reason: "not-found", matches: [], storage: { adapter: "libsql", scope: "shared" } },
 		},
 		{
 			error: new ForkSourceNotFoundError({ runId, reason: "not-found" }),
-			message: `Fork source not found: no durable root run ${runId} (source-not-found). ${list}`,
-			hint: list,
+			message: `Fork source not found: no durable root run ${runId} (source-not-found). ${rootList}`,
+			hint: rootList,
 			fields: { runId, reason: "not-found", matches: [] },
 		},
 		{
@@ -407,6 +412,44 @@ test("ForkClaimReleaseError renders how long the source stays claimed and when t
 			fields: { runId, claimExpiresInMs: 1_500 },
 		},
 	]);
+});
+
+test("ForkCleanupError renders the step that failed, whose it was and what is left to do (#4321)", () => {
+	const cause = new Error("EBUSY");
+	const unaffected =
+		"Nothing to undo: the outcome and the source run are unaffected. If it repeats, check the session storage with atomic storage status.";
+	const leftover = `The fork was not created and the source run is unchanged; the leftover copies are internal sessions of run ${forkRunId} that nothing reads, so they can be deleted.`;
+	assertCases([
+		{
+			error: new ForkCleanupError({ runId, step: "close-source-sessions" }, { cause }),
+			message: `Fork cleanup failed: the session store read for run ${runId} was not closed (cleanup-failed). ${unaffected}`,
+			hint: unaffected,
+			fields: { runId, step: "close-source-sessions" },
+		},
+		{
+			error: new ForkCleanupError({ runId, step: "close-destination-sessions", forkRunId }, { cause }),
+			message: `Fork cleanup failed: the session store written for fork ${forkRunId} of run ${runId} was not closed (cleanup-failed). ${unaffected}`,
+			hint: unaffected,
+			fields: { runId, step: "close-destination-sessions", forkRunId },
+		},
+		{
+			error: new ForkCleanupError({ runId, step: "remove-copied-sessions", forkRunId }, { cause }),
+			message: `Fork cleanup failed: the stage sessions copied for fork ${forkRunId} of run ${runId} were not removed (cleanup-failed). ${leftover}`,
+			hint: leftover,
+			fields: { runId, step: "remove-copied-sessions", forkRunId },
+		},
+		{
+			error: new ForkCleanupError({ runId, step: "remove-copied-sessions" }, { cause }),
+			message: `Fork cleanup failed: the stage sessions copied for run ${runId} were not removed (cleanup-failed). The fork was not created and the source run is unchanged; the leftover copies are internal sessions of run ${runId} that nothing reads, so they can be deleted.`,
+			hint: `The fork was not created and the source run is unchanged; the leftover copies are internal sessions of run ${runId} that nothing reads, so they can be deleted.`,
+			fields: { runId, step: "remove-copied-sessions" },
+		},
+	]);
+	const error = new ForkCleanupError({ runId, step: "close-source-sessions" }, { cause });
+	assert.deepEqual(
+		[error.runId, error.step, error.forkRunId, error.retryable, error.cause],
+		[runId, "close-source-sessions", undefined, false, cause],
+	);
 });
 
 test("ForkJournalUnavailableError renders each phase, its journal and whether to retry or resume (#4321)", () => {
@@ -517,6 +560,13 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 			{ cause: Object.assign(new Error("fetch failed"), { name: "StorageUnavailableError" }) },
 		),
 		guard: isForkSessionUnavailableError,
+	},
+	{
+		error: new ForkCleanupError(
+			{ runId, step: "remove-copied-sessions", forkRunId },
+			{ cause: new AggregateError([new Error("one"), new Error("two")], "2 copied fork sessions were not removed") },
+		),
+		guard: isForkCleanupError,
 	},
 ];
 
@@ -660,6 +710,27 @@ test("rehydrated fork errors keep their typed fields (#4321)", () => {
 	const sourceless = rehydrateForkError({ ...serializeForkError(noOptionals), fields: { sessionId: "s" } });
 	assert.ok(sourceless instanceof ForkSessionNotFoundError);
 	assert.equal(sourceless.storeSource, "project");
+	const cleanup = typed.at(-1);
+	assert.ok(cleanup instanceof ForkCleanupError);
+	assert.deepEqual(
+		[cleanup.runId, cleanup.step, cleanup.forkRunId, cleanup.retryable],
+		[runId, "remove-copied-sessions", forkRunId, false],
+	);
+	assert.ok(cleanup.cause instanceof AggregateError);
+	assert.deepEqual(
+		cleanup.cause.errors.map((error: Error) => error.message),
+		["one", "two"],
+	);
+	const cleanupBare = rehydrateForkError({
+		...serializeForkError(cleanup),
+		cause: undefined,
+		fields: { runId, step: "close-source-sessions" },
+	});
+	assert.ok(cleanupBare instanceof ForkCleanupError);
+	assert.deepEqual(
+		[cleanupBare.step, cleanupBare.forkRunId, (cleanupBare.cause as Error).message],
+		["close-source-sessions", undefined, "The cleanup failure's cause was not serialized."],
+	);
 });
 
 test("rehydration keeps every issue, count and cause, and tolerates missing fields (#4321)", () => {
@@ -818,14 +889,91 @@ test("a nested fork cause survives the round trip as its own class within the de
 	assert.equal(causes, FORK_ERROR_MAX_CAUSE_DEPTH);
 });
 
-test("a cleanup failure is attached without replacing the primary error (#4321)", () => {
-	const cleanup = new Error("release failed");
+test("cleanup failures are attached in order without replacing the primary error (#4321)", () => {
+	const first = new Error("close failed");
+	const second = new Error("release failed");
+	const third = new Error("delete failed");
 	const error = new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: [] });
-	assert.equal(error.cleanupCause, undefined);
-	assert.equal(error.withCleanupCause(cleanup), error);
-	assert.equal(error.cleanupCause, cleanup);
+	const attached = (): Error | undefined => error.cleanupCause;
+	assert.equal(attached(), undefined);
+	assert.equal(Object.hasOwn(error, "cleanupCause"), false);
+	assert.equal(error.withCleanupCause(first), error);
+	assert.equal(attached(), first, "one failure is attached as itself");
+	error.withCleanupCause(second);
+	const two = attached();
+	assert.ok(two instanceof AggregateError);
+	assert.deepEqual([two.errors, two.message], [[first, second], "2 fork cleanup steps failed"]);
+	error.withCleanupCause(third);
+	const three = attached();
+	assert.ok(three instanceof AggregateError);
+	assert.deepEqual([three.errors, three.message], [[first, second, third], "3 fork cleanup steps failed"]);
 	assert.equal(error.code, "target-not-found");
 	assert.equal("cause" in error, false);
+	const other = new ForkTargetNotFoundError({ runId, fromStage: "y", validStagePaths: [] }).withCleanupCause(third);
+	assert.equal(other.cleanupCause, third, "each error keeps its own cleanup failures");
+});
+
+test("cleanup failures cross the wire with the error, as an AggregateError when there are several (#4321)", () => {
+	const closed = new ForkCleanupError(
+		{ runId, step: "close-destination-sessions", forkRunId },
+		{ cause: Object.assign(new Error("EBUSY"), { code: "EBUSY" }) },
+	);
+	const released = new ForkClaimReleaseError({ runId, claimExpiresInMs: 120_000 }, { cause: new Error("lease lost") });
+	const single = new ForkCopyFailedError({ runId, forkRunId, phase: "journal" }, { cause: new Error("disk full") });
+	single.withCleanupCause(closed);
+	const singleWire = JSON.parse(JSON.stringify(single)) as SerializedForkError;
+	assert.equal(singleWire.cleanupCause?.fork?.name, "ForkCleanupError");
+	const singleBack = rehydrateForkError(singleWire);
+	assert.ok(singleBack instanceof ForkCopyFailedError);
+	assert.ok(singleBack.cleanupCause instanceof ForkCleanupError);
+	assert.ok(isForkCleanupError(singleBack.cleanupCause));
+	assert.deepEqual(singleBack.cleanupCause.fields, closed.fields);
+	assert.equal((singleBack.cleanupCause.cause as Error & { code?: string }).code, "EBUSY");
+	assert.deepEqual(serializeForkError(singleBack), singleWire);
+	const several = new ForkCopyFailedError({ runId, forkRunId, phase: "journal" }, { cause: new Error("disk full") });
+	several.withCleanupCause(closed).withCleanupCause(released);
+	const wire = JSON.parse(JSON.stringify(several)) as SerializedForkError;
+	assert.deepEqual(
+		[
+			wire.cleanupCause?.name,
+			wire.cleanupCause?.message,
+			wire.cleanupCause?.errors?.map((error) => error.fork?.code),
+		],
+		["AggregateError", "2 fork cleanup steps failed", ["cleanup-failed", "claim-release-failed"]],
+	);
+	const back = rehydrateForkError(wire);
+	assert.ok(back instanceof ForkCopyFailedError);
+	assert.equal((back.cause as Error).message, "disk full");
+	assert.ok(back.cleanupCause instanceof AggregateError);
+	const [backClosed, backReleased] = back.cleanupCause.errors as Error[];
+	assert.ok(backClosed instanceof ForkCleanupError);
+	assert.deepEqual(backClosed.fields, closed.fields);
+	assert.ok(backReleased instanceof ForkClaimReleaseError);
+	assert.deepEqual(backReleased.fields, released.fields);
+	assert.equal(back.cleanupCause.message, "2 fork cleanup steps failed");
+	assert.deepEqual(serializeForkError(back), wire);
+	assert.equal("cleanupCause" in serializeForkError(new ForkJournalUnsupportedError()), false);
+	const opaque = new AggregateError(["not an error", new Error("kept")], "mixed");
+	const mixed = serializeForkError(
+		new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause: opaque }),
+	);
+	assert.deepEqual(mixed.cause, {
+		name: "AggregateError",
+		message: "mixed",
+		errors: [{ name: "Error", message: "kept" }],
+	});
+	const empty = serializeForkError(
+		new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause: new AggregateError([], "none") }),
+	);
+	assert.deepEqual(empty.cause, { name: "AggregateError", message: "none" });
+	let deep: Error = new Error("deepest");
+	for (let index = 0; index < FORK_ERROR_MAX_CAUSE_DEPTH; index++) deep = new AggregateError([deep], `level ${index}`);
+	const bounded = serializeForkError(
+		new ForkCopyFailedError({ runId, forkRunId, phase: "sessions" }, { cause: deep }),
+	);
+	let levels = 0;
+	for (let current = bounded.cause; current !== undefined; current = current.errors?.[0]) levels++;
+	assert.equal(levels, FORK_ERROR_MAX_CAUSE_DEPTH, "nested aggregates stay within the depth bound");
 });
 
 test("the SDK surface exports every fork error class and guard (#4321)", () => {
@@ -843,6 +991,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"ForkCopyFailedError",
 		"ForkClaimReleaseError",
 		"ForkSessionUnavailableError",
+		"ForkCleanupError",
 		"isForkError",
 		"isForkTargetNotFoundError",
 		"isForkDefinitionMismatchError",
@@ -856,6 +1005,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"isForkCopyFailedError",
 		"isForkClaimReleaseError",
 		"isForkSessionUnavailableError",
+		"isForkCleanupError",
 		"isRetryableForkError",
 		"findForkError",
 		"serializeForkError",

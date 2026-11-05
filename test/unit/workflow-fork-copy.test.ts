@@ -10,6 +10,7 @@ import { durableHash } from "../../packages/workflows/src/durable/durable-hash.j
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	ForkClaimReleaseError,
+	ForkCleanupError,
 	ForkConfigError,
 	ForkCopyFailedError,
 	ForkDefinitionMismatchError,
@@ -619,9 +620,17 @@ test("a failed session copy removes the sessions it created and reports a cleanu
 	}).catch((problem: Error) => problem);
 	assert.ok(error instanceof ForkCopyFailedError);
 	assert.deepEqual([error.phase, error.cause], ["sessions", failure]);
-	assert.ok(error.cleanupCause instanceof AggregateError);
-	assert.deepEqual((error.cleanupCause as AggregateError).errors, [deleteFailure, deleteFailure]);
-	assert.equal(error.cleanupCause.message, "Copied fork sessions were not removed");
+	assert.ok(error.cleanupCause instanceof ForkCleanupError);
+	assert.deepEqual(
+		[error.cleanupCause.step, error.cleanupCause.runId, error.cleanupCause.forkRunId],
+		["remove-copied-sessions", sourceId, error.forkRunId],
+	);
+	const removal = error.cleanupCause.cause;
+	assert.ok(removal instanceof AggregateError);
+	assert.deepEqual(
+		[removal.errors, removal.message],
+		[[deleteFailure, deleteFailure], "2 copied fork sessions were not removed"],
+	);
 	assert.equal(await backend.journal.getRun(error.forkRunId), undefined);
 	vi.restoreAllMocks();
 	const single = vi.spyOn(sessions, "create").mockImplementationOnce(create).mockRejectedValueOnce(failure);
@@ -632,7 +641,8 @@ test("a failed session copy removes the sessions it created and reports a cleanu
 		sourceSessionStore: sessions,
 	}).catch((problem: Error) => problem);
 	assert.ok(one instanceof ForkCopyFailedError);
-	assert.equal(one.cleanupCause, deleteFailure, "one failed removal is reported as itself");
+	assert.ok(one.cleanupCause instanceof ForkCleanupError);
+	assert.equal(one.cleanupCause.cause, deleteFailure, "one failed removal is reported as itself");
 	assert.equal(deletes.mock.calls.length, 1);
 	assert.equal(single.mock.calls.length, 2);
 	vi.restoreAllMocks();
