@@ -29,6 +29,7 @@ import {
 	type WorkflowRuntimeConfig,
 } from "../shared/types.js";
 import { hostWorkerBindings } from "../workers/host-options.js";
+import { resolveWorkerTiming } from "../workers/worker-timing.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import type { WorkflowToolArgs } from "./index.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
@@ -67,6 +68,7 @@ export interface DispatcherOpts {
 	durableBackend?: DurableWorkflowBackend;
 	/** The launching runtime's decision that its root runs send their console output to the workflow log (#4175). */
 	routeConsoleToLog?: boolean;
+	/** The host's `workflows.localWorkers` settings, validated as such before a run starts. */
 	localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
 	admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
 	/** Registry of compiled workflow definitions. */
@@ -194,6 +196,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			try {
 				resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 				resolve_budget({ config: opts.config?.budget, definition: def.budget, run: args.budget });
+				if (opts.localWorkers !== undefined) resolveWorkerTiming(opts.localWorkers, "settings");
 			} catch (err) {
 				return failedRunResult(def.name, "", err instanceof Error ? err.message : String(err));
 			}

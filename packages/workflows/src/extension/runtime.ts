@@ -39,6 +39,7 @@ import type {
 } from "../shared/types.js";
 import { hostWorkerBindings } from "../workers/host-options.js";
 import { withWorkerSettings } from "../workers/public-pool.js";
+import { resolveWorkerTiming } from "../workers/worker-timing.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { createRegistry } from "../workflows/registry.js";
 import { dispatch } from "./dispatcher.js";
@@ -230,9 +231,10 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				throw error;
 			}));
 
+	/** Options of a resumed run; the local worker settings it takes are validated before it resumes. */
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
 		const defaultSessionDir = resolveDefaultStageSessionDir?.();
-		return withWorkerSettings(
+		const options = withWorkerSettings(
 			{
 				adapters,
 				store: activeStore,
@@ -254,6 +256,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			},
 			opts.resolveJournalSettings?.(),
 		);
+		if (options.localWorkers !== undefined) resolveWorkerTiming(options.localWorkers, "settings");
+		return options;
 	}
 
 	function matchesResumeStageIdentifier(stage: RunSnapshot["stages"][number], identifier: string): boolean {

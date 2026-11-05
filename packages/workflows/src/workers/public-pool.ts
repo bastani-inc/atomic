@@ -21,7 +21,6 @@ import {
 } from "./pool-journal.js";
 import { DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU, type WorkflowExecutionResources } from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
-import { resolveWorkerTiming } from "./worker-timing.js";
 
 /**
  * Saved settings a resumed root may run with other values of: they size and pace its pool and bound its own sessions
@@ -110,14 +109,11 @@ function resourceChanges(saved: WorkflowExecutionResources, current: WorkflowExe
 
 /**
  * The run options with the host's `workflows.localWorkers` and `workflows.admission` settings where the options set
- * none. Settings the run takes are validated here, before anything runs: an out-of-range lease or heartbeat throws
- * `LocalWorkerOptionsError` naming its `workflows.localWorkers` setting.
+ * none. Only a merge: a run or resume validates the local worker settings it takes before it starts.
  */
 export function withWorkerSettings(options: RunOpts, settings?: RunJournalSettings): RunOpts {
 	const configured = settings?.workflows;
 	if (!configured || Array.isArray(configured)) return options;
-	if (options.localWorkers === undefined && configured.localWorkers !== undefined)
-		resolveWorkerTiming(configured.localWorkers, "settings");
 	return {
 		...options,
 		localWorkers: options.localWorkers ?? configured.localWorkers,

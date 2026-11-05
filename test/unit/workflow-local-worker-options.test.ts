@@ -235,25 +235,16 @@ test("run refuses an invalid heartbeat before it opens or writes anything for th
 	}
 });
 
-test("host settings are validated when a run takes them, naming the settings path (#4313)", () => {
-	const settings = {
-		workflows: { localWorkers: { count: 1, definitions: [], leaseMs: 1_000 } },
-	};
-	const error = refused(() => withWorkerSettings({}, settings));
-	assert.equal(error.code, "invalid-lease");
-	assert.equal(error.source, "settings");
-	assert.equal(error.field, "workflows.localWorkers.leaseMs");
-	const own = { count: 2, definitions: [] };
+test("merging host worker settings into run options only merges (#4313)", () => {
+	const invalid = { count: 1, definitions: [], leaseMs: 1_000 };
 	assert.equal(
-		withWorkerSettings({ localWorkers: own }, settings).localWorkers,
-		own,
-		"settings the run's own options replace are not checked",
+		withWorkerSettings({}, { workflows: { localWorkers: invalid } }).localWorkers,
+		invalid,
+		"an out-of-range setting is refused by the run or resume that takes it, not by the merge",
 	);
+	const own = { count: 2, definitions: [] };
+	assert.equal(withWorkerSettings({ localWorkers: own }, { workflows: { localWorkers: invalid } }).localWorkers, own);
 	assert.equal(withWorkerSettings({}, { workflows: {} }).localWorkers, undefined);
 	assert.equal(withWorkerSettings({}, { workflows: ["workflows"] }).localWorkers, undefined);
-	assert.deepEqual(
-		withWorkerSettings({}, { workflows: { localWorkers: { count: 1, definitions: [], heartbeatMs: 7_500 } } })
-			.localWorkers,
-		{ count: 1, definitions: [], heartbeatMs: 7_500 },
-	);
+	assert.equal(withWorkerSettings({}, undefined).localWorkers, undefined);
 });

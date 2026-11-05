@@ -1281,8 +1281,8 @@ The option is off by default. Without it, Atomic creates no pool tables, worker 
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
-| `LocalWorkerOptionsError` | `invalid-lease` | `localWorkers.leaseMs` is not an integer from `2000` to `2147483647`. Thrown before the run starts. | `source` (`"sdk"` or `"settings"`), `field` (`localWorkers.leaseMs`, or `workflows.localWorkers.leaseMs` for settings), `option`, `reason` (`not-an-integer`, `below-minimum` or `above-maximum`), `received`, `minimum`, `maximum` | Set the named field to an integer in range, or omit it for the 30000 ms default. |
-| `LocalWorkerOptionsError` | `invalid-heartbeat` | `localWorkers.heartbeatMs` is not an integer from `100` to half of the lease. Thrown before the run starts. | The same fields; `maximum` is half of the lease | Set the named field to an integer in range, or omit it to send four heartbeats per lease. |
+| `LocalWorkerOptionsError` | `invalid-lease` | `localWorkers.leaseMs` is not an integer from `2000` to `2147483647`. `run(...)` rejects with it before anything is written; with the value in settings, the run or resume is refused before it starts, with this error's message. | `source` (`"sdk"` or `"settings"`), `field` (`localWorkers.leaseMs`, or `workflows.localWorkers.leaseMs` for settings), `option`, `reason` (`not-an-integer`, `below-minimum` or `above-maximum`), `received`, `minimum`, `maximum` | Set the named field to an integer in range, or omit it for the 30000 ms default. |
+| `LocalWorkerOptionsError` | `invalid-heartbeat` | `localWorkers.heartbeatMs` is not an integer from `100` to half of the lease. Refused the same way. | The same fields; `maximum` is half of the lease | Set the named field to an integer in range, or omit it to send four heartbeats per lease. |
 
 ```ts
 import { isLocalWorkerOptionsError, run } from "@bastani/atomic/workflows";
