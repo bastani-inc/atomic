@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
+import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import type { ResourceAdmission } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -28,7 +29,7 @@ import {
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
+import { type AttemptOutcome, SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
@@ -67,7 +68,7 @@ const ADMISSION_DELAY_MS = 300;
 /** A saturated loop turn the start budget's probe reads as starvation: well past twice its 100 ms interval. */
 const STARVED_TURN_MS = 300;
 
-type StallPoint = "session_start" | "input" | "session_recovery_restore";
+type StallPoint = "session_start" | "input" | "before_agent_start" | "session_recovery_restore" | "session_shutdown";
 type StallHook = (point: StallPoint) => Promise<void> | undefined;
 const STALL_HOOK = "__atomicIssue4319Stall";
 const globals = globalThis as typeof globalThis & { [STALL_HOOK]?: StallHook };
@@ -219,14 +220,26 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 			...options,
 		});
 	/** A child-only extension, written after the parent loaded its own, that holds `point` until released. */
-	const stallChildAt = (point: StallPoint): { readonly reached: () => boolean; readonly release: () => void } => {
+	const stallChildAt = (
+		point: StallPoint,
+		options: { readonly untilReleased?: boolean } = {},
+	): {
+		readonly reached: () => boolean;
+		readonly release: () => void;
+		readonly shutdown: Promise<void>;
+	} => {
 		let reached = false;
+		let shutdownVisited: () => void = () => undefined;
+		const shutdown = new Promise<void>((resolve) => {
+			shutdownVisited = () => resolve();
+		});
 		let release: () => void = () => undefined;
 		const held = new Promise<void>((resolve) => {
 			release = () => resolve();
 		});
-		const timer = setTimeout(release, STALL_MS);
+		const timer = options.untilReleased ? undefined : setTimeout(release, STALL_MS);
 		globals[STALL_HOOK] = (at) => {
+			if (at === "session_shutdown") shutdownVisited();
 			if (at !== point) return undefined;
 			reached = true;
 			return held;
@@ -244,11 +257,13 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 				`\tconst stall = (point) => globalThis.${STALL_HOOK}?.(point);`,
 				'\tpi.on("session_start", () => stall("session_start"));',
 				'\tpi.on("input", async () => { await stall("input"); return { action: "continue" }; });',
+				'\tpi.on("before_agent_start", async () => { await stall("before_agent_start"); });',
+				'\tpi.on("session_shutdown", () => stall("session_shutdown"));',
 				'\tpi.on("session_recovery_restore", async () => { await stall("session_recovery_restore"); });',
 				"}",
 			].join("\n"),
 		);
-		return { reached: () => reached, release };
+		return { reached: () => reached, release, shutdown };
 	};
 	return {
 		cwd,
@@ -361,6 +376,83 @@ test(
 		assert.equal(error.step, "dispatching-task");
 		assert.equal(error.steps.at(-2)?.step, "creating-session");
 		assert.deepEqual(fixture.requests, [], "its task never reached the provider");
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+const TIMEOUT_REPORT_GRACE_MS = 2_000;
+
+const nextMacrotask = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+for (const point of ["input", "before_agent_start"] as const) {
+	test(
+		`a child whose ${point} handler never settles reports its start timeout without waiting for cleanup (#4319)`,
+		async () => {
+			const fixture = await startFixture();
+			const stall = fixture.stallChildAt(point, { untilReleased: true });
+			const outcome = await Promise.race([
+				fixture.launch(`start-never-settles-${point}`, STALL_START_BUDGET_MS),
+				sleep(STALL_START_BUDGET_MS + TIMEOUT_REPORT_GRACE_MS).then(() => "hung" as const),
+			]);
+
+			assert.ok(stall.reached(), `the child's ${point} handling was held`);
+			assert.ok(outcome !== "hung", "the launch settled while its handler was still held");
+			const error = startTimeoutOf(outcome);
+			assert.equal(error.phase, "dispatch");
+			assert.equal(error.step, "dispatching-task");
+			assert.deepEqual(fixture.requests, [], "its task never reached the provider");
+
+			stall.release();
+			await stall.shutdown;
+			assert.deepEqual(fixture.requests, [], "the timed-out child never dispatches after its handler is released");
+		},
+		REAL_CHILD_SESSION_TIMEOUT_MS,
+	);
+}
+
+test(
+	"a child's disposal failing after its start timeout leaves the timeout as the error and keeps the failure as its cleanupCause (#4319)",
+	async () => {
+		const fixture = await startFixture();
+		const stall = fixture.stallChildAt("input", { untilReleased: true });
+		const attempts: Promise<AttemptOutcome>[] = [];
+		const startAttempt = SubagentControlRuntime.prototype.startAttempt;
+		SubagentControlRuntime.prototype.startAttempt = function (...args) {
+			const running = startAttempt.apply(this, args);
+			attempts.push(running.promise);
+			return running;
+		};
+		const disposalError = new Error("child session store closed with a pending write");
+		let disposalFailed: () => void = () => undefined;
+		const failedDisposal = new Promise<void>((resolve) => {
+			disposalFailed = () => resolve();
+		});
+		const dispose = AgentSession.prototype.dispose;
+		let failed = false;
+		AgentSession.prototype.dispose = async function (this: AgentSession) {
+			if (!stall.reached() || failed) return dispose.call(this);
+			failed = true;
+			await dispose.call(this);
+			disposalFailed();
+			throw disposalError;
+		};
+		cleanups.push(() => {
+			SubagentControlRuntime.prototype.startAttempt = startAttempt;
+			AgentSession.prototype.dispose = dispose;
+		});
+		const result = await fixture.launch("start-timeout-disposal-fails", STALL_START_BUDGET_MS);
+
+		startTimeoutOf(result);
+		const outcome = await attempts[0]!;
+		assert.ok(outcome.status === "error");
+		const { startError } = outcome;
+		assert.ok(startError && isSessionStartTimeoutError(startError));
+		assert.equal((startError as { cleanupCause?: unknown }).cleanupCause, undefined, "disposal is still held");
+		stall.release();
+		await failedDisposal;
+		await nextMacrotask();
+		assert.equal((startError as { cleanupCause?: unknown }).cleanupCause, disposalError);
+		assert.ok(isSessionStartTimeoutError(startError));
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
@@ -560,4 +652,244 @@ test("a child runs with task hooks that bind neither its transcript nor its sess
 
 	assert.equal(outcome.status, "ok", JSON.stringify(outcome));
 	assert.ok(activity.length > 0, "its activity was still reported");
+});
+
+type TestSessionTaskHooks = Parameters<SubagentControlRuntime["runChildAttempt"]>[4];
+type TestSessionCleanupCallback = Parameters<SubagentControlRuntime["runChildAttempt"]>[5];
+
+async function testSessionAttempt(
+	dispose: () => void | Promise<void>,
+	options: {
+		readonly taskHooks?: TestSessionTaskHooks;
+		readonly onCleanup?: TestSessionCleanupCallback;
+		readonly terminalBeforeStart?: boolean;
+		readonly failPromptWrite?: boolean;
+		readonly failBeforeSession?: boolean;
+	} = {},
+) {
+	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-dispose-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const agent: AgentConfig = {
+		name: "worker",
+		description: "disposal fixture",
+		systemPrompt: "",
+		systemPromptMode: "replace",
+		inheritProjectContext: false,
+		inheritSkills: false,
+		source: "user",
+		filePath: join(root, "worker.md"),
+	};
+	const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
+	control.registerAgents([agent]);
+	const { admitted } = control.admitChildSession(
+		{
+			taskName: "worker",
+			task: "reply done",
+			agent,
+			cwd: root,
+			parent: options.failBeforeSession
+				? {
+						path: "parent",
+						depth: 0,
+						getChildSessionOptions: () => {
+							throw new Error("parent context closed");
+						},
+					}
+				: undefined,
+			testSession: options.failBeforeSession
+				? false
+				: { output: "done", dispose, promptLogPath: options.failPromptWrite ? root : undefined },
+		},
+		{ path: "parent", depth: 0 },
+	);
+	assert.ok(admitted);
+	if (options.terminalBeforeStart) {
+		const previous = control.native.beginChildAttempt(admitted.identity.path);
+		assert.ok(previous.token);
+		control.native.finishChildAttempt(previous.token, "ok");
+	}
+	return control.runChildAttempt(
+		admitted,
+		{},
+		{ abort: new AbortController().signal, interrupt: new AbortController().signal },
+		undefined,
+		options.taskHooks,
+		options.onCleanup,
+	);
+}
+
+function taskBackedAttempt(dispose: () => void | Promise<void>) {
+	const bound: Parameters<NonNullable<NonNullable<TestSessionTaskHooks>["bindTranscript"]>>[0][] = [];
+	let statusesCleared = 0;
+	let cleanup: Parameters<NonNullable<TestSessionCleanupCallback>>[0] | undefined;
+	const attempt = testSessionAttempt(dispose, {
+		taskHooks: {
+			reportActivity: () => undefined,
+			bindTranscript: (source) => bound.push(source),
+			clearExtensionStatuses: () => {
+				statusesCleared++;
+			},
+		},
+		onCleanup: (settled) => {
+			cleanup = settled;
+		},
+	});
+	return {
+		attempt,
+		cleanup: () => cleanup,
+		statusesCleared: () => statusesCleared,
+		lastBound: () => bound.at(-1),
+	};
+}
+
+test("a child's result waits for its session's disposal to finish (#4319)", async () => {
+	let release: () => void = () => undefined;
+	const held = new Promise<void>((resolve) => {
+		release = () => resolve();
+	});
+	let disposing: () => void = () => undefined;
+	const disposalStarted = new Promise<void>((resolve) => {
+		disposing = () => resolve();
+	});
+	let settled = false;
+	const attempt = testSessionAttempt(async () => {
+		disposing();
+		await held;
+	}).then((outcome) => {
+		settled = true;
+		return outcome;
+	});
+	await disposalStarted;
+	await nextMacrotask();
+	assert.equal(settled, false, "the result waits while disposal is held");
+	release();
+	const outcome = await attempt;
+	assert.equal(outcome.status, "ok", JSON.stringify(outcome));
+	assert.equal(outcome.cleanupCause, undefined);
+});
+
+test("a child whose session fails to dispose keeps its result and reports the failure as its cleanupCause (#4319)", async () => {
+	const disposalError = new Error("session store closed with a pending write");
+	const outcome = await testSessionAttempt(() => {
+		throw disposalError;
+	});
+
+	assert.equal(outcome.status, "ok", JSON.stringify({ ...outcome, cleanupCause: undefined }));
+	assert.equal(outcome.cleanupCause, disposalError);
+});
+
+test("a task-backed child's result does not wait for its held disposal, which reports reaped once it finishes (#4319)", async () => {
+	let release: () => void = () => undefined;
+	const held = new Promise<void>((resolve) => {
+		release = () => resolve();
+	});
+	let disposing: () => void = () => undefined;
+	const disposalStarted = new Promise<void>((resolve) => {
+		disposing = () => resolve();
+	});
+	const run = taskBackedAttempt(async () => {
+		disposing();
+		await held;
+	});
+	await disposalStarted;
+	const outcome = await Promise.race([run.attempt, nextMacrotask().then(() => "waiting" as const)]);
+
+	assert.ok(outcome !== "waiting", "the result settled while disposal was held");
+	assert.equal(outcome.status, "ok", JSON.stringify(outcome));
+	assert.equal(outcome.cleanupCause, undefined);
+	assert.ok(run.cleanup(), "the cleanup was handed to the task owner");
+	assert.equal(run.statusesCleared(), 0, "extension statuses stay open while disposal is held");
+	assert.ok(
+		run.lastBound() && "subscribe" in run.lastBound()!,
+		"the live transcript stays bound while disposal is held",
+	);
+
+	release();
+	assert.deepEqual(await run.cleanup(), { kind: "reaped" });
+	assert.equal(run.statusesCleared(), 1);
+	const settled = run.lastBound();
+	assert.ok(settled);
+	assert.equal("subscribe" in settled, false, "the settled transcript keeps no reference to the disposed session");
+	assert.ok(settled.getSessionId().length > 0);
+	assert.ok(settled.getEntries().length > 0);
+});
+
+for (const [kind, thrown, message] of [
+	["an Error", new Error("session store closed with a pending write"), "session store closed with a pending write"],
+	["a non-Error value", 42, "42"],
+] as const) {
+	test(`a task-backed child whose disposal throws ${kind} reports it as failed cleanup and still settles its transcript (#4319)`, async () => {
+		const run = taskBackedAttempt(() => Promise.reject(thrown));
+		const outcome = await run.attempt;
+
+		assert.equal(outcome.status, "ok", JSON.stringify(outcome));
+		assert.equal(outcome.cleanupCause, undefined);
+		assert.deepEqual(await run.cleanup(), {
+			kind: "failed",
+			resources: [{ resource: "agent-session", code: "CleanupFailed", message }],
+		});
+		assert.equal(run.statusesCleared(), 1);
+		const settled = run.lastBound();
+		assert.ok(settled);
+		assert.equal("subscribe" in settled, false, "the settled transcript keeps no reference to the disposed session");
+		assert.ok(settled.getEntries().length > 0);
+	});
+}
+
+test("a terminal child refused before session construction has no disposal to await (#4319)", async () => {
+	let disposals = 0;
+	const outcome = await testSessionAttempt(
+		() => {
+			disposals++;
+		},
+		{ terminalBeforeStart: true },
+	);
+	assert.equal(outcome.status, "error");
+	assert.equal(disposals, 0);
+	assert.equal(outcome.cleanupCause, undefined);
+});
+
+test("a non-timeout dispatch failure still waits for session disposal (#4319)", async () => {
+	let release: () => void = () => undefined;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let disposing: () => void = () => undefined;
+	const disposalStarted = new Promise<void>((resolve) => {
+		disposing = resolve;
+	});
+	let settled = false;
+	const attempt = testSessionAttempt(
+		async () => {
+			disposing();
+			await held;
+		},
+		{ failPromptWrite: true },
+	).then((outcome) => {
+		settled = true;
+		return outcome;
+	});
+	await disposalStarted;
+	await nextMacrotask();
+	assert.equal(settled, false);
+	release();
+	const outcome = await attempt;
+	assert.ok(outcome.status === "error");
+	assert.equal(outcome.startError, undefined);
+	assert.equal(outcome.cleanupCause, undefined);
+});
+
+test("a setup failure before session construction has no agent session to dispose (#4319)", async () => {
+	let cleanup: Parameters<NonNullable<TestSessionCleanupCallback>>[0] | undefined;
+	const outcome = await testSessionAttempt(() => assert.fail("no session was constructed"), {
+		failBeforeSession: true,
+		onCleanup: (result) => {
+			cleanup = result;
+		},
+	});
+	assert.ok(outcome.status === "error");
+	assert.equal(outcome.startError, undefined);
+	assert.equal(outcome.cleanupCause, undefined);
+	assert.ok(cleanup);
+	assert.deepEqual(await cleanup, { kind: "reaped" });
 });

@@ -13,6 +13,7 @@ import {
 	findSessionStartError,
 	getAgentDir,
 	getBuiltinPackagePaths,
+	isSessionStartTimeoutError,
 	type PackageSource,
 	SessionManager,
 	type SessionStartError,
@@ -347,7 +348,12 @@ export type AttemptOutcome = (
 			readonly thinking?: string;
 	  }
 ) &
-	AttemptSkillReport;
+	AttemptSkillReport & { readonly cleanupCause?: unknown };
+
+interface SessionDisposal {
+	readonly cleanup: Cleanup;
+	readonly error?: unknown;
+}
 
 export interface ResultEnvelope {
 	readonly path: string;
@@ -1126,6 +1132,41 @@ export class SubagentControlRuntime {
 		>,
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
+		let disposal: Promise<SessionDisposal> | undefined;
+		const outcome = await this.attemptChild(admitted, candidate, signals, onModelChange, taskHooks, (disposing) => {
+			disposal = disposing;
+			onCleanup?.(disposing.then(({ cleanup }) => cleanup));
+		});
+		if (onCleanup || disposal === undefined) return outcome;
+		if (outcome.status === "error" && outcome.startError && isSessionStartTimeoutError(outcome.startError)) {
+			const timeout: SessionStartError & { cleanupCause?: unknown } = outcome.startError;
+			void disposal.then(({ cleanup, error }) => {
+				if (cleanup.kind === "failed") timeout.cleanupCause = error;
+			});
+			return outcome;
+		}
+		const { cleanup, error } = await disposal;
+		return cleanup.kind === "failed" ? { ...outcome, cleanupCause: error } : outcome;
+	}
+
+	private async attemptChild(
+		admitted: AdmittedChild,
+		candidate: ModelCandidate,
+		signals: AttemptSignals,
+		onModelChange: ((model: string | undefined, thinking?: string) => void) | undefined,
+		taskHooks:
+			| Pick<
+					TaskExecutionHooks,
+					| "reportActivity"
+					| "bindTranscript"
+					| "bindChildSession"
+					| "bindChildLaunch"
+					| "setExtensionStatus"
+					| "clearExtensionStatuses"
+			  >
+			| undefined,
+		onDisposal: (disposal: Promise<SessionDisposal>) => void,
+	): Promise<AttemptOutcome> {
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
 		const configuredThinking = candidate.thinkingLevel ?? admitted.policy.thinkingLevel;
 		let effectiveModelId = candidateModelId;
@@ -1760,14 +1801,14 @@ export class SubagentControlRuntime {
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager !== undefined) taskHooks?.bindTranscript?.(settledTranscript(transcriptManager));
 			};
-			if (onCleanup) {
-				onCleanup(
-					(async (): Promise<Cleanup> => {
-						try {
-							await session?.dispose();
-							return { kind: "reaped" };
-						} catch (error) {
-							return {
+			onDisposal(
+				(async (): Promise<SessionDisposal> => {
+					try {
+						await session?.dispose();
+						return { cleanup: { kind: "reaped" } };
+					} catch (error) {
+						return {
+							cleanup: {
 								kind: "failed",
 								resources: [
 									{
@@ -1776,21 +1817,14 @@ export class SubagentControlRuntime {
 										message: error instanceof Error ? error.message : String(error),
 									},
 								],
-							};
-						} finally {
-							settleTranscript();
-						}
-					})(),
-				);
-			} else {
-				try {
-					await session?.dispose();
-				} catch {
-					// Session teardown must not replace the attempt result.
-				} finally {
-					settleTranscript();
-				}
-			}
+							},
+							error,
+						};
+					} finally {
+						settleTranscript();
+					}
+				})(),
+			);
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)
