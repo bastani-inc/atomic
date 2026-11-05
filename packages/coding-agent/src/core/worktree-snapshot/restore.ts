@@ -103,10 +103,23 @@ async function checkTarget(target: string, snapshotId: string | null): Promise<v
 	try {
 		empty = (await stat(target)).isDirectory() && (await readdir(target)).length === 0;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-		throw unreadablePathError(target, error);
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(target, error);
+		if (await belowRegularFile(target)) throw unreadablePathError(target, error);
+		return;
 	}
 	if (!empty) throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target, reason: "not-empty" });
+}
+
+/**
+ * Whether the deepest existing ancestor of a missing `path` is not a directory. Linux reports such a path as
+ * `ENOTDIR`, Windows as missing (`ENOENT`), so only its ancestors tell a path that could be created from one that cannot.
+ */
+async function belowRegularFile(path: string): Promise<boolean> {
+	for (let current = dirname(path); current !== dirname(current); current = dirname(current)) {
+		const entry = await statIfPresent(current);
+		if (entry) return !entry.isDirectory();
+	}
+	return false;
 }
 
 /** Which of `trees` the object store already holds, asked of Git in one process. */
@@ -413,17 +426,16 @@ async function withRestoreRecord(
 	}
 }
 
-async function ensureObjectStore(
-	storeDir: string,
-	remotes: readonly string[],
-	snapshotId: string | null,
-	signal?: AbortSignal,
-): Promise<string> {
-	const repositories = join(storeDir, "repositories");
-	const store = join(repositories, `${sha256Hex(remotes.join("\n")).slice(0, 24)}.git`);
+/** The shared object store of the repository that `remotes` name, under `storeDir`. */
+function objectStorePath(storeDir: string, remotes: readonly string[]): string {
+	return join(storeDir, "repositories", `${sha256Hex(remotes.join("\n")).slice(0, 24)}.git`);
+}
+
+/** Creates `store` if needed. Callers hold its repository lock, so restores never initialize one store at once. */
+async function ensureObjectStore(store: string, snapshotId: string | null, signal?: AbortSignal): Promise<void> {
+	const repositories = dirname(store);
 	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
 	await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
-	return store;
 }
 
 function bundlePrerequisites(bundle: Uint8Array): string[] {
@@ -743,9 +755,10 @@ export async function restoreWorktree(
 	};
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = await ensureObjectStore(storeDir, target.remotes, snapshotId, signal);
+		const store = objectStorePath(storeDir, target.remotes);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await withRepositoryLock(store, async () => {
+			await ensureObjectStore(store, snapshotId, signal);
 			await ensureHead(
 				git,
 				snapshot ?? { id: null, head: target.head, remotes: target.remotes, bundle: null, omitted: [] },
@@ -885,7 +898,7 @@ export async function removeRestoredWorktree(
 				allowExitCodes: [128],
 			})
 		: undefined;
-	const store = common?.stdout.toString("utf8").trim() ?? "";
+	const store = common ? resolve(common.stdout.toString("utf8").trim()) : "";
 	if (
 		common?.exitCode !== 0 ||
 		!isWithin(repositories, store) ||

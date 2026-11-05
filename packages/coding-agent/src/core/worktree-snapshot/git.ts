@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { GitUnavailableError, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
@@ -135,6 +135,14 @@ function unreadableDirectory(directory: string): WorkspaceSnapshotError | undefi
 	}
 }
 
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 /** Runs one Git command through the injected executable. Rejects with the signal's reason when aborted. */
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
@@ -152,7 +160,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	const detached = options.nonInteractive === true && process.platform !== "win32";
 	const argv = [...BASE_CONFIG, ...(options.neutral ? NEUTRAL_CONVERSION_CONFIG : []), ...args];
 	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
-		(error.code === "ENOENT" || error.code === "EACCES") && existsSync(options.cwd)
+		(error.code === "ENOENT" || error.code === "EACCES") && isDirectory(options.cwd)
 			? (unreadableDirectory(options.cwd) ??
 				new GitUnavailableError("not-installed", executable.path, { cause: error }))
 			: new WorkspaceGitError(
