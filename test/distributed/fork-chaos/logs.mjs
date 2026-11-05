@@ -2,19 +2,21 @@
  * Worker attempt logs of a fork chaos round (#4321): the controller collects every worker's state archive onto node a,
  * and the checker reads the collected logs of every worker the timeline expects.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ChaosInvariantError } from "./verdict.mjs";
 
-/** @typedef {{ readonly code: number | null, readonly stdout: Buffer }} TransferResult */
+/** @typedef {{ readonly code: number | null, readonly stdout: Buffer | string }} TransferResult */
 
 /**
- * @typedef {object} LogTransfer
- * @property {(node: string) => Promise<TransferResult>} archive archives `node`'s state directory
- * @property {(node: string, archive: Buffer) => void} save keeps the archive among the round's artifacts
- * @property {(node: string, archive: Buffer) => Promise<TransferResult>} extract unpacks the archive's logs on node a
- * @property {() => Promise<void>} check runs the checker over the collected logs
+ * Runs `command` on `node` over SSH, with `input` on its stdin; `binary` keeps its stdout a Buffer.
+ *
+ * @typedef {(node: string, command: string, options: { readonly input?: Buffer | string, readonly binary?: boolean }) => Promise<TransferResult>} RemoteCommand
  */
+
+const STATE = "/opt/fork-chaos/state";
+const COLLECTED = "/opt/fork-chaos/collected";
+const ARCHIVE = `tar -C ${STATE} -czf - $(cd ${STATE} && ls *.jsonl *.log sources.json 2>/dev/null)`;
 
 /**
  * @param {string} node
@@ -24,30 +26,29 @@ import { ChaosInvariantError } from "./verdict.mjs";
  */
 function assertTransferred(node, transfer, result) {
 	if (result.code === 0) return;
-	throw new ChaosInvariantError("logs-not-collected", {
-		node,
-		transfer,
-		transferExitCode: result.code,
-	});
+	throw new ChaosInvariantError("logs-not-collected", { node, transfer, transferExitCode: result.code });
 }
 
 /**
- * Collects every worker's logs, then runs the checker. An archive is saved and extracted only after it was produced
- * completely, and the checker runs only after every worker's logs were extracted; a failed or killed transfer throws
- * a `logs-not-collected` {@link ChaosInvariantError} instead.
+ * Collects every worker's logs onto node a, into a fresh `/opt/fork-chaos/collected/<node>`, and records `workers` as
+ * the timeline's `expectedWorkers`, the list the checker requires logs from. Each worker's state archive is kept as
+ * `raw/<node>-state.tgz` in `artifactDir`, but only once it was produced completely, and only then extracted. A failed
+ * or killed transfer throws a `logs-not-collected` {@link ChaosInvariantError}, so the checker never runs on partial
+ * logs.
  *
- * @param {readonly string[]} workers
- * @param {LogTransfer} transfer
+ * @param {{ readonly workers: readonly string[], readonly timeline: { expectedWorkers?: readonly string[] }, readonly artifactDir: string, readonly remote: RemoteCommand }} round
  * @returns {Promise<void>}
  */
-export async function collectLogsAndCheck(workers, { archive, save, extract, check }) {
+export async function collectLogs({ workers, timeline, artifactDir, remote }) {
+	timeline.expectedWorkers = workers;
 	for (const node of workers) {
-		const archived = await archive(node);
+		const archived = await remote(node, ARCHIVE, { binary: true });
 		assertTransferred(node, "archive", archived);
-		save(node, archived.stdout);
-		assertTransferred(node, "extract", await extract(node, archived.stdout));
+		writeFileSync(join(artifactDir, "raw", `${node}-state.tgz`), archived.stdout);
+		const target = `${COLLECTED}/${node}`;
+		const extract = `rm -rf ${target} && mkdir -p ${target} && tar -xzf - -C ${target} --wildcards '*.jsonl'`;
+		assertTransferred(node, "extract", await remote("a", extract, { input: archived.stdout }));
 	}
-	await check();
 }
 
 /** @typedef {{ readonly t: string, readonly logNode: string, readonly [key: string]: unknown }} WorkerLogRecord */
@@ -69,11 +70,12 @@ const isWorkerList = (value) =>
 	new Set(value).size === value.length;
 
 /**
+ * The `code` of an error the `node:fs` calls below throw; with string paths they throw only Node system errors.
+ *
  * @param {unknown} error
- * @returns {string}
+ * @returns {string | undefined}
  */
-const errnoOf = (error) =>
-	typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : "unknown";
+const errnoOf = (error) => /** @type {NodeJS.ErrnoException} */ (error).code;
 
 /**
  * The log record `line` holds, or `undefined` when it is not a JSON object with a string `t`.
@@ -88,17 +90,15 @@ function parseRecord(line) {
 	} catch {
 		return undefined;
 	}
-	return typeof value === "object" && value !== null && !Array.isArray(value) && typeof value.t === "string"
-		? value
-		: undefined;
+	return typeof value?.t === "string" ? value : undefined;
 }
 
 /**
- * Reads the collected logs (`<dir>/<node>/*.jsonl`) of every worker in `expectedWorkers`, the list the controller took
- * from the manifest. Every complete (newline-terminated) line must be a log record. Only a file's final line may be
- * torn, by a process killed while writing it; it is skipped and counted. A zero-byte file, from a process killed
- * before its first record, is counted too. `problems` lists each worker without readable logs, with no record at
- * all, or with a corrupt complete line, each node directory the list lacks, and an invalid list.
+ * Reads the collected logs (`<dir>/<node>/*.jsonl`) of every worker in `expectedWorkers`, the list
+ * the controller took from the manifest. Every complete (newline-terminated) line must be a log record. Only a file's
+ * final line may be torn, by a process killed while writing it; it is skipped and counted. A zero-byte file, from a
+ * process killed before its first record, is counted too. `problems` lists each worker without readable logs, with no
+ * record at all, or with a corrupt complete line, each node directory the list lacks, and an invalid list.
  *
  * @param {string} dir
  * @param {unknown} expectedWorkers
@@ -109,14 +109,19 @@ export function readWorkerLogs(dir, expectedWorkers) {
 	const records = [];
 	/** @type {WorkerLogProblem[]} */
 	const problems = [];
-	/** @type {Record<string, WorkerLogCounts>} */
-	const logsByNode = {};
+	/** @type {Map<string, WorkerLogCounts>} */
+	const logsByNode = new Map();
 	let files = 0;
 	if (!isWorkerList(expectedWorkers))
-		return { records, files, problems: [{ node: null, problem: "timeline does not list the expected workers" }], logsByNode };
+		return {
+			records,
+			files,
+			problems: [{ node: null, problem: "timeline does not list the expected workers" }],
+			logsByNode: {},
+		};
 	for (const node of expectedWorkers) {
 		const counts = { files: 0, records: 0, emptyFiles: 0, tornFinalLines: 0 };
-		logsByNode[node] = counts;
+		logsByNode.set(node, counts);
 		/** @param {{ readonly t: string, readonly [key: string]: unknown }} record */
 		const keep = (record) => {
 			records.push({ ...record, logNode: node });
@@ -124,12 +129,14 @@ export function readWorkerLogs(dir, expectedWorkers) {
 		};
 		let names;
 		try {
-			names = readdirSync(join(dir, node))
-				.filter((name) => name.endsWith(".jsonl"))
-				.sort();
+			names = readdirSync(join(dir, node)).filter((name) => name.endsWith(".jsonl"));
 		} catch (error) {
 			const errno = errnoOf(error);
-			problems.push(errno === "ENOENT" ? { node, problem: "no log directory" } : { node, problem: "log directory unreadable", errno });
+			problems.push(
+				errno === "ENOENT"
+					? { node, problem: "no log directory" }
+					: { node, problem: "log directory unreadable", errno },
+			);
 			continue;
 		}
 		if (names.length === 0) {
@@ -151,13 +158,13 @@ export function readWorkerLogs(dir, expectedWorkers) {
 				continue;
 			}
 			const lines = text.split("\n");
-			const final = lines.pop() ?? "";
+			const final = lines.pop();
 			lines.forEach((line, index) => {
 				const record = parseRecord(line);
 				if (record === undefined) problems.push({ node, problem: "corrupt record", file, line: index + 1 });
 				else keep(record);
 			});
-			if (final === "") continue;
+			if (!final) continue;
 			const record = parseRecord(final);
 			if (record === undefined) counts.tornFinalLines++;
 			else keep(record);
@@ -171,5 +178,5 @@ export function readWorkerLogs(dir, expectedWorkers) {
 	} catch (error) {
 		problems.push({ node: null, problem: "collected directory unreadable", errno: errnoOf(error) });
 	}
-	return { records, files, problems, logsByNode };
+	return { records, files, problems, logsByNode: Object.fromEntries(logsByNode) };
 }

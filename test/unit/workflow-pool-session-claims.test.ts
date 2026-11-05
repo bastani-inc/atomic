@@ -197,12 +197,18 @@ for (const [label, open] of [
 			const { parentSessionId: _parent, ...notACopy } = copyHeader("not-a-copy");
 			await withPoolSessions(h, (sessions) => sessions.create(notACopy, [message("copied", null)]));
 			await stageForkCopy(h, copyHeader("other-run", "another-run"));
+			const { internal: _internal, ...notInternal } = copyHeader("not-internal");
+			await withPoolSessions(h, (sessions) => sessions.create(notInternal, [message("copied", null)]));
+			const { workflow: _workflow, ...runless } = copyHeader("runless");
+			await withPoolSessions(h, (sessions) => sessions.create(runless, [message("copied", null)]));
 			await stageForkCopy(h, copyHeader("in-scope"));
 			await stageForkCopy(h, copyHeader("elsewhere"));
 			const refusals: readonly [ForkSessionClaimReason, PoolSessionClaim][] = [
 				["owned-by-other-work", claimOf("owned")],
 				["not-fork-copy", claimOf("not-a-copy")],
+				["not-fork-copy", claimOf("not-internal")],
 				["run-mismatch", claimOf("other-run")],
+				["run-mismatch", claimOf("runless")],
 				["missing", claimOf("missing")],
 				["outside-scope", claimOf("elsewhere", `${other.work.scope}:stage`)],
 			];
@@ -297,6 +303,148 @@ test("a pool session store that fails to close after a refused claim is attached
 			},
 		);
 		assert.deepEqual(await h.pool.inspect("root"), []);
+	} finally {
+		vi.restoreAllMocks();
+		await h.close();
+	}
+});
+
+/** A second root in the same journal whose child has the same scope as the first root's: forks of one source do. */
+async function secondRoot() {
+	const directory = makeTempDirectory("pool-session-claims-two-roots-");
+	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	const journal = await SqlRunJournal.open(database);
+	const leases: Lease[] = [];
+	for (const runId of ["root", "root-b"]) {
+		await journal.createRun({ runId, name: runId, cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire(runId, "coordinator");
+		if (acquired.status !== "acquired") assert.fail("No root lease");
+		leases.push(acquired.lease);
+	}
+	const pool = await openSqlPoolQueue(journal);
+	for (const lease of leases) await pool.initialize(lease, 60_000);
+	const rebased = <T>(value: T): T => JSON.parse(JSON.stringify(value).replaceAll('"root"', '"root-b"')) as T;
+	const workB = { ...work, childRunId: "child-b" };
+	const boundaryB = rebased(boundary);
+	(boundaryB.topology!.boundary!.child as { runId: string }).runId = "child-b";
+	return {
+		pool,
+		leases: leases as [Lease, Lease],
+		storage: sqlPoolStorage(journal)!,
+		workB,
+		boundaryB,
+		async close() {
+			await journal.close();
+			await database.close();
+			removeTempDirectory(directory);
+		},
+	};
+}
+
+test("a claim never takes a session another root's work owns for the same stage of the same scope (#4321)", async () => {
+	const f = await secondRoot();
+	try {
+		const [rootLease, otherLease] = f.leases;
+		await f.pool.enqueue(otherLease, f.workB, f.boundaryB);
+		const attempt = (await f.pool.claim(otherLease, "worker", [f.workB], 60_000))!;
+		await f.pool.commit(otherLease, attempt, "create", {
+			kind: "session-create",
+			checkpoint: {
+				kind: "stage",
+				workflowId: "root-b",
+				checkpointId: `${work.scope}:session:0`,
+				name: "stage",
+				replayKey: `${work.scope}:stage`,
+				sessionId: "shared",
+				completedAt: 0,
+				topology: {
+					version: 1,
+					stageId: "stage",
+					parentIds: [],
+					sourceOrder: 0,
+					run: { ...f.boundaryB.topology!.boundary!.child },
+				},
+			},
+			header: { id: "shared", version: 4, createdAt: "2026-01-01T00:00:00Z", cwd: "/worker" },
+			entries: [message("copied", null)],
+		});
+		await assert.rejects(
+			f.pool.enqueue(rootLease, work, boundary, { claimSessions: [claimOf("shared")] }),
+			(error: unknown) => error instanceof ForkSessionClaimError && error.reason === "owned-by-other-work",
+		);
+		assert.deepEqual(await f.pool.inspect("root"), []);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a session the work took over for one stage is refused for another stage (#4321)", async () => {
+	const h = await localJournal();
+	try {
+		await stageForkCopy(h, copyHeader("fork-copy"));
+		const queued = await h.pool.enqueue(h.lease, work, boundary, { claimSessions: [claimOf("fork-copy")] });
+		await assert.rejects(
+			h.pool.enqueue(h.lease, work, boundary, { claimSessions: [claimOf("fork-copy", `${work.scope}:other`)] }),
+			(error: unknown) => {
+				assert.ok(error instanceof ForkSessionClaimError);
+				assert.deepEqual([error.reason, error.replayKey], ["claimed-for-other-stage", `${work.scope}:other`]);
+				return true;
+			},
+		);
+		assert.deepEqual(
+			(await h.pool.inspect("root")).map((entry) => entry.id),
+			[queued.id],
+		);
+	} finally {
+		await h.close();
+	}
+});
+
+test("an empty claim list opens no pool session store (#4321)", async () => {
+	const h = await localJournal();
+	try {
+		vi.spyOn(SqlSessionStore.prototype, "close").mockRejectedValue(new Error("close failed"));
+		assert.equal((await h.pool.enqueue(h.lease, work, boundary, { claimSessions: [] })).childRunId, work.childRunId);
+	} finally {
+		vi.restoreAllMocks();
+		await h.close();
+	}
+});
+
+test("a pool session store that fails to close after accepted claims fails the enqueue, which queues nothing (#4321)", async () => {
+	const h = await localJournal();
+	try {
+		await stageForkCopy(h, copyHeader("fork-copy"));
+		const closeFailure = new Error("close failed");
+		vi.spyOn(SqlSessionStore.prototype, "close").mockRejectedValue(closeFailure);
+		await assert.rejects(
+			h.pool.enqueue(h.lease, work, boundary, { claimSessions: [claimOf("fork-copy")] }),
+			(error: unknown) => error === closeFailure,
+		);
+		vi.restoreAllMocks();
+		assert.deepEqual(await h.pool.inspect("root"), []);
+	} finally {
+		vi.restoreAllMocks();
+		await h.close();
+	}
+});
+
+test("a claim that fails outside the fork family keeps its failure and logs the store's close failure once (#4321)", async () => {
+	const h = await localJournal();
+	try {
+		await stageForkCopy(h, copyHeader("fork-copy"));
+		const readFailure = new Error("read failed");
+		const closeFailure = new Error("close failed");
+		vi.spyOn(SqlSessionStore.prototype, "readHeader").mockRejectedValue(readFailure);
+		vi.spyOn(SqlSessionStore.prototype, "close").mockRejectedValue(closeFailure);
+		const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+		await assert.rejects(
+			h.pool.enqueue(h.lease, work, boundary, { claimSessions: [claimOf("fork-copy")] }),
+			(error: unknown) => error === readFailure,
+		);
+		assert.deepEqual(warned.mock.calls, [
+			["atomic-workflows: closing the pool sessions of a failed claim failed", closeFailure],
+		]);
 	} finally {
 		vi.restoreAllMocks();
 		await h.close();

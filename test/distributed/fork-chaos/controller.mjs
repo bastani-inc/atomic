@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectLogsAndCheck } from "./logs.mjs";
+import { collectLogs } from "./logs.mjs";
 import { assertChaosInvariants, assertLocalSqliteReport, findChaosInvariantError } from "./verdict.mjs";
 
 const runId = process.env.RUN_ID;
@@ -48,7 +48,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const seconds = (value) => Math.round(value * 1000 * scale);
 const random = (low, high) => low + Math.random() * (high - low);
 
-const timeline = { runId, startedAt: Date.now(), expectedWorkers: workers, events: [], stops: [], phases: [] };
+const timeline = { runId, startedAt: Date.now(), events: [], stops: [], phases: [] };
 function record(action, details = {}) {
 	const event = { at: Date.now(), iso: new Date().toISOString(), action, ...details };
 	timeline.events.push(event);
@@ -87,7 +87,10 @@ const env = "source /opt/fork-chaos/env; cd /opt/fork-chaos/repo";
 const state = "/opt/fork-chaos/state";
 
 async function writeControl(node, control, file = "control.json") {
-	await sshOk(node, `cat > ${state}/${file}.tmp <<'JSON'\n${JSON.stringify(control)}\nJSON\nmv ${state}/${file}.tmp ${state}/${file}`);
+	await sshOk(
+		node,
+		`cat > ${state}/${file}.tmp <<'JSON'\n${JSON.stringify(control)}\nJSON\nmv ${state}/${file}.tmp ${state}/${file}`,
+	);
 }
 
 let baseControl;
@@ -102,16 +105,23 @@ async function setControl(nodesToSet, patch) {
 }
 
 async function pushScenarioFiles() {
-	const tar = await exec("tar", ["-C", join(here, "../../.."), "-czf", "-", "test/distributed/fork-chaos"], { binary: true });
+	const tar = await exec("tar", ["-C", join(here, "../../.."), "-czf", "-", "test/distributed/fork-chaos"], {
+		binary: true,
+	});
 	await Promise.all(
 		workers.map((node) =>
-			exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, "tar -xzf - -C /opt/fork-chaos/repo"], { input: tar.stdout }),
+			exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, "tar -xzf - -C /opt/fork-chaos/repo"], {
+				input: tar.stdout,
+			}),
 		),
 	);
 }
 
 async function startForker(node) {
-	await sshOk(node, `setsid nohup bash /opt/fork-chaos/repo/test/distributed/fork-chaos/supervise.sh >/dev/null 2>&1 < /dev/null &\nsleep 0.2`);
+	await sshOk(
+		node,
+		`setsid nohup bash /opt/fork-chaos/repo/test/distributed/fork-chaos/supervise.sh >/dev/null 2>&1 < /dev/null &\nsleep 0.2`,
+	);
 	record("forker-start", { node });
 }
 
@@ -141,7 +151,8 @@ async function progress(label) {
 
 // --- Faults ------------------------------------------------------------------------------------------------
 // The device that carries traffic to `peer`. Never resolve it with the host's own address: that route is `lo`.
-const devOf = (peer) => `dev=$(ip route get ${peer} | awk '{for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1)}')`;
+const devOf = (peer) =>
+	`dev=$(ip route get ${peer} | awk '{for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1)}')`;
 const defaultDev = "dev=$(ip route show default | awk '{print $5; exit}')";
 
 async function measureConnect(node) {
@@ -156,25 +167,47 @@ async function netem(impaired, delayMs, lossPct) {
 	const jitter = Math.round(delayMs / 10);
 	const qdisc = (peerFilters) =>
 		`sudo tc qdisc del dev $dev root 2>/dev/null; sudo tc qdisc add dev $dev root handle 1: prio bands 3 priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 && sudo tc qdisc add dev $dev parent 1:1 handle 10: netem delay ${delayMs}ms ${jitter}ms loss ${lossPct}% && ${peerFilters}`;
-	const filter = (peer) => `sudo tc filter add dev $dev protocol ip parent 1:0 prio 1 u32 match ip dst ${peer}/32 flowid 1:1`;
+	const filter = (peer) =>
+		`sudo tc filter add dev $dev protocol ip parent 1:0 prio 1 u32 match ip dst ${peer}/32 flowid 1:1`;
 	await Promise.all([
 		...impaired.map((node) => sshOk(node, `${devOf(sqldIp)}\n${qdisc(filter(sqldIp))}`)),
-		sshOk("sqld", `${devOf(nodes[impaired[0]].ip)}\n${qdisc(impaired.map((node) => filter(nodes[node].ip)).join(" && "))}`),
+		sshOk(
+			"sqld",
+			`${devOf(nodes[impaired[0]].ip)}\n${qdisc(impaired.map((node) => filter(nodes[node].ip)).join(" && "))}`,
+		),
 	]);
 	const connect = await measureConnect(impaired[0]);
-	record("netem", { nodes: impaired, delayMs, jitterMs: jitter, lossPct, bothDirections: true, tlsConnectSeconds: connect });
+	record("netem", {
+		nodes: impaired,
+		delayMs,
+		jitterMs: jitter,
+		lossPct,
+		bothDirections: true,
+		tlsConnectSeconds: connect,
+	});
 }
 
 async function clearNetem(targets) {
 	const left = await Promise.all(
-		targets.map((node) => ssh(node, `${defaultDev}\nsudo tc qdisc del dev $dev root 2>/dev/null; tc qdisc show dev $dev | grep -c netem`)),
+		targets.map((node) =>
+			ssh(
+				node,
+				`${defaultDev}\nsudo tc qdisc del dev $dev root 2>/dev/null; tc qdisc show dev $dev | grep -c netem`,
+			),
+		),
 	);
-	record("netem-cleared", { nodes: targets, netemQdiscsLeft: Object.fromEntries(targets.map((node, index) => [node, Number(left[index].stdout.trim())])) });
+	record("netem-cleared", {
+		nodes: targets,
+		netemQdiscsLeft: Object.fromEntries(targets.map((node, index) => [node, Number(left[index].stdout.trim())])),
+	});
 }
 
 async function partition(node, durationMs) {
 	await sshOk(node, `sudo iptables -I OUTPUT -d ${sqldIp} -j DROP && sudo iptables -I INPUT -s ${sqldIp} -j DROP`);
-	const probe = await ssh(node, `curl -s -o /dev/null -w '%{http_code}' --max-time 5 --cacert /opt/fork-chaos/tls/ca.crt https://${sqldIp}:8443/health; echo " exit=$?"`);
+	const probe = await ssh(
+		node,
+		`curl -s -o /dev/null -w '%{http_code}' --max-time 5 --cacert /opt/fork-chaos/tls/ca.crt https://${sqldIp}:8443/health; echo " exit=$?"`,
+	);
 	record("partition", { node, durationMs, probeDuringPartition: probe.stdout.trim() });
 	await sleep(durationMs);
 	await sshOk(node, `sudo iptables -D OUTPUT -d ${sqldIp} -j DROP; sudo iptables -D INPUT -s ${sqldIp} -j DROP; true`);
@@ -182,7 +215,10 @@ async function partition(node, durationMs) {
 }
 
 async function externalKill(node) {
-	const result = await ssh(node, "n=$(pgrep -f 'workload[.]ts forker' | wc -l); pkill -KILL -f 'workload[.]ts forker'; echo $n");
+	const result = await ssh(
+		node,
+		"n=$(pgrep -f 'workload[.]ts forker' | wc -l); pkill -KILL -f 'workload[.]ts forker'; echo $n",
+	);
 	record("sigkill", { node, processes: Number(result.stdout.trim()) });
 }
 
@@ -227,7 +263,10 @@ async function diskFull(on) {
 		);
 		record("disk-full", { df: result.trim().split("\n") });
 	} else {
-		const result = await sshOk("sqld", "sudo rm -f /data/fc-fill.bin; df -B1 --output=size,used,avail /data | tail -1; systemctl is-active sqld; systemctl show sqld -p NRestarts");
+		const result = await sshOk(
+			"sqld",
+			"sudo rm -f /data/fc-fill.bin; df -B1 --output=size,used,avail /data | tail -1; systemctl is-active sqld; systemctl show sqld -p NRestarts",
+		);
 		record("disk-freed", { df: result.trim().split("\n") });
 	}
 }
@@ -236,7 +275,10 @@ async function healAll() {
 	await clearNetem([...workers, "sqld"]);
 	await Promise.all(
 		workers.map((node) =>
-			ssh(node, `for i in 1 2 3; do sudo iptables -D OUTPUT -d ${sqldIp} -j DROP 2>/dev/null; sudo iptables -D INPUT -s ${sqldIp} -j DROP 2>/dev/null; done; true`),
+			ssh(
+				node,
+				`for i in 1 2 3; do sudo iptables -D OUTPUT -d ${sqldIp} -j DROP 2>/dev/null; sudo iptables -D INPUT -s ${sqldIp} -j DROP 2>/dev/null; done; true`,
+			),
 		),
 	);
 	await ssh("sqld", "sudo rm -f /data/fc-fill.bin; true");
@@ -258,7 +300,10 @@ async function main() {
 	// A fresh start: no forker, fault or journal left from an earlier attempt of this run.
 	await Promise.all(
 		workers.map((node) =>
-			ssh(node, `pkill -KILL -f 'fork-chaos/supervise[.]sh'; pkill -KILL -f 'workload[.]ts'; sleep 1; rm -rf ${state}/* /opt/fork-chaos/collected; ${devOf(sqldIp)}; sudo tc qdisc del dev $dev root 2>/dev/null; for i in 1 2 3; do sudo iptables -D OUTPUT -d ${sqldIp} -j DROP 2>/dev/null; sudo iptables -D INPUT -s ${sqldIp} -j DROP 2>/dev/null; done; true`),
+			ssh(
+				node,
+				`pkill -KILL -f 'fork-chaos/supervise[.]sh'; pkill -KILL -f 'workload[.]ts'; sleep 1; rm -rf ${state}/* /opt/fork-chaos/collected; ${devOf(sqldIp)}; sudo tc qdisc del dev $dev root 2>/dev/null; for i in 1 2 3; do sudo iptables -D OUTPUT -d ${sqldIp} -j DROP 2>/dev/null; sudo iptables -D INPUT -s ${sqldIp} -j DROP 2>/dev/null; done; true`,
+			),
 		),
 	);
 	await sshOk(
@@ -270,14 +315,24 @@ async function main() {
 
 	let sources;
 	await phase("seed", async () => {
-		const out = await sshOk("a", `${env}\nbun run test/distributed/fork-chaos/workload.ts seed 6 2>>${state}/seed-stderr.log | tail -1`);
+		const out = await sshOk(
+			"a",
+			`${env}\nbun run test/distributed/fork-chaos/workload.ts seed 6 2>>${state}/seed-stderr.log | tail -1`,
+		);
 		sources = JSON.parse(out.trim()).sources;
 		if (sources.some((source) => source.status !== "completed")) throw new Error(`seed failed: ${out}`);
-		await sshOk("a", `${env}\nbun run test/distributed/fork-chaos/check.ts snapshot ${state}/sources.json ${state}/before.json`);
+		await sshOk(
+			"a",
+			`${env}\nbun run test/distributed/fork-chaos/check.ts snapshot ${state}/sources.json ${state}/before.json`,
+		);
 		const before = await sshOk("a", `cat ${state}/before.json`);
 		writeFileSync(join(artifactDir, "sources-before.json"), before);
 		const sourcesJson = await sshOk("a", `cat ${state}/sources.json`);
-		await Promise.all(workers.filter((node) => node !== "a").map((node) => sshOk(node, `cat > ${state}/sources.json <<'JSON'\n${sourcesJson}\nJSON`)));
+		await Promise.all(
+			workers
+				.filter((node) => node !== "a")
+				.map((node) => sshOk(node, `cat > ${state}/sources.json <<'JSON'\n${sourcesJson}\nJSON`)),
+		);
 		record("seeded", { sources });
 	});
 	const sourceIds = sources.map((source) => source.runId);
@@ -332,7 +387,12 @@ async function main() {
 
 	await phase("kills", async () => {
 		await setControl(workers, { killAfterClaimP: 0.05, killMidTxP: 0.1, killAfterCommitP: 0.08, killInToolP: 0.02 });
-		record("self-kill-hooks-armed", { killAfterClaimP: 0.05, killMidTxP: 0.1, killAfterCommitP: 0.08, killInToolP: 0.02 });
+		record("self-kill-hooks-armed", {
+			killAfterClaimP: 0.05,
+			killMidTxP: 0.1,
+			killAfterCommitP: 0.08,
+			killInToolP: 0.02,
+		});
 		const end = Date.now() + seconds(300);
 		while (Date.now() < end) {
 			await sleep(Math.round(random(seconds(15), seconds(30))));
@@ -352,13 +412,29 @@ async function main() {
 		const token = randomUUID().slice(0, 8);
 		await writeControl(
 			"a",
-			{ ...baseControl, concurrency: 1, hotP: 1, probeP: 0, abortP: 0, forkOfForkP: 0, wholeRunP: 0, maxAttempts: 1, stopAfterClaim: { source: hot, token } },
+			{
+				...baseControl,
+				concurrency: 1,
+				hotP: 1,
+				probeP: 0,
+				abortP: 0,
+				forkOfForkP: 0,
+				wholeRunP: 0,
+				maxAttempts: 1,
+				stopAfterClaim: { source: hot, token },
+			},
 			"control-stopper.json",
 		);
-		await sshOk("a", `${env}\nFC_CONTROL=${state}/control-stopper.json setsid nohup bun run test/distributed/fork-chaos/workload.ts stopper >>${state}/stopper-stdout.log 2>&1 < /dev/null &\nsleep 0.2`);
+		await sshOk(
+			"a",
+			`${env}\nFC_CONTROL=${state}/control-stopper.json setsid nohup bun run test/distributed/fork-chaos/workload.ts stopper >>${state}/stopper-stdout.log 2>&1 < /dev/null &\nsleep 0.2`,
+		);
 		let stoppedAt;
 		for (let poll = 0; poll < 600; poll++) {
-			const result = await ssh("a", `test -f ${state}/stop-${token}.used && ps -o stat= -p $(pgrep -f 'workload[.]ts stopper' | head -1)`);
+			const result = await ssh(
+				"a",
+				`test -f ${state}/stop-${token}.used && ps -o stat= -p $(pgrep -f 'workload[.]ts stopper' | head -1)`,
+			);
 			if (result.stdout.trim().startsWith("T")) {
 				stoppedAt = Date.now();
 				break;
@@ -371,7 +447,14 @@ async function main() {
 		await sshOk("a", "pkill -CONT -f 'workload[.]ts stopper'");
 		const continuedAt = Date.now();
 		record("sigcont", { node: "a", stoppedForMs: continuedAt - stoppedAt });
-		timeline.stops.push({ token, node: "a", source: hot, stoppedAtController: stoppedAt, continuedAtController: continuedAt, skew: skews });
+		timeline.stops.push({
+			token,
+			node: "a",
+			source: hot,
+			stoppedAtController: stoppedAt,
+			continuedAtController: continuedAt,
+			skew: skews,
+		});
 		await waitForExit("a", "workload[.]ts stopper", 600_000);
 		record("stopper-exited");
 		for (const [node, offset] of Object.entries(skews)) await unskew(node, offset);
@@ -410,14 +493,35 @@ async function main() {
 	const healAt = Date.now();
 	await phase("heal-and-converge", async () => {
 		await healAll();
-		await setControl(workers, { drain: true, killAfterClaimP: 0, killMidTxP: 0, killAfterCommitP: 0, killInToolP: 0 });
-		const drained = await Promise.all(workers.map((node) => waitForExit(node, "fork-chaos/supervise[.]sh", 1_800_000)));
-		record("forkers-drained", { drained: Object.fromEntries(workers.map((node, index) => [node, drained[index]])), msSinceHeal: Date.now() - healAt });
+		await setControl(workers, {
+			drain: true,
+			killAfterClaimP: 0,
+			killMidTxP: 0,
+			killAfterCommitP: 0,
+			killInToolP: 0,
+		});
+		const drained = await Promise.all(
+			workers.map((node) => waitForExit(node, "fork-chaos/supervise[.]sh", 1_800_000)),
+		);
+		record("forkers-drained", {
+			drained: Object.fromEntries(workers.map((node, index) => [node, drained[index]])),
+			msSinceHeal: Date.now() - healAt,
+		});
 		const resumed = await Promise.all(
-			workers.map((node) => ssh(node, `${env}\nbun run test/distributed/fork-chaos/workload.ts resume 2>>${state}/resume-stderr.log | tail -1`, { timeoutMs: 1_800_000 })),
+			workers.map((node) =>
+				ssh(
+					node,
+					`${env}\nbun run test/distributed/fork-chaos/workload.ts resume 2>>${state}/resume-stderr.log | tail -1`,
+					{ timeoutMs: 1_800_000 },
+				),
+			),
 		);
 		record("node-resume", Object.fromEntries(workers.map((node, index) => [node, resumed[index].stdout.trim()])));
-		const swept = await ssh("a", `${env}\nbun run test/distributed/fork-chaos/workload.ts resume --global 2>>${state}/resume-stderr.log | tail -1`, { timeoutMs: 1_800_000 });
+		const swept = await ssh(
+			"a",
+			`${env}\nbun run test/distributed/fork-chaos/workload.ts resume --global 2>>${state}/resume-stderr.log | tail -1`,
+			{ timeoutMs: 1_800_000 },
+		);
 		record("global-sweep", { result: swept.stdout.trim() });
 	});
 	const convergedAt = Date.now();
@@ -433,41 +537,49 @@ async function main() {
 			{ timeoutMs: 600_000 },
 		);
 		const reportText = result.stdout.trim();
-		writeFileSync(join(artifactDir, "node-local-sqlite.json"), reportText || JSON.stringify({ error: result.stderr.slice(-2000) }));
+		writeFileSync(
+			join(artifactDir, "node-local-sqlite.json"),
+			reportText || JSON.stringify({ error: result.stderr.slice(-2000) }),
+		);
 		try {
 			assertLocalSqliteReport(reportText, { workloadExitCode: result.code });
 		} catch (error) {
 			localFailure = findChaosInvariantError(error);
 			if (localFailure === undefined) throw error;
 		}
-		record("node-local-sqlite", { exit: result.code, passed: localFailure === undefined, localFailures: localFailure?.localFailures ?? [] });
+		record("node-local-sqlite", {
+			exit: result.code,
+			passed: localFailure === undefined,
+			localFailures: localFailure?.localFailures ?? [],
+		});
 	});
 
 	await phase("check", async () => {
 		writeFileSync(join(artifactDir, "timeline.json"), JSON.stringify(timeline, null, 2));
-		await sshOk("a", "rm -rf /opt/fork-chaos/collected && mkdir -p /opt/fork-chaos/collected");
-		await collectLogsAndCheck(workers, {
-			archive: (node) =>
-				exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, `tar -C ${state} -czf - $(cd ${state} && ls *.jsonl *.log sources.json 2>/dev/null)`], { binary: true }),
-			save: (node, archive) => writeFileSync(join(artifactDir, "raw", `${node}-state.tgz`), archive),
-			extract: (node, archive) =>
-				exec("ssh", [...sshOptions, `azureuser@${nodes.a.ip}`, `mkdir -p /opt/fork-chaos/collected/${node} && tar -xzf - -C /opt/fork-chaos/collected/${node} --wildcards '*.jsonl'`], { input: archive }),
-			check: async () => {
-				await sshOk("a", `cat > /opt/fork-chaos/collected/timeline.json <<'JSON'\n${JSON.stringify(timeline)}\nJSON`);
-				const checked = await ssh(
-					"a",
-					`${env}\nbun run test/distributed/fork-chaos/check.ts check /opt/fork-chaos/collected ${state}/before.json /opt/fork-chaos/collected/timeline.json ${state}/check.json >${state}/check-stdout.log 2>${state}/check-stderr.log; status=$?; tail -1 ${state}/check-stdout.log; tail -20 ${state}/check-stderr.log; exit $status`,
-					{ timeoutMs: 1_800_000 },
-				);
-				record("checker", { exit: checked.code, summary: checked.stdout.trim() });
-				const report = await ssh("a", `cat ${state}/check.json`);
-				if (report.code === 0) writeFileSync(join(artifactDir, "check.json"), report.stdout);
-				const sqldState = await ssh("sqld", "systemctl show sqld -p NRestarts -p ActiveState; df -B1 --output=size,used,avail /data | tail -1; sudo du -sb /data/sqld");
-				record("sqld-state", { state: sqldState.stdout.trim().split("\n") });
-				// A missing, unreadable, incomplete or failing report fails the round; main's catch records it and exits 1.
-				assertChaosInvariants(report.code === 0 ? report.stdout : undefined, { checkerExitCode: checked.code });
-			},
+		await sshOk("a", "mkdir -p /opt/fork-chaos/collected");
+		await collectLogs({
+			workers,
+			timeline,
+			artifactDir,
+			remote: (node, command, options) =>
+				exec("ssh", [...sshOptions, `azureuser@${nodes[node].ip}`, command], options),
 		});
+		await sshOk("a", `cat > /opt/fork-chaos/collected/timeline.json <<'JSON'\n${JSON.stringify(timeline)}\nJSON`);
+		const checked = await ssh(
+			"a",
+			`${env}\nbun run test/distributed/fork-chaos/check.ts check /opt/fork-chaos/collected ${state}/before.json /opt/fork-chaos/collected/timeline.json ${state}/check.json >${state}/check-stdout.log 2>${state}/check-stderr.log; status=$?; tail -1 ${state}/check-stdout.log; tail -20 ${state}/check-stderr.log; exit $status`,
+			{ timeoutMs: 1_800_000 },
+		);
+		record("checker", { exit: checked.code, summary: checked.stdout.trim() });
+		const report = await ssh("a", `cat ${state}/check.json`);
+		if (report.code === 0) writeFileSync(join(artifactDir, "check.json"), report.stdout);
+		const sqldState = await ssh(
+			"sqld",
+			"systemctl show sqld -p NRestarts -p ActiveState; df -B1 --output=size,used,avail /data | tail -1; sudo du -sb /data/sqld",
+		);
+		record("sqld-state", { state: sqldState.stdout.trim().split("\n") });
+		// A missing, unreadable, incomplete or failing report fails the round; main's catch records it and exits 1.
+		assertChaosInvariants(report.code === 0 ? report.stdout : undefined, { checkerExitCode: checked.code });
 	});
 	// The shared checker does not cover the node-local scenario; its failure fails the round once the check ran.
 	if (localFailure !== undefined) throw localFailure;

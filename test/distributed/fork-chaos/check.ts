@@ -118,8 +118,15 @@ function runFingerprint(run: RunRow, events: readonly Event[]) {
 }
 
 async function snapshot(sourcesFile: string, out: string): Promise<void> {
-	const config = loadConfig();
-	const { database } = await openSharedStorage(config);
+	const { database } = await openSharedStorage(loadConfig());
+	try {
+		await snapshotJournal(database, sourcesFile, out);
+	} finally {
+		await database.close();
+	}
+}
+
+async function snapshotJournal(database: SqliteDatabase, sourcesFile: string, out: string): Promise<void> {
 	const sources = JSON.parse(readFileSync(sourcesFile, "utf8")) as { runId: string }[];
 	const runs = new Map((await loadRuns(database)).map((run) => [run.runId, run]));
 	const result: Record<string, Json> = {};
@@ -130,7 +137,6 @@ async function snapshot(sourcesFile: string, out: string): Promise<void> {
 	const now = await database.get<Row>("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now");
 	writeFileSync(out, JSON.stringify({ takenAtSqld: num(now?.now), sources: result }, null, 2));
 	console.log(JSON.stringify({ sources: Object.keys(result).length }));
-	await database.close();
 }
 
 interface LogRecord {
@@ -204,14 +210,31 @@ function comparableOutput(checkpoint: Checkpoint): Json {
 	return output;
 }
 
+/**
+ * Checks every invariant against the shared journal and the collected logs, writes the report to `out`, and resolves
+ * whether every invariant passed. The journal connection is closed whether or not the check completes.
+ */
 export async function check(
 	collectedDir: string,
 	beforeFile: string,
 	timelineFile: string,
 	out: string,
 ): Promise<boolean> {
-	const config = loadConfig();
-	const { database } = await openSharedStorage(config);
+	const { database } = await openSharedStorage(loadConfig());
+	try {
+		return await checkJournal(database, collectedDir, beforeFile, timelineFile, out);
+	} finally {
+		await database.close();
+	}
+}
+
+async function checkJournal(
+	database: SqliteDatabase,
+	collectedDir: string,
+	beforeFile: string,
+	timelineFile: string,
+	out: string,
+): Promise<boolean> {
 	const started = Date.now();
 	const before = JSON.parse(readFileSync(beforeFile, "utf8")) as {
 		sources: Record<string, ReturnType<typeof runFingerprint> | null>;
@@ -900,7 +923,6 @@ export async function check(
 			),
 		),
 	);
-	await database.close();
 	// The report is written either way; the exit status says whether every invariant passed.
 	try {
 		assertChaosInvariants(JSON.stringify(result));
@@ -912,17 +934,25 @@ export async function check(
 	}
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-	let passed = true;
-	switch (process.argv[2]) {
+const USAGE =
+	"usage: bun run test/distributed/fork-chaos/check.ts snapshot <sources.json> <out.json>\n" +
+	"       bun run test/distributed/fork-chaos/check.ts check <collected-dir> <before.json> <timeline.json> <out.json>";
+
+/**
+ * The checker command: `argv` holds the arguments after the script. Resolves the exit status: 0 when the snapshot was
+ * written or every invariant passed, 1 when an invariant failed, and 2 after printing the usage for an unknown mode.
+ */
+export async function main(argv: readonly string[]): Promise<number> {
+	switch (argv[0]) {
 		case "snapshot":
-			await snapshot(process.argv[3]!, process.argv[4]!);
-			break;
+			await snapshot(argv[1]!, argv[2]!);
+			return 0;
 		case "check":
-			passed = await check(process.argv[3]!, process.argv[4]!, process.argv[5]!, process.argv[6]!);
-			break;
+			return (await check(argv[1]!, argv[2]!, argv[3]!, argv[4]!)) ? 0 : 1;
 		default:
-			throw new Error(`unknown mode ${process.argv[2]}`);
+			console.error(USAGE);
+			return 2;
 	}
-	process.exit(passed ? 0 : 1);
 }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) process.exit(await main(process.argv.slice(2)));

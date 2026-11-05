@@ -558,8 +558,9 @@ export class SqlPoolQueue {
 					claim.sessionId,
 				);
 				if (owner !== undefined) {
-					if (owner.work === work && owner.replay_key === claim.replayKey) continue;
-					throw refuse("owned-by-other-work");
+					if (owner.work !== work) throw refuse("owned-by-other-work");
+					if (owner.replay_key !== claim.replayKey) throw refuse("claimed-for-other-stage");
+					continue;
 				}
 				const header = await sessions.readHeader(claim.sessionId);
 				if (header === undefined) throw refuse("missing");

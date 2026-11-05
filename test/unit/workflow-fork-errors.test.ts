@@ -453,6 +453,7 @@ test("ForkSessionClaimError renders each reason with the session, forked run and
 	const because: Record<ForkSessionClaimReason, string> = {
 		"outside-scope": "its stage is outside the child's scope",
 		"owned-by-other-work": "another work owns it",
+		"claimed-for-other-stage": "the child's work already took it over for another stage",
 		missing: "it is not in the pool tables",
 		"not-fork-copy": "it is not a copy the fork made",
 		"run-mismatch": "its header names another run than its stage",

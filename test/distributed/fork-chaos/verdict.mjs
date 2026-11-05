@@ -153,9 +153,12 @@ export const CHAOS_ERROR_CAUSE_DEPTH = 8;
 
 const HINTS = {
 	"report-missing": "Read the checker's stderr log on node a, fix what stopped it, and run the controller again",
-	"report-invalid": "Read the checker's stderr log on node a; the report must be JSON with every invariant's pass flag",
-	"checker-failed": "Read the checker's stderr log on node a; a checker that exits nonzero cannot vouch for its report",
-	"invariants-failed": "Open check.json and read the failed invariants' example violations before changing the fork code",
+	"report-invalid":
+		"Read the checker's stderr log on node a; the report must be JSON with every invariant's pass flag",
+	"checker-failed":
+		"Read the checker's stderr log on node a; a checker that exits nonzero cannot vouch for its report",
+	"invariants-failed":
+		"Open check.json and read the failed invariants' example violations before changing the fork code",
 	"local-sqlite-failed":
 		"Open node-local-sqlite.json and local-stderr.log on node b; each listed expectation names the report field that missed",
 	"logs-not-collected":
@@ -187,7 +190,16 @@ export class ChaosInvariantError extends Error {
 	 */
 	constructor(
 		code,
-		{ failedInvariants = [], missingInvariants = [], localFailures = [], checkerExitCode, node, transfer, transferExitCode, cause } = {},
+		{
+			failedInvariants = [],
+			missingInvariants = [],
+			localFailures = [],
+			checkerExitCode,
+			node,
+			transfer,
+			transferExitCode,
+			cause,
+		} = {},
 	) {
 		const details = [
 			failedInvariants.length > 0 ? `failed: ${failedInvariants.join(", ")}` : undefined,
@@ -206,7 +218,10 @@ export class ChaosInvariantError extends Error {
 					: `${transfer} exit ${transferExitCode}`,
 		].filter((part) => part !== undefined);
 		const subject = details.length > 0 ? `${SUBJECTS[code]} (${details.join("; ")})` : SUBJECTS[code];
-		super(`Fork chaos round did not pass: ${subject} (${code}). ${HINTS[code]}.`, cause === undefined ? {} : { cause });
+		super(
+			`Fork chaos round did not pass: ${subject} (${code}). ${HINTS[code]}.`,
+			cause === undefined ? {} : { cause },
+		);
 		/** @readonly Why the round did not pass. */
 		this.code = code;
 		/** @readonly What to do next. */
@@ -271,7 +286,8 @@ export function isChaosInvariantError(error) {
  * @returns {void}
  */
 export function assertChaosInvariants(reportText, { checkerExitCode } = {}) {
-	if (reportText === undefined || reportText.trim() === "") throw new ChaosInvariantError("report-missing", { checkerExitCode });
+	if (reportText === undefined || reportText.trim() === "")
+		throw new ChaosInvariantError("report-missing", { checkerExitCode });
 	let report;
 	try {
 		report = JSON.parse(reportText);
@@ -284,8 +300,10 @@ export function assertChaosInvariants(reportText, { checkerExitCode } = {}) {
 	const failedInvariants = CHAOS_INVARIANTS.filter((name) => entries[name]?.pass === false);
 	if (failedInvariants.length > 0)
 		throw new ChaosInvariantError("invariants-failed", { failedInvariants, missingInvariants, checkerExitCode });
-	if (missingInvariants.length > 0) throw new ChaosInvariantError("report-invalid", { missingInvariants, checkerExitCode });
-	if (checkerExitCode !== undefined && checkerExitCode !== 0) throw new ChaosInvariantError("checker-failed", { checkerExitCode });
+	if (missingInvariants.length > 0)
+		throw new ChaosInvariantError("report-invalid", { missingInvariants, checkerExitCode });
+	if (checkerExitCode !== undefined && checkerExitCode !== 0)
+		throw new ChaosInvariantError("checker-failed", { checkerExitCode });
 }
 
 /**
@@ -329,7 +347,10 @@ export function localSqliteFailures(report) {
 	for (const field of ["sharedRunViaLocalJournal", "sharedRunPointsViaLocalJournal"]) {
 		const error = isRecord(report[field]) ? report[field] : {};
 		expect(
-			error.fork === true && error.code === "source-not-found" && error.hintJoin === true && error.storageScope === "local-only",
+			error.fork === true &&
+				error.code === "source-not-found" &&
+				error.hintJoin === true &&
+				error.storageScope === "local-only",
 			`${field} is not a local-only source-not-found fork error with the join hint`,
 		);
 	}
@@ -359,7 +380,9 @@ export function localSqliteFailures(report) {
 export function assertLocalSqliteReport(reportText, { workloadExitCode } = {}) {
 	const localFailures = [];
 	if (workloadExitCode !== undefined && workloadExitCode !== 0)
-		localFailures.push(workloadExitCode === null ? "workload ended by a signal" : `workload exit ${workloadExitCode}`);
+		localFailures.push(
+			workloadExitCode === null ? "workload ended by a signal" : `workload exit ${workloadExitCode}`,
+		);
 	let report;
 	let cause;
 	if (reportText === undefined || reportText.trim() === "") localFailures.push("no report");

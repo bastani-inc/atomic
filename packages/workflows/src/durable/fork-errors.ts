@@ -824,12 +824,13 @@ export class ForkCleanupError extends ForkError {
 
 /**
  * Why a forked child's work could not take over a stage session the fork copied for it: the stage is outside the
- * work's scope, another work owns the session, the session is not in the pool tables, it is not a fork's copy, or its
- * header names another run than the stage.
+ * work's scope, another work owns the session, the work already took it over for another stage, the session is not in
+ * the pool tables, it is not a fork's copy, or its header names another run than the stage.
  */
 export type ForkSessionClaimReason =
 	| "outside-scope"
 	| "owned-by-other-work"
+	| "claimed-for-other-stage"
 	| "missing"
 	| "not-fork-copy"
 	| "run-mismatch";
@@ -837,6 +838,7 @@ export type ForkSessionClaimReason =
 const CLAIM_SUBJECTS: Record<ForkSessionClaimReason, string> = {
 	"outside-scope": "its stage is outside the child's scope",
 	"owned-by-other-work": "another work owns it",
+	"claimed-for-other-stage": "the child's work already took it over for another stage",
 	missing: "it is not in the pool tables",
 	"not-fork-copy": "it is not a copy the fork made",
 	"run-mismatch": "its header names another run than its stage",

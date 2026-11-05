@@ -398,3 +398,142 @@ test("a fork whose journal write fails removes its copies from the pool tables a
 	assert.ok((await poolSession(source.backend, source.workerSession)) !== undefined, "the source's session stays");
 	assert.deepEqual(await sessionIds(destination), []);
 });
+
+interface SourceStage {
+	readonly name: string;
+	/** The run the stage belongs to: a child run, the root, or none recorded. */
+	readonly run: "child" | "root" | "none";
+	/** Where its session is: the journal's pool tables or the host's store. */
+	readonly home: "pool" | "host";
+}
+
+/** A paused source with the given stages, with or without local workers, and with or without pool tables. */
+async function stagedSource(
+	seed: string,
+	options: { readonly localWorkers: boolean; readonly poolTables: boolean; readonly stages: readonly SourceStage[] },
+) {
+	const directory = makeTempDirectory("fork-pool-staged-");
+	cleanups.push(() => removeTempDirectory(directory));
+	const backend = await JournalDurableBackend.open(
+		await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } }),
+	);
+	cleanups.push(() => backend.close());
+	if (options.poolTables) await openSqlPoolQueue(backend.journal);
+	const pool = options.poolTables ? await poolSessionStore(backend) : undefined;
+	const host = new MemorySessionStore();
+	const runId = testRunId(seed);
+	const childId = testRunId(`${seed}-child`);
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: definition.name,
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+		invocationCwd: directory,
+		...(options.localWorkers ? { resources: { localWorkers: { count: 1, definitions: [] } } } : {}),
+	});
+	const sessions = new Map<string, string>();
+	for (const [index, stage] of options.stages.entries()) {
+		const store = stage.home === "pool" ? pool : host;
+		assert.ok(store !== undefined);
+		const session = await SessionManager.create(store, directory);
+		await session.appendMessage({ role: "user", content: stage.name, timestamp: 1 });
+		sessions.set(stage.name, session.getSessionId());
+		const run =
+			stage.run === "child"
+				? { runId: childId, runName: "impl", parentRunId: runId, rootRunId: runId }
+				: { runId, runName: "root" };
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: runId,
+			checkpointId: `workflow:impl:fp:1:session:${stage.name}`,
+			name: stage.name,
+			replayKey: `workflow:impl:fp:1:stage:${stage.name}:1`,
+			sessionId: session.getSessionId(),
+			completedAt: index + 1,
+			...(stage.run === "none" ? {} : { topology: { version: 1, stageId: `${stage.name}-id`, parentIds: [], run } }),
+		});
+	}
+	await pool?.close();
+	return { backend, runId, host, sessions, directory };
+}
+
+test("a fork copies every child stage session into one pool session store, which it opens and closes once (#4321)", async () => {
+	const source = await stagedSource("fork-pool-one-store", {
+		localWorkers: true,
+		poolTables: true,
+		stages: [
+			{ name: "first", run: "child", home: "pool" },
+			{ name: "second", run: "child", home: "pool" },
+		],
+	});
+	const creates = vi.spyOn(SqlSessionStore.prototype, "create");
+	const closes = vi.spyOn(SqlSessionStore.prototype, "close");
+	const destination = new MemorySessionStore();
+	const fork = await forkDurableRun(
+		source.backend,
+		forkRequest(source.runId, source.directory, source.host, destination),
+	);
+	assert.equal(creates.mock.instances.length, 2);
+	assert.equal(creates.mock.instances[0], creates.mock.instances[1], "both copies go to one pool session store");
+	assert.equal(
+		closes.mock.calls.length,
+		2,
+		"the pool store read from and the pool store written to are each closed once",
+	);
+	assert.ok(closes.mock.instances.includes(creates.mock.instances[0]!));
+	assert.deepEqual(await sessionIds(destination), []);
+	for (const name of ["first", "second"]) {
+		const copy = source.backend.getStageSession(fork.runId, `workflow:impl:fp:1:stage:${name}:1`)?.sessionId;
+		assert.ok(copy !== undefined);
+		assert.equal((await poolSession(source.backend, copy))?.parentSessionId, source.sessions.get(name));
+	}
+});
+
+test("a fork of a run with local workers fails before writing when the journal has no pool session tables for its copies (#4321)", async () => {
+	const source = await stagedSource("fork-pool-no-tables", {
+		localWorkers: true,
+		poolTables: false,
+		stages: [{ name: "implement", run: "child", home: "host" }],
+	});
+	const destination = new MemorySessionStore();
+	await assert.rejects(
+		forkDurableRun(source.backend, forkRequest(source.runId, source.directory, source.host, destination)),
+		(error: unknown) => {
+			assert.ok(error instanceof ForkCopyFailedError);
+			assert.deepEqual([error.code, error.phase, error.retryable], ["copy-failed", "sessions", true]);
+			assert.ok(error.cause instanceof Error);
+			assert.equal(error.cause.message, "The journal has no pool session tables for the fork's workers");
+			return true;
+		},
+	);
+	assert.deepEqual(await sessionIds(destination), []);
+	assert.deepEqual(
+		(await source.backend.journal.listRuns()).map((run) => run.runId),
+		[source.runId],
+	);
+});
+
+test("a fork keeps a session in the fork's store when its run has no local workers, or its stage names no run (#4321)", async () => {
+	for (const [label, localWorkers, run] of [
+		["no local workers", false, "child"],
+		["no recorded run", true, "none"],
+	] as const) {
+		const source = await stagedSource(`fork-pool-stays-${label.replaceAll(" ", "-")}`, {
+			localWorkers,
+			poolTables: true,
+			stages: [{ name: "implement", run, home: "host" }],
+		});
+		const destination = new MemorySessionStore();
+		const creates = vi.spyOn(SqlSessionStore.prototype, "create");
+		const fork = await forkDurableRun(
+			source.backend,
+			forkRequest(source.runId, source.directory, source.host, destination),
+		);
+		const copy = source.backend.getStageSession(fork.runId, "workflow:impl:fp:1:stage:implement:1")?.sessionId;
+		assert.ok(copy !== undefined, label);
+		assert.equal((await destination.load(copy)).header.parentSessionId, source.sessions.get("implement"), label);
+		assert.equal(creates.mock.calls.length, 0, `${label}: nothing is copied into the pool tables`);
+		creates.mockRestore();
+	}
+});
