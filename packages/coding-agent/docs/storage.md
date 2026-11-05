@@ -456,7 +456,7 @@ Session listings accept an `AbortSignal`. Cancellation rejects with the original
 
 | Code | When | What to do |
 |---|---|---|
-| `settings-unreadable` | The settings file cannot be parsed; `subject` names it. Nothing was changed. | Fix the file, then run again. |
+| `settings-unreadable` | The settings file cannot be read or parsed; `subject` names it, and `detail` gives the file-system error code or where the JSON breaks, never the file's content. Nothing was changed. | Fix the file, then run again. |
 | `adapter-not-installed` | The libSQL adapter cannot be loaded. Nothing was changed. | Run `atomic install npm:@bastani/atomic-storage-libsql`. |
 | `connection-failed` | The database refused or failed `SELECT 1`; `retryable: true`. Nothing was changed. | Check the URL, the token, and the network, then retry. |
 | `connection-timeout` | The database did not answer within 15 seconds. Thrown as `TeamProfileTimeoutError`, a `TeamProfileError` with `timeoutMs`, `elapsedMs`, and `phase` (`"connect"`); `retryable: true`. Nothing was changed. | Check that the database is reachable from this machine, then retry. |

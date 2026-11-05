@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -355,6 +355,38 @@ describe("atomic team join, status and leave (#4320)", () => {
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
+
+	test("unreadable settings name the reason without quoting the file (#4320)", async () => {
+		const settingsPath = join(agentDir, "settings.json");
+		const cases: [string, string][] = [
+			['{\n  "apiKey": "sk-secret",\n}', "not valid JSON at line 3, column 1"],
+			['{"apiKey": sk-secret}', "not valid JSON"],
+			["null", "TypeError"],
+		];
+		const unreadable = async (): Promise<Error> =>
+			joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project }).then(
+				() => assert.fail("joined with unreadable settings"),
+				(error: Error) => error,
+			);
+		for (const [content, detail] of cases) {
+			writeFileSync(settingsPath, content);
+			const error = await unreadable();
+			assert.ok(error instanceof TeamProfileError);
+			assert.deepEqual([error.code, error.detail], ["settings-unreadable", detail], content);
+			assert.doesNotMatch(`${error.message}\n${JSON.stringify(error)}`, /sk-secret/);
+		}
+		if (process.platform !== "win32" && process.getuid?.() !== 0) {
+			writeFileSync(settingsPath, "{}");
+			chmodSync(settingsPath, 0);
+			try {
+				const error = await unreadable();
+				assert.ok(error instanceof TeamProfileError);
+				assert.deepEqual([error.code, error.detail], ["settings-unreadable", "EACCES"]);
+			} finally {
+				chmodSync(settingsPath, 0o600);
+			}
+		}
+	});
 
 	test("join changes nothing when an input or a precondition fails (#4320)", async () => {
 		const before = { ...UNRELATED };

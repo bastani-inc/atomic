@@ -663,8 +663,13 @@ describe("the profile in effect (#4320)", () => {
 		new ProjectTrustStore(agentDir).set(project, true);
 		const unreadable = failure(() => selectTeamProfile({ agentDir, cwd: project })) as TeamProfileError;
 		assert.deepEqual(
-			[unreadable.code, unreadable.subject, unreadable.hint],
-			["settings-unreadable", "project settings", "Fix the settings file, then run the command again."],
+			[unreadable.code, unreadable.subject, unreadable.detail, unreadable.hint],
+			[
+				"settings-unreadable",
+				"project settings",
+				"not valid JSON at line 1, column 3",
+				"Fix the settings file, then run the command again.",
+			],
 		);
 		assert.ok(unreadable.cause instanceof Error);
 	});

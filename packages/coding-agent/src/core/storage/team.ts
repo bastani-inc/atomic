@@ -144,6 +144,18 @@ function settingsPathOf(agentDir: string): string {
 	return join(agentDir, "settings.json");
 }
 
+/**
+ * Why a settings file cannot be read, without any of its content: the file-system error code, or where its JSON
+ * breaks. A parser message can quote part of the file, such as a key, so it is never shown.
+ */
+function unreadableSettingsDetail(error: Error): string {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code === "string") return code;
+	if (!(error instanceof SyntaxError)) return error.name;
+	const position = /\(line (\d+) column (\d+)\)/.exec(error.message);
+	return position === null ? "not valid JSON" : `not valid JSON at line ${position[1]}, column ${position[2]}`;
+}
+
 function openGlobalSettings(cwd: string, agentDir: string): SettingsManager {
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const failure = manager.drainErrors().find(({ scope }) => scope === "global");
@@ -152,6 +164,7 @@ function openGlobalSettings(cwd: string, agentDir: string): SettingsManager {
 		if (isLocked(failure.error)) throw lockedError(settingsPath, failure.error, "Nothing was changed.");
 		throw new TeamProfileError("settings-unreadable", {
 			subject: settingsPath,
+			detail: unreadableSettingsDetail(failure.error),
 			hint: `Fix ${settingsPath} first, then run the command again.`,
 			cause: failure.error,
 		});
@@ -624,6 +637,7 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 		if (isLocked(failure.error)) throw lockedError(`${failure.scope} settings`, failure.error, "Nothing was read.");
 		throw new TeamProfileError("settings-unreadable", {
 			subject: `${failure.scope} settings`,
+			detail: unreadableSettingsDetail(failure.error),
 			hint: "Fix the settings file, then run the command again.",
 			cause: failure.error,
 		});
