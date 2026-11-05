@@ -302,7 +302,7 @@ describe("InteractiveMode extension dialogs", () => {
 		assert.equal(context.programStatus.setBlocked.mock.calls.length, 4);
 	});
 
-	it("clears an overlay's blocked status when its signal dismisses it", async () => {
+	it("clears an overlay's blocked status when its signal dismisses it (earendil-works/pi#11816)", async () => {
 		const context = createContext();
 		const controller = new AbortController();
 		const question = context.showExtensionCustom<string>(() => new Text("question"), {

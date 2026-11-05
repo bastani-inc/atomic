@@ -696,8 +696,7 @@ describe("OAuthCallbackServer pages", () => {
 		}
 	});
 
-	// earendil-works/pi#11311
-	it("closes while the browser keeps an unused connection open", async () => {
+	it("closes while the browser keeps an unused connection open (earendil-works/pi#11311)", async () => {
 		const callback = await OAuthCallbackServer.listen();
 		const url = new URL(callback.redirectUrl);
 		const spare = createConnection({ host: url.hostname, port: Number(url.port) });

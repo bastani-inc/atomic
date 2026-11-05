@@ -277,9 +277,8 @@ describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 		}
 	});
 
-	// Regression for earendil-works/pi#11853: reset hid only the topmost overlay, so lower extension overlays stayed
-	// on screen and kept input.
-	test("resetExtensionUI removes every extension overlay but keeps Atomic's own overlays", async () => {
+	// Reset hid only the topmost overlay, so lower extension overlays stayed on screen and kept input.
+	test("resetExtensionUI removes every extension overlay but keeps Atomic's own overlays (earendil-works/pi#11853)", async () => {
 		const terminal = new RecordingTerminal();
 		const ui = new TuiMainScreen(terminal);
 		const editorContainer = new Container();
