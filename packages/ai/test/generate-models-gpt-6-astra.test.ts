@@ -553,6 +553,7 @@ test("prefers Copilot catalog metadata and routes Astra through Responses", () =
 			models: {
 				"gpt-6-astra": {
 					name: "Copilot Astra fixture",
+					provider: { npm: "@ai-sdk/openai" },
 					tool_call: true,
 					reasoning: true,
 					modalities: { input: ["text", "image"], output: ["text"] },

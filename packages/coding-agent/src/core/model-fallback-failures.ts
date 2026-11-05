@@ -7,6 +7,7 @@
  * expose it to the raw-TypeScript companion packages without a cycle.
  */
 
+import { findGitHubCopilotError, type GitHubCopilotError, type GitHubCopilotErrorCode } from "@bastani/pi-ai";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
@@ -239,9 +240,6 @@ function messageLooksLikeModelUnavailable(message: string): boolean {
 	);
 }
 
-/** GitHub Copilot rejects a model this client integration cannot use with a generic 400 `invalid_request_error`. */
-const MODEL_UNAVAILABLE_FOR_INTEGRATOR_PATTERN = /model_not_available_for_integrator|not available for integrator/i;
-
 function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | undefined {
 	switch (status) {
 		case 400:
@@ -464,7 +462,6 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (refusalKind !== undefined) return refusalKind;
 	const transportOutageKind = transportOutageKindFromMessage(message);
 	if (transportOutageKind !== undefined) return transportOutageKind;
-	if (MODEL_UNAVAILABLE_FOR_INTEGRATOR_PATTERN.test(message)) return "model_unavailable";
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
@@ -713,6 +710,32 @@ export function errorMessage(error: unknown): string {
 /** Alias used by the subagent package's older public helper name. */
 export const modelFailureMessage = errorMessage;
 
+/** The fallback decision each typed GitHub Copilot failure stands for. */
+const GITHUB_COPILOT_FAILURE_KINDS: Readonly<Record<GitHubCopilotErrorCode, ModelFallbackFailureKind>> = {
+	"model-unavailable": "model_unavailable",
+	"rate-limited": "rate_limit",
+	"quota-exhausted": "quota_exhausted",
+	"content-filtered": "content_filter",
+	"prompt-too-large": "request_incompatible",
+	"invalid-request": "request_incompatible",
+	"authentication-failed": "auth_on_candidate_provider",
+	"service-unavailable": "provider_unavailable",
+	"stream-ended-early": "transport_error",
+	"empty-response": "transport_error",
+	"unrecognized-response": "provider_unavailable",
+};
+
+/**
+ * A GitHub Copilot failure is typed at the provider: its code decides, never its text. The typed error is found on
+ * the failure, anywhere in its cause chain, or in the diagnostics of a failed assistant message in that chain, as
+ * when a workflow wraps the message.
+ */
+function githubCopilotSignal(error: unknown): ModelFallbackFailureSignal | undefined {
+	const copilotError: GitHubCopilotError | undefined = findGitHubCopilotError(error);
+	if (copilotError === undefined) return undefined;
+	return makeSignal(GITHUB_COPILOT_FAILURE_KINDS[copilotError.code], copilotError, signalSource(error, undefined));
+}
+
 export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailureSignal {
 	// Extension startup is not a model request. Its message names extension paths
 	// and their own errors, which must not read as a provider failure.
@@ -725,6 +748,8 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 			...(name !== undefined ? { name } : {}),
 		};
 	}
+	const copilot = githubCopilotSignal(error);
+	if (copilot !== undefined) return copilot;
 	const structured = structuredSignal(error, new Set());
 	if (structured !== undefined) return structured;
 	const message = errorMessage(error);

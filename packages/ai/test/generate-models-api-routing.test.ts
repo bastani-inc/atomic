@@ -4,8 +4,8 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ModelCost } from "../src/types.ts";
 import { afterEach, test } from "vitest";
+import type { ModelCost } from "../src/types.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const temporaryRoots: string[] = [];
@@ -16,6 +16,7 @@ afterEach(() => {
 
 type GeneratedModel = {
 	id: string;
+	name?: string;
 	api: string;
 	baseUrl: string;
 	compat?: {
@@ -126,31 +127,53 @@ test("routes every Fireworks GLM model through openai-completions", () => {
 
 // Regression for upstream pi 69afa105 (closes upstream #8961): GitHub Copilot
 // Claude Fable models are Claude models and must use the Anthropic Messages
-// adapter, otherwise the selected reasoning level is never sent.
-test("routes GitHub Copilot Claude Fable models through anthropic-messages", () => {
+// adapter, otherwise the selected reasoning level is never sent. Each Copilot
+// model's API comes from its models.dev SDK metadata, never its ID (#4324).
+test("routes GitHub Copilot models by their models.dev SDK metadata, not their IDs (#4324)", () => {
+	const anthropicSdk = { provider: { npm: "@ai-sdk/anthropic" } };
+	const openAISdk = { provider: { npm: "@ai-sdk/openai" } };
 	const catalog = {
 		"github-copilot": {
 			models: {
-				"claude-fable-5": { id: "claude-fable-5", ...toolCapable },
-				"claude-fable-5-1": { id: "claude-fable-5-1", ...toolCapable },
-				"claude-sonnet-4": { id: "claude-sonnet-4", ...toolCapable },
-				// Neither a Claude model nor a /responses-only model.
+				"claude-fable-5": { id: "claude-fable-5", name: "Copilot Fable 5", ...toolCapable, ...anthropicSdk },
+				"claude-sonnet-4": { id: "claude-sonnet-4", ...toolCapable, ...anthropicSdk },
+				// No per-model SDK: Copilot's Chat Completions endpoint, as for Gemini and Kimi.
 				"gemini-3-pro": { id: "gemini-3-pro", ...toolCapable },
+				"kimi-k9": { id: "kimi-k9", ...toolCapable, provider: { npm: "@ai-sdk/openai-compatible" } },
 				// Copilot serves these only through /responses.
-				"gpt-5.2": { id: "gpt-5.2", ...toolCapable },
+				"gpt-5.2": { id: "gpt-5.2", ...toolCapable, ...openAISdk },
+				"grok-9": { id: "grok-9", ...toolCapable, ...openAISdk },
+				// An ID that reads like a /responses or Claude model still follows its metadata.
+				"gpt-chat-preview": { id: "gpt-chat-preview", ...toolCapable },
+				"claude-opus-9-chat": { id: "claude-opus-9-chat", ...toolCapable },
+				"new-vendor-model": { id: "new-vendor-model", ...toolCapable, ...openAISdk },
+			},
+		},
+		// Copilot lags Fable 5.1, so the generator reuses the Anthropic row, which carries no per-model SDK.
+		// Copilot's own row wins over the Anthropic row when Copilot lists the model.
+		anthropic: {
+			models: {
+				"claude-fable-5": { id: "claude-fable-5", name: "Anthropic Fable 5", ...toolCapable },
+				"claude-fable-5-1": { id: "claude-fable-5-1", ...toolCapable },
 			},
 		},
 	};
 
 	const copilot = generateProviderCatalogs(catalog, ["github-copilot"])["github-copilot"];
 
+	assert.equal(copilot["claude-fable-5"]?.name, "Copilot Fable 5");
 	assert.deepEqual(Object.fromEntries(Object.entries(copilot).map(([id, model]) => [id, model.api])), {
 		"claude-fable-5": "anthropic-messages",
 		"claude-fable-5-1": "anthropic-messages",
 		"claude-opus-5.5": "anthropic-messages",
+		"claude-opus-9-chat": "openai-completions",
 		"claude-sonnet-4": "anthropic-messages",
 		"gemini-3-pro": "openai-completions",
 		"gpt-5.2": "openai-responses",
+		"gpt-chat-preview": "openai-completions",
+		"grok-9": "openai-responses",
+		"kimi-k9": "openai-completions",
+		"new-vendor-model": "openai-responses",
 		// Astra's provisional fallback is present even before models.dev advertises it.
 		"gpt-6-astra": "openai-responses",
 		// Copilot fallbacks added before models.dev lists them (upstream pi 27c072e9).

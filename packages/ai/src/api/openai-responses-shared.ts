@@ -1072,7 +1072,7 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			finalizeResponse(event.response);
 		} else if (event.type === "error") {
-			throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
+			throw responsesStreamError(`Error Code ${event.code}: ${event.message}`, event.code);
 		} else if (event.type === "response.failed") {
 			sawTerminalResponseEvent = true;
 			output.rawStopReason = event.response?.status;
@@ -1083,7 +1083,7 @@ export async function processResponsesStream<TApi extends Api>(
 				: details?.reason
 					? `incomplete: ${details.reason}`
 					: "Unknown error (no error details in response)";
-			throw new Error(msg);
+			throw responsesStreamError(msg, error?.code);
 		}
 	}
 	if (!sawTerminalResponseEvent) {
@@ -1099,6 +1099,11 @@ export async function processResponsesStream<TApi extends Api>(
 			);
 		}
 	}
+}
+
+/** A failure the stream reported in an event, keeping the provider's error code for typed classification. */
+function responsesStreamError(message: string, code: string | null | undefined): Error {
+	return code ? Object.assign(new Error(message), { code }) : new Error(message);
 }
 
 type CustomInput = Extract<ToolCallInput, { kind: "custom" }>;

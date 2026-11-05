@@ -14,6 +14,7 @@ import {
 	CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
 } from "../src/api/cloudflare.ts";
 import { COPILOT_HEADERS } from "../src/api/github-copilot-headers.ts";
+import { githubCopilotApiForSdk } from "../src/providers/github-copilot-capabilities.ts";
 import type {
 	AnthropicMessagesCompat,
 	AnyModel,
@@ -2686,28 +2687,19 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		// reuse that release's models.dev Anthropic metadata instead of maintaining a local snapshot.
 		const githubCopilotModels = { ...data["github-copilot"]?.models };
 		for (const modelId of GITHUB_COPILOT_CLAUDE_FABLE_MODEL_IDS) {
-			const source = githubCopilotModels[modelId] ?? data.anthropic?.models?.[modelId];
+			const anthropicSource = data.anthropic?.models?.[modelId];
+			const source =
+				githubCopilotModels[modelId] ??
+				(anthropicSource ? { ...anthropicSource, provider: { npm: "@ai-sdk/anthropic" } } : undefined);
 			if (source) githubCopilotModels[modelId] = source;
 		}
 		for (const [modelId, m] of Object.entries(githubCopilotModels)) {
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
 
-				// Claude 4.x and 5.x models route to Anthropic Messages API
-				const isCopilotClaude = /^claude-(haiku|sonnet|opus|fable)-[45]([.\-]|$)/.test(modelId);
-				// GPT, Grok, OSWE, and MAI-Code models use
-				// the Copilot /responses endpoint.
-				const needsResponsesApi =
-					modelId.startsWith("gpt-") ||
-					modelId.startsWith("grok-") ||
-					modelId.startsWith("oswe") ||
-					modelId.startsWith("mai-");
-
-				const api: Api = isCopilotClaude
-					? "anthropic-messages"
-					: needsResponsesApi
-						? "openai-responses"
-						: "openai-completions";
+				// The model's own metadata picks the Copilot API, as for OpenCode: models.dev's
+				// per-model SDK names the endpoint Copilot serves it on, never the model ID.
+				const api: Api = githubCopilotApiForSdk(m.provider?.npm);
 
 				const anthropicCompat =
 					api === "anthropic-messages" ? getAnthropicMessagesCompat("github-copilot", modelId) : undefined;

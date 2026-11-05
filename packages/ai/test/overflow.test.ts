@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
+import {
+	type GitHubCopilotError,
+	GitHubCopilotInvalidRequestError,
+	GitHubCopilotPromptTooLargeError,
+	GitHubCopilotRateLimitError,
+	GitHubCopilotUnrecognizedResponseError,
+	recordGitHubCopilotError,
+} from "../src/providers/github-copilot-errors.ts";
 import type { AssistantMessage } from "../src/types.ts";
 import { isContextOverflow, isRecoverableLength } from "../src/utils/overflow.ts";
 
@@ -54,6 +62,38 @@ describe("isContextOverflow", () => {
 		"4130 failed to parse request", // bare 4130 is not 413
 	])("does not mistake unrelated errors for request-size overflow: %s", (errorMessage) => {
 		expect(isContextOverflow(createErrorMessage(errorMessage))).toBe(false);
+	});
+
+	it("decides a failed GitHub Copilot response by its typed code only (#4324)", () => {
+		const typed = (error: GitHubCopilotError, stopReason: AssistantMessage["stopReason"] = "error") => {
+			const message = {
+				...createErrorMessage("prompt token count of 9 exceeds the limit of 8", "github-copilot"),
+				stopReason,
+			};
+			recordGitHubCopilotError(message, error, message.errorMessage);
+			return message;
+		};
+		const context = { modelId: "m", api: "openai-completions" };
+		expect(isContextOverflow(typed(new GitHubCopilotPromptTooLargeError(context)))).toBe(true);
+		// The provider text alone reads like an overflow, but the typed code says otherwise.
+		expect(isContextOverflow(typed(new GitHubCopilotRateLimitError(context)))).toBe(false);
+		// A rejection too general to rule overflow out is checked by its provider text, like any provider's.
+		for (const general of [
+			new GitHubCopilotInvalidRequestError("rejected", context),
+			new GitHubCopilotUnrecognizedResponseError("unknown-status", context),
+		]) {
+			const overflowText = {
+				...typed(general),
+				errorMessage: `${general.message}\n\nprompt is too long: 9 tokens > 8 maximum`,
+			};
+			expect(isContextOverflow(overflowText)).toBe(true);
+			const notOverflow = { ...typed(general), errorMessage: `${general.message}\n\nBad Request` };
+			expect(isContextOverflow(notOverflow)).toBe(false);
+		}
+		// A successful turn is still checked for silent overflow, whatever its diagnostics carry.
+		const silent = typed(new GitHubCopilotRateLimitError(context), "stop");
+		silent.usage = { ...silent.usage, input: 200 };
+		expect(isContextOverflow(silent, 100)).toBe(true);
 	});
 
 	it("limits HTTP-status matching to failed responses", () => {

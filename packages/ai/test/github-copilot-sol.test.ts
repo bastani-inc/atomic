@@ -55,10 +55,23 @@ describe("GitHub Copilot GPT-6.1 Sol", () => {
 				maxTokens: 128_000,
 				fetch: async (input, init) => {
 					request = input instanceof Request ? input : new Request(input, init);
-					return new Response(
-						`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } } })}\n\n`,
-						{ status: 200, headers: { "content-type": "text/event-stream" } },
-					);
+					const message = { type: "message", id: "msg_1", role: "assistant", status: "completed" };
+					const events = [
+						{ type: "response.output_item.added", output_index: 0, item: { ...message, content: [] } },
+						{
+							type: "response.output_item.done",
+							output_index: 0,
+							item: { ...message, content: [{ type: "output_text", text: "ok", annotations: [] }] },
+						},
+						{
+							type: "response.completed",
+							response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+						},
+					];
+					return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					});
 				},
 			},
 		).result();

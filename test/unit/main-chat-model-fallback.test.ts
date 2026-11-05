@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { GitHubCopilotModelUnavailableError, getGitHubCopilotError, recordGitHubCopilotFailure } from "@bastani/pi-ai";
 import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { test } from "vitest";
@@ -917,20 +918,37 @@ test("a gRPC ResourceExhausted failure is both same-model retryable and fallback
 	assert.equal(_isFallbackableError.call(session as never, message), true);
 });
 
-test("a Copilot model unavailable to the client integration names the model and advances the fallback chain (#3998)", async () => {
+test("a Copilot model unavailable to the client integration names the model and advances the fallback chain (#3998, #4324)", async () => {
 	const primary = model("github-copilot", "claude-opus-4.8-fast");
 	const fallback = model("anthropic", "claude-opus-4-8");
-	const rawError =
-		'OpenAI API error (400): {"message":"The requested model is not available for integrator \\"vscode-chat\\". Verify the correct Copilot-Integration-Id header is being sent.","code":"model_not_available_for_integrator","param":"model","type":"invalid_request_error"}';
-	const failed = retryableMessage({ errorMessage: rawError, provider: primary.provider, model: primary.id });
-
-	_applyProviderErrorGuidance.call({} as never, { type: "message_end", message: failed });
-	assert.equal(
-		failed.errorMessage,
-		`claude-opus-4.8-fast isn't available to Atomic's GitHub Copilot integration; pick another model or run /login to refresh the model list.\n\n${rawError}`,
+	const body = {
+		message:
+			'The requested model is not available for integrator "vscode-chat". Verify the correct Copilot-Integration-Id header is being sent.',
+		code: "model_not_available_for_integrator",
+		param: "model",
+		type: "invalid_request_error",
+	};
+	const rawError = `github-copilot API error (400): ${JSON.stringify(body)}`;
+	const failed = retryableMessage({
+		errorMessage: rawError,
+		provider: primary.provider,
+		model: primary.id,
+		api: "anthropic-messages",
+	});
+	// The provider types the rejection where it reads the response.
+	recordGitHubCopilotFailure(
+		failed,
+		Object.assign(new Error(`400 ${body.message}`), { status: 400, error: body }),
+		false,
 	);
-	assert.equal(normalizeModelFailureSignal(rawError).kind, "model_unavailable");
+	const guidance =
+		"GitHub Copilot model unavailable: claude-opus-4.8-fast (model-unavailable). Copilot does not offer this model to Atomic's integration. Pick another model, or run /login to refresh the model list.";
+	assert.equal(failed.errorMessage, `${guidance}\n\n${rawError}`);
+	_applyProviderErrorGuidance.call({} as never, { type: "message_end", message: failed });
+	assert.equal(failed.errorMessage, `${guidance}\n\n${rawError}`);
+	assert.ok(getGitHubCopilotError(failed) instanceof GitHubCopilotModelUnavailableError);
 	assert.equal(normalizeModelFailureSignal(failed).kind, "model_unavailable");
+	assert.equal(normalizeModelFailureSignal(JSON.parse(JSON.stringify(failed))).kind, "model_unavailable");
 
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
 	let continued = 0;

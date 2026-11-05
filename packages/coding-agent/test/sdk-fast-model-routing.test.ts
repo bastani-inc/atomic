@@ -92,20 +92,31 @@ function copilotResponse(api: Api, modelId: string): Response {
 			{ status: 200, headers },
 		);
 	}
+	const message = { type: "message", id: "msg_test", role: "assistant", status: "completed" };
 	return new Response(
-		`data: ${JSON.stringify({
-			type: "response.completed",
-			response: {
-				id: "resp_test",
-				status: "completed",
-				usage: {
-					input_tokens: 1,
-					output_tokens: 1,
-					total_tokens: 2,
-					input_tokens_details: { cached_tokens: 0 },
+		[
+			{ type: "response.output_item.added", output_index: 0, item: { ...message, content: [] } },
+			{
+				type: "response.output_item.done",
+				output_index: 0,
+				item: { ...message, content: [{ type: "output_text", text: "ok", annotations: [] }] },
+			},
+			{
+				type: "response.completed",
+				response: {
+					id: "resp_test",
+					status: "completed",
+					usage: {
+						input_tokens: 1,
+						output_tokens: 1,
+						total_tokens: 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
 				},
 			},
-		})}\n\n`,
+		]
+			.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+			.join(""),
 		{ status: 200, headers },
 	);
 }
@@ -409,10 +420,10 @@ describe("createAgentSession fast model routing", () => {
 	);
 
 	it("records the selected canonical fast identity on the assistant message", async () => {
-		const captured = await captureRealCopilotTurn("openai-responses", true, "gpt-5.6-sol");
+		const captured = await captureRealCopilotTurn("openai-responses", true, "vendor-model-a");
 
 		assert.equal(captured.message.provider, "github-copilot");
-		assert.equal(captured.message.model, "gpt-5.6-sol-fast");
+		assert.equal(captured.message.model, "vendor-model-a-fast");
 	});
 
 	it("persists and restores an exact Copilot fast model ID from the cached account list across sessions", async () => {

@@ -178,6 +178,54 @@ Atomic reads the account's model list on every network catalog refresh (at inter
 
 A Copilot fast model appears only when the account's list advertises its exact ID, and like any discovered model it takes its limits and capabilities from its own entry. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. Each refresh also updates the model lists saved with your OAuth login, which decide what the login is offered, so a model the refresh finds is offered at once, and models found with another login are not offered to yours. An API key has no such lists, so after you switch keys the previous key's models stay until the next refresh. If the configured default model, or the fast model of a resumed session, is a Copilot model that is not cached yet, Atomic stops with a message instead of switching models; run `atomic update --models` once with network access.
 
+#### Model families
+
+Copilot serves models from several vendors through one provider. Atomic picks each model's API from its metadata, never from its name: a bundled model uses the API its catalog entry names, and a discovered model uses the first of the Messages, Responses, and Chat Completions endpoints its `supported_endpoints` lists. Endpoints Atomic does not call, such as `/interactions` and `ws:/responses`, are ignored, and an entry that lists only those is skipped.
+
+| Family | Bundled models | API | Thinking levels | Reasoning on the next turn | Context / max output |
+| --- | --- | --- | --- | --- | --- |
+| Gemini | `gemini-3.8-flash`, `gemini-4-argon` | Chat Completions | `low`, `medium`, `high` | Copilot's opaque reasoning value is kept and sent back to the same model | 1,000,000 / 64,000; 1,048,576 / 65,536 |
+| Kimi | `kimi-k3` | Chat Completions | `low`, `high`, `max` | Readable reasoning, when the model returns it, is sent back to the same model | 1,048,576 / 131,072 |
+| Grok | `grok-4.5`, `grok-4.6`, `grok-4.7` | Responses | `low`, `medium`, `high`; 4.6 and 4.7 add `xhigh` | The encrypted reasoning item is sent back to the same model | 500,000 / 128,000 |
+| Discovered | Any chat model the account lists | From `supported_endpoints` | From the entry's `reasoning_effort` | As for its API | From the entry's limits |
+
+For every family:
+
+- Parallel tool calls are accepted, a tool call with no arguments arrives as `{}`, and arguments streamed in pieces are joined before the call runs. Tool call IDs are kept as Copilot sends them; Responses IDs are shortened to a valid `call_id` when they are sent back.
+- Tool schemas are sent strict for the bundled Gemini and Kimi models, and for a discovered model only when its entry lists `structured_outputs`.
+- Reasoning tokens count toward a turn's output tokens, including Gemini's, which Copilot reports outside the completion count.
+- Images are accepted by every bundled model above. A discovered model takes image support from the entry's `vision` flag, and its per-request image count and per-image size from `limits.vision`; Atomic resizes images below that size.
+- Copilot can reject a prompt below the context window because a model may accept fewer prompt tokens than its window. Atomic then compacts the conversation and retries, as for any context overflow.
+- A Chat Completions or Responses turn that ends with no text and no tool call, as Gemini sometimes returns, fails as `empty-response` and is retried.
+
+Which of these models an account can use is up to Copilot, per account and per integration. Run `/login` again or `atomic update --models` after your plan changes.
+
+#### Errors
+
+Atomic types every failed Copilot request, so retries and [model fallback](/settings#retry) follow the failure itself, not the wording of the provider's message. The message starts with what failed, the model, and the code, then what to do, followed by Copilot's own response.
+
+Every error carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `providerCode` (Copilot's own error code), `requestId` (Copilot's `x-request-id`), `detail` (a short excerpt of Copilot's response text, which can quote parts of the request) and the underlying `cause`. The extra fields are listed per class.
+
+| Class | Code | When | Extra fields | Retried on the same model | Falls back to the next model | What to do |
+| --- | --- | --- | --- | --- | --- | --- |
+| `GitHubCopilotModelUnavailableError` | `model-unavailable` | Copilot does not offer the model to this account, this integration, or this API, has no endpoint for it, or does not know it (HTTP 404) | `reason`: `integration`, `not-supported`, `wrong-api`, `no-endpoint`, `not-found` | No | Yes | Pick another model, or run `/login` to refresh the model list |
+| `GitHubCopilotRateLimitError` | `rate-limited` | HTTP 429, or a rate-limit error in the stream; honours `Retry-After` | `retryAfterMs` | Yes | Yes, after retries | Wait for the limit to reset |
+| `GitHubCopilotQuotaExhaustedError` | `quota-exhausted` | HTTP 402, a quota code, or an HTTP 429 that reports a used-up quota (`x-ratelimit-exceeded: quota_exceeded`, or the body `quota exceeded`) | None | No | Yes | Pick another model, or wait for the quota to reset |
+| `GitHubCopilotContentFilterError` | `content-filtered` | A content or policy filter blocked the request (for example HTTP 422 `cyber_policy`) or stopped the response: `content_filter` on Chat Completions, an `incomplete` response with reason `content_filter` on Responses, a `refusal` or `sensitive` stop on Messages | None | Only when `retry.fallbackOnContentFilter` is `false` | Only when `retry.fallbackOnContentFilter` allows it | Rephrase the request or pick another model |
+| `GitHubCopilotPromptTooLargeError` | `prompt-too-large` | The prompt exceeds the model's prompt-token limit, or HTTP 413 | `promptTokens`, `limitTokens` when Copilot names them | No | No; Atomic compacts instead | Run `/compact` or start a new session |
+| `GitHubCopilotInvalidRequestError` | `invalid-request` | Copilot rejected the request, for example a thinking level the model does not list, or an unknown `Copilot-Integration-Id` header | `reason`: `reasoning-effort`, `integration-id`, `rejected` | No | Yes | Pick a supported thinking level, or check `models.json` overrides |
+| `GitHubCopilotAuthenticationError` | `authentication-failed` | HTTP 401 or 403 | None | No | Yes | Run `/login`, or check `COPILOT_GITHUB_TOKEN` |
+| `GitHubCopilotServiceUnavailableError` | `service-unavailable` | HTTP 408, 5xx or 529, or a server error in the stream | None | Yes | Yes, after retries | Retry later |
+| `GitHubCopilotStreamEndedEarlyError` | `stream-ended-early` | The response stopped before its finish reason or final event | None | Yes | Yes, after retries | Retry |
+| `GitHubCopilotEmptyResponseError` | `empty-response` | The model finished with no text and no tool call | None | Yes | Yes, after retries | Retry |
+| `GitHubCopilotUnrecognizedResponseError` | `unrecognized-response` | An HTTP status, stream error code, or body Atomic does not recognize | `reason`: `unknown-status`, `unknown-error-event`, `malformed-body` | Yes, up to the retry limit | Yes, after retries | Retry, and report it if it persists |
+
+All of them extend `GitHubCopilotError`. The same decisions apply in the main chat, in subagents, and in workflow stages, which find the error through the failed message they wrap. An `invalid-request` or `unrecognized-response` whose response text reads as a context overflow is still treated as one.
+
+A cancelled request is never reported as one of these. A connection failure before Copilot answers keeps Atomic's usual network handling.
+
+SDK users can read the typed error from a failed assistant message with `getGitHubCopilotError(message)`, or from any error whose cause chain holds one, or a failed message, with `findGitHubCopilotError(error)`, which returns the error as an instance of its class. The error travels in the message's `diagnostics`, so it survives workers, RPC, and saved sessions; `serializeGitHubCopilotError()` and `deserializeGitHubCopilotError()` convert it explicitly, and `deserializeGitHubCopilotError()` returns `undefined` for a payload whose class name does not go with its code or whose reason that class does not have. Guards such as `isGitHubCopilotError()` and `isGitHubCopilotRateLimitError()` answer whether an error, its cause chain, or a failed message in it holds one, including errors relayed from another process. They return a plain `boolean` and do not narrow the value you pass in, because that value is often the wrapper or the message; call `findGitHubCopilotError()` when you need the instance and its fields. `describeGitHubCopilotModel(model)` returns the capabilities in the table above for one model.
+
 #### Endpoint routing for personal access tokens
 
 OAuth logins get their Copilot host from the token GitHub issues during login. A token saved through `/login` as an API key, or set in `COPILOT_GITHUB_TOKEN`, has no such exchange, so Atomic resolves the host itself, highest precedence first:
