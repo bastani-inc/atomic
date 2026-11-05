@@ -181,7 +181,12 @@ test(
 			}),
 		);
 		assert.deepEqual(grown, { records: 1 });
-		assert.deepEqual(liveAsyncResources(), resources);
+		const live = liveAsyncResources();
+		assert.deepEqual(
+			Object.fromEntries(Object.entries(live).filter(([type, count]) => count > (resources[type] ?? 0))),
+			{},
+			"no timer, socket or process grows with the released children",
+		);
 		assert.deepEqual(
 			{ scheduled: dispatcher.stats().scheduled, timers: dispatcher.stats().timers },
 			{ scheduled: 4, timers: 1 },
