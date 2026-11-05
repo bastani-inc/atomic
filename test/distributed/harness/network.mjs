@@ -51,27 +51,60 @@ export function cidrWithin(inner, outer) {
 }
 
 /**
- * One /16 per region from `10.<first>.0.0/16` upward, skipping every prefix already in use (peered to the control
- * VNet, owned by other runs, or reserved for the control network). Returns undefined when the pool is exhausted.
+ * One /16 per distinct region from the pool's free /16s, skipping every prefix already in use (peered to the control
+ * VNet, owned by other runs, or reserved for the control network) and the first `skip` free ones, modulo the room
+ * left. Returns undefined when the pool has too few free /16s.
  * @param {readonly string[]} regions
  * @param {readonly string[]} used
  * @param {{ firstSecondOctet: number, lastSecondOctet: number }} pool
+ * @param {number} [skip]
  * @returns {Map<string, string> | undefined}
  */
-export function allocateAddressSpaces(regions, used, pool) {
-	/** @type {Map<string, string>} */
-	const allocated = new Map();
-	let octet = pool.firstSecondOctet;
-	for (const region of regions) {
-		if (allocated.has(region)) continue;
-		while (octet <= pool.lastSecondOctet && used.some((prefix) => cidrsOverlap(`10.${octet}.0.0/16`, prefix)))
-			octet++;
-		if (octet > pool.lastSecondOctet) return undefined;
+export function allocateAddressSpaces(regions, used, pool, skip = 0) {
+	const distinct = [...new Set(regions)];
+	/** @type {string[]} */
+	const free = [];
+	for (let octet = pool.firstSecondOctet; octet <= pool.lastSecondOctet; octet++) {
 		const prefix = `10.${octet}.0.0/16`;
-		allocated.set(region, prefix);
-		octet++;
+		if (!used.some((taken) => cidrsOverlap(prefix, taken))) free.push(prefix);
 	}
-	return allocated;
+	if (free.length < distinct.length) return undefined;
+	const start = skip % (free.length - distinct.length + 1);
+	return new Map(distinct.map((region, index) => [region, free[start + index]]));
+}
+
+/**
+ * @param {string} runId
+ * @param {number} attempt
+ */
+export function allocationSkip(runId, attempt) {
+	if (attempt <= 1) return 0;
+	let hash = 0x811c9dc5;
+	for (const char of `${runId}:${attempt}`) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
+	return hash;
+}
+
+/**
+ * @typedef {{ name: string, prefixes: readonly string[] | null }} ControlPeer
+ * @typedef {{ region: string, prefix: string, peering: string, remotePrefix: string }} AddressConflict
+ */
+
+/**
+ * @param {ReadonlyMap<string, string>} allocated
+ * @param {readonly ControlPeer[]} peers
+ * @param {readonly string[]} ownPeerings
+ * @returns {AddressConflict[]}
+ */
+export function addressConflicts(allocated, peers, ownPeerings) {
+	return [...allocated].flatMap(([region, prefix]) =>
+		peers
+			.filter((peer) => !ownPeerings.includes(peer.name))
+			.flatMap((peer) =>
+				(peer.prefixes ?? [])
+					.filter((remotePrefix) => cidrsOverlap(prefix, remotePrefix))
+					.map((remotePrefix) => ({ region, prefix, peering: peer.name, remotePrefix })),
+			),
+	);
 }
 
 /**

@@ -11,12 +11,13 @@
  * docs/distributed-tests.md.
  */
 import { randomInt } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACT_REMOTE_DIR, artifactBuildScript } from "./harness/artifact.mjs";
 import { AzureRun, checkPrerequisites, requiredTools } from "./harness/azure.mjs";
+import { cacheFile } from "./harness/cache.mjs";
 import { profileCoverage } from "./harness/chaos.mjs";
 import { azJson, runCommand, settleAll } from "./harness/commands.mjs";
 import {
@@ -62,6 +63,7 @@ import {
 import { overallStatus, suiteStatus, writeReport } from "./harness/report.mjs";
 import { createRunSecrets, loadRunSecrets } from "./harness/secrets.mjs";
 import { bindViolations, gateVerdict, publicAddressChecks } from "./harness/security.mjs";
+import { loadState, reuseCommand } from "./harness/state.mjs";
 import { featureSkip, parseCapabilities, runSmoke, selectedSuites } from "./harness/suites.mjs";
 import { teardownRun } from "./harness/teardown.mjs";
 
@@ -113,40 +115,41 @@ async function resolveRef(context, repository, ref, signal) {
  * @param {string} version
  * @param {AbortSignal} signal
  */
-async function nodeTarball(context, version, signal) {
+export async function nodeTarball(context, version, signal) {
 	const dir = join(CACHE_ROOT, "node");
 	mkdirSync(dir, { recursive: true });
 	const name = `node-${version}-linux-x64.tar.xz`;
 	const path = join(dir, name);
-	if (!existsSync(path)) {
-		await runCommand(context, "curl", ["-fsSL", "-o", `${path}.part`, `https://nodejs.org/dist/${version}/${name}`], {
+	await cacheFile(path, async (temporary) => {
+		await runCommand(context, "curl", ["-fsSL", "-o", temporary, `https://nodejs.org/dist/${version}/${name}`], {
 			operation: `download ${name}`,
 			timeoutMs: 600_000,
 			signal,
 		});
-		await runCommand(context, "mv", [`${path}.part`, path], {
-			operation: "store Node tarball",
-			timeoutMs: 10_000,
+		await verifyNodeTarball(temporary);
+	});
+	return { path, digest: await verifyNodeTarball(path) };
+
+	/** @param {string} candidate */
+	async function verifyNodeTarball(candidate) {
+		const sums = await runCommand(context, "curl", ["-fsSL", `https://nodejs.org/dist/${version}/SHASUMS256.txt`], {
+			operation: "download SHASUMS256.txt",
+			timeoutMs: 60_000,
 			signal,
 		});
+		const expected = sums.stdout
+			.split("\n")
+			.find((line) => line.endsWith(`  ${name}`))
+			?.split(" ")[0];
+		const actual = await sha256File(candidate);
+		if (expected !== actual)
+			throw new DistributedProvisionError({
+				step: "verify Node runtime",
+				resource: name,
+				detail: "SHA-256 does not match SHASUMS256.txt",
+			});
+		return actual;
 	}
-	const sums = await runCommand(context, "curl", ["-fsSL", `https://nodejs.org/dist/${version}/SHASUMS256.txt`], {
-		operation: "download SHASUMS256.txt",
-		timeoutMs: 60_000,
-		signal,
-	});
-	const expected = sums.stdout
-		.split("\n")
-		.find((line) => line.endsWith(`  ${name}`))
-		?.split(" ")[0];
-	const actual = await sha256File(path);
-	if (expected !== actual)
-		throw new DistributedProvisionError({
-			step: "verify Node runtime",
-			resource: name,
-			detail: "SHA-256 does not match SHASUMS256.txt",
-		});
-	return { path, digest: actual };
 }
 
 /**
@@ -155,11 +158,10 @@ async function nodeTarball(context, version, signal) {
  * @param {{ image: string, version: string }} database
  * @param {AbortSignal} signal
  */
-async function sqldBinary(context, database, signal) {
+export async function sqldBinary(context, database, signal) {
 	const dir = join(CACHE_ROOT, "sqld", database.version);
 	const path = join(dir, "sqld");
-	if (!existsSync(path)) {
-		mkdirSync(dir, { recursive: true });
+	await cacheFile(path, async (temporary) => {
 		await runCommand(context, "docker", ["pull", database.image], {
 			operation: "pull sqld image",
 			timeoutMs: 900_000,
@@ -174,7 +176,7 @@ async function sqldBinary(context, database, signal) {
 		/** @type {unknown} */
 		let copyFailure;
 		try {
-			await runCommand(context, "docker", ["cp", `${id}:/bin/sqld`, path], {
+			await runCommand(context, "docker", ["cp", `${id}:/bin/sqld`, temporary], {
 				operation: "copy sqld binary",
 				timeoutMs: 120_000,
 				signal,
@@ -189,7 +191,7 @@ async function sqldBinary(context, database, signal) {
 			attachCleanupFailure(copyFailure, error);
 		}
 		if (copyFailure !== undefined) throw copyFailure;
-	}
+	});
 	const version = await runCommand(context, path, ["--version"], {
 		operation: "sqld version",
 		timeoutMs: 30_000,
@@ -210,7 +212,7 @@ async function sqldBinary(context, database, signal) {
  * @param {import("./harness/commands.mjs").CommandContext} context
  * @param {{ sha: string, repository: string, nodeVersion: string, builder?: string, manifest: Manifest, signal: AbortSignal }} input
  */
-async function buildArtifact(context, { sha, repository, nodeVersion, builder, manifest, signal }) {
+export async function buildArtifact(context, { sha, repository, nodeVersion, builder, manifest, signal }) {
 	const dir = join(CACHE_ROOT, "artifacts");
 	mkdirSync(dir, { recursive: true });
 	const path = join(dir, `atomic-${sha}.tar.zst`);
@@ -251,25 +253,21 @@ async function buildArtifact(context, { sha, repository, nodeVersion, builder, m
 			.split("\n")
 			.filter((line) => /^[0-9a-f]{64}$/.test(line))
 			.pop();
-		await runCommand(
-			context,
-			"crabbox",
-			["cp", "--id", slug, `SANDBOX:${ARTIFACT_REMOTE_DIR}/atomic.tar.zst`, `${path}.part`],
-			{ operation: "copy artifact", timeoutMs: 1_800_000, signal, cwd: REPO_ROOT },
-		);
-		const digest = await sha256File(`${path}.part`);
-		if (digest !== remoteDigest)
-			throw new DistributedProvisionError({
-				step: "copy artifact",
-				resource: path,
-				detail: "digest differs from the builder's",
-			});
-		await runCommand(context, "mv", [`${path}.part`, path], {
-			operation: "store artifact",
-			timeoutMs: 10_000,
-			signal,
+		const cached = await cacheFile(path, async (temporary) => {
+			await runCommand(
+				context,
+				"crabbox",
+				["cp", "--id", slug, `SANDBOX:${ARTIFACT_REMOTE_DIR}/atomic.tar.zst`, temporary],
+				{ operation: "copy artifact", timeoutMs: 1_800_000, signal, cwd: REPO_ROOT },
+			);
+			if ((await sha256File(temporary)) !== remoteDigest)
+				throw new DistributedProvisionError({
+					step: "copy artifact",
+					resource: path,
+					detail: "digest differs from the builder's",
+				});
 		});
-		built = { path, digest, cached: false };
+		built = { path, digest: await sha256File(path), cached };
 	} catch (error) {
 		failure = error;
 	}
@@ -397,12 +395,7 @@ async function securityGate(
 	return gateVerdict(checks);
 }
 
-/**
- * @typedef {{ plan: import("./harness/config.mjs").RunPlan, options: import("./harness/config.mjs").RunOptions, subscription: string, controlVnetId: string,
- *   vms: import("./harness/azure.mjs").PlacedVm[], networks: import("./harness/azure.mjs").RegionNetwork[], sha: string,
- *   artifact: { path: string, digest: string }, runtime: { path: string, digest: string }, sqld: { path: string, digest: string, version: string },
- *   deployed: boolean, sqldReady: boolean }} RunState
- */
+/** @typedef {import("./harness/state.mjs").RunState} RunState */
 
 /**
  * @param {string} outDir
@@ -410,22 +403,6 @@ async function securityGate(
  */
 function saveState(outDir, state) {
 	writeFileSync(join(outDir, "state.json"), `${JSON.stringify(state, null, "\t")}\n`, { mode: 0o600 });
-}
-
-/**
- * The saved state of a kept run, for `--reuse`.
- * @param {string} runId
- * @returns {RunState}
- */
-function loadState(runId) {
-	return /** @type {RunState} */ (
-		readJsonInput((path) => readFileSync(path, "utf8"), {
-			source: "cli",
-			field: "--reuse",
-			path: join(STATE_ROOT, runId, "state.json"),
-			expected: "the id of a run kept with --keep whose topology was provisioned",
-		})
-	);
 }
 
 async function main() {
@@ -466,7 +443,7 @@ async function main() {
 				expected: "a readable JSON topology file",
 			}),
 		);
-		reused = args.reuse === undefined ? undefined : loadState(args.reuse);
+		reused = args.reuse === undefined ? undefined : loadState(args.reuse, STATE_ROOT, args.out);
 		const replay =
 			reused !== undefined
 				? {
@@ -1045,7 +1022,7 @@ async function main() {
 			ok: null,
 			kept: true,
 			expiresAt: plan.expiresAt,
-			reuse: `node test/distributed/run.mjs --reuse ${plan.runId}`,
+			reuse: reuseCommand(plan.runId, args.out),
 			sweep: `node test/distributed/sweep.mjs --run-id ${plan.runId} --force`,
 		};
 	if (outcome.teardownSkipped === "nothing-provisioned")
@@ -1067,4 +1044,6 @@ async function main() {
 	return report.status === "passed" ? 0 : report.status === "cancelled" ? 130 : 1;
 }
 
-process.exitCode = await main();
+if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	process.exitCode = await main();
+}

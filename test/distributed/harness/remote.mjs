@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 import { retrying, runCommand, shellQuote } from "./commands.mjs";
-import { agentCommandError, DistributedProvisionError, isCancellation } from "./errors.mjs";
+import { agentCommandError, DistributedProvisionError, DistributedTimeoutError, isCancellation } from "./errors.mjs";
 
 export const REMOTE_ROOT = "/opt/adt";
 export const NODE_BIN = `${REMOTE_ROOT}/node/bin/node`;
@@ -28,6 +28,61 @@ export function sha256File(path) {
 			.on("error", reject)
 			.on("end", () => resolve(hash.digest("hex")));
 	});
+}
+
+const UNDO_BUDGET_MS = 90 * 60_000;
+
+export class UndoScope {
+	/** @type {AbortSignal | undefined} */
+	#current;
+
+	/** @param {{ signal?: AbortSignal | undefined, budgetMs?: number }} init */
+	constructor({ signal, budgetMs = UNDO_BUDGET_MS }) {
+		this.#current = signal;
+		this.budgetMs = budgetMs;
+	}
+
+	get signal() {
+		return this.#current;
+	}
+
+	/**
+	 * @template {object} T
+	 * @param {T} target
+	 * @returns {T}
+	 */
+	bind(target) {
+		return Object.create(target, { signal: { get: () => this.#current, enumerable: true } });
+	}
+
+	/**
+	 * @template T
+	 * @param {() => Promise<T>} step
+	 * @returns {Promise<T>}
+	 */
+	async undo(step) {
+		const controller = new AbortController();
+		const started = performance.now();
+		const timer = setTimeout(
+			() =>
+				controller.abort(
+					new DistributedTimeoutError({
+						phase: "fault undo",
+						timeoutMs: this.budgetMs,
+						elapsedMs: Math.round(performance.now() - started),
+					}),
+				),
+			this.budgetMs,
+		);
+		const previous = this.#current;
+		this.#current = controller.signal;
+		try {
+			return await step();
+		} finally {
+			clearTimeout(timer);
+			this.#current = previous;
+		}
+	}
 }
 
 export class Host {
@@ -334,18 +389,51 @@ export async function unitState(host, unit) {
 	);
 }
 
+const FILE_MISSING = 3;
+
 /**
- * Reads a JSON-lines file the agent wrote.
+ * Reads a JSON-lines file the agent wrote; `undefined` when it does not exist.
+ * @param {Host} host
+ * @param {string} path
+ * @returns {Promise<import("./invariants.mjs").WriterRecord[] | undefined>}
+ */
+export async function readJsonLinesFile(host, path) {
+	const quoted = shellQuote(path);
+	const result = await host.run(`if [ -e ${quoted} ]; then cat ${quoted}; else exit ${FILE_MISSING}; fi`, {
+		operation: `read ${path}`,
+		allowExitCodes: [FILE_MISSING],
+	});
+	if (result.exitCode === FILE_MISSING) return undefined;
+	return result.stdout
+		.split("\n")
+		.filter((line) => line.startsWith("{"))
+		.map((line) => JSON.parse(line));
+}
+
+/**
  * @param {Host} host
  * @param {string} path
  * @returns {Promise<import("./invariants.mjs").WriterRecord[]>}
  */
 export async function readJsonLines(host, path) {
-	const result = await host.run(`cat ${shellQuote(path)} 2>/dev/null || true`, { operation: `read ${path}` });
-	return result.stdout
-		.split("\n")
-		.filter((line) => line.startsWith("{"))
-		.map((line) => JSON.parse(line));
+	return (await readJsonLinesFile(host, path)) ?? [];
+}
+
+/**
+ * @param {readonly { holder: string, host: Host, acks: string }[]} writers
+ * @returns {Promise<{ records: import("./invariants.mjs").WriterRecord[], missing: { holder: string, host: string, path: string }[] }>}
+ */
+export async function readWriterEvidence(writers) {
+	/** @type {import("./invariants.mjs").WriterRecord[]} */
+	const records = [];
+	/** @type {{ holder: string, host: string, path: string }[]} */
+	const missing = [];
+	for (const { holder, host, acks } of writers) {
+		const lines = await readJsonLinesFile(host, acks);
+		if (lines === undefined) missing.push({ holder, host: host.name, path: acks });
+		else records.push(...lines);
+	}
+	return { records, missing };
 }
 
 /**

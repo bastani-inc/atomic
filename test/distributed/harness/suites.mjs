@@ -32,8 +32,11 @@ import {
 	REF_DIR,
 	REMOTE_ROOT,
 	readJsonLines,
+	readJsonLinesFile,
+	readWriterEvidence,
 	SECRETS,
 	startAgentUnit,
+	UndoScope,
 	unitState,
 	waitFor,
 } from "./remote.mjs";
@@ -167,7 +170,8 @@ export function selectedSuites(selection) {
  * @typedef {(fault: FaultRecord, mark: (event: string) => void, injecting: () => void) => Promise<void>} ApplyStep
  * @typedef {{ profile: string, target: string, parameters: Record<string, unknown>, apply: ApplyStep, revert?: FaultStep,
  *   recover?: FaultStep, cleanup?: FaultStep }} FaultSpec
- * @typedef {{ profiles: readonly string[], faults: FaultRecord[], started: number, log: (line: string) => void, signal?: AbortSignal }} FaultRun
+ * @typedef {{ profiles: readonly string[], faults: FaultRecord[], started: number, log: (line: string) => void, signal?: AbortSignal,
+ *   undo?: <T>(step: () => Promise<T>) => Promise<T> }} FaultRun
  */
 
 /**
@@ -176,7 +180,7 @@ export function selectedSuites(selection) {
  * the observation failed, so a revert must tolerate a fault that was only partly applied; `recover` observes recovery
  * when nothing failed; `cleanup` always runs last. The first failure becomes the fault's `fault-failed` error and
  * every later one is attached to it as its cleanup cause. A cancellation from any step is rethrown once the revert and
- * cleanup ran.
+ * cleanup ran. With `run.undo`, `revert` and `cleanup` run inside it.
  * @param {FaultRun} run
  * @param {FaultSpec} spec
  * @returns {Promise<FaultRecord | undefined>}
@@ -214,6 +218,11 @@ export async function exerciseProfile(run, { profile, target, parameters, apply,
 	};
 	/** @param {FaultStep | undefined} step */
 	const after = (step) => (step === undefined ? undefined : () => step(fault, mark));
+	/** @param {FaultStep | undefined} step */
+	const undoing = (step) => {
+		const undo = run.undo;
+		return step === undefined || undo === undefined ? after(step) : () => undo(() => step(fault, mark));
+	};
 	mark("begin");
 	await attempt(
 		() =>
@@ -222,9 +231,9 @@ export async function exerciseProfile(run, { profile, target, parameters, apply,
 			}),
 		() => (fault.applied ? "observe" : "apply"),
 	);
-	if (injected || fault.applied) await attempt(after(revert), () => "recover");
+	if (injected || fault.applied) await attempt(undoing(revert), () => "recover");
 	if (failures.length === 0) await attempt(after(recover), () => "recover");
-	await attempt(after(cleanup), () => "recover");
+	await attempt(undoing(cleanup), () => "recover");
 	if (failures.length === 0) {
 		mark("end");
 		return fault;
@@ -257,8 +266,13 @@ const sleep = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(
  */
 export async function runSmoke(ctx) {
 	const { attempt } = ctx;
+	const scope = new UndoScope({ signal: ctx.signal });
+	const nodes = ctx.nodes.map((node) => scope.bind(node));
+	const primary = scope.bind(ctx.primary);
+	const replicaHost = scope.bind(ctx.replica);
+	const azure = scope.bind(ctx.azure);
 	const journalRun = `${ctx.runId}-smoke-${attempt}`;
-	const shared = (/** @type {Host} */ via = ctx.primary) => [
+	const shared = (/** @type {Host} */ via = primary) => [
 		"--ref-dir",
 		REF_DIR,
 		"--journal",
@@ -277,6 +291,7 @@ export async function runSmoke(ctx) {
 		faults,
 		started: ctx.started,
 		log: ctx.log,
+		undo: (step) => scope.undo(step),
 		...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
 	};
 	/** @type {{ holder: string, epoch: number, outcome: "rejected" | "appended", error?: { name: string } }[]} */
@@ -285,8 +300,8 @@ export async function runSmoke(ctx) {
 	const writers = new Map();
 	/** @type {Record<string, unknown>} */
 	const metrics = {};
-	const vmNode = ctx.nodes.find((node) => node.roles.includes("vm-faults")) ?? ctx.nodes[ctx.nodes.length - 1];
-	const others = ctx.nodes.filter((node) => node !== vmNode);
+	const vmNode = nodes.find((node) => node.roles.includes("vm-faults")) ?? nodes[nodes.length - 1];
+	const others = nodes.filter((node) => node !== vmNode);
 	const first = others.length > 0 ? ctx.random.pick(others) : vmNode;
 	const second =
 		others.find((node) => node !== first && node.region !== first.region) ??
@@ -369,7 +384,7 @@ export async function runSmoke(ctx) {
 		});
 	};
 
-	const dbIp = ctx.primary.ip;
+	const dbIp = primary.ip;
 	const port = ctx.gatewayPort;
 	let current = await startWriter(first, { lease: "acquire" });
 	await waitAcks(current, 5);
@@ -389,7 +404,7 @@ export async function runSmoke(ctx) {
 			target: host.name,
 			parameters: { kind, windowMs: 20_000 },
 			apply: async (fault, mark, injecting) => {
-				const gatewayBefore = await gatewayRequests(ctx.primary);
+				const gatewayBefore = await gatewayRequests(primary);
 				injecting();
 				await host.run(rules.apply, { operation: `${profile} apply` });
 				fault.applied = true;
@@ -400,7 +415,7 @@ export async function runSmoke(ctx) {
 				const counters = parseCounters(
 					(await host.run(rules.counters, { operation: `${profile} counters` })).stdout,
 				);
-				const gatewayDuring = (await gatewayRequests(ctx.primary)) - gatewayBefore;
+				const gatewayDuring = (await gatewayRequests(primary)) - gatewayBefore;
 				fault.observed = { acksDuringWindow: during, counters, gatewayRequestsDuringWindow: gatewayDuring };
 				fault.effectObserved =
 					kind === "full"
@@ -752,8 +767,8 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 	 * @param {(event: string) => void} mark
 	 */
 	const ensureRunning = async (mark) => {
-		if ((await ctx.azure.vmFacts(vmNode.vmName)).powerState !== "VM running") {
-			await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
+		if ((await azure.vmFacts(vmNode.vmName)).powerState !== "VM running") {
+			await azure.vmPower(vmNode.vmName, "start", { wait: false });
 			mark("start requested");
 		}
 		await vmNode.waitForSsh();
@@ -771,7 +786,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			await waitAcks(holder, 3);
 			const bootBefore = (await vmNode.agent("facts", [])).bootId;
 			injecting();
-			await ctx.azure.vmPower(vmNode.vmName, "restart", { wait: false });
+			await azure.vmPower(vmNode.vmName, "restart", { wait: false });
 			fault.applied = true;
 			mark("restart requested");
 			const bootAfter = await waitFor(
@@ -808,9 +823,9 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		apply: async (fault, mark, injecting) => {
 			const bootBefore = (await vmNode.agent("facts", [])).bootId;
 			injecting();
-			await ctx.azure.vmPower(vmNode.vmName, "deallocate");
+			await azure.vmPower(vmNode.vmName, "deallocate");
 			fault.applied = true;
-			const power = (await ctx.azure.vmFacts(vmNode.vmName)).powerState;
+			const power = (await azure.vmFacts(vmNode.vmName)).powerState;
 			mark(`power state ${power}`);
 			fault.observed = { powerStateWhileDeallocated: power, bootBefore };
 			fault.effectObserved = power === "VM deallocated";
@@ -835,15 +850,16 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			target: vmNode.vmName,
 			parameters: { nic },
 			apply: async (fault, mark, injecting) => {
-				const before = await ctx.azure.vmFacts(vmNode.vmName);
+				await stopWriter(current);
+				const before = await azure.vmFacts(vmNode.vmName);
 				fault.observed = { nicsBefore: before.nics };
 				injecting();
-				await ctx.azure.vmPower(vmNode.vmName, "deallocate");
-				await ctx.azure.vmNic(vmNode.vmName, nic, "remove");
+				await azure.vmPower(vmNode.vmName, "deallocate");
+				await azure.vmNic(vmNode.vmName, nic, "remove");
 				fault.applied = true;
-				await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
+				await azure.vmPower(vmNode.vmName, "start", { wait: false });
 				await vmNode.waitForSsh();
-				const detached = await ctx.azure.vmFacts(vmNode.vmName);
+				const detached = await azure.vmFacts(vmNode.vmName);
 				const guestLinks = Number(
 					(await vmNode.run("ip -o link show | grep -vc ' lo:'", { operation: "count links" })).stdout.trim(),
 				);
@@ -857,9 +873,9 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 				/** @type {unknown} */
 				let failure;
 				try {
-					if ((await ctx.azure.vmFacts(vmNode.vmName)).nics < Number(fault.observed.nicsBefore)) {
-						await ctx.azure.vmPower(vmNode.vmName, "deallocate");
-						await ctx.azure.vmNic(vmNode.vmName, nic, "add");
+					if ((await azure.vmFacts(vmNode.vmName)).nics < Number(fault.observed.nicsBefore)) {
+						await azure.vmPower(vmNode.vmName, "deallocate");
+						await azure.vmNic(vmNode.vmName, nic, "add");
 						mark("NIC re-added");
 					}
 				} catch (error) {
@@ -874,7 +890,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 				if (failure !== undefined) throw failure;
 			},
 			recover: async (fault, mark) => {
-				const restored = await ctx.azure.vmFacts(vmNode.vmName);
+				const restored = await azure.vmFacts(vmNode.vmName);
 				fault.observed = { ...fault.observed, nicsRestored: restored.nics };
 				current = await startWriter(vmNode, { count: "5" });
 				await waitEvent(current, "done", 240_000);
@@ -893,7 +909,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 	const integrity = await first.agent("integrity", shared());
 	const replica = await waitFor(
 		async () => {
-			const copy = await first.agent("read", [...shared(ctx.replica), "--run", journalRun]);
+			const copy = await first.agent("read", [...shared(replicaHost), "--run", journalRun]);
 			return copy.entries.length === read.entries.length ? copy : undefined;
 		},
 		{
@@ -906,15 +922,20 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		if (isCancellation(error, ctx.signal)) throw error;
 		return { error: serializeDistributedError(error) };
 	});
-	/** @type {import("./invariants.mjs").WriterRecord[]} */
-	const allRecords = [];
-	for (const holder of writers.keys()) allRecords.push(...(await records(holder)));
+	const evidence = await readWriterEvidence([...writers].map(([holder, writer]) => ({ holder, ...writer })));
+	const allRecords = evidence.records;
 	const invariants = checkJournalInvariants({
 		entries: read.entries,
 		records: allRecords,
 		fencing,
 		integrity: integrity.result,
 		expectations: { minAcks: 10, requireCompletion: true },
+	});
+	invariants.push({
+		name: "writer-evidence-complete",
+		passed: evidence.missing.length === 0,
+		expected: { writers: writers.size, missing: [] },
+		actual: { writers: writers.size, missing: evidence.missing.map((item) => item.holder) },
 	});
 	const lastEntry = read.entries.at(-1);
 	invariants.push({
@@ -1053,7 +1074,14 @@ async function runDiskProfiles(ctx, host, faultRun) {
 				}
 				const read = await host.agent("read", [...journal, "--run", journalRun]);
 				const integrity = await host.agent("integrity", journal);
-				const all = await writer.records();
+				const evidence = await readJsonLinesFile(host, acks);
+				invariants.push({
+					name: `${profile}/writer-evidence-complete`,
+					passed: evidence !== undefined,
+					expected: { writers: 1, missing: [] },
+					actual: { writers: 1, missing: evidence === undefined ? [holder] : [] },
+				});
+				const all = evidence ?? [];
 				const preFault =
 					typeof fault.observed.acksBeforeFault === "number" ? fault.observed.acksBeforeFault : undefined;
 				const considered =

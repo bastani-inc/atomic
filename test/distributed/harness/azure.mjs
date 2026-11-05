@@ -7,8 +7,13 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import { azJson, retrying, settleAll } from "./commands.mjs";
-import { DistributedPrerequisiteError, DistributedProvisionError, isCancellation } from "./errors.mjs";
-import { allocateAddressSpaces, subnetOf, subnetRules } from "./network.mjs";
+import {
+	attachConcurrentFailures,
+	DistributedPrerequisiteError,
+	DistributedProvisionError,
+	isCancellation,
+} from "./errors.mjs";
+import { addressConflicts, allocateAddressSpaces, allocationSkip, subnetOf, subnetRules } from "./network.mjs";
 import { networkNames, RUN_TAG, runTags, tagArguments } from "./ownership.mjs";
 
 /**
@@ -17,9 +22,13 @@ import { networkNames, RUN_TAG, runTags, tagArguments } from "./ownership.mjs";
  * @typedef {import("./config.mjs").VmPlan} VmPlan
  * @typedef {VmPlan & { privateIp: string, secondaryIp?: string, nics: string[] }} PlacedVm
  * @typedef {{ region: string, prefix: string, vnetId: string, names: ReturnType<typeof networkNames> }} RegionNetwork
+ * @typedef {RegionNetwork & { rejection?: unknown }} RegionClaim
+ * @typedef {import("./network.mjs").ControlPeer} ControlPeer
  */
 
 const AZ_TIMEOUT_MS = 20 * 60_000;
+
+export const ADDRESS_ATTEMPTS = 5;
 
 /**
  * @typedef {{ tool: string, what: string, why: string, fix: string }} ToolRequirement
@@ -220,32 +229,35 @@ export class AzureRun {
 		}
 	}
 
-	/** Address prefixes already in use by the control VNet's peers and by other runs' VNets. */
-	async usedPrefixes() {
-		const peers = /** @type {string[][]} */ (
-			await this.az(
-				[
-					"network",
-					"vnet",
-					"peering",
-					"list",
-					"--resource-group",
-					this.control.resourceGroup,
-					"--vnet-name",
-					this.control.vnet,
-					"--query",
-					"[].remoteAddressSpace.addressPrefixes",
-				],
-				"list control peer prefixes",
-			)
+	async controlPeers() {
+		/** @type {ControlPeer[] | null} */
+		const peers = await this.az(
+			[
+				"network",
+				"vnet",
+				"peering",
+				"list",
+				"--resource-group",
+				this.control.resourceGroup,
+				"--vnet-name",
+				this.control.vnet,
+				"--query",
+				"[].{name:name,prefixes:remoteAddressSpace.addressPrefixes}",
+			],
+			"list control peerings",
 		);
+		return peers ?? [];
+	}
+
+	async usedPrefixes() {
+		const peers = await this.controlPeers();
 		const tagged = /** @type {string[][]} */ (
 			await this.az(
 				["network", "vnet", "list", "--query", `[?tags."${RUN_TAG}" != null].addressSpace.addressPrefixes`],
 				"list run VNet prefixes",
 			)
 		);
-		return [...this.controlPrefixes, ...(peers ?? []).flat(), ...(tagged ?? []).flat()];
+		return [...this.controlPrefixes, ...peers.flatMap((peer) => peer.prefixes ?? []), ...(tagged ?? []).flat()];
 	}
 
 	async createGroup() {
@@ -268,51 +280,18 @@ export class AzureRun {
 	}
 
 	/**
-	 * Allocates one /16 per region and creates the VNets first, so a run starting a moment later already sees these
-	 * prefixes as taken; then each region's NSG with its rules and the private subnet, then the peerings.
+	 * Claims one /16 per region, then creates each region's NSG with its rules and the private subnet, then the
+	 * remaining peerings.
 	 */
 	async createNetworks() {
-		const allocated = allocateAddressSpaces(
-			this.plan.vnetRegions,
-			await this.usedPrefixes(),
-			this.topology.addressPool,
-		);
-		if (allocated === undefined) {
-			throw new DistributedProvisionError({
-				step: "allocate address space",
-				resource: "10.60.0.0/16 pool",
-				detail: "no free /16 left in the pool",
-			});
-		}
+		const claims = await this.claimAddressSpaces();
+		const allocated = new Map(claims.map((claim) => [claim.region, claim.prefix]));
 		const runPrefixes = [...allocated.values()];
 		const databaseVms = this.plan.vms.filter((vm) => vm.kind === "database");
 		const hostIp = (/** @type {VmPlan} */ vm) =>
 			subnetOf(/** @type {string} */ (allocated.get(vm.region))).host(vm.hostIndex);
 		await settleAll(
-			this.plan.vnetRegions.map(async (region) => {
-				const prefix = /** @type {string} */ (allocated.get(region));
-				const names = networkNames(this.plan.runId, region);
-				/** @type {{ newVNet: { id: string } }} */
-				const vnet = await this.create({
-					kind: "vnet",
-					name: names.vnet,
-					step: "create VNet",
-					args: [
-						"network",
-						"vnet",
-						"create",
-						"--resource-group",
-						this.plan.resourceGroup,
-						"--name",
-						names.vnet,
-						"--location",
-						region,
-						"--address-prefixes",
-						prefix,
-						"--tags",
-						...this.tags,
-					],
-				});
+			claims.map(async ({ region, prefix, vnetId, names }) => {
 				await this.create({
 					kind: "nsg",
 					name: names.nsg,
@@ -398,68 +377,197 @@ export class AzureRun {
 						"false",
 					],
 				});
-				this.networks.set(region, { region, prefix, vnetId: vnet.newVNet.id, names });
+				this.networks.set(region, { region, prefix, vnetId, names });
 			}),
 		);
 		await this.createPeerings();
 	}
 
-	async createPeerings() {
-		const peer = (
-			/** @type {string} */ group,
-			/** @type {string} */ vnet,
-			/** @type {string} */ name,
-			/** @type {string} */ remote,
-			/** @type {string} */ scope,
-		) =>
-			this.create({
-				kind: "peering",
+	/** @returns {Promise<RegionClaim[]>} */
+	async claimAddressSpaces() {
+		const pool = this.topology.addressPool;
+		const poolLabel = `10.${pool.firstSecondOctet}.0.0-10.${pool.lastSecondOctet}.255.255 pool`;
+		/** @type {string[]} */
+		const lost = [];
+		/** @type {unknown} */
+		let lastRejection;
+		for (let attempt = 1; attempt <= ADDRESS_ATTEMPTS; attempt++) {
+			const allocated = allocateAddressSpaces(
+				this.plan.vnetRegions,
+				[...(await this.usedPrefixes()), ...lost],
+				pool,
+				allocationSkip(this.plan.runId, attempt),
+			);
+			if (allocated === undefined) {
+				throw new DistributedProvisionError({
+					step: "allocate address space",
+					resource: poolLabel,
+					detail: "no free /16 left in the pool",
+					cause: lastRejection,
+				});
+			}
+			const claims = await settleAll([...allocated].map(([region, prefix]) => this.claimRegion(region, prefix)));
+			const peers = await this.controlPeers();
+			const conflicts = addressConflicts(
+				allocated,
+				peers,
+				claims.map((claim) => claim.names.fromControl),
+			);
+			const conflicted = new Set(conflicts.map((conflict) => conflict.region));
+			const rejected = claims.filter((claim) => claim.rejection !== undefined);
+			const unexplained = rejected.filter((claim) => !conflicted.has(claim.region)).map((claim) => claim.rejection);
+			if (unexplained.length > 0) throw attachConcurrentFailures(unexplained[0], unexplained.slice(1));
+			if (conflicts.length === 0) return claims;
+			lastRejection = rejected[0]?.rejection;
+			lost.push(...[...conflicted].map((region) => /** @type {string} */ (allocated.get(region))));
+			const listed = new Set(peers.map((peer) => peer.name));
+			await settleAll(claims.map((claim) => this.releaseClaim(claim, listed.has(claim.names.fromControl))));
+		}
+		throw new DistributedProvisionError({
+			step: "allocate address space",
+			resource: poolLabel,
+			detail: `concurrent runs took ${[...new Set(lost)].join(", ")} on all ${ADDRESS_ATTEMPTS} attempts`,
+			cause: lastRejection,
+		});
+	}
+
+	/**
+	 * @param {string} region @param {string} prefix
+	 * @returns {Promise<RegionClaim>}
+	 */
+	async claimRegion(region, prefix) {
+		const names = networkNames(this.plan.runId, region);
+		/** @type {{ newVNet: { id: string } }} */
+		const vnet = await this.create({
+			kind: "vnet",
+			name: names.vnet,
+			step: "create VNet",
+			args: [
+				"network",
+				"vnet",
+				"create",
+				"--resource-group",
+				this.plan.resourceGroup,
+				"--name",
+				names.vnet,
+				"--location",
+				region,
+				"--address-prefixes",
+				prefix,
+				"--tags",
+				...this.tags,
+			],
+		});
+		/** @type {RegionClaim} */
+		const claim = { region, prefix, vnetId: vnet.newVNet.id, names };
+		try {
+			await this.peer(
+				this.control.resourceGroup,
+				this.control.vnet,
+				names.fromControl,
+				claim.vnetId,
+				this.controlScope(),
+			);
+		} catch (error) {
+			if (isCancellation(error, this.signal)) throw error;
+			claim.rejection = error;
+		}
+		return claim;
+	}
+
+	/** @param {RegionClaim} claim @param {boolean} peered */
+	async releaseClaim({ names }, peered) {
+		const scope = this.controlScope();
+		if (peered) {
+			await this.release("peering", names.fromControl, scope, [
+				"network",
+				"vnet",
+				"peering",
+				"delete",
+				"--resource-group",
+				this.control.resourceGroup,
+				"--vnet-name",
+				this.control.vnet,
+				"--name",
+				names.fromControl,
+			]);
+		}
+		await this.release("vnet", names.vnet, this.plan.resourceGroup, [
+			"network",
+			"vnet",
+			"delete",
+			"--resource-group",
+			this.plan.resourceGroup,
+			"--name",
+			names.vnet,
+		]);
+	}
+
+	/**
+	 * @param {string} kind @param {string} name @param {string} scope @param {readonly string[]} args
+	 */
+	async release(kind, name, scope, args) {
+		const step = "release conflicting address space";
+		try {
+			await this.az(args, `${step} ${name}`);
+		} catch (error) {
+			if (isCancellation(error, this.signal)) throw error;
+			throw new DistributedProvisionError({ step, resource: name, cause: error });
+		}
+		this.manifest.mark(kind, name, scope, "deleted");
+	}
+
+	controlScope() {
+		return `${this.control.resourceGroup}/${this.control.vnet}`;
+	}
+
+	/**
+	 * @param {string} group @param {string} vnet @param {string} name @param {string} remote @param {string} scope
+	 */
+	peer(group, vnet, name, remote, scope) {
+		return this.create({
+			kind: "peering",
+			name,
+			scope,
+			step: "create VNet peering",
+			args: [
+				"network",
+				"vnet",
+				"peering",
+				"create",
+				"--resource-group",
+				group,
+				"--vnet-name",
+				vnet,
+				"--name",
 				name,
-				scope,
-				step: "create VNet peering",
-				args: [
-					"network",
-					"vnet",
-					"peering",
-					"create",
-					"--resource-group",
-					group,
-					"--vnet-name",
-					vnet,
-					"--name",
-					name,
-					"--remote-vnet",
-					remote,
-					"--allow-vnet-access",
-					"true",
-					"--allow-forwarded-traffic",
-					"false",
-				],
-			});
+				"--remote-vnet",
+				remote,
+				"--allow-vnet-access",
+				"true",
+				"--allow-forwarded-traffic",
+				"false",
+			],
+		});
+	}
+
+	async createPeerings() {
 		const networks = [...this.networks.values()];
-		const control = `${this.control.resourceGroup}/${this.control.vnet}`;
 		await settleAll(
-			networks.map(async (network) => {
-				await peer(
-					this.control.resourceGroup,
-					this.control.vnet,
-					network.names.fromControl,
-					network.vnetId,
-					control,
-				);
-				await peer(
+			networks.map((network) =>
+				this.peer(
 					this.plan.resourceGroup,
 					network.names.vnet,
 					network.names.toControl,
 					this.controlVnetId,
 					this.plan.resourceGroup,
-				);
-			}),
+				),
+			),
 		);
 		for (const network of networks) {
 			for (const other of networks) {
 				if (other !== network)
-					await peer(
+					await this.peer(
 						this.plan.resourceGroup,
 						network.names.vnet,
 						network.names.toRegion(other.region),

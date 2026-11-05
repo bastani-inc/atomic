@@ -14,10 +14,11 @@
  * sweep to one run; with `--force` it ignores that run's TTL. Schedule it (cron or a CI timer) to collect runs whose
  * controller died.
  */
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { azJson } from "./harness/commands.mjs";
 import { parseControlEnv, RUN_ID_PATTERN } from "./harness/config.mjs";
-import { DistributedConfigError, serializeDistributedError } from "./harness/errors.mjs";
+import { DistributedConfigError, isCancellation, serializeDistributedError } from "./harness/errors.mjs";
 import { planSweep, RUN_TAG } from "./harness/ownership.mjs";
 import { teardownRun } from "./harness/teardown.mjs";
 
@@ -157,9 +158,17 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 	);
 	/** @type {{ runId: string, ok: boolean, remaining: string[], queries: import("./harness/teardown.mjs").QueryRecord[], error?: import("./harness/errors.mjs").SerializedError }[]} */
 	const runs = [];
-	if (dryRun) return { plan, runs };
-	for (const resource of plan.resources)
-		await az(["resource", "delete", "--ids", resource.id], `delete ${resource.id}`);
+	/** @type {{ id: string, runId: string, error: import("./harness/errors.mjs").SerializedError }[]} */
+	const deleteFailures = [];
+	if (dryRun) return { plan, runs, deleteFailures };
+	for (const resource of plan.resources) {
+		try {
+			await az(["resource", "delete", "--ids", resource.id], `delete ${resource.id}`);
+		} catch (error) {
+			if (isCancellation(error)) throw error;
+			deleteFailures.push({ id: resource.id, runId: resource.runId, error: serializeDistributedError(error) });
+		}
+	}
 	const runIds = [
 		...new Set([
 			...plan.groups.map((group) => group.runId),
@@ -188,7 +197,12 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 			...(result.error === undefined ? {} : { error: serializeDistributedError(result.error) }),
 		});
 	}
-	return { plan, runs };
+	return { plan, runs, deleteFailures };
+}
+
+/** @param {{ runs: readonly { ok: boolean }[], deleteFailures: readonly { id: string }[] }} result */
+export function sweepExitCode(result) {
+	return result.runs.every((run) => run.ok) && result.deleteFailures.length === 0 ? 0 : 1;
 }
 
 async function main() {
@@ -216,11 +230,13 @@ async function main() {
 			log: (line) => process.stderr.write(`${line}\n`),
 		});
 		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-		return result.runs.every((run) => run.ok) ? 0 : 1;
+		return sweepExitCode(result);
 	} catch (error) {
 		process.stderr.write(`Sweep failed: ${error instanceof Error ? error.message : String(error)}\n`);
 		return 1;
 	}
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) process.exitCode = await main();
+if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	process.exitCode = await main();
+}

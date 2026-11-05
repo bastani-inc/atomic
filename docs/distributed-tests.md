@@ -49,7 +49,9 @@ are looked up on `PATH`; `az` is called only once it is found:
    flag or field, raised before any side effect.
 2. Creates a dedicated resource group `<run-id>-rg`, one VNet per region (`10.60.0.0/16` upward, skipping the control
    VNet's address space and prefixes already peered to it or owned by other runs), NSGs, peerings to the control VNet
-   and between the run's VNets, private NICs and VMs. Every taggable resource carries
+   and between the run's VNets, private NICs and VMs. It claims address space through the control-side peering before
+   creating any subnet, checks for overlaps, and reallocates up to five times if another run won the same ranges.
+   Every taggable resource carries
    `atomic-distributed-test=<run-id>` and `atomic-distributed-test-expiry=<ISO time>`. Each resource is written to
    `manifest.json` before the command that creates it.
 3. Resolves `--ref` to a SHA through its exact name only: a full refname (`refs/...`) as given, otherwise
@@ -58,7 +60,8 @@ are looked up on `PATH`; `az` is called only once it is found:
    ambiguous; pass the full refname instead. The report records the refname used. The harness builds the ref once on
    Crabbox (`npm ci --ignore-scripts` and `npm run build`), caches the tarball by SHA under
    `$XDG_CACHE_HOME/atomic-distributed-test/artifacts/`, and copies identical bytes to every node, checking the
-   SHA-256 on each.
+   SHA-256 on each. Concurrent cache writers use separate staging files and atomically publish one complete entry
+   without overwriting an entry another run is using.
 4. Starts `sqld` (`v0.24.33`, digest-pinned) as a primary and a replica with namespaces, JWT authentication and
    replication over mutual TLS, behind a TLS gateway on each database VM's private address.
 5. Runs the security gate. Any failure aborts the run before a scenario starts and tears everything down.
@@ -144,11 +147,13 @@ feature adds its scenarios to `test/distributed/harness/suites.mjs` and sets `im
 A chain of writers holds the lease on one run in the shared journal (the `smoke` namespace on sqld, opened through
 `@bastani/atomic-storage-libsql` from the deployed ref) and appends keyed checkpoints, recording every acknowledged
 append. Each chaos profile is applied to the writer's node or VM and its effect is observed. Whenever the fault was
-applied it is reverted, even when observing it failed, so a failed profile never leaves a partition, qdisc, skewed
-clock, cgroup or device-mapper target behind for the next one. The writers then recover on their own, taking an
-expired lease over at the next epoch where a writer died. The disk profiles
-use local SQLite journals on device-mapper volumes on one node. At the end the suite checks:
+applied it is reverted, even when observing it failed. Revert and cleanup commands use a separate signal with a
+90-minute budget that covers sequential VM recovery commands, so cancelling a run does not prevent them from starting.
+Undo failures are retained alongside the original error. The writers recover by taking an expired lease over at the
+next epoch where a writer died. The disk profiles use local SQLite journals on device-mapper volumes on one node.
+At the end the suite checks:
 
+- every writer's acknowledgement file is readable; a missing file fails the evidence check rather than reducing the history;
 - every acknowledged checkpoint is in the journal with the same sequence, epoch and payload digest;
 - no key is stored twice, and checkpoint indexes have no gaps;
 - sequence numbers increase and lease epochs never go back (fencing);
@@ -199,7 +204,8 @@ same values; explicit flags override them. A seed reproduces choices and their o
 timing.
 
 `--keep` leaves the topology up after the run, unless its security gate failed. `--reuse <run-id>` runs the security
-gate and the suites again on a kept topology, which is the fast way to iterate on a scenario.
+gate and the suites again on a kept topology, which is the fast way to iterate on a scenario. If the kept run used
+`--out <dir>`, pass the same directory with `--reuse <run-id> --out <dir>`. The report includes that reuse command.
 
 ## Evidence
 
@@ -241,7 +247,8 @@ node test/distributed/sweep.mjs --run-id <run-id> --force   # delete one run now
 ```
 
 It re-reads each candidate's tags, never deletes a group with a missing or malformed expiry, removes
-control VNet peerings whose run group is gone or expired, and runs the same absence queries.
+control VNet peerings whose run group is gone or expired, and runs the same absence queries. If one straggler deletion
+fails, it continues with the remaining deletions and expired runs, reports each failure, and exits nonzero.
 
 Cost is bounded by the topology's size, `--ttl-hours` (default 6) and the sweeper; there is no spending limit. A
 smoke run uses five VMs (16 vCPUs) for roughly an hour; `--chaos none` or a short profile list makes it cheaper, and
