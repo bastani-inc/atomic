@@ -149,6 +149,7 @@ describe("validating persisted snapshot entries", () => {
 	const check = (entry: object) => () =>
 		validateSessionEntryStructure([{ ...base, ...entry } as never], "/sessions/file.jsonl");
 	const record = { id: "s1", tree: "t1", chain: [] };
+	const restored = { from: "/old", to: "/r", snapshotId: "s1", tree: "t", restoredAt: "x" };
 
 	test("accepts a reference, a stored snapshot, a restore and carried blobs", () => {
 		assert.doesNotThrow(check({ root: "/r", snapshotId: "s1" }));
@@ -158,6 +159,17 @@ describe("validating persisted snapshot entries", () => {
 				root: "/r",
 				snapshotId: "s1",
 				restore: { from: "/old", to: "/r", snapshotId: "s1", tree: "t", restoredAt: "x" },
+			}),
+		);
+		assert.doesNotThrow(
+			check({
+				root: "/r",
+				snapshotId: "s1",
+				restore: { from: "/old", to: "/r", snapshotId: "s1", tree: "t", restoredAt: "x" },
+				restoreWarnings: [
+					{ code: "lfs-objects-unavailable", paths: ["a.bin"] },
+					{ code: "stale-restore-retained", path: "/host/restores" },
+				],
 			}),
 		);
 		assert.doesNotThrow(check({ root: "/r", snapshotId: "s1", blobs: { a: "AA==", b: "BB==" } }));
@@ -197,6 +209,24 @@ describe("validating persisted snapshot entries", () => {
 			["array blobs", { root: "/r", snapshotId: "s1", blobs: ["AA=="] }],
 			["blobs with a non-string value", { root: "/r", snapshotId: "s1", blobs: { a: "AA==", b: 5 } }],
 			["blobs whose first value is not a string", { root: "/r", snapshotId: "s1", blobs: { a: 5, b: "AA==" } }],
+			...(
+				[
+					["restore warnings without a restore", undefined, []],
+					["restore warnings that are not a list", restored, { code: "stale-restore-retained", path: "/p" }],
+					["a null restore warning", restored, [null]],
+					[
+						"a restore warning the snapshot record reproduces",
+						restored,
+						[{ code: "omitted-content", omitted: [] }],
+					],
+					["LFS paths that are not a list", restored, [{ code: "lfs-objects-unavailable", paths: "a.bin" }]],
+					["an LFS path that is not a string", restored, [{ code: "lfs-objects-unavailable", paths: ["a", 5] }]],
+					["a leftover without a path", restored, [{ code: "stale-restore-retained" }]],
+				] as const
+			).map(([name, restore, restoreWarnings]): [string, object] => [
+				name,
+				{ root: "/r", snapshotId: "s1", ...(restore ? { restore } : {}), restoreWarnings },
+			]),
 		];
 		for (const [name, entry] of invalid) {
 			assert.throws(

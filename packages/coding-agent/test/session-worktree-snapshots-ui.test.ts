@@ -117,6 +117,27 @@ describe("/session snapshot", () => {
 		assert.match(text, /1 file changed, 1 insertion\(\+\), 1 deletion\(-\)/);
 	});
 
+	test("lists a restored checkout once, under the worktree it was restored into (#4245)", async () => {
+		const { clone, manager } = await recordedSession();
+		writeFileSync(join(clone, "a.txt"), "drifted\n");
+		const opened = await openSessionInWorktree(manager, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			storeDir: sandbox.path("host"),
+		});
+		const [mapping] = opened.sessionManager.getWorktreeRootMappings();
+		assert.ok(mapping);
+		const host = snapshotCommandHost(opened.sessionManager);
+		await handleSessionSnapshotCommand.call(host);
+		const lines = rendered(host.chatContainer)
+			.split("\n")
+			.map((line) => line.trim());
+		assert.deepEqual(
+			lines.filter((line) => line === clone || line === mapping.to),
+			[mapping.to],
+		);
+		assert.ok(lines.includes("matches the current tree"));
+	});
+
 	test("reports a checkout that no longer exists", async () => {
 		const { clone, manager } = await recordedSession();
 		const host = snapshotCommandHost(manager);

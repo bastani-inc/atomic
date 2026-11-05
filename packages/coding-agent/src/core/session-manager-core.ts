@@ -52,6 +52,7 @@ import type {
 	SessionTreeNode,
 	SessionWorkflowMetadata,
 	UsageEntry,
+	WorktreeRestoreHostWarning,
 } from "./session-manager-types.ts";
 import {
 	assertValidSessionId,
@@ -519,13 +520,14 @@ export class SessionManager {
 	/**
 	 * Record a checkout's snapshot at the current leaf. Pass the snapshot when it is new; omit it to refer to an earlier
 	 * entry's snapshot with the same id (an unchanged capture). `restore` records that the snapshot was restored on
-	 * this host into `root`.
+	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record.
 	 */
 	appendWorktreeSnapshot(
 		root: string,
 		snapshotId: string,
 		snapshot?: WorktreeSnapshot,
 		restore?: WorktreeRootMapping,
+		restoreWarnings: readonly WorktreeRestoreHostWarning[] = [],
 	): Promise<string> {
 		return this.runMutation(async () => {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
@@ -537,7 +539,18 @@ export class SessionManager {
 			if (restore !== undefined && (restore.to !== root || restore.snapshotId !== snapshotId)) {
 				throw new WorkspaceConfigError("sdk", "restore", "a mapping to root for snapshotId");
 			}
-			const entry = createWorktreeSnapshotEntry(root, snapshotId, snapshot, restore, this.byId, this.leafId);
+			if (restore === undefined && restoreWarnings.length > 0) {
+				throw new WorkspaceConfigError("sdk", "restoreWarnings", "warnings recorded together with their restore");
+			}
+			const entry = createWorktreeSnapshotEntry(
+				root,
+				snapshotId,
+				snapshot,
+				restore,
+				restoreWarnings,
+				this.byId,
+				this.leafId,
+			);
 			await this._appendEntry(entry);
 			return entry.id;
 		});

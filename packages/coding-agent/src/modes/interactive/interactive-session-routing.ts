@@ -21,6 +21,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
+import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
@@ -345,10 +346,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus("Resumed session");
-		for (const line of worktreeRestoreNotices(this.sessionManager, resumeStartedAt)) {
-			if (line.type === "info") this.showStatus(line.message);
-			else this.showWarning(line.message);
-		}
+		showSessionNotices(this, worktreeRestoreNotices(this.sessionManager, resumeStartedAt));
 		this.startSessionRecovery("resume");
 		return result;
 	} catch (error: unknown) {

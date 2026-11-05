@@ -82,7 +82,7 @@ describe("resuming from the TUI", () => {
 		const errors: string[] = [];
 		const fatal: Array<[string, unknown]> = [];
 		const host: ResumeHost = {
-			sessionManager: { getWorktreeRootMappings: () => [], getWorktreeSnapshotRecords: () => new Map() },
+			sessionManager: { getBranch: () => [], getWorktreeSnapshotRecords: () => new Map() },
 			statusContainer: new Container(),
 			settingsManager: { getClearOnShrink: () => false },
 			firstRunNoticeVisible: false,
