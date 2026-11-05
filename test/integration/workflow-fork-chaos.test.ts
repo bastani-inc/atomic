@@ -331,7 +331,9 @@ test(
 			]);
 		} finally {
 			await backend.close();
+			database.close();
 		}
+		assert.equal(database.isOpen, false, "the caller-owned connection is closed before removing its directory");
 		assert.equal(await sourceHash(journal.path, journal.sourceId), before);
 	},
 	CHAOS_TEST_TIMEOUT_MS,
