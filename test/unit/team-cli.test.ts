@@ -515,6 +515,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 					[failure.name, failure.code, failure.retryable, failure.timeoutMs, failure.phase, failure.subject],
 					["TeamProfileTimeoutError", "connection-timeout", true, 300, "connect", url],
 				);
+				assert.ok(Number.isFinite(failure.elapsedMs) && failure.elapsedMs >= 0, `elapsed ${failure.elapsedMs} ms`);
 				assert.equal(
 					failure.message,
 					`The team database did not answer in time: ${url} (connection-timeout): no answer within 300 ms (connect). Nothing was changed. Check that the database is reachable from this machine, then run the command again.`,

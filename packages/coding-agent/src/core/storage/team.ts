@@ -207,7 +207,8 @@ export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
 /**
  * `checkConnection`, bounded by `timeoutMs`: a database that does not answer fails with a retryable
  * {@link TeamProfileTimeoutError} instead of waiting for the operating system's connection timeout. A check that
- * fails after the deadline is recorded as the timeout error's `cleanupCause`.
+ * fails after the deadline is recorded as the timeout error's `cleanupCause`. `elapsedMs` is never below `timeoutMs`:
+ * Node can fire a timer a millisecond before the wall clock shows its delay has passed.
  */
 async function checkConnectionWithin(
 	url: string,
@@ -238,7 +239,7 @@ async function checkConnectionWithin(
 	const timeout = new TeamProfileTimeoutError({
 		subject: url,
 		timeoutMs,
-		elapsedMs: Date.now() - started,
+		elapsedMs: Math.max(Date.now() - started, timeoutMs),
 		phase: "connect",
 		hint: "Nothing was changed. Check that the database is reachable from this machine, then run the command again.",
 	});

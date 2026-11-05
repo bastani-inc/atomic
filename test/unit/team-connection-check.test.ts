@@ -177,7 +177,7 @@ test("a connection check that fails after the deadline is kept as the timeout's 
 	});
 });
 
-test("a database that never answers times out exactly at the deadline, with the elapsed time measured from the start (#4320)", async () => {
+test("a database that never answers times out exactly at the deadline, and elapsedMs never reads below it when the timer fires early (#4320)", async () => {
 	installAdapter(RECORDING_ADAPTER);
 	const before = settingsText();
 	const reached = new Promise<void>((resolve) => {
@@ -197,6 +197,7 @@ test("a database that never answers times out exactly at the deadline, with the 
 	await reached;
 	await vi.advanceTimersByTimeAsync(299);
 	assert.equal(settled, false);
+	vi.setSystemTime(Date.now() - 5);
 	await vi.advanceTimersByTimeAsync(1);
 	const failure = await joining;
 	assert.ok(isTeamProfileTimeoutError(failure));
