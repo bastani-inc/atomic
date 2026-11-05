@@ -115,14 +115,12 @@ describe("/session snapshot output", () => {
 		assert.deepEqual(stat, ["    a.txt | 2 +-", "    1 file changed, 1 insertion(+), 1 deletion(-)"]);
 	});
 
-	test("a moved HEAD with the same tree shows the difference without an empty diff", async () => {
-		const { clone, manager, snapshot } = await recorded();
+	test("a descended HEAD with the same tree shows a match and the current HEAD", async () => {
+		const { clone, manager } = await recorded();
 		const moved = await sandbox.commitAll(clone, "commit the edit");
 		const host = snapshotHost(manager);
 		await snapshotCommand.call(host);
-		assert.deepEqual(plain(host.chatContainer).slice(6), [
-			`   differs from the current tree ${snapshot.tree.slice(0, 12)} at ${moved.slice(0, 12)}`,
-		]);
+		assert.deepEqual(plain(host.chatContainer).slice(6), [`   matches the current tree at ${moved.slice(0, 12)}`]);
 	});
 
 	test("a missing checkout shows why, and several checkouts are separated by a blank line", async () => {

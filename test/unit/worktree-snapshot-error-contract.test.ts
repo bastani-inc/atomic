@@ -171,6 +171,12 @@ describe("WorkspaceRestoreError messages", () => {
 			`Cannot restore workspace: no retained snapshot or warm object store has tree ${TREE} (snapshot-not-found). Pass the recorded snapshot, or restore on a host that already materialized this tree.`,
 		],
 		[
+			"snapshot-not-found for a session reference with no record",
+			"snapshot-not-found",
+			{ snapshotId: "snap9" },
+			"Cannot restore snapshot snap9: the session refers to it but holds no record of it (snapshot-not-found). Resume on the machine that recorded it, or import (`atomic --import <file>`) a session saved with `/export <file>.jsonl`, which carries its snapshots.",
+		],
+		[
 			"blob-missing patch",
 			"blob-missing",
 			{ snapshotId: "snap1", blob: "h1", role: "patch", deltaIndex: 2 },

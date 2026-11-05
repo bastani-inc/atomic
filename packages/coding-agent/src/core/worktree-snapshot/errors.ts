@@ -238,10 +238,15 @@ function restoreMessage(
 	const snapshot = fields.snapshotId ?? "binding";
 	switch (code) {
 		case "snapshot-not-found":
-			return [
-				`Cannot restore workspace: no retained snapshot or warm object store has tree ${fields.tree}`,
-				"Pass the recorded snapshot, or restore on a host that already materialized this tree.",
-			];
+			return fields.tree === undefined
+				? [
+						`Cannot restore snapshot ${snapshot}: the session refers to it but holds no record of it`,
+						"Resume on the machine that recorded it, or import (`atomic --import <file>`) a session saved with `/export <file>.jsonl`, which carries its snapshots.",
+					]
+				: [
+						`Cannot restore workspace: no retained snapshot or warm object store has tree ${fields.tree}`,
+						"Pass the recorded snapshot, or restore on a host that already materialized this tree.",
+					];
 		case "blob-missing":
 			return [
 				`Cannot restore snapshot ${snapshot}: ${fields.role ?? "snapshot"} blob ${fields.blob} is missing from storage`,

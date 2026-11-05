@@ -279,7 +279,7 @@ describe("mapRestoredPath", () => {
 describe("choosing the checkout a resumed session belongs to", () => {
 	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 
-	test("the innermost recorded checkout containing the working directory is the one verified, whatever order they were recorded in", async () => {
+	test("the innermost recorded checkout containing the working directory is restored, whatever order roots were recorded in", async () => {
 		const outer = await sandbox.remoteWithClone("outer");
 		const innerPath = join(outer.clone, "inner");
 		await sandbox.git(sandbox.root, "init", "-q", innerPath);
@@ -312,7 +312,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 					storeDir: sandbox.path(`host-${restoredRoots.length}`),
 				});
 				assert.equal(resume.status, "restored");
-				if (resume.status === "restored") assert.equal(resume.mapping.from, innerPath);
+				if (resume.status === "restored") assert.ok(resume.mappings.some((mapping) => mapping.from === innerPath));
 			} finally {
 				rmSync(join(innerPath, "drift.txt"), { force: true });
 			}
@@ -320,7 +320,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		}
 	});
 
-	test("recording disabled or no recorded checkout around the working directory means nothing to resume, without touching Git", async () => {
+	test("disabled or absent snapshots touch no Git; recorded roots outside the working directory are still verified", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const store = await sqlStore();
 		const manager = await SessionManager.create(store, clone);
@@ -340,8 +340,8 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		assert.deepEqual(await resumeSessionWorktree(elsewhere, { settings }), { status: "none" });
 		const parentOnly = await SessionManager.create(store, join(sandbox.root, "unrelated"));
 		await parentOnly.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-		assert.deepEqual(await resumeSessionWorktree(parentOnly, { settings }), { status: "none" });
-		assert.equal(lookups, 0);
+		assert.equal((await resumeSessionWorktree(parentOnly, { settings })).status, "verified");
+		assert.ok(lookups > 0);
 	});
 
 	test("verification applies the settings the snapshot was captured with", async () => {
@@ -381,10 +381,10 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		const first = await resumeSessionWorktree(manager, { settings, storeDir });
 		assert.equal(first.status, "restored");
 		if (first.status !== "restored") return;
-		assert.equal(readFileSync(join(first.mapping.to, "notes.log"), "utf8"), "recorded\n");
+		assert.equal(readFileSync(join(first.mappings[0]!.to, "notes.log"), "utf8"), "recorded\n");
 		const second = await resumeSessionWorktree(manager, { settings, storeDir });
 		assert.equal(second.status, "verified");
-		assert.deepEqual(readdirSync(join(storeDir, "worktrees")), [first.mapping.to.split(/[\\/]/).at(-1)]);
+		assert.deepEqual(readdirSync(join(storeDir, "worktrees")), [first.mappings[0]!.to.split(/[\\/]/).at(-1)]);
 		assert.equal(manager.getWorktreeRootMappings().length, 1);
 	});
 
@@ -400,21 +400,22 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		const resume = await resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") });
 		assert.equal(resume.status, "restored");
 		if (resume.status !== "restored") return;
-		assert.equal(resume.cwd, join(resume.mapping.to, "src"));
-		assert.equal(resume.mapping.from, clone);
-		assert.equal(resume.mapping.snapshotId, capture.snapshot.id);
-		assert.equal(resume.mapping.tree, capture.snapshot.tree);
-		assert.match(resume.mapping.restoredAt, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+		const mapping = resume.mappings[0]!;
+		assert.equal(resume.cwd, join(mapping.to, "src"));
+		assert.equal(mapping.from, clone);
+		assert.equal(mapping.snapshotId, capture.snapshot.id);
+		assert.equal(mapping.tree, capture.snapshot.tree);
+		assert.match(mapping.restoredAt, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
 		assert.equal(readFileSync(join(resume.cwd, "a.txt"), "utf8"), "a\n");
-		assert.deepEqual(manager.getWorktreeRootMappings(), [resume.mapping]);
+		assert.deepEqual(manager.getWorktreeRootMappings(), [mapping]);
 		const entry = snapshotEntries(manager).at(-1);
-		assert.equal(entry?.root, resume.mapping.to);
+		assert.equal(entry?.root, mapping.to);
 		assert.equal(entry?.snapshotId, capture.snapshot.id);
 		assert.equal(entry?.snapshot, undefined);
-		assert.deepEqual(entry?.restore, resume.mapping);
+		assert.deepEqual(entry?.restore, mapping);
 	});
 
-	test("a replaced checkout that is not a repository with history is an error, not a drift to restore over", async () => {
+	test("a replaced checkout without repository history is restored into a fresh worktree", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const store = await sqlStore();
 		const capture = (await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs })) as {
@@ -424,10 +425,9 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 		rmSync(join(clone, ".git"), { recursive: true });
 		await sandbox.git(clone, "init", "-q");
-		await assert.rejects(
-			resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") }),
-			(error: unknown) => isWorkspaceSnapshotError(error) && error.code === "unborn-head",
-		);
+		const result = await resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") });
+		assert.equal(result.status, "restored");
+		if (result.status === "restored") assert.notEqual(result.cwd, clone);
 	});
 
 	test("a failure that is not a typed workspace error propagates unchanged instead of being wrapped as drift", async () => {
@@ -810,17 +810,13 @@ describe("comparing a snapshot with the current tree", () => {
 		assert.equal(unknownTree.status === "differs" && unknownTree.stat, undefined);
 	});
 
-	test("a moved HEAD with an unchanged tree is a difference", async () => {
+	test("a moved HEAD descended from the recorded head with an unchanged tree is a match", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "x.txt"), "x\n");
 		const { snapshot } = (await captureWorktreeSnapshot(clone)) as { snapshot: WorktreeSnapshot };
 		const moved = await sandbox.commitAll(clone, "commit the edit");
 		const result = await compareWorktreeSnapshot(snapshot, clone, settings);
-		assert.equal(result.status, "differs");
-		assert.ok(result.status === "differs");
-		assert.equal(result.head, moved);
-		assert.equal(result.tree, snapshot.tree);
-		assert.equal(result.stat, "");
+		assert.deepEqual(result, { status: "match", tree: snapshot.tree, head: moved });
 	});
 });
 

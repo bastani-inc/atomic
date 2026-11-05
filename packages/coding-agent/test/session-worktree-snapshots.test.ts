@@ -264,9 +264,9 @@ describe("resumeSessionWorktree", () => {
 		if (resume.status !== "restored") return;
 		assert.equal(readFileSync(join(resume.cwd, "a.txt"), "utf8"), "recorded\n");
 		assert.equal(readFileSync(join(clone, "a.txt"), "utf8"), "edited after the session\n");
-		assert.equal(resume.mapping.from, clone);
-		assert.equal(resume.mapping.to, resume.cwd);
-		assert.deepEqual(manager.getWorktreeRootMappings(), [resume.mapping]);
+		assert.equal(resume.mappings[0]!.from, clone);
+		assert.equal(resume.mappings[0]!.to, resume.cwd);
+		assert.deepEqual(manager.getWorktreeRootMappings(), resume.mappings);
 		const again = await resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") });
 		assert.deepEqual(again.status === "verified" && again.cwd, resume.cwd);
 	});
