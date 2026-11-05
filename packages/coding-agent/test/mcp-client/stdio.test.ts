@@ -55,6 +55,18 @@ describe("StdioTransport", () => {
 		}
 	});
 
+	it("connects to a server whose stderr is inherited rather than piped", async () => {
+		const transport = new StdioTransport({ command: process.execPath, args: [fixture], stderr: "inherit" });
+		const client = new McpClient({ name: "stdio-test", version: "1.0.0" });
+		try {
+			await client.connect(transport);
+			assert.deepEqual(await client.listTools(), [{ name: "echo", inputSchema: { type: "object" } }]);
+			assert.equal(transport.stderr, "");
+		} finally {
+			await client.close();
+		}
+	});
+
 	it("kills a server that ignores shutdown, including its children", async () => {
 		const transport = new StdioTransport({
 			command: process.execPath,

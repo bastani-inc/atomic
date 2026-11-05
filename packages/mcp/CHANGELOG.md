@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Streamable HTTP SSE streams framed with a lone CR line ending are now split into events. Lines end at CR, LF or CRLF, a CRLF split across chunks counts once, and a CR-terminated event is delivered while the stream stays open. Before, such a stream was parsed as one line at EOF and a tool call answered this way failed with "stream ended without a response" (upstream [#11775](https://github.com/earendil-works/pi/pull/11775))
+- stdio MCP servers that send a large message in many chunks no longer slow down quadratically: the transport keeps an incomplete message as a list of chunks and joins it once when its newline arrives, instead of copying and rescanning the whole buffer on every chunk. A 1 MiB message in 4 KiB chunks now takes one `Buffer.concat` instead of 257 (upstream [#11791](https://github.com/earendil-works/pi/pull/11791))
 
 ## [0.9.71] - 2026-11-03
 
