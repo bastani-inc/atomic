@@ -456,6 +456,8 @@ test("ForkJournalUnavailableError renders each phase, its journal and whether to
 	const status = "atomic storage status shows the storage in use.";
 	const retry = `Nothing was written and run ${runId} is unchanged; retry the fork once the journal is reachable. ${status}`;
 	const resume = `Fork run ${forkRunId} was written; resume it with /workflow resume ${forkRunId} once the journal is reachable instead of forking again. ${status}`;
+	const commit = `Fork run ${forkRunId} may have been written, and its copied stage sessions were kept. Once the journal is reachable, inspect that exact run with /workflow status ${forkRunId} and resume it with /workflow resume ${forkRunId} if it exists. Do not fork run ${runId} again before that check: a missing run does not prove the write will never land. ${status}`;
+	const confirmed = `Nothing to do: fork run ${forkRunId} was written and the fork continues. If the journal keeps failing, ${status}`;
 	const cause = new Error("Storage unavailable: libsql at libsql://journal");
 	const shared = { adapter: "libsql", scope: "shared" } as const;
 	const local = { adapter: "node-sqlite", scope: "local-only" } as const;
@@ -473,6 +475,21 @@ test("ForkJournalUnavailableError renders each phase, its journal and whether to
 			fields: { runId, phase: "claim", storage: local },
 		},
 		{
+			error: new ForkJournalUnavailableError({ runId, phase: "commit", forkRunId, storage: shared }, { cause }),
+			message: `Fork journal unavailable: writing fork run ${forkRunId} of run ${runId} to the shared libsql journal could not be confirmed (journal-unavailable). ${commit}`,
+			hint: commit,
+			fields: { runId, phase: "commit", forkRunId, storage: shared },
+		},
+		{
+			error: new ForkJournalUnavailableError(
+				{ runId, phase: "commit-confirmed", forkRunId, storage: shared },
+				{ cause },
+			),
+			message: `Fork journal unavailable: writing fork run ${forkRunId} of run ${runId} to the shared libsql journal reported an error, but reading it back confirmed the fork run was written (journal-unavailable). ${confirmed}`,
+			hint: confirmed,
+			fields: { runId, phase: "commit-confirmed", forkRunId, storage: shared },
+		},
+		{
 			error: new ForkJournalUnavailableError({ runId, phase: "hydrate", forkRunId, storage: shared }, { cause }),
 			message: `Fork journal unavailable: loading fork run ${forkRunId} of run ${runId} from the shared libsql journal (journal-unavailable). ${resume}`,
 			hint: resume,
@@ -484,6 +501,20 @@ test("ForkJournalUnavailableError renders each phase, its journal and whether to
 	assert.deepEqual([read.retryable, read.forkRunId, read.cause], [true, undefined, cause]);
 	assert.deepEqual([hydrate.retryable, hydrate.forkRunId], [false, forkRunId]);
 	assert.equal(isRetryableForkError(new Error("wrapped", { cause: hydrate })), false);
+	const unconfirmed = new ForkJournalUnavailableError(
+		{ runId, phase: "commit", forkRunId, storage: shared },
+		{ cause: new AggregateError([cause, new Error("read-back failed")], "write and read-back failed") },
+	);
+	assert.deepEqual([unconfirmed.retryable, unconfirmed.forkRunId], [false, forkRunId]);
+	assert.equal(isRetryableForkError(new Error("wrapped", { cause: unconfirmed })), false);
+	const back = rehydrateForkError(JSON.parse(JSON.stringify(unconfirmed)) as SerializedForkError);
+	assert.ok(isForkJournalUnavailableError(back) && back instanceof ForkJournalUnavailableError);
+	assert.deepEqual([back.phase, back.forkRunId, back.retryable, back.hint], ["commit", forkRunId, false, commit]);
+	assert.ok(back.cause instanceof AggregateError);
+	assert.deepEqual(
+		(back.cause.errors as Error[]).map((failure) => failure.message),
+		[cause.message, "read-back failed"],
+	);
 	const rehydrated = rehydrateForkError(JSON.parse(JSON.stringify(hydrate)) as SerializedForkError);
 	assert.ok(rehydrated instanceof ForkJournalUnavailableError);
 	assert.deepEqual(

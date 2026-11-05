@@ -655,6 +655,202 @@ test("a failed journal copy is a retryable ForkCopyFailedError that leaves no ru
 	);
 });
 
+async function copySource(seed: string) {
+	const backend = await createMemoryTestBackend();
+	const sessions = new MemorySessionStore();
+	const session = await SessionManager.create(sessions, process.cwd());
+	await session.appendMessage({ role: "user", content: "saved", timestamp: 1 });
+	const def = workflow({ name: seed, description: "", inputs: {}, outputs: {}, run: async () => ({}) });
+	const runId = testRunId(seed);
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: def.name,
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+		invocationCwd: process.cwd(),
+	});
+	await backend.commitCheckpoint({
+		kind: "stage",
+		workflowId: runId,
+		checkpointId: "stage:saved",
+		name: "saved",
+		replayKey: "saved",
+		sessionId: session.getSessionId(),
+		output: "saved",
+		completedAt: 2,
+	});
+	const created = vi.spyOn(sessions, "create");
+	const fork = (signal?: AbortSignal) =>
+		forkDurableRun(backend, {
+			source: "sdk",
+			runId,
+			carryMessages: "before",
+			definition: def,
+			sessionStore: sessions,
+			sourceSessionStore: sessions,
+			signal,
+		});
+	const copyKept = async () => (await sessions.readHeader(created.mock.calls[0]![0].id)) !== undefined;
+	const forkRuns = async () => (await backend.journal.listRuns()).filter((entry) => entry.runId !== runId);
+	return { backend, runId, fork, created, copyKept, forkRuns, sharedJournal: () => sharedJournal(backend) };
+}
+
+/** A journal reached over the network: a rejected write there is not proof that nothing was committed. */
+function sharedJournal(backend: { readonly journal: RunJournal }) {
+	return Object.defineProperty(backend.journal, "descriptor", {
+		value: { adapter: "libsql", location: "libsql://journal.example" },
+	});
+}
+
+/** A write that commits and then fails, like a lost reply or a failed close after the commit. */
+function failAfterCommit(journal: RunJournal, failure: Error) {
+	const write = journal.createRunWithEvents!.bind(journal);
+	return vi.spyOn(journal, "createRunWithEvents").mockImplementation(async (header, events) => {
+		await write(header, events);
+		throw failure;
+	});
+}
+
+test("a write that commits and then fails resolves the fork the journal holds, keeps its sessions and forks once (#4321)", async () => {
+	for (const shared of [false, true]) {
+		const { backend, fork, created, copyKept, forkRuns, sharedJournal } = await copySource(`fork-late-${shared}`);
+		if (shared) sharedJournal();
+		const failure = new Error("connection closed before the commit reply");
+		const write = failAfterCommit(backend.journal, failure);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const forked = await fork();
+		const [written] = await forkRuns();
+		assert.equal(forked.runId, written?.runId, "the result names the fork the journal holds");
+		assert.deepEqual([write.mock.calls.length, created.mock.calls.length, await copyKept()], [1, 1, true]);
+		assert.equal(backend.getWorkflow(forked.runId)?.forkedFrom?.runId, forked.forkedFrom.runId, "it is hydrated");
+		assert.equal(warn.mock.calls.length, 1, "the journal's error is logged once, as a typed error");
+		const [logged] = warn.mock.calls[0]!;
+		assert.ok(logged instanceof ForkJournalUnavailableError);
+		assert.deepEqual([logged.phase, logged.forkRunId, logged.cause], ["commit-confirmed", forked.runId, failure]);
+		assert.equal((await forkRuns()).length, 1);
+		vi.restoreAllMocks();
+	}
+});
+
+test("an unconfirmed write keeps the copied sessions and names the fork run in a non-retryable error (#4321)", async () => {
+	const { backend, runId, fork, copyKept, forkRuns, sharedJournal } = await copySource("fork-unconfirmed");
+	sharedJournal();
+	const failure = new Error("timed out waiting for the commit reply");
+	vi.spyOn(backend.journal, "createRunWithEvents").mockRejectedValue(failure);
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const error = await fork().catch((problem: Error) => problem);
+	assert.ok(isForkJournalUnavailableError(error), String(error));
+	assert.ok(error instanceof ForkJournalUnavailableError);
+	assert.deepEqual(
+		[error.code, error.phase, error.runId, error.retryable, error.storage, error.cause],
+		["journal-unavailable", "commit", runId, false, { adapter: "libsql", scope: "shared" }, failure],
+	);
+	assert.equal(isRetryableForkError(error), false);
+	assert.ok(error.forkRunId !== undefined && error.hint.includes(`/workflow resume ${error.forkRunId}`));
+	assert.ok(!error.hint.includes("fork again."), "the hint never advises forking again");
+	assert.equal(await copyKept(), true, "a fork that may exist keeps its sessions");
+	assert.equal((await forkRuns()).length, 0);
+	assert.equal(claimsOf(pendingForks, backend).has(runId), false, "the source claim was released");
+	assert.equal(warn.mock.calls.length, 0, "a thrown uncertainty is not logged as well");
+});
+
+test("a cancelled caller gets the signal's reason from an unconfirmed write, with the sessions kept and the uncertainty logged once (#4321)", async () => {
+	const { backend, runId, fork, copyKept, sharedJournal } = await copySource("fork-unconfirmed-cancelled");
+	sharedJournal();
+	const failure = new Error("timed out waiting for the commit reply");
+	const reason = new Error("caller cancelled");
+	const controller = new AbortController();
+	vi.spyOn(backend.journal, "createRunWithEvents").mockImplementation(async () => {
+		controller.abort(reason);
+		throw failure;
+	});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const error = await fork(controller.signal).catch((problem: unknown) => problem);
+	assert.equal(error, reason, "the exact signal reason, not a ForkError");
+	assert.equal(await copyKept(), true, "the possible fork keeps its sessions");
+	assert.equal(claimsOf(pendingForks, backend).has(runId), false, "the source claim was released");
+	assert.equal(warn.mock.calls.length, 1);
+	const [logged] = warn.mock.calls[0]!;
+	assert.ok(logged instanceof ForkJournalUnavailableError);
+	assert.deepEqual([logged.phase, logged.retryable, logged.cause], ["commit", false, failure]);
+});
+
+test("a cancelled local write that did not commit propagates the signal reason and removes its copies (#4321)", async () => {
+	const { backend, runId, fork, copyKept, forkRuns } = await copySource("fork-local-cancelled");
+	const reason = new Error("caller cancelled");
+	const controller = new AbortController();
+	vi.spyOn(backend.journal, "createRunWithEvents").mockImplementation(async () => {
+		controller.abort(reason);
+		throw new Error("local transaction rolled back");
+	});
+	const error = await fork(controller.signal).catch((problem: unknown) => problem);
+	assert.equal(error, reason);
+	assert.equal(await copyKept(), false);
+	assert.deepEqual(await forkRuns(), []);
+	assert.equal(claimsOf(pendingForks, backend).has(runId), false);
+});
+
+test("a write failure whose read-back also fails keeps the sessions and carries both failures (#4321)", async () => {
+	const { backend, fork, copyKept, forkRuns } = await copySource("fork-readback-fails");
+	const failure = new Error("commit reply lost");
+	failAfterCommit(backend.journal, failure);
+	const unreachable = new StorageUnavailableError({ adapter: "memory", location: ":memory:" }, new Error("reset"));
+	const getRun = backend.journal.getRun.bind(backend.journal);
+	vi.spyOn(backend.journal, "getRun").mockImplementation(async (id) => {
+		if (id !== (await forkRuns())[0]?.runId) return getRun(id);
+		throw unreachable;
+	});
+	const error = await fork().catch((problem: Error) => problem);
+	assert.ok(error instanceof ForkJournalUnavailableError);
+	assert.deepEqual([error.phase, error.retryable], ["commit", false]);
+	assert.equal(error.forkRunId, (await forkRuns())[0]?.runId, "it names the fork that was in fact written");
+	assert.ok(error.cause instanceof AggregateError);
+	assert.deepEqual(error.cause.errors, [failure, unreachable]);
+	assert.equal(await copyKept(), true);
+});
+
+test("a rejected write the journal proves unwritten is a retryable ForkCopyFailedError that removes the copies (#4321)", async () => {
+	const cases = [
+		{ name: "a local journal", shared: false, write: () => Promise.reject(new Error("disk full")) },
+		{
+			name: "a shared journal that returned an answer",
+			shared: true,
+			write: () => Promise.resolve("exists" as const),
+		},
+	];
+	for (const { name, shared, write } of cases) {
+		const { backend, fork, copyKept, forkRuns, sharedJournal } = await copySource(`fork-proven-${shared}`);
+		if (shared) sharedJournal();
+		vi.spyOn(backend.journal, "createRunWithEvents").mockImplementation(write);
+		const error = await fork().catch((problem: Error) => problem);
+		assert.ok(error instanceof ForkCopyFailedError, `${name}: ${String(error)}`);
+		assert.deepEqual([error.retryable, error.phase], [true, "journal"], name);
+		assert.equal(await copyKept(), false, `${name}: the copied session was removed`);
+		assert.equal((await forkRuns()).length, 0, name);
+		vi.restoreAllMocks();
+	}
+});
+
+test("a write that returns exists is a ForkCopyFailedError even when a run with that id is in the journal (#4321)", async () => {
+	const { backend, fork, copyKept, forkRuns } = await copySource("fork-returned-exists");
+	const write = backend.journal.createRunWithEvents!.bind(backend.journal);
+	vi.spyOn(backend.journal, "createRunWithEvents").mockImplementation(async (header, events) => {
+		await write(header, events);
+		return "exists";
+	});
+	const getRun = vi.spyOn(backend.journal, "getRun");
+	const lookups = getRun.mock.calls.length;
+	const error = await fork().catch((problem: Error) => problem);
+	assert.ok(error instanceof ForkCopyFailedError, String(error));
+	assert.deepEqual([error.retryable, error.phase], [true, "journal"]);
+	assert.equal((error.cause as Error).message, `Run ${error.forkRunId} already exists`);
+	assert.equal(await copyKept(), false, "the answer is definite, so nothing is read back and the copies go");
+	assert.equal((await forkRuns()).length, 1, "the other run is not touched");
+	const afterFork = getRun.mock.calls.filter(([id]) => id === error.forkRunId).length;
+	assert.equal(afterFork, 0, `the fork id is not read back (${lookups} earlier lookups)`);
+});
+
 test("a journal storage failure is a ForkJournalUnavailableError that says whether a retry is safe (#4321)", async () => {
 	const { backend, def, runId } = await linearSource("fork-journal-unavailable");
 	const request = {

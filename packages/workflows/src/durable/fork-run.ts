@@ -890,11 +890,44 @@ async function closeCopies(copied: CopiedSessions, forkRunId: string, cleanup: F
 }
 
 /**
+ * What the journal says about the fork run after its write rejected with `failure`. The write is one transaction,
+ * so a run that is there is complete (`written`). A run that is absent is certainly unwritten (`absent`) only on a
+ * journal local to this node, where a rejected write cannot commit later. On a shared journal a rejection can be a
+ * lost reply to a commit that still lands, and a failed read-back says nothing: both are returned, not thrown, as
+ * a non-retryable `ForkJournalUnavailableError` (`commit`) naming the fork run, and the caller keeps the copies.
+ */
+async function forkRunOutcome(
+	journal: RunJournal,
+	runId: string,
+	forkRunId: string,
+	failure: Error,
+): Promise<"written" | "absent" | ForkJournalUnavailableError> {
+	const storage = journalStorage(journal);
+	const unconfirmed = (cause: Error) =>
+		new ForkJournalUnavailableError({ runId, phase: "commit", forkRunId, storage }, { cause });
+	let present: boolean;
+	try {
+		present = (await journal.getRun(forkRunId)) !== undefined;
+	} catch (readFailure) {
+		return unconfirmed(
+			new AggregateError(
+				[failure, readFailure],
+				`Writing fork run ${forkRunId} failed, and reading it back failed too`,
+			),
+		);
+	}
+	if (present) return "written";
+	return storage.scope === "local-only" ? "absent" : unconfirmed(failure);
+}
+
+/**
  * Fork a durable run. Every precondition is checked before the first write: the options, the source
  * run, the claim, the definition and inputs, the fork point and the readability of every session to
  * copy. Then sessions are copied and the fork's journal events are written in one transaction. On a
- * failure before that write nothing is left behind; on an abort the signal's reason is thrown. A failed
- * cleanup step never replaces the outcome: it is attached to a `ForkError`, or logged once.
+ * failure before that write nothing is left behind; on an abort the signal's reason is thrown. A rejected write
+ * is read back: a fork the journal holds goes on, and an unconfirmed one on a shared journal keeps its copied
+ * sessions (`ForkJournalUnavailableError`, `commit`, or the signal's reason after an abort). A failed cleanup step never replaces the outcome: it is
+ * attached to a `ForkError`, or logged once.
  */
 export async function forkDurableRun<
 	TInputs extends WorkflowInputValues,
@@ -929,6 +962,7 @@ export async function forkDurableRun<
 			return sessionId === undefined ? [] : [{ sessionId, checkpoint: checkpoint as DurableStageCheckpoint }];
 		});
 		const copied = await copySessions(source, sessionCheckpoints, ids, request, cleanup);
+		let retainCopies = false;
 		try {
 			request.signal?.throwIfAborted();
 			const checkpoints = selection.checkpoints.map((checkpoint) => forkCheckpoint(checkpoint, ids));
@@ -954,7 +988,8 @@ export async function forkDurableRun<
 					} as RunEvent,
 				},
 			];
-			let created: "created" | "exists";
+			let created: "created" | "exists" | undefined;
+			let writeFailure: Error | undefined;
 			try {
 				created = await journalBackend.journal.createRunWithEvents(
 					{
@@ -968,18 +1003,46 @@ export async function forkDurableRun<
 					events,
 				);
 			} catch (error) {
-				throw new ForkCopyFailedError(
-					{ runId: source.runId, forkRunId: ids.forkRunId, phase: "journal" },
-					{ cause: error as Error },
-				);
+				writeFailure = error as Error;
 			}
-			if (created !== "created")
+			if (created === "exists")
 				throw new ForkCopyFailedError(
 					{ runId: source.runId, forkRunId: ids.forkRunId, phase: "journal" },
 					{ cause: new Error(`Run ${ids.forkRunId} already exists`) },
 				);
+			if (writeFailure !== undefined) {
+				// A rejection can follow the commit (a failed close, a lost reply): ask the journal before touching the copies.
+				const outcome = await forkRunOutcome(journalBackend.journal, source.runId, ids.forkRunId, writeFailure);
+				if (outcome === "absent") {
+					request.signal?.throwIfAborted();
+					throw new ForkCopyFailedError(
+						{ runId: source.runId, forkRunId: ids.forkRunId, phase: "journal" },
+						{ cause: writeFailure },
+					);
+				}
+				if (outcome === "written")
+					console.warn(
+						new ForkJournalUnavailableError(
+							{
+								runId: source.runId,
+								phase: "commit-confirmed",
+								forkRunId: ids.forkRunId,
+								storage: journalStorage(journalBackend.journal),
+							},
+							{ cause: writeFailure },
+						),
+					);
+				else {
+					// The fork may exist, so its copied sessions are live: keep them. A cancelled caller gets
+					// the signal's reason, and the uncertainty is logged once instead.
+					retainCopies = true;
+					if (request.signal?.aborted !== true) throw outcome;
+					console.warn(outcome);
+					request.signal.throwIfAborted();
+				}
+			}
 		} catch (error) {
-			if (copied !== undefined) await removeCopies(copied, ids.forkRunId, cleanup);
+			if (copied !== undefined && !retainCopies) await removeCopies(copied, ids.forkRunId, cleanup);
 			throw error;
 		} finally {
 			if (copied !== undefined) await closeCopies(copied, ids.forkRunId, cleanup);

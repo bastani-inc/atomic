@@ -588,19 +588,25 @@ export class ForkJournalUnsupportedError extends ForkError {
 	}
 }
 
-/** When the journal failed: reading or claiming the source run, or loading the fork run just written. */
-export type ForkJournalPhase = "read" | "claim" | "hydrate";
+/**
+ * When the journal failed: reading or claiming the source run, writing the fork run without being able to tell
+ * whether it exists (`commit`), a write that reported an error although reading the fork run back confirmed it
+ * (`commit-confirmed`, logged, never thrown), or loading the fork run just written.
+ */
+export type ForkJournalPhase = "read" | "claim" | "commit" | "commit-confirmed" | "hydrate";
 
 /**
  * The run journal's storage failed during the fork. In the `read` and `claim` phases nothing was written and a
- * retry is safe; in the `hydrate` phase the fork run was written, so it is resumed rather than forked again.
+ * retry is safe. In the `commit` phase the write failed and the journal could not say whether the fork run exists,
+ * so its copied sessions were kept and that exact run is inspected after the storage recovers, never forked again
+ * blindly. In the `hydrate` phase the fork run was written, so it is resumed rather than forked again.
  */
 export class ForkJournalUnavailableError extends ForkError {
 	declare readonly name: "ForkJournalUnavailableError";
 	declare readonly code: "journal-unavailable";
 	readonly runId: string;
 	readonly phase: ForkJournalPhase;
-	/** The fork run that was written, in the `hydrate` phase. */
+	/** The fork run that was written (`hydrate`) or that may have been (`commit`). */
 	readonly forkRunId?: string;
 	/** Adapter of the journal, and whether it is local to this node. */
 	readonly storage: ForkStorage;
@@ -618,20 +624,26 @@ export class ForkJournalUnavailableError extends ForkError {
 		const subjects: Record<ForkJournalPhase, string> = {
 			read: `reading run ${input.runId} from ${journal}`,
 			claim: `claiming run ${input.runId} in ${journal}`,
+			commit: `writing fork run ${input.forkRunId} of run ${input.runId} to ${journal} could not be confirmed`,
+			"commit-confirmed": `writing fork run ${input.forkRunId} of run ${input.runId} to ${journal} reported an error, but reading it back confirmed the fork run was written`,
 			hydrate: `loading fork run ${input.forkRunId} of run ${input.runId} from ${journal}`,
 		};
 		const status = "atomic storage status shows the storage in use.";
-		const hint =
-			input.phase === "hydrate"
-				? `Fork run ${input.forkRunId} was written; resume it with /workflow resume ${input.forkRunId} once the journal is reachable instead of forking again. ${status}`
-				: `Nothing was written and run ${input.runId} is unchanged; retry the fork once the journal is reachable. ${status}`;
+		const hints: Record<ForkJournalPhase, string> = {
+			read: `Nothing was written and run ${input.runId} is unchanged; retry the fork once the journal is reachable. ${status}`,
+			claim: `Nothing was written and run ${input.runId} is unchanged; retry the fork once the journal is reachable. ${status}`,
+			commit: `Fork run ${input.forkRunId} may have been written, and its copied stage sessions were kept. Once the journal is reachable, inspect that exact run with /workflow status ${input.forkRunId} and resume it with /workflow resume ${input.forkRunId} if it exists. Do not fork run ${input.runId} again before that check: a missing run does not prove the write will never land. ${status}`,
+			"commit-confirmed": `Nothing to do: fork run ${input.forkRunId} was written and the fork continues. If the journal keeps failing, ${status}`,
+			hydrate: `Fork run ${input.forkRunId} was written; resume it with /workflow resume ${input.forkRunId} once the journal is reachable instead of forking again. ${status}`,
+		};
+		const hint = hints[input.phase];
 		super({
 			name: "ForkJournalUnavailableError",
 			code: "journal-unavailable",
 			what: "Fork journal unavailable",
 			subject: subjects[input.phase],
 			hint,
-			retryable: input.phase !== "hydrate",
+			retryable: input.phase === "read" || input.phase === "claim",
 			fields: {
 				runId: input.runId,
 				phase: input.phase,

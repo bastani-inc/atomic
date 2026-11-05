@@ -667,12 +667,13 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 
 `/workflow fork` creates a new run in the current directory from a saved run, from any project, and starts it in the background. The source run is never changed, so you can fork the same run several times. With `--from`, the new run replays every completed `ctx.tool` call, prompt answer and stage that finished before that stage, then runs the stage and everything after it again. Prompts asked at or after the stage are asked again. Name a stage inside a nested workflow with a dot path, such as `implement-api.review-2`. The workflow tool's `fork` action does the same, and also accepts replacement `inputs` and `carryMessages: "all"` to keep Intercom messages and prompt answers recorded after the stage.
 
-A fork checks everything before it writes anything. When a check fails, nothing is created and the command reports a typed error with what to do next:
+A fork checks everything before it writes anything. When a check fails, nothing is created (a write that fails on a shared journal is the one exception, below) and the command reports a typed error with what to do next:
 
 - An unknown stage lists up to 10 stages you can fork from.
 - A run that is executing, being resumed or being forked is busy; pause or quit it (or wait), then fork again.
 - A workflow definition that is missing, renamed, or no longer accepts the run's inputs is reported as a definition mismatch; pass replacement inputs or restore the definition.
 - A run that is not in this node's journal is reported with the journal it searched; when that journal is local-only, the error says so and names the command that joins shared storage.
+- On a shared journal, a rejected write of the fork is not proof that nothing was written: the reply can be lost while the commit lands. If reading the fork back confirms it, the fork goes on. If it cannot be confirmed, the copied sessions are kept and the error names the fork run: once the journal is reachable, inspect that exact run with `/workflow status <fork-run-id>` and resume it with `/workflow resume <fork-run-id>` if it exists. Do not fork the source again before that check.
 
 `/workflow status <fork-run-id>` shows `forkedFrom` with the source run ID and stage. See [`forkRun`](/workflows/api-reference#forkrun-runid-options) for the SDK equivalent and the full error reference.
 

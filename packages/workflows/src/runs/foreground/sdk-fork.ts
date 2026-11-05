@@ -86,7 +86,8 @@ async function sdkDurableBackend(
 /**
  * Fork a durable run from a stage into a new run and execute it. The source run is claimed while it is
  * read and is never written. Every precondition is checked before anything is copied, so a failure
- * leaves no fork behind; failures are `ForkError`s. An abort before the fork is written rejects with
+ * leaves no fork behind, except a write on a shared journal that cannot be confirmed, which keeps the copied
+ * sessions and names the fork run (`ForkJournalUnavailableError`, `commit`); failures are `ForkError`s. An abort before the fork is written rejects with
  * the signal's reason; after that, it cancels the fork's execution like `run()`.
  */
 export async function forkRun<
