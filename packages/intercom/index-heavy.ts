@@ -1689,7 +1689,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         releaseJoinedGroups();
         sessionHomeGroup = null;
       } else {
-        sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));
+        try {
+          sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));
+        } catch (error) {
+          // Git could not name the project group. The session still starts; its first connection resolves the home
+          // group again after it verifies the broker's routing and reports this typed error before any registration.
+          if (!isProjectGroupError(error)) throw error;
+          sessionHomeGroup = null;
+        }
         inboundDeliveries.restore(value.sessionManager.getBranch());
       }
       runtimeContext = value;

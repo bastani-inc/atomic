@@ -439,6 +439,50 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
+for (const [label, code, breakGit] of [
+	[
+		"Git is missing",
+		"git-unavailable",
+		(directory: string) => {
+			const emptyPath = join(root, "empty-path");
+			mkdirSync(emptyPath);
+			vi.stubEnv("PATH", emptyPath);
+			return directory;
+		},
+	],
+	[
+		"Git cannot read the repository",
+		"git-failed",
+		() => {
+			const broken = join(root, "broken");
+			mkdirSync(broken);
+			writeFileSync(join(broken, ".git"), "gitdir: missing-git-directory\n");
+			return broken;
+		},
+	],
+] as const) {
+	test(
+		`a session that selects shared storage when ${label} still starts, and reports the typed Git error with its hint before it registers (#4320)`,
+		async () => {
+			startBrokerWithStorage(sharedStorage());
+			await brokerRouting("on");
+			vi.stubEnv("ATOMIC_STORAGE", sharedStorage());
+			const cwd = breakGit(repository("alpha", "git@github.com:acme/alpha.git"));
+			const alphaContext = sessionContext(cwd, `start-${code}`);
+			const alpha = await loadExtension();
+			cleanups.push(() => alpha.stop(alphaContext));
+			await alpha.start(alphaContext);
+
+			const denied = await alpha.status(alphaContext);
+			assert.equal(denied.isError, true, denied.content[0]?.text);
+			assert.equal(denied.details?.code, code, denied.content[0]?.text);
+			assert.match(String(denied.details?.hint), /ATOMIC_INTERCOM_GROUP/);
+			assert.equal(await sessionsOnBroker(), 0);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+}
+
 test(
 	"a CI-profile session is refused by a reused broker that has a storage selection but does not route across machines (#4320)",
 	async () => {
