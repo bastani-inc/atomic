@@ -12,7 +12,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { dirname, join, resolve } from "path";
+import { dirname, isAbsolute, join, sep } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
@@ -78,9 +78,11 @@ const MAX_SYMLINK_HOPS = 40;
 function settingsFileTarget(path: string): string {
 	if (existsSync(path)) return realpathSync(path);
 	let current = path;
-	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop += 1) {
+	for (let hop = 0; hop <= MAX_SYMLINK_HOPS; hop += 1) {
 		if (!lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) return current;
-		current = resolve(dirname(current), readlinkSync(current));
+		const link = readlinkSync(current);
+		// Joined without normalizing, so a linked directory resolves before `..` as writing through the link would.
+		current = isAbsolute(link) ? link : `${dirname(current)}${sep}${link}`;
 	}
 	throw Object.assign(new Error(`ELOOP: too many symbolic links encountered, write '${path}'`), {
 		code: "ELOOP",

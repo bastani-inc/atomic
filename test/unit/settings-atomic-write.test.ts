@@ -96,11 +96,62 @@ test.skipIf(!posix)("a link cycle fails without replacing the link (#4320)", () 
 	symlinkSync("other.json", link);
 	symlinkSync("settings.json", join(root, "other.json"));
 
-	assert.throws(() => writeSettingsFile(link, "{}"), { code: "ELOOP" });
+	assert.throws(() => writeSettingsFile(link, "{}"), {
+		code: "ELOOP",
+		message: `ELOOP: too many symbolic links encountered, write '${link}'`,
+	});
 
 	assert.equal(lstatSync(link).isSymbolicLink(), true);
 	assert.deepEqual(readdirSync(root).sort(), ["other.json", "settings.json"]);
 });
+
+test.skipIf(!posix)(
+	"a chain of as many links as the system follows is written through, and one more fails (#4320)",
+	() => {
+		const chain = (name: string, links: number): string => {
+			const directory = join(root, name);
+			mkdirSync(directory);
+			for (let index = 0; index < links; index += 1) symlinkSync(`l${index + 1}`, join(directory, `l${index}`));
+			return directory;
+		};
+		const longest = chain("forty", 40);
+		writeSettingsFile(join(longest, "l0"), '{"deep":true}');
+		assert.equal(readFileSync(join(longest, "l40"), "utf8"), '{"deep":true}');
+
+		const tooLong = chain("forty-one", 41);
+		assert.throws(() => writeSettingsFile(join(tooLong, "l0"), "{}"), { code: "ELOOP" });
+		assert.equal(readdirSync(tooLong).length, 41);
+	},
+);
+
+test.skipIf(!posix)("an absolute link to a missing file creates that file and stays a link (#4320)", () => {
+	const dotfiles = join(root, "dotfiles");
+	mkdirSync(dotfiles);
+	const link = join(root, "settings.json");
+	symlinkSync(join(dotfiles, "settings.json"), link);
+
+	writeSettingsFile(link, '{"a":1}');
+
+	assert.equal(lstatSync(link).isSymbolicLink(), true);
+	assert.equal(readFileSync(join(dotfiles, "settings.json"), "utf8"), '{"a":1}');
+});
+
+test.skipIf(!posix)(
+	"a link that goes up from a linked directory creates the file where the system resolves it (#4320)",
+	() => {
+		const nested = join(root, "a", "b");
+		mkdirSync(nested, { recursive: true });
+		symlinkSync(nested, join(root, "linked"));
+		const link = join(root, "settings.json");
+		symlinkSync("linked/../created.json", link);
+
+		writeSettingsFile(link, '{"up":true}');
+
+		assert.equal(readFileSync(join(root, "a", "created.json"), "utf8"), '{"up":true}');
+		assert.deepEqual(readdirSync(root).sort(), ["a", "linked", "settings.json"]);
+		assert.equal(lstatSync(link).isSymbolicLink(), true);
+	},
+);
 
 test("a write that cannot finish leaves what was there and no temporary file (#4320)", () => {
 	const path = join(root, "settings.json");
