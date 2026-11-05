@@ -813,3 +813,120 @@ export function isRetryableTeamProfileError(error: unknown): boolean {
 	}
 	return false;
 }
+
+/** A cause of a serialized team error: its name, the first line of its message and its `code`, at most eight deep. */
+export interface SerializedTeamErrorCause {
+	readonly name: string;
+	readonly message: string;
+	readonly code?: string;
+	readonly cause?: SerializedTeamErrorCause;
+}
+
+/** A {@link TeamProfileError} or {@link TeamProfileConfigError} as JSON, to cross a worker, coordinator or broker boundary. */
+export interface SerializedTeamError {
+	readonly name: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint: string;
+	/** The error's own facts: `subject`, `detail`, `timeoutMs`, `elapsedMs`, `phase`, `source`, `field`, `path`, `missing`, `retryable`. */
+	readonly fields: Readonly<Record<string, string | number | boolean | readonly string[]>>;
+	readonly cause?: SerializedTeamErrorCause;
+}
+
+function serializeCause(cause: unknown, depth: number): SerializedTeamErrorCause | undefined {
+	if (depth >= MAX_CAUSE_DEPTH || cause === undefined || cause === null) return undefined;
+	const error = cause instanceof Error ? cause : undefined;
+	const code = (cause as { readonly code?: unknown }).code;
+	const next = serializeCause(error?.cause, depth + 1);
+	return {
+		name: error?.name ?? "Error",
+		message: (error?.message ?? String(cause)).split("\n", 1)[0]!,
+		...(typeof code === "string" ? { code } : {}),
+		...(next === undefined ? {} : { cause: next }),
+	};
+}
+
+function rehydrateCause(cause: SerializedTeamErrorCause | undefined): Error | undefined {
+	if (cause === undefined) return undefined;
+	const inner = rehydrateCause(cause.cause);
+	const error = new Error(cause.message, inner === undefined ? undefined : { cause: inner });
+	error.name = cause.name;
+	if (cause.code !== undefined) Object.assign(error, { code: cause.code });
+	return error;
+}
+
+/** The JSON form of a team error, with its cause chain bounded to eight levels; it holds no token. */
+export function serializeTeamError(error: TeamProfileError | TeamProfileConfigError): SerializedTeamError {
+	const fields: Record<string, string | number | boolean | readonly string[]> = { retryable: error.retryable };
+	if (isTeamProfileConfigError(error)) {
+		fields.source = error.source;
+		fields.field = error.field;
+		if (error.path !== undefined) fields.path = error.path;
+		if (error.missing !== undefined) fields.missing = [...error.missing];
+	} else {
+		fields.subject = error.subject;
+		if (error.detail !== undefined) fields.detail = error.detail;
+		if (isTeamProfileTimeoutError(error)) {
+			fields.timeoutMs = error.timeoutMs;
+			fields.elapsedMs = error.elapsedMs;
+			fields.phase = error.phase;
+		}
+	}
+	const cause = serializeCause(error.cause, 0);
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		fields,
+		...(cause === undefined ? {} : { cause }),
+	};
+}
+
+/**
+ * The team error a {@link serializeTeamError} result describes, as an instance of its class, so `instanceof`, the
+ * guards and `isRetryableTeamProfileError` work on the receiving side. An unknown name becomes a
+ * {@link TeamProfileError} that keeps the original `name`, `code` and `retryable`.
+ */
+export function rehydrateTeamError(serialized: SerializedTeamError): TeamProfileError | TeamProfileConfigError {
+	const { fields } = serialized;
+	const text = (key: string): string | undefined =>
+		typeof fields[key] === "string" ? (fields[key] as string) : undefined;
+	const count = (key: string): number => (typeof fields[key] === "number" ? (fields[key] as number) : 0);
+	const cause = rehydrateCause(serialized.cause);
+	let error: TeamProfileError | TeamProfileConfigError;
+	if (serialized.name === "TeamProfileConfigError") {
+		const missing = Array.isArray(fields.missing) ? fields.missing : undefined;
+		error = new TeamProfileConfigError(serialized.code as TeamProfileConfigErrorCode, {
+			source: text("source") as TeamProfileConfigErrorFields["source"],
+			field: text("field") ?? "",
+			hint: serialized.hint,
+			...(text("path") === undefined ? {} : { path: text("path") }),
+			...(missing === undefined ? {} : { missing }),
+			...(cause === undefined ? {} : { cause }),
+		});
+	} else if (serialized.name === "TeamProfileTimeoutError") {
+		error = new TeamProfileTimeoutError({
+			subject: text("subject") ?? "",
+			hint: serialized.hint,
+			timeoutMs: count("timeoutMs"),
+			elapsedMs: count("elapsedMs"),
+			phase: (text("phase") ?? "connect") as TeamProfileTimeoutPhase,
+		});
+		if (cause !== undefined)
+			Object.defineProperty(error, "cause", { value: cause, configurable: true, writable: true });
+	} else {
+		error = new TeamProfileError(serialized.code as TeamProfileErrorCode, {
+			subject: text("subject") ?? "",
+			hint: serialized.hint,
+			...(text("detail") === undefined ? {} : { detail: text("detail") }),
+			...(cause === undefined ? {} : { cause }),
+		});
+		if (serialized.name !== error.name) Object.defineProperty(error, "name", { value: serialized.name });
+	}
+	Object.defineProperty(error, "message", { value: serialized.message, configurable: true, writable: true });
+	if (typeof fields.retryable === "boolean" && fields.retryable !== error.retryable) {
+		Object.defineProperty(error, "retryable", { value: fields.retryable });
+	}
+	return error;
+}

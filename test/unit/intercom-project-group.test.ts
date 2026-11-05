@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import type { ExtensionContext } from "@bastani/atomic";
+import { type ExtensionContext, isProjectGroupError, ProjectGroupError } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
@@ -13,9 +13,7 @@ import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import {
 	DEFAULT_GROUP_WARNING,
 	gitInstallCommand,
-	isProjectGroupError,
 	multiNodeSelected,
-	ProjectGroupError,
 	projectGroup,
 	projectHomeGroup,
 	projectName,

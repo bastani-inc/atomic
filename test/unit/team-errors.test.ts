@@ -5,8 +5,11 @@ import {
 	isTeamProfileConfigError,
 	isTeamProfileError,
 	isTeamProfileTimeoutError,
+	rehydrateTeamError,
+	type SerializedTeamError,
 	StorageConfigError,
 	StorageError,
+	serializeTeamError,
 	TEAM_PROFILE_CONFIG_ERROR_CODES,
 	TEAM_PROFILE_ERROR_CODES,
 	TeamProfileConfigError,
@@ -221,4 +224,132 @@ test("the code lists, summaries and usage prefixes are the documented ones (#432
 		),
 	);
 	assert.deepEqual(usage, ["unknown-command", "unknown-option", "missing-value", "unexpected-argument"]);
+});
+
+/** Serialize, send as JSON text, and rehydrate, as a worker, coordinator or broker boundary would. */
+function acrossProcesses(error: TeamProfileError | TeamProfileConfigError) {
+	const sent: SerializedTeamError = JSON.parse(JSON.stringify(serializeTeamError(error)));
+	return { sent, received: rehydrateTeamError(sent) };
+}
+
+test("a team error crosses a process boundary as the same class with its code, fields, hint and causes (#4320)", () => {
+	const socket = Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:8443\n    at internal"), {
+		code: "ECONNREFUSED",
+		cause: "socket closed",
+	});
+	const failed = new TeamProfileError("connection-failed", {
+		subject: "libsql://team.example.turso.io",
+		detail: "connect ECONNREFUSED 10.0.0.5:8443",
+		hint: "Check the URL.",
+		cause: socket,
+	});
+	const { sent, received } = acrossProcesses(failed);
+	assert.deepEqual(sent, {
+		name: "TeamProfileError",
+		code: "connection-failed",
+		message: failed.message,
+		hint: "Check the URL.",
+		fields: {
+			retryable: true,
+			subject: "libsql://team.example.turso.io",
+			detail: "connect ECONNREFUSED 10.0.0.5:8443",
+		},
+		cause: {
+			name: "Error",
+			message: "connect ECONNREFUSED 10.0.0.5:8443",
+			code: "ECONNREFUSED",
+			cause: { name: "Error", message: "socket closed" },
+		},
+	});
+	assert.ok(received instanceof TeamProfileError);
+	assert.ok(isTeamProfileError(received));
+	assert.deepEqual(
+		[
+			received.name,
+			received.code,
+			received.subject,
+			received.detail,
+			received.hint,
+			received.retryable,
+			received.message,
+		],
+		["TeamProfileError", "connection-failed", failed.subject, failed.detail, failed.hint, true, failed.message],
+	);
+	assert.ok(isRetryableTeamProfileError(new Error("worker failed", { cause: received })));
+	const cause = received.cause as Error & { code?: string };
+	assert.deepEqual(
+		[cause.name, cause.message, cause.code],
+		["Error", "connect ECONNREFUSED 10.0.0.5:8443", "ECONNREFUSED"],
+	);
+	assert.equal((cause.cause as Error).message, "socket closed");
+
+	const timeout = new TeamProfileTimeoutError({
+		subject: "libsql://team.example.turso.io",
+		hint: "Retry.",
+		timeoutMs: 15_000,
+		elapsedMs: 15_004,
+		phase: "connect",
+	});
+	const timedOut = acrossProcesses(timeout).received;
+	assert.ok(timedOut instanceof TeamProfileTimeoutError);
+	assert.ok(isTeamProfileTimeoutError(timedOut));
+	assert.deepEqual(
+		[timedOut.code, timedOut.timeoutMs, timedOut.elapsedMs, timedOut.phase, timedOut.retryable, timedOut.message],
+		["connection-timeout", 15_000, 15_004, "connect", true, timeout.message],
+	);
+	assert.equal(Object.hasOwn(timedOut, "cause"), false);
+
+	const config = new TeamProfileConfigError("incomplete-profile", {
+		source: "env",
+		field: "ATOMIC_PROFILE",
+		hint: "Set it.",
+		missing: ["ATOMIC_PROFILE", "ATOMIC_TEAM_TOKEN"],
+	});
+	const invalid = acrossProcesses(config).received;
+	assert.ok(invalid instanceof TeamProfileConfigError);
+	assert.ok(invalid instanceof StorageConfigError);
+	assert.ok(isTeamProfileConfigError(invalid));
+	assert.deepEqual(
+		[invalid.code, invalid.reason, invalid.source, invalid.field, invalid.missing, invalid.path, invalid.message],
+		["incomplete-profile", "incomplete-profile", "env", "ATOMIC_PROFILE", config.missing, undefined, config.message],
+	);
+	const unreadable = acrossProcesses(
+		new TeamProfileConfigError("unreadable-token-file", {
+			source: "cli",
+			field: "--token-file",
+			hint: "Fix it.",
+			path: "/tmp/token",
+			cause: new Error("ENOENT"),
+		}),
+	).received as TeamProfileConfigError;
+	assert.deepEqual([unreadable.path, (unreadable.cause as Error).message], ["/tmp/token", "ENOENT"]);
+});
+
+test("an unknown team error name keeps its name, code and retryable, and causes stay bounded (#4320)", () => {
+	const future = rehydrateTeamError({
+		name: "TeamProfileQuotaError",
+		code: "quota-exceeded",
+		message: "The team database is full (quota-exceeded). Free space.",
+		hint: "Free space.",
+		fields: { retryable: true, subject: "libsql://team.example.turso.io" },
+	});
+	assert.ok(future instanceof TeamProfileError);
+	assert.deepEqual(
+		[future.name, future.code, future.retryable, future.message, future.subject],
+		[
+			"TeamProfileQuotaError",
+			"quota-exceeded",
+			true,
+			"The team database is full (quota-exceeded). Free space.",
+			"libsql://team.example.turso.io",
+		],
+	);
+	let deep: Error = new Error("level 12");
+	for (let level = 11; level >= 1; level--) deep = new Error(`level ${level}`, { cause: deep });
+	const { sent } = acrossProcesses(
+		new TeamProfileError("settings-write-failed", { subject: "/s.json", hint: "Fix it.", cause: deep }),
+	);
+	let levels = 0;
+	for (let cause = sent.cause; cause !== undefined; cause = cause.cause) levels++;
+	assert.equal(levels, 8);
 });
