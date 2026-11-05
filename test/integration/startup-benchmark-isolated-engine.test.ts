@@ -29,6 +29,12 @@ interface LifecycleMarker {
 	ppid: number;
 }
 
+interface BenchmarkExit {
+	pid: number;
+	code: number | null;
+	signal: NodeJS.Signals | null;
+}
+
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
 /** Whether `offset` lies between an alternate-screen enter and its matching leave, where output is discarded. */
@@ -49,8 +55,23 @@ test.skipIf(!TMUX_AVAILABLE)(
 		const probe = join(temp, "probe.mjs");
 		const markersPath = join(temp, "markers.jsonl");
 		const rawPath = join(temp, "pane.raw");
+		const launcher = join(temp, "launcher.mjs");
+		const exitPath = join(temp, "exit.json");
 		mkdirSync(agentDir, { recursive: true });
 		await writeFileEnsuringDir(config, "set -g remain-on-exit on\nset -g history-limit 50000\n");
+		await writeFileEnsuringDir(
+			launcher,
+			`import { spawn } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
+const resultPath = process.argv[2];
+const child = spawn(process.execPath, process.argv.slice(3), { stdio: "inherit" });
+writeFileSync(resultPath + ".pid", String(child.pid));
+child.on("exit", (code, signal) => {
+	writeFileSync(resultPath + ".tmp", JSON.stringify({ pid: child.pid, code, signal }));
+	renameSync(resultPath + ".tmp", resultPath);
+});
+`,
+		);
 		await writeFileEnsuringDir(
 			probe,
 			`import { appendFileSync } from "node:fs";
@@ -75,8 +96,6 @@ export default function (pi) {
 			return true;
 		};
 		try {
-			// The pane waits for Enter before it execs the CLI, so the raw stream is recorded from the CLI's first byte
-			// and the pane's process, exit status and history are the CLI's own.
 			tmux(
 				"new-session",
 				"-d",
@@ -103,6 +122,8 @@ export default function (pi) {
 				'read _ && exec "$@"',
 				"startup-benchmark",
 				process.execPath,
+				launcher,
+				exitPath,
 				join(repoRoot, "packages/coding-agent/dist/cli.js"),
 				"--no-session",
 				"--offline",
@@ -117,23 +138,27 @@ export default function (pi) {
 				"--extension",
 				probe,
 			);
-			const hostPid = Number(tmux("display-message", "-p", "-t", "benchmark", "#{pane_pid}"));
 			tmux("pipe-pane", "-o", "-t", "benchmark", `cat >> '${rawPath}'`);
 			tmux("send-keys", "-t", "benchmark", "Enter");
-			let exitState = "0::";
-			const exited = await waitUntil(() => {
-				exitState = tmux(
-					"display-message",
-					"-p",
-					"-t",
-					"benchmark",
-					"#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}",
+			const exited = await waitUntil(async () => {
+				return (
+					(await fileExists(exitPath)) && tmux("display-message", "-p", "-t", "benchmark", "#{pane_dead}") === "1"
 				);
-				return exitState.startsWith("1:") && exitState !== "1::";
 			}, Date.now() + BENCHMARK_EXIT_TIMEOUT_MS);
 			const pane = tmux("capture-pane", "-p", "-J", "-S", "-", "-t", "benchmark");
-			assert.ok(exited, `the benchmark run must exit by itself (pane state ${exitState})\n${pane}`);
-			assert.equal(exitState, "1:0:", `the benchmark must exit with status 0 and no signal\n${pane}`);
+			if (!exited) {
+				const tmuxVersion = spawnSyncCollect(["tmux", "-V"]).stdout.toString().trim();
+				const pid = (await fileExists(`${exitPath}.pid`)) ? (await readText(`${exitPath}.pid`)).trim() : "";
+				const processState = /^\d+$/.test(pid)
+					? spawnSyncCollect(["ps", "-o", "pid,ppid,stat,etime,comm", "-p", pid]).stdout.toString()
+					: "the launcher did not report a child PID";
+				assert.fail(`the benchmark run must exit by itself (${tmuxVersion})\n${processState}\n${pane}`);
+			}
+			const exit = JSON.parse(await readText(exitPath)) as BenchmarkExit;
+			assert.equal(exit.code, 0, `the benchmark must exit with status 0\n${pane}`);
+			assert.equal(exit.signal, null, `the benchmark must exit without a signal\n${pane}`);
+			const hostPid = exit.pid;
+			assert.ok(Number.isInteger(hostPid) && hostPid > 0, "the launcher must report the CLI's actual PID");
 			let rawSize = -1;
 			let unchangedPolls = 0;
 			await waitUntil(async () => {
