@@ -18,6 +18,7 @@ import {
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createExtensionRuntime, type ExtensionRuntimeOpts } from "../../packages/workflows/src/extension/runtime.js";
+import { awaitJobSettlement } from "../../packages/workflows/src/runs/background/ended-run-settlement.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
@@ -28,14 +29,6 @@ import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 // Issue #3085 / #3087
 
-/**
- * Each status poll gives the run a real-time slice for its I/O, then advances fake time (retry, cooldown and auth
- * delays) by one step. A run under load needs more slices than an idle one before its next timer is even armed, so
- * the waits end on the state they wait for, not after a fixed number of polls: 60 polls failed under CPU contention
- * with the run still waiting on its first fallback (#3085/#3087).
- */
-const RUN_STATUS_POLL_REAL_MS = 50;
-const RUN_STATUS_POLL_FAKE_MS = 1_000;
 /** Real time all of the test's waits share, inside the 30 s test timeout, leaving room to report and clean up. */
 const WAITS_REAL_BUDGET_MS = 24_000;
 
@@ -53,6 +46,24 @@ function realNow(): number {
 /** Runs `step` until `done`, or until the real clock passes `deadline` (whichever comes first). */
 async function pollUntil(done: () => boolean, step: () => Promise<void>, deadline: number): Promise<void> {
 	while (!done() && realNow() < deadline) await step();
+}
+
+/** Whether any filesystem call is still in flight in this process, by the libuv requests Node reports as active. */
+function filesystemCallsInFlight(): boolean {
+	return process.getActiveResourcesInfo().some((resource) => resource.startsWith("FSReq"));
+}
+
+/**
+ * One status poll: wait, on the real clock, until no filesystem call is in flight or `deadline` passes, then fire the
+ * next fake timer (retry, cooldown and auth delays). Polls wait on the run's I/O and its timers, never for a fixed real
+ * slice: fixed slices spent the waits' shared real budget on a loaded Windows runner, where a real timer sleeps at
+ * least 15.6 ms (#4393). Fake timers stay installed throughout, because reinstalling them drops the pending ones. A run
+ * under load still needs more polls than an idle one, so the waits end on the state they wait for, not after a fixed
+ * number of polls (#3085/#3087).
+ */
+async function settleIoThenFireNextTimer(deadline: number): Promise<void> {
+	while (filesystemCallsInFlight() && realNow() < deadline) await realSleep(1);
+	await vi.advanceTimersToNextTimerAsync();
 }
 
 const spec = {
@@ -130,10 +141,7 @@ test("a wait on a run that never gets there ends at its real-time deadline while
 		const outcome = await Promise.race([
 			pollUntil(
 				() => abandoned,
-				async () => {
-					await realSleep(RUN_STATUS_POLL_REAL_MS);
-					await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
-				},
+				() => settleIoThenFireNextTimer(deadline),
 				deadline,
 			).then(() => "ended at its deadline"),
 			realSleep(5_000).then(() => "still polling after 5 s of real time"),
@@ -147,8 +155,9 @@ test("a wait on a run that never gets there ends at its real-time deadline while
 
 test("fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix", async () => {
 	const deadline = realNow() + WAITS_REAL_BUDGET_MS;
-	/** Polls until `done`, advancing fake time a step per real slice, or until the test's shared real budget is spent. */
+	/** Polls until `done`, or until the test's shared real budget is spent. */
 	const until = (done: () => boolean, step: () => Promise<void>) => pollUntil(done, step, deadline);
+	const poll = () => settleIoThenFireNextTimer(deadline);
 	const cleanup: Array<() => void | Promise<void>> = [];
 	try {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-wf-"));
@@ -192,9 +201,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 				return {};
 			},
 		});
+		const jobs = createJobTracker();
 		const runtimeOptions: ExtensionRuntimeOpts = {
 			store,
-			jobs: createJobTracker(),
+			jobs,
 			cwd: dir,
 			registry: createRegistry([definition]),
 			adapters: {
@@ -269,25 +279,18 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const starting = runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} }).then((result) => {
 			started = result;
 		});
-		await until(
-			() => started !== undefined,
-			async () => {
-				await realSleep(1);
-				await vi.advanceTimersByTimeAsync(1);
-			},
-		);
+		await until(() => started !== undefined, poll);
 		assert.ok(started, "detached dispatch must acknowledge");
 		await starting;
 		const startedRun = started;
 		assert.equal(startedRun.action, "run");
 		assert.ok(startedRun.runId);
+		const blockedRunJob = jobs.get(startedRun.runId);
+		assert.ok(blockedRunJob, "the detached run must be tracked until it settles");
 
 		await until(
 			() => effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) === "blocked",
-			async () => {
-				await realSleep(RUN_STATUS_POLL_REAL_MS);
-				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
-			},
+			poll,
 		);
 		const source = store.runs().find((run) => run.id === startedRun.runId);
 		assert.ok(source);
@@ -323,6 +326,15 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 			);
 		assert.equal(parentCards.length, 1, "parent transcript must persist exactly one blocked lifecycle card");
 
+		const blockedRunEnding = awaitJobSettlement(blockedRunJob);
+		let blockedRunEnded = false;
+		const markBlockedRunEnded = () => {
+			blockedRunEnded = true;
+		};
+		blockedRunEnding.then(markBlockedRunEnded, markBlockedRunEnded);
+		await until(() => blockedRunEnded, poll);
+		assert.ok(blockedRunEnded, "the blocked run must finish recording its ending in the journal");
+		await blockedRunEnding;
 		const fresh = await backend.reopen();
 		await fresh.hydrateWorkflow(source.id);
 		const hydrated = fresh.getWorkflow(source.id);
@@ -342,15 +354,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const resuming = recoveryRuntime.resumeDurableWorkflow(source.id).then((result) => {
 			resumed = result;
 		});
-		await until(
-			() => resumed !== undefined,
-			async () => {
-				vi.useRealTimers();
-				await realSleep(RUN_STATUS_POLL_REAL_MS);
-				vi.useFakeTimers();
-				await vi.advanceTimersByTimeAsync(1);
-			},
-		);
+		await until(() => resumed !== undefined, poll);
 		assert.ok(resumed, "resume must acknowledge");
 		await resuming;
 		const resumedRun = resumed;
@@ -359,10 +363,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 
 		await until(
 			() => effectiveRunStatus(restoredStore.runs().find((run) => run.id === resumedRun.runId)!) === "completed",
-			async () => {
-				await realSleep(RUN_STATUS_POLL_REAL_MS);
-				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
-			},
+			poll,
 		);
 		const continuation = restoredStore.runs().find((run) => run.id === resumedRun.runId);
 		assert.ok(continuation);
