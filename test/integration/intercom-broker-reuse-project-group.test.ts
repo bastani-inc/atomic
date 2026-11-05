@@ -24,7 +24,6 @@ const REAL_BROKER_TEST_TIMEOUT_MS = 90_000;
 const BROKER_WAIT_MS = 20_000;
 const BACKGROUND_RECONNECT_SETTLE_MS = 3_000;
 const RECURRING_ATTEMPT_WINDOW_MS = 3_500;
-const STUCK_STATUS_TEST_TIMEOUT_MS = 30_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const storageAdapterModule = join(repoRoot, "test/fixtures/storage-adapter.ts");
@@ -368,30 +367,23 @@ const FAULT_CODES: ReadonlyArray<readonly [StatusFault, string]> = [
 ];
 
 for (const [fault, code] of FAULT_CODES) {
-	test(
-		`a broker whose routing state cannot be verified (${fault}) denies registration with ${code} instead of using the default group (#4320)`,
-		async () => {
-			const faulty = await startFaultyBroker(fault);
-			const alphaContext = sessionContext(
-				repository("alpha", "git@github.com:acme/alpha.git"),
-				`unverified-${fault}`,
-			);
-			const alpha = await loadExtension();
-			cleanups.push(() => alpha.stop(alphaContext));
-			await alpha.start(alphaContext);
+	test(`a broker whose routing state cannot be verified (${fault}) denies registration with ${code} instead of using the default group (#4320)`, async () => {
+		const faulty = await startFaultyBroker(fault);
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), `unverified-${fault}`);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
 
-			const denied = await alpha.status(alphaContext);
-			assert.equal(denied.isError, true, denied.content[0]?.text);
-			assert.equal(denied.details?.code, code);
-			assert.equal(denied.details?.retryable, true);
-			assert.equal(faulty.statusRequests, 1);
-			assert.equal(faulty.registrations, 0);
+		const denied = await alpha.status(alphaContext);
+		assert.equal(denied.isError, true, denied.content[0]?.text);
+		assert.equal(denied.details?.code, code);
+		assert.equal(denied.details?.retryable, true);
+		assert.equal(faulty.statusRequests, 1);
+		assert.equal(faulty.registrations, 0);
 
-			await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
-			assert.equal(faulty.registrations, 0);
-		},
-		STUCK_STATUS_TEST_TIMEOUT_MS,
-	);
+		await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
+		assert.equal(faulty.registrations, 0);
+	});
 }
 
 test(
@@ -557,54 +549,46 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-test(
-	"a broker that cannot verify the routing a registration expects is never given the default group by a silent unverified register (#4320)",
-	async () => {
-		const faulty = await startFaultyBroker("register-unsupported");
-		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "old-broker");
-		const alpha = await loadExtension();
-		cleanups.push(() => alpha.stop(alphaContext));
-		await alpha.start(alphaContext);
+test("a broker that cannot verify the routing a registration expects is never given the default group by a silent unverified register (#4320)", async () => {
+	const faulty = await startFaultyBroker("register-unsupported");
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "old-broker");
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
 
-		const denied = await alpha.status(alphaContext);
-		assert.equal(denied.isError, true, denied.content[0]?.text);
-		assert.equal(denied.details?.code, "broker-routing-unavailable");
-		assert.equal(faulty.verifiedRegistrations, 1);
-		assert.equal(faulty.registrations, 0);
-		await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
-		assert.equal(faulty.registrations, 0);
-	},
-	STUCK_STATUS_TEST_TIMEOUT_MS,
-);
+	const denied = await alpha.status(alphaContext);
+	assert.equal(denied.isError, true, denied.content[0]?.text);
+	assert.equal(denied.details?.code, "broker-routing-unavailable");
+	assert.equal(faulty.verifiedRegistrations, 1);
+	assert.equal(faulty.registrations, 0);
+	await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
+	assert.equal(faulty.registrations, 0);
+});
 
-test(
-	"an attempt whose session was replaced while it checked the broker registers nothing (#4320)",
-	async () => {
-		const faulty = await startFaultyBroker("multi-node");
-		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "stale-alpha");
-		const alpha = await loadExtension();
-		cleanups.push(() => alpha.stop(alphaContext, "reload"));
-		await alpha.start(alphaContext);
-		const queried = Promise.withResolvers<void>();
-		const released = Promise.withResolvers<void>();
-		routingQueries.afterQuery = async () => {
-			queried.resolve();
-			await released.promise;
-		};
+test("an attempt whose session was replaced while it checked the broker registers nothing (#4320)", async () => {
+	const faulty = await startFaultyBroker("multi-node");
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "stale-alpha");
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext, "reload"));
+	await alpha.start(alphaContext);
+	const queried = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	routingQueries.afterQuery = async () => {
+		queried.resolve();
+		await released.promise;
+	};
 
-		const stale = alpha.status(alphaContext);
-		await queried.promise;
-		await alpha.stop(alphaContext, "reload");
-		await alpha.start(alphaContext, "reload");
-		released.resolve();
-		await new Promise((settle) => setTimeout(settle, 1_000));
-		assert.equal(faulty.registrations + faulty.verifiedRegistrations, 0);
-		const staleResult = await stale;
-		assert.equal(staleResult.isError, true);
-		assert.equal(staleResult.content[0]?.text, "Intercom not connected: Intercom runtime no longer active");
-	},
-	STUCK_STATUS_TEST_TIMEOUT_MS,
-);
+	const stale = alpha.status(alphaContext);
+	await queried.promise;
+	await alpha.stop(alphaContext, "reload");
+	await alpha.start(alphaContext, "reload");
+	released.resolve();
+	await new Promise((settle) => setTimeout(settle, 1_000));
+	assert.equal(faulty.registrations + faulty.verifiedRegistrations, 0);
+	const staleResult = await stale;
+	assert.equal(staleResult.isError, true);
+	assert.equal(staleResult.content[0]?.text, "Intercom not connected: Intercom runtime no longer active");
+});
 
 test(
 	"a resumed session whose saved memberships were held under the single-machine home does not rejoin default when its broker routes across machines (#4320)",
