@@ -729,6 +729,7 @@ describe("git resolution (#4322)", () => {
 			assert.equal(probesBefore, before === undefined ? 0 : 1);
 
 			writeGit(dir, executableName(), 0o755, "2.43.0");
+			writeFileSync(path, '#!/bin/sh\necho "git version 2.43.0"\n');
 			assert.equal(tools.resolveGitSync().path, path);
 			assert.equal((await tools.resolveGit()).path, path);
 			assert.equal(tools.getGitStatus().source, "system");
