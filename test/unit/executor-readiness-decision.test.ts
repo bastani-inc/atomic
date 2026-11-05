@@ -124,7 +124,7 @@ type Decide = (
 	request: WorkflowDecisionRequest<ReadinessDecisionQuestions>,
 ) => Promise<DecisionResult<ReadinessDecisionQuestions>>;
 
-function launch(input: { decide: Decide; enabled?: boolean; answer?: string }) {
+function launch(input: { decide: Decide; enabled?: boolean | "unset"; answer?: string }) {
 	const events: string[] = [];
 	const registry = createStageControlRegistry();
 	let sessions = 0;
@@ -132,7 +132,7 @@ function launch(input: { decide: Decide; enabled?: boolean; answer?: string }) {
 	const models = {
 		listModels: async () => [],
 		decide: decide as unknown as NonNullable<WorkflowModelCatalogPort["decide"]>,
-		autoAdvanceAfterSteer: () => input.enabled ?? true,
+		...(input.enabled === "unset" ? {} : { autoAdvanceAfterSteer: () => input.enabled !== false }),
 	} satisfies WorkflowModelCatalogPort;
 	const definition = workflow({
 		name: "readiness-decision",
@@ -299,6 +299,49 @@ describe("executor — readiness after a steer decided by the decision model (#4
 			assert.equal((await result).status, "completed");
 		});
 	}
+
+	test("a pause during the decision keeps the user's message and decides again after resume", async () => {
+		store.clear();
+		let calls = 0;
+		const { result, decide, registry } = launch({
+			decide: async (request) => {
+				calls += 1;
+				if (calls === 1) {
+					await new Promise<void>((_resolve, reject) => {
+						request.signal?.addEventListener("abort", () => reject(request.signal?.reason), { once: true });
+					});
+				}
+				return classified(0.93, 0.07, 0.91);
+			},
+		});
+		const deadline = Date.now() + 2_000;
+		while (decide.mock.calls.length < 1 && Date.now() < deadline) await sleep(5);
+		const handle = registry.get(store.runs()[0]!.id, themeStage().id);
+		assert.ok(handle);
+		await handle.pause();
+		await sleep(20);
+		assert.equal(themeStage().readinessDecision, undefined);
+		await handle.resume();
+		assert.equal((await result).status, "completed");
+		assert.equal(readinessQuestionShown(), false);
+		assert.equal(decide.mock.calls.length, 2);
+		assert.equal(decide.mock.calls[1]![0].state.user_message, STEER);
+		assert.equal(themeStage().readinessDecision?.outcome, "advanced");
+		assert.deepEqual(
+			themeStage()
+				.notices?.filter((notice) => notice.kind === "decision")
+				.map((notice) => notice.to),
+			["advanced"],
+		);
+	});
+
+	test("a host that does not report the setting keeps its default, on", async () => {
+		store.clear();
+		const { result, decide } = launch({ decide: async () => classified(0.93, 0.07, 0.91), enabled: "unset" });
+		assert.equal((await result).status, "completed");
+		assert.equal(decide.mock.calls.length, 1);
+		assert.equal(readinessQuestionShown(), false);
+	});
 
 	test("with autoAdvanceAfterSteer off the readiness question is asked and the decision model is not", async () => {
 		store.clear();
