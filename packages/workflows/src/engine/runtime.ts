@@ -82,6 +82,7 @@ export class EngineRuntime {
 	readonly runId: string;
 	readonly workflowIntercomGroup: string;
 	readonly depth: number;
+	readonly workflowName: string;
 	readonly activeStore: Store;
 	readonly childRunOptions: EngineChildRunOptions;
 	readonly parentRootRunId?: string;
@@ -113,6 +114,7 @@ export class EngineRuntime {
 		this.runId = input.runId;
 		this.workflowIntercomGroup = workflowInvocationIntercomGroup(input.parentRootRunId ?? input.runId);
 		this.depth = input.depth;
+		this.workflowName = input.runSnapshot.name;
 		this.activeStore = input.activeStore;
 		this.childRunOptions = input.childRunOptions;
 		this.parentRootRunId = input.parentRootRunId;

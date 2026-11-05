@@ -18,8 +18,8 @@ export interface WorkflowGitRequiredFields {
 	readonly source: WorkflowGitRequiredSource;
 	/** The workflow input bound to `gitWorktreeDir`, or the task name for a `task-option` source. */
 	readonly field: string;
-	/** The requested worktree path; a path, never a secret. */
-	readonly gitWorktreeDir: string;
+	/** The requested worktree path; a path, never a secret. Absent for a task that asks for a temporary worktree. */
+	readonly gitWorktreeDir?: string;
 }
 
 export interface SerializedWorkflowGitRequiredError {
@@ -35,7 +35,9 @@ export interface SerializedWorkflowGitRequiredError {
 function describeRequest(fields: WorkflowGitRequiredFields): string {
 	return fields.source === "input"
 		? `"${fields.workflow}" creates a worktree at input ${fields.field} (${fields.gitWorktreeDir})`
-		: `task "${fields.field}" of "${fields.workflow}" creates a worktree (${fields.gitWorktreeDir})`;
+		: `task "${fields.field}" of "${fields.workflow}" creates a worktree${
+				fields.gitWorktreeDir === undefined ? "" : ` (${fields.gitWorktreeDir})`
+			}`;
 }
 
 /**

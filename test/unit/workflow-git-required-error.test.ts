@@ -65,6 +65,16 @@ describe("WorkflowGitRequiredError (#4322)", () => {
 		assert.equal(error.retryable, true);
 	});
 
+	test("renders a task that asks for a temporary worktree without a path", () => {
+		const { gitWorktreeDir: _dir, ...withoutDir } = TASK;
+		const error = new WorkflowGitRequiredError(withoutDir, OFFLINE);
+		assert.match(
+			error.message,
+			/^Workflow needs git: task "implement" of "ralph" creates a worktree, but git is unavailable \(offline\)\./,
+		);
+		assert.equal("gitWorktreeDir" in error.fields, false);
+	});
+
 	test("keeps the git error reachable and retryable through the cause chain", () => {
 		const error = new WorkflowGitRequiredError(INPUT, BUSY);
 		assert.equal(error.cause, BUSY);

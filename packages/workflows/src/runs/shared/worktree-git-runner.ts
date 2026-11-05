@@ -4,6 +4,7 @@ import {
 	createGitEnvironment,
 	isGitProvisionError,
 	isGitUnavailableError,
+	isRetryableGitProvisionError,
 	resolveGit,
 	resolveGitSync,
 } from "@bastani/atomic";
@@ -70,8 +71,9 @@ export async function prepareRunGit(
 
 /**
  * Give a task that creates its own worktree the chance to download git before its stage starts. Only a missing git
- * that can be downloaded is attempted; every other state, and a failed download, is left to the first git command,
- * which raises the recorded typed error, so a replayed task that never touches git still completes offline.
+ * that can be downloaded, or a download that failed in a retryable way, is attempted; every other state, and a failed
+ * attempt, is left to the stage's live setup, which raises the recorded typed error as `WorkflowGitRequiredError`, so
+ * a replayed task that never touches git still completes offline.
  */
 export async function prepareTaskGit(signal: AbortSignal): Promise<void> {
 	if (gitRunnerOverride !== undefined) return;
@@ -79,7 +81,8 @@ export async function prepareTaskGit(signal: AbortSignal): Promise<void> {
 		resolveGitSync();
 		return;
 	} catch (error) {
-		if (!isGitUnavailableError(error) || error.code !== "not-installed") return;
+		if (!isGitUnavailableError(error) || (error.code !== "not-installed" && !isRetryableGitProvisionError(error)))
+			return;
 	}
 	await resolveGit({ signal }).catch((error: unknown) => {
 		if (!isGitProvisionError(error)) throw error;

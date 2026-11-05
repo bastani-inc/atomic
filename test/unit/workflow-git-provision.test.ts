@@ -82,15 +82,16 @@ describe("workflow runs without git (#4322)", () => {
 		};
 	}
 
-	function worktreeWorkflow(onBody: () => void): WorkflowDefinition {
+	function worktreeWorkflow(onBody: () => void, withStage = false): WorkflowDefinition {
 		return workflow({
 			name: "git-required-worktree",
 			description: "",
 			inputs: { git_worktree_dir: Type.String() },
 			outputs: { ok: Type.Optional(Type.Boolean()) },
 			worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir" },
-			run: async () => {
+			run: async (ctx) => {
 				onBody();
+				if (withStage) await ctx.stage("work").complete("ok");
 				return { ok: true };
 			},
 		}) as unknown as WorkflowDefinition;
@@ -156,6 +157,26 @@ describe("workflow runs without git (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 3);
 		assert.match(run.error ?? "", /but git is unavailable \(download-failed\)/);
 	});
+
+	test.each([
+		["offline", ""],
+		["online with git undownloadable", "1"],
+	])(
+		"a worktree-bound workflow with a blank worktree input starts no download and runs (%s)",
+		async (_label, offline) => {
+			vi.stubEnv("ATOMIC_OFFLINE", offline === "1" ? "" : "1");
+			let bodyRuns = 0;
+			const fetchMock = failingFetch();
+			const { run } = await finish(
+				worktreeWorkflow(() => bodyRuns++, true),
+				{ git_worktree_dir: "" },
+			);
+			assert.equal(run.error, undefined);
+			assert.equal(run.status, "completed");
+			assert.equal(bodyRuns, 1);
+			assert.equal(fetchMock.mock.calls.length, 0);
+		},
+	);
 
 	test("runs that never use a worktree start no download and still run, even when git cannot be downloaded", async () => {
 		vi.stubEnv("ATOMIC_OFFLINE", "");
@@ -224,7 +245,7 @@ describe("workflow runs without git (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 3);
 	});
 
-	test("prepareTaskGit attempts a download only when git is missing and downloadable", async () => {
+	test("prepareTaskGit attempts a download when git is missing and downloadable, and again after a retryable failure", async () => {
 		const fetchMock = failingFetch();
 		const controller = new AbortController();
 		await prepareTaskGit(controller.signal);
@@ -233,7 +254,46 @@ describe("workflow runs without git (#4322)", () => {
 		await prepareTaskGit(controller.signal);
 		assert.equal(fetchMock.mock.calls.length, 3);
 		await prepareTaskGit(controller.signal);
-		assert.equal(fetchMock.mock.calls.length, 3);
+		assert.equal(fetchMock.mock.calls.length, 6);
+	});
+
+	test("prepareTaskGit does not retry a failure that retrying cannot fix", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => new Response("gone", { status: 404 }));
+		const controller = new AbortController();
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 1);
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 1);
+	});
+
+	test.each([
+		["worktree: true", { prompt: "x", worktree: true }, /creates a worktree, but git is unavailable \(offline\)/],
+		[
+			"a gitWorktreeDir option",
+			{ prompt: "x", gitWorktreeDir: "../named" },
+			/creates a worktree \(\.\.\/named\), but git is unavailable \(offline\)/,
+		],
+	])("a task with %s fails with a git-required error naming the task", async (_label, taskOptions, creates) => {
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+		const def = workflow({
+			name: "taskneedsworktree",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Optional(Type.Boolean()) },
+			run: async (ctx) => {
+				await ctx.task("edit", taskOptions);
+				return { ok: true };
+			},
+		}) as unknown as WorkflowDefinition;
+		const { run } = await finish(def, {});
+		assert.equal(run.status, "failed");
+		assert.match(run.error ?? "", /Workflow needs git: task "edit" of "taskneedsworktree"/);
+		assert.match(run.error ?? "", creates);
+		assert.match(run.error ?? "", /\(git-required\)$/);
+		assert.equal(fetchMock.mock.calls.length, 0);
 	});
 
 	test("worktree git commands fail with the typed reason instead of a spawn error", () => {

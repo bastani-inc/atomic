@@ -27,6 +27,7 @@ import type {
 	WorkflowTaskResult,
 	WorkflowTaskStep,
 } from "../../shared/types.js";
+import { wrapGitRequired } from "../../shared/workflow-git-required-error.js";
 import type { EngineRuntime } from "../runtime.js";
 import { createChainPrimitive } from "./chain.js";
 import { createParallelPrimitive } from "./parallel.js";
@@ -50,6 +51,20 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		runtime.exit.throwIfWorkflowExitSelected();
+		/** A git failure while this task sets up its own worktree says that the task needs git, and why. */
+		const withGitRequired = <T>(setup: () => T, gitWorktreeDir: string | undefined): T => {
+			try {
+				return setup();
+			} catch (error) {
+				throw wrapGitRequired(error, {
+					workflow: runtime.workflowName,
+					runId: runtime.runId,
+					source: "task-option",
+					field: name,
+					...(gitWorktreeDir === undefined ? {} : { gitWorktreeDir }),
+				});
+			}
+		};
 		const runTaskOnce = async (
 			taskOptions: WorkflowTaskOptions,
 			prepareLiveOptions?: () => WorkflowTaskOptions,
@@ -67,10 +82,14 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				prepareLiveOptions: () => {
 					const preparedOptions = prepareLiveOptions?.() ?? taskOptions;
 					resolvedTaskOptions =
-						stageOptionsWithGitWorktree(
-							stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
-							runtime.workflowInvocationCwd,
-							runtime.gitWorktreeSetupCache,
+						withGitRequired(
+							() =>
+								stageOptionsWithGitWorktree(
+									stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
+									runtime.workflowInvocationCwd,
+									runtime.gitWorktreeSetupCache,
+								),
+							taskOptions.gitWorktreeDir,
 						) ?? preparedOptions;
 					return taskStageOptions(resolvedTaskOptions);
 				},
@@ -124,13 +143,17 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		};
 		try {
 			const result = await runTaskOnce(options, () => {
-				prepared = prepareTaskWorktrees(
-					[{ ...options, name }],
-					{ ...options, worktree: true },
-					`${runtime.runId}-${name}-${crypto.randomUUID()}`,
-					name,
-					runtime.workflowInvocationCwd,
-					runtime.worktreeSymlinkDirectories,
+				prepared = withGitRequired(
+					() =>
+						prepareTaskWorktrees(
+							[{ ...options, name }],
+							{ ...options, worktree: true },
+							`${runtime.runId}-${name}-${crypto.randomUUID()}`,
+							name,
+							runtime.workflowInvocationCwd,
+							runtime.worktreeSymlinkDirectories,
+						),
+					undefined,
 				);
 				const preparedTask = prepared.tasks[0]!;
 				if (preparedTask.durableReplayKey !== undefined)
