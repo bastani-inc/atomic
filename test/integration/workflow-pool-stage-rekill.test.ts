@@ -27,7 +27,7 @@ import {
 	ROUNDS_STEER,
 	ROUNDS_TOOL_RELEASE_FILE,
 } from "../fixtures/pool-rounds-child.js";
-import { testRunId } from "../helpers/run-id.js";
+import { rootOf, testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /** Structural: a coordinator process, worker processes, real agent tool rounds and two replacements. */
@@ -135,7 +135,7 @@ async function roundsPool(prefix: string, foreground = false, admission = false)
 /** The users' and the stage's own texts in the finished stage's session, in order. */
 async function transcript(live: Awaited<ReturnType<typeof roundsPool>>): Promise<string[]> {
 	const finished = live.stage()!.stage;
-	const sessions = await poolSessionStore(live.backend);
+	const sessions = await poolSessionStore(live.backend, rootOf(live.backend, live.stage()!.runId));
 	assert.ok(sessions !== undefined);
 	const messages = (await SessionManager.open(sessions, finished.sessionId!)).buildSessionContext().messages;
 	await sessions.close();

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isJournalCatalogError, rehydrateJournalStoreError } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -163,7 +164,10 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		const result = await execute({ action: "resume", runId: target }, {} as never);
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "noop");
-		assert.equal(result.message, `Run not found: ${target}`);
+		assert.equal(result.code, "run_not_found");
+		const typed = rehydrateJournalStoreError(result.failure!);
+		assert.ok(isJournalCatalogError(typed) && typed.code === "run-not-found" && typed.runId === target);
+		assert.equal(result.message, `${typed.message}\n${typed.hint}`);
 		assert.deepEqual(
 			backend.targetedHydrationCalls,
 			[target],

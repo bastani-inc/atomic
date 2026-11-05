@@ -24,7 +24,7 @@ import type {
 	SeqEvent,
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { LIVE_STAGE_FIRST_DELTA, LIVE_STAGE_SECOND_DELTA } from "../fixtures/pool-live-stage-child.js";
-import { testRunId } from "../helpers/run-id.js";
+import { rootOf, testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
@@ -130,7 +130,7 @@ test.skipIf(process.platform === "win32")(
 
 			// The snapshot's settled messages are the session's: the prompt, and nothing of the turn in flight.
 			assert.equal(watch.snapshot.sessionId, target.stage.sessionId);
-			const sessions = await poolSessionStore(backend);
+			const sessions = await poolSessionStore(backend, rootOf(backend, target.runId));
 			assert.ok(sessions !== undefined);
 			const persisted = (await SessionManager.open(sessions, target.stage.sessionId!)).buildSessionContext()
 				.messages;

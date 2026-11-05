@@ -1295,6 +1295,15 @@ try {
 }
 ```
 
+#### Admission errors
+
+`WorkflowAdmissionError` is the family of errors a refused `admission` configuration raises; catch it, or `WorkflowAdmissionConfigError`, and branch on `code`, never on the message. Every error has a `code`, a `hint` with the remediation on its own, and `retryable: false`. `isWorkflowAdmissionError(error)` and `isWorkflowAdmissionConfigError(error)` check the class, and also the `name` and `code` of an error that crossed a process or realm boundary. `findWorkflowAdmissionError(error)` returns the first family error in an error's `cause` chain, looking at most eight causes deep. All of them are exported from `@bastani/atomic/workflows`, with the code types `WorkflowAdmissionErrorCode`, `WorkflowAdmissionConfigErrorCode`, `WorkflowAdmissionMismatchReason` and `WorkflowAdmissionSource`.
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `WorkflowAdmissionConfigError` | `user-limits-need-one-journal` | `admission.userLimits` is set and the run's journal is the default journal store, where each root has its own shard. `run(...)` rejects with it before the root is placed in the journal; from settings, the run or resume is refused before it starts. | `source` (`"sdk"` or `"settings"`), `field` (`admission.userLimits`, or `workflows.admission.userLimits` for settings) | Set `RunOpts.journal` (`workflows.journal.path`) to one SQLite file and `userDatabase` to the same absolute path, or remove `userLimits`. |
+| `WorkflowAdmissionConfigError` | `user-database-mismatch` | `userLimits` is set and `userDatabase` is not the run's journal file. | The same fields, `reason` (`unsupported-journal`, `missing` or `other-file`), `userDatabase`, `journalPath` | Set `userDatabase` to the journal file's absolute path, or remove `userLimits`. |
+
 #### Pool coordination counts
 
 While a root's local worker pool runs, the root's `RunSnapshot` carries `pool.coordination`: what the pool's coordinator handled since it started.
@@ -1313,7 +1322,7 @@ The pool runs children once any worker is ready and fails only when no worker st
 
 Workers are supported only on Linux and macOS hosts with native process identity and boot identity. Windows and hosts without those capabilities refuse activation, including when no process cap is configured. Remote hosts and network workers are not supported: every worker runs on the root's machine. The root's journal need not be a local file. A journal selected with `RunOpts.journal`, `--storage`, `ATOMIC_WORKFLOWS_JOURNAL` or settings can be any [storage adapter](/storage), such as libSQL or Turso, or a SQLite file with a custom prefix; the workers open it through the same selection, and the pool keeps its queue, leases and admission state in a SQLite database on the machine that runs it. A root on such a journal resumes only on the machine whose pool database holds its work; resuming it elsewhere fails with an error naming that machine. A journal passed to the SDK as an object, and a memory journal, cannot host workers because the worker processes cannot open them. Pooled SDK runs reject process-bound adapters, UI, persistence, and similar runtime overrides before worker launch. `ui` is accepted: it answers the `ctx.ui` prompts (`input`, `confirm`, `select`, `editor`) of children on local workers, and each answer is sent to the worker that asked. If a `ui` call rejects, the prompt fails in that child with the same error. `stageUiBroker` is accepted: a stage on a local worker that asks `ask_user_question` raises the same form there, and its answer is sent to the worker that asked. A `ctx.ui.custom` prompt in a child on a local worker fails that child with an error, since its component cannot be shown outside the worker. `stageControlRegistry` is accepted: while a stage runs on a worker, the registry holds a handle for it whose `sendUserMessage`, `steer`, `followUp` and `subscribe` reach that stage and report the same delivery actions as an in-process stage. The handle streams the stage's events only while something subscribes or a message is on its way. The CLI keeps its host-specific bindings at the root and gives worker sessions their own adapters.
 
-Admission limits count actual resources: a session from creation through disposal, including fallback and delegated sessions, and a managed tool process until confirmed cleanup. Yielding an observation wait does not free a process permit. Subprocesses started outside Atomic's managed APIs are not counted. Host load and free-memory thresholds are launch gates, not hard OS limits. `userLimits` are reliable only when every participating run uses the configured canonical database path; they are local-user coordination, not a tenant security boundary.
+Admission limits count actual resources: a session from creation through disposal, including fallback and delegated sessions, and a managed tool process until confirmed cleanup. Yielding an observation wait does not free a process permit. Subprocesses started outside Atomic's managed APIs are not counted. Host load and free-memory thresholds are launch gates, not hard OS limits. `userLimits` are reliable only when every participating run uses the configured canonical database path, selected with `RunOpts.journal` or `workflows.journal.path`; they are local-user coordination, not a tenant security boundary. See [admission errors](#admission-errors) for the typed errors a refused configuration raises.
 
 Worker recovery replays unfinished child work from committed checkpoints, so external effects before the latest checkpoint may run again. Use stable logical idempotency keys where duplicate effects matter.
 
@@ -1530,7 +1539,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 import type { RunJournalOption } from "@bastani/atomic/workflows";
 ```
 
-`run()` uses the local SQLite journal at `~/.atomic/workflows/journal.sqlite` by default, shared with sessions under separate `wf_` and `session_` table prefixes. It releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
+`run()` uses the local [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/` by default: a catalog plus SQLite shard files, with each root and its children on one shard. It releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
 
 - `{ path }` opens that SQLite file.
 - `{ database, prefix? }` uses a caller-owned async `SqliteDatabase` facade. Atomic initializes the journal schema on it but does not close the database.
@@ -1597,7 +1606,7 @@ A custom journal can also implement two optional speed-ups that `SqlRunJournal` 
 
 The types `RunVersion`, `RunSnapshotTail` and `RunJournalBatchAppend` are exported from `@bastani/atomic/storage`. When these members are present, `registerRunJournalConformance` also checks them.
 
-Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
+Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal store in `~/.atomic/workflows/journal/`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Resume a run from the journal that holds it: the store finds its own and adopted runs by ID; a run in an explicitly selected file needs that selection or `atomic storage adopt`.
 
 ```ts
 import { run } from "@bastani/atomic/workflows";

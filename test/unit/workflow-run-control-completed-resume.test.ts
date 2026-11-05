@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isJournalCatalogError, rehydrateJournalStoreError, SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import {
@@ -331,8 +332,14 @@ describe("durable prefix resume namespace and stage scope", () => {
 			},
 		} as unknown as ExtensionRuntime;
 		const result = await workflowResumeAction({ action: "resume", runId: root }, toolResumeDeps(runtime));
-		assert.equal("status" in result ? result.status : undefined, "noop");
-		assert.equal("message" in result ? result.message : undefined, `Run not found: ${root}`);
+		assert.equal(result.action, "resume");
+		if (result.action !== "resume") return;
+		assert.deepEqual([result.status, result.code, result.runId], ["noop", "run_not_found", root]);
+		const error = rehydrateJournalStoreError(result.failure!);
+		assert.ok(isJournalCatalogError(error) && error.code === "run-not-found");
+		assert.equal(error.fields.localOnly, true);
+		assert.ok(error.hint.includes(SHARED_STORAGE_JOIN_HINT));
+		assert.equal(result.message, `${error.message}\n${error.hint}`);
 	});
 
 	test("workflow tool prefix plus a stage selector refuses durable dispatch", async () => {
@@ -932,7 +939,10 @@ describe("/workflow resume completed target", () => {
 		const missingTarget = testRunId("missing-workflow");
 		const result = await resume(missingTarget, createExtensionRuntime({ store }));
 
-		assert.match(result.errors.join("\n"), new RegExp(`No resumable workflow found for id: ${missingTarget}`));
+		assert.match(
+			result.errors.join("\n"),
+			new RegExp(`Workflow run not found: ${missingTarget} in this session's workflow store \\(run-not-found\\)`),
+		);
 	});
 
 	test("explicit resume of a non-resumable run keeps the explanatory error", async () => {

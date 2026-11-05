@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { setImmediate } from "node:timers";
-import { StorageError, type StorageFailureCause } from "@bastani/atomic/storage";
+import { type JournalShardUnavailableError, StorageError, type StorageFailureCause } from "@bastani/atomic/storage";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../shared/types.js";
@@ -326,6 +326,11 @@ interface WorkflowLeaseExecution {
 export interface CheckpointSelection {
 	readonly ids: readonly string[];
 	readonly prefixes: readonly string[];
+}
+
+export interface UnavailableShardsReader {
+	/** The shards of a journal store that a listing could not open (`ShardedRunJournal`). */
+	unavailableShards(): readonly JournalShardUnavailableError[];
 }
 
 /**
@@ -1509,7 +1514,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	async prepareWorkflowCatalog() {
 		await this.hydrateResumableWorkflows();
-		return this.projection.prepareWorkflowCatalog();
+		const catalog = await this.projection.prepareWorkflowCatalog();
+		const unavailableShards = (this.journal as Partial<UnavailableShardsReader>).unavailableShards?.() ?? [];
+		return unavailableShards.length === 0 ? catalog : { ...catalog, unavailableShards };
 	}
 	private *deleteOwned(runId: string, expectSeq?: number): Operation<void> {
 		try {

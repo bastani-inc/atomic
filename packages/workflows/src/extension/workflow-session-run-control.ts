@@ -16,6 +16,7 @@ import {
 	WorkflowStageNotFoundError,
 	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
+import { rehydrateJournalStoreError } from "@bastani/atomic/storage";
 import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { JournalError } from "../durable/journal/types.js";
 import { canonicalDirectory, isProjectRootRun, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
@@ -144,7 +145,7 @@ function controlOutcome(result: WorkflowToolResult): WorkflowRunControlOutcome {
 			result.code,
 			result.message,
 			result.runId,
-			undefined,
+			"failure" in result ? rehydrateJournalStoreError(result.failure!) : undefined,
 			"failedRuns" in result ? result.failedRuns : undefined,
 		);
 	}

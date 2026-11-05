@@ -9,6 +9,8 @@ export type {
 	StorageDescriptor,
 } from "./database.js";
 export * from "./errors.js";
+export * from "./journal-adoption.js";
+export * from "./journal-catalog.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
 	getWriterQueueDegradation,
@@ -34,6 +36,7 @@ export {
 	type StorageInputSelection,
 	type StorageSettingsSelection,
 	selectStorage,
+	selectsDefaultJournalStore,
 	TEAM_PREFIX_ENV,
 	TEAM_PROFILE_ENV,
 	TEAM_TOKEN_ENV,

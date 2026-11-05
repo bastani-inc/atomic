@@ -33,7 +33,7 @@ import type { PooledStageHandle } from "../../packages/workflows/src/workers/poo
 import { acquirePooledStage } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
 import type { DeliveryOpId } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { LIVE_STAGE_FIRST_DELTA } from "../fixtures/pool-live-stage-child.js";
-import { testRunId } from "../helpers/run-id.js";
+import { rootOf, testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
@@ -327,7 +327,7 @@ test.skipIf(process.platform === "win32")(
 			);
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const finished = agentStages(live.store)[0]!.stage;
-			const sessions = await poolSessionStore(live.backend);
+			const sessions = await poolSessionStore(live.backend, rootOf(live.backend, agentStages(live.store)[0]!.runId));
 			assert.ok(sessions !== undefined);
 			const users = (await SessionManager.open(sessions, finished.sessionId!))
 				.buildSessionContext()
@@ -425,7 +425,7 @@ test.skipIf(process.platform === "win32")(
 			);
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const finished = agentStages(live.store)[0]!.stage;
-			const sessions = await poolSessionStore(live.backend);
+			const sessions = await poolSessionStore(live.backend, rootOf(live.backend, agentStages(live.store)[0]!.runId));
 			assert.ok(sessions !== undefined);
 			const users = (await SessionManager.open(sessions, finished.sessionId!))
 				.buildSessionContext()
@@ -634,7 +634,7 @@ test.skipIf(process.platform === "win32")(
 			);
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const finished = agentStages(live.store)[0]!.stage;
-			const sessions = await poolSessionStore(live.backend);
+			const sessions = await poolSessionStore(live.backend, rootOf(live.backend, agentStages(live.store)[0]!.runId));
 			assert.ok(sessions !== undefined);
 			const users = (await SessionManager.open(sessions, finished.sessionId!))
 				.buildSessionContext()

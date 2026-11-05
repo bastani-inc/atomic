@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test, vi } from "vitest";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.js";
 import * as sessionPicker from "../../packages/coding-agent/src/cli/session-picker.js";
@@ -187,7 +187,7 @@ test("invalid selected session configuration raises StorageConfigError with its 
 	}
 });
 
-test("session and journal defaults share a file without sharing records", async () => {
+test("the default sessions file and the default journal store keep separate files and records (#4325)", async () => {
 	const root = makeTempDirectory("session-shared-");
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = join(root, "agent");
@@ -204,7 +204,10 @@ test("session and journal defaults share a file without sharing records", async 
 			createdAt: 1,
 			status: "running",
 		});
-		assert.deepEqual(first.getSessionStore().descriptor, (await journal.getRun(first.getSessionId()))?.storage);
+		const stored = (await journal.getRun(first.getSessionId()))?.storage;
+		assert.equal(stored?.adapter, "node-sqlite");
+		assert.equal(dirname(stored!.location), join(root, "workflows", "journal"));
+		assert.notEqual(stored?.location, first.getSessionStore().descriptor.location);
 		assert.equal((await journal.getRun(first.getSessionId()))?.name, "journal only");
 		assert.equal((await first.getSessionStore().load(first.getSessionId())).entries.length, 1);
 		const stageStore = await stageSessionStore({ cwd: root });

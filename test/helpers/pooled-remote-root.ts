@@ -241,7 +241,7 @@ export async function runPooledRoot(
 		});
 
 		// A finished pooled stage's transcript is read from the coordination database through the journal's identity.
-		const sessions = await poolSessionStore(backend);
+		const sessions = await poolSessionStore(backend, rootId);
 		assert.ok(sessions, "pooled stage sessions are reachable");
 		try {
 			const ids = checkpoints.flatMap((entry) =>

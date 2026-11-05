@@ -131,7 +131,7 @@ export async function completedWorkflowRunSnapshots(
 	// Stages that ran on local workers keep their sessions in the journal's pool tables (#3996).
 	let pooled: Promise<SessionStore | undefined> | undefined;
 	const pooledStore = () => {
-		pooled ??= poolSessionStore(backend);
+		pooled ??= poolSessionStore(backend, handle.rootWorkflowId ?? handle.workflowId);
 		return pooled;
 	};
 	try {

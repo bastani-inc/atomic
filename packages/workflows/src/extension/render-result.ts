@@ -11,6 +11,7 @@
  *  - pi-subagents src/extension/index.ts renderResult slot
  */
 
+import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { RunDetail } from "../runs/background/status.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
@@ -192,6 +193,8 @@ type ResumeResult = {
 	status: string;
 	message: string;
 	code?: WorkflowControlFailureCode;
+	/** `run_not_found`: the typed storage error behind it, serialized for the SDK to rehydrate. */
+	failure?: SerializedJournalStoreError;
 };
 
 /**

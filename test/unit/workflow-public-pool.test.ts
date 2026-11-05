@@ -102,7 +102,7 @@ test.skipIf(process.platform === "win32").each([
 	{ localWorkers: { count: 1, definitions: [] }, adapters: {}, error: /process-bound override: adapters/ },
 	{
 		admission: { userLimits: { session: 1 }, userDatabase: "/not-the-journal.sqlite" },
-		error: /canonical journal database/,
+		error: /user-database-mismatch/,
 	},
 	{ admission: { limits: { process: 0 } }, error: /resource limit/ },
 ])("invalid public configuration is rejected before root admission ($error) (#3869)", async ({ error, ...options }) => {

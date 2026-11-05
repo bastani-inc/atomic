@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic";
+import { type StorageInputSelection, selectsDefaultJournalStore } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { RunOpts } from "../../packages/workflows/src/authoring.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -10,6 +11,7 @@ import {
 	resolveRunJournal,
 	selectRunJournal,
 } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { isShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import { optionCases } from "../fixtures/storage-value-adapter.js";
@@ -99,7 +101,7 @@ test("settings memory true selects memory even when path is empty", async () => 
 	}
 });
 
-test("absent and empty settings and memory false use the persistent default", async () => {
+test("absent and empty settings and memory false use the persistent default journal store (#4325)", async () => {
 	for (const settings of [
 		undefined,
 		{},
@@ -108,9 +110,14 @@ test("absent and empty settings and memory false use the persistent default", as
 		{ workflows: { journal: { path: "", memory: false } } },
 	]) {
 		const journal = await resolve({ settings });
-		assert.ok(journal instanceof SqlRunJournal);
-		assert.equal(journal.path, join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
+		assert.ok(isShardedRunJournal(journal));
+		assert.equal(journal.directory, join(dirname(getAgentDir()), "workflows", "journal"));
 	}
+	assert.deepEqual(selectRunJournal({ settings: { workflows: { journal: { prefix: "isolated_" } } } }), {
+		kind: "sqlite",
+		path: join(dirname(getAgentDir()), "workflows", "journal.sqlite"),
+		prefix: "isolated_",
+	});
 });
 
 test("selected settings with nonempty path and memory true fail with exact typed fields", async () => {
@@ -134,8 +141,8 @@ test("journal settings override shared storage outright and shared storage overr
 	assert.ok(sharedDefault instanceof SqlRunJournal);
 	assert.equal(sharedDefault.path, join(dirname(getAgentDir()), "storage.sqlite"));
 	const explicit = await resolve({ settings: { workflows: { journal: {} }, storage: { memory: true } } });
-	assert.ok(explicit instanceof SqlRunJournal);
-	assert.equal(explicit.path, join(dirname(getAgentDir()), "workflows", "journal.sqlite"));
+	assert.ok(isShardedRunJournal(explicit));
+	assert.equal(explicit.directory, join(dirname(getAgentDir()), "workflows", "journal"));
 	assert.ok(
 		(await resolve({
 			settings: { workflows: { journal: { memory: true } }, storage: { path: "shared.sqlite" } },
@@ -189,7 +196,9 @@ test("factory-created journals persist safe descriptors without mutating caller 
 		assert.deepEqual(header, snapshot);
 		assert.deepEqual(
 			stored?.storage,
-			journal instanceof SqlRunJournal ? journal.descriptor : { adapter: "memory", location: ":memory:" },
+			isShardedRunJournal(journal)
+				? { adapter: "node-sqlite", location: journal.shardOf(header.runId)!.path }
+				: { adapter: "memory", location: ":memory:" },
 		);
 		assert.equal("inputs" in stored!, false);
 	}
@@ -282,3 +291,12 @@ for (const source of ["sdk", "workflows.journal", "storage"] as const) {
 		});
 	}
 }
+
+test("only a journal selection that names no store of its own means the journal store (#4325)", () => {
+	for (const value of [undefined, null, "journal.sqlite", 5, true, []])
+		assert.equal(selectsDefaultJournalStore(value as StorageInputSelection), false, JSON.stringify(value));
+	for (const value of [{}, { path: "" }, { path: undefined }, { prefix: undefined }, { memory: false }])
+		assert.equal(selectsDefaultJournalStore(value as StorageInputSelection), true, JSON.stringify(value));
+	for (const value of [{ path: "journal.sqlite" }, { prefix: "p_" }, { memory: true }, { dir: "journals" }])
+		assert.equal(selectsDefaultJournalStore(value as StorageInputSelection), false, JSON.stringify(value));
+});

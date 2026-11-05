@@ -21,3 +21,11 @@ export function testRunId(seed: string): string {
 	const variant = `${((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}`;
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${version}-${variant}-${hex.slice(20, 32)}`;
 }
+
+/** The root of `runId` as the backend records it: the run itself when it is a root or not yet hydrated. */
+export function rootOf(
+	backend: { getWorkflow(id: string): { readonly rootWorkflowId?: string } | undefined },
+	runId: string,
+): string {
+	return backend.getWorkflow(runId)?.rootWorkflowId ?? runId;
+}

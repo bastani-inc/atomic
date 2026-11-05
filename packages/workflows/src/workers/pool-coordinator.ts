@@ -1,10 +1,11 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { setDebugSetting } from "@bastani/atomic";
+import { isJournalStoreError, JournalShardUnavailableError, serializeJournalStoreError } from "@bastani/atomic/storage";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
@@ -608,7 +609,13 @@ export class PoolCoordinator {
 				.within(kind, () => this.execute(command))
 				.then(
 					(value) => this.port.send({ kind: "reply", id: command.id, value }),
-					(error: Error) => this.port.send({ kind: "reply", id: command.id, error: error.message }),
+					(error: Error) =>
+						this.port.send({
+							kind: "reply",
+							id: command.id,
+							error: error.message,
+							...(isJournalStoreError(error) ? { failure: serializeJournalStoreError(error) } : {}),
+						}),
 				);
 			this.inflight.add(handled);
 			void handled.finally(() => this.inflight.delete(handled));
@@ -692,6 +699,13 @@ export class PoolCoordinator {
 		this.root = root;
 		this.options = options;
 		this.desiredControl ??= control;
+		if (options.journalShard !== undefined && !existsSync(options.journalPath))
+			throw new JournalShardUnavailableError({
+				code: "shard-missing",
+				shardId: options.journalShard,
+				shardPath: options.journalPath,
+				runId: root,
+			});
 		configurePooledWatchTrace(options.journalPath, "coordinator");
 		this.journal ??= await this.openCountedJournal(options.journalPath);
 		if (options.durable !== undefined && this.remote === undefined) {

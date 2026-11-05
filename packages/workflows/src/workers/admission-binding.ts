@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type ResourceAdmission, type ResourcePermit, withResourceAdmission } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
@@ -94,9 +95,10 @@ export async function admitWorkflowSessions(
 	if (!config) return callback(opts);
 	if (!(rootBackend instanceof JournalDurableBackend))
 		throw new Error("Resource admission requires a journal backend");
-	const admission = await SqlResourceAdmission.open(poolJournalFor(rootBackend.journal), {
+	const root = opts.parentRun?.rootRunId ?? opts.runId;
+	const admission = await SqlResourceAdmission.open(poolJournalFor(await rootRunJournal(rootBackend.journal, root)), {
 		...config,
-		root: opts.parentRun?.rootRunId ?? opts.runId,
+		root,
 		holder: randomUUID(),
 		// The root admits its sessions while it holds its lease, so it saves its limits here: a resume may have changed
 		// them, and its workers and children admit against what the root saved (#4196).

@@ -224,6 +224,11 @@ describe("targeted durable workflow inspection", () => {
 		const observer = await writer.reopen();
 		assert.equal((await inspectTargetedDurableWorkflow(observer, absentId)).kind, "absent");
 		assert.equal((await inspectTargetedDurableWorkflow(observer, deletedId)).kind, "absent");
+		const prefix = "0f0f0f0f";
+		const unmatched = await inspectTargetedDurableWorkflow(observer, prefix);
+		assert.equal(unmatched.kind, "absent");
+		if (unmatched.kind === "absent")
+			assert.deepEqual([unmatched.error.code, unmatched.error.runId], ["run-not-found", prefix]);
 	});
 
 	// #2603: read-only prefix inspection includes live runs owned by another session.

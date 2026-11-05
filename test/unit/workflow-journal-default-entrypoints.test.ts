@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
+import { isJournalCatalogError } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { isShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { availableStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
@@ -30,12 +32,14 @@ import { buildCtx } from "./slash-dispatch-utils.js";
 
 let directory: string;
 let expectedPath: string;
+let expectedStore: string;
 beforeEach(() => {
 	setDurableBackend(undefined);
 	directory = makeTempDirectory("default-journal-entry-");
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(directory, "agent"));
 	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", undefined);
 	expectedPath = join(directory, "workflows", "journal.sqlite");
+	expectedStore = join(directory, "workflows", "journal");
 	assert.equal(getAgentDir(), join(directory, "agent"));
 	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
 });
@@ -64,8 +68,8 @@ function definition() {
 function defaultBackend(store: Store) {
 	const backend = availableStoreDurableBackend(store);
 	assert.ok(backend instanceof JournalDurableBackend);
-	assert.ok(backend.journal instanceof SqlRunJournal);
-	assert.equal(backend.journal.path, expectedPath);
+	assert.ok(isShardedRunJournal(backend.journal));
+	assert.equal(backend.journal.directory, expectedStore);
 	assert.equal(backend.persistent, true);
 	return backend;
 }
@@ -86,20 +90,20 @@ async function settle(owner: ReturnType<typeof resources>): Promise<void> {
 	assert.equal((await backend.journal.listRuns()).length, 1);
 }
 
-test("SDK run defaults to the persistent SQLite journal without an injected backend", async () => {
+test("SDK run defaults to the persistent journal store without an injected backend", async () => {
 	const store = createStore();
 	const result = await run(definition(), {}, { cwd: directory, store });
 	assert.equal(result.status, "completed", JSON.stringify(result));
 	assert.equal((await defaultBackend(store).journal.listRuns()).length, 1);
 });
 
-test("background run defaults to the persistent SQLite journal without an injected backend", async () => {
+test("background run defaults to the persistent journal store without an injected backend", async () => {
 	const owner = resources();
 	runDetached(definition(), {}, { ...owner, cwd: directory });
 	await settle(owner);
 });
 
-test("extension dispatch defaults to the persistent SQLite journal without settings", async () => {
+test("extension dispatch defaults to the persistent journal store without settings", async () => {
 	const owner = resources();
 	const runtime = createExtensionRuntime({ ...owner, cwd: directory, definitions: [definition()] });
 	const result = await runtime.dispatch({ action: "run", workflow: "default-journal" });
@@ -138,7 +142,7 @@ for (const hasUI of [true, false]) {
 	});
 }
 
-test("workflow tool defaults to the persistent SQLite journal without settings", async () => {
+test("workflow tool defaults to the persistent journal store without settings", async () => {
 	const owner = resources();
 	const runtime = createExtensionRuntime({ ...owner, cwd: directory, definitions: [definition()] });
 	const execute = makeExecuteWorkflowTool(
@@ -172,7 +176,7 @@ test("empty workflow status stays local without initializing a journal (#3674)",
 	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
 });
 
-test("resume reopens the default SQLite journal without an injected backend", async () => {
+test("resume reopens the default journal store without an injected backend", async () => {
 	const def = definition();
 	const store = createStore();
 	const result = await run(def, {}, { cwd: directory, store });
@@ -190,11 +194,12 @@ test("resume reopens the default SQLite journal without an injected backend", as
 	assert.equal(defaultBackend(owner.store).getWorkflow(result.runId)?.status, "completed");
 });
 
-test("an unopenable default SQLite journal fails without selecting memory", async () => {
-	makeDirectorySync(expectedPath, { recursive: true });
+test("an unopenable default journal store fails with a typed catalog error without selecting memory", async () => {
+	makeDirectorySync(join(expectedStore, "catalog.sqlite"), { recursive: true });
 	await assert.rejects(run(definition(), {}, { cwd: directory, store: createStore() }), (error: Error) => {
-		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.location, expectedPath);
+		assert.ok(isJournalCatalogError(error));
+		assert.equal(error.code, "catalog-unavailable");
+		assert.equal(error.catalogPath, join(expectedStore, "catalog.sqlite"));
 		return true;
 	});
 	assert.equal(getDurableBackendProcessOwner().selectedBackends?.size, 0);

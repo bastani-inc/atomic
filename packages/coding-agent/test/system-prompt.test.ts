@@ -472,6 +472,11 @@ describe("buildSystemPrompt", () => {
 				const workflowsDir = join(dirname(agentDir), "workflows");
 
 				assert.ok(guidance.includes(join(workflowsDir, "journal.sqlite")));
+				assert.ok(
+					guidance.includes(
+						`workflow runs in the journal store \`${join(workflowsDir, "journal")}/\` (a catalog plus shard files)`,
+					),
+				);
 				assert.ok(guidance.includes(getDefaultSessionDirPath(project, agentDir)));
 				assert.ok(guidance.includes(`${join(workflowsDir, "runs")}/<runId>/`));
 				assert.ok(guidance.includes("`ATOMIC_WORKFLOW_ARTIFACT_DIR` moves them"));
