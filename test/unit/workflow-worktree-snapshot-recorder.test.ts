@@ -21,7 +21,11 @@ import {
 	releaseWorkflowSnapshotAncestry,
 } from "../../packages/workflows/src/durable/worktree-snapshot-recorder.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { openSqlSnapshotJournal, type SqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
+import {
+	closeSnapshotJournals,
+	openSqlSnapshotJournal,
+	type SqlSnapshotJournal,
+} from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -31,6 +35,7 @@ beforeEach(() => {
 	journals = [];
 });
 afterEach(async () => {
+	await closeSnapshotJournals();
 	for (const journal of journals) await journal.close();
 	sandbox.dispose();
 });

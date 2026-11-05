@@ -16,7 +16,11 @@ import {
 import { afterEach, beforeEach, test } from "vitest";
 import { RUN_EVENT_TYPES, type RunEvent, type RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import { resolveWorkflowSnapshotFrontier } from "../../packages/workflows/src/durable/worktree-snapshots.js";
-import { openSqlSnapshotJournal, type SqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
+import {
+	closeSnapshotJournals,
+	openSqlSnapshotJournal,
+	type SqlSnapshotJournal,
+} from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -26,6 +30,7 @@ beforeEach(async () => {
 	fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
 });
 afterEach(async () => {
+	await closeSnapshotJournals();
 	await fixture.close();
 	sandbox.dispose();
 });

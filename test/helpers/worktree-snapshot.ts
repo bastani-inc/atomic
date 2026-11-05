@@ -11,6 +11,17 @@ import {
 	setWorktreeSnapshotGit,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 
+/** The error code for a path below a regular file: POSIX systems say ENOTDIR, Windows reports the path as missing. */
+export const BELOW_FILE_ERRNO = process.platform === "win32" ? "ENOENT" : "ENOTDIR";
+
+/** The error code for opening a directory as a file: EISDIR on POSIX systems, EPERM on Windows. */
+export const DIRECTORY_AS_FILE_ERRNO = process.platform === "win32" ? "EPERM" : "EISDIR";
+
+/** `path` as a Git config value: forward slashes, which Git reads on every platform, where backslashes would be escapes. */
+export function gitConfigPath(path: string): string {
+	return path.replace(/\\/g, "/");
+}
+
 /** The Git LFS pointer of `content`: what an LFS file holds until its object is fetched. */
 export function lfsPointer(content: string): string {
 	const oid = createHash("sha256").update(content).digest("hex");
@@ -93,6 +104,6 @@ export class GitSandbox {
 
 	dispose(): void {
 		this.restoreResolver();
-		rmSync(this.root, { recursive: true, force: true });
+		rmSync(this.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	}
 }

@@ -8,7 +8,11 @@ import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/dur
 import { resolveWorkflowSnapshotFrontier } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { openSqlSnapshotJournal, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
+import {
+	closeSnapshotJournals,
+	openSqlSnapshotJournal,
+	openSqlSnapshotJournalBackend,
+} from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -18,7 +22,8 @@ beforeEach(() => {
 	priorAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = sandbox.path("agent");
 });
-afterEach(() => {
+afterEach(async () => {
+	await closeSnapshotJournals();
 	if (priorAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = priorAgentDir;
 	sandbox.dispose();

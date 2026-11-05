@@ -19,7 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -183,7 +183,7 @@ describe("captureWorktreeSnapshot content", () => {
 		sandbox.write(sandbox.path("global-excludes"), "*.global\n");
 		sandbox.write(
 			sandbox.globalConfig,
-			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\texcludesFile = ${sandbox.path("global-excludes")}\n`,
+			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\texcludesFile = ${gitConfigPath(sandbox.path("global-excludes"))}\n`,
 		);
 		const { clone } = await sandbox.remoteWithClone("repo", {
 			".gitignore": "build/\n",

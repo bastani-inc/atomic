@@ -19,7 +19,14 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { assertCaptureUnreadable, assertUnreadablePath, GitSandbox } from "../helpers/worktree-snapshot.js";
+import {
+	assertCaptureUnreadable,
+	assertUnreadablePath,
+	BELOW_FILE_ERRNO,
+	DIRECTORY_AS_FILE_ERRNO,
+	GitSandbox,
+	gitConfigPath,
+} from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -47,7 +54,10 @@ describe("which directories can be captured", () => {
 
 		const below = await captureWorktreeSnapshot(join(file, "child"));
 		assert.equal(below.status === "unavailable" && below.reason.code, "not-a-repository");
-		assert.equal(below.status === "unavailable" && (below.reason.cause as NodeJS.ErrnoException).code, "ENOTDIR");
+		assert.equal(
+			below.status === "unavailable" && (below.reason.cause as NodeJS.ErrnoException).code,
+			BELOW_FILE_ERRNO,
+		);
 
 		const missing = await captureWorktreeSnapshot(sandbox.path("absent"));
 		assert.equal(missing.status === "unavailable" && (missing.reason.cause as NodeJS.ErrnoException).code, "ENOENT");
@@ -63,19 +73,22 @@ describe("which directories can be captured", () => {
 		}
 	});
 
-	test("a checkout whose directory name contains a newline keeps its whole root", async () => {
-		const parent = mkdtempSync(join(sandbox.root, "nl-"));
-		const root = join(parent, "line one\nline two");
-		mkdirSync(root);
-		await sandbox.git(root, "init", "-q");
-		writeFileSync(join(root, "a.txt"), "a\n");
-		await sandbox.git(root, "add", "-A");
-		await sandbox.git(root, "commit", "-q", "-m", "init");
-		writeFileSync(join(root, "b.txt"), "b\n");
-		const result = captured(await captureWorktreeSnapshot(root));
-		assert.equal(result.snapshot.root, root);
-		assert.equal(await sandbox.git(root, "cat-file", "-p", `${result.snapshot.tree}:b.txt`), "b");
-	});
+	test.skipIf(process.platform === "win32")(
+		"a checkout whose directory name contains a newline keeps its whole root (Windows names cannot hold a newline)",
+		async () => {
+			const parent = mkdtempSync(join(sandbox.root, "nl-"));
+			const root = join(parent, "line one\nline two");
+			mkdirSync(root);
+			await sandbox.git(root, "init", "-q");
+			writeFileSync(join(root, "a.txt"), "a\n");
+			await sandbox.git(root, "add", "-A");
+			await sandbox.git(root, "commit", "-q", "-m", "init");
+			writeFileSync(join(root, "b.txt"), "b\n");
+			const result = captured(await captureWorktreeSnapshot(root));
+			assert.equal(result.snapshot.root, root);
+			assert.equal(await sandbox.git(root, "cat-file", "-p", `${result.snapshot.tree}:b.txt`), "b");
+		},
+	);
 
 	test("a clone made without a checkout has no index yet and snapshots as an empty working tree", async () => {
 		const { remote } = await sandbox.remoteWithClone();
@@ -90,7 +103,11 @@ describe("which directories can be captured", () => {
 		const { clone } = await sandbox.remoteWithClone();
 		unlinkSync(join(clone, ".git", "index"));
 		mkdirSync(join(clone, ".git", "index"));
-		assertCaptureUnreadable(await captureWorktreeSnapshot(clone), join(clone, ".git", "index"), "EISDIR");
+		assertCaptureUnreadable(
+			await captureWorktreeSnapshot(clone),
+			join(clone, ".git", "index"),
+			DIRECTORY_AS_FILE_ERRNO,
+		);
 	});
 });
 
@@ -424,7 +441,7 @@ describe.skipIf(process.platform === "win32")("the user's own Git settings durin
 		const { readFileSync } = await import("node:fs");
 		writeFileSync(
 			sandbox.globalConfig,
-			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\tattributesFile = ${attributes}\n[filter "host"]\n\tclean = sed s/alpha/omega/g\n`,
+			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\tattributesFile = ${gitConfigPath(attributes)}\n[filter "host"]\n\tclean = sed s/alpha/omega/g\n`,
 		);
 		const result = captured(await captureWorktreeSnapshot(clone));
 		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${result.snapshot.tree}:note.txt`), "omega");

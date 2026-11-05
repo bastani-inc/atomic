@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
@@ -93,7 +93,7 @@ describe("restoreWorktreeSnapshot", () => {
 			});
 			assert.deepEqual(restored.warnings, []);
 			assert.equal(
-				(await sandbox.git(restored.path, "rev-parse", "--git-common-dir")).startsWith(
+				resolve(await sandbox.git(restored.path, "rev-parse", "--git-common-dir")).startsWith(
 					sandbox.path("machine-b", "repositories"),
 				),
 				true,

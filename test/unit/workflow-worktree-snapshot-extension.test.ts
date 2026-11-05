@@ -8,7 +8,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
+import { closeSnapshotJournals, openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -20,6 +20,7 @@ beforeEach(() => {
 	process.env.ATOMIC_CODING_AGENT_DIR = sandbox.path("agent");
 });
 afterEach(async () => {
+	await closeSnapshotJournals();
 	for (const store of stores.splice(0)) await releaseDurableBackendsHeldBy(store);
 	if (priorAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = priorAgentDir;

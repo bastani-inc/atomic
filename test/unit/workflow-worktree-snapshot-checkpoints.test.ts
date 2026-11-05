@@ -17,14 +17,17 @@ import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/m
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
+import { closeSnapshotJournals, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(async () => {
+	await closeSnapshotJournals();
+	sandbox.dispose();
+});
 
 test("completed workflow tool checkpoints carry their captured workspace and durable blobs (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();

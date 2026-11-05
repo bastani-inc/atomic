@@ -282,20 +282,23 @@ describe("a restore whose process lost its lock", () => {
 });
 
 describe("the record a restore writes", () => {
-	test("is private to its owner while the restore runs", async () => {
-		const { snapshot, blobs } = await dirtyClone();
-		const storeDir = sandbox.path("host");
-		const modes: number[] = [];
-		faults.spawnHook = (args) => {
-			if (is(args, "worktree", "add")) {
-				for (const name of readdirSync(join(storeDir, "restores")))
-					if (name.endsWith(".json")) modes.push(statSync(join(storeDir, "restores", name)).mode & 0o077);
-			}
-			return undefined;
-		};
-		await restoreInto(snapshot, blobs, storeDir, sandbox.path("final"));
-		assert.deepEqual(modes, [0], "neither group nor others can read or write the record");
-	});
+	test.skipIf(process.platform === "win32")(
+		"is private to its owner while the restore runs (POSIX modes, which Windows files do not have)",
+		async () => {
+			const { snapshot, blobs } = await dirtyClone();
+			const storeDir = sandbox.path("host");
+			const modes: number[] = [];
+			faults.spawnHook = (args) => {
+				if (is(args, "worktree", "add")) {
+					for (const name of readdirSync(join(storeDir, "restores")))
+						if (name.endsWith(".json")) modes.push(statSync(join(storeDir, "restores", name)).mode & 0o077);
+				}
+				return undefined;
+			};
+			await restoreInto(snapshot, blobs, storeDir, sandbox.path("final"));
+			assert.deepEqual(modes, [0], "neither group nor others can read or write the record");
+		},
+	);
 
 	test("is created exclusively, so a record path someone planted as a symlink is never written through", async () => {
 		const { snapshot, blobs } = await dirtyClone();
@@ -321,7 +324,7 @@ describe("the record a restore writes", () => {
 		const { snapshot, blobs } = await dirtyClone();
 		const storeDir = sandbox.path("host");
 		faults.writeFile = (path) => {
-			if (path.includes("/restores/") && path.endsWith(".json")) {
+			if (/[\\/]restores[\\/]/.test(path) && path.endsWith(".json")) {
 				throw Object.assign(new Error(`ENOSPC: no space left on device, open '${path}'`), {
 					code: "ENOSPC",
 					syscall: "open",
@@ -350,7 +353,7 @@ describe("the record a restore writes", () => {
 		const id = uuid();
 		faults.uuids.push(id);
 		faults.rm = (path) => {
-			if (path.includes("/restores/") && path.endsWith(".json")) {
+			if (/[\\/]restores[\\/]/.test(path) && path.endsWith(".json")) {
 				throw Object.assign(new Error(`EBUSY: resource busy, rm '${path}'`), {
 					code: "EBUSY",
 					syscall: "rm",
@@ -603,6 +606,7 @@ describe("cleaning up after a failed restore", () => {
 	test("a worktree Git refuses to remove is kept with its files, and the failure names the command and its exit code", async () => {
 		const reason = new Error("stop");
 		const { error, warnings, staging, store } = await failedRestore(reason, (path) => {
+			rmSync(join(path, ".git"));
 			writeFileSync(join(path, ".git"), "gitdir: /nonexistent\n");
 			writeFileSync(join(path, "work.txt"), "unsaved work\n");
 		});

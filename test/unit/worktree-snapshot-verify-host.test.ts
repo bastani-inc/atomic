@@ -9,7 +9,7 @@ import {
 	restoreWorktreeSnapshot,
 	verifyWorktree,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -28,7 +28,7 @@ test("a recorded untracked file restores and verifies even when the new host exc
 	writeFileSync(exclude, "*.log\n");
 	writeFileSync(
 		sandbox.globalConfig,
-		`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\texcludesFile = ${exclude}\n`,
+		`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\texcludesFile = ${gitConfigPath(exclude)}\n`,
 	);
 	const restored = await restoreWorktreeSnapshot(captured.snapshot, { blobs, storeDir: sandbox.path("host-b") });
 	assert.equal(readFileSync(join(restored, "notes.log"), "utf8"), "recorded content\n");
@@ -73,7 +73,7 @@ test("a restore verifies with host-global attributes ignored but the repository 
 	writeFileSync(attributes, "*.txt filter=host\n");
 	writeFileSync(
 		sandbox.globalConfig,
-		`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\tattributesFile = ${attributes}\n[filter "host"]\n\tclean = sed s/alpha/omega/g\n`,
+		`${readFileSync(sandbox.globalConfig, "utf8")}\n[core]\n\tattributesFile = ${gitConfigPath(attributes)}\n[filter "host"]\n\tclean = sed s/alpha/omega/g\n`,
 	);
 	const restored = await restoreWorktreeSnapshot(captured.snapshot, { blobs, storeDir: sandbox.path("host-b") });
 	assert.equal(readFileSync(join(restored, "note.txt"), "utf8"), "alpha\n");
