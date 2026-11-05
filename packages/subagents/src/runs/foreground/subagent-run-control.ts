@@ -11,6 +11,7 @@ import {
 import { subagentChildIdOfPath } from "../inprocess/control-registry.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
+import { releasedChildReservation, reserveReleasedChildren } from "./released-child-reservations.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
@@ -294,6 +295,8 @@ async function stopChildren(
 		if (isReleased(record)) {
 			// Nothing of it runs: stopping it only stops what would wake it. Results that arrive are kept for resume.
 			await recordSubagentChildStatus(deps.pi, record, status);
+			const parked = releasedChildReservation({ ...record, terminalStatus: status });
+			if (parked !== undefined) await reserveReleasedChildren(deps.pi.events, [parked]);
 			children.push(childDetails(record, status));
 			lines.push(
 				`${action === "pause" ? "Paused" : "Quit"} released ${label(record)}: it is not woken any more, and results of the calls it waited on are kept for its resume. Resume it with { action: "resume", id: "${record.childId}", message? }.`,

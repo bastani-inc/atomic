@@ -12,6 +12,11 @@ import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVEN
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
+	releasedChildHoldFailures,
+	reserveReleasedChildTargets,
+	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
+} from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
+import {
 	bindReleasedChildWakes,
 	SUBAGENT_RELEASED_CHILD_WAKE_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -19,11 +24,9 @@ import {
 	decideReleasedChildWake,
 	forwardDetachedResults,
 	handleReleasedChildWakes,
-	holdReleasedChildTargets,
 	lateToolResultMessage,
 	pendingToolCalls,
 	planReleasedChildWake,
-	releasedChildHoldFailures,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentReleasePolicy,
@@ -313,43 +316,35 @@ function fakeEvents(authorize: boolean): FakeEvents {
 	return events;
 }
 
-test("a released child's targets are reserved dormant with wake, and nothing is kept in this process (#4326)", async () => {
-	const events = fakeEvents(true);
-	holdReleasedChildTargets(
+test("a released child's name and ids are reserved for waking in one request, and nothing is kept in this process (#4326)", async () => {
+	const events = fakeEvents(false);
+	await reserveReleasedChildTargets(
 		{ intercomEvents: events, intercomSessionName: "child-1", intercomGroup: "lane" },
 		"session-1",
+		"intercom-id-1",
 	);
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
-	const reserve = events.emitted.find((entry) => entry.channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT)?.data as {
-		capability: string;
-		group?: string;
-		aliases: string[];
-		dormant?: boolean;
-		wake?: boolean;
-	};
-	assert.deepEqual(
-		{ ...reserve, completion: undefined },
-		{ capability: "cap-1", group: "lane", aliases: ["session-1"], dormant: true, wake: true, completion: undefined },
-	);
+	const requests = events.emitted.filter((entry) => entry.channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
+	assert.equal(requests.length, 1);
+	assert.deepEqual((requests[0]?.data as { children: unknown[] }).children, [
+		{ childName: "child-1", group: "lane", aliases: ["session-1", "intercom-id-1"], wake: true },
+	]);
 
-	const silent = fakeEvents(true);
+	const silent = fakeEvents(false);
 	const failures = releasedChildHoldFailures.count;
-	holdReleasedChildTargets({ intercomEvents: silent });
-	holdReleasedChildTargets({ intercomSessionName: "child-2" });
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	await reserveReleasedChildTargets({ intercomEvents: silent }, "session-2", undefined);
+	await reserveReleasedChildTargets({ intercomSessionName: "child-2" }, "session-2", undefined);
 	assert.equal(silent.emitted.length, 0, "a child with no Intercom name or bus has nothing to keep addressable");
 	assert.equal(releasedChildHoldFailures.count, failures, "and nothing failed trying");
 });
 
-test("a failure to keep a released child addressable is counted, not swallowed (#4326)", async () => {
+test("a failure to keep a released child addressable is counted as a typed hold failure, not swallowed (#4326)", async () => {
 	const before = releasedChildHoldFailures.count;
 	const events = fakeEvents(false);
 	events.emit = (channel, data) => {
-		if (channel === SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT)
-			(data as { completion?: Promise<object> }).completion = Promise.reject(new Error("broker gone"));
+		if (channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT)
+			(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("broker gone"));
 	};
-	holdReleasedChildTargets({ intercomEvents: events, intercomSessionName: "child-3" });
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	await reserveReleasedChildTargets({ intercomEvents: events, intercomSessionName: "child-3" }, undefined, undefined);
 	assert.equal(releasedChildHoldFailures.count, before + 1);
 	const failure = releasedChildHoldFailures.last;
 	assert.ok(failure && isReleasedChildError(failure));

@@ -14,6 +14,11 @@ import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/sess
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import {
+	type ReleasedChildReservation,
+	reserveReleasedChildren,
+	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
+} from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import { SUBAGENT_RELEASED_WAKE_PROMPT } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import { SUBAGENT_RESERVE_RESTORING_CHILD_EVENT } from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
@@ -57,10 +62,9 @@ const worker: AgentConfig = {
 	inheritSkills: false,
 };
 
-/** Reservation requests seen on a bus, with the completion Intercom attached to each. */
+/** Requests to reserve released children seen on a bus, with the completion Intercom attached to each. */
 interface ObservedReservation {
-	readonly wake?: boolean;
-	readonly dormant?: boolean;
+	readonly children: readonly ReleasedChildReservation[];
 	completion?: Promise<void>;
 }
 
@@ -80,7 +84,7 @@ function eventBus() {
 		},
 		emit(eventName: string, payload: unknown) {
 			for (const handler of handlers.get(eventName) ?? []) handler(payload);
-			if (eventName === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) reservations.push(payload as ObservedReservation);
+			if (eventName === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT) reservations.push(payload as ObservedReservation);
 		},
 	};
 }
@@ -261,13 +265,16 @@ test(
 					),
 				{ timeout: RECORD_WAIT_MS, interval: 10 },
 			);
-			// The released child's targets are reserved at the broker, dormant and with wake, before anything is sent.
-			await vi.waitFor(() => assert.ok(parent.events.reservations.some((request) => request.wake === true)), {
+			// The released child is reserved at the broker by name, to wake its owner, before anything is sent.
+			await vi.waitFor(() => assert.ok(parent.events.reservations.some((request) => request.children.length > 0)), {
 				timeout: RECORD_WAIT_MS,
 				interval: 10,
 			});
-			const reservation = parent.events.reservations.find((request) => request.wake === true);
-			assert.equal(reservation?.dormant, true);
+			const reservation = parent.events.reservations.find((request) => request.children.length > 0);
+			assert.deepEqual(
+				reservation?.children.map((child) => [child.childName, child.wake]),
+				[[childName, true]],
+			);
 			await reservation?.completion;
 			const sender = await peer("released-sender");
 			const replies: string[] = [];
@@ -343,7 +350,7 @@ test(
 			assert.ok(request.completion, "Intercom answers the supervisor authorization request");
 			return request.completion;
 		};
-		const reserve = async (request: { capability: string; aliases: string[]; dormant?: boolean; wake?: boolean }) => {
+		const reserve = async (request: { capability: string; aliases: string[] }) => {
 			const forwarded: typeof request & { completion?: Promise<void> } = request;
 			parent.events.emit(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, forwarded);
 			assert.ok(forwarded.completion, "Intercom takes the reservation request");
@@ -354,12 +361,7 @@ test(
 			const restoring = "subagent-worker-hold9-1";
 			const released = "subagent-worker-rel9-1";
 			await reserve({ capability: (await authorize(restoring)).capability, aliases: [] });
-			await reserve({
-				capability: (await authorize(released)).capability,
-				aliases: [],
-				dormant: true,
-				wake: true,
-			});
+			await reserveReleasedChildren(parent.events, [{ childName: released, aliases: [], wake: true }]);
 			const sender = await peer("hold-only-sender");
 			let restoringSendSettled = false;
 			void sender
@@ -404,29 +406,12 @@ async function ownerClient(name: string): Promise<Client> {
 }
 
 test(
-	"the broker drops a client whose reservation carries a wake that is not a boolean, and takes a boolean one (#4326)",
-	async () => {
-		const malformed = await ownerClient("malformed-wake-owner");
-		const { capability } = await malformed.authorizeSupervisorChild("subagent-worker-bad1-1");
-		const raw = malformed as unknown as { restoringRecipientRequest(request: object): Promise<void> };
-		await assert.rejects(
-			raw.restoringRecipientRequest({ type: "reserve_restoring_recipient", capability, wake: "yes" }),
-			(error: Error) => error.name === "IntercomClientDisconnectedError",
-		);
-		const owner = await ownerClient("boolean-wake-owner");
-		const granted = await owner.authorizeSupervisorChild("subagent-worker-bad2-1");
-		await owner.reserveRestoringRecipient(granted.capability, { dormant: true, wake: true });
-	},
-	REAL_BROKER_TEST_TIMEOUT_MS,
-);
-
-test(
 	"another owner's reservation of a child does not take over a hold that is not dormant (#4326)",
 	async () => {
 		const childName = "subagent-worker-keep1-1";
 		const first = await ownerClient("hold-keeper-owner");
 		const { capability } = await first.authorizeSupervisorChild(childName);
-		await first.reserveRestoringRecipient(capability, { wake: true });
+		await first.reserveRestoringRecipient(capability);
 		const sender = await peer("hold-keeper-sender");
 		let settled = false;
 		void sender

@@ -66,6 +66,7 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import { readPreviousIntercomId } from "../foreground/subagent-child-session.js";
 import {
 	lastNonEmptyAssistantText,
 	PARENT_CANCEL_CAUSE,
@@ -218,6 +219,8 @@ export interface SubagentWaitingCall {
 export interface SubagentReleased {
 	readonly waitingOn: readonly SubagentWaitingCall[];
 	readonly calls: readonly DetachedToolCall[];
+	/** The Intercom session id the child was registered under, when its session recorded one. */
+	readonly intercomId?: string;
 }
 
 /** The envelope a released child's attempt reports: what it waits on, and what wakes it. */
@@ -727,6 +730,11 @@ function settledTranscript(manager: SessionManager): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const entries = manager.getEntries();
 	return { getSessionId: () => sessionId, getEntries: () => [...entries] };
+}
+
+function releasedIntercomId(manager: SessionManager): { intercomId: string } | Record<string, never> {
+	const intercomId = readPreviousIntercomId(manager);
+	return intercomId === undefined ? {} : { intercomId };
 }
 
 /** What a released child keeps for task inspection: only its session id. Its history is in its session store. */
@@ -1737,7 +1745,11 @@ export class SubagentControlRuntime {
 				this.native.finishChildAttempt(token, nativeStatus("interrupted"));
 				return {
 					status: "interrupted",
-					released: { waitingOn, calls: detached },
+					released: {
+						waitingOn,
+						calls: detached,
+						...releasedIntercomId(sessionManager),
+					},
 					stats,
 					path: admitted.identity.path,
 					envelope: releasedEnvelope(waitingOn),

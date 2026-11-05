@@ -1381,7 +1381,7 @@ export class IntercomClient extends EventEmitter {
    */
   reserveRestoringRecipient(
     capability: string,
-    options: { group?: string; aliases?: readonly string[]; dormant?: boolean; wake?: boolean } = {},
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
   ): Promise<void> {
     return this.restoringRecipientRequest({
       type: "reserve_restoring_recipient",
@@ -1389,7 +1389,6 @@ export class IntercomClient extends EventEmitter {
       ...(options.group === undefined ? {} : { group: options.group }),
       ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
       ...(options.dormant === true ? { dormant: true } : {}),
-      ...(options.wake === true ? { wake: true } : {}),
     });
   }
 

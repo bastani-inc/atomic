@@ -105,6 +105,11 @@ export function subagentChildRecordForTarget(
 	return childId === undefined ? undefined : subagentChildRecordOf(ownerSessionId, childId);
 }
 
+/** Every child of `ownerSessionId` in the index. Walks the whole index: for a restart or a reconnect, not a wake. */
+export function subagentChildRecordsOf(ownerSessionId: string): SubagentChildRecord[] {
+	return [...latest.values()].filter((record) => record.owner?.sessionId === ownerSessionId);
+}
+
 /** How many children the index holds; counted by tests and the benchmark. */
 export function subagentChildIndexSize(): number {
 	return latest.size;

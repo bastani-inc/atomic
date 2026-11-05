@@ -17,6 +17,12 @@ import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagent
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
 import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
+import {
+	type ReleasedChildReservation,
+	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
+	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
+} from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
 	lateToolResultMessage,
@@ -122,8 +128,14 @@ interface Harness {
 	/** Every child run: the prompt it received, its options, and the agent definition it ran. */
 	readonly runs: Array<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }>;
 	readonly authorizations: string[];
+	/** What Intercom was asked to do for released children, in order. */
+	readonly releasedChildRequests: Array<
+		| { reserve: ReleasedChildReservation[] }
+		| { drop: string[]; gone?: string; refusal?: string }
+		| { acknowledge: string }
+	>;
 	readonly holds: Array<
-		{ reserve: string; aliases: readonly string[]; dormant?: true; wake?: true } | { release: string; gone?: string }
+		{ reserve: string; aliases: readonly string[]; dormant?: true } | { release: string; gone?: string }
 	>;
 	/** How the next child run settles once its prompt runs; the original launch always waits until stopped. */
 	settleAs: "ok" | "error";
@@ -182,6 +194,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const runs: Harness["runs"] = [];
 	const authorizations: string[] = [];
 	const holds: Harness["holds"] = [];
+	const releasedChildRequests: Harness["releasedChildRequests"] = [];
 	const events = {
 		on: () => () => {},
 		emit(channel: string, data: object) {
@@ -202,10 +215,21 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 					reserve: request.capability,
 					aliases: request.aliases,
 					...(request.dormant === true ? { dormant: true as const } : {}),
-					...(request.wake === true ? { wake: true as const } : {}),
 				});
 				request.completion = Promise.resolve();
 			}
+			if (channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT)
+				releasedChildRequests.push({ reserve: (data as { children: ReleasedChildReservation[] }).children });
+			if (channel === SUBAGENT_DROP_RELEASED_CHILDREN_EVENT) {
+				const request = data as { childNames: string[]; gone?: string; refusal?: string };
+				releasedChildRequests.push({
+					drop: request.childNames,
+					...(request.gone === undefined ? {} : { gone: request.gone }),
+					...(request.refusal === undefined ? {} : { refusal: request.refusal }),
+				});
+			}
+			if (channel === SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT)
+				releasedChildRequests.push({ acknowledge: (data as { childName: string }).childName });
 			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReleaseRestoringChildRequest;
 				holds.push({ release: request.capability, ...(request.gone === undefined ? {} : { gone: request.gone }) });
@@ -272,6 +296,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		} as unknown as ExtensionContext,
 		runs,
 		authorizations,
+		releasedChildRequests,
 		holds,
 		settleAs: "ok",
 		completesWhenStopped: false,
@@ -2916,10 +2941,20 @@ test("a background child released while it waits is recorded released, settles a
 		"pause",
 	);
 	assert.equal(h.runs[0]?.options.releaseWhenWaiting?.afterMs, SUBAGENT_RELEASE_AFTER_MS);
-	await h.waitForLatest("release1:0", () => h.holds.length > 0);
-	assert.deepEqual(h.holds, [
-		{ reserve: "fresh-capability-1", aliases: [released.childSessionId], dormant: true, wake: true },
+	await h.waitForLatest("release1:0", () => h.releasedChildRequests.length > 0);
+	assert.deepEqual(h.releasedChildRequests, [
+		{
+			reserve: [
+				{
+					childName: "subagent-worker-release1",
+					group: "lane-group",
+					aliases: [released.childSessionId],
+					wake: true,
+				},
+			],
+		},
 	]);
+	assert.deepEqual([h.holds, h.authorizations], [[], []], "no capability was minted for a released child");
 
 	const status = subagentChildrenAwaitingResume(h.ctx, "release1:0");
 	assert.equal(status.length, 1);
@@ -3253,4 +3288,54 @@ test("a result held while its child still ran wakes the child once it is release
 	);
 	assert.deepEqual(woken.heldToolResults ?? [], [], "the wake took what was held");
 	assert.equal(h.runs.filter((run) => run.task !== ORIGINAL_TASK).length, 1, "woken once");
+});
+
+test("pause and quit park a released child at the broker: held sends no longer wake its owner (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("park1", undefined, { intercomEvents: h.deps.pi.events }));
+	const released = await h.waitForLatest(
+		"park1:0",
+		(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+	await h.waitForLatest("park1:0", () => h.releasedChildRequests.length > 0);
+	const parked = (status: string) => ({
+		reserve: [
+			{
+				childName: "subagent-worker-park1",
+				group: "lane-group",
+				aliases: [released.childSessionId],
+				wake: status === "released",
+			},
+		],
+	});
+
+	await h.call({ action: "pause", id: "park1:0" });
+	await h.waitForLatest("park1:0", (record) => record.terminalStatus === "paused");
+	assert.deepEqual(h.releasedChildRequests.at(-1), parked("paused"));
+	assert.equal(h.releasedChildRequests.length, 2, "one request to reserve it, one to park it");
+
+	await h.call({ action: "quit", id: "park1:0" });
+	await h.waitForLatest("park1:0", (record) => record.terminalStatus === "quit");
+	assert.equal(h.releasedChildRequests.length, 2, "quitting a child already parked leaves the broker as it is");
+});
+
+test("an Intercom wake tells the broker the owner is waking the child, once per wake (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("ack1"));
+	await h.waitForLatest("ack1:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	const dispatcher = new AgentWakeDispatcher();
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => unbind());
+
+	await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "ack1:0"), {
+		id: "intercom:1",
+		kind: "intercom",
+	});
+	assert.deepEqual(
+		h.releasedChildRequests.filter((request) => "acknowledge" in request),
+		[{ acknowledge: "subagent-worker-ack1" }],
+	);
 });

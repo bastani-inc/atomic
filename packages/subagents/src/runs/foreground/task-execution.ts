@@ -25,9 +25,9 @@ import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
+import { reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
 	forwardDetachedResults,
-	holdReleasedChildTargets,
 	subagentReleasePolicy,
 	subagentWakeKey,
 	wakeReleasedChildWithHeldResults,
@@ -377,6 +377,7 @@ export async function runAgentTask(input: {
 		heldMessages?: SubagentChildPendingMessages,
 		launch?: SubagentChildLaunch,
 		waitingOn?: SubagentChildRecordInput["waitingOn"],
+		releasedIntercomId?: string,
 	) => {
 		const worktree = runWorktreeRecord(input.options.runId, input.options.index ?? 0);
 		input.recordChild?.record({
@@ -398,6 +399,7 @@ export async function runAgentTask(input: {
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(waitingOn ? { waitingOn } : {}),
+			...(releasedIntercomId === undefined ? {} : { releasedIntercomId }),
 			// A wake hands this execution the results the record held for it: they are delivered, so none is held now.
 			...(input.options.resumeToolResults ? { heldToolResults: [] } : {}),
 			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
@@ -520,7 +522,17 @@ export async function runAgentTask(input: {
 				terminalStatus?: string,
 				heldMessages?: SubagentChildPendingMessages,
 				waitingOn?: SubagentChildRecordInput["waitingOn"],
-			) => recordChildTask(context.ref.taskId, state, terminalStatus, heldMessages, undefined, waitingOn);
+				releasedIntercomId?: string,
+			) =>
+				recordChildTask(
+					context.ref.taskId,
+					state,
+					terminalStatus,
+					heldMessages,
+					undefined,
+					waitingOn,
+					releasedIntercomId,
+				);
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
 					input.options.modelRoute?.assertCurrent();
@@ -596,7 +608,13 @@ export async function runAgentTask(input: {
 					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
 					if (released && child.released) {
 						// The record goes first: a result forwarded before it would find the child still recorded running.
-						recordChild("terminal", SUBAGENT_CHILD_RELEASED_STATUS, undefined, child.released.waitingOn);
+						recordChild(
+							"terminal",
+							SUBAGENT_CHILD_RELEASED_STATUS,
+							undefined,
+							child.released.waitingOn,
+							child.released.intercomId,
+						);
 						if (ownerSessionId !== undefined)
 							forwardDetachedResults(
 								input.wakeDispatcher ?? agentWakeDispatcher(),
@@ -609,7 +627,11 @@ export async function runAgentTask(input: {
 								subagentWakeKey(ownerSessionId, subagentChildId(runId, index)),
 								subagentChildRecordOf(ownerSessionId, subagentChildId(runId, index))?.heldToolResults,
 							);
-						holdReleasedChildTargets(input.options, childSession.childSessionId);
+						void reserveReleasedChildTargets(
+							input.options,
+							childSession.childSessionId,
+							child.released.intercomId,
+						);
 					} else if (!ownerClosed())
 						recordChild(
 							"terminal",

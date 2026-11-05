@@ -71,7 +71,7 @@ interface Harness {
 	readonly ctx: ExtensionContext;
 	readonly deps: ExecutorDeps;
 	readonly runs: Array<{ task: string; options: RunSyncOptions }>;
-	readonly holds: Array<{ reserve: string; dormant?: true; wake?: true } | { release: string }>;
+	readonly holds: Array<{ reserve: string; dormant?: true } | { release: string }>;
 	readonly stageState?: Map<string, object>;
 	host: AgentTaskHost;
 	original: OriginalLaunch;
@@ -124,7 +124,6 @@ function harness(options: { stage?: boolean } = {}): Harness {
 				holds.push({
 					reserve: request.capability,
 					...(request.dormant === true ? { dormant: true as const } : {}),
-					...(request.wake === true ? { wake: true as const } : {}),
 				});
 				request.completion = Promise.resolve();
 			}

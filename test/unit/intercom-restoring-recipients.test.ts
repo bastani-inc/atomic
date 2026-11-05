@@ -3,7 +3,6 @@ import type net from "node:net";
 import { afterEach, test, vi } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { type HeldSend, RestoringRecipients } from "../../packages/intercom/broker/restoring-recipients.js";
-import { isReserveRestoringChildRequest } from "../../packages/intercom/session-recovery.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 
 afterEach(() => {
@@ -218,13 +217,6 @@ test("a reservation without wake never asks its owner to wake the child (#4326)"
 		kind: "held",
 		timeoutMs: 20_000,
 	});
-});
-
-test("a reservation request is taken with or without a boolean wake, and refused with any other wake (#4326)", () => {
-	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [] }), true);
-	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [], wake: false }), true);
-	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [], wake: true }), true);
-	assert.equal(isReserveRestoringChildRequest({ capability: "c", aliases: [], wake: "yes" }), false);
 });
 
 test("a client passes on a broker's wake notice for its released child and rejects a malformed one (#4326)", () => {

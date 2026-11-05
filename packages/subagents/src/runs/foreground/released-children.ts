@@ -8,11 +8,9 @@ import {
 	type ExtensionContext,
 	type SessionManager,
 } from "@bastani/atomic";
-import type { RunSyncOptions } from "../../shared/types.js";
 import type { SubagentReleasePolicy } from "../inprocess/runner.js";
 import { ReleasedChildError } from "./released-child-errors.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
-import { holdChildTargets } from "./subagent-child-hold.js";
 import {
 	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_GONE_STATUS,
@@ -105,35 +103,6 @@ export function wakeReleasedChildWithHeldResults(
 /** The release policy of one background child: release after `afterMs` of waiting on a detachable call. */
 export function subagentReleasePolicy(afterMs: number = SUBAGENT_RELEASE_AFTER_MS): SubagentReleasePolicy {
 	return { afterMs };
-}
-
-/** Failures to keep a released child addressable, counted so they are not lost; see {@link holdReleasedChildTargets}. */
-export const releasedChildHoldFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
-
-/**
- * Keep a released child addressable while it holds no session: the broker holds sends and asks to its name and session
- * id, and tells this owner to wake it. The reservation lives in the broker; nothing for it stays in this process.
- */
-export function holdReleasedChildTargets(
-	options: Pick<RunSyncOptions, "intercomEvents" | "intercomSessionName" | "intercomGroup">,
-	childSessionId?: string,
-): void {
-	const events = options.intercomEvents;
-	if (events === undefined) return;
-	const childName = options.intercomSessionName;
-	void holdChildTargets(
-		events,
-		{ intercomTarget: options.intercomSessionName, childSessionId },
-		options.intercomGroup,
-		{ dormant: true, wake: true },
-	).catch((error: Error) => {
-		releasedChildHoldFailures.count += 1;
-		releasedChildHoldFailures.last = new ReleasedChildError(
-			"hold-failed",
-			childName === undefined ? {} : { childName },
-			{ cause: error },
-		);
-	});
 }
 
 /** The calls a reopened transcript ends on without results: the last assistant turn's unanswered tool calls. */

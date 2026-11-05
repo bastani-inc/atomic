@@ -1913,7 +1913,6 @@ class IntercomBroker {
           typeof clientMessage.capability !== "string" || !clientMessage.capability ||
           (clientMessage.group !== undefined && typeof clientMessage.group !== "string") ||
           (clientMessage.dormant !== undefined && typeof clientMessage.dormant !== "boolean") ||
-          (clientMessage.wake !== undefined && typeof clientMessage.wake !== "boolean") ||
           (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases))
         ) {
           throw new Error("Invalid reserve_restoring_recipient message");
@@ -1939,7 +1938,7 @@ class IntercomBroker {
           childName,
           normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
           aliases,
-          { dormant: clientMessage.dormant === true, wake: clientMessage.wake === true },
+          { dormant: clientMessage.dormant === true },
         );
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
         break;
@@ -2561,11 +2560,11 @@ class IntercomBroker {
     childName: string,
     group: string,
     aliases: readonly string[],
-    options: { readonly dormant: boolean; readonly wake: boolean; readonly replaceAliases?: true },
+    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true },
   ): void {
     const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
     this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {
-      wake: options.wake,
+      wake: options.wake === true,
       ...(options.replaceAliases === true ? { replaceAliases: true } : {}),
     });
     if (wake !== undefined) this.wakeRestoringRecipientOwner(wake);

@@ -17,13 +17,22 @@ import {
 	type IntercomRecoveryPeersRequest,
 	awaitRestoredIntercomPeers,
 	isAwaitIntercomPeerRequest,
+	isAcknowledgeReleasedChildWakeRequest,
+	isDropReleasedChildrenRequest,
 	isReleaseRestoringChildRequest,
+	isReserveReleasedChildrenRequest,
 	isReserveRestoringChildRequest,
 	planIntercomRecoveryReplay,
+	type AcknowledgeReleasedChildWakeRequest,
+	type DropReleasedChildrenRequest,
 	type ReleaseRestoringChildRequest,
+	type ReserveReleasedChildrenRequest,
 	type ReserveRestoringChildRequest,
+	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
@@ -742,7 +751,6 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			aliases: [...payload.aliases],
 			...(payload.group === undefined ? {} : { group: payload.group }),
 			...(payload.dormant === true ? { dormant: true } : {}),
-			...(payload.wake === true ? { wake: true } : {}),
 		};
 		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 			handle.assertCurrent();
@@ -751,6 +759,40 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await forwarded.completion;
 		});
 	});
+	// #4326: the owner reserves its released children by name, in bulk, on its own broker connection.
+	pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+		if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
+		const forwarded: ReserveReleasedChildrenRequest = { children: payload.children };
+		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, forwarded);
+			if (!forwarded.completion) throw new Error("Intercom cannot reserve released subagents");
+			await forwarded.completion;
+		});
+	});
+	// A reservation lives on the connection that made it: without a loaded Intercom there is nothing to drop or to
+	// extend, and loading it just to say so would only report a failure at shutdown.
+	for (const [eventName, isRequest] of [
+		[SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, isDropReleasedChildrenRequest],
+		[SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, isAcknowledgeReleasedChildWakeRequest],
+	] as const) {
+		pi.events.on(eventName, (payload) => {
+			if (!isRequest(payload) || payload.completion) return;
+			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest = { ...payload };
+			const handle = loadedHeavy;
+			payload.completion = !handle
+				? Promise.resolve()
+				: (async () => {
+						try {
+							handle.assertCurrent();
+							await dispatchEventHandlers(handle.heavy, eventName, forwarded);
+							await forwarded.completion;
+						} catch {
+							// The connection is gone, and its reservations with it.
+						}
+					})();
+		});
+	}
 	pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
 		if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
 		const forwarded: ReleaseRestoringChildRequest = {

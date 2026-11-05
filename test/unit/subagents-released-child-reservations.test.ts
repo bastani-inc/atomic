@@ -1,0 +1,157 @@
+import assert from "node:assert/strict";
+import type { ExtensionContext } from "@bastani/atomic";
+import { test } from "vitest";
+import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import {
+	acknowledgeReleasedChildWake,
+	dropReleasedChildren,
+	INTERCOM_CONNECTED_EVENT,
+	type ReleasedChildReservation,
+	releasedChildReservation,
+	reserveReleasedChildren,
+	reserveReleasedChildrenOf,
+	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
+	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
+} from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
+import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
+import {
+	createSubagentChildRecordSink,
+	SUBAGENT_CHILD_RELEASED_STATUS,
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
+	type SubagentChildRecord,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
+import type { IntercomEventBus } from "../../packages/subagents/src/shared/types.js";
+
+function bus() {
+	const emitted: Array<{ channel: string; data: object }> = [];
+	const listeners = new Map<string, Array<(data: object) => void>>();
+	const events: IntercomEventBus = {
+		on(channel, handler) {
+			listeners.set(channel, [...(listeners.get(channel) ?? []), handler]);
+			return () =>
+				listeners.set(
+					channel,
+					(listeners.get(channel) ?? []).filter((candidate) => candidate !== handler),
+				);
+		},
+		emit(channel, data) {
+			emitted.push({ channel, data: data as object });
+			for (const handler of listeners.get(channel) ?? []) handler(data as object);
+		},
+	};
+	return { events, emitted, listeners };
+}
+
+function record(overrides: Partial<SubagentChildRecord> = {}): SubagentChildRecord {
+	return {
+		version: 1,
+		childId: "run:0",
+		runId: "run",
+		index: 0,
+		agent: "worker",
+		state: "terminal",
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		cwd: "/repo",
+		owner: { kind: "session", sessionId: "owner" },
+		intercomTarget: "subagent-worker-run-1",
+		childSessionId: "child-session",
+		waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }],
+		...overrides,
+	};
+}
+
+test("a released child is reserved to wake its owner, a child stopped while it waited is parked, and no other child is reserved (#4326)", () => {
+	assert.deepEqual(releasedChildReservation(record({ releasedIntercomId: "icom-1", intercomGroup: "lane" })), {
+		childName: "subagent-worker-run-1",
+		group: "lane",
+		aliases: ["child-session", "icom-1"],
+		wake: true,
+	});
+	for (const status of ["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS])
+		assert.equal(releasedChildReservation(record({ terminalStatus: status }))?.wake, false, status);
+	assert.equal(releasedChildReservation(record({ terminalStatus: "paused", waitingOn: [] })), undefined);
+	assert.equal(releasedChildReservation(record({ terminalStatus: "ok" })), undefined);
+	assert.equal(releasedChildReservation(record({ state: "running", terminalStatus: undefined })), undefined);
+	assert.equal(releasedChildReservation(record({ intercomTarget: undefined })), undefined);
+	assert.deepEqual(releasedChildReservation(record({ childSessionId: undefined }))?.aliases, []);
+});
+
+async function ownerWith(records: Array<Partial<SubagentChildRecord>>) {
+	const sessionManager = SessionManager.inMemory("/repo");
+	const ctx = { sessionManager } as unknown as ExtensionContext;
+	const ownerSessionId = sessionManager.getSessionId();
+	const sink = createSubagentChildRecordSink(
+		{ appendEntry: async (type, data) => void (await sessionManager.appendCustomEntry(type, data)) },
+		ctx,
+	);
+	for (const [index, overrides] of records.entries()) {
+		const {
+			childId: _childId,
+			owner: _owner,
+			version: _version,
+			...input
+		} = record({
+			runId: `run${index}`,
+			index: 0,
+			intercomTarget: `subagent-worker-run${index}-1`,
+			childSessionId: `child-${index}`,
+			...overrides,
+		});
+		sink.record(input);
+	}
+	await sink.flushed?.();
+	return { ctx, ownerSessionId };
+}
+
+test("every released and parked child of an owner is reserved in one request, whatever their number (#4326)", async () => {
+	const many = Array.from({ length: 1_201 }, () => ({}));
+	const { ownerSessionId } = await ownerWith([
+		...many,
+		{ terminalStatus: "paused" },
+		{ terminalStatus: "ok" },
+		{ state: "running", terminalStatus: undefined, waitingOn: undefined },
+	]);
+	const { events, emitted } = bus();
+
+	await reserveReleasedChildrenOf(events, ownerSessionId);
+
+	assert.equal(emitted.length, 1, "one request, not one per child");
+	const children = (emitted[0]?.data as { children: ReleasedChildReservation[] }).children;
+	assert.equal(emitted[0]?.channel, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
+	assert.equal(children.length, 1_202);
+	assert.equal(children.filter((child) => child.wake).length, 1_201);
+	assert.equal(children.filter((child) => !child.wake).length, 1);
+});
+
+test("a binding reserves the owner's released children when it starts and again at every reconnect, and stops with it (#4326)", async () => {
+	const { ctx, ownerSessionId } = await ownerWith([{}, { terminalStatus: "quit" }]);
+	const { events, emitted, listeners } = bus();
+	const reserves = () => emitted.filter((entry) => entry.channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
+
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	assert.equal(reserves().length, 1, "at start");
+	assert.equal((reserves()[0]?.data as { children: unknown[] }).children.length, 2, ownerSessionId);
+
+	for (const handler of listeners.get(INTERCOM_CONNECTED_EVENT) ?? []) handler({ sessionId: "icom" });
+	assert.equal(reserves().length, 2, "after a reconnect the broker has forgotten them");
+
+	stop();
+	assert.equal((listeners.get(INTERCOM_CONNECTED_EVENT) ?? []).length, 0);
+});
+
+test("dropping and acknowledging name the children, and a request to nobody changes nothing (#4326)", async () => {
+	const { events, emitted } = bus();
+	await reserveReleasedChildren(events, []);
+	await dropReleasedChildren(events, []);
+	assert.equal(emitted.length, 0);
+
+	await dropReleasedChildren(events, ["a", "b"], { gone: "its stage ended" });
+	await acknowledgeReleasedChildWake(events, "a");
+	assert.deepEqual(emitted, [
+		{ channel: SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, data: { childNames: ["a", "b"], gone: "its stage ended" } },
+		{ channel: SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, data: { childName: "a" } },
+	]);
+});

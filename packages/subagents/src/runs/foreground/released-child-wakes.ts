@@ -9,6 +9,11 @@ import {
 import type { IntercomEventBus } from "../../shared/types.js";
 import { ReleasedChildError } from "./released-child-errors.js";
 import {
+	acknowledgeReleasedChildWake,
+	INTERCOM_CONNECTED_EVENT,
+	reserveReleasedChildrenOf,
+} from "./released-child-reservations.js";
+import {
 	handleReleasedChildWakes,
 	holdToolResultsInRecord,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
@@ -41,9 +46,15 @@ export function bindReleasedChildWakes(
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
 ): () => void {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	const reserveAll = () => {
+		indexSubagentChildOwner(ctx);
+		void reserveReleasedChildrenOf(events, ownerSessionId);
+	};
+	reserveAll();
 	const disposeHandler = handleReleasedChildWakes(
 		ctx,
 		async (record, decision) => {
+			if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
 			const outcome = await restoreSubagentChild(deps, ctx, record.childId, {
 				prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
 				toolResults: decision.toolResults,
@@ -67,8 +78,10 @@ export function bindReleasedChildWakes(
 			.deliver(subagentWakeKey(ownerSessionId, record.childId), { id: `intercom:${randomUUID()}`, kind: "intercom" })
 			.catch((error) => dispatcher.reportUnobservedFailure(error));
 	});
+	const unsubscribeConnected = events.on(INTERCOM_CONNECTED_EVENT, reserveAll);
 	return () => {
 		disposeHandler();
 		unsubscribe();
+		unsubscribeConnected();
 	};
 }

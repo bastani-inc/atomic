@@ -146,6 +146,11 @@ export interface SubagentChildRecord {
 	 */
 	readonly waitingOn?: readonly SubagentChildWaitingCall[];
 	/**
+	 * The Intercom session id a released child was registered under. The broker reserves it with the child's name, so a
+	 * reply or a send addressed to that id still reaches the hold that wakes the child (#4326).
+	 */
+	readonly releasedIntercomId?: string;
+	/**
 	 * Results of its detached calls that arrived while the child could not take them (paused, quit, or live in another
 	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
 	 */

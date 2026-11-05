@@ -13,11 +13,19 @@ import {
   INTERCOM_RECOVERY_PEERS_EVENT,
   type IntercomRecoveryPeersRequest,
   isAwaitIntercomPeerRequest,
+  INTERCOM_CONNECTED_EVENT,
+  type IntercomConnectedNotice,
+  isAcknowledgeReleasedChildWakeRequest,
+  isDropReleasedChildrenRequest,
   isReleaseRestoringChildRequest,
+  isReserveReleasedChildrenRequest,
   isReserveRestoringChildRequest,
   planIntercomRecoveryReplay,
+  SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
   SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+  SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
   SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+  SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   SUBAGENT_RELEASED_CHILD_WAKE_EVENT,
   type ReleasedChildWakeNotice,
@@ -1449,6 +1457,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
             if (reason !== "startup") redrainPendingStage?.();
+            // The broker forgot every reservation this connection made when the last one ended.
+            if (nextClient.sessionId) {
+              const connected: IntercomConnectedNotice = { sessionId: nextClient.sessionId };
+              pi.events.emit(INTERCOM_CONNECTED_EVENT, connected);
+            }
             return nextClient;
           } catch (error) {
             if (client === nextClient) {
@@ -1652,9 +1665,35 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         ...(request.group === undefined ? {} : { group: request.group }),
         aliases: request.aliases,
         ...(request.dormant === true ? { dormant: true } : {}),
-        ...(request.wake === true ? { wake: true } : {}),
       }),
     );
+  });
+  // #4326: released children are reserved by name for this connection, any number in one call.
+  pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+    if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
+    const request = payload;
+    request.completion = ensureConnected("background").then((activeClient) =>
+      activeClient.reserveReleasedChildren(request.children),
+    );
+  });
+  pi.events.on(SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, (payload) => {
+    if (!isDropReleasedChildrenRequest(payload) || payload.completion) return;
+    const request = payload;
+    const activeClient = client;
+    request.completion = activeClient?.isConnected()
+      ? activeClient.dropReleasedChildren(request.childNames, {
+          ...(request.gone === undefined ? {} : { gone: request.gone }),
+          ...(request.refusal === undefined ? {} : { refusal: request.refusal }),
+        })
+      : Promise.resolve();
+  });
+  pi.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (payload) => {
+    if (!isAcknowledgeReleasedChildWakeRequest(payload) || payload.completion) return;
+    const request = payload;
+    const activeClient = client;
+    request.completion = activeClient?.isConnected()
+      ? activeClient.acknowledgeReleasedChildWake(request.childName)
+      : Promise.resolve();
   });
   pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
     if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
