@@ -350,7 +350,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|${APP_NAME}] [--all]   Update ${APP_NAME} (use --all for ${APP_NAME} and extensions)
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config [-l]               Open resource TUI (Tab switches global/project scope)
-  ${APP_NAME} auth <command>            Print credentials or check provider readiness
+  ${APP_NAME} auth <command>            Log in or out, print credentials, or check provider readiness
   ${APP_NAME} mcp <command>             Configure MCP servers, check connections, and sign in
   ${APP_NAME} storage <command>         Show storage selections and connectivity, or join a shared database
   ${APP_NAME} team <command>            Join or leave a team database (shared workflow runs and Intercom, private sessions)

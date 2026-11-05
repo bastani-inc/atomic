@@ -123,7 +123,7 @@ describe("pi mcp", () => {
 				assert.equal(result.exitCode, 1);
 				assert.equal(
 					result.output,
-					`MCP server "radius" uses the credentials of provider "radius". Run /${command} radius in atomic.`,
+					`MCP server "radius" uses the credentials of provider "radius". Run "atomic auth ${command} radius".`,
 				);
 			}
 		} finally {

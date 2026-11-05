@@ -35,6 +35,8 @@ Use `/login` in interactive mode, then select a provider:
 
 Use `/login <provider>`, such as `/login openrouter` or `/login kimi-coding`, to go directly to a provider. Select subscription or API-key authentication when both are available.
 
+To sign in from the shell without starting a session, for example over SSH, run `atomic auth login <provider>`. It opens the browser for account sign-in; `--no-browser` uses a device code or another sign-in method instead, and `--api-key` saves an API key. See [Credential Commands](/reference/cli#credential-commands).
+
 OpenRouter opens its browser PKCE flow and asks whether to mint a new API key. Complete the browser redirect before returning to Atomic. On remote or headless machines, the browser cannot reach the loopback callback; paste the final redirect URL or authorization code instead. Claude, ChatGPT Codex, and extension providers that set `usesCallbackServer` offer the same fallback.
 
 Kimi Code displays its device URL/code and polls until approval, then refreshes expired tokens automatically.
@@ -48,6 +50,8 @@ Escape or Ctrl+C quietly cancels the matching login, including immediate/pre-dev
 Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source.
 
 Type `/logout ` to autocomplete providers with stored credentials, or use `/logout kimi-coding` to open a filtered selector; press Enter in the selector to remove the credential, or Escape to cancel.
+
+`atomic auth logout <provider>` removes stored credentials from the shell in the same way, and succeeds when nothing is stored.
 
 ### Token Refresh
 

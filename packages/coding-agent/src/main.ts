@@ -19,6 +19,9 @@ import {
 	printAuthCommandHelp,
 	validateAuthCheckArgs,
 } from "./cli/auth-command.ts";
+import { runAuthLogin } from "./cli/auth-login.js";
+import { runAuthLogout } from "./cli/auth-logout.js";
+import { createProcessLoginTerminal } from "./cli/auth-terminal.js";
 import {
 	CredentialPrintError,
 	emitCredential,
@@ -228,9 +231,46 @@ async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<
 	}
 	process.exitCode = result.status === "ready" ? 0 : result.status === "not_ready" ? 1 : 2;
 }
+async function runAuthLoginCommand(args: string[]): Promise<number> {
+	const settingsManager = SettingsManager.create(process.cwd(), getAgentDir(), { projectTrusted: false });
+	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+
+	const controller = new AbortController();
+	const interrupt = () => controller.abort();
+	process.on("SIGINT", interrupt);
+	try {
+		return await runAuthLogin(args, {
+			modelRuntime,
+			terminal: createProcessLoginTerminal(interrupt),
+			getDeviceId: () => settingsManager.getOrCreateDeviceId(),
+			signal: controller.signal,
+		});
+	} finally {
+		process.off("SIGINT", interrupt);
+	}
+}
+
+async function runAuthLogoutCommand(args: string[]): Promise<number> {
+	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+	return runAuthLogout(args, {
+		modelRuntime,
+		terminal: { write: (line) => console.log(line), error: (line) => console.error(line) },
+		signal: AbortSignal.timeout(15_000),
+	});
+}
+
 async function runAuthCommand(args: string[]): Promise<boolean> {
 	if (isAuthCommandHelp(args)) {
 		printAuthCommandHelp();
+		return true;
+	}
+	if (args[0] === "auth" && args[1] === "login") {
+		// main() already applied --offline.
+		process.exitCode = await runAuthLoginCommand(args.slice(2).filter((arg) => arg !== "--offline"));
+		return true;
+	}
+	if (args[0] === "auth" && args[1] === "logout") {
+		process.exitCode = await runAuthLogoutCommand(args.slice(2).filter((arg) => arg !== "--offline"));
 		return true;
 	}
 

@@ -12,29 +12,11 @@ import {
 } from "@earendil-works/pi-tui";
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import { openBrowser } from "../../../utils/open-browser.ts";
+import { displayUrl, webUrl } from "../../../utils/web-url.js";
 import { theme } from "../theme/theme.js";
 import { AuthUrlComponent } from "./auth-url.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.js";
-
-/**
- * The `http:` or `https:` URL `value` names, normalized, or undefined. The shared launcher also opens files and custom
- * protocols, so login only opens web URLs. Normalizing percent-encodes control characters, which would otherwise end a
- * terminal hyperlink early.
- */
-function webUrl(value: string): string | undefined {
-	if (!URL.canParse(value)) return undefined;
-	const url = new URL(value);
-	return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
-}
-
-/**
- * `value` normalized as a web URL, else with control characters replaced: an untrusted string printed as is could end a
- * hyperlink early or send its own escape sequences to the terminal.
- */
-function displayUrl(value: string): string {
-	return webUrl(value) ?? replaceControlCharacters(value);
-}
 
 /**
  * `text` as an OSC 8 terminal hyperlink to `url` when that is a web URL, else plain `text`. Control characters in `text`
