@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 	readdirSync: vi.fn(),
 	rmSync: vi.fn(),
 	renameSync: vi.fn(),
+	existsSync: vi.fn(),
 	lock: undefined as
 		| ((
 				actual: typeof import("proper-lockfile"),
@@ -74,7 +75,13 @@ vi.mock("fs/promises", async () => {
 vi.mock("fs", async () => {
 	const actual = await vi.importActual<typeof import("fs")>("fs");
 	mocks.actualFs = actual;
-	return { ...actual, readdirSync: mocks.readdirSync, rmSync: mocks.rmSync, renameSync: mocks.renameSync };
+	return {
+		...actual,
+		existsSync: mocks.existsSync,
+		readdirSync: mocks.readdirSync,
+		rmSync: mocks.rmSync,
+		renameSync: mocks.renameSync,
+	};
 });
 
 vi.mock("proper-lockfile", async () => {
@@ -86,8 +93,10 @@ vi.mock("proper-lockfile", async () => {
 });
 
 const isWindows = process.platform === "win32";
-const PID_NAMESPACE = existsSync("/proc/self/ns/pid") ? readlinkSync("/proc/self/ns/pid") : "";
-const HOST_TAG = createHash("sha256").update(`${hostname()}\0${PID_NAMESPACE}`).digest("hex").slice(0, 8);
+function hostTag(): string {
+	const pidNamespace = existsSync("/proc/self/ns/pid") ? readlinkSync("/proc/self/ns/pid") : "";
+	return createHash("sha256").update(`${hostname()}\0${pidNamespace}`).digest("hex").slice(0, 8);
+}
 /** Node timers may fire up to a millisecond before `Date.now()` shows the full delay. */
 const TIMER_EARLY_FIRE_TOLERANCE_MS = 2;
 const ORIGINAL_PATH = process.env.PATH ?? "";
@@ -241,6 +250,8 @@ beforeEach(async () => {
 	mocks.rmSync.mockImplementation(actualFs.rmSync);
 	mocks.renameSync.mockReset();
 	mocks.renameSync.mockImplementation(actualFs.renameSync);
+	mocks.existsSync.mockReset();
+	mocks.existsSync.mockImplementation(actualFs.existsSync);
 	mocks.spawnSyncOptions.length = 0;
 	mocks.lock = undefined;
 });
@@ -903,12 +914,12 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		serveArchive(fake.bytes);
 		const binDir = join(agentDir, "bin");
 		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-		const abandoned = join(binDir, `.git-staging-${HOST_TAG}-${exitedPid}-abandoned`);
-		const live = join(binDir, `.git-staging-${HOST_TAG}-${process.pid}-live`);
+		const abandoned = join(binDir, `.git-staging-${hostTag()}-${exitedPid}-abandoned`);
+		const live = join(binDir, `.git-staging-${hostTag()}-${process.pid}-live`);
 		const foreign = join(binDir, ".git-staging-unowned");
 		const otherHost = join(
 			binDir,
-			`.git-staging-${HOST_TAG === "00000000" ? "11111111" : "00000000"}-${exitedPid}-x`,
+			`.git-staging-${hostTag() === "00000000" ? "11111111" : "00000000"}-${exitedPid}-x`,
 		);
 		for (const dir of [abandoned, live, foreign, otherHost]) mkdirSync(dir, { recursive: true });
 		const skewedPast = new Date(Date.now() - 48 * 3_600_000);
@@ -1614,8 +1625,8 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		const fake = healthy();
 		serveArchive(fake.bytes);
 		const binDir = join(agentDir, "bin");
-		const initOwned = join(binDir, `.git-staging-${HOST_TAG}-1-init`);
-		const lookalike = join(binDir, `old.git-staging-${HOST_TAG}-${runProcess(process.execPath, ["-e", ""]).pid}-x`);
+		const initOwned = join(binDir, `.git-staging-${hostTag()}-1-init`);
+		const lookalike = join(binDir, `old.git-staging-${hostTag()}-${runProcess(process.execPath, ["-e", ""]).pid}-x`);
 		for (const dir of [initOwned, lookalike]) mkdirSync(dir, { recursive: true });
 		await provision({ release: fake.release });
 		assert.equal(existsSync(initOwned), true);
@@ -1688,5 +1699,21 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		} finally {
 			clearInterval(refresh);
 		}
+	});
+
+	it("tags staging by host alone where the PID namespace is not visible", async () => {
+		const fake = healthy();
+		serveArchive(fake.bytes);
+		const actualExists = mocks.actualFs!.existsSync;
+		mocks.existsSync.mockImplementation((path: string) => path !== "/proc/self/ns/pid" && actualExists(path));
+		const hostOnlyTag = createHash("sha256").update(`${hostname()}\0`).digest("hex").slice(0, 8);
+		const abandoned = join(
+			agentDir,
+			"bin",
+			`.git-staging-${hostOnlyTag}-${runProcess(process.execPath, ["-e", ""]).pid}-x`,
+		);
+		mkdirSync(abandoned, { recursive: true });
+		await provision({ release: fake.release });
+		assert.equal(actualExists(abandoned), false);
 	});
 });
