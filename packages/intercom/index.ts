@@ -37,6 +37,7 @@ import {
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
+import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,
@@ -781,6 +782,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await forwarded.completion;
 		});
 	});
+	answerReleasedReplyFormatRequests(pi.events);
 	// #4326: the owner reserves its released children by name, in bulk, on its own broker connection.
 	pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
 		if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;

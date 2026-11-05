@@ -433,7 +433,9 @@ async function relaunchChild(
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
 	const heldResults = [...(record.heldToolResults ?? []), ...(resume?.toolResults ?? [])];
-	const toolResults = sessionManager ? formatReleasedReplyResults(sessionManager, heldResults) : heldResults;
+	const toolResults = sessionManager
+		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
+		: heldResults;
 	const heldMessages =
 		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
 	const promptless = resume?.promptless === true && heldMessages.length === 0;

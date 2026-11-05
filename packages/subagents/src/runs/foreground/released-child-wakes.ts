@@ -8,10 +8,6 @@ import {
 	isStaleExtensionContextError,
 	type TaskId,
 } from "@bastani/atomic";
-import {
-	RELEASED_CHILD_REPLY_EVENT,
-	type ReleasedChildReplyRequest,
-} from "../../../../intercom/released-reply-wait.js";
 import { type IntercomEventBus, resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { deliverLocalCompletionNotification } from "./completion-notification.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
@@ -31,6 +27,7 @@ import {
 	wakeReleasedChildrenOfEarlierProcess,
 	wakeReleasedChildWithHeldResults,
 } from "./released-children.js";
+import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./released-reply-protocol.js";
 import {
 	indexSubagentChildOwner,
 	subagentChildRecordForTarget,

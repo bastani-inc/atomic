@@ -1,16 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentWakeDispatcher, DetachedToolCall, DetachedToolResult, SessionManager } from "@bastani/atomic";
-import type { JsonValue } from "@bastani/pi-ai";
-import {
-	formatAttachments,
-	parseStructuredSupervisorReply,
-	validateSupervisorInterviewRequest,
-} from "../../../../intercom/intercom-utils.js";
-import { RELEASED_REPLY_WAIT_ENTRY, type ReleasedReplyWaitData } from "../../../../intercom/released-reply-wait.js";
-import { ASK_REPLY_TIMEOUT_MS } from "../../../../intercom/retry-policy.js";
-import { intercomRecoveryStoppedText } from "../../../../intercom/tool-retry.js";
 import type { Message } from "../../../../intercom/types.js";
+import type { IntercomEventBus } from "../../shared/types.js";
 import { ReleasedChildError } from "./released-child-errors.js";
+import {
+	RELEASED_REPLY_FORMAT_EVENT,
+	RELEASED_REPLY_WAIT_ENTRY,
+	type ReleasedReplyFormatRequest,
+	type ReleasedReplyPayload,
+	type ReleasedReplyWaitData,
+} from "./released-reply-protocol.js";
 import type { SubagentChildWaitingCall } from "./subagent-child-records.js";
 
 /** Read only plain correlation facts from the child's saved session, for calls that actually detached. */
@@ -105,86 +104,83 @@ export function releasedReplyToolResult(
 	return { ...call, result: { content: [], details: { releasedIntercomReply: reply } }, isError: false };
 }
 
+/** A plain marker the child's wake turns into the timeout result its inline call returns. */
 export function releasedReplyTimeout(call: SubagentChildWaitingCall): DetachedToolResult {
-	const reason = `Failed: No reply from "${call.replyWait?.from}" within ${Math.round(ASK_REPLY_TIMEOUT_MS / 60_000)} minutes`;
-	const retries = call.replyWait?.retryCount ?? 0;
-	const intercom = call.toolName === "intercom";
 	return {
 		toolCallId: call.toolCallId,
 		toolName: call.toolName,
 		result: {
-			content: [{ type: "text", text: intercom ? intercomRecoveryStoppedText(reason, retries) : reason }],
-			details: intercom
-				? { error: true, terminal: true, automaticRetries: retries, outcome: "unknown" }
-				: { error: true },
+			content: [],
+			details: {
+				releasedIntercomTimeout: { from: call.replyWait?.from ?? "", retryCount: call.replyWait?.retryCount ?? 0 },
+			},
 		},
 		isError: true,
 	};
 }
 
-/** Convert held replies using the reopened child's pending calls, exactly as their inline tools do. */
+type ReleasedReplyTimeoutMarker = { readonly from: string; readonly retryCount: number };
+
+type ReleasedReplyMarker =
+	| { readonly releasedIntercomReply: ReleasedReplyPayload }
+	| { readonly releasedIntercomTimeout: ReleasedReplyTimeoutMarker };
+
+function releasedReplyMarker(result: DetachedToolResult): ReleasedReplyMarker | undefined {
+	const details = result.result.details as
+		| { releasedIntercomReply?: ReleasedReplyPayload; releasedIntercomTimeout?: ReleasedReplyTimeoutMarker }
+		| undefined;
+	if (details?.releasedIntercomReply !== undefined) return { releasedIntercomReply: details.releasedIntercomReply };
+	if (details?.releasedIntercomTimeout !== undefined)
+		return { releasedIntercomTimeout: details.releasedIntercomTimeout };
+	return undefined;
+}
+
+function pendingCallArguments(
+	messages: ReturnType<SessionManager["buildSessionProjection"]>["messages"],
+	toolCallId: string,
+): ReleasedReplyFormatRequest["args"] {
+	const call = messages
+		.flatMap((entry) => (entry.role === "assistant" ? entry.content : []))
+		.find((part) => part.type === "toolCall" && part.id === toolCallId);
+	if (call?.type !== "toolCall")
+		throw new ReleasedChildError("child-unrestorable", { reason: "the pending reply call is missing" });
+	return call.arguments as ReleasedReplyFormatRequest["args"];
+}
+
+/**
+ * Convert held replies and deadlines into the results their inline calls return, using the reopened child's pending
+ * calls. Intercom does the formatting; without it loaded the child cannot be given its reply.
+ */
 export function formatReleasedReplyResults(
 	manager: Pick<SessionManager, "buildSessionProjection">,
 	results: readonly DetachedToolResult[],
+	events: Pick<IntercomEventBus, "emit">,
 ): DetachedToolResult[] {
+	if (!results.some((result) => releasedReplyMarker(result) !== undefined)) return [...results];
 	const messages = manager.buildSessionProjection().messages;
 	return results.map((result): DetachedToolResult => {
-		const message = (
-			result.result.details as
-				| {
-						releasedIntercomReply?: {
-							replyTo: string;
-							text: string;
-							replyError?: string;
-							attachments?: Message["content"]["attachments"];
-						};
-				  }
-				| undefined
-		)?.releasedIntercomReply;
-		if (message === undefined) return result;
-		const call = messages
-			.flatMap((entry) => (entry.role === "assistant" ? entry.content : []))
-			.find((part) => part.type === "toolCall" && part.id === result.toolCallId);
-		if (call?.type !== "toolCall")
-			throw new ReleasedChildError("child-unrestorable", { reason: "the pending reply call is missing" });
-		const args = call.arguments as { to?: string; reason?: string; interview?: object };
-		const attachments = message.attachments?.length ? formatAttachments(message.attachments) : "";
-		if (result.toolName === "intercom") {
-			if (message.replyError !== undefined)
-				return {
-					...result,
-					isError: true,
-					result: {
-						content: [{ type: "text", text: `Failed: ${message.replyError}` }],
-						details: { error: true, replyTo: message.replyTo },
-					},
-				};
-			return {
-				...result,
-				result: {
-					content: [{ type: "text", text: `**Reply from ${args.to}:**\n${message.text}${attachments}` }],
-					details: {},
-				},
-			};
-		}
-		const interview =
-			args.reason === "interview_request" ? validateSupervisorInterviewRequest(args.interview) : undefined;
-		if (interview?.ok === false)
-			throw new ReleasedChildError("child-unrestorable", { reason: "the pending interview is invalid" });
-		const structured =
-			interview?.ok === true ? parseStructuredSupervisorReply(message.text, interview.interview) : undefined;
-		const details: Record<string, JsonValue> = {};
-		if (structured?.value !== undefined)
-			details.structuredReply = {
-				responses: structured.value.responses.map(({ id, value }) => ({ id, value: value as string | string[] })),
-			};
-		else if (structured !== undefined) details.structuredReplyParseError = structured.error ?? "";
-		return {
-			...result,
-			result: {
-				content: [{ type: "text", text: `**Reply from supervisor:**\n${message.text}${attachments}` }],
-				details,
-			},
-		};
+		const marker = releasedReplyMarker(result);
+		if (marker === undefined) return result;
+		const request: ReleasedReplyFormatRequest =
+			"releasedIntercomReply" in marker
+				? {
+						toolName: result.toolName,
+						args: pendingCallArguments(messages, result.toolCallId),
+						outcome: { kind: "reply", reply: marker.releasedIntercomReply },
+					}
+				: {
+						toolName: result.toolName,
+						args: {},
+						outcome: { kind: "timeout", ...marker.releasedIntercomTimeout },
+					};
+		events.emit(RELEASED_REPLY_FORMAT_EVENT, request);
+		const answer = request.result;
+		if (answer === undefined)
+			throw new ReleasedChildError("child-unrestorable", {
+				reason: "Intercom is not loaded in the session that launched it, so its reply cannot be delivered",
+			});
+		if (!answer.ok) throw new ReleasedChildError("child-unrestorable", { reason: answer.reason });
+		const { content, details, isError } = answer.formatted;
+		return { ...result, result: { content, details }, isError };
 	});
 }

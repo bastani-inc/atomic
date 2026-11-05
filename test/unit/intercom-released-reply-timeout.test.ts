@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import type { ToolDefinition } from "@bastani/atomic";
 import { test, vi } from "vitest";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
+import { answerReleasedReplyFormatRequests } from "../../packages/intercom/released-reply-format.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import { ASK_REPLY_TIMEOUT_MS } from "../../packages/intercom/retry-policy.js";
-import { releasedReplyTimeout } from "../../packages/subagents/src/runs/foreground/released-child-replies.js";
+import {
+	formatReleasedReplyResults,
+	releasedReplyTimeout,
+} from "../../packages/subagents/src/runs/foreground/released-child-replies.js";
 
 for (const name of ["intercom", "contact_supervisor"] as const) {
 	test(`a released ${name} timeout matches the inline tool result exactly (#4326)`, async () => {
@@ -68,11 +74,20 @@ for (const name of ["intercom", "contact_supervisor"] as const) {
 			await sent.promise;
 			await vi.advanceTimersByTimeAsync(ASK_REPLY_TIMEOUT_MS);
 			const inline = await pending;
-			const timed = releasedReplyTimeout({
-				toolCallId: "call-1",
-				toolName: name,
-				replyWait: { questionId: "q-1", deadline: Date.now(), from: "peer-id" },
-			});
+			const intercomEvents = createEventBus();
+			answerReleasedReplyFormatRequests(intercomEvents);
+			const [timed] = formatReleasedReplyResults(
+				SessionManager.inMemory("/repo"),
+				[
+					releasedReplyTimeout({
+						toolCallId: "call-1",
+						toolName: name,
+						replyWait: { questionId: "q-1", deadline: Date.now(), from: "peer-id", retryCount: 0 },
+					}),
+				],
+				intercomEvents,
+			);
+			assert.ok(timed);
 			assert.deepEqual(
 				{ content: timed.result.content, details: timed.result.details, isError: timed.isError },
 				{ content: inline.content, details: inline.details, isError: inline.isError },

@@ -14,6 +14,11 @@ import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import {
+	formatReleasedReply,
+	RELEASED_REPLY_FORMAT_EVENT,
+	type ReleasedReplyFormatRequest,
+} from "../../packages/intercom/released-reply-format.js";
 import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
@@ -235,6 +240,10 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			}
 			if (channel === SUBAGENT_AWAIT_INTERCOM_PEER_EVENT)
 				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(true);
+			if (channel === RELEASED_REPLY_FORMAT_EVENT) {
+				const request = data as ReleasedReplyFormatRequest;
+				request.result = formatReleasedReply(request);
+			}
 			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReserveRestoringChildRequest;
 				holds.push({

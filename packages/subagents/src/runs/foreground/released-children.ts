@@ -10,11 +10,11 @@ import {
 	type SessionManager,
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
-import { isReleasedReplyHandoffResult } from "../../../../intercom/released-reply-wait.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import { releasedReplyTimeoutId, scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { type ReleasedChildResumeWake, setReleasedChildWakeActive, settleResumeWake } from "./released-child-resume.js";
+import { isReleasedReplyHandoffResult } from "./released-reply-protocol.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
 	observeChildRecordFailure,
