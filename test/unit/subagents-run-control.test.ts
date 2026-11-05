@@ -3667,11 +3667,12 @@ test("an owner restart starts the calls of its earlier released children at most
 	await releasedByEarlierProcess(h, "throttle2");
 	h.redispatchGate = Promise.withResolvers<void>();
 
-	bindProcessWakes(h);
-	for (let turn = 0; turn < DRAIN_TURNS && h.redispatching.active === 0; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
-	for (let turn = 0; turn < DRAIN_TURNS; turn++) await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(h.redispatching.active, 1, "the second child waits for the first");
+	const dispatcher = bindProcessWakes(h);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (h.redispatching.active === 0 && Date.now() < deadline) await sleep(10);
+	assert.equal(h.redispatching.active, 1, "the first child's call starts again");
+	const { running, queued } = dispatcher.stats();
+	assert.deepEqual({ running, queued }, { running: 1, queued: 1 }, "the second child waits for the first");
 	h.redispatchGate.resolve();
 
 	for (const childId of ["throttle1:0", "throttle2:0"])
