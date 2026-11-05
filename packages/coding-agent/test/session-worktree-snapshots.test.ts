@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { ENV_AGENT_DIR } from "../src/config.js";
+import {
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionFromServices,
+	createAgentSessionRuntime,
+	createAgentSessionServices,
+} from "../src/core/agent-session-runtime.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { SessionEntry, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resumeSessionWorktree } from "../src/core/session-worktree-snapshots.ts";
@@ -31,6 +40,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
+	vi.unstubAllEnvs();
 	sandbox.dispose();
 });
 
@@ -284,4 +294,106 @@ describe("resumeSessionWorktree", () => {
 		assert.equal(resume.status, "unavailable");
 		assert.ok(resume.status === "unavailable" && resume.reason instanceof GitUnavailableError);
 	});
+});
+
+describe("cross-machine session resume", () => {
+	function filesUnder(root: string): Map<string, Buffer> {
+		const files = new Map<string, Buffer>();
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				if (entry.name === ".git") continue;
+				const path = join(dir, entry.name);
+				if (entry.isDirectory()) walk(path);
+				else files.set(relative(root, path).split("\\").join("/"), readFileSync(path));
+			}
+		};
+		walk(root);
+		return files;
+	}
+
+	test("a session moved to another machine resumes in a restored worktree whose bytes match, and its tools run there (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", {
+			"a.txt": "one\n",
+			"data.bin": new Uint8Array([0, 1, 2]),
+		});
+		writeFileSync(join(clone, "feature.txt"), "unpushed\n");
+		await sandbox.commitAll(clone, "unpushed work");
+		writeFileSync(join(clone, "a.txt"), "staged\n");
+		await sandbox.git(clone, "add", "a.txt");
+		writeFileSync(join(clone, "data.bin"), new Uint8Array([9, 0, 255]));
+
+		vi.stubEnv(ENV_AGENT_DIR, sandbox.path("machine-a", "agent"));
+		const manager = await SessionManager.create(await sqlStore("machine-a"), clone);
+		const recorder = await harnessFor(manager);
+		await writeTurn(recorder, join(clone, "untracked", "u.txt"), "written by the agent\n");
+		const exported = await recorder.session.exportToJsonl(sandbox.path("moved.jsonl"));
+		const expected = filesUnder(clone);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+
+		vi.stubEnv(ENV_AGENT_DIR, sandbox.path("machine-b", "agent"));
+		const storeB = await sqlStore("machine-b");
+		const imported = await SessionManager.importFromJsonl(exported, clone, storeB);
+		const faux = registerFauxProvider();
+		cleanups.push(() => faux.unregister());
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: sandbox.path("models.json"),
+		});
+		const model = faux.getModel();
+		modelRuntime.registerProvider(model.provider, {
+			baseUrl: model.baseUrl,
+			api: model.api,
+			models: [{ ...model }],
+		});
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+			const services = await createAgentSessionServices({
+				cwd,
+				agentDir: sandbox.path("machine-b", "agent"),
+				modelRuntime,
+				model,
+				resourceLoaderOptions: {
+					builtinPackagePaths: [],
+					noSkills: true,
+					noPromptTemplates: true,
+					noThemes: true,
+				},
+			});
+			return {
+				...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model })),
+				services,
+				diagnostics: services.diagnostics,
+			};
+		};
+		const start = await SessionManager.create(storeB, sandbox.root);
+		const runtime = await createAgentSessionRuntime(createRuntime, {
+			cwd: sandbox.root,
+			agentDir: sandbox.path("machine-b", "agent"),
+			sessionManager: start,
+		});
+		cleanups.push(() => runtime.dispose());
+		assert.deepEqual(await runtime.switchSession(imported.getSessionId()), { cancelled: false });
+
+		const [mapping] = runtime.session.sessionManager.getWorktreeRootMappings();
+		assert.ok(mapping);
+		assert.equal(mapping.from, clone);
+		assert.ok(mapping.to.startsWith(sandbox.path("machine-b", "agent", "worktree-snapshots", "worktrees")));
+		assert.equal(runtime.session.sessionManager.getCwd(), mapping.to);
+		assert.deepEqual(filesUnder(mapping.to), expected);
+
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "pwd && cat untracked/u.txt" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await runtime.session.prompt("where are we");
+		const result = runtime.session.messages.findLast((message) => message.role === "toolResult");
+		const text = (result?.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("");
+		assert.match(
+			text,
+			new RegExp(`${realpathSync(mapping.to).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+written by the agent`),
+		);
+	}, 60_000);
 });

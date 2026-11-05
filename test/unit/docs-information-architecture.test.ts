@@ -388,6 +388,7 @@ const issueNavigationOrder: Record<string, readonly string[]> = {
  */
 const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/usage": ["/guides/non-interactive"],
+	"/sessions": ["/worktree-snapshots"],
 	"/compaction": [
 		"/guides/configuration",
 		"/guides/workflows",

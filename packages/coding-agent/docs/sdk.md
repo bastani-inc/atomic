@@ -310,6 +310,10 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 `session.sessionSummary` returns the current branch's latest `SessionSummaryEntry`, or `undefined` when none is available. Read `summary` for the generated text and `summarizedThroughId` for the last message it describes. `SessionManager.list()` and `SessionManager.listAll()` expose those same fields on each `SessionInfo`. Stored summaries remain readable when `sessionSummary.enabled` is false; that setting controls generation only.
 
+### Worktree snapshots
+
+A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed, and restores it into a fresh worktree when it resumes on a machine where that checkout is missing or drifted. `createAgentSession({ snapshots: { enabled: false } })` turns this off for one session; the other fields (`includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, `fullEvery`) override `snapshots.*` settings. `captureWorktreeSnapshot()`, `restoreWorktreeSnapshot()`, `verifyWorktree()` and the `WorkspaceBinding` type are exported for hosts and schedulers that move work between machines; `session.sessionManager.getWorktreeRootMappings()` returns the restores a session went through. `session.exportToJsonl()` returns a promise and carries snapshot content inline. See [Worktree snapshots](/worktree-snapshots) for the guarantee, the API and the error table.
+
 ### Workflow journal selection
 
 Standalone workflow `run()` accepts `RunOpts.journal` to choose a local SQLite file, a caller-owned connection, process-local memory, or a supplied `RunJournal`:
