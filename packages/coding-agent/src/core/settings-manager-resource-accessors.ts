@@ -1,6 +1,7 @@
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
+import type { Settings } from "./settings-schema.ts";
 import type { DefaultProjectTrust, PackageSource, QuietStartup, ThinkingBudgetsSettings } from "./settings-types.ts";
 
 interface SettingsManagerResourceAccessors {
@@ -45,6 +46,9 @@ interface SettingsManagerResourceAccessors {
 	getWorkflowPaths(): string[];
 	setWorkflowPaths(paths: string[]): void;
 	setProjectWorkflowPaths(paths: string[]): void;
+	/** `workflows.autoAdvanceAfterSteer`: whether the decision model may decide a stage's readiness after a steer. */
+	getAutoAdvanceAfterSteer(): boolean;
+	setAutoAdvanceAfterSteer(enabled: boolean, scope?: "global" | "project"): void;
 	getEnableSkillCommands(): boolean;
 	setEnableSkillCommands(enabled: boolean): void;
 	getThinkingBudgets(): ThinkingBudgetsSettings | undefined;
@@ -300,6 +304,30 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		projectSettings.workflows = Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
 		state.markProjectModified("workflows");
 		state.saveProjectSettings(projectSettings);
+	},
+
+	getAutoAdvanceAfterSteer() {
+		const workflows = settingsInternals(this).settings.workflows;
+		const value = Array.isArray(workflows) ? undefined : workflows?.autoAdvanceAfterSteer;
+		return value ?? SETTINGS_DEFAULTS.workflows.autoAdvanceAfterSteer;
+	},
+
+	setAutoAdvanceAfterSteer(enabled, scope = "global") {
+		const state = settingsInternals(this);
+		const withSetting = (workflows: Settings["workflows"]): Settings["workflows"] =>
+			Array.isArray(workflows)
+				? { paths: [...workflows], autoAdvanceAfterSteer: enabled }
+				: { ...workflows, autoAdvanceAfterSteer: enabled };
+		if (scope === "project") {
+			const projectSettings = structuredClone(state.projectSettings);
+			projectSettings.workflows = withSetting(projectSettings.workflows);
+			state.markProjectModified("workflows");
+			state.saveProjectSettings(projectSettings);
+			return;
+		}
+		state.globalSettings.workflows = withSetting(state.globalSettings.workflows);
+		state.markModified("workflows");
+		state.save();
 	},
 
 	getEnableSkillCommands() {

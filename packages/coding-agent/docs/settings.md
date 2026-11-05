@@ -57,8 +57,8 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 |---------|------|---------|-------------|
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
-| `routerModel` | string | `""` | Inference model for workflow-stage and subagent `model: "auto"` selection only. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change chat or `structured_output` tool inference. |
-| `modelRouting` | object | `{}` | Provider and model filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays), `allowedModels` and `excludedModels` (model ID or glob pattern arrays). Does not change `routerModel`. See [modelRouting](#modelrouting). |
+| `decisionModel` | string | `""` | Inference model for workflow-stage and subagent `model: "auto"` selection only. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change chat or `structured_output` tool inference. |
+| `modelRouting` | object | `{}` | Provider and model filters for the models `model: "auto"` may select: `allowedProviders` and `excludedProviders` (provider ID arrays), `allowedModels` and `excludedModels` (model ID or glob pattern arrays). Does not change `decisionModel`. See [modelRouting](#modelrouting). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -76,19 +76,19 @@ If it remains unsupported, Atomic does not silently switch providers:
 
 Normal automatic selection of an available authenticated model remains enabled if the provider is supported but its saved model is unknown or lacks configured authentication. It also remains enabled when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
 
-#### routerModel
+#### decisionModel
 
 ```json
-{ "routerModel": "" }
+{ "decisionModel": "" }
 ```
 
-Use `/settings` → **Router model** to change the effective selection. If the project already defines `routerModel`, the picker edits that project override; otherwise it saves the global default in `~/.atomic/agent/settings.json`. The picker identifies which scope it will save. Choose **Automatic** to save `""` in that scope. `""` and `auto` both use the current chat model; saved classifier credentials do not change that choice. To pin a decision model, choose an exact ID from the current registry, such as `typesafe/jev-latest`, or a chat model by provider/model ID. A classifier is not a chat model and does not appear in `/model`. Run `/reload` or restart Atomic to apply the saved choice to an already-running isolated engine.
+Use `/settings` → **Decision model** to change the effective selection. If the project already defines `decisionModel`, the picker edits that project override; otherwise it saves the global default in `~/.atomic/agent/settings.json`. The picker identifies which scope it will save. Choose **Automatic** to save `""` in that scope. `""` and `auto` both use the current chat model; saved classifier credentials do not change that choice. To pin a decision model, choose an exact ID from the current registry, such as `typesafe/jev-latest`, or a chat model by provider/model ID. A classifier is not a chat model and does not appear in `/model`. Run `/reload` or restart Atomic to apply the saved choice to an already-running isolated engine.
 
 An explicit ID other than `auto` is resolved through the current model registry: a registered classifier first, otherwise a chat model. Built-in gateway classifiers include `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, and `opencode/jev-1.13-free`; authenticate their provider before choosing them. An invalid explicit ID, image-generation model, non-string value, or surrounding whitespace fails the decision instead of silently changing providers. An explicit empty project value overrides a global selection and restores the current chat model.
 
 A failed explicit classifier routing attempt switches to the current chat model when one exists. That includes missing credentials, an unavailable classify operation, a provider size or context rejection, a refusal, and a malformed answer. Transient retries follow the provider operation and retry settings. Chat routing gets an initial attempt plus three corrective retries for invalid output, using the same context. Each routing inference must finish within a wall-clock deadline taken from [`httpIdleTimeoutMs`](#http), 10 minutes by default, covering its corrective retries and any chat fallback; otherwise routing fails like any other total inference failure. Cancel the request to stop sooner. Independent provider, credential-preparation, and enclosing tool-request limits still apply. The fallback can incur chat-provider charges. Cancellation does not trigger fallback.
 
-A classifier `routerModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`routerModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
+A classifier `decisionModel` such as Jev only chooses between the shortlisted models and never receives the task; a chat model (`decisionModel` when it is one, otherwise the current chat model) reads the task to answer the routing questions. If the selected classifier rejects the request, routing switches to the current chat model.
 
 Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection, or turn on [debug mode](#debug-mode) to write them to the debug log.
 
@@ -109,7 +109,7 @@ Remove secrets from routing tasks, inputs, and workflow descriptions/contracts b
 }
 ```
 
-Limits which models workflow stages and subagents with `model: "auto"` can be routed to, including builtin workflow stages that do not name a model. It filters the candidates only; the model that makes the decision is still `routerModel`.
+Limits which models workflow stages and subagents with `model: "auto"` can be routed to, including builtin workflow stages that do not name a model. It filters the candidates only; the model that makes the decision is still `decisionModel`.
 
 - `allowedProviders`: when nonempty, only models from these providers are candidates.
 - `excludedProviders`: models from these providers are never candidates, even if they are also allowed.

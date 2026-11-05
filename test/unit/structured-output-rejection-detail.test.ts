@@ -8,7 +8,7 @@ import {
 	formatStructuredOutputCorrectionPrompt,
 	isStructuredOutputContractFailure,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-structured-output.js";
-import { decisionMessage, decisionModel, decisionRequest, messageStream } from "../helpers/structured-output.js";
+import { decisionChatModel, decisionMessage, decisionRequest, messageStream } from "../helpers/structured-output.js";
 
 const REJECTED_SECRET = "private-rejected-value";
 const REPAIR_ATTEMPTS = 4;
@@ -33,7 +33,7 @@ function replyWith(args: JsonObject, error?: string) {
 function requestFor<T extends TSchema>(streamSimple: Stream, outputSchema: T) {
 	return {
 		model: "decision-test/chat",
-		modelRegistry: { getAll: () => [decisionModel], streamSimple },
+		modelRegistry: { getAll: () => [decisionChatModel], streamSimple },
 		schema: outputSchema,
 		state: { task: "Report the stage result" },
 		instructions: "Report the stage result.",
@@ -142,7 +142,10 @@ test("reports non-JSON tool arguments distinctly without echoing the parser's qu
 
 	const result = await generateStructuredOutput({
 		...requestFor(stream, schema),
-		modelRegistry: { getAll: () => [decisionModel, { ...decisionModel, id: "chat-2" }], streamSimple: stream },
+		modelRegistry: {
+			getAll: () => [decisionChatModel, { ...decisionChatModel, id: "chat-2" }],
+			streamSimple: stream,
+		},
 		fallbackModels: ["decision-test/chat-2"],
 	});
 
@@ -216,7 +219,7 @@ test("routing rejects a correlated-validation failure with the schema-mismatch p
 });
 
 test("model attempts keep the value-free rejection detail of an exhausted candidate (#3802)", async () => {
-	const second = { ...decisionModel, id: "chat-2" };
+	const second = { ...decisionChatModel, id: "chat-2" };
 	const stream = vi.fn((model: Model<Api>) =>
 		model.id === "chat"
 			? replyWith({ summary: "ok", files: REJECTED_SECRET })
@@ -225,7 +228,7 @@ test("model attempts keep the value-free rejection detail of an exhausted candid
 
 	const result = await generateStructuredOutput({
 		...requestFor(stream, schema),
-		modelRegistry: { getAll: () => [decisionModel, second], streamSimple: stream },
+		modelRegistry: { getAll: () => [decisionChatModel, second], streamSimple: stream },
 		fallbackModels: ["decision-test/chat-2"],
 	});
 

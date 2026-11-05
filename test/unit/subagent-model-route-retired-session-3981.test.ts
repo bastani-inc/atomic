@@ -5,7 +5,7 @@ import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { routeSubagentModel } from "../../packages/subagents/src/runs/shared/model-router.js";
 import { chatRouter } from "../helpers/model-routing.js";
-import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { decisionChatModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 
 beforeEach(() => vi.stubEnv("TYPESAFE_API_KEY", ""));
 afterEach(() => {
@@ -38,12 +38,12 @@ async function launchingContext() {
 	};
 	const ctx = {
 		get model() {
-			return live(decisionModel);
+			return live(decisionChatModel);
 		},
 		get modelRegistry() {
 			return live(registry);
 		},
-		getRouterModel: () => live("decision-test/chat"),
+		getDecisionModel: () => live("decision-test/chat"),
 	} as ExtensionContext;
 	return {
 		ctx,
@@ -58,7 +58,7 @@ test("a subagent's model route still answers after model fallback retires the se
 	const route = await routeSubagentModel({ ctx: launching.ctx, agent, task: "Fix the approved defect" });
 	const candidate = route.modelOverride;
 	const before = {
-		model: route.allowsModel(decisionModel, route.routerSelection.effort ?? undefined),
+		model: route.allowsModel(decisionChatModel, route.routerSelection.effort ?? undefined),
 		candidate: route.allowsCandidate(candidate, route.routerSelection.effort ?? "off"),
 	};
 	assert.deepEqual(before, { model: true, candidate: true });
@@ -69,7 +69,7 @@ test("a subagent's model route still answers after model fallback retires the se
 	assert.doesNotThrow(() => route.assertCurrent());
 	assert.deepEqual(
 		{
-			model: route.allowsModel(decisionModel, route.routerSelection.effort ?? undefined),
+			model: route.allowsModel(decisionChatModel, route.routerSelection.effort ?? undefined),
 			candidate: route.allowsCandidate(candidate, route.routerSelection.effort ?? "off"),
 		},
 		before,

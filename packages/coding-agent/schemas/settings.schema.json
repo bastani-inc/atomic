@@ -66,7 +66,7 @@
     "defaultModel": {
       "type": "string"
     },
-    "routerModel": {
+    "decisionModel": {
       "type": "string",
       "description": "Inference model for workflow-stage and subagent model: \"auto\" selection only. An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
       "default": ""
@@ -107,7 +107,7 @@
           "description": "Models matching these full-ID or glob patterns are never routing candidates. Applied after allowedModels."
         }
       },
-      "description": "Provider and model filters for the candidates model \"auto\" may route to. Does not affect routerModel."
+      "description": "Provider and model filters for the candidates model \"auto\" may route to. Does not affect decisionModel."
     },
     "defaultThinkingLevel": {
       "$ref": "#/$defs/ModelThinkingLevel"

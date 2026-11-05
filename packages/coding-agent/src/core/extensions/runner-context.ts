@@ -66,7 +66,7 @@ export interface ExtensionContextSource {
 	getContextUsage(): ContextUsage | undefined;
 	compact(options?: CompactOptions): void;
 	getSystemPrompt(): string;
-	getRouterModel?(): string;
+	getDecisionModel?(): string;
 	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?(): number;
 	getSkillCatalog?(): SkillCatalog;
@@ -363,10 +363,11 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertAction?.();
 			source.compact(options);
 		},
-		getRouterModel: () => {
+		getDecisionModel: () => {
 			source.assertActive();
-			if (!source.getRouterModel) throw new Error("Router settings are unavailable in this extension host.");
-			return source.getRouterModel();
+			if (!source.getDecisionModel)
+				throw new Error("Decision model settings are unavailable in this extension host.");
+			return source.getDecisionModel();
 		},
 		getModelRouting: () => {
 			source.assertActive();

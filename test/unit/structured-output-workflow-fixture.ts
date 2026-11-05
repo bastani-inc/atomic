@@ -1,7 +1,12 @@
 import type { JsonObject, TranscriptContext } from "@bastani/pi-ai";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/context-types.js";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
-import { decisionMessage, decisionModel, inferenceUserContent, messageStream } from "../helpers/structured-output.js";
+import {
+	decisionChatModel,
+	decisionMessage,
+	inferenceUserContent,
+	messageStream,
+} from "../helpers/structured-output.js";
 import { toolContext } from "../helpers/tool-context.js";
 
 export function workflowDecisionArgs(value: JsonObject) {
@@ -12,10 +17,10 @@ export function workflowDecisionArgs(value: JsonObject) {
 }
 
 export const workflowDecisionContext = {
-	model: decisionModel,
+	model: decisionChatModel,
 	modelRegistry: {
-		getAll: () => [decisionModel],
-		streamSimple: (_model: typeof decisionModel, context: TranscriptContext) => {
+		getAll: () => [decisionChatModel],
+		streamSimple: (_model: typeof decisionChatModel, context: TranscriptContext) => {
 			const content = inferenceUserContent(context);
 			if (typeof content !== "string") throw new Error("Workflow fixture requires JSON state");
 			const payload = JSON.parse(content) as { state?: { scriptedResult?: JsonObject } };

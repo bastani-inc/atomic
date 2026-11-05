@@ -4,13 +4,13 @@ import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { decisionMessage, decisionModel, messageStream } from "../helpers/structured-output.js";
+import { decisionChatModel, decisionMessage, messageStream } from "../helpers/structured-output.js";
 
 const FORMER_FIXED_CAP = 4096;
 const CHARS_PER_TOKEN = 4;
 const ITEM_COUNT = 150;
 
-const largeModel: Model<Api> = { ...decisionModel, id: "large-output", contextWindow: 200_000, maxTokens: 64_000 };
+const largeModel: Model<Api> = { ...decisionChatModel, id: "large-output", contextWindow: 200_000, maxTokens: 64_000 };
 
 const inventorySchema = Type.Object(
 	{
@@ -84,7 +84,7 @@ test("router decisions apply no fixed output-token cap (#3309)", async () => {
 
 	const result = await routeModel({
 		...largeRequest(dispatch),
-		settings: SettingsManager.inMemory({ routerModel: `${largeModel.provider}/${largeModel.id}` }),
+		settings: SettingsManager.inMemory({ decisionModel: `${largeModel.provider}/${largeModel.id}` }),
 		classifier: {
 			questions: {},
 			decode: () => {

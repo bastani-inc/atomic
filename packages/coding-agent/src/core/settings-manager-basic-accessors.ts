@@ -4,6 +4,7 @@ import {
 	resolveBackgroundCompactionEnabled,
 	resolveBackgroundCompactionThresholdPercent,
 } from "./compaction/background-compaction.ts";
+import { DecisionConfigError } from "./decision/errors.js";
 import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
@@ -87,11 +88,11 @@ interface SettingsManagerBasicAccessors {
 	setOnboardedVersion(version: string): void;
 	getDefaultProvider(): string | undefined;
 	getDefaultModel(): string | undefined;
-	getRouterModel(): string;
+	getDecisionModel(): string;
 	getModelRouting(): ModelRoutingSettings;
 	getCompactionModel(): string;
 	setCompactionModel(model: string, scope?: "global" | "project"): void;
-	setRouterModel(model: string, scope?: "global" | "project"): void;
+	setDecisionModel(model: string, scope?: "global" | "project"): void;
 	setDefaultProvider(provider: string): void;
 	setDefaultModel(modelId: string): void;
 	setDefaultModelAndProvider(provider: string, modelId: string): void;
@@ -254,11 +255,11 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return settingsInternals(this).settings.defaultModel;
 	},
 
-	getRouterModel() {
-		const value = settingsInternals(this).settings.routerModel;
-		if (value === undefined) return SETTINGS_DEFAULTS.routerModel;
+	getDecisionModel() {
+		const value = settingsInternals(this).settings.decisionModel;
+		if (value === undefined) return SETTINGS_DEFAULTS.decisionModel;
 		if (typeof value !== "string" || value.trim() !== value) {
-			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
+			throw new DecisionConfigError({ code: "invalid-setting", source: "settings", field: "decisionModel" });
 		}
 		return value;
 	},
@@ -303,19 +304,19 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		};
 	},
 
-	setRouterModel(model, scope = "global") {
+	setDecisionModel(model, scope = "global") {
 		if (typeof model !== "string" || model.trim() !== model) {
-			throw new Error("Invalid routerModel: expected an exact provider/model ID, auto, or an empty string.");
+			throw new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel" });
 		}
 		const state = settingsInternals(this);
 		if (scope === "project") {
-			const projectSettings = { ...state.projectSettings, routerModel: model };
-			state.markProjectModified("routerModel");
+			const projectSettings = { ...state.projectSettings, decisionModel: model };
+			state.markProjectModified("decisionModel");
 			state.saveProjectSettings(projectSettings);
 			return;
 		}
-		state.globalSettings.routerModel = model;
-		state.markModified("routerModel");
+		state.globalSettings.decisionModel = model;
+		state.markModified("decisionModel");
 		state.save();
 	},
 

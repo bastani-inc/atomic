@@ -8,8 +8,8 @@ import {
 	isModelType,
 	type Model,
 } from "@bastani/pi-ai";
-import { Type } from "typebox";
 import { getDocsPath } from "../config.js";
+import { decide } from "./decision/decide.js";
 import type { ModelRegistry } from "./model-registry.ts";
 import { resolveModelScopeFromModels } from "./model-resolver-scope.ts";
 import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
@@ -37,7 +37,7 @@ import {
 	type TaskNeeds,
 } from "./model-routing-needs.js";
 import type { ModelRoutingSettings } from "./settings-types.ts";
-import { resolveRouterModel, routeModel } from "./structured-output/index.js";
+import { resolveDecisionModel } from "./structured-output/index.js";
 import { carriedProviderFailure, withProviderFailure } from "./structured-output/provider-failure.js";
 
 export interface ModelRoutingContext {
@@ -47,7 +47,7 @@ export interface ModelRoutingContext {
 	> &
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">>;
 	readonly model?: Model<Api>;
-	getRouterModel(): string;
+	getDecisionModel(): string;
 	/** Provider and model filters from settings.json `modelRouting`; absent means every model is a candidate. */
 	getModelRouting?(): ModelRoutingSettings;
 	/** The `httpIdleTimeoutMs` setting; bounds each routing inference. Absent means the setting's default. */
@@ -74,8 +74,8 @@ export class AutoRoutingInferenceError extends Error {
 	 */
 	readonly currentModelRoute?: ModelRoute;
 
-	constructor(message: string, currentModelRoute?: ModelRoute) {
-		super(message);
+	constructor(message: string, currentModelRoute?: ModelRoute, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "AutoRoutingInferenceError";
 		if (currentModelRoute !== undefined) this.currentModelRoute = currentModelRoute;
 	}
@@ -236,10 +236,10 @@ export async function routeExecutionModel(input: {
 	let selection = input.selection;
 	if (selection === undefined) {
 		const settings = {
-			getRouterModel: () => ctx.getRouterModel(),
+			getDecisionModel: () => ctx.getDecisionModel(),
 			...(ctx.getHttpIdleTimeoutMs ? { getHttpIdleTimeoutMs: () => ctx.getHttpIdleTimeoutMs!() } : {}),
 		};
-		const router = resolveRouterModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
+		const router = resolveDecisionModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
 		if (!input.task.trim()) throw new Error("Auto routing requires task instructions.");
 		const stated = statedNeeds;
 		const agent = { name: input.agent.name, description: input.agent.description };
@@ -276,11 +276,11 @@ export async function routeExecutionModel(input: {
 		// Any failure before a model is chosen is a total inference failure: the
 		// router and its chat structured-output fallback both failed (#3206).
 		const { deadline, limit } = input.inference ?? {};
-		const infer = async <T>(decide: (inferenceSignal: AbortSignal | undefined) => Promise<T>): Promise<T> => {
+		const infer = async <T>(ask: (inferenceSignal: AbortSignal | undefined) => Promise<T>): Promise<T> => {
 			const inferenceSignal =
 				deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
 			try {
-				return await (limit ? limit(() => decide(inferenceSignal), inferenceSignal) : decide(inferenceSignal));
+				return await (limit ? limit(() => ask(inferenceSignal), inferenceSignal) : ask(inferenceSignal));
 			} catch (error) {
 				signal?.throwIfAborted();
 				// A router's rate limit or exhausted quota keeps its status, code and retry hint (#4031).
@@ -292,6 +292,7 @@ export async function routeExecutionModel(input: {
 								? error.message
 								: String(error),
 						await currentModelRoute().catch(() => undefined),
+						deadline?.aborted ? undefined : { cause: error },
 					),
 					deadline?.aborted ? undefined : carriedProviderFailure(error),
 				);
@@ -342,20 +343,6 @@ export async function routeExecutionModel(input: {
 				await fallBackToCurrentModel(
 					"Auto routing needs a chat model to read the task. Select a chat model or state every taskNeeds field.",
 				);
-			const schema = Type.Object(
-				Object.fromEntries(
-					questions.map((question) => [
-						question.id,
-						Type.String({
-							enum: Object.keys(question.criteria),
-							description: `${question.instructions} ${Object.entries(question.criteria)
-								.map(([key, meaning]) => `${key}: ${meaning}`)
-								.join("; ")}.`,
-						}),
-					]),
-				),
-				{ additionalProperties: false },
-			);
 			const callerSays = stated
 				? {
 						...(stated.work ? { work: stated.work } : {}),
@@ -369,35 +356,28 @@ export async function routeExecutionModel(input: {
 					}
 				: undefined;
 			const result = await infer((inferenceSignal) =>
-				routeModel(
-					{
-						settings: { ...settings, getRouterModel: () => reader! },
-						modelRegistry: ctx.modelRegistry,
-						currentModel: ctx.model,
-						state: {
-							task,
-							agent,
-							...(callerSays && Object.keys(callerSays).length ? { caller_says: callerSays } : {}),
-						},
-						instructions: NEEDS_INSTRUCTIONS,
-						schema,
-						// Unused: the reader always resolves to a chat model.
-						classifier: {
-							questions: Object.fromEntries(
-								questions.map((question) => [
-									question.id,
-									{ instructions: question.instructions, criteria: question.criteria },
-								]),
-							),
-							decode: (choices) =>
-								Object.fromEntries(questions.map((question) => [question.id, choices[question.id]!])),
-						},
-						signal: inferenceSignal,
+				decide({
+					settings,
+					// A classifier never receives the task: the reader is a chat model.
+					model: reader!,
+					modelRegistry: ctx.modelRegistry,
+					...(ctx.model ? { currentModel: ctx.model } : {}),
+					state: {
+						task,
+						agent,
+						...(callerSays && Object.keys(callerSays).length ? { caller_says: callerSays } : {}),
 					},
-					(value) => questions.every((question) => Object.hasOwn(question.criteria, String(value[question.id]))),
-				),
+					instructions: NEEDS_INSTRUCTIONS,
+					questions: Object.fromEntries(
+						questions.map((question) => [
+							question.id,
+							{ type: "choice" as const, instructions: question.instructions, criteria: question.criteria },
+						]),
+					),
+					...(inferenceSignal ? { signal: inferenceSignal } : {}),
+				}),
 			);
-			answers = result.value;
+			answers = Object.fromEntries(Object.entries(result.answers).map(([id, answer]) => [id, answer.choice]));
 		}
 		const needs: ResolvedTaskNeeds = resolveTaskNeeds(stated, answers);
 
@@ -473,40 +453,24 @@ export async function routeExecutionModel(input: {
 		let chosen = shortlist[0]!;
 		if (shortlist.length > 1) {
 			const keys = shortlist.map((_, index) => `m${index}`);
-			const schema = Type.Object(
-				{ modelId: Type.String({ enum: shortlist.map((option) => option.model) }) },
-				{ additionalProperties: false },
-			);
 			const result = await infer((inferenceSignal) =>
-				routeModel(
-					{
-						settings,
-						modelRegistry: ctx.modelRegistry,
-						currentModel: ctx.model,
-						state: {
-							...choiceState,
+				decide({
+					settings,
+					modelRegistry: ctx.modelRegistry,
+					...(ctx.model ? { currentModel: ctx.model } : {}),
+					state: { ...choiceState },
+					instructions: CHOICE_INSTRUCTIONS,
+					questions: {
+						model: {
+							type: "choice",
+							instructions: "Which model should do this task?",
+							criteria: describeAll(shortlist),
 						},
-						instructions: CHOICE_INSTRUCTIONS,
-						schema,
-						classifier: {
-							questions: {
-								model: {
-									instructions: "Which model should do this task?",
-									criteria: describeAll(shortlist),
-								},
-							},
-							decode: (choices) => {
-								const option = shortlist[keys.indexOf(choices.model ?? "")];
-								if (!option) throw new Error("Invalid execution model Choice.");
-								return { modelId: option.model };
-							},
-						},
-						signal: inferenceSignal,
 					},
-					(value) => shortlist.some((option) => option.model === value.modelId),
-				),
+					...(inferenceSignal ? { signal: inferenceSignal } : {}),
+				}),
 			);
-			chosen = shortlist.find((option) => option.model === result.value.modelId)!;
+			chosen = shortlist[keys.indexOf(result.answers.model.choice)]!;
 		}
 
 		// Step 4: effort from difficulty; fallbacks are the next distinct models in code's ranking.

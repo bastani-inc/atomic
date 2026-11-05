@@ -1,0 +1,13 @@
+{
+	"model": "jev-latest",
+	"usage": { "input_tokens": 412, "output_tokens": 9 },
+	"answers": {
+		"next_action": {
+			"type": "choice",
+			"choice": "advance",
+			"probabilities": { "advance": 0.93, "stay": 0.07 },
+			"confidence": 0.93
+		},
+		"reply_addresses_message": { "type": "noul", "noul": 0.91 }
+	}
+}

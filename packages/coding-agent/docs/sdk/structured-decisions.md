@@ -5,9 +5,9 @@ description: Make a schema-validated structured decision without starting an age
 
 # Structured decisions
 
-Use `generateStructuredOutput()` from `@bastani/atomic`, or the `structured_output` tool, when an integration needs one schema-validated semantic decision. Both use the same model contract. Neither starts a child agent, executes the caller's other tools, or authorizes an action. Neither reads `routerModel` or changes the selected chat model.
+Use `generateStructuredOutput()` from `@bastani/atomic`, or the `structured_output` tool, when an integration needs one schema-validated semantic decision. Both use the same model contract. Neither starts a child agent, executes the caller's other tools, or authorizes an action. Neither reads `decisionModel` or changes the selected chat model.
 
-Automatic workflow-stage and subagent `model: "auto"` selection uses `routerModel` separately; it does not change calls to `generateStructuredOutput()`. See [Select the router](#select-the-router).
+Automatic workflow-stage and subagent `model: "auto"` selection uses `decisionModel` separately; it does not change calls to `generateStructuredOutput()`. See [Select the router](#select-the-router).
 
 ## Select the inference model
 
@@ -18,7 +18,7 @@ Pass an optional exact `provider/model` string, not a model object and not `auto
 - Omit `model` to use the current stage or chat model as the primary.
 - After the primary and every explicit fallback, Atomic tries the current chat model if it has not already been tried.
 
-Image-generation models, model patterns, reasoning suffixes, surrounding whitespace, and IDs the registry does not list cannot be used. Atomic skips such an ID, records it with its error in `modelAttempts`, and still tries the remaining candidates, including the current chat model, so a mistyped `model` or fallback does not fail the call. The call fails with the first ID's error only when no candidate resolves. A classifier is never an execution `auto` candidate. A catalog entry does not prove that the provider can classify, that credentials work, or that quota remains. Setting `routerModel` does not change this selection.
+Image-generation models, model patterns, reasoning suffixes, surrounding whitespace, and IDs the registry does not list cannot be used. Atomic skips such an ID, records it with its error in `modelAttempts`, and still tries the remaining candidates, including the current chat model, so a mistyped `model` or fallback does not fail the call. The call fails with the first ID's error only when no candidate resolves. A classifier is never an execution `auto` candidate. A catalog entry does not prove that the provider can classify, that credentials work, or that quota remains. Setting `decisionModel` does not change this selection.
 
 A classifier can answer a finite Choice. Literal unions, enums, booleans, and flat objects whose required fields all use those types are Choice-compatible. Free-form text, unconstrained numbers, arrays, optional fields, and nested objects are not. Atomic compiles compatible schemas into generic choice questions and skips an incompatible classifier, recording the skip. A request whose entire chain is incompatible fails without inventing a decoder.
 
@@ -55,9 +55,9 @@ The `structured_output` tool takes the same decision inputs from the calling mod
 
 ## Select the router
 
-For workflow stages and subagents with `model: "auto"`, `routerModel` selects the decision provider: an explicit exact registered chat or classifier ID uses that model, while an unset or `auto` value uses the current chat model. Saved classifier credentials do not change this selection. An invalid explicit router selection fails instead of falling back. Set it through [/settings](/settings#routermodel); extensions can read the current value with `ctx.getRouterModel()`.
+For workflow stages and subagents with `model: "auto"`, `decisionModel` selects the decision provider: an explicit exact registered chat or classifier ID uses that model, while an unset or `auto` value uses the current chat model. Saved classifier credentials do not change this selection. An invalid explicit router selection fails instead of falling back. Set it through [/settings](/settings#routermodel); extensions can read the current value with `ctx.getDecisionModel()`.
 
-Chat routing gets an initial attempt plus up to three corrective retries for malformed or schema-invalid output, all within one [decision deadline](#cancellation-and-failures). A failed explicit classifier routing attempt switches to the current chat model immediately when one exists, including missing credentials, an unsupported classify operation, a provider size or context rejection, and a refusal. Cancellation does not fall back. The result includes `fallback: { from, to, reason }` when that hop is used. Transient provider retries follow the selected provider's operation and the request's retry settings. General `generateStructuredOutput()` advances its own `fallbackModels` chain; it does not read `routerModel`.
+Chat routing gets an initial attempt plus up to three corrective retries for malformed or schema-invalid output, all within one [decision deadline](#cancellation-and-failures). A failed explicit classifier routing attempt switches to the current chat model immediately when one exists, including missing credentials, an unsupported classify operation, a provider size or context rejection, and a refusal. Cancellation does not fall back. The result includes `fallback: { from, to, reason }` when that hop is used. Transient provider retries follow the selected provider's operation and the request's retry settings. General `generateStructuredOutput()` advances its own `fallbackModels` chain; it does not read `decisionModel`.
 
 For [workflow-stage](/workflows/operations#automatic-stage-models) and [subagent](/subagents/reference#automatic-model-selection) `model: "auto"`, a complete routing-inference failure runs the stage or child on the current chat model with a recorded warning instead of failing, provided that model is available and satisfies every routing constraint.
 
@@ -67,7 +67,7 @@ Instructions describe the judgment. Named `state` fields contain the actual task
 
 A general structured-output request supplies `instructions`, `state`, and `schema`. Atomic derives choice questions from a compatible schema and skips a classifier for other schemas. Keep fixed numeric limits in code. Include a no-match outcome in the schema when abstention is valid.
 
-Automatic routing builds its own finite Choice questions from eligible execution models. Call `generateStructuredOutput()` directly for other decisions; it derives questions from your result schema instead of reading `routerModel`.
+Automatic routing builds its own finite Choice questions from eligible execution models. Call `generateStructuredOutput()` directly for other decisions; it derives questions from your result schema instead of reading `decisionModel`.
 
 ## Provider behavior and limits
 

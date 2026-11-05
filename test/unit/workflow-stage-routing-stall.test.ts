@@ -12,14 +12,14 @@ import {
 	settleVirtually,
 	useVirtualTime,
 } from "../helpers/routing-provider.js";
-import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { decisionChatModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 import { createStore, run, workflow } from "./executor-shared.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
-const OTHER_MODEL = { ...decisionModel, id: "other", name: "Other" };
+const OTHER_MODEL = { ...decisionChatModel, id: "other", name: "Other" };
 const CURRENT_MODEL_ID = "decision-test/chat";
 const ROUTED_MODEL_ID = "decision-test/other";
-const ROUTER_MODEL = { ...decisionModel, provider: "router-test" };
+const ROUTER_MODEL = { ...decisionChatModel, provider: "router-test" };
 const ROUTER_MODEL_ID = "router-test/chat";
 /** Virtual time a bounded outcome may exceed its deadline by (timers armed around it). */
 const DEADLINE_SLACK_MS = 5_000;
@@ -40,11 +40,11 @@ async function fixture(provider: RoutingProvider, withCurrentModel = true) {
 		models: [ROUTER_MODEL],
 		streamSimple: provider.streamSimple,
 	});
-	vi.spyOn(registry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL, ROUTER_MODEL]);
+	vi.spyOn(registry, "getAvailable").mockReturnValue([decisionChatModel, OTHER_MODEL, ROUTER_MODEL]);
 	const models = workflowModelCatalogFromContext({
-		...(withCurrentModel ? { model: decisionModel } : {}),
+		...(withCurrentModel ? { model: decisionChatModel } : {}),
 		modelRegistry: registry,
-		getRouterModel: () => ROUTER_MODEL_ID,
+		getDecisionModel: () => ROUTER_MODEL_ID,
 	});
 	const admissions: string[] = [];
 	const adapters = {

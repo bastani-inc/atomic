@@ -15,6 +15,7 @@ import {
 	type Model,
 } from "@bastani/pi-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { isDecisionModelUnavailableError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import {
 	AutoRoutingInferenceError,
 	routeExecutionModel,
@@ -40,8 +41,8 @@ import {
 	offeredModels,
 } from "../helpers/model-routing.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
@@ -70,9 +71,9 @@ async function fixture() {
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry } = await registeredDecisionRuntime(infer);
 	const ctx = {
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: registry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 	} as ExtensionContext;
 	return { ctx, infer, route: (task = "Fix the approved defect") => routeSubagentModel({ ctx, agent, task }) };
 }
@@ -88,7 +89,7 @@ function mockClassifier(
 ) {
 	const model = f.ctx.modelRegistry.getClassifierModel("typesafe", "jev-latest");
 	assert.ok(model);
-	f.ctx.getRouterModel = () => `${model.provider}/${model.id}`;
+	f.ctx.getDecisionModel = () => `${model.provider}/${model.id}`;
 	return vi.spyOn(f.ctx.modelRegistry, "classify").mockImplementation(async (_selected, context) => {
 		const answers: ClassifierResult["answers"] = {};
 		for (const [id, question] of Object.entries(context.questions)) {
@@ -115,19 +116,19 @@ function mockClassifier(
 test("auto routing admits multimodal-input chat but excludes image and classifier models, even from a native provider", async () => {
 	const { runtime, registry } = await registeredDecisionRuntime(() => messageStream(decisionMessage()));
 	const multimodal = {
-		...decisionModel,
+		...decisionChatModel,
 		provider: "multimodal",
 		id: "chat",
 		input: ["text", "image"] as ("text" | "image")[],
 	};
 	runtime.registerProvider("multimodal", {
-		api: decisionModel.api,
-		baseUrl: decisionModel.baseUrl,
+		api: decisionChatModel.api,
+		baseUrl: decisionChatModel.baseUrl,
 		apiKey: "test-key",
 		models: [multimodal],
 	});
 	const image = {
-		...decisionModel,
+		...decisionChatModel,
 		type: "image" as const,
 		provider: "leaky",
 		id: "painter",
@@ -135,7 +136,7 @@ test("auto routing admits multimodal-input chat but excludes image and classifie
 		output: ["image" as const],
 	};
 	const classifier = {
-		...decisionModel,
+		...decisionChatModel,
 		type: "classifier" as const,
 		provider: "leaky",
 		id: "judge",
@@ -168,7 +169,7 @@ test("auto routing admits multimodal-input chat but excludes image and classifie
 	await runtime.setRuntimeApiKey("leaky", "test-key", {});
 	await runtime.setRuntimeApiKey("openrouter", "test-key", {});
 	await runtime.setRuntimeApiKey("typesafe", "test-key", {});
-	const ctx = { model: decisionModel, getRouterModel: () => "decision-test/chat", modelRegistry: registry };
+	const ctx = { model: decisionChatModel, getDecisionModel: () => "decision-test/chat", modelRegistry: registry };
 	const imageId = "black-forest-labs/flux.2-flex";
 	assert.ok(runtime.getModelOfType("image", "openrouter", imageId));
 	assert.equal(runtime.getModel("openrouter", imageId), undefined);
@@ -274,7 +275,7 @@ for (const answer of invalidPairs) {
 }
 
 const reasoningModel: Model<Api> = {
-	...decisionModel,
+	...decisionChatModel,
 	provider: "second-provider",
 	id: "reasoner",
 	reasoning: true,
@@ -285,7 +286,7 @@ const reasoningModel: Model<Api> = {
 };
 test("explicit legacy effort constrains automatic selection and intersects hard constraints", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
 	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
 	const overridden = applyBuiltinOverrides(
@@ -376,7 +377,7 @@ test("builtin primary and fallback checks retain the same hard-constraint snapsh
 
 test("full provider catalog preserves supported off, independent task decisions and fallback effort", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.infer.mockImplementation((model, context) => {
 		const { state } = chatPayload(context);
 		const offered = offeredModels(context);
@@ -395,7 +396,7 @@ test("full provider catalog preserves supported off, independent task decisions 
 
 test("cost, context, capability and effort constraints are enforced before inference and on fallback", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
 	const route = await routeSubagentModel({
 		ctx: f.ctx,
@@ -468,11 +469,11 @@ test("authored and management-created constraints round trip without widening", 
 
 test("catalog availability is revalidated after inference and immediately before admission", async () => {
 	const f = await fixture();
-	const available = vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel]);
+	const available = vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel]);
 	const selected = await f.route();
 	available.mockReturnValue([]);
 	assert.throws(selected.assertCurrent, /no longer eligible/);
-	available.mockReturnValue([decisionModel]);
+	available.mockReturnValue([decisionChatModel]);
 	f.infer.mockImplementation((model, context) => {
 		available.mockReturnValue([]);
 		return chatRouter()(model, context);
@@ -490,7 +491,7 @@ for (const evalsCase of ["missing", "empty"] as const) {
 			return "";
 		});
 		try {
-			assert.equal((await f.route()).modelOverride, `${decisionModel.provider}/${decisionModel.id}`);
+			assert.equal((await f.route()).modelOverride, `${decisionChatModel.provider}/${decisionChatModel.id}`);
 			assert.equal(f.infer.mock.calls.length, 0);
 		} finally {
 			read.mockRestore();
@@ -526,7 +527,7 @@ test("provider failure degrades to the current chat model; cancellation never be
 	assert.equal((await f.route()).modelOverride, "decision-test/chat");
 	f.ctx.model = undefined;
 	await assert.rejects(f.route(), /provider request failed/);
-	f.ctx.model = decisionModel;
+	f.ctx.model = decisionChatModel;
 	const stream = createAssistantMessageEventStream();
 	const entered = Promise.withResolvers<void>();
 	f.infer.mockImplementation(() => {
@@ -551,7 +552,7 @@ for (const [allowed, degrades] of [
 ] as const) {
 	test(`total routing failure with allowedModels=${allowed} ${degrades ? "degrades to" : "never runs"} the current chat model (#3206)`, async () => {
 		const f = await fixture();
-		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+		vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
 		f.infer.mockImplementation(() => {
@@ -616,27 +617,30 @@ test("default reasoning catalog does not invent extended effort support (#3206)"
 	await assert.rejects(f.route(), /Invalid structured output/);
 	f.ctx.model = undefined;
 	await assert.rejects(f.route(), /Invalid structured output/);
-	f.ctx.model = decisionModel;
+	f.ctx.model = decisionChatModel;
 });
 
 test("router defaults and auto use current chat while invalid explicit configuration fails", async () => {
 	const f = await fixture();
-	f.ctx.getRouterModel = () => "";
+	f.ctx.getDecisionModel = () => "";
 	await f.route();
-	assert.equal(f.infer.mock.calls[0]![0].id, decisionModel.id);
-	f.ctx.getRouterModel = () => "auto";
+	assert.equal(f.infer.mock.calls[0]![0].id, decisionChatModel.id);
+	f.ctx.getDecisionModel = () => "auto";
 	await f.route();
-	f.ctx.getRouterModel = () => "missing/model";
-	await assert.rejects(f.route(), /Invalid routerModel/);
+	f.ctx.getDecisionModel = () => "missing/model";
+	await assert.rejects(
+		f.route(),
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "not-in-catalog",
+	);
 	assert.equal(f.infer.mock.calls.length, 2);
-	assert.equal(f.ctx.model, decisionModel);
+	assert.equal(f.ctx.model, decisionChatModel);
 });
 
 test("a stale model catalog fails before a classifier selection can launch a subagent", async () => {
 	const f = await fixture();
 	const catalog = vi
 		.spyOn(f.ctx.modelRegistry, "getAvailable")
-		.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` })));
+		.mockReturnValue(Array.from({ length: 256 }, (_, i) => ({ ...decisionChatModel, id: `m${i}` })));
 	const classify = mockClassifier(f, (keys, id) => {
 		catalog.mockReturnValue([]);
 		if (id === "work") return "coding";
@@ -649,7 +653,7 @@ test("a stale model catalog fails before a classifier selection can launch a sub
 
 test("classifier provider failure cannot return a route without a current chat model", async () => {
 	const f = await fixture();
-	const catalog = Array.from({ length: 256 }, (_, i) => ({ ...decisionModel, id: `m${i}` }));
+	const catalog = Array.from({ length: 256 }, (_, i) => ({ ...decisionChatModel, id: `m${i}` }));
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue(catalog);
 	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue(catalog);
 	const classify = mockClassifier(f);
@@ -666,7 +670,7 @@ test("long tasks reach the chat reader complete and never reach the classifier",
 	const f = await fixture();
 	const notice = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const task = `Review this change.\n${"reference data ".repeat(2000)}<keepContext>Review only.</keepContext>${"more data ".repeat(2000)}\nReport defects.`;
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	const classify = mockClassifier(f);
 	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
 	assert.equal(f.infer.mock.calls.length, 1);
@@ -685,7 +689,7 @@ test("auto routing screens credentials anywhere in a long task", async () => {
 test("a classifier that rejects the choice falls back to chat without the task, quietly unless debugging", async () => {
 	const f = await fixture();
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	const classify = mockClassifier(f);
 	classify.mockRejectedValue(new Error("request too large"));
 	const task = `<keepContext>${"required detail ".repeat(3000)}</keepContext>`;
@@ -704,7 +708,7 @@ test("a classifier that rejects the choice falls back to chat without the task, 
 	]);
 
 	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
-	f.ctx.getRouterModel = () => "typesafe/jev-latest";
+	f.ctx.getDecisionModel = () => "typesafe/jev-latest";
 	await f.route(task);
 	assert.ok(
 		(warn.mock.calls as unknown[][]).some(([message]) =>
@@ -744,7 +748,7 @@ const catalogModel = (provider: string, id: string, overrides: Partial<Model<Api
 
 test("the chat reader is asked only for the task needs the caller did not state", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	const classify = mockClassifier(f);
 	const route = await routeTask(f, { taskNeeds: { work: "computer_use", needsImages: true } });
 	assert.equal(classify.mock.calls.length, 0, "a single model able to read images leaves nothing to choose between");
@@ -764,7 +768,7 @@ test("the chat reader is asked only for the task needs the caller did not state"
 
 test("routerSelection.candidates lists only the models the router chose from after the image filter (#3528)", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	mockClassifier(f);
 	const route = await routeTask(f, { taskNeeds: { work: "computer_use", needsImages: true } });
 	assert.deepEqual(route.routerSelection.candidates, ["second-provider/reasoner"]);
@@ -1002,7 +1006,7 @@ test("a caller's shortlist is described with standings among every model the use
 
 test("a task that needs images falls back to the current chat model when no eligible model can read them", async () => {
 	const f = await fixture();
-	const current = { ...decisionModel, input: ["text" as const] };
+	const current = { ...decisionChatModel, input: ["text" as const] };
 	f.ctx.model = current;
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([
 		current,
@@ -1048,9 +1052,9 @@ test("a caller list is offered whole while it fits one choice request, and falls
 
 test("a task larger than the preferred reader's window is read by an eligible model that holds it", async () => {
 	const f = await fixture();
-	const wide: Model<Api> = { ...decisionModel, id: "wide", contextWindow: 200_000 };
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, wide]);
-	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, wide]);
+	const wide: Model<Api> = { ...decisionChatModel, id: "wide", contextWindow: 200_000 };
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, wide]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionChatModel, wide]);
 	const classify = mockClassifier(f);
 	const task = `Review the attached logs.\n${"log line ".repeat(16_000)}`;
 	await routeTask(f, { task });
@@ -1063,8 +1067,8 @@ test("a task larger than the preferred reader's window is read by an eligible mo
 
 test("only the call's own provider lists replace the user's modelRouting settings, never the agent definition's", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.ctx.getModelRouting = () => ({ excludedProviders: ["second-provider"] });
 	const permissive = { ...agent, modelConstraints: { allowedProviders: ["decision-test", "second-provider"] } };
 	const fromDefinition = await routeSubagentModel({ ctx: f.ctx, agent: permissive, task: "Fix the approved defect" });
@@ -1080,19 +1084,19 @@ test("only the call's own provider lists replace the user's modelRouting setting
 
 test("a subagent route and every fallback candidate stay inside modelRouting.allowedModels (#3528)", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
-	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.ctx.getModelRouting = () => ({ allowedModels: ["second-provider/*"] });
 	const route = await f.route();
 	assert.equal(route.modelOverride.startsWith("second-provider/reasoner"), true);
 	assert.deepEqual(route.routerSelection.candidates, ["second-provider/reasoner"]);
 	assert.equal(route.allowsCandidate("decision-test/chat"), false, "the current chat model is no fallback");
-	assert.equal(route.allowsModel(decisionModel), false);
+	assert.equal(route.allowsModel(decisionChatModel), false);
 });
 
 test("total routing failure never degrades to a current chat model outside modelRouting.excludedModels (#3528)", async () => {
 	const f = await fixture();
-	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.ctx.getModelRouting = () => ({ excludedModels: ["decision-test/chat"] });
 	f.infer.mockImplementation(() => {
 		throw new Error("mock provider failure");

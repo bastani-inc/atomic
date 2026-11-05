@@ -9,7 +9,7 @@ import {
 	isWorkflowStructuredOutputContractError,
 	stageOptionsWithStructuredOutput,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-structured-output.js";
-import { decisionMessage, decisionModel } from "../helpers/structured-output.js";
+import { decisionChatModel, decisionMessage } from "../helpers/structured-output.js";
 import { toolContext } from "../helpers/tool-context.js";
 import {
 	type AgentSession,
@@ -44,9 +44,9 @@ function hangingContext(extra: { getHttpIdleTimeoutMs?: () => number } = {}) {
 		return stream;
 	};
 	const context = toolContext({
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			streamSimple,
 		},
 		...extra,
@@ -91,10 +91,7 @@ test("a stage's schemaTimeoutMs bounds the structured_output decision (#3806)", 
 	await vi.advanceTimersByTimeAsync(1);
 
 	assert.equal(outcome.settled, true);
-	assert.match(
-		outcome.error?.message ?? "",
-		/^Structured output decision exceeded its 1000ms deadline; no decision was accepted\./,
-	);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 1000ms deadline/);
 });
 
 test("without schemaTimeoutMs the stage follows the session's httpIdleTimeoutMs (#3806)", async () => {
@@ -104,7 +101,7 @@ test("without schemaTimeoutMs the stage follows the session's httpIdleTimeoutMs 
 
 	await vi.advanceTimersByTimeAsync(2_500);
 
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 2500ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 2500ms deadline/);
 });
 
 test("schemaTimeoutMs wins over the session's httpIdleTimeoutMs (#3806)", async () => {
@@ -114,7 +111,7 @@ test("schemaTimeoutMs wins over the session's httpIdleTimeoutMs (#3806)", async 
 
 	await vi.advanceTimersByTimeAsync(400);
 
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 400ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 400ms deadline/);
 });
 
 test("an invalid schemaTimeoutMs fails when the stage is set up, before any model turn (#3806)", () => {
@@ -153,7 +150,7 @@ async function expiredDecisionMessage(): Promise<string> {
 
 test("a deadline overrun is an execution failure, while an exhausted repair budget stays a contract failure (#3806)", async () => {
 	const deadline = await expiredDecisionMessage();
-	assert.match(deadline, /^Structured output decision exceeded its 1000ms deadline/);
+	assert.match(deadline, /^Decision timed out: no answer within its 1000ms deadline/);
 
 	assert.equal(isStructuredOutputContractFailure(deadline), false, deadline);
 	assert.equal(

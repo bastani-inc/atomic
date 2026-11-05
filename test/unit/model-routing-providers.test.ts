@@ -53,7 +53,7 @@ function routingContext(modelRouting?: ModelRoutingSettings) {
 	const offered: string[][] = [];
 	const ctx: ModelRoutingContext = {
 		model: models[0],
-		getRouterModel: () => "typesafe/jev-latest",
+		getDecisionModel: () => "typesafe/jev-latest",
 		...(modelRouting ? { getModelRouting: () => modelRouting } : {}),
 		modelRegistry: {
 			getAvailable: () => models,

@@ -2,7 +2,7 @@ import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } from "@bastani/pi-ai/utils/retry";
 
 /** Runtime defaults shared by settings accessors and the published JSON Schema. */
 export const SETTINGS_DEFAULTS = {
-	routerModel: "",
+	decisionModel: "",
 	transport: "auto",
 	steeringMode: "one-at-a-time",
 	followUpMode: "one-at-a-time",
@@ -36,6 +36,9 @@ export const SETTINGS_DEFAULTS = {
 	},
 	hideThinkingBlock: false,
 	showCacheMissNotices: false,
+	workflows: {
+		autoAdvanceAfterSteer: true,
+	},
 	quietStartup: false,
 	defaultProjectTrust: "ask",
 	search: {

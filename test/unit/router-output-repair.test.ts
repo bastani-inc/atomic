@@ -4,9 +4,9 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	messageStream,
 	structuredOutputRequest,
@@ -57,7 +57,7 @@ test("general structured output repairs invalid output three times on a single c
 			...structuredOutputRequest(),
 			currentModel: undefined,
 			model: "decision-test/chat",
-			modelRegistry: { getAll: () => [decisionModel], streamSimple: stream },
+			modelRegistry: { getAll: () => [decisionChatModel], streamSimple: stream },
 		}),
 		/Structured output/,
 	);
@@ -100,7 +100,7 @@ test.each([0, 0.5, 0.999, 1.001, 1.5, 2])(
 		});
 		const result = await routeModel({
 			...request,
-			settings: SettingsManager.inMemory({ routerModel: "decision-test/classifier" }),
+			settings: SettingsManager.inMemory({ decisionModel: "decision-test/classifier" }),
 			modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },
 		});
 		assert.equal(result.value.route, "review");
@@ -115,7 +115,7 @@ test("classifier invalid choice fails without retry when no chat fallback exists
 		routeModel({
 			...request,
 			currentModel: undefined,
-			settings: SettingsManager.inMemory({ routerModel: "decision-test/classifier" }),
+			settings: SettingsManager.inMemory({ decisionModel: "decision-test/classifier" }),
 			modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },
 		}),
 		/Classifier returned no valid decision/,
@@ -176,7 +176,7 @@ test("repairs retain the original state, schema, model and router selection", as
 	const request = decisionRequest();
 	const state = { ...request.state };
 	const originalState = JSON.stringify(request.state);
-	const models = [{ ...decisionModel }];
+	const models = [{ ...decisionChatModel }];
 	const getAll = vi.fn(() => models);
 	const stream = vi.fn<typeof request.modelRegistry.streamSimple>((model, context) => {
 		assert.equal(model.id, "chat");
@@ -229,7 +229,7 @@ test("slow classifier request can finish after the former deadline", async () =>
 	try {
 		const result = await routeModel({
 			...request,
-			settings: SettingsManager.inMemory({ routerModel: "decision-test/classifier" }),
+			settings: SettingsManager.inMemory({ decisionModel: "decision-test/classifier" }),
 			modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },
 		});
 		assert.equal(result.value.route, "review");

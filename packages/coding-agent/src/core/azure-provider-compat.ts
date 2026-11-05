@@ -38,7 +38,9 @@ export function normalizeAzureSettings(settings: Settings): Settings {
 		...(typeof settings.defaultProvider === "string" && {
 			defaultProvider: normalizeProviderId(settings.defaultProvider),
 		}),
-		...(typeof settings.routerModel === "string" && { routerModel: normalizeModelReference(settings.routerModel) }),
+		...(typeof settings.decisionModel === "string" && {
+			decisionModel: normalizeModelReference(settings.decisionModel),
+		}),
 		...(isStringArray(settings.enabledModels) && {
 			enabledModels: settings.enabledModels.map(normalizeModelReference),
 		}),

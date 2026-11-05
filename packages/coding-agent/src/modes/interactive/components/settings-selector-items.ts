@@ -315,12 +315,12 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 				),
 		},
 		{
-			id: "router-model",
-			label: "Router model",
-			description: `Saves to ${config.routerModelScope ?? "global"} settings; affects routing decisions, not the chat model`,
-			currentValue: config.routerModel && config.routerModel !== "auto" ? config.routerModel : "Automatic",
+			id: "decision-model",
+			label: "Decision model",
+			description: `Saves to ${config.decisionModelScope ?? "global"} settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model`,
+			currentValue: config.decisionModel && config.decisionModel !== "auto" ? config.decisionModel : "Automatic",
 			submenu: (_currentValue, done) => {
-				const current = config.routerModel === "auto" ? "" : (config.routerModel ?? "");
+				const current = config.decisionModel === "auto" ? "" : (config.decisionModel ?? "");
 				const options = [
 					{
 						value: "",
@@ -348,16 +348,16 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					});
 				}
 				return new SelectSubmenu(
-					"Router model",
-					`Saves to ${config.routerModelScope ?? "global"} settings. Choose a provider permitted to receive routing context. Automatic saves an empty routerModel.`,
+					"Decision model",
+					`Saves to ${config.decisionModelScope ?? "global"} settings. Choose a provider permitted to receive decision context. A classifier answers with probabilities; Automatic saves an empty decisionModel.`,
 					options.map((option) => ({
 						...option,
 						label: `${option.value === current ? "✓ " : "  "}${option.label}`,
 					})),
 					current,
 					(value) => {
-						callbacks.onRouterModelChange?.(value);
-						config.routerModel = value;
+						callbacks.onDecisionModelChange?.(value);
+						config.decisionModel = value;
 						done(value || "Automatic");
 					},
 					() => done(),
@@ -365,6 +365,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					true,
 				);
 			},
+		},
+		{
+			id: "auto-advance-after-steer",
+			label: "Auto-advance after steer",
+			description: `Saves to ${config.autoAdvanceAfterSteerScope ?? "global"} settings; after you steer a workflow stage, the decision model advances it or keeps it open instead of asking, and asks when unsure`,
+			currentValue: config.autoAdvanceAfterSteer === false ? "false" : "true",
+			values: ["true", "false"],
 		},
 		{
 			id: "compaction-model",

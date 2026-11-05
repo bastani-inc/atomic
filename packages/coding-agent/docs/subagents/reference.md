@@ -44,10 +44,10 @@ The agent's system prompt is not routing metadata. For a self-contained agent wi
 
 The chat model reads the complete task; a task too large for its context window is read by the cheapest eligible model whose window holds it. If a classifier rejects the choice request, routing falls back to the current chat model. Fallbacks are silent unless `ATOMIC_MODEL_ROUTING_DEBUG=1`, which prints them with the HTTP status and error type, or [debug mode](/development#debugging), which writes them to the debug log. Hard `modelConstraints` are never truncated.
 
-The shared [`routerModel`](/settings#routermodel) setting chooses the model making the decision, not the child model. Selection follows this order:
+The shared [`decisionModel`](/settings#routermodel) setting chooses the model making the decision, not the child model. Selection follows this order:
 
 1. An explicit registered classifier or chat model.
-2. The current chat model, including when `routerModel` is unset or `auto`.
+2. The current chat model, including when `decisionModel` is unset or `auto`.
 
 Saved classifier credentials do not change this order. Neither routing nor child fallback changes the parent chat model or the `structured_output` tool.
 

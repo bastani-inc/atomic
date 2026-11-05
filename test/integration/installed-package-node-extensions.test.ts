@@ -179,11 +179,11 @@ runTest(
 				import { getVirtualModules } from "./dist/core/extensions/loader-host-modules.js";
 				const hosted = (await getVirtualModules())["@bastani/atomic"];
 				assert.equal(hosted.generateStructuredOutput, sdk.generateStructuredOutput);
-				for (const name of ["inferRouterDecision", "routeModel", "resolveRouterModel"]) {
+				for (const name of ["inferRouterDecision", "routeModel", "resolveDecisionModel"]) {
 					assert.equal(Object.hasOwn(sdk, name), false);
 					assert.equal(Object.hasOwn(hosted, name), false);
 				}
-				assert.equal(sdk.SettingsManager.inMemory().getRouterModel(), "");
+				assert.equal(sdk.SettingsManager.inMemory().getDecisionModel(), "");
 				const classifier = {
 					type: "classifier", provider: "fixture", id: "intent", api: "typesafe-system-one",
 					name: "Fixture classifier", baseUrl: "https://example.invalid", input: ["text"],

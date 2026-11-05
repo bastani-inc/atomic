@@ -34,8 +34,11 @@ export interface SettingsConfig {
 	availableThinkingLevels: ThinkingLevel[];
 	availableDefaultModels?: Model<Api>[];
 	availableClassifierModels?: ClassifierModel<ClassifierApi>[];
-	routerModel?: string;
-	routerModelScope?: "global" | "project";
+	decisionModel?: string;
+	decisionModelScope?: "global" | "project";
+	/** `workflows.autoAdvanceAfterSteer`. */
+	autoAdvanceAfterSteer?: boolean;
+	autoAdvanceAfterSteerScope?: "global" | "project";
 	availableCompactorModels?: CompactorModel[];
 	compactionModel?: string;
 	compactionModelScope?: "global" | "project";
@@ -83,7 +86,8 @@ export interface SettingsCallbacks {
 	onHttpIdleTimeoutChange: (timeoutMs: number) => void;
 	onCacheWarmingChange: (mode: CacheWarmingMode) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
-	onRouterModelChange?: (model: string) => void;
+	onDecisionModelChange?: (model: string) => void;
+	onAutoAdvanceAfterSteerChange?: (enabled: boolean) => void;
 	onCompactionModelChange?: (model: string) => void;
 	onModelThinkingLevelChange?: (provider: string, modelId: string, level: ThinkingLevel) => void;
 	onModelThinkingLevelRemove?: (provider: string, modelId: string) => void;

@@ -3,6 +3,7 @@ import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../conf
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { backgroundCompactionSettingErrors } from "./compaction/background-compaction.ts";
+import { DecisionConfigError, type DecisionConfigSource, isDecisionConfigError } from "./decision/errors.js";
 import { deepMergeSettings } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
@@ -110,6 +111,7 @@ export class SettingsManager {
 
 	/** Create an in-memory SettingsManager (no file I/O) */
 	static inMemory(settings: Partial<Settings> = {}): SettingsManager {
+		SettingsManager.refuseRenamedSettings(settings, "sdk");
 		const storage = new InMemorySettingsStorage();
 		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
 		storage.withLock("global", () => JSON.stringify(initialSettings, null, 2));
@@ -131,7 +133,20 @@ export class SettingsManager {
 			return {};
 		}
 		const settings = parseJsonFileContent(content) as Record<string, unknown>;
+		SettingsManager.refuseRenamedSettings(settings, "settings", scope);
 		return SettingsManager.migrateSettings(settings);
+	}
+
+	/** A removed key fails fast: `routerModel` was renamed to `decisionModel`, and nothing reads it any more. */
+	private static refuseRenamedSettings(settings: object, source: DecisionConfigSource, scope?: SettingsScope): void {
+		if (settings !== null && typeof settings === "object" && Object.hasOwn(settings, "routerModel")) {
+			throw new DecisionConfigError({
+				code: "renamed-setting",
+				source,
+				field: "routerModel",
+				...(scope === undefined ? {} : { scope }),
+			});
+		}
 	}
 
 	private static tryLoadFromStorage(
@@ -142,6 +157,7 @@ export class SettingsManager {
 		try {
 			return { settings: SettingsManager.loadFromStorage(storage, scope, projectTrusted), error: null };
 		} catch (error) {
+			if (isDecisionConfigError(error)) throw error;
 			return { settings: {}, error: error as Error };
 		}
 	}
@@ -326,6 +342,7 @@ export class SettingsManager {
 
 	/** Apply additional overrides on top of current settings */
 	applyOverrides(overrides: Partial<Settings>): void {
+		SettingsManager.refuseRenamedSettings(overrides, "sdk");
 		this.settings = deepMergeSettings(this.settings, overrides);
 	}
 

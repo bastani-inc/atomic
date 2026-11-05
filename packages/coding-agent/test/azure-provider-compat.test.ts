@@ -30,7 +30,7 @@ test("Azure settings normalization preserves invalid shapes for settings validat
 	for (const invalid of [null, false, 7, "not-an-array", {}, [7], [null]]) {
 		const settings = {
 			defaultProvider: legacy,
-			routerModel: typeof invalid === "string" ? 7 : invalid,
+			decisionModel: typeof invalid === "string" ? 7 : invalid,
 			enabledModels: invalid,
 			fallbackModels: invalid,
 			modelRouting: { allowedProviders: invalid, excludedProviders: invalid },
@@ -239,7 +239,7 @@ test("mixed-case legacy Azure references resolve in CLI, scopes and saved settin
 		const content = JSON.stringify({
 			defaultProvider: "AZURE-OPENAI-RESPONSES",
 			enabledModels: ["Azure-OpenAI-Responses/MixedCase*"],
-			routerModel: "AZURE-OPENAI-RESPONSES/MixedCaseDeployment",
+			decisionModel: "AZURE-OPENAI-RESPONSES/MixedCaseDeployment",
 			fallbackModels: ["Azure-OpenAI-Responses/MixedCaseDeployment:high"],
 			modelThinkingLevels: {
 				"AZURE-OPENAI-RESPONSES/MixedCaseDeployment": "low",
@@ -255,7 +255,7 @@ test("mixed-case legacy Azure references resolve in CLI, scopes and saved settin
 		const settings = SettingsManager.create(root, root);
 		assert.equal(settings.getDefaultProvider(), "azure");
 		assert.deepEqual(settings.getEnabledModels(), ["azure/MixedCase*"]);
-		assert.equal(settings.getRouterModel(), "azure/MixedCaseDeployment");
+		assert.equal(settings.getDecisionModel(), "azure/MixedCaseDeployment");
 		assert.deepEqual(settings.getFallbackModels(), ["azure/MixedCaseDeployment:high"]);
 		assert.deepEqual(settings.getAllModelThinkingLevels(), {
 			"azure/MixedCaseDeployment": "high",

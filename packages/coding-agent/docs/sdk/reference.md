@@ -154,7 +154,7 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 ### Structured decisions
 
-Use `generateStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model; the current chat model is also the terminal fallback. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema and never read `routerModel`. Workflow-stage and subagent `model: "auto"` selection use `routerModel` internally; no separate routing-decision API is exported. See [Structured decisions](/sdk/structured-decisions).
+Use `generateStructuredOutput()` for one schema-validated semantic decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start with the current chat model; the current chat model is also the terminal fallback. Atomic resolves each ID through the supplied registry: a chat model uses chat inference, and a registered classifier uses the generic classify operation. A catalog entry does not prove that the provider can serve the request. Classifiers run only when the schema is a finite Choice and are otherwise skipped. General calls derive choice questions from that schema and never read `decisionModel`. Workflow-stage and subagent `model: "auto"` selection use `decisionModel` internally; no separate routing-decision API is exported. See [Structured decisions](/sdk/structured-decisions).
 
 ### System Prompt
 
@@ -1102,7 +1102,7 @@ type StructuredOutputToolOptions
 type StructuredOutputRequest
 type StructuredOutputResult
 type StructuredOutputModel
-type RouterModelSelectionOptions
+type DecisionModelSelectionOptions
 type RouterDecisionRequest
 type StructuredChoiceQuestion
 type ExtensionFactory

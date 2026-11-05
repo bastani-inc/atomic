@@ -66,7 +66,7 @@ function stageContext(
 		getContextUsage: () => undefined,
 		compact: () => {},
 		getSystemPrompt: () => "",
-		getRouterModel: () => "",
+		getDecisionModel: () => "",
 		observeWorkflowActivity: () => ({ dispose() {} }),
 	} satisfies ExtensionContext;
 }

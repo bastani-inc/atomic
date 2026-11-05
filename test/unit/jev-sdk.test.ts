@@ -6,9 +6,9 @@ import { generateStructuredOutput, routeModel } from "../../packages/coding-agen
 import { chatRouter } from "../helpers/model-routing.js";
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	messageStream,
 	structuredOutputRequest,
@@ -28,9 +28,9 @@ function routedClassifier(
 	const request = decisionRequest();
 	return {
 		...request,
-		settings: { getRouterModel: () => "decision-test/classifier" },
+		settings: { getDecisionModel: () => "decision-test/classifier" },
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			getClassifierModel: () => decisionClassifier,
 			classify,
 			streamSimple,
@@ -144,11 +144,11 @@ test("execution auto routing uses selected current chat even with classifier cre
 	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
 	const selection = { model: "decision-test/chat", effort: null };
 	const dispatch = vi.fn(chatRouter());
-	const available = [decisionModel];
+	const available = [decisionChatModel];
 	const result = await routeExecutionModel({
 		ctx: {
-			model: decisionModel,
-			getRouterModel: () => "",
+			model: decisionChatModel,
+			getDecisionModel: () => "",
 			modelRegistry: {
 				getAll: () => available,
 				getAvailable: () => available,

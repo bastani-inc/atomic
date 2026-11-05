@@ -68,7 +68,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 			})();
 		},
 		getSystemPrompt: () => this.session.systemPrompt,
-		getRouterModel: () => this.session.settingsManager.getRouterModel(),
+		getDecisionModel: () => this.session.settingsManager.getDecisionModel(),
 		getModelRouting: () => this.session.settingsManager.getModelRouting(),
 		getHttpIdleTimeoutMs: () => this.session.settingsManager.getHttpIdleTimeoutMs(),
 	});

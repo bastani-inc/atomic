@@ -33,8 +33,8 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import type { PiExecResult } from "../../packages/workflows/src/extension/wiring.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
@@ -45,9 +45,9 @@ async function routingModels() {
 		messageStream(decisionMessage({ model: "decision-test/chat", effort: null })),
 	);
 	return workflowModelCatalogFromContext({
-		model: decisionModel,
+		model: decisionChatModel,
 		modelRegistry: registry,
-		getRouterModel: () => "decision-test/chat",
+		getDecisionModel: () => "decision-test/chat",
 	});
 }
 

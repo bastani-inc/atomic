@@ -7,7 +7,7 @@ import {
 	settleVirtually,
 	useVirtualTime,
 } from "../../../test/helpers/routing-provider.js";
-import { decisionModel } from "../../../test/helpers/structured-output.js";
+import { decisionChatModel } from "../../../test/helpers/structured-output.js";
 import {
 	AutoRoutingInferenceError,
 	type ModelRoutingContext,
@@ -15,7 +15,7 @@ import {
 	routeExecutionModel,
 } from "../src/core/execution-model-router.js";
 
-const OTHER_MODEL = { ...decisionModel, id: "other", name: "Other" };
+const OTHER_MODEL = { ...decisionChatModel, id: "other", name: "Other" };
 const CALLER_DEADLINE_MS = 60_000;
 /** Virtual time a bounded outcome may exceed the caller's deadline by (timers armed around it). */
 const DEADLINE_SLACK_MS = 5_000;
@@ -28,12 +28,12 @@ function routingContext(
 	httpIdleTimeoutMs?: number,
 ): ModelRoutingContext {
 	return {
-		...(withCurrentModel ? { model: decisionModel } : {}),
-		getRouterModel: () => "decision-test/chat",
+		...(withCurrentModel ? { model: decisionChatModel } : {}),
+		getDecisionModel: () => "decision-test/chat",
 		...(httpIdleTimeoutMs === undefined ? {} : { getHttpIdleTimeoutMs: () => httpIdleTimeoutMs }),
 		modelRegistry: {
-			getAvailable: () => [decisionModel, OTHER_MODEL],
-			getAll: () => [decisionModel, OTHER_MODEL],
+			getAvailable: () => [decisionChatModel, OTHER_MODEL],
+			getAll: () => [decisionChatModel, OTHER_MODEL],
 			streamSimple: provider.streamSimple,
 			containsConfiguredCredential: async () => false,
 		},

@@ -7,9 +7,9 @@ import {
 import {
 	type choiceDecisionSchema,
 	classifierResult,
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
@@ -35,7 +35,7 @@ for (const kind of ["chat", "classifier"] as const) {
 			...structuredOutputRequest(),
 			currentModel: undefined,
 			modelRegistry: {
-				getAll: () => [decisionModel],
+				getAll: () => [decisionChatModel],
 				streamSimple: dispatch,
 				getClassifierModel: () => decisionClassifier,
 				classify,

@@ -128,19 +128,19 @@ test("keeps a configured automatic theme marked while browsing", () => {
 
 function openRouterSubmenu(
 	config: SettingsConfig,
-	onRouterModelChange: (model: string) => void,
+	onDecisionModelChange: (model: string) => void,
 	done = vi.fn(),
 ): Container {
-	const item = buildSettingsItems(config, { onRouterModelChange } as SettingsCallbacks).find(
-		({ id }) => id === "router-model",
+	const item = buildSettingsItems(config, { onDecisionModelChange } as SettingsCallbacks).find(
+		({ id }) => id === "decision-model",
 	);
-	expect(item?.label).toBe("Router model");
+	expect(item?.label).toBe("Decision model");
 	return item!.submenu!(item!.currentValue, done) as Container;
 }
 
 test("router settings list registered classifiers and use the current chat model by default", () => {
 	const config = settingsConfig({
-		routerModel: "",
+		decisionModel: "",
 		availableDefaultModels: [],
 		availableClassifierModels: [
 			{ type: "classifier", provider: "judge", id: "custom", name: "Custom classifier" },
@@ -158,7 +158,7 @@ test("router settings list registered classifiers and use the current chat model
 	submenu.handleInput?.("\r");
 	expect(changed).toHaveBeenCalledExactlyOnceWith("judge/custom");
 	expect(done).toHaveBeenCalledWith("judge/custom");
-	expect(config.routerModel).toBe("judge/custom");
+	expect(config.decisionModel).toBe("judge/custom");
 	expect(config.availableDefaultModels).toEqual([]);
 
 	const reopened = openRouterSubmenu(config, changed);
@@ -166,12 +166,12 @@ test("router settings list registered classifiers and use the current chat model
 	reopened.handleInput?.("\x1b[A");
 	reopened.handleInput?.("\r");
 	expect(changed).toHaveBeenLastCalledWith("");
-	expect(config.routerModel).toBe("");
+	expect(config.decisionModel).toBe("");
 });
 
 test("router settings search a registered non-Jev classifier without changing chat defaults", () => {
 	const config = settingsConfig({
-		routerModel: "",
+		decisionModel: "",
 		availableDefaultModels: [],
 		availableClassifierModels: [
 			{ type: "classifier", provider: "vendor", id: "judge-v2", name: "Vendor judge" },
@@ -182,14 +182,14 @@ test("router settings search a registered non-Jev classifier without changing ch
 	for (const character of "judge-v2") submenu.handleInput?.(character);
 	submenu.handleInput?.("\r");
 	expect(changed).toHaveBeenCalledExactlyOnceWith("vendor/judge-v2");
-	expect(config.routerModel).toBe("vendor/judge-v2");
+	expect(config.decisionModel).toBe("vendor/judge-v2");
 	expect(config.availableDefaultModels).toEqual([]);
 	expect(config.thinkingLevel).toBe("off");
 });
 
 test("router settings search exact provider/model IDs without changing chat defaults", () => {
 	const config = settingsConfig({
-		routerModel: "",
+		decisionModel: "",
 		availableDefaultModels: [
 			{ id: "nested/model", provider: "test", name: "Test model", reasoning: true },
 		] as SettingsConfig["availableDefaultModels"],
@@ -207,7 +207,7 @@ test("router settings search exact provider/model IDs without changing chat defa
 });
 
 test("router settings preserve an unavailable selection and cancellation does not save", () => {
-	const config = settingsConfig({ routerModel: "missing/model", availableDefaultModels: [] });
+	const config = settingsConfig({ decisionModel: "missing/model", availableDefaultModels: [] });
 	const changed = vi.fn();
 	const done = vi.fn();
 	const submenu = openRouterSubmenu(config, changed, done);
@@ -216,12 +216,12 @@ test("router settings preserve an unavailable selection and cancellation does no
 	submenu.handleInput?.("\x1b");
 	expect(changed).not.toHaveBeenCalled();
 	expect(done).toHaveBeenCalledWith();
-	expect(config.routerModel).toBe("missing/model");
+	expect(config.decisionModel).toBe("missing/model");
 });
 
 test("router picker marks an unavailable classifier ID and excludes non-chat execution models", () => {
 	const config = settingsConfig({
-		routerModel: "typesafe-ai/jev-latest",
+		decisionModel: "typesafe-ai/jev-latest",
 		availableDefaultModels: [
 			{ type: "image", provider: "gallery", id: "paint", name: "Painter" },
 			{ type: "classifier", provider: "judge", id: "jev", name: "Judge" },
@@ -243,38 +243,40 @@ test("router menu saves settings.json and Automatic clears only the router selec
 		writeFileSync(file, JSON.stringify(defaults));
 		const manager = SettingsManager.create(directory, directory);
 		const config = settingsConfig({
-			routerModel: manager.getRouterModel(),
+			decisionModel: manager.getDecisionModel(),
 			availableClassifierModels: [
 				{ type: "classifier", provider: "judge", id: "custom", name: "Custom classifier" },
 			] as SettingsConfig["availableClassifierModels"],
 		});
-		const change = (model: string) => manager.setRouterModel(model);
+		const change = (model: string) => manager.setDecisionModel(model);
 		const menu = openRouterSubmenu(config, change);
 		menu.handleInput?.("\x1b[B");
 		menu.handleInput?.("\r");
 		await manager.flush();
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, routerModel: "judge/custom" });
-		expect(SettingsManager.create(directory, directory).getRouterModel()).toBe("judge/custom");
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, decisionModel: "judge/custom" });
+		expect(SettingsManager.create(directory, directory).getDecisionModel()).toBe("judge/custom");
 		const reopened = openRouterSubmenu(config, change);
 		reopened.handleInput?.("\x1b[A");
 		reopened.handleInput?.("\r");
 		await manager.flush();
-		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, routerModel: "" });
-		expect(SettingsManager.create(directory, directory).getRouterModel()).toBe("");
+		expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...defaults, decisionModel: "" });
+		expect(SettingsManager.create(directory, directory).getDecisionModel()).toBe("");
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
 
-test("router setter accepts auto and rejects malformed IDs", () => {
-	const manager = SettingsManager.inMemory({ routerModel: "judge/custom" });
+test("decision model setter accepts auto and rejects malformed IDs with a typed error", () => {
+	const manager = SettingsManager.inMemory({ decisionModel: "judge/custom" });
 	for (const value of [" judge/custom", "judge/custom "]) {
-		expect(() => manager.setRouterModel(value)).toThrow(/Invalid routerModel/);
+		expect(() => manager.setDecisionModel(value)).toThrow(
+			expect.objectContaining({ name: "DecisionConfigError", code: "invalid-setting", field: "decisionModel" }),
+		);
 	}
-	expect(manager.getRouterModel()).toBe("judge/custom");
-	manager.setRouterModel("auto");
-	expect(manager.getRouterModel()).toBe("auto");
-	const submenu = openRouterSubmenu(settingsConfig({ routerModel: manager.getRouterModel() }), vi.fn());
+	expect(manager.getDecisionModel()).toBe("judge/custom");
+	manager.setDecisionModel("auto");
+	expect(manager.getDecisionModel()).toBe("auto");
+	const submenu = openRouterSubmenu(settingsConfig({ decisionModel: manager.getDecisionModel() }), vi.fn());
 	expect(render(submenu)).toContain("→ ✓ Automatic");
 });
 
@@ -284,36 +286,36 @@ test("router menu edits the project override including Automatic without changin
 		mkdirSync(join(directory, ".atomic"));
 		const globalFile = join(directory, "settings.json");
 		const projectFile = join(directory, ".atomic", "settings.json");
-		const global = { routerModel: "global/model", theme: "dark" };
+		const global = { decisionModel: "global/model", theme: "dark" };
 		writeFileSync(globalFile, JSON.stringify(global));
-		writeFileSync(projectFile, JSON.stringify({ routerModel: "typesafe/jev-latest", quietStartup: true }));
+		writeFileSync(projectFile, JSON.stringify({ decisionModel: "typesafe/jev-latest", quietStartup: true }));
 		const manager = SettingsManager.create(directory, directory);
 		for (const next of ["", "test/nested/model"]) {
-			const scope = manager.getProjectSettings().routerModel !== undefined ? "project" : "global";
+			const scope = manager.getProjectSettings().decisionModel !== undefined ? "project" : "global";
 			const menu = openRouterSubmenu(
 				settingsConfig({
-					routerModel: manager.getRouterModel(),
-					routerModelScope: scope,
+					decisionModel: manager.getDecisionModel(),
+					decisionModelScope: scope,
 					availableDefaultModels: [
 						{ id: "nested/model", provider: "test", name: "Test model" },
 					] as SettingsConfig["availableDefaultModels"],
 				}),
-				(model) => manager.setRouterModel(model, scope),
+				(model) => manager.setDecisionModel(model, scope),
 			);
 			for (const character of next ? "nested" : "Automatic") menu.handleInput?.(character);
 			menu.handleInput?.("\r");
 			await manager.flush();
-			expect(manager.getRouterModel()).toBe(next);
+			expect(manager.getDecisionModel()).toBe(next);
 			expect(JSON.parse(readFileSync(globalFile, "utf8"))).toEqual(global);
-			expect(JSON.parse(readFileSync(projectFile, "utf8"))).toEqual({ routerModel: next, quietStartup: true });
+			expect(JSON.parse(readFileSync(projectFile, "utf8"))).toEqual({ decisionModel: next, quietStartup: true });
 			expect(render(menu)).toContain("project settings");
 			await manager.reload();
-			expect(manager.getRouterModel()).toBe(next);
+			expect(manager.getDecisionModel()).toBe(next);
 		}
 		const untrusted = SettingsManager.create(directory, directory, { projectTrusted: false });
-		expect(untrusted.getProjectSettings().routerModel).toBeUndefined();
-		expect(() => untrusted.setRouterModel("", "project")).toThrow(/not trusted/);
-		expect(untrusted.getRouterModel()).toBe("global/model");
+		expect(untrusted.getProjectSettings().decisionModel).toBeUndefined();
+		expect(() => untrusted.setDecisionModel("", "project")).toThrow(/not trusted/);
+		expect(untrusted.getDecisionModel()).toBe("global/model");
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

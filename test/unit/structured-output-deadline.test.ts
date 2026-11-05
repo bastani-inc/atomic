@@ -8,16 +8,16 @@ import { generateStructuredOutput, routeModel } from "../../packages/coding-agen
 import { createStructuredOutputTool } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	classifierResult,
+	decisionChatModel,
 	decisionClassifier,
 	decisionMessage,
-	decisionModel,
 	decisionRequest,
 	structuredOutputRequest,
 } from "../helpers/structured-output.js";
 import { toolContext } from "../helpers/tool-context.js";
 
 const DEADLINE_MS = 1_000;
-const DEADLINE_ERROR = `Structured output decision exceeded its ${DEADLINE_MS}ms deadline; no decision was accepted.`;
+const DEADLINE_ERROR = `Decision timed out: no answer within its ${DEADLINE_MS}ms deadline while waiting for the chat model (timeout). Retry, or allow a longer deadline (httpIdleTimeoutMs).`;
 const CANCELLED_ERROR = "Structured output cancelled; no decision was accepted.";
 const NO_RETRY = { enabled: false, maxRetries: 0, baseDelayMs: 1 } as const;
 
@@ -99,7 +99,7 @@ function scripted(steps: ReadonlyArray<readonly [afterMs: number, message: Assis
 function chatRequest(streamSimple: Stream) {
 	return {
 		...structuredOutputRequest(),
-		modelRegistry: { getAll: () => [decisionModel], streamSimple },
+		modelRegistry: { getAll: () => [decisionChatModel], streamSimple },
 	};
 }
 
@@ -117,7 +117,7 @@ for (const honorsAbort of [true, false]) {
 				timeoutMs: DEADLINE_MS,
 				fallbackModels: ["decision-test/chat-2"],
 				modelRegistry: {
-					getAll: () => [decisionModel, { ...decisionModel, id: "chat-2" }],
+					getAll: () => [decisionChatModel, { ...decisionChatModel, id: "chat-2" }],
 					streamSimple: stream,
 				},
 			}),
@@ -156,12 +156,15 @@ test("routing repairs share one deadline as well (#3806)", async () => {
 	await vi.advanceTimersByTimeAsync(DEADLINE_MS);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", new RegExp(`^${DEADLINE_ERROR.replaceAll(".", "\\.")} Attempts: `));
+	assert.match(
+		outcome.error?.message ?? "",
+		new RegExp(`^${DEADLINE_ERROR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} Attempts: `),
+	);
 	assert.equal(stream.mock.calls.length, 3);
 });
 
 test("the deadline spans model-candidate fallbacks and ends the chain (#3806)", async () => {
-	const models = ["chat", "chat-2", "chat-3"].map((id) => ({ ...decisionModel, id }));
+	const models = ["chat", "chat-2", "chat-3"].map((id) => ({ ...decisionChatModel, id }));
 	const stream = vi.fn<Stream>((model, _context, options) =>
 		model.id === "chat"
 			? answerAfter(600, { ...textMessage("error"), errorMessage: "provider failure" }, options)
@@ -214,7 +217,7 @@ test("transport retries and their backoff count toward the deadline, each reques
 	assert.equal(outcome.state, "rejected");
 	assert.equal(
 		outcome.error?.message,
-		"Structured output decision exceeded its 5000ms deadline; no decision was accepted. Attempts: 1) stopReason=error 100ms; 2) stopReason=error 100ms.",
+		"Decision timed out: no answer within its 5000ms deadline while waiting for the chat model (timeout). Retry, or allow a longer deadline (httpIdleTimeoutMs). Attempts: 1) stopReason=error 100ms; 2) stopReason=error 100ms.",
 	);
 	assert.equal(stream.mock.calls.length, 2, "the third retry would have started after the deadline");
 });
@@ -228,7 +231,7 @@ test("a hung routing classifier ends at the deadline without switching to the ch
 	const outcome = observe(
 		routeModel({
 			...request,
-			settings: { getRouterModel: () => "decision-test/classifier" },
+			settings: { getDecisionModel: () => "decision-test/classifier" },
 			modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },
 			timeoutMs: DEADLINE_MS,
 		}),
@@ -237,13 +240,13 @@ test("a hung routing classifier ends at the deadline without switching to the ch
 	await vi.advanceTimersByTimeAsync(DEADLINE_MS);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 1000ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 1000ms deadline/);
 	assert.equal(classify.mock.calls.length, 1);
 	assert.equal(chat.mock.calls.length, 0);
 });
 
 test("the default deadline follows the httpIdleTimeoutMs setting and an explicit timeoutMs overrides it (#3806)", async () => {
-	const settings = SettingsManager.inMemory({ routerModel: "decision-test/chat", httpIdleTimeoutMs: 2_000 });
+	const settings = SettingsManager.inMemory({ decisionModel: "decision-test/chat", httpIdleTimeoutMs: 2_000 });
 	const stream = vi.fn<Stream>((_model, _context, options) => hang(options));
 
 	const fromSetting = observe(routeModel({ ...routerRequest(stream), settings }));
@@ -251,16 +254,16 @@ test("the default deadline follows the httpIdleTimeoutMs setting and an explicit
 	assert.equal(fromSetting.state, "pending");
 	await vi.advanceTimersByTimeAsync(1);
 	assert.equal(fromSetting.state, "rejected");
-	assert.match(fromSetting.error?.message ?? "", /^Structured output decision exceeded its 2000ms deadline/);
+	assert.match(fromSetting.error?.message ?? "", /^Decision timed out: no answer within its 2000ms deadline/);
 
 	const overridden = observe(routeModel({ ...routerRequest(stream), settings, timeoutMs: 500 }));
 	await vi.advanceTimersByTimeAsync(500);
 	assert.equal(overridden.state, "rejected");
-	assert.match(overridden.error?.message ?? "", /^Structured output decision exceeded its 500ms deadline/);
+	assert.match(overridden.error?.message ?? "", /^Decision timed out: no answer within its 500ms deadline/);
 });
 
 test("httpIdleTimeoutMs 0 disables the idle timeout, so the deadline falls back to the largest timer delay (#3806)", async () => {
-	const settings = SettingsManager.inMemory({ routerModel: "decision-test/chat", httpIdleTimeoutMs: 0 });
+	const settings = SettingsManager.inMemory({ decisionModel: "decision-test/chat", httpIdleTimeoutMs: 0 });
 	const stream = vi.fn<Stream>((_model, _context, options) => hang(options));
 	const outcome = observe(routeModel({ ...routerRequest(stream), settings }));
 
@@ -269,7 +272,7 @@ test("httpIdleTimeoutMs 0 disables the idle timeout, so the deadline falls back 
 	await vi.advanceTimersByTimeAsync(1);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 2147483647ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 2147483647ms deadline/);
 });
 
 test("a call with no reachable settings is bounded by the default httpIdleTimeoutMs (#3806)", async () => {
@@ -277,7 +280,7 @@ test("a call with no reachable settings is bounded by the default httpIdleTimeou
 	const stream = vi.fn<Stream>((_model, _context, options) => hang(options));
 	const generated = observe(generateStructuredOutput(chatRequest(stream)));
 	const routed = observe(
-		routeModel({ ...routerRequest(stream), settings: { getRouterModel: () => "decision-test/chat" } }),
+		routeModel({ ...routerRequest(stream), settings: { getDecisionModel: () => "decision-test/chat" } }),
 	);
 
 	await vi.advanceTimersByTimeAsync(defaultMs - 1);
@@ -287,7 +290,10 @@ test("a call with no reachable settings is bounded by the default httpIdleTimeou
 
 	for (const outcome of [generated, routed]) {
 		assert.equal(outcome.state, "rejected");
-		assert.match(outcome.error?.message ?? "", new RegExp(`^Structured output decision exceeded its ${defaultMs}ms`));
+		assert.match(
+			outcome.error?.message ?? "",
+			new RegExp(`^Decision timed out: no answer within its ${defaultMs}ms`),
+		);
 	}
 });
 
@@ -314,7 +320,7 @@ test("a valid timeoutMs larger than the timer limit still bounds the decision at
 	await vi.advanceTimersByTimeAsync(1);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 2147483647ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 2147483647ms deadline/);
 });
 
 test("an exhausted repair budget reports how each attempt ended and how long it took (#3806)", async () => {
@@ -407,7 +413,7 @@ test("a finished classifier decision releases its deadline timer (#3806)", async
 	const outcome = observe(
 		routeModel({
 			...request,
-			settings: { getRouterModel: () => "decision-test/classifier" },
+			settings: { getDecisionModel: () => "decision-test/classifier" },
 			modelRegistry: { ...request.modelRegistry, getClassifierModel: () => decisionClassifier, classify },
 			timeoutMs: DEADLINE_MS,
 		}),
@@ -429,8 +435,8 @@ test("the structured_output tool bounds a decision by its timeoutMs option (#380
 			undefined,
 			undefined,
 			toolContext({
-				model: decisionModel,
-				modelRegistry: { getAll: () => [decisionModel], streamSimple: stream },
+				model: decisionChatModel,
+				modelRegistry: { getAll: () => [decisionChatModel], streamSimple: stream },
 			} as never),
 		),
 	);
@@ -438,7 +444,7 @@ test("the structured_output tool bounds a decision by its timeoutMs option (#380
 	await vi.advanceTimersByTimeAsync(DEADLINE_MS);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 1000ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 1000ms deadline/);
 	assert.equal(stream.mock.calls.length, 1);
 });
 
@@ -446,8 +452,8 @@ test("the structured_output tool takes its default deadline from the session's h
 	const stream = vi.fn<Stream>((_model, _context, options) => hang(options));
 	const tool = createStructuredOutputTool({ schema: structuredOutputRequest().schema });
 	const context = toolContext({
-		model: decisionModel,
-		modelRegistry: { getAll: () => [decisionModel], streamSimple: stream },
+		model: decisionChatModel,
+		modelRegistry: { getAll: () => [decisionChatModel], streamSimple: stream },
 		getHttpIdleTimeoutMs: () => 2_500,
 	} as never);
 	const outcome = observe(
@@ -465,5 +471,5 @@ test("the structured_output tool takes its default deadline from the session's h
 	await vi.advanceTimersByTimeAsync(1);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", /^Structured output decision exceeded its 2500ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 2500ms deadline/);
 });

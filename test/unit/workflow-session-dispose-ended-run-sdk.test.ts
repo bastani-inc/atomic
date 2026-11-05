@@ -18,8 +18,8 @@ import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/m
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
@@ -67,7 +67,7 @@ test(
 		const memory = new MemoryRunJournal();
 		const { runtime: modelRuntime } = await registeredDecisionRuntime(() => messageStream(doneReply()));
 		const settingsManager = SettingsManager.inMemory({
-			routerModel: "decision-test/chat",
+			decisionModel: "decision-test/chat",
 			compaction: { enabled: false },
 			sessionSummary: { enabled: false },
 		});
@@ -94,7 +94,7 @@ test(
 			cwd: project,
 			agentDir,
 			modelRuntime,
-			model: decisionModel,
+			model: decisionChatModel,
 			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 			settingsManager,
 			resourceLoader,

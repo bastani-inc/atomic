@@ -28,6 +28,7 @@ import {
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
+import { createStartupSettingsManager } from "./cli/settings-startup.ts";
 import {
 	ENV_DEBUG,
 	ENV_OFFLINE,
@@ -61,7 +62,6 @@ import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/sessio
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
-import { SettingsManager } from "./core/settings-manager.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
 import {
 	hasProcessStorageSelection,
@@ -347,7 +347,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 	const agentDir = getAgentDir();
-	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	const bootstrapSettingsManager = createStartupSettingsManager(cwd, agentDir, { projectTrusted: false });
 	if (!inheritsDebugSetting()) setDebugSetting(bootstrapSettingsManager.getDebug());
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
@@ -458,7 +458,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const projectTrustStore = new ProjectTrustStore(agentDir);
 	const startupHasTrustInputs = hasProjectTrustInputs(cwd);
 	const startupStoredProjectTrust = startupHasTrustInputs ? projectTrustStore.get(cwd) : null;
-	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	const startupGlobalSettingsManager = createStartupSettingsManager(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
 	const startupProjectTrusted =
 		parsed.projectTrustOverride ??
@@ -501,7 +501,9 @@ export async function main(argv: string[], options?: MainOptions) {
 		startupEarlyInputCapture = undefined;
 	}
 
-	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
+	const startupSettingsManager = createStartupSettingsManager(cwd, agentDir, {
+		projectTrusted: startupProjectTrusted,
+	});
 	setCapabilityOverrides(startupSettingsManager.getTerminalCapabilityOverrides());
 	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager, "startup session lookup");
 
@@ -658,7 +660,9 @@ export async function main(argv: string[], options?: MainOptions) {
 			parsed.projectTrustOverride === undefined &&
 			cachedProjectTrust === undefined &&
 			hasTrustInputs;
-		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		const runtimeSettingsManager = createStartupSettingsManager(cwd, agentDir, {
+			projectTrusted: initialProjectTrusted,
+		});
 		const existingSession = sessionManager.buildSessionContext();
 		const deferStartupTrust =
 			sessionStartEvent === undefined &&

@@ -1,3 +1,4 @@
+import type { ClassifierAnswer } from "@bastani/pi-ai";
 import type { Static, TSchema } from "typebox";
 import type { StructuredChoiceQuestion } from "./types.js";
 
@@ -5,7 +6,10 @@ type ChoiceValue = string | number | boolean | null;
 
 export interface ChoiceSchema<T extends TSchema> {
 	readonly questions: Readonly<Record<string, StructuredChoiceQuestion>>;
-	readonly decode: (choices: Readonly<Record<string, string>>) => Static<T>;
+	readonly decode: (
+		choices: Readonly<Record<string, string>>,
+		answers: Readonly<Record<string, ClassifierAnswer>>,
+	) => Static<T>;
 }
 
 function choiceValues(schema: TSchema): ChoiceValue[] | undefined {

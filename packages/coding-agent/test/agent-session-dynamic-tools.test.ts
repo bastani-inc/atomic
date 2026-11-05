@@ -27,7 +27,7 @@ describe("AgentSession dynamic tool registration", () => {
 
 	// #3089: routers must use the owning session's live settings, including in-memory overrides.
 	it("exposes current session router settings without changing the chat model", async () => {
-		const settingsManager = SettingsManager.inMemory({ routerModel: "typesafe/jev-latest" });
+		const settingsManager = SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" });
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: tempDir,
 			agentDir,
@@ -47,12 +47,12 @@ describe("AgentSession dynamic tool registration", () => {
 			await session.bindExtensions({});
 			const context = session.extensionRunner.createContext();
 			const model = context.model;
-			expect(context.getRouterModel()).toBe("typesafe/jev-latest");
-			settingsManager.applyOverrides({ routerModel: "anthropic/claude-sonnet-4-5" });
-			expect(context.getRouterModel()).toBe("anthropic/claude-sonnet-4-5");
+			expect(context.getDecisionModel()).toBe("typesafe/jev-latest");
+			settingsManager.applyOverrides({ decisionModel: "anthropic/claude-sonnet-4-5" });
+			expect(context.getDecisionModel()).toBe("anthropic/claude-sonnet-4-5");
 			expect(context.model).toBe(model);
-			settingsManager.applyOverrides({ routerModel: "auto" });
-			expect(context.getRouterModel()).toBe("auto");
+			settingsManager.applyOverrides({ decisionModel: "auto" });
+			expect(context.getDecisionModel()).toBe("auto");
 			expect(context.model).toBe(model);
 			expect(context.getModelRouting?.()).toEqual({});
 			settingsManager.applyOverrides({ modelRouting: { excludedProviders: ["openrouter"] } });

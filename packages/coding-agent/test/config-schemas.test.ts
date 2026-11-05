@@ -363,7 +363,7 @@ describe("settings.json schema", () => {
 				websockets: true,
 				skills: { enableSkillCommands: true, customDirectories: ["./skills"] },
 				retry: { maxDelayMs: 1000 },
-				routerModel: "typesafe/jev-latest",
+				decisionModel: "typesafe/jev-latest",
 				compactionModel: "morph/morph-compactor",
 				fallbackModels: ["anthropic/claude-opus-4-8:xhigh"],
 				modelRouting: { allowedProviders: ["anthropic"], excludedModels: ["*-fast"] },
@@ -551,7 +551,7 @@ describe("settings.json schema", () => {
 	it("returns the published defaults from accessors when nothing is configured", () => {
 		const settings = SettingsManager.inMemory();
 		const defaults = SETTINGS_DEFAULTS;
-		assert.equal(settings.getRouterModel(), defaults.routerModel);
+		assert.equal(settings.getDecisionModel(), defaults.decisionModel);
 		assert.equal(settings.getTransport(), defaults.transport);
 		assert.equal(settings.getSteeringMode(), defaults.steeringMode);
 		assert.equal(settings.getFollowUpMode(), defaults.followUpMode);

@@ -6,6 +6,7 @@ import type { NoticeEntry, TranscriptDebugEntry, TranscriptEntry } from "./stage
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "./workflow-notice-card.js";
 
 export function noticeSummary(n: StageNotice): string {
+	if (n.kind === "decision" && n.meta !== undefined) return `~ ${n.meta}`;
 	const base = `~ ${n.kind} → ${n.to}`;
 	return n.from ? `${base} (was ${n.from})` : base;
 }
@@ -197,6 +198,17 @@ function stageNoticeCard(entry: NoticeEntry): {
 				headline: "Task finished; its process cleanup is still being confirmed",
 				tone: "warning",
 				fields: stageNoticeFields(entry, "warning"),
+			};
+		case "decision":
+			return {
+				title: "STAGE READINESS",
+				glyph: entry.value === "advanced" ? "✓" : entry.value === "stayed" ? "◆" : "?",
+				headline: entry.meta ?? "Decision model judged the stage's readiness",
+				tone: entry.value === "advanced" ? "success" : entry.value === "stayed" ? "info" : "warning",
+				fields: [
+					{ label: "outcome", value: entry.value, tone: "text" },
+					{ label: "model", value: entry.from, tone: "muted" },
+				],
 			};
 		case "tree":
 			return {

@@ -21,7 +21,7 @@ import {
 	stageOptionsWithInputDefaults,
 } from "./executor-direct-helpers.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
-import { askUserQuestionToolEvent, toolResultHasChatAnswer } from "./executor-hil.js";
+import { askUserQuestionToolEvent, toolResultChatText, toolResultHasChatAnswer } from "./executor-hil.js";
 import { stageReplayFields } from "./executor-lifecycle.js";
 import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-user-message.js";
 import type { StageScheduler } from "./executor-scheduler.js";
@@ -290,8 +290,9 @@ export function createWorkflowStageFactory(input: {
 			} else {
 				return;
 			}
-			if (toolResultHasChatAnswer((event as Record<string, unknown>).result))
-				state.chatAnswerObservedThisTurn = true;
+			const toolResult = (event as Record<string, unknown>).result;
+			if (toolResultHasChatAnswer(toolResult)) state.chatAnswerObservedThisTurn = true;
+			state.latestUserMessage = toolResultChatText(toolResult) ?? state.latestUserMessage;
 			if (!hasActiveAskUserQuestion()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 				input.stageUiBroker.clearStagePrompt(input.runId, stageId);

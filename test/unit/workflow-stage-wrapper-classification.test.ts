@@ -13,11 +13,11 @@ import {
 	settleVirtually,
 	useVirtualTime,
 } from "../helpers/routing-provider.js";
-import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { decisionChatModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
 import { createStore, run, workflow } from "./executor-shared.js";
 import { makeMockSession, type StageSessionCreateOptions } from "./stage-runner-helpers.js";
 
-const ROUTER_MODEL = { ...decisionModel, provider: "router-test" };
+const ROUTER_MODEL = { ...decisionChatModel, provider: "router-test" };
 
 beforeEach(useVirtualTime);
 afterEach(() => vi.restoreAllMocks());
@@ -33,10 +33,10 @@ async function routedStageFailure(stageName: string, behavior: RoutingProviderBe
 		models: [ROUTER_MODEL],
 		streamSimple: provider.streamSimple,
 	});
-	vi.spyOn(registry, "getAvailable").mockReturnValue([decisionModel, ROUTER_MODEL]);
+	vi.spyOn(registry, "getAvailable").mockReturnValue([decisionChatModel, ROUTER_MODEL]);
 	const models = workflowModelCatalogFromContext({
 		modelRegistry: registry,
-		getRouterModel: () => "router-test/chat",
+		getDecisionModel: () => "router-test/chat",
 	});
 	const adapters = {
 		agentSession: {

@@ -14,8 +14,8 @@ import {
 	type StructuredOutputRequest,
 } from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
+	decisionChatModel,
 	decisionMessage,
-	decisionModel,
 	inferenceUserContent,
 	messageStream,
 	registeredDecisionRuntime,
@@ -60,7 +60,7 @@ function classifierRegistry(
 	const calls: string[] = [];
 	const contexts: ClassifierContext[] = [];
 	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
-		getAll: () => [decisionModel],
+		getAll: () => [decisionChatModel],
 		streamSimple: () => {
 			calls.push("chat");
 			return messageStream(decisionMessage(chatResult));
@@ -81,7 +81,7 @@ const verdictSchema = Type.Object({ verdict: Type.Union([Type.Literal("approved"
 function verdictRequest(modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"]) {
 	return {
 		model: "acme/intent",
-		currentModel: decisionModel,
+		currentModel: decisionChatModel,
 		modelRegistry,
 		schema: verdictSchema,
 		state: { task: "Decide the verdict" },
@@ -127,9 +127,9 @@ afterEach(() => {
 test("structured output uses the current chat model when model is omitted", async () => {
 	let calls = 0;
 	const result = await generateStructuredOutput({
-		currentModel: decisionModel,
+		currentModel: decisionChatModel,
 		modelRegistry: {
-			getAll: () => [decisionModel],
+			getAll: () => [decisionChatModel],
 			streamSimple: () => {
 				calls++;
 				return messageStream(decisionMessage({ verdict: "approved" }));
@@ -209,7 +209,7 @@ test("an ID the registry does not list is skipped and the current chat model dec
 test("an unresolvable explicit model ID falls back to the current chat model (#3814)", async () => {
 	const calls: string[] = [];
 	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
-		getAll: () => [decisionModel],
+		getAll: () => [decisionChatModel],
 		streamSimple: (model) => {
 			calls.push(model.id);
 			return messageStream(decisionMessage({ summary: "ok" }));
@@ -217,30 +217,30 @@ test("an unresolvable explicit model ID falls back to the current chat model (#3
 	};
 	const result = await generateStructuredOutput({
 		model: "some-model-display-name",
-		currentModel: decisionModel,
+		currentModel: decisionChatModel,
 		modelRegistry,
 		schema: Type.Object({ summary: Type.String() }),
 		state: { summary: "ok" },
 		instructions: "Return the result.",
 	});
-	assert.deepEqual(calls, [decisionModel.id]);
+	assert.deepEqual(calls, [decisionChatModel.id]);
 	assert.deepEqual(result.value, { summary: "ok" });
-	assert.equal(result.model, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.equal(result.model, `${decisionChatModel.provider}/${decisionChatModel.id}`);
 	assert.deepEqual(result.modelAttempts, [
 		{
 			model: "some-model-display-name",
 			error: "Structured output model is unavailable or not a chat or classifier model: some-model-display-name",
 		},
-		{ model: `${decisionModel.provider}/${decisionModel.id}` },
+		{ model: `${decisionChatModel.provider}/${decisionChatModel.id}` },
 	]);
 	assert.equal(result.fallback?.from, "some-model-display-name");
-	assert.equal(result.fallback?.to, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.equal(result.fallback?.to, `${decisionChatModel.provider}/${decisionChatModel.id}`);
 });
 
 test("unresolvable and malformed fallback model IDs are recorded and skipped in order (#3814)", async () => {
 	const calls: string[] = [];
 	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
-		getAll: () => [decisionModel],
+		getAll: () => [decisionChatModel],
 		streamSimple: (model) => {
 			calls.push(model.id);
 			return messageStream(decisionMessage({ summary: "ok" }));
@@ -249,13 +249,13 @@ test("unresolvable and malformed fallback model IDs are recorded and skipped in 
 	const result = await generateStructuredOutput({
 		model: "Claude Display Name",
 		fallbackModels: ["nonexistent/model", " padded/model ", "auto"],
-		currentModel: decisionModel,
+		currentModel: decisionChatModel,
 		modelRegistry,
 		schema: Type.Object({ summary: Type.String() }),
 		state: { summary: "ok" },
 		instructions: "Return the result.",
 	});
-	assert.deepEqual(calls, [decisionModel.id]);
+	assert.deepEqual(calls, [decisionChatModel.id]);
 	assert.deepEqual(
 		result.modelAttempts?.map(({ model }) => model),
 		[
@@ -263,7 +263,7 @@ test("unresolvable and malformed fallback model IDs are recorded and skipped in 
 			"nonexistent/model",
 			" padded/model ",
 			"auto",
-			`${decisionModel.provider}/${decisionModel.id}`,
+			`${decisionChatModel.provider}/${decisionChatModel.id}`,
 		],
 	);
 	assert.equal(result.modelAttempts?.filter(({ error }) => error).length, 4);
@@ -272,23 +272,23 @@ test("unresolvable and malformed fallback model IDs are recorded and skipped in 
 test("a resolvable primary succeeds without touching an unresolvable fallback ID (#3814)", async () => {
 	const calls: string[] = [];
 	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
-		getAll: () => [decisionModel],
+		getAll: () => [decisionChatModel],
 		streamSimple: (model) => {
 			calls.push(model.id);
 			return messageStream(decisionMessage({ summary: "ok" }));
 		},
 	};
 	const result = await generateStructuredOutput({
-		model: `${decisionModel.provider}/${decisionModel.id}`,
+		model: `${decisionChatModel.provider}/${decisionChatModel.id}`,
 		fallbackModels: ["nonexistent/model"],
 		modelRegistry,
 		schema: Type.Object({ summary: Type.String() }),
 		state: { summary: "ok" },
 		instructions: "Return the result.",
 	});
-	assert.deepEqual(calls, [decisionModel.id]);
+	assert.deepEqual(calls, [decisionChatModel.id]);
 	assert.deepEqual(result.value, { summary: "ok" });
-	assert.equal(result.model, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.equal(result.model, `${decisionChatModel.provider}/${decisionChatModel.id}`);
 	assert.equal(result.modelAttempts, undefined);
 	assert.equal(result.fallback, undefined);
 });
@@ -423,8 +423,8 @@ test("a classifier content-filter refusal falls back without leaking the provide
 });
 
 test("an incompatible classifier is skipped and chat fallbacks run in order before the current model", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const calls: string[] = [];
 	const { modelRegistry } = classifierRegistry(() => classifierResult({}));
 	const result = await generateStructuredOutput({
@@ -460,8 +460,8 @@ test("an incompatible classifier is skipped and chat fallbacks run in order befo
 });
 
 test("structured output preserves state, schema, and instructions across model fallback", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const state = { task: "original" };
 	const schema = Type.Object({ verdict: Type.String() });
 	let fallbackPayload: string | undefined;
@@ -471,7 +471,7 @@ test("structured output preserves state, schema, and instructions across model f
 		currentModel: current,
 		modelRegistry: {
 			getAll: () => [first, current],
-			streamSimple: (model: typeof decisionModel, context: Context) => {
+			streamSimple: (model: typeof decisionChatModel, context: Context) => {
 				if (model.id === "first") {
 					state.task = "mutated";
 					Object.assign(schema.properties, { verdict: Type.Number() });
@@ -520,8 +520,8 @@ for (const status of [400, 401, 422, 503] as const) {
 }
 
 test("provider content-filter error advances to current chat without leaking its message", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const calls: string[] = [];
 	const result = await generateStructuredOutput({
 		model: "decision-test/first",
@@ -553,14 +553,14 @@ test("provider content-filter error advances to current chat without leaking its
 });
 
 test("provider error advances to an explicit classifier fallback before current chat", async () => {
-	const first = { ...decisionModel, id: "first" };
+	const first = { ...decisionChatModel, id: "first" };
 	const calls: string[] = [];
 	const result = await generateStructuredOutput({
 		model: "decision-test/first",
 		fallbackModels: ["acme/intent"],
-		currentModel: decisionModel,
+		currentModel: decisionChatModel,
 		modelRegistry: {
-			getAll: () => [first, decisionModel],
+			getAll: () => [first, decisionChatModel],
 			streamSimple: (model) => {
 				calls.push(model.id);
 				return messageStream({
@@ -595,8 +595,8 @@ for (const [stopReason, output] of [
 	["length", 7],
 ] as const) {
 	test(`plain-text refusal (${stopReason}, ${output} output tokens) follows ordinary repair then fallback`, async () => {
-		const first = { ...decisionModel, id: "first" };
-		const current = { ...decisionModel, id: "current" };
+		const first = { ...decisionChatModel, id: "first" };
+		const current = { ...decisionChatModel, id: "current" };
 		const calls: string[] = [];
 		const result = await generateStructuredOutput({
 			model: "decision-test/first",
@@ -626,8 +626,8 @@ for (const [stopReason, output] of [
 }
 
 test("filtered prose without a provider error follows ordinary repair before fallback", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const calls: string[] = [];
 	const result = await generateStructuredOutput({
 		model: "decision-test/first",
@@ -659,8 +659,8 @@ test("filtered prose without a provider error follows ordinary repair before fal
 
 for (const errorMessage of ["opaque private provider response", "content_filter private provider response"]) {
 	test(`thrown provider error ${errorMessage.split(" ")[0]} advances without inspecting wording`, async () => {
-		const first = { ...decisionModel, id: "first" };
-		const current = { ...decisionModel, id: "current" };
+		const first = { ...decisionChatModel, id: "first" };
+		const current = { ...decisionChatModel, id: "current" };
 		const calls: string[] = [];
 		const result = await generateStructuredOutput({
 			model: "decision-test/first",
@@ -685,8 +685,8 @@ for (const errorMessage of ["opaque private provider response", "content_filter 
 }
 
 test("structured output advances from a rate-limited response to the current chat model", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const calls: string[] = [];
 	const result = await generateStructuredOutput({
 		model: "decision-test/first",
@@ -712,8 +712,8 @@ test("structured output advances from a rate-limited response to the current cha
 });
 
 test("structured output repairs invalid answers before trying the next model", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const calls: string[] = [];
 	const result = await generateStructuredOutput({
 		model: "decision-test/first",
@@ -744,9 +744,9 @@ test("structured output cancellation does not expose abort reasons or try fallba
 	await assert.rejects(
 		generateStructuredOutput({
 			model: "decision-test/chat",
-			currentModel: decisionModel,
+			currentModel: decisionChatModel,
 			modelRegistry: {
-				getAll: () => [decisionModel],
+				getAll: () => [decisionChatModel],
 				streamSimple: () => {
 					calls++;
 					return messageStream(decisionMessage({ verdict: "approved" }));
@@ -840,8 +840,8 @@ test("a registered model without a classifier operation falls back to the curren
 });
 
 test("candidates run once each in primary, explicit fallback, then current-model order", async () => {
-	const first = { ...decisionModel, id: "first" };
-	const current = { ...decisionModel, id: "current" };
+	const first = { ...decisionChatModel, id: "first" };
+	const current = { ...decisionChatModel, id: "current" };
 	const calls: string[] = [];
 	const { modelRegistry } = classifierRegistry(() => {
 		calls.push("acme/intent");

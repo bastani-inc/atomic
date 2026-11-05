@@ -1,3 +1,4 @@
+import { type DecisionPhase, DecisionTimeoutError } from "../decision/errors.js";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 
 /** The largest delay `setTimeout` honors; a larger one fires immediately. */
@@ -5,18 +6,9 @@ const MAX_DEADLINE_MS = 2_147_483_647;
 
 const CANCELLED_MESSAGE = "Structured output cancelled; no decision was accepted.";
 
-export class StructuredOutputDeadlineError extends Error {
-	constructor(timeoutMs: number, attempts: string) {
-		super(
-			`Structured output decision exceeded its ${timeoutMs}ms deadline; no decision was accepted.${attempts ? ` ${attempts}` : ""}`,
-		);
-		this.name = "StructuredOutputDeadlineError";
-	}
-}
-
 /** The failure for an aborted decision: the deadline error when the deadline fired, otherwise a plain cancellation. */
 export function abortFailure(signal: AbortSignal): Error {
-	return signal.reason instanceof StructuredOutputDeadlineError ? signal.reason : new Error(CANCELLED_MESSAGE);
+	return signal.reason instanceof DecisionTimeoutError ? signal.reason : new Error(CANCELLED_MESSAGE);
 }
 
 export function validateTimeoutOverride(value: number | undefined): void {
@@ -51,6 +43,10 @@ function formatDuration(milliseconds: number): string {
 /** One model request, from send to response; transport retries and their waits are not part of it. Records only the stop reason and timing, never content. */
 export class DecisionAttempt {
 	readonly startedAt = performance.now();
+	readonly phase: Exclude<DecisionPhase, "resolve">;
+	constructor(phase: Exclude<DecisionPhase, "resolve">) {
+		this.phase = phase;
+	}
 	endedAt: number | undefined;
 	stopReason: string | undefined;
 
@@ -78,10 +74,15 @@ export class DecisionTrace {
 		return this.attempts.length;
 	}
 
-	begin(): DecisionAttempt {
-		const attempt = new DecisionAttempt();
+	begin(phase: Exclude<DecisionPhase, "resolve">): DecisionAttempt {
+		const attempt = new DecisionAttempt(phase);
 		this.attempts.push(attempt);
 		return attempt;
+	}
+
+	/** The phase of the latest request, or `resolve` before the first one was sent. */
+	get phase(): DecisionPhase {
+		return this.attempts.at(-1)?.phase ?? "resolve";
 	}
 
 	/** Mark every generation still in flight as ended without a response. */
@@ -105,7 +106,7 @@ export interface DecisionRun {
 
 /**
  * Run a whole decision under one wall-clock limit. `run` receives a signal that aborts with the caller's reason when
- * the caller aborts and with a {@link StructuredOutputDeadlineError} when the limit passes, so the existing abort
+ * the caller aborts and with a {@link DecisionTimeoutError} when the limit passes, so the existing abort
  * plumbing cancels the in-flight generation. The timer is always released.
  */
 export async function withinDecisionDeadline<T>(
@@ -118,8 +119,17 @@ export async function withinDecisionDeadline<T>(
 	const forwardCallerAbort = () => controller.abort(callerSignal?.reason);
 	if (callerSignal?.aborted) forwardCallerAbort();
 	else callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
+	const startedAt = performance.now();
 	const timer = setTimeout(
-		() => controller.abort(new StructuredOutputDeadlineError(timeoutMs, trace.describe())),
+		() =>
+			controller.abort(
+				new DecisionTimeoutError({
+					timeoutMs,
+					elapsedMs: Math.round(performance.now() - startedAt),
+					phase: trace.phase,
+					attempts: trace.describe(),
+				}),
+			),
 		timeoutMs,
 	);
 	try {
