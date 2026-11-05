@@ -1,6 +1,6 @@
 # @bastani/pi-ai
 
-Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`469d8651b59069d7bd907c7da84597865e114da6`](https://github.com/earendil-works/pi/commit/469d8651b59069d7bd907c7da84597865e114da6). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
+Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`850ea2eae2f39eb16ae14e1f09448eab6da2188a`](https://github.com/earendil-works/pi/commit/850ea2eae2f39eb16ae14e1f09448eab6da2188a). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
 
 The public API is a drop-in replacement: install `@bastani/pi-ai` and import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. See [NOTICE.md](NOTICE.md). This package lives in the Atomic monorepo and publishes from `.github/workflows/publish.yml`. The first npm version must be published by hand so trusted publishing can be attached.
 
@@ -67,7 +67,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - **OpenAI** (API key or Sign in with ChatGPT)
 - **Ant Ling**
 - **Azure OpenAI (Responses)**
-- **OpenAI Codex (legacy)** (ChatGPT subscription, requires OAuth, see below)
+- **OpenAI Codex** (ChatGPT subscription, requires OAuth, see below)
 - **Radius** (API key or OAuth, with a dynamically refreshed gateway catalog)
 - **TypeSafe** (System One classifier API)
 - **DeepSeek**
@@ -1854,7 +1854,7 @@ Several providers support OAuth authentication instead of static API keys:
 
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI** (Sign in with ChatGPT, direct Responses API access)
-- **OpenAI Codex (legacy)** (ChatGPT subscription, Codex Responses access)
+- **OpenAI Codex** (ChatGPT subscription, Codex Responses access)
 - **GitHub Copilot** (Copilot subscription)
 - **OpenRouter** (OAuth PKCE that mints a user-controlled API key)
 
@@ -1936,7 +1936,7 @@ Built-in login and refresh flows are private provider implementations. Use provi
 
 Provider notes:
 
-**OpenAI Codex (legacy)**: Requires a ChatGPT subscription with model access. Includes GPT-6.1 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
+**OpenAI Codex**: Requires a ChatGPT subscription with model access. Includes GPT-6.1 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
 
 Call `cleanupSessionResources(sessionId)` when finished with a Codex session so its pooled WebSocket connection does not keep the process alive. Import it from `@bastani/pi-ai`.
 

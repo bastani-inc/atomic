@@ -196,6 +196,22 @@ export async function cycleModel(
 	});
 }
 
+/**
+ * Index of the model to cycle to, or undefined when there is nothing to switch to.
+ * When the current model is not in the list (currentIndex -1), forward picks the first
+ * entry and backward the last, so a one-entry list still selects its only model.
+ */
+function getNextCycleIndex(
+	currentIndex: number,
+	length: number,
+	direction: "forward" | "backward",
+): number | undefined {
+	if (length === 0) return undefined;
+	if (currentIndex === -1) return direction === "forward" ? 0 : length - 1;
+	if (length === 1) return undefined;
+	return direction === "forward" ? (currentIndex + 1) % length : (currentIndex - 1 + length) % length;
+}
+
 export async function _cycleScopedModel(
 	this: AgentSession,
 	direction: "forward" | "backward",
@@ -204,14 +220,10 @@ export async function _cycleScopedModel(
 	const scopedModels = this._scopedModels.filter((scoped) =>
 		this._modelRuntime.hasConfiguredAuth(scoped.model.provider),
 	);
-	if (scopedModels.length <= 1) return undefined;
-
 	const currentModel = this.model;
-	let currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
-
-	if (currentIndex === -1) currentIndex = 0;
-	const len = scopedModels.length;
-	const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
+	const currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
+	const nextIndex = getNextCycleIndex(currentIndex, scopedModels.length, direction);
+	if (nextIndex === undefined) return undefined;
 	const next = scopedModels[nextIndex];
 	const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
 	const nextModel = next.model;
@@ -246,14 +258,10 @@ export async function _cycleAvailableModel(
 ): Promise<ModelCycleResult | undefined> {
 	const availableModels = await this._modelRuntime.getAvailableSnapshot();
 	assertSessionOpen(this);
-	if (availableModels.length <= 1) return undefined;
-
 	const currentModel = this.model;
-	let currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
-
-	if (currentIndex === -1) currentIndex = 0;
-	const len = availableModels.length;
-	const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
+	const currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
+	const nextIndex = getNextCycleIndex(currentIndex, availableModels.length, direction);
+	if (nextIndex === undefined) return undefined;
 	const selectedModel = availableModels[nextIndex];
 
 	const thinkingLevel = this._getThinkingLevelForModelSwitch(selectedModel);

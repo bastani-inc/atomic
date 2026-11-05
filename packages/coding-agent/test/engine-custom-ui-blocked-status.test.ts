@@ -52,6 +52,18 @@ test("carries an inline custom component's blocked status across the isolated-en
 	assert.deepEqual(mountOptions?.blocked, { kind: "question", message: "Pick a color" });
 });
 
+test("carries an overlay's blocked status across the isolated-engine protocol (earendil-works/pi#11816)", () => {
+	const mountOptions = mountFromEngine({
+		type: "engine_custom_open",
+		componentId: "remote_component_1",
+		overlay: true,
+		blocked: { kind: "question", message: "Pick a color" },
+	});
+
+	assert.equal(mountOptions?.overlay, true);
+	assert.deepEqual(mountOptions?.blocked, { kind: "question", message: "Pick a color" });
+});
+
 test("mounts an isolated custom component without a blocked status when none is requested", () => {
 	const mountOptions = mountFromEngine({
 		type: "engine_custom_open",

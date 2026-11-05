@@ -243,6 +243,7 @@ export function buildInteractiveHostCustomUi(): {
 		},
 		editorContainer: new Container(),
 		extensionDialogs: [],
+		extensionOverlays: new Set<() => void>(),
 		programStatus: { setBlocked: () => undefined },
 		keybindings: {},
 		ui: {

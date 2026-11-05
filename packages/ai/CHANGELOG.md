@@ -25,6 +25,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - The bundled `github-copilot` catalog picks each model's API from its models.dev SDK metadata (Anthropic SDK: Messages, OpenAI SDK: Responses, otherwise Chat Completions) instead of from model ID prefixes. The generated catalog is unchanged ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - A discovered `github-copilot` model sends strict tool schemas only when its entry lists `structured_outputs`, and takes its images per request and a resize cap from the entry's `limits.vision` ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - A `github-copilot` Chat Completions or Responses turn that completes with no text and no tool call now fails with a retryable `empty-response` error instead of finishing empty ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
+- The `openai-codex` provider is named "OpenAI Codex" again instead of "OpenAI Codex (legacy)" (upstream [`36142c1c`](https://github.com/earendil-works/pi/commit/36142c1c7eab1d756e977b5f39149a634cc472ac))
 
 ### Fixed
 

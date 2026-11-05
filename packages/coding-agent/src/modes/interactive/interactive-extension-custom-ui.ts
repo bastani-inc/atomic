@@ -91,8 +91,14 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		let transcriptReserveCoordinator: TranscriptOverlayReserve | undefined;
 		let releaseTranscriptReserveRegistration: (() => void) | undefined;
 		let releaseOverlayFocusListener: (() => void) | undefined;
+		// An overlay stays blocked until its interaction ends, also while setHidden() hides it.
+		const overlayStatusSource =
+			isOverlay && options?.blocked ? `extension-overlay:${this.nextBlockingOverlayId++}` : undefined;
 
+		let componentDisposed = false;
 		const disposeComponent = () => {
+			if (componentDisposed) return;
+			componentDisposed = true;
 			try {
 				component?.dispose?.();
 			} catch {
@@ -125,24 +131,33 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 			this.ui.requestRender();
 		};
 
+		// Shared by done(), the abort signal and resetExtensionUI(), which leaves the promise pending.
+		// Removing the registry entry first makes a second call a no-op.
+		const removeOverlay = () => {
+			if (!this.extensionOverlays.delete(removeOverlay)) return;
+			const ownedInput = overlayHandle?.isFocused();
+			releaseOverlayFocusListener?.();
+			releaseOverlayFocusListener = undefined;
+			releaseOverlayInlineCustomUiFocusDeferral?.();
+			releaseOverlayInlineCustomUiFocusDeferral = undefined;
+			releaseTranscriptReserve();
+			// Hide THIS overlay, not whatever is on top: during engine-death
+			// teardown an unrelated native overlay can be above this one, and the
+			// generic top-overlay call would close that instead.
+			if (overlayHandle) overlayHandle.hide();
+			else this.ui.hideOverlay();
+			if (overlayStatusSource) this.programStatus.setBlocked(overlayStatusSource, undefined);
+			if (options?.reserveTranscriptRows && ownedInput && !this.ui.hasOverlay()) {
+				// Navigation may have closed while this prompt waited; its preFocus is stale.
+				this.ui.setFocus(this.editorContainer.children.at(-1) ?? this.editor);
+			}
+			disposeComponent();
+		};
+
 		const closeMountedUi = () => {
 			if (!mounted) return;
 			if (isOverlay) {
-				const ownedInput = overlayHandle?.isFocused();
-				releaseOverlayFocusListener?.();
-				releaseOverlayFocusListener = undefined;
-				releaseOverlayInlineCustomUiFocusDeferral?.();
-				releaseOverlayInlineCustomUiFocusDeferral = undefined;
-				releaseTranscriptReserve();
-				// Hide THIS overlay, not whatever is on top: during engine-death
-				// teardown an unrelated native overlay can be above this one, and the
-				// generic top-overlay call would close that instead.
-				if (overlayHandle) overlayHandle.hide();
-				else this.ui.hideOverlay();
-				if (options?.reserveTranscriptRows && ownedInput && !this.ui.hasOverlay()) {
-					// Navigation may have closed while this prompt waited; its preFocus is stale.
-					this.ui.setFocus(this.editorContainer.children.at(-1) ?? this.editor);
-				}
+				removeOverlay();
 			} else if (inlineMount) {
 				const dialogs = this.extensionDialogs;
 				const index = dialogs.findIndex((dialog) => dialog.component === inlineMount);
@@ -291,6 +306,8 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 					const handle = this.ui.showOverlay(mountedComponent, mountedOverlayOptions);
 					overlayHandle = handle;
 					mounted = true;
+					this.extensionOverlays.add(removeOverlay);
+					if (overlayStatusSource) this.programStatus.setBlocked(overlayStatusSource, options?.blocked);
 					// Register only once the overlay is really up and `mounted` is
 					// set: a throw before this point must not leave a registry entry
 					// or blank-row component in the transcript document.

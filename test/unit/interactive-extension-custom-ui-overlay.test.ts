@@ -53,6 +53,7 @@ function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
 		},
 		editor,
 		extensionDialogs: [],
+		extensionOverlays: new Set<() => void>(),
 		programStatus: { setBlocked: () => {} },
 		keybindings: {},
 		editorContainer: {
@@ -214,6 +215,7 @@ test("clearExtensionWidgets and resetExtensionUI reattach a live below-editor wi
 	const scheduled: Array<() => void> = [];
 	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
 		extensionDialogs: [],
+		extensionOverlays: new Set<() => void>(),
 		extensionWidgetsAbove: new Map(),
 		extensionWidgetsBelow: new Map(),
 		widgetReleaseListeners: new Map(),

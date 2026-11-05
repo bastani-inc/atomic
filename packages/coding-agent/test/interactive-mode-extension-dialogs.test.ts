@@ -10,7 +10,15 @@ type DialogContext = {
 	editorContainer: Container;
 	editor: Component & { getText(): string; setText(text: string): void };
 	focused: Component | undefined;
-	ui: { setFocus: (component: Component) => void; requestRender: () => void; hasOverlay: () => boolean };
+	ui: {
+		setFocus: (component: Component) => void;
+		requestRender: () => void;
+		hasOverlay: () => boolean;
+		showOverlay: (component: Component) => OverlayHandleFake;
+	};
+	overlays: Component[];
+	nextBlockingOverlayId: number;
+	extensionOverlays: Set<() => void>;
 	programStatus: { setBlocked: ReturnType<typeof vi.fn> };
 	disposeActiveSelector: () => void;
 	toggleToolOutputExpansion: () => void;
@@ -21,14 +29,22 @@ type DialogContext = {
 	hostCustomUiStateListeners: Set<HostCustomUiStateListener>;
 };
 
+type OverlayHandleFake = { hide: () => void; setHidden: (hidden: boolean) => void; isFocused: () => boolean };
+
 type DialogMethods = {
 	showExtensionConfirm(title: string, message: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
 	focusHostInlineCustomUi(): boolean;
 	showExtensionCustom<T>(
 		factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
-		options?: { blocked?: { kind: "permission" | "question" | "auth"; message: string } },
+		options?: {
+			overlay?: boolean;
+			onHandle?: (handle: { setHidden: (hidden: boolean) => void }) => void;
+			signal?: AbortSignal;
+			blocked?: { kind: "permission" | "question" | "auth"; message: string };
+		},
 	): Promise<T>;
 	setCustomEditorComponent(factory: (() => Component) | undefined): void;
+	resetExtensionUI(): void;
 };
 
 function createContext(): DialogContext & DialogMethods {
@@ -50,8 +66,21 @@ function createContext(): DialogContext & DialogMethods {
 				context.focused = component;
 			},
 			requestRender: vi.fn(),
-			hasOverlay: () => false,
+			hasOverlay: () => context.overlays.length > 0,
+			showOverlay: (component) => {
+				context.overlays.push(component);
+				return {
+					hide: () => {
+						context.overlays = context.overlays.filter((overlay) => overlay !== component);
+					},
+					setHidden: vi.fn(),
+					isFocused: () => context.overlays.at(-1) === component,
+				};
+			},
 		},
+		overlays: [],
+		nextBlockingOverlayId: 0,
+		extensionOverlays: new Set(),
 		programStatus: { setBlocked: vi.fn() },
 		disposeActiveSelector: vi.fn(),
 		toggleToolOutputExpansion: vi.fn(),
@@ -228,6 +257,100 @@ describe("InteractiveMode extension dialogs", () => {
 		assert.equal(await first, "yes");
 		assert.equal(context.focused, context.editor);
 		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-dialog", undefined]);
+	});
+
+	it("reports blocked status for each opted-in overlay until it is done, also while hidden (earendil-works/pi#11816)", async () => {
+		const context = createContext();
+		const dones: Array<(result: string) => void> = [];
+		const handles: Array<{ setHidden: (hidden: boolean) => void }> = [];
+		const open = (text: string, blocked?: { kind: "question"; message: string }) =>
+			context.showExtensionCustom<string>(
+				(_tui, _theme, _keybindings, done) => {
+					dones.push(done);
+					return new Text(text);
+				},
+				{ overlay: true, onHandle: (handle) => handles.push(handle), blocked },
+			);
+
+		const first = open("first", { kind: "question", message: "First?" });
+		await vi.waitFor(() => assert.equal(context.overlays.length, 1));
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-overlay:0",
+			{ kind: "question", message: "First?" },
+		]);
+
+		const second = open("second", { kind: "question", message: "Second?" });
+		await vi.waitFor(() => assert.equal(context.overlays.length, 2));
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-overlay:1",
+			{ kind: "question", message: "Second?" },
+		]);
+
+		const loader = open("loading");
+		await vi.waitFor(() => assert.equal(context.overlays.length, 3));
+		dones[2]("loaded");
+		assert.equal(await loader, "loaded");
+
+		handles[0].setHidden(true);
+		dones[1]("two");
+		assert.equal(await second, "two");
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-overlay:1", undefined]);
+
+		dones[0]("one");
+		assert.equal(await first, "one");
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-overlay:0", undefined]);
+		assert.equal(context.programStatus.setBlocked.mock.calls.length, 4);
+	});
+
+	it("clears an overlay's blocked status when its signal dismisses it (earendil-works/pi#11816)", async () => {
+		const context = createContext();
+		const controller = new AbortController();
+		const question = context.showExtensionCustom<string>(() => new Text("question"), {
+			overlay: true,
+			signal: controller.signal,
+			blocked: { kind: "question", message: "Question?" },
+		});
+		await vi.waitFor(() => assert.equal(context.overlays.length, 1));
+
+		const reason = new Error("dismissed");
+		controller.abort(reason);
+		await assert.rejects(question, (error) => error === reason);
+		assert.deepEqual(context.overlays, []);
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-overlay:0", undefined]);
+		assert.equal(context.extensionOverlays.size, 0);
+	});
+
+	it("clears overlay blocked status when the extension UI is reset (earendil-works/pi#11816)", async () => {
+		const context = createContext();
+		Object.assign(context, {
+			clearExtensionTerminalInputListeners: vi.fn(),
+			setExtensionFooter: vi.fn(),
+			setExtensionHeader: vi.fn(),
+			clearExtensionWidgets: vi.fn(),
+			footerDataProvider: { clearExtensionStatuses: vi.fn() },
+			footer: { invalidate: vi.fn() },
+			setCustomEditorComponent: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			defaultEditor: {},
+			updateTerminalTitle: vi.fn(),
+			setWorkingIndicator: vi.fn(),
+			setHiddenThinkingLabel: vi.fn(),
+		});
+		void context.showExtensionCustom<string>(() => new Text("question"), {
+			overlay: true,
+			blocked: { kind: "question", message: "Question?" },
+		});
+		await vi.waitFor(() => assert.equal(context.overlays.length, 1));
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-overlay:0",
+			{ kind: "question", message: "Question?" },
+		]);
+
+		// /reload and session switches drop overlays without calling done().
+		context.resetExtensionUI();
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-overlay:0", undefined]);
+		assert.equal(context.extensionOverlays.size, 0);
+		assert.deepEqual(context.overlays, []);
 	});
 
 	it("keeps an open dialog visible when the editor component is replaced (earendil-works/pi#11431)", async () => {

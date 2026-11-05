@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -57,18 +58,18 @@ describe("AgentSession cycle fallback controls", () => {
 		expect(modelChanges(harness)).toEqual([]);
 	});
 
-	it("returns undefined with one authenticated model even when the current model differs", async () => {
+	it("switches to the one authenticated model when the current model differs (upstream #11806)", async () => {
 		const harness = await createHarness({ models: [{ id: "only-model", name: "Only" }] });
 		harnesses.push(harness);
 		const onlyModel = harness.getModel();
-		const unknownCurrent = { ...onlyModel, id: "unknown-current", name: "Unknown Current" };
-		harness.session.agent.state.model = unknownCurrent;
+		harness.session.agent.state.model = { ...onlyModel, id: "unknown-current", name: "Unknown Current" };
 
 		const result = await harness.session.cycleModel();
 
-		expect(result).toBeUndefined();
-		expect(harness.session.model).toBe(unknownCurrent);
-		expect(modelChanges(harness)).toEqual([]);
+		assert.equal(result?.model.id, "only-model");
+		assert.equal(result?.isScoped, false);
+		assert.equal(harness.session.model?.id, "only-model");
+		assert.deepEqual(modelChanges(harness), [`${onlyModel.provider}/only-model`]);
 	});
 
 	it("preserves the lock when duplicate scoped entries keep the same provider and id", async () => {

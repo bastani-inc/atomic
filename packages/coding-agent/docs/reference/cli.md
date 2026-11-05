@@ -50,10 +50,21 @@ Afterwards Atomic reports the version it finds installed: the one on disk, or wh
 ## Credential Commands
 
 ```bash
+atomic auth login <provider> [--api-key] [--no-browser]
+atomic auth logout <provider>
 atomic auth check [--provider <p>] [--model <model>] [--json] [--credentials] [--no-refresh]
 atomic auth print-api-key --model <model> [--provider <p>]
 atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
 ```
+
+`atomic auth login <provider>` signs in to a provider in the terminal and exits, without starting a session. It signs in with an account and opens the browser, like `/login <provider>`; when the provider offers another sign-in method, it prints how to use it instead. Providers without account sign-in ask for an API key. `<provider>` is a provider ID or display name, such as `openai` or `OpenAI`. A name that matches more than one provider, such as a `models.json` provider named like a built-in one, is rejected with the matching provider IDs; the exact provider ID always selects that provider. After signing in, it refreshes that provider's model catalog; if the refresh fails, times out after 15 seconds, or you press Ctrl+C, the login is kept and the catalog refreshes on the next start. It requires an interactive terminal.
+
+| Option | Description |
+|---|---|
+| `--api-key` | Save an API key instead of signing in with an account; the key is read without echoing it |
+| `--no-browser` | Do not open a browser; use the provider's other sign-in method, such as a device code, for example over SSH. Asks when there are several. Not allowed with `--api-key` |
+
+`atomic auth logout <provider>` removes the credentials that `atomic auth login` or `/login` stored, like `/logout`, and takes `<provider>` the same way. Environment variables and `models.json` config are unchanged. For a built-in or `models.json` provider it exits with status `0` when nothing is stored, so it is safe to repeat. Extensions are not loaded, so an extension provider's credentials are removed by its provider ID; once none are stored, that ID is reported as an unknown provider with exit status `1`, like a mistyped name.
 
 `atomic auth check` verifies the effective credential a provider or model would use before a session starts. It requires at least one of `--provider` or `--model`, prints `ready`, `not_ready`, or `invalid` to stdout, and exits `0`, `1`, or `2` for those states. `--json` adds the resolved provider when one is found, credential kind, and any reason. By default, a check never emits credential material.
 
@@ -61,11 +72,11 @@ atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <d
 
 Checks refresh expired OAuth credentials by default, using Atomic's normal locked `auth.json` update path. Pass `--no-refresh` to read credentials without creating, locking, or mutating `auth.json`; this is useful when a probe must not change stored auth state. It still reads Atomic's primary and legacy credential paths and resolves configured API-key values, including `!command`, through the normal provider configuration. In this read-only mode, malformed `auth.json` is `invalid` (exit `2`) rather than an unavailable credential. An OAuth credential export requires at least 30 minutes of life: the normal path can refresh it, while `--no-refresh` refuses a shorter-lived token.
 
-The credential commands print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+The credential print commands print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
 
 `--model` is required for the two `print-*` exports. An exporting auth check needs `--provider` or an exact `--model` target. When several configured providers offer a model, pass `--provider` to choose one. The two `print-*` subcommands accept only `--provider` and `--model`: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
 
-`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. `atomic auth check --help` (or `-h`) does the same until a `--` terminator; after it, the flag is not help. Any other subcommand exits `1` and names all three valid commands. Help never uses stdout, so raw credential export stdout is a credential or empty; a JSON export writes an object that carries a credential only in its `credentials` field.
+`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. `atomic auth check --help` (or `-h`) does the same until a `--` terminator; after it, the flag is not help. Any other subcommand exits `1` and names all five valid commands. Help never uses stdout, so raw credential export stdout is a credential or empty; a JSON export writes an object that carries a credential only in its `credentials` field.
 
 `print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — even after a `--` terminator — because an API key has no expiry. A failed refresh leaves your stored credential untouched.
 

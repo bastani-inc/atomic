@@ -54,9 +54,17 @@ export function isAuthCommandHelp(args: string[]): boolean {
 
 export function printAuthCommandHelp(): void {
 	console.error(`Usage:
+  ${APP_NAME} auth login <provider> [--api-key] [--no-browser]
+  ${APP_NAME} auth logout <provider>
   ${APP_NAME} auth print-api-key --model <model> [--provider <provider>]
   ${APP_NAME} auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
   ${APP_NAME} auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]
+
+login signs in to a provider with an account in the browser, or saves an API key with
+--api-key, then exits. --no-browser does not open a browser and uses another sign-in
+method, such as a device code; it cannot be combined with --api-key. login needs an
+interactive terminal. logout removes the stored credentials; environment variables and
+models.json config are unchanged, and it exits 0 when nothing is stored.
 
 Credential print commands write one configured credential alone on stdout. Everything else —
 warnings, provider selection, refresh notices, and help — goes to stderr. --model is
@@ -118,7 +126,7 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 					: undefined;
 	if (!kind) {
 		throw new AuthCommandError(
-			`Unknown auth command "${args[1] ?? ""}". Use "${APP_NAME} auth print-api-key", "${APP_NAME} auth print-bearer-token", or "${APP_NAME} auth check".`,
+			`Unknown auth command "${args[1] ?? ""}". Use "${APP_NAME} auth login", "${APP_NAME} auth logout", "${APP_NAME} auth print-api-key", "${APP_NAME} auth print-bearer-token", or "${APP_NAME} auth check".`,
 		);
 	}
 
