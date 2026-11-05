@@ -19,7 +19,11 @@ import {
 import { type GitRunOptions, gitText, nulFields, runGit } from "./git.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord } from "./records.ts";
-import { resolveWorktreeSnapshotSettings, type WorktreeSnapshotSettingsInput } from "./settings.ts";
+import {
+	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+	resolveWorktreeSnapshotSettings,
+	type WorktreeSnapshotSettingsInput,
+} from "./settings.ts";
 import type { SnapshotBlobStore, WorkspaceBinding, WorktreeRestoreWarning, WorktreeSnapshot } from "./types.ts";
 
 export interface RestoreWorktreeSnapshotOptions {
@@ -565,15 +569,10 @@ async function materialize(
 	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
 }
 
-async function removeWorktree(
-	git: GitRunOptions,
-	target: string,
-	created: boolean,
-	snapshotId: string | null,
-): Promise<void> {
+/** Removes the restored worktree at `target` from the store `git` points at, then prunes what its removal left. */
+async function removeWorktree(git: GitRunOptions, target: string): Promise<void> {
 	await runGit(["worktree", "remove", "--force", target], { ...git, signal: undefined, allowExitCodes: [128] });
-	await writing(target, snapshotId, () => rm(target, { recursive: true, force: true }));
-	if (!created) await writing(target, snapshotId, () => mkdir(target, { recursive: true }));
+	await writing(target, null, () => rm(target, { recursive: true, force: true }));
 	await runGit(["worktree", "prune"], { ...git, signal: undefined });
 }
 
@@ -603,7 +602,7 @@ export async function restoreWorktree(
 	if (options.into !== undefined && (typeof options.into !== "string" || options.into.length === 0)) {
 		throw new WorkspaceConfigError("sdk", "into", "a directory path");
 	}
-	const settings = resolveWorktreeSnapshotSettings(undefined, "sdk", "settings");
+	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
 	assertUsableSnapshotRecord(target, snapshot);
@@ -790,7 +789,7 @@ export async function removeRestoredWorktree(
 	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
 	}
-	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target, true, null);
+	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target);
 }
 
 function isWithin(parent: string, child: string): boolean {
