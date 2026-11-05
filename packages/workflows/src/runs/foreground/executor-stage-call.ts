@@ -339,7 +339,7 @@ export function createTrackedStageCaller(input: {
 							const controller = new AbortController();
 							runtime.state.readinessController = controller;
 							let decision: ReadinessDecision;
-							let superseded = false;
+							let superseded: boolean;
 							try {
 								const readinessSignal = AbortSignal.any([runtime.signal, controller.signal]);
 								const decided = await decideReadiness(readinessSignal);
