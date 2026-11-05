@@ -33,6 +33,7 @@ import { afterEach, beforeEach, test } from "vitest";
 import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { expireWorkflowLease } from "../helpers/workflow-lease.js";
 
 let root: string;
 let store: string;
@@ -1550,8 +1551,9 @@ test("a destination fence taken between the check and the undo's delete leaves t
 	assert.equal(result.moveRuns, 3, "the undo repointed back, found the fence stolen, and repointed forward again");
 	assert.equal(result.named, result.destination);
 	assert.deepEqual(
-		result.report.runs.map((run) => [run.runId, run.outcome]),
-		[["r", "skipped"]],
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+		"the resume holding the destination lacks the event the source gained",
 	);
 	assert.equal(scalar(result.destination, HOLDER), "p2");
 });
@@ -1815,3 +1817,320 @@ for (const [label, change] of [
 				"a resume that appended and released left the run on its source",
 			);
 	});
+
+const RESUME_TAKES_SOURCE = "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'";
+
+async function readThroughStore() {
+	const reopened = await ShardedRunJournal.open({ directory: store, openShard: openSqlRunJournal });
+	try {
+		const saved = [];
+		for await (const event of reopened.read("r")) saved.push(event);
+		return saved;
+	} finally {
+		await reopened.close();
+	}
+}
+
+/** Run `r` reads in full through the store, and the shard the catalog names holds every one of its events. */
+async function assertEveryEventSelected(events: number, lastKey: string): Promise<string> {
+	const named = (await withCatalog((catalog) => catalog.locate("r")))!.shard.path;
+	assert.equal(scalar(named, EVENTS), events, "the shard the catalog names holds every committed event");
+	const saved = await readThroughStore();
+	assert.deepEqual(
+		saved.map((event) => event.seq),
+		Array.from({ length: events }, (_, index) => index + 1),
+	);
+	assert.equal(saved.at(-1)?.key, lastKey);
+	return named;
+}
+
+/**
+ * Another consolidation crashed after copying run `r` and left its fence on the destination's copy; this consolidation
+ * then moves the run, and a resume takes the source and appends before it repoints the catalog.
+ */
+async function moveOverDeadFence(stale: boolean) {
+	const { path, destination, events } = await interrupted("copy");
+	const deadFence = scalar(destination, HOLDER);
+	if (stale) expireWorkflowLease(destination, "r");
+	let moveRuns = 0;
+	const report = await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			if (++moveRuns === 1) {
+				raw(path, RESUME_TAKES_SOURCE);
+				raw(path, APPEND_EVENT, events + 1, "p1-new");
+			}
+			return moveRun(runId, from, to);
+		});
+		return consolidateJournalStore(catalog);
+	});
+	return { path, destination, events, deadFence, report, moveRuns };
+}
+
+test("a move undone onto a destination a crashed consolidation still fences takes over its stale fence and returns to the source (#4402)", async () => {
+	const { path, destination, events, deadFence, report, moveRuns } = await moveOverDeadFence(true);
+	assert.ok(String(deadFence).startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX));
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(moveRuns, 2, "repointed, then returned once");
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), path);
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0, "the dead consolidation's copy is gone");
+	assert.equal(scalar(destination, HOLDER), undefined, "and its fence with it");
+	assert.equal(scalar(path, HOLDER), "p1", "the resume keeps the source");
+});
+
+test("a fresh fence another consolidation holds on the destination is left to it, and taken over once stale (#4402)", async () => {
+	const { path, destination, events, deadFence, report } = await moveOverDeadFence(false);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	const error = report.runs[0]?.error;
+	assert.ok(error instanceof JournalCatalogError && error.code === "run-conflict");
+	assert.equal(scalar(destination, HOLDER), deadFence, "a fence that may belong to a running consolidation is kept");
+	assert.equal(scalar(destination, EVENTS), events, "and so is its copy");
+	assert.equal(scalar(path, EVENTS), events + 1, "the source keeps every event");
+	expireWorkflowLease(destination, "r");
+	const recovery = await consolidateJournalStore(store);
+	assert.deepEqual(
+		recovery.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), path);
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0);
+});
+
+/** A crashed consolidation's copy of `r` on the destination; a resume then appends to the source and releases it. */
+async function staleCopyBehindResume() {
+	const crashed = await interrupted("copy");
+	raw(crashed.path, RESUME_TAKES_SOURCE);
+	raw(crashed.path, APPEND_EVENT, crashed.events + 1, "p1-new");
+	raw(crashed.path, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+	return crashed;
+}
+
+test("a copy a crashed consolidation left on the destination is replaced once its fence is stale, and kept until then (#4402)", async () => {
+	const { path, destination, events } = await staleCopyBehindResume();
+	const deadFence = scalar(destination, HOLDER);
+	const fresh = await consolidateJournalStore(store);
+	assert.deepEqual(
+		fresh.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	assert.deepEqual([scalar(destination, EVENTS), scalar(destination, HOLDER)], [events, deadFence]);
+	expireWorkflowLease(destination, "r");
+	const epoch = Number(scalar(destination, "SELECT epoch FROM wf_leases WHERE run_id = 'r'"));
+	const stale = await consolidateJournalStore(store);
+	assert.deepEqual(
+		stale.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+	);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), destination);
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.equal(scalar(destination, HOLDER), null);
+	assert.ok(Number(scalar(destination, "SELECT epoch FROM wf_leases WHERE run_id = 'r'")) > epoch);
+});
+
+for (const [label, holder] of [
+	["a resume holds", "'p2'"],
+	["nobody holds", "NULL"],
+] as const)
+	test(`a stale destination lease ${label} is no consolidation's fence, and its copy is never replaced (#4402)`, async () => {
+		const { path, destination, events } = await staleCopyBehindResume();
+		raw(destination, `UPDATE wf_leases SET holder_id = ${holder} WHERE run_id = 'r'`);
+		expireWorkflowLease(destination, "r");
+		const report = await consolidateJournalStore(store);
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["r", "skipped", "conflict"]],
+		);
+		assert.equal(scalar(destination, EVENTS), events);
+		assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), path);
+	});
+
+test("a destination copy whose history differs is never replaced, however stale its fence (#4402)", async () => {
+	const { path, destination, events } = await staleCopyBehindResume();
+	raw(destination, "UPDATE wf_events SET payload = '\"other\"' WHERE run_id = 'r'");
+	expireWorkflowLease(destination, "r");
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_events WHERE payload = '\"other\"'"), events);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), path);
+});
+
+test("an undo whose destination fence another consolidation takes before the delete keeps the catalog on the source (#4402)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source }) => raw(source, APPEND_EVENT, Number(scalar(source, EVENTS)) + 1, "p1-new"),
+		},
+		after: {
+			2: ({ destination }) =>
+				raw(
+					destination,
+					`UPDATE wf_leases SET holder_id = '${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}other', epoch = epoch + 1 WHERE run_id = 'r'`,
+				),
+		},
+	});
+	assert.equal(result.moveRuns, 2, "the catalog is not moved back onto a copy another consolidation is removing");
+	assert.equal(result.named, result.source);
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(scalar(result.source, "SELECT count(*) FROM wf_events WHERE key = 'p1-new'"), 1);
+});
+
+/**
+ * A consolidation whose source a resume took (appending one event) abandons its move; another consolidation repoints the
+ * catalog to the destination between this cleanup's catalog check and its deletion, and this one crashes `at` its check,
+ * after its deletion, or after its recopy.
+ */
+async function overtakenCleanup(at: "check" | "delete" | "recopy") {
+	const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [source]);
+	const from = (await withCatalog((catalog) => catalog.locate("r")))!.shard;
+	const destination = await withCatalog((catalog) => catalog.homeShard("r"));
+	const events = Number(scalar(source, EVENTS));
+	await withCatalog(async (catalog) => {
+		const homeShard = catalog.homeShard.bind(catalog);
+		Reflect.set(catalog, "homeShard", async (runId: string) => {
+			const home = await homeShard(runId);
+			raw(source, RESUME_TAKES_SOURCE);
+			raw(source, APPEND_EVENT, events + 1, "p1-new");
+			return home;
+		});
+		let checks = 0;
+		const locate = catalog.locate.bind(catalog);
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			const check = ++checks;
+			if (check === 2 && at === "delete") throw new Error("crashed after the deletion");
+			const found = await locate(runId);
+			if (check === 1) {
+				await withCatalog(async (other) => assert.equal(await other.moveRun(runId, from.id, destination.id), true));
+				if (at === "check") throw new Error("crashed at the catalog check");
+			}
+			return found;
+		});
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (...args: Parameters<JournalCatalog["moveRun"]>) => {
+			if (at === "recopy") throw new Error("crashed after the recopy");
+			return moveRun(...args);
+		});
+		await assert.rejects(consolidateJournalStore(catalog), /crashed/);
+	});
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination.path);
+	return { source, destination: destination.path, events };
+}
+
+test("a cleanup overtaken by a repoint that crashes after deleting its copy has its run returned to the source (#4402)", async () => {
+	const { source, destination, events } = await overtakenCleanup("delete");
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0, "the catalog names a shard without the run");
+	const recovery = await consolidateJournalStore(store);
+	assert.deepEqual(
+		recovery.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), source);
+	assert.equal(scalar(source, HOLDER), "p1");
+});
+
+test("a cleanup overtaken by a repoint that crashes at its catalog check leaves a fresh fence, returned once stale (#4402)", async () => {
+	const { source, destination, events } = await overtakenCleanup("check");
+	const deadFence = scalar(destination, HOLDER);
+	assert.ok(String(deadFence).startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX));
+	assert.equal(scalar(destination, EVENTS), events, "the catalog names a copy without the resume's event");
+	assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+	assert.deepEqual([scalar(destination, HOLDER), scalar(source, EVENTS)], [deadFence, events + 1]);
+	expireWorkflowLease(destination, "r");
+	const recovery = await consolidateJournalStore(store);
+	assert.deepEqual(
+		recovery.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), source);
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0);
+});
+
+test("a cleanup overtaken by a repoint that crashes after its recopy leaves the run whole where the catalog names it (#4402)", async () => {
+	const { destination, events } = await overtakenCleanup("recopy");
+	for (let pass = 0; pass < 2; pass++) {
+		assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+		assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), destination);
+		expireWorkflowLease(destination, "r");
+	}
+});
+
+test("recovery reports a shard it cannot open while returning a run, and returns it once the file is back (#4402)", async () => {
+	const { source, destination, events } = await overtakenCleanup("delete");
+	const backup = join(root, "destination.backup");
+	copyFileSync(destination, backup);
+	removeDatabaseFiles(destination);
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "shard-unavailable"]],
+	);
+	assert.ok(isJournalShardUnavailableError(report.runs[0]?.error));
+	assert.equal(report.runs[0].error.code, "shard-missing");
+	assert.equal(scalar(source, EVENTS), events + 1);
+	copyFileSync(backup, destination);
+	await consolidateJournalStore(store);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), source);
+});
+
+test("recovery leaves alone a run deleted from its source while it looks the run up (#4402)", async () => {
+	const { source, destination } = await overtakenCleanup("delete");
+	await withCatalog(async (catalog) => {
+		const locate = catalog.locate.bind(catalog);
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			for (const table of ["wf_events", "wf_leases", "wf_runs"])
+				raw(source, `DELETE FROM ${table} WHERE run_id = ?`, runId);
+			return locate(runId);
+		});
+		assert.deepEqual((await consolidateJournalStore(catalog)).runs, []);
+	});
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+});
+
+test("recovery never returns a run from a copy whose history differs, however stale its fence (#4402)", async () => {
+	const { destination, events } = await overtakenCleanup("check");
+	raw(destination, "UPDATE wf_events SET payload = '\"other\"' WHERE run_id = 'r'");
+	expireWorkflowLease(destination, "r");
+	assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_events WHERE payload = '\"other\"'"), events);
+});
+
+test("recovery looks up only the runs the catalog does not list on their journal, and leaves unlisted ones alone (#4402)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [
+		{ runId: "moving" },
+		{ runId: "running", status: "running" },
+	]);
+	await adoptJournals(store, [path]);
+	await journal(path, [{ runId: "unlisted" }]);
+	await withCatalog(async (catalog) => {
+		const lookups: string[] = [];
+		const locate = catalog.locate.bind(catalog);
+		Reflect.set(catalog, "locate", (runId: string) => {
+			lookups.push(runId);
+			return locate(runId);
+		});
+		const report = await consolidateJournalStore(catalog);
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome, run.reason ?? null]),
+			[
+				["moving", "moved", null],
+				["running", "skipped", "unfinished"],
+			],
+		);
+		assert.deepEqual(lookups, ["unlisted"]);
+		assert.equal(await catalog.locate("unlisted"), undefined);
+	});
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs WHERE run_id = 'unlisted'"), 1);
+});
