@@ -623,13 +623,14 @@ test("truncation keeps saved image labels next to images and outside the text bu
 });
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+const SVG_XML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>';
 
 async function createModelsHarness() {
 	const harness = await createHarness({
 		extensionFactories: [createCodemodeExtension()],
 		initialActiveToolNames: ["codemode"],
 	});
-	const requests: Array<{ baseUrl: string; apiKey: string | undefined; input: unknown }> = [];
+	const requests: Array<{ baseUrl: string; apiKey: string | undefined; input: unknown; options: unknown }> = [];
 	const painter = {
 		type: "image" as const,
 		id: "painter",
@@ -658,11 +659,20 @@ async function createModelsHarness() {
 		images: {
 			"test-images": {
 				generateImages: async (model, context, options) => {
-					requests.push({ baseUrl: model.baseUrl, apiKey: options?.apiKey, input: context.input });
+					requests.push({ baseUrl: model.baseUrl, apiKey: options?.apiKey, input: context.input, options });
 					const prompt = context.input.find((block) => block.type === "text")?.text;
 					const base = { api: model.api, provider: model.provider, model: model.id, timestamp: 0 };
 					if (prompt === "explode") {
 						return { ...base, output: [], stopReason: "error", errorMessage: "painter exploded" };
+					}
+					if (prompt?.startsWith("vector")) {
+						const svg = {
+							type: "image" as const,
+							data: Buffer.from(SVG_XML).toString("base64"),
+							mimeType: "image/svg+xml",
+						};
+						const png = { type: "image" as const, data: TINY_PNG_BASE64, mimeType: "image/png" };
+						return { ...base, output: prompt === "vector and raster" ? [svg, png] : [svg], stopReason: "stop" };
 					}
 					const input = { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100 };
 					return {
@@ -803,6 +813,157 @@ test("codemode notes generated images that the script did not show", async () =>
 			getMessageText(result),
 			/stop\nNote: models\.generateImages\(\) returned 1 image that the script did not show\. Show each image block of result\.output with image\(block\)\./,
 		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode saves generated SVG images as .svg files and never asks the script to show them (#4332)", async () => {
+	const { harness } = await createModelsHarness();
+	const { harness: mixedHarness } = await createModelsHarness();
+	const saved: string[] = [];
+	try {
+		const svgOnly = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("image", "scorer");
+				const first = await models.generateImages(model, { input: [{ type: "text", text: "vector" }] });
+				const again = await models.generateImages(model, { input: [{ type: "text", text: "vector" }] });
+				return [first.output[0].mimeType, again.output.length];
+			`,
+		);
+		const mixed = await runScript(
+			mixedHarness,
+			`
+				const [model] = await models.getAvailableOfType("image", "scorer");
+				const result = await models.generateImages(model, { input: [{ type: "text", text: "vector and raster" }] });
+				return result.output.map((block) => block.mimeType);
+			`,
+		);
+
+		const svgOnlyText = getMessageText(svgOnly);
+		const mixedText = getMessageText(mixed);
+		const svgPaths = (text: string) =>
+			[...text.matchAll(/^\[SVG saved to (\S+\.svg) \(image\/svg\+xml, \d+B\)\]$/gm)].map((match) => match[1] ?? "");
+		saved.push(...svgPaths(svgOnlyText), ...svgPaths(mixedText));
+		assert.equal(svgOnly.isError, false);
+		assert.match(svgOnlyText, /\["image\/svg\+xml",1\]/);
+		assert.equal(svgPaths(svgOnlyText).length, 1);
+		assert.match(svgPaths(svgOnlyText)[0] ?? "", /[\\/]atomic-codemode-[^\\/]+\.svg$/);
+		assert.equal(readFileSync(svgPaths(svgOnlyText)[0] ?? "", "utf8"), SVG_XML);
+		assert.doesNotMatch(svgOnlyText, /did not show/);
+		assert.deepEqual(
+			svgOnly.content.filter((block) => block.type === "image"),
+			[],
+		);
+		assert.equal(svgPaths(mixedText).length, 1);
+		assert.match(
+			mixedText,
+			/Note: models\.generateImages\(\) returned 1 image that the script did not show\. Show each image block of result\.output with image\(block\)\./,
+		);
+	} finally {
+		for (const path of saved) rmSync(path, { force: true });
+		await harness.cleanup();
+		await mixedHarness.cleanup();
+	}
+});
+
+test("codemode reports an SVG it cannot save and keeps the script output (#4332)", async () => {
+	const { harness } = await createModelsHarness();
+	try {
+		for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, `${harness.tempDir}/missing-output-dir`);
+		const result = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("image", "scorer");
+				const generated = await models.generateImages(model, { input: [{ type: "text", text: "vector" }] });
+				return generated.stopReason;
+			`,
+		);
+
+		assert.equal(result.isError, false);
+		assert.match(getMessageText(result), /^stop\n\[SVG \(image\/svg\+xml, \d+B\) could not be saved: \S.*\]$/m);
+	} finally {
+		vi.unstubAllEnvs();
+		await harness.cleanup();
+	}
+});
+
+test("codemode forwards GPT Image request options and image roles without credentials (#4332)", async () => {
+	const { harness, requests } = await createModelsHarness();
+	try {
+		const result = await runScript(
+			harness,
+			`
+				const [model] = await models.getAvailableOfType("image", "scorer");
+				const block = (role) => ({ type: "image", data: "${TINY_PNG_BASE64}", mimeType: "image/png", ...(role ? { role } : {}) });
+				const attempt = async (fn) => { try { await fn(); return "ok"; } catch (error) { return error.message; } };
+				const generated = await models.generateImages(
+					model,
+					{ input: [{ type: "text", text: "recolor" }, block(), block("markup")] },
+					{ size: "1024x1024", quality: "low", n: 1, background: "opaque", outputFormat: "gif", outputCompression: undefined, frameCount: 3, frameDurationMs: 200, complexity: "low", svg: { model: "author" }, moderation: "low", safetyIdentifier: "hashed" },
+				);
+				const withoutOptions = await models.generateImages(model, { input: [{ type: "text", text: "plain" }] }, null);
+				const maskOnly = await models.generateImages(model, { input: [{ type: "text", text: "mask it" }, block(), block("mask")] });
+				const [judge] = await models.getAvailableOfType("classifier", "scorer");
+				const classified = await attempt(() => models.classify(judge, { state: {}, questions: { ok: { type: "bool", instructions: "Fine?", criteria: { true: "yes", false: "no" } } } }, { apiKey: "ignored by classify" }));
+				return {
+					stopReason: generated.stopReason,
+					withoutOptions: withoutOptions.stopReason,
+					maskOnly: maskOnly.stopReason,
+					classified,
+					apiKey: await attempt(() => models.generateImages(model, { input: [{ type: "text", text: "x" }] }, { apiKey: "sk-script" })),
+					headers: await attempt(() => models.generateImages(model, { input: [{ type: "text", text: "x" }] }, { size: "auto", headers: { a: "b" }, fetch: "evil" })),
+					notAnObject: await attempt(() => models.generateImages(model, { input: [{ type: "text", text: "x" }] }, "low")),
+					badRole: await attempt(() => models.generateImages(model, { input: [{ type: "text", text: "x" }, block("sticker")] })),
+				};
+			`,
+		);
+
+		assert.equal(result.isError, false);
+		const value = JSON.parse(getMessageText(result).split("Output:\n")[1]?.split("\nNote:")[0] ?? "{}") as Record<
+			string,
+			string
+		>;
+		assert.equal(value.stopReason, "stop");
+		assert.equal(value.withoutOptions, "stop");
+		assert.equal(value.maskOnly, "stop");
+		assert.equal(value.classified, "ok");
+		assert.match(
+			value.apiKey ?? "",
+			/does not accept the option "apiKey"\. Allowed options: size, quality, n, background, outputFormat/,
+		);
+		assert.match(value.headers ?? "", /does not accept the option "headers", "fetch"\./);
+		assert.match(value.notAnObject ?? "", /expects options as its third argument to be an object, got a string\./);
+		assert.match(
+			value.badRole ?? "",
+			/context\.input\[1\]\.role must be "markup" or "mask" when set, got a string\./,
+		);
+		assert.equal(requests.length, 3);
+		assert.deepEqual(requests[0]?.input, [
+			{ type: "text", text: "recolor" },
+			{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+			{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png", role: "markup" },
+		]);
+		const forwarded = requests[0]?.options as Record<string, unknown>;
+		const { apiKey: _apiKey, signal: _signal, env: _env, headers, ...requestOptions } = forwarded;
+		assert.deepEqual(requestOptions, {
+			size: "1024x1024",
+			quality: "low",
+			n: 1,
+			background: "opaque",
+			outputFormat: "gif",
+			frameCount: 3,
+			frameDurationMs: 200,
+			complexity: "low",
+			svg: { model: "author" },
+			moderation: "low",
+			safetyIdentifier: "hashed",
+		});
+		assert.deepEqual(headers, {});
+		assert.equal(forwarded.apiKey, "secret-key");
+		assert(forwarded.signal instanceof AbortSignal);
+		assert.equal((requests[1]?.options as { size?: string } | undefined)?.size, undefined);
 	} finally {
 		await harness.cleanup();
 	}

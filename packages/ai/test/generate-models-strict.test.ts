@@ -194,6 +194,74 @@ describe("strict model generation", () => {
 		assert.deepEqual(basetenCatalog["zai-org/GLM-5.2-Fast"]?.input, ["text"]);
 	});
 
+	it("lists the GPT Image 2.6 models first under openai-images with their prices and capabilities (#4332)", () => {
+		const result = runOpenRouterRetryFixture("transient-success");
+
+		expect(result.status).toBe(0);
+		const images = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/openai-images.all.json"), "utf8"),
+		) as Array<{
+			type: string;
+			id: string;
+			name: string;
+			api: string;
+			provider: string;
+			baseUrl: string;
+			input: string[];
+			output: string[];
+			cost: object;
+			capabilities?: object;
+		}>;
+		const byId = new Map(images.map((model) => [model.id, model]));
+		const price = { input: 5, output: 30, cacheRead: 1.25, cacheWrite: 0 };
+		const all2dot6 = { complexity: true, markup: true, svg: true, gif: true };
+
+		assert.deepEqual([...byId.keys()].sort(), [
+			"gpt-image-1",
+			"gpt-image-1-mini",
+			"gpt-image-1.5",
+			"gpt-image-2",
+			"gpt-image-2.5-flare",
+			"gpt-image-2.5-sunburst",
+			"gpt-image-2.6-flare",
+			"gpt-image-2.6-sunburst",
+		]);
+		for (const [id, name, capabilities] of [
+			["gpt-image-2.6-sunburst", "GPT Image 2.6 Sunburst", all2dot6],
+			["gpt-image-2.6-flare", "GPT Image 2.6 Flare", all2dot6],
+			["gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst", { markup: true }],
+			["gpt-image-2.5-flare", "GPT Image 2.5 Flare", { markup: true }],
+		] as const) {
+			const { inputLimits: _inputLimits, ...model } = byId.get(id) as (typeof images)[number] & {
+				inputLimits?: object;
+			};
+			assert.deepEqual(model, {
+				type: "image",
+				id,
+				name,
+				api: "openai-images",
+				provider: "openai-images",
+				baseUrl: "https://api.openai.com/v1",
+				input: ["text", "image"],
+				output: ["image"],
+				cost: price,
+				capabilities,
+			});
+		}
+		assert.deepEqual(byId.get("gpt-image-2.5-flare")?.capabilities, { markup: true });
+		assert.deepEqual(byId.get("gpt-image-2.5-sunburst")?.capabilities, { markup: true });
+		for (const id of ["gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"]) {
+			assert.equal(byId.get(id)?.capabilities, undefined, id);
+		}
+		const openai = JSON.parse(readFileSync(join(result.outputPath, "providers/openai.all.json"), "utf8")) as Array<{
+			id: string;
+		}>;
+		assert.deepEqual(
+			openai.filter((model) => model.id.startsWith("gpt-image-2.6")),
+			[],
+		);
+	});
+
 	it("retries a model catalog whose body times out mid-download", () => {
 		const result = runOpenRouterRetryFixture("body-timeout");
 		const output = `${result.stdout}\n${result.stderr}`;

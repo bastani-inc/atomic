@@ -908,18 +908,71 @@ console.log(model.output); // ['image'] or ['image', 'text']
 
 ### OpenAI Images API
 
-The `openai-images` provider serves OpenAI's GPT Image models (`gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) through the Images API. It borrows the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`; a ChatGPT OAuth credential on `openai` is skipped, so with only that credential the models are unavailable and `generateImages()` returns `Provider is not configured: openai-images`. Text blocks become the `prompt`. Without image blocks the request goes to `/images/generations`; with them it goes to `/images/edits`, uploading each image block. `OpenAIImagesOptions` adds `size`, `quality`, `n`, and `background`, each sent only when set:
+The `openai-images` provider serves OpenAI's GPT Image models (`gpt-image-2.6-sunburst`, `gpt-image-2.6-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`) through the Images API. It borrows the API key stored for `openai-api`, then the one stored for `openai`, then `OPENAI_API_KEY`; a ChatGPT OAuth credential on `openai` is skipped, so with only that credential the models are unavailable and `generateImages()` returns `Provider is not configured: openai-images`. Text blocks become the `prompt`. Without image blocks the request goes to `/images/generations`; with them it goes to `/images/edits`, uploading each image block. `OpenAIImagesOptions` adds the request fields below, each sent only when set:
 
 ```typescript
 import { getBuiltinImageModel } from '@bastani/pi-ai/providers/all';
 
-const flare = getBuiltinImageModel('openai-images', 'gpt-image-2.5-flare');
+const flare = getBuiltinImageModel('openai-images', 'gpt-image-2.6-flare');
 const result = await models.generateImages(flare, {
   input: [{ type: 'text', text: 'A red fox in the snow, watercolor' }]
 }, { size: '1024x1024', quality: 'low' });
 ```
 
-Each returned image is an `ImageContent` block whose `mimeType` follows the response's `output_format`.
+Each returned image is an `ImageContent` block whose `mimeType` follows the response's `output_format`: `image/png`, `image/jpeg`, `image/webp`, `image/gif` or `image/svg+xml`. An SVG block holds UTF-8 XML in `data` as base64; save a GIF with `.gif` and an SVG with `.svg`.
+
+| Option | Sent as | Notes |
+| --- | --- | --- |
+| `size`, `quality`, `n`, `background` | same name | `n` is the number of images. `background: 'transparent'` needs `png` or `webp` output. |
+| `outputFormat` | `output_format` | `png`, `jpeg`, `webp`, `svg` or `gif`. `svg` and `gif` need a GPT Image 2.6 model and work on generations only. |
+| `outputCompression` | `output_compression` | Integer 0-100, for `jpeg` and `webp` output only. |
+| `frameCount` | `frame_count` | GIF frames, an integer from 2 to 16 (`OPENAI_IMAGES_LIMITS.gifFrameCount`). The API defaults to 9. Needs `outputFormat: 'gif'`. |
+| `frameDurationMs` | `frame_duration_ms` | Milliseconds per GIF frame, an integer from 20 to 2000. The API rounds to 10 ms and defaults to 200. Needs `outputFormat: 'gif'`. |
+| `svg` | `svg` | `{ model, reasoning?: { effort } }`: the model that writes the SVG. Needs `outputFormat: 'svg'`. The API requires `svg.model` when SVG model selection is enabled for your account and answers `missing_required_parameter` without it. |
+| `complexity` | `complexity` | `low`, `medium` or `high`: how much the model plans before rendering. GPT Image 2.6 only; the API defaults to `high`. |
+| `moderation` | `moderation` | `auto` or `low`. |
+| `safetyIdentifier` | `safety_identifier` | A stable, hashed end-user identifier of at most 128 characters. |
+
+GIF and SVG output are generation-only: they cannot be combined with image blocks, SVG needs `n` of 1, and neither supports streaming, partial images or `outputCompression`. `outputFormat: 'gif'` costs more tokens as `frameCount` grows; GIF `size` is the size of each frame, and the frames must fit the model's size limits, so a small `size` with few frames can be refused (`512x512` with 3 frames worked).
+
+**Reference images, markup and mask.** With image blocks the first image without a `role` is the base image to edit and the others are references. Set `role: 'markup'` on a transparent PNG with annotations (circles, sketches) to send it as the `markup` field, which guides the edit of the first image and must have its dimensions; set `role: 'mask'` on an image with an alpha channel to send it as the `mask` field for the first image. A markup or mask image is not counted as a reference, a request takes at most one of each, and they cannot be combined. Markup-guided edits work on GPT Image 2.5 and 2.6.
+
+```typescript
+await models.generateImages(flare, {
+  input: [
+    { type: 'text', text: 'Recolor the vase inside the red circle to cobalt blue. Remove the circle.' },
+    { type: 'image', data: kitchenBase64, mimeType: 'image/webp' },
+    { type: 'image', data: overlayBase64, mimeType: 'image/png', role: 'markup' }
+  ]
+}, { quality: 'medium' });
+```
+
+**Validation.** A request that cannot succeed fails before anything is sent, with an `ImageGenerationConfigError` naming the `field`, the `reason` and what to change: a value out of range, `frameCount` or `frameDurationMs` without GIF output, GIF or SVG output on an edit, SVG with `n` above 1, `outputCompression` with anything but `jpeg` or `webp`, `svg` without SVG output, markup together with a mask, a role image without a base image, two images with the same role, and `complexity`, GIF, SVG or markup on a model that does not declare it. Models declare the optional features in `ImageModel.capabilities`; a feature that is not declared is unsupported, so a custom `openai-images` model needs `capabilities` to use them. The checks run before an `onPayload` hook sees the request and again on the request that is sent, whether the hook returns a replacement or changes it in place. `reason` is one of:
+
+| `reason` | When it fires | What to do |
+| --- | --- | --- |
+| `out-of-range` | `frameCount` outside 2-16, `frameDurationMs` outside 20-2000, `outputCompression` outside 0-100 (or not an integer), or `safetyIdentifier` longer than 128 characters. The bounds are in `OPENAI_IMAGES_LIMITS`. | Use a value within the bounds. |
+| `requires-option` | `frameCount` or `frameDurationMs` without `outputFormat: "gif"`, or `svg` without `outputFormat: "svg"`. `related` names the missing option. | Set the option in `related`, or remove `field`. |
+| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg` or no format; `background: "transparent"` with `jpeg`, `gif` or `svg`; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
+| `generation-only` | GIF or SVG output on a request with input images, which goes to the edits endpoint. | Remove the input images, or choose `png`, `jpeg` or `webp`. |
+| `unsupported-by-model` | `complexity`, GIF, SVG or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
+| `requires-base-image` | An image with `role: "markup"` or `role: "mask"` but no image without a role for it to apply to. | Put the base image first, without a role. |
+| `duplicate-role` | Two images with `role: "markup"`, or two with `role: "mask"`. | Send at most one image per role. |
+
+**Errors.** `generateImages()` still resolves with `stopReason: 'error'` and `errorMessage`, and now also `error`, a JSON-safe `ImageGenerationErrorData`. Rebuild the typed error with `imageGenerationErrorFromData(result.error)` and branch on its class or guard, `code` or `retryable`, never on the message. Cancellation resolves with `stopReason: 'aborted'` and no `error`. The typed error holds only the HTTP status and the provider's type, code and request ID, in `detail` and in its message; it never holds the provider's message, which can quote the prompt. `errorMessage` keeps the provider's text.
+
+| Class (guard) | `code` | When | Retryable | Useful fields |
+| --- | --- | --- | --- | --- |
+| `ImageGenerationConfigError` (`isImageGenerationConfigError`) | `invalid-option` | The options or input are invalid. Nothing was sent. | No | `field`, `reason`, `related`, `model`, `hint` |
+| `ImageGenerationApiError` (`isImageGenerationApiError`) | `api-error` | Any other API failure, including connection errors. | Only 408, 409 and connection errors | `status`, `apiCode`, `apiType`, `requestId` |
+| `ImageGenerationQuotaError` (`isImageGenerationQuotaError`) | `quota-exceeded` | Out of quota or credit, even though it arrives as HTTP 429. | No | as `api-error` |
+| `ImageGenerationRateLimitError` (`isImageGenerationRateLimitError`) | `rate-limited` | HTTP 429 rate limit. | Yes | as `api-error` |
+| `ImageGenerationServerError` (`isImageGenerationServerError`) | `server-error` | HTTP 5xx. | Yes | as `api-error` |
+| `ImageGenerationUserError` (`isImageGenerationUserError`) | `user-error` | `error.type` is `image_generation_user_error`: change the prompt or input images. `apiCode` is the stable discriminator. | No | as `api-error` |
+| `ImageModerationBlockedError` (`isImageModerationBlockedError`) | `moderation-blocked` | `error.code` is `moderation_blocked`. | No | `moderationStage` (`input`, `output`, `unknown`), `categories` |
+| `ImageGenerationTimeoutError` (`isImageGenerationTimeoutError`) | `timeout` | The request exceeded `timeoutMs`. | Yes | `timeoutMs`, `elapsedMs`, `phase` |
+
+All extend `ImageGenerationError`, and `isImageGenerationError()` matches any of them. Guards check the value itself: an instance, or an object from another process whose `name` is the class name and whose `code` is that class's code. To search a `cause` chain (at most eight links), use `findImageGenerationError(error, guard)`, for example `findImageGenerationError(error, isImageGenerationQuotaError)`; `isRetryableImageGenerationError()` answers whether the nearest one in the chain is retryable. `result.error` keeps up to eight cause-chain links: family causes retain their data, while foreign causes retain a safe name and known errno code, if any, with their message replaced by `[foreign error message omitted]`. Rehydration preserves these links and codes. With `maxRetries`, rate-limit and server errors are retried; quota and user errors never are. Usage from an SVG request covers the image model only; OpenAI reports the tokens of the SVG-authoring model separately (`svg_usage`), and they are not added to `usage` or its cost.
 
 ### Notes and Limitations
 

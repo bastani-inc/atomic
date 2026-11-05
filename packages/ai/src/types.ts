@@ -7,9 +7,10 @@ import type { GoogleVertexOptions } from "./api/google-vertex.ts";
 import type { MistralOptions } from "./api/mistral-conversations.ts";
 import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.ts";
 import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
-import type { OpenAIImagesOptions } from "./api/openai-images.ts";
+import type { OpenAIImagesOptions } from "./api/openai-images-options.ts";
 import type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 import type { PiMessagesOptions } from "./api/pi-messages.ts";
+import type { ImageGenerationErrorData } from "./image-generation-error.ts";
 import type {
 	AnthropicMessagesCompat,
 	BedrockCompat,
@@ -744,7 +745,19 @@ export type ToolResultMessage<TDetails = JsonValue> =
 
 export type Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage;
 
-export type ImagesInputContent = TextContent | ImageContent;
+/** Role of an input image of an image request. Images without a role are the base image and references. */
+export type ImagesInputImageRole = "markup" | "mask";
+
+/**
+ * An image of an image request. Without a `role`, the first image is the base image to edit and the
+ * rest are references. A `markup` image is a transparent annotation layer and a `mask` image an
+ * alpha-channel mask; both apply to the first image. `openai-images` honors roles.
+ */
+export interface ImagesInputImage extends ImageContent {
+	role?: ImagesInputImageRole;
+}
+
+export type ImagesInputContent = TextContent | ImagesInputImage;
 export type ImagesOutputContent = TextContent | ImageContent;
 
 export interface ImagesContext {
@@ -762,6 +775,8 @@ export interface AssistantImages {
 	usage?: Usage;
 	stopReason: ImagesStopReason;
 	errorMessage?: string;
+	/** Typed form of `errorMessage` when the failure is classified. Rebuild it with `imageGenerationErrorFromData()`. */
+	error?: ImageGenerationErrorData;
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -1021,9 +1036,23 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 						: never;
 }
 
+/** Optional request features of an image model beyond plain generation and editing. */
+export interface ImageModelCapabilities {
+	/** The `complexity` option. */
+	complexity?: boolean;
+	/** An input image with `role: "markup"`. */
+	markup?: boolean;
+	/** `outputFormat: "svg"`. */
+	svg?: boolean;
+	/** `outputFormat: "gif"` with `frameCount` and `frameDurationMs`. */
+	gif?: boolean;
+}
+
 /** Image-generation model: usable with `generateImages()` only. */
 export interface ImageModel<TApi extends ImageApi> extends BaseModel<TApi> {
 	type: "image";
+	/** Optional request features the model supports. A feature that is absent is unsupported and fails validation. */
+	capabilities?: ImageModelCapabilities;
 	/** Output modalities. Always includes `"image"`; `"text"` means the model can also return text blocks. */
 	output: ("text" | "image")[];
 }

@@ -16,7 +16,7 @@ import type {
 	Model,
 	ModelsApiStreamOptions,
 	ModelsClassifierOptions,
-	ModelsImagesOptions,
+	ModelsImagesApiOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
 	ModelsSimpleStreamOptions,
@@ -173,10 +173,10 @@ export class ModelRegistry {
 		return this.runtime.classify(model, context, options);
 	}
 
-	generateImages(
-		model: ImageModel<ImageApi>,
+	generateImages<TApi extends ImageApi>(
+		model: ImageModel<TApi>,
 		context: ImagesContext,
-		options?: ModelsImagesOptions,
+		options?: ModelsImagesApiOptions<TApi>,
 	): Promise<AssistantImages> {
 		return this.runtime.generateImages(model, context, options);
 	}

@@ -16,7 +16,12 @@ export * from "./api/lazy.ts";
 export type { MistralOptions } from "./api/mistral-conversations.ts";
 export type { OpenAICodexResponsesOptions, OpenAICodexWebSocketDebugStats } from "./api/openai-codex-responses.ts";
 export type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
-export type { OpenAIImagesOptions } from "./api/openai-images.ts";
+export {
+	OPENAI_IMAGES_LIMITS,
+	type OpenAIImagesOptions,
+	type OpenAIImagesOutputFormat,
+	type OpenAIImagesSvgOptions,
+} from "./api/openai-images-options.ts";
 export type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 export type { PiMessagesEvent, PiMessagesOptions, PiMessagesRewriteImpact } from "./api/pi-messages.ts";
 export * from "./auth/context.ts";
@@ -41,6 +46,7 @@ export type {
 } from "./compat/extension-oauth-types.ts";
 export * from "./decision-models.ts";
 export { containsKnownEnvCredential } from "./env-api-keys.ts";
+export * from "./image-generation-error.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
 export { normalizeProviderId } from "./provider-id.ts";

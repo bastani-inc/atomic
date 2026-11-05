@@ -1,3 +1,4 @@
+import { findImageGenerationError } from "../image-generation-error.ts";
 import type {
 	AnyModel,
 	Api,
@@ -59,8 +60,14 @@ export function imageErrorResult(model: ImageModel<ImageApi>, error: unknown, ab
 		output: [],
 		stopReason: aborted ? "aborted" : "error",
 		errorMessage: error instanceof Error ? error.message : String(error),
+		...(aborted ? {} : imageErrorField(error)),
 		timestamp: Date.now(),
 	};
+}
+
+function imageErrorField(error: unknown): Pick<AssistantImages, "error"> {
+	const typed = findImageGenerationError(error);
+	return typed ? { error: typed.toData() } : {};
 }
 
 export function classifierErrorResult(

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { generateImages } from "../src/api/openai-images.ts";
+import { generateImages, type OpenAIImagesOptions } from "../src/api/openai-images.ts";
 import type { ImageModel, ImagesContext } from "../src/types.ts";
 
 const model: ImageModel<"openai-images"> = {
@@ -69,15 +69,16 @@ describe("openai-images transport", () => {
 
 	it("passes size, quality, n, and background when given (#3527)", async () => {
 		const { fetch, requests } = mockFetch();
-
-		await generateImages(model, textContext, {
+		const options: OpenAIImagesOptions = {
 			apiKey: "sk-test",
 			fetch,
 			size: "1536x1024",
 			quality: "low",
 			n: 2,
 			background: "transparent",
-		});
+		};
+
+		await generateImages(model, textContext, options);
 
 		assert.deepEqual(jsonBody(requests[0]), {
 			model: "gpt-image-2.5-flare",

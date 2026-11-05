@@ -4,6 +4,23 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added the GPT Image 2.6 models `gpt-image-2.6-sunburst` and `gpt-image-2.6-flare` to the `openai-images` provider, priced at $5 text input, $1.25 cached input and $30 image output per million tokens ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+- `OpenAIImagesOptions` supports GPT Image 2.6: `outputFormat` (`png`, `jpeg`, `webp`, `svg`, `gif`) with `outputCompression`, animated GIFs with `frameCount` (2-16) and `frameDurationMs`, SVG output with the authoring `svg` model, `complexity`, `moderation` and `safetyIdentifier`. Outputs carry `image/gif` and `image/svg+xml` MIME types. `OPENAI_IMAGES_LIMITS` exports the documented bounds. A live request with 17 GIF frames was rejected, so the maximum is 16, as the API reference says, not the guide's 64 ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+- Image blocks in an image request accept `role: "markup"` (a transparent annotation layer for markup-guided edits) or `role: "mask"`. The first image without a role is the base image and the others are references ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+- `ImageModel.capabilities` declares the optional request features a model supports (`complexity`, `markup`, `svg`, `gif`). The GPT Image 2.6 models declare all four and the 2.5 models declare `markup`.
+- Requests that cannot succeed fail before anything is sent with an `ImageGenerationConfigError` naming the offending `field`: values out of range, GIF or SVG on an edit, frame options without GIF, SVG with `n` above 1, compression with `png`, `gif` or `svg`, markup with a mask, and features the model does not declare. The checks also cover the request an `onPayload` hook returns or changes in place. Each failure has a `reason` (`out-of-range`, `requires-option`, `conflicts-with-option`, `generation-only`, `unsupported-by-model`, `requires-base-image`, `duplicate-role`), documented in the README ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+- Typed image-generation errors: `ImageGenerationError` and its subclasses for configuration, API, quota, rate-limit, server, user (`image_generation_user_error`), moderation (`moderation_blocked`, with `moderationStage` and `categories`) and timeout failures, each with a stable `code`, `retryable`, a `hint`, guards that check the `name` and `code` of the value itself, `findImageGenerationError(error, guard)` to search a `cause` chain, and `imageGenerationErrorFromData()` to rebuild one, with its typed cause chain, from `AssistantImages.error` after it crossed a process boundary. Typed errors carry the HTTP status and the provider's type, code and request ID, never the provider's message, which can quote the prompt. Cause chains retain up to eight links, including foreign wrappers and known errno codes; foreign messages are replaced with `[foreign error message omitted]` ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+
+### Changed
+
+- `openai-images` no longer retries a quota-exhausted HTTP 429 when `maxRetries` is set; rate-limit and server errors are still retried ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+
+### Fixed
+
+- Image requests reject transparent JPEG, GIF and SVG output locally, and an `onPayload` hook cannot leave a markup or mask image without a base image. Rebuilt API errors preserve explicit `retryable` overrides ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+
 ## [0.9.71] - 2026-11-03
 
 Copilot discovery now preserves readable model names alongside exact request IDs.
