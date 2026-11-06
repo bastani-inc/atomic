@@ -6,6 +6,7 @@ import { createToolControlRegistry } from "../../packages/workflows/src/engine/r
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { run as sdkRun } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { deliverStageWake } from "../../packages/workflows/src/runs/foreground/stage-wake-dispatcher.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import {
 	DEFAULT_EVICT_WHEN_WAITING_AFTER_MS,
 	parseEvictWhenWaiting,
@@ -22,7 +23,6 @@ import { MAX_RELEASE_WHEN_WAITING_AFTER_MS } from "../../packages/workflows/src/
 import { isStageWakeError } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import { registerStageWakeKind, type StageWakeHandlerContext } from "../../packages/workflows/src/shared/stage-wake.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { assert, createCancellationRegistry, run, test, workflow } from "./executor-shared.js";

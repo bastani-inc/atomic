@@ -8,6 +8,7 @@ import {
 	assertIdleInvariants,
 	IDLE_RESOURCE_GROWTH_PER_RUN,
 	type IdleInvariantReport,
+	parseOptions,
 } from "../../scripts/perf/waiting-stages/benchmark.js";
 
 function report(patch: {
@@ -81,4 +82,13 @@ test("an evicted wave passes only when every idle agent is only its index entry 
 		/999 of 1000 idle agents are only their index entry/,
 	);
 	assertIdleInvariants(report({ options: { evict: false }, idle: { residentEntries: 0 } }));
+});
+
+test("the benchmark refuses --evict with --no-release, whose resident agents could never be evicted (#4373)", () => {
+	assert.throws(
+		() => parseOptions(["--evict", "--no-release"]),
+		/--evict needs released agents: drop --no-release or --evict/,
+	);
+	assert.equal(parseOptions(["--evict"]).evict, true);
+	assert.equal(parseOptions(["--no-release"]).expectRelease, false);
 });

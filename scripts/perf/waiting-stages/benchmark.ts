@@ -23,6 +23,7 @@
  *
  * `--evict` also runs each wave with `evictWhenWaiting`: once every agent of the wave waits on the long tool, the run is
  * evicted from memory and each waiting agent is only its index entry until the wake phase rebuilds the run by replay.
+ * It cannot be combined with `--no-release`: a run whose agents keep their sessions is never evicted.
  */
 import { getEventListeners } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -75,6 +76,13 @@ export function parseOptions(argv: readonly string[]): Options {
 	const store = value("store") ?? "sqlite";
 	if (store !== "memory" && store !== "sqlite") throw new Error(`--store must be memory or sqlite, got ${store}`);
 	const out = value("out");
+	const expectRelease = !argv.includes("--no-release");
+	const evict = argv.includes("--evict");
+	if (evict && !expectRelease) {
+		throw new Error(
+			"--evict needs released agents: drop --no-release or --evict, since a resident run is never evicted",
+		);
+	}
 	return {
 		agents: count("agents", 1_000),
 		turns: count("turns", 20),
@@ -82,8 +90,8 @@ export function parseOptions(argv: readonly string[]): Options {
 		store,
 		label: value("label") ?? "run",
 		...(out === undefined ? {} : { out: resolve(out) }),
-		expectRelease: !argv.includes("--no-release"),
-		evict: argv.includes("--evict"),
+		expectRelease,
+		evict,
 	};
 }
 

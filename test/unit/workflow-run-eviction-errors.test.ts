@@ -1,5 +1,6 @@
 import { describe } from "vitest";
 import * as sdk from "../../packages/workflows/src/sdk-surface.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import {
 	deserializeRunEvictionError,
 	findRunEvictionError,
@@ -13,7 +14,6 @@ import {
 	RunReplayError,
 	type SerializedRunEvictionError,
 } from "../../packages/workflows/src/shared/run-eviction-errors.js";
-import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { assert, test } from "./executor-shared.js";
