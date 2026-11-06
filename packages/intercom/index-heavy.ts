@@ -53,7 +53,7 @@ import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
-import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./released-reply-wait.js";
+import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest, replyWaitGates } from "./released-reply-wait.js";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
 import { registerIntercomTool } from "./intercom-tool.js";
 import { registerIntercomOverlay } from "./overlay.js";
@@ -1852,23 +1852,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
   });
 
-  const replyWaitMayStartBeforeRouting = (): boolean => client?.isConnected() !== true || client.multiNodeRouting === "off";
+  const replyWaits = replyWaitGates(() => client);
   registerContactSupervisorTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
-    mayDetachReplyWait: () => client?.isConnected() === true && client.multiNodeRouting === "off",
-    mayAdmitReplyWait: replyWaitMayStartBeforeRouting,
+    ...replyWaits,
   });
   registerIntercomTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
-    mayDetachReplyWait: () => client?.isConnected() === true && client.multiNodeRouting === "off",
-    mayAdmitReplyWait: replyWaitMayStartBeforeRouting,
+    ...replyWaits,
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
     multiNodeRouting,

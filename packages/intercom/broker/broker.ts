@@ -96,6 +96,7 @@ import {
 } from "./released-children.js";
 import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
+import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -227,10 +228,6 @@ interface PendingReleasedReplyAck {
   readonly questionId: string;
   readonly childName: string;
   readonly route: ReleasedAskerReplyRoute;
-}
-
-function releasedAskerReplyRefusal(childName: string): string {
-  return `Subagent \`${childName}\` is released and no longer waiting for this reply`;
 }
 
 function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
@@ -2349,6 +2346,11 @@ class IntercomBroker {
 		case "released_child_reply_ack": {
 			if (typeof clientMessage.messageId !== "string" || typeof clientMessage.accepted !== "boolean") {
 				throw new Error("Invalid released_child_reply_ack message");
+			}
+			const owner = currentId === null ? undefined : this.sessions.get(currentId);
+			const handoffId = typeof clientMessage.handoffId === "string" ? clientMessage.handoffId : undefined;
+			if (owner !== undefined && this.multiNode?.releasedReplyAcknowledged(owner, clientMessage.messageId, handoffId, clientMessage.accepted)) {
+				break;
 			}
 			const pending = this.releasedReplyAcks.get(clientMessage.messageId);
 			if (pending?.ownerSessionId === currentId && pending.handoffId === clientMessage.handoffId) {

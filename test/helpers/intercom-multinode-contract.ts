@@ -15,6 +15,7 @@ import type {
 	OutboxStore,
 	PendingAskStore,
 	RecipientPresenceSubject,
+	ReleasedAskStore,
 	RestoringReservation,
 	RestoringReservationRequest,
 	RestoringReservationStore,
@@ -1230,6 +1231,145 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await a.clearReply(reply("target", "", "q1")), empty("empty-session-id"));
 		assert.deepEqual(await a.pruneSender(""), empty("empty-session-id"));
 		assert.deepEqual(await a.takeForTarget(""), empty("empty-session-id"));
+		assert.deepEqual(await a.listForSender(""), empty("empty-session-id"));
+	});
+
+	check("lists a sender's asks in insertion order without removing them (#4386)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(ask("asker", "target-2", "q-later-target"));
+		await b.record(ask("someone", "target", "q-other"));
+		await a.record(ask("asker", "target", "q-first-target"));
+		const listed = {
+			status: "listed",
+			asks: [ask("asker", "target-2", "q-later-target"), ask("asker", "target", "q-first-target")],
+		};
+		assert.deepEqual(await b.listForSender("asker"), listed);
+		assert.deepEqual(await a.listForSender("asker"), listed);
+		assert.deepEqual(await a.listForSender("nobody"), { status: "listed", asks: [] });
+		assert.deepEqual(await b.matchesReply(reply("target", "asker", "q-first-target")), { status: "match" });
+	});
+}
+
+export function registerReleasedAskStoreConformance(
+	runner: MultiNodeConformanceRunner,
+	name: string,
+	open: OpenSharedStoreFixture<ReleasedAskStore>,
+): void {
+	const check = withShared(runner, `${name} released asks`, open);
+	const KEEP_MS = 3_600_000;
+	const asked = (questionId: string, replierSessionId = "replier", childName = " Worker\t1 ") => ({
+		questionId,
+		askerSessionId: "asker",
+		replierSessionId,
+		childName,
+	});
+	const by = (questionId: string, replyMessageId: string, replierSessionId = "replier") => ({
+		questionId,
+		replierSessionId,
+		replyMessageId,
+	});
+
+	check("keeps an ask once, verbatim, and finds it only under its replier", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		assert.deepEqual(await a.keep([asked("q1"), asked("q2", "other-replier")], KEEP_MS), { status: "kept", kept: 2 });
+		assert.deepEqual(await b.keep([asked("q1", "replier", "renamed"), asked("q3")], KEEP_MS), {
+			status: "kept",
+			kept: 1,
+		});
+		assert.deepEqual(await b.keep([], KEEP_MS), { status: "kept", kept: 0 });
+		assert.deepEqual(await b.lookup({ questionId: "q1", replierSessionId: "replier" }), {
+			status: "found",
+			ask: { ...asked("q1"), state: "open" },
+		});
+		assert.deepEqual(await a.lookup({ questionId: "q2", replierSessionId: "replier" }), { status: "missing" });
+		assert.deepEqual(await a.lookup({ questionId: "q2", replierSessionId: "other-replier" }), {
+			status: "found",
+			ask: { ...asked("q2", "other-replier"), state: "open" },
+		});
+	});
+
+	check("lets exactly one reply claim an ask, and answers that reply's retries", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.keep([asked("q1")], KEEP_MS);
+		const claimed = { ...asked("q1"), state: "claimed", replyMessageId: "reply-1" };
+		assert.deepEqual(await a.claim(by("q1", "reply-1")), { status: "claimed", ask: claimed });
+		assert.deepEqual(await b.claim(by("q1", "reply-1")), { status: "claimed", ask: claimed });
+		assert.deepEqual(await b.claim(by("q1", "reply-2")), { status: "taken", ask: claimed });
+		assert.deepEqual(await b.lookup({ questionId: "q1", replierSessionId: "replier" }), {
+			status: "found",
+			ask: claimed,
+		});
+		assert.deepEqual(await a.claim(by("q1", "reply-1", "someone-else")), { status: "missing" });
+		assert.deepEqual(await b.answer(by("q1", "reply-2")), { status: "stale" });
+		assert.deepEqual(await b.answer(by("q1", "reply-1")), { status: "settled" });
+		assert.deepEqual(await a.answer(by("q1", "reply-1")), { status: "settled" });
+		const answered = { ...claimed, state: "answered" };
+		assert.deepEqual(await a.claim(by("q1", "reply-1")), { status: "claimed", ask: answered });
+		assert.deepEqual(await a.claim(by("q1", "reply-2")), { status: "taken", ask: answered });
+		assert.deepEqual(await a.reopen(by("q1", "reply-1")), { status: "stale" });
+		assert.deepEqual(await a.answer(by("missing", "reply-1")), { status: "missing" });
+	});
+
+	check("reopens an ask only for the reply that claimed it", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.keep([asked("q1")], KEEP_MS);
+		await a.claim(by("q1", "reply-1"));
+		assert.deepEqual(await b.reopen(by("q1", "reply-2")), { status: "stale" });
+		assert.deepEqual(await b.reopen(by("q1", "reply-1")), { status: "settled" });
+		assert.deepEqual(await a.lookup({ questionId: "q1", replierSessionId: "replier" }), {
+			status: "found",
+			ask: { ...asked("q1"), state: "open" },
+		});
+		assert.deepEqual(await a.reopen(by("q1", "reply-1")), { status: "stale" });
+		assert.deepEqual(await a.answer(by("q1", "reply-1")), { status: "stale" });
+		assert.deepEqual(await a.claim(by("q1", "reply-2")), {
+			status: "claimed",
+			ask: { ...asked("q1"), state: "claimed", replyMessageId: "reply-2" },
+		});
+		assert.deepEqual(await b.reopen(by("missing", "reply-1")), { status: "missing" });
+	});
+
+	check("loses an open ask at its deadline but keeps a claimed one until it is pruned", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.keep([asked("open-past-deadline")], -1);
+		await a.keep([asked("claimed-then-lapsed")], 200);
+		await a.keep([asked("open-in-time")], KEEP_MS);
+		await b.claim(by("claimed-then-lapsed", "reply-1"));
+		await sleep(400);
+		assert.deepEqual(await b.lookup({ questionId: "open-past-deadline", replierSessionId: "replier" }), {
+			status: "missing",
+		});
+		assert.deepEqual(await b.claim(by("open-past-deadline", "reply-1")), { status: "missing" });
+		assert.deepEqual(await a.claim(by("claimed-then-lapsed", "reply-2")), {
+			status: "taken",
+			ask: { ...asked("claimed-then-lapsed"), state: "claimed", replyMessageId: "reply-1" },
+		});
+		assert.equal(await b.prune(KEEP_MS), 0);
+		assert.equal(await b.prune(0), 2);
+		assert.deepEqual(await a.claim(by("claimed-then-lapsed", "reply-1")), { status: "missing" });
+		assert.deepEqual((await a.lookup({ questionId: "open-in-time", replierSessionId: "replier" })).status, "found");
+	});
+
+	check("rejects empty identifiers before writing anything", async (connect) => {
+		const a = await connect();
+		const empty = (reason: string) => ({ status: "invalid", reason });
+		assert.deepEqual(await a.keep([asked("q1"), asked("")], KEEP_MS), empty("empty-message-id"));
+		assert.deepEqual(await a.keep([{ ...asked("q1"), askerSessionId: "" }], KEEP_MS), empty("empty-session-id"));
+		assert.deepEqual(await a.keep([asked("q1", "")], KEEP_MS), empty("empty-session-id"));
+		assert.deepEqual(await a.keep([asked("q1", "replier", "")], KEEP_MS), empty("empty-child-name"));
+		assert.deepEqual(await a.lookup({ questionId: "q1", replierSessionId: "replier" }), { status: "missing" });
+		assert.deepEqual(await a.lookup({ questionId: "", replierSessionId: "replier" }), empty("empty-message-id"));
+		assert.deepEqual(await a.lookup({ questionId: "q1", replierSessionId: "" }), empty("empty-session-id"));
+		await a.keep([asked("q1")], KEEP_MS);
+		for (const write of [a.claim, a.answer, a.reopen]) {
+			assert.deepEqual(await write(by("q1", "")), empty("empty-message-id"));
+			assert.deepEqual(await write(by("", "reply-1")), empty("empty-message-id"));
+			assert.deepEqual(await write(by("q1", "reply-1", "")), empty("empty-session-id"));
+		}
+		assert.deepEqual(await a.lookup({ questionId: "q1", replierSessionId: "replier" }), {
+			status: "found",
+			ask: { ...asked("q1"), state: "open" },
+		});
 	});
 }
 

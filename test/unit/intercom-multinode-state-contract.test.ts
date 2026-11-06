@@ -9,6 +9,7 @@ import {
 	registerKnownSessionStoreConformance,
 	registerOutboxStoreConformance,
 	registerPendingAskStoreConformance,
+	registerReleasedAskStoreConformance,
 	registerRestoringReservationStoreConformance,
 	registerSentMessageAuthorityConformance,
 	registerWakeUpBusConformance,
@@ -19,16 +20,21 @@ import {
 	openMemoryLeaseStoreFixture,
 	openMemoryOutboxFixture,
 	openMemoryPendingAskFixture,
+	openMemoryReleasedAskFixture,
 	openMemoryRestoringReservationFixture,
 	openMemorySentMessageFixture,
 	openMemoryWakeUpBusFixture,
 } from "../helpers/intercom-multinode-memory-reference.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 registerBrokerLeaseStoreConformance(test, "memory reference", openMemoryLeaseStoreFixture);
 registerOutboxStoreConformance(test, "memory reference", openMemoryOutboxFixture);
 registerHeldSendStoreConformance(test, "memory reference", openMemoryHeldSendFixture);
 registerRestoringReservationStoreConformance(test, "memory reference", openMemoryRestoringReservationFixture);
 registerPendingAskStoreConformance(test, "memory reference", openMemoryPendingAskFixture);
+registerReleasedAskStoreConformance(test, "memory reference", openMemoryReleasedAskFixture);
 registerSentMessageAuthorityConformance(test, "memory reference", openMemorySentMessageFixture);
 registerWakeUpBusConformance(test, "memory reference", openMemoryWakeUpBusFixture);
 registerKnownSessionStoreConformance(test, "memory reference", openMemoryKnownSessionFixture);

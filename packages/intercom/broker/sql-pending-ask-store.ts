@@ -4,6 +4,7 @@ import type {
 	InvalidStateInput,
 	PendingAsk,
 	PendingAskClearResult,
+	PendingAskListResult,
 	PendingAskMatchResult,
 	PendingAskPruneResult,
 	PendingAskRecordResult,
@@ -14,6 +15,12 @@ import type {
 } from "./multinode-state-store.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
+
+const toAsk = (row: AskRow): PendingAsk => ({
+	senderSessionId: row.sender_session_id,
+	targetSessionId: row.target_session_id,
+	messageId: row.message_id,
+});
 
 const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ status: "invalid", reason });
 
@@ -81,6 +88,15 @@ export async function openSqlPendingAskStore({
 			const { changes } = await database.run(`DELETE FROM ${table} WHERE sender_session_id = ?`, senderSessionId);
 			return { status: "pruned", removed: changes };
 		},
+		async listForSender(senderSessionId): Promise<PendingAskListResult> {
+			if (senderSessionId.length === 0) return invalid("empty-session-id");
+			const rows = await database.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE sender_session_id = ? ORDER BY "order"`,
+				senderSessionId,
+			);
+			return { status: "listed", asks: rows.map(toAsk) };
+		},
 		async takeForTarget(targetSessionId): Promise<PendingAskTakeResult> {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const rows = await database.transaction(async (tx) => {
@@ -92,14 +108,7 @@ export async function openSqlPendingAskStore({
 				await tx.run(`DELETE FROM ${table} WHERE target_session_id = ?`, targetSessionId);
 				return taken;
 			});
-			return {
-				status: "taken",
-				asks: rows.map((row) => ({
-					senderSessionId: row.sender_session_id,
-					targetSessionId: row.target_session_id,
-					messageId: row.message_id,
-				})),
-			};
+			return { status: "taken", asks: rows.map(toAsk) };
 		},
 	};
 }

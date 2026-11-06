@@ -1,4 +1,5 @@
 import type { LiveWorkflowStageRouteRefusalCode } from "./live-route-refusal.js";
+import type { SerializedIntercomReleasedReplyError } from "./broker/released-reply-errors.js";
 
 export interface SessionInfo {
   id: string;
@@ -141,6 +142,13 @@ export interface BrokerStatusReport {
 }
 
 /**
+ * #4386: why a reply to a subagent released while it waited on that question was refused before reaching its owner.
+ * `released_reply_answered`: the owner already took another reply. `released_reply_in_flight`: another reply is
+ * still being handed to the owner.
+ */
+export type ReleasedReplyRefusalCode = "released_reply_answered" | "released_reply_in_flight";
+
+/**
  * Why a send or ask was refused, for callers that branch on it; the free-text `reason` stays for people.
  * `recipient_not_restored`: the sender was held for a subagent that was being restored or woken, and the hold ended
  * first. `recipient_parked`: the subagent's owner keeps it parked (paused or quit) and never wakes it for a send.
@@ -149,7 +157,8 @@ export type DeliveryFailureReasonCode =
 	| "message_id_conflict"
 	| "session_not_found"
 	| "recipient_not_restored"
-	| "recipient_parked";
+	| "recipient_parked"
+	| ReleasedReplyRefusalCode;
 
 /** One released subagent in a `reserve_released_children` frame. */
 export interface ReleasedChildReservationFrame {
@@ -435,6 +444,14 @@ export type BrokerMessage =
 	| { type: "released_child_reply"; childName: string; handoffId: string; replyTo: string; from: SessionInfo; message: Message }
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
 	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal }
-	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: DeliveryFailureReasonCode; attemptId?: string }
+	| {
+			type: "delivery_failed";
+			messageId: string;
+			reason: string;
+			reasonCode?: DeliveryFailureReasonCode;
+			attemptId?: string;
+			/** #4386: the typed refusal of a reply to a released subagent; its `code` equals `reasonCode`. */
+			error?: SerializedIntercomReleasedReplyError;
+	  }
 	| { type: "broker_status"; requestId: string; report: BrokerStatusReport }
 	| { type: "shutdown_ack"; requestId: string };

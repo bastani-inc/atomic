@@ -6,6 +6,7 @@ import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
 import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
 import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
+import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import {
@@ -14,12 +15,16 @@ import {
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
 	registerPendingAskStoreConformance,
+	registerReleasedAskStoreConformance,
 	registerRestoringReservationStoreConformance,
 	registerSentMessageAuthorityConformance,
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
 import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 type OpenStore<Store> = (options: IntercomBrokerStateOptions) => Promise<Store>;
 type OpenConnection = (directory: string) => Promise<SqliteDatabase>;
@@ -62,6 +67,7 @@ for (const [name, openConnection, prefix] of [
 	["SQL on the module-selected adapter", moduleSelectedAdapter, "team_"],
 ] as const) {
 	registerPendingAskStoreConformance(test, name, sharedFileFixture(openConnection, openSqlPendingAskStore, prefix));
+	registerReleasedAskStoreConformance(test, name, sharedFileFixture(openConnection, openSqlReleasedAskStore, prefix));
 	registerSentMessageAuthorityConformance(
 		test,
 		name,

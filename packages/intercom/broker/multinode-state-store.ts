@@ -31,6 +31,15 @@ export const KNOWN_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** The exact frame a broker writes to a recipient's socket; a cross-node delivery writes the same frame. */
 export type IntercomDeliveryFrame = Extract<BrokerMessage, { type: "message" }>;
 
+/**
+ * #4386: a reply to a subagent released while it waited on the question, for the subagent's owner. The owner's broker
+ * writes it with a new `handoffId` for each handoff, and the owner answers it with `released_child_reply_ack`.
+ */
+export type ReleasedAskerReplyFrame = Omit<Extract<BrokerMessage, { type: "released_child_reply" }>, "handoffId">;
+
+/** What an outbox row writes to its recipient; its `message.id` is the row's message id. */
+export type OutboxFrame = IntercomDeliveryFrame | ReleasedAskerReplyFrame;
+
 /** A send held for a recipient being restored (#3760), dispatched again verbatim when the hold ends. */
 export type HeldSendRequest = Extract<ClientMessage, { type: "send" | "supervisor_send" }>;
 
@@ -136,7 +145,7 @@ export interface OutboxEnqueueRequest {
 	/** Caller-computed send digest; the same message id with another digest is a conflict. */
 	readonly digest: string;
 	/** Written verbatim to the recipient; its `message.id` is the row's message id. */
-	readonly frame: IntercomDeliveryFrame;
+	readonly frame: OutboxFrame;
 }
 
 export interface OutboxRow {
@@ -146,7 +155,7 @@ export interface OutboxRow {
 	readonly targetIdentity: string;
 	readonly originBrokerId: string;
 	readonly digest: string;
-	readonly frame: IntercomDeliveryFrame;
+	readonly frame: OutboxFrame;
 	readonly state: OutboxRowState;
 	/** Number of claims taken on this row so far. */
 	readonly claimAttempts: number;
@@ -474,6 +483,7 @@ export type PendingAskClearResult =
 	| { readonly status: "no-match" }
 	| InvalidStateInput;
 export type PendingAskPruneResult = { readonly status: "pruned"; readonly removed: number } | InvalidStateInput;
+export type PendingAskListResult = { readonly status: "listed"; readonly asks: PendingAsk[] } | InvalidStateInput;
 export type PendingAskTakeResult = { readonly status: "taken"; readonly asks: PendingAsk[] } | InvalidStateInput;
 
 /**
@@ -487,8 +497,78 @@ export interface PendingAskStore {
 	matchesReply(route: ReplyRoute): Promise<PendingAskMatchResult>;
 	clearReply(route: ReplyRoute): Promise<PendingAskClearResult>;
 	pruneSender(senderSessionId: string): Promise<PendingAskPruneResult>;
+	/** The sender's asks, in insertion order, without removing them. */
+	listForSender(senderSessionId: string): Promise<PendingAskListResult>;
 	/** Remove and return the asks addressed to this target, in insertion order. */
 	takeForTarget(targetSessionId: string): Promise<PendingAskTakeResult>;
+}
+
+/**
+ * #4386: an ask whose asker, a supervised subagent, was released while it waited for the reply. A reply to it from
+ * the ask's target goes to the subagent's owner, wherever either is connected.
+ */
+export interface ReleasedAsk {
+	readonly questionId: string;
+	readonly askerSessionId: string;
+	readonly replierSessionId: string;
+	/** The asker's registration name, verbatim: its owner holds it under `releasedReservationKey(childName)`. */
+	readonly childName: string;
+}
+
+/** `open` until a reply claims it; `claimed` while that reply is handed to the owner; `answered` once accepted. */
+export type ReleasedAskState = "open" | "claimed" | "answered";
+
+export interface ReleasedAskRecord extends ReleasedAsk {
+	readonly state: ReleasedAskState;
+	/** The reply that claimed or answered the ask; absent while it is open. */
+	readonly replyMessageId?: string;
+}
+
+export interface ReleasedAskKey {
+	readonly questionId: string;
+	readonly replierSessionId: string;
+}
+
+export interface ReleasedAskClaim extends ReleasedAskKey {
+	readonly replyMessageId: string;
+}
+
+export type ReleasedAskKeepResult = { readonly status: "kept"; readonly kept: number } | InvalidStateInput;
+export type ReleasedAskLookupResult =
+	| { readonly status: "found"; readonly ask: ReleasedAskRecord }
+	| { readonly status: "missing" }
+	| InvalidStateInput;
+export type ReleasedAskClaimResult =
+	/** This reply holds the ask: it claimed it now, or had claimed or answered it before. */
+	| { readonly status: "claimed"; readonly ask: ReleasedAskRecord }
+	/** Another reply claimed or answered it. */
+	| { readonly status: "taken"; readonly ask: ReleasedAskRecord }
+	| { readonly status: "missing" }
+	| InvalidStateInput;
+export type ReleasedAskSettleResult =
+	| { readonly status: "settled" }
+	/** The ask is not claimed by this reply. */
+	| { readonly status: "stale" }
+	| { readonly status: "missing" }
+	| InvalidStateInput;
+
+/**
+ * S3 (#4386): released askers' asks, kept by the asker's broker when the asker leaves, before its pending asks are
+ * pruned, so a reply through any broker reaches the asker's owner exactly once. An ask still open past its deadline
+ * is missing; a claimed or answered one keeps answering its reply, and refusing others, until it is pruned.
+ */
+export interface ReleasedAskStore {
+	/** Keep each ask open for `ttlMs` of store time; an ask kept before is left as it is. */
+	keep(asks: readonly ReleasedAsk[], ttlMs: number): Promise<ReleasedAskKeepResult>;
+	lookup(key: ReleasedAskKey): Promise<ReleasedAskLookupResult>;
+	/** Claim an open ask for this reply, atomically, so only one reply is ever handed to the owner at a time. */
+	claim(claim: ReleasedAskClaim): Promise<ReleasedAskClaimResult>;
+	/** The owner accepted the claiming reply. Answering again for the same reply is `settled`. */
+	answer(claim: ReleasedAskClaim): Promise<ReleasedAskSettleResult>;
+	/** The owner refused the claiming reply on its first handoff: the ask is open to another reply. */
+	reopen(claim: ReleasedAskClaim): Promise<ReleasedAskSettleResult>;
+	/** Delete asks whose deadline passed more than `olderThanMs` ago; returns the count. */
+	prune(olderThanMs: number): Promise<number>;
 }
 
 export type SentMessageState = "reserved" | "accepted";
@@ -601,6 +681,7 @@ export interface IntercomBrokerStateStore {
 	readonly heldSends: HeldSendStore;
 	readonly reservations: RestoringReservationStore;
 	readonly pendingAsks: PendingAskStore;
+	readonly releasedAsks: ReleasedAskStore;
 	readonly sentMessages: SentMessageAuthority;
 	readonly knownSessions: KnownSessionStore;
 	close(): Promise<void>;
