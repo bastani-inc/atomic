@@ -294,12 +294,19 @@ const SLOW_FILES = 60;
 
 /**
  * A repository whose files take a while to check out, and whose checkouts do not start before `openCheckouts`: a test
- * acts on an addition it knows is still running, however slowly a loaded machine runs the test itself.
+ * acts on an addition it knows is still running, however slowly a loaded machine runs the test itself. A checkout also
+ * stops waiting once the sandbox is gone, so a test that fails before opening the gate leaves no git behind: git runs
+ * in its own process group, which teardown does not kill, and fails once it writes into the removed worktree.
  */
 function slowCheckoutRepository(name: string): { readonly repo: string; readonly openCheckouts: () => void } {
 	const repo = createRepository(dirs.root, name);
 	const gate = join(dirs.root, `${name}-checkouts-open`);
-	git(repo, "config", "filter.slow.smudge", `until [ -e '${gate}' ]; do sleep 0.01; done; sleep 0.05; cat`);
+	git(
+		repo,
+		"config",
+		"filter.slow.smudge",
+		`until [ -e '${gate}' ] || [ ! -d '${dirs.root}' ]; do sleep 0.01; done; sleep 0.05; cat`,
+	);
 	writeFileSync(join(repo, ".gitattributes"), "*.txt filter=slow\n");
 	for (let index = 0; index < SLOW_FILES; index++) writeFileSync(join(repo, `file-${index}.txt`), `${index}\n`);
 	git(repo, "add", ".");
