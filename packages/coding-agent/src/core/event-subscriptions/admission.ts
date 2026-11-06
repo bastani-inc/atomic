@@ -78,11 +78,11 @@ export function validateEventSource(source: EventSource, field: string): void {
 }
 
 /** Validates admission caps at the API boundary, before anything is recorded. */
-export function validateSubscriptionAdmission(admission: SubscriptionAdmission | undefined, prefix: string): void {
-	if (admission?.maxConcurrent !== undefined && !isPositiveInteger(admission.maxConcurrent)) {
+export function validateSubscriptionAdmission(admission: SubscriptionAdmission, prefix: string): void {
+	if (admission.maxConcurrent !== undefined && !isPositiveInteger(admission.maxConcurrent)) {
 		throw new SubscriptionConfigError(`${prefix}.maxConcurrent`, "not-positive-integer");
 	}
-	const rate = admission?.maxRate;
+	const rate = admission.maxRate;
 	if (rate === undefined) return;
 	if (!isPositiveInteger(rate.events))
 		throw new SubscriptionConfigError(`${prefix}.maxRate.events`, "not-positive-integer");

@@ -1818,7 +1818,17 @@ test("github sources validate repo, pr and interval before any command runs", ()
 		["githubChecks", githubChecks],
 		["githubReviews", githubReviews],
 	] as const) {
-		for (const repo of ["", "widgets", "acme/", "/widgets", "acme/../x", "acme/widgets/extra", "a b/c"]) {
+		for (const repo of [
+			"",
+			"widgets",
+			"acme/",
+			"/widgets",
+			"acme/.",
+			"acme/..",
+			"acme/../x",
+			"acme/widgets/extra",
+			"a b/c",
+		]) {
 			const error = configError(() => factory({ repo, pr: 1, gh }));
 			assert.equal(error.field, `${name}.repo`);
 			assert.equal(error.reason, "not-string");
@@ -1832,6 +1842,7 @@ test("github sources validate repo, pr and interval before any command runs", ()
 		assert.equal(notFunction.field, `${name}.gh`);
 		assert.equal(notFunction.reason, "not-function");
 		assert.ok(factory({ repo: "acme/widgets", pr: 1, intervalMs: LONGEST_TIMER_MS, gh }));
+		for (const repo of ["acme/.github", "acme/..dots", "a-1/x.y_z"]) assert.ok(factory({ repo, pr: 1, gh }));
 		for (const pr of [0, -1, 1.5, Number.NaN]) {
 			const error = configError(() => factory({ repo: "acme/widgets", pr, gh }));
 			assert.equal(error.field, `${name}.pr`);
