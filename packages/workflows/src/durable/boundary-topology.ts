@@ -49,7 +49,10 @@ export interface DurableChildInvocation {
 	readonly recordedWorkspace?: BoundWorkspace;
 	/** Whether an earlier attempt recorded any checkpoint inside the child, so its worktree may hold work to keep. */
 	recordedChildProgress(): boolean;
-	/** Heads of the changes that steps completed inside the child recorded on `binding`'s branch; resume needs them. */
+	/**
+	 * Heads of the changes that completed steps inside the child recorded on `binding`'s branch and resume checks: the
+	 * latest step's, or every overlapping step's. See `childHeadsToCheck`.
+	 */
 	recordedChildHeads(binding: Pick<BoundWorkspace, "repo" | "branch">): readonly string[];
 	/** Workspace binding of this attempt, recorded with the boundary start. */
 	readonly workspace?: BoundWorkspace;
@@ -126,7 +129,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		identity,
 		recordedWorkspace,
 		recordedChildProgress: () => childCheckpoints.length > 0,
-		recordedChildHeads: (binding) => childHeads(childCheckpoints, binding),
+		recordedChildHeads: (binding) => childHeadsToCheck(childCheckpoints, binding),
 		get workspace() {
 			return workspace;
 		},
@@ -465,18 +468,46 @@ function changeSetOf(
 		: undefined;
 }
 
-/** The `changeSet` heads that completed steps inside a child recorded on one repository's branch. */
-function childHeads(
+/**
+ * The `changeSet` heads that resume checks among those completed steps inside a child recorded on one repository's
+ * branch. A step reads the branch head before its checkpoint gets its `completedAt`, so when steps overlap, the step
+ * that saved last can hold an older head than one that saved before it. The heads checked are those of the step that
+ * started last and of every step still running when it started (`completedAt` later than the greatest `startedAt`).
+ * Steps that ran one after another leave only the latest step's head, so a step may amend or squash the commits of the
+ * steps before it. A step's start is the latest `startedAt` among the records that share its replay key; when a step
+ * has none, every recorded head is checked.
+ */
+export function childHeadsToCheck(
 	childCheckpoints: readonly DurableCheckpoint[],
 	binding: Pick<BoundWorkspace, "repo" | "branch">,
 ): string[] {
-	const heads = new Set<string>();
+	// A task's result record carries no start; the stage records that share its replay key do, and the latest is that
+	// of the attempt that completed.
+	const starts = new Map<string, number>();
+	for (const checkpoint of childCheckpoints)
+		if (checkpoint.kind === "stage" && checkpoint.startedAt !== undefined)
+			starts.set(
+				checkpoint.replayKey,
+				Math.max(starts.get(checkpoint.replayKey) ?? checkpoint.startedAt, checkpoint.startedAt),
+			);
+	const steps: { readonly startedAt: number | undefined; readonly completedAt: number; readonly head: string }[] = [];
 	for (const checkpoint of childCheckpoints) {
 		if (checkpoint.kind !== "stage") continue;
 		const changeSet = changeSetOf(checkpoint.output);
-		if (changeSet?.repo === binding.repo && changeSet.branch === binding.branch) heads.add(changeSet.headCommit);
+		if (changeSet?.repo !== binding.repo || changeSet.branch !== binding.branch) continue;
+		const startedAt = starts.get(checkpoint.replayKey);
+		steps.push({ startedAt, completedAt: checkpoint.completedAt, head: changeSet.headCommit });
 	}
-	return [...heads];
+	let lastStart = Number.NEGATIVE_INFINITY;
+	for (const step of steps) {
+		if (step.startedAt === undefined) return [...new Set(steps.map((each) => each.head))];
+		lastStart = Math.max(lastStart, step.startedAt);
+	}
+	return [
+		...new Set(
+			steps.filter((step) => step.startedAt === lastStart || step.completedAt > lastStart).map((step) => step.head),
+		),
+	];
 }
 
 function invalid(input: Pick<DurableBoundaryDescriptor, "replayKey">, message: string): DurableNestedTopologyError {

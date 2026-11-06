@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -27,10 +28,11 @@ import { AuthStorage, ModelRuntime, SettingsManager } from "../../packages/codin
 import goal from "../../packages/workflows/builtin/goal.js";
 import ralph from "../../packages/workflows/builtin/ralph.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { childHeadsToCheck } from "../../packages/workflows/src/durable/boundary-topology.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { WorkflowGracefulQuitError } from "../../packages/workflows/src/engine/workflow-tool-abort.js";
 import { createAgentSessionAdapter } from "../../packages/workflows/src/extension/wiring.js";
@@ -40,7 +42,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/executor-child-helpers.js";
 import { stageOptionsWithInputDefaults } from "../../packages/workflows/src/runs/foreground/executor-direct-helpers.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { WorkflowModelCatalogPort } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowModelCatalogPort, WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
@@ -79,8 +81,16 @@ interface RecordedSession {
 	readonly workspace: CreateAgentSessionOptions["workspace"];
 }
 
-/** A stage adapter that records where each session runs and commits `<stage>.txt` when asked to write. */
-function recordingAdapter(options: { readonly commitIn?: (stage: string) => boolean } = {}) {
+/**
+ * A stage adapter that records where each session runs, commits `<stage>.txt` when asked to write, and runs `act` in
+ * the session's directory when given one.
+ */
+function recordingAdapter(
+	options: {
+		readonly commitIn?: (stage: string) => boolean;
+		readonly act?: (stage: string, cwd: string) => void | Promise<void>;
+	} = {},
+) {
 	const sessions: RecordedSession[] = [];
 	return {
 		sessions,
@@ -99,6 +109,7 @@ function recordingAdapter(options: { readonly commitIn?: (stage: string) => bool
 						async prompt() {
 							if (created.cwd !== undefined && options.commitIn?.(stage) === true)
 								commitFile(created.cwd, `${stage}.txt`, `${stage}\n`);
+							if (created.cwd !== undefined) await options.act?.(stage, created.cwd);
 							appendProseTurn(session.messages);
 						},
 						getLastAssistantText: () => "done",
@@ -957,6 +968,465 @@ describe("workspace bindings across resume (#3109)", () => {
 			sessions.map((session) => session.stage),
 			["next"],
 			"the completed step replays from the journal; only the next one runs",
+		);
+	});
+});
+
+type StepContext = Pick<WorkflowRunContext, "task">;
+
+/** What a stage's recorded change set says, by stage name, for the stages that recorded one. */
+function recordedHeads(checkpoints: readonly DurableCheckpoint[]): ReadonlyMap<string, string> {
+	const heads = new Map<string, string>();
+	for (const checkpoint of checkpoints) {
+		if (checkpoint.kind !== "stage") continue;
+		const changeSet = (checkpoint.output as { readonly changeSet?: { readonly headCommit: string } } | undefined)
+			?.changeSet;
+		if (changeSet !== undefined) heads.set(checkpoint.name, changeSet.headCommit);
+	}
+	return heads;
+}
+
+function checksOf(transcript: readonly string[], head: string): number {
+	return transcript.filter(
+		(line) =>
+			line === `probe: rev-parse --verify ${head}^{commit}` ||
+			line === `validate: merge-base --is-ancestor ${head} HEAD`,
+	).length;
+}
+
+describe("a resumed child checks only the commit of its latest completed step (#4382)", () => {
+	/**
+	 * A child bound to `api` that runs `steps`, is interrupted after them on its first attempt and runs `next` once
+	 * resumed. `act` does each step's git work in the worktree.
+	 */
+	async function interruptedAfterSteps(
+		api: Workspace,
+		steps: (ctx: StepContext) => Promise<void>,
+		act: (stage: string, cwd: string) => void | Promise<void>,
+	) {
+		const state = { failFirst: true };
+		const child = workflow({
+			name: "rewriter",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await steps(ctx);
+				if (state.failFirst) throw new Error("interrupted after the steps");
+				await ctx.task("next", { prompt: "build on the steps" });
+				return {};
+			},
+		});
+		const parent = workflow({
+			name: "rewriter-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(child, { workspace: api });
+				return {};
+			},
+		});
+		const journalPath = join(dirs.root, "journal.sqlite");
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const first = recordingAdapter({ act });
+		const failed = await run(
+			parent,
+			{},
+			{ store: createStore(), durableBackend: firstBackend, adapters: first.adapters },
+		);
+		assert.equal(failed.status, "failed");
+		const checkpoints = firstBackend.listCheckpoints(failed.runId);
+		const [start] = boundaryStarts(checkpoints);
+		const binding = start?.topology?.boundary?.workspace as BoundWorkspace;
+		const heads = recordedHeads(checkpoints);
+		const completions = new Map(
+			(checkpoints as DurableStageCheckpoint[])
+				.filter((checkpoint) => recordedHeads([checkpoint]).has(checkpoint.name))
+				.map((checkpoint) => [checkpoint.name, checkpoint.completedAt]),
+		);
+		await firstBackend.close();
+		state.failFirst = false;
+		const resume = async () => {
+			const backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+			const second = recordingAdapter();
+			try {
+				const { result, transcript } = await gitTranscript(() =>
+					run(
+						parent,
+						{},
+						{ runId: failed.runId, store: createStore(), durableBackend: backend, adapters: second.adapters },
+					),
+				);
+				return { resumed: result, transcript, sessions: second.sessions.map((session) => session.stage) };
+			} finally {
+				await backend.close();
+			}
+		};
+		return {
+			binding,
+			head: (stage: string) => heads.get(stage)!,
+			completedAt: (stage: string) => completions.get(stage)!,
+			resume,
+		};
+	}
+
+	const inSequence =
+		(...names: string[]) =>
+		async (ctx: StepContext) => {
+			for (const name of names) await ctx.task(name, { prompt: name });
+		};
+
+	function amend(cwd: string, file: string): void {
+		writeFileSync(join(cwd, file), "amended\n");
+		git(cwd, "commit", "-q", "-a", "--amend", "--no-edit");
+	}
+
+	function isAncestor(cwd: string, commit: string, of: string): boolean {
+		try {
+			git(cwd, "merge-base", "--is-ancestor", commit, of);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	test("a child that amended its earlier step's commit resumes, checking only the amended commit once (#4382)", async () => {
+		const repo = createRepository(dirs.root, "amended-step");
+		const { binding, head, resume } = await interruptedAfterSteps(
+			workspace({ repo, branch: "feat/amend" }),
+			inSequence("write", "amend"),
+			(stage, cwd) => {
+				if (stage === "write") commitFile(cwd, "write.txt", "write\n");
+				if (stage === "amend") amend(cwd, "write.txt");
+			},
+		);
+		const [written, amended] = [head("write"), head("amend")];
+		assert.notEqual(written, amended);
+		assert.equal(
+			isAncestor(binding.worktree, written, "HEAD"),
+			false,
+			"the amend took the first commit off the branch",
+		);
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.equal(transcript.filter((line) => line === `probe: rev-parse --verify ${amended}^{commit}`).length, 1);
+		assert.equal(
+			transcript.filter((line) => line === `validate: merge-base --is-ancestor ${amended} HEAD`).length,
+			1,
+		);
+		assert.deepEqual(
+			transcript.filter((line) => line.includes(written)),
+			[],
+			"the replaced commit is never looked up",
+		);
+		assert.deepEqual(sessions, ["next"], "both completed steps replay; only the next one runs");
+	});
+
+	test("a child that squashed its earlier steps' commits resumes, checking only the squashed commit (#4382)", async () => {
+		const repo = createRepository(dirs.root, "squashed-steps");
+		const { head, resume } = await interruptedAfterSteps(
+			workspace({ repo, branch: "feat/squash" }),
+			inSequence("one", "two", "three", "squash"),
+			(stage, cwd) => {
+				if (stage === "squash") {
+					git(cwd, "reset", "-q", "--soft", "HEAD~3");
+					git(cwd, "commit", "-q", "-m", "squashed");
+				} else commitFile(cwd, `${stage}.txt`, `${stage}\n`);
+			},
+		);
+		const squashed = head("squash");
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.equal(checksOf(transcript, squashed), 2, "one availability probe and one ancestry check");
+		for (const stage of ["one", "two", "three"])
+			assert.deepEqual(
+				transcript.filter((line) => line.includes(head(stage))),
+				[],
+				`${stage}'s squashed-away commit is never looked up`,
+			);
+		assert.deepEqual(sessions, ["next"]);
+	});
+
+	test("a rewritten latest step still fails closed with drift naming its commit (#4382)", async () => {
+		const repo = createRepository(dirs.root, "rewritten-latest");
+		const { binding, head, resume } = await interruptedAfterSteps(
+			workspace({ repo, branch: "feat/rewritten" }),
+			inSequence("first", "second"),
+			(stage, cwd) => {
+				commitFile(cwd, `${stage}.txt`, `${stage}\n`);
+			},
+		);
+		const latest = head("second");
+		git(binding.worktree, "commit", "-q", "--amend", "-m", "rewritten outside the child");
+		const rewritten = git(binding.worktree, "rev-parse", "HEAD");
+		const { resumed, sessions } = await resume();
+		assert.equal(resumed.status, "failed");
+		const error = rehydrateWorkspaceError(resumed.workspaceError!);
+		assert.ok(error instanceof WorkspaceBindingError);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.code, "drift");
+		assert.equal(error.reason, "history-rewritten");
+		assert.equal(error.fields.expected, latest, "names the latest step's commit");
+		assert.equal(error.fields.actual, rewritten);
+		assert.deepEqual(sessions, [], "nothing runs on a branch that lost the latest step's work");
+	});
+
+	test("a resume elsewhere does not need an amended commit that was never pushed (#4382)", async () => {
+		const remote = createRemote(dirs.root, "amended-unpushed");
+		git(remote.seed, "push", "-q", remote.url.replace(/^file:\/\//, ""), "HEAD:refs/heads/feat/step");
+		const { head, resume } = await interruptedAfterSteps(
+			workspace({ repo: remote.url, branch: "feat/step" }),
+			inSequence("write", "amend"),
+			(stage, cwd) => {
+				if (stage === "write") commitFile(cwd, "write.txt", "write\n");
+				if (stage === "amend") {
+					amend(cwd, "write.txt");
+					git(cwd, "push", "-q", "origin", "HEAD:refs/heads/feat/step");
+				}
+			},
+		);
+		rmSync(join(dirs.home, "repos"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		rmSync(join(dirs.home, "worktrees"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.equal(checksOf(transcript, head("amend")), 2);
+		assert.deepEqual(
+			transcript.filter((line) => line.includes(head("write"))),
+			[],
+		);
+		assert.deepEqual(sessions, ["next"]);
+	});
+
+	test("a resume elsewhere fails closed naming only the latest step's commit when it was never pushed (#4382)", async () => {
+		const remote = createRemote(dirs.root, "latest-unpushed");
+		git(remote.seed, "push", "-q", remote.url.replace(/^file:\/\//, ""), "HEAD:refs/heads/feat/step");
+		const { head, resume } = await interruptedAfterSteps(
+			workspace({ repo: remote.url, branch: "feat/step" }),
+			inSequence("write", "amend"),
+			(stage, cwd) => {
+				if (stage === "write") commitFile(cwd, "write.txt", "write\n");
+				if (stage === "amend") amend(cwd, "write.txt");
+			},
+		);
+		rmSync(join(dirs.home, "repos"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		rmSync(join(dirs.home, "worktrees"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "failed");
+		const error = rehydrateWorkspaceError(resumed.workspaceError!);
+		assert.ok(error instanceof WorkspaceRestoreError);
+		assert.ok(isWorkspaceRestoreError(error));
+		assert.equal(error.code, "restore-failed");
+		assert.equal(error.reason, "commits-unavailable");
+		assert.equal(error.retryable, false);
+		assert.deepEqual(error.fields.missingCommits, [head("amend")], "names the latest step's commit, and only it");
+		assert.ok(error.hint?.includes("push origin feat/step"));
+		assert.equal(
+			transcript.filter((line) => line.includes(head("write"))).length,
+			0,
+			"the amended-away commit is never looked up",
+		);
+		assert.deepEqual(sessions, []);
+	});
+
+	test("parallel steps on one branch: every step still running when the last one started is checked (#4382)", async () => {
+		const repo = createRepository(dirs.root, "parallel-steps");
+		const fastDone = Promise.withResolvers<void>();
+		const { head, resume } = await interruptedAfterSteps(
+			workspace({ repo, branch: "feat/parallel" }),
+			async (ctx) => {
+				await Promise.all([
+					ctx.task("slow", { prompt: "slow" }),
+					ctx.task("fast", { prompt: "fast" }).then(() => fastDone.resolve()),
+				]);
+			},
+			async (stage, cwd) => {
+				if (stage === "slow") await fastDone.promise;
+				commitFile(cwd, `${stage}.txt`, `${stage}\n`);
+			},
+		);
+		const [slow, fast] = [head("slow"), head("fast")];
+		assert.notEqual(slow, fast);
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.equal(checksOf(transcript, slow), 2, "the step that completed last");
+		assert.equal(checksOf(transcript, fast), 2, "the step that completed while the other was running");
+		assert.deepEqual(sessions, ["next"]);
+	});
+
+	// POSIX: the git that holds a step's change-set read is a shell script.
+	test.skipIf(process.platform === "win32")(
+		"parallel steps that save out of order: losing the commit of the step that saved first fails closed (#4382)",
+		async () => {
+			const repo = createRepository(dirs.root, "out-of-order");
+			const armed = join(dirs.root, "hold-armed");
+			const held = join(dirs.root, "hold-entered");
+			const release = join(dirs.root, "hold-released");
+			const env = {
+				FAKE_GIT_HOLD: "diff --numstat",
+				FAKE_GIT_ARMED: armed,
+				FAKE_GIT_HELD: held,
+				FAKE_GIT_RELEASE: release,
+			};
+			// "older" reads the branch head, then its change-set diff is held until "newer" has committed on top and
+			// saved, so "older" saves last with the older head.
+			const { binding, head, completedAt, resume } = await withInjectedGit(dirs.root, env, () =>
+				interruptedAfterSteps(
+					workspace({ repo, branch: "feat/out-of-order" }),
+					async (ctx) => {
+						await Promise.all([
+							ctx.task("older", { prompt: "older" }),
+							ctx.task("newer", { prompt: "newer" }).then(() => writeFileSync(release, "")),
+						]);
+					},
+					async (stage, cwd) => {
+						if (stage === "older") {
+							commitFile(cwd, "older.txt", "older\n");
+							writeFileSync(armed, "");
+							return;
+						}
+						while (!existsSync(held)) await sleep(10);
+						rmSync(armed);
+						commitFile(cwd, "newer.txt", "newer\n");
+					},
+				),
+			);
+			const [older, newer] = [head("older"), head("newer")];
+			assert.ok(isAncestor(binding.worktree, older, newer), "the step that saved first committed on top");
+			assert.ok(completedAt("older") > completedAt("newer"), "the step with the older head saved last");
+			git(binding.worktree, "reset", "-q", "--hard", older);
+			const { resumed, sessions } = await resume();
+			assert.equal(resumed.status, "failed");
+			const error = rehydrateWorkspaceError(resumed.workspaceError!);
+			assert.ok(error instanceof WorkspaceBindingError);
+			assert.equal(error.code, "drift");
+			assert.equal(error.reason, "history-rewritten");
+			assert.equal(error.fields.expected, newer, "names the commit of the step that saved first");
+			assert.equal(error.fields.actual, older);
+			assert.deepEqual(sessions, [], "nothing runs on a branch that lost a step's work");
+		},
+	);
+});
+
+describe("childHeadsToCheck (#4382)", () => {
+	const binding = { repo: "/repos/app", branch: "feat/x" } as const;
+	let sequence = 0;
+	function step(
+		startedAt: number | undefined,
+		completedAt: number,
+		changeSet?: { readonly repo: string; readonly branch: string; readonly headCommit: string },
+	): DurableCheckpoint {
+		const id = `scope:task:step-${++sequence}`;
+		return {
+			kind: "stage",
+			workflowId: "child",
+			checkpointId: id,
+			name: id,
+			replayKey: id,
+			...(startedAt !== undefined ? { startedAt } : {}),
+			completedAt,
+			output: { text: "done", ...(changeSet !== undefined ? { changeSet } : {}) },
+		};
+	}
+	const on = (headCommit: string) => ({ ...binding, headCommit });
+
+	test("checks only the latest step when the steps ran one after another, wherever the list has it", () => {
+		assert.deepEqual(childHeadsToCheck([step(3, 4, on("h2")), step(5, 6, on("h3")), step(1, 2, on("h1"))], binding), [
+			"h3",
+		]);
+	});
+
+	test("checks every step still running when the last one started, so an older head saved last hides nothing", () => {
+		assert.deepEqual(
+			childHeadsToCheck([step(1, 2, on("h1")), step(3, 9, on("older")), step(4, 6, on("newer"))], binding),
+			["older", "newer"],
+		);
+	});
+
+	test("counts a step that saved as the next one started as finished before it", () => {
+		assert.deepEqual(childHeadsToCheck([step(1, 5, on("a")), step(5, 7, on("b"))], binding), ["b"]);
+		assert.deepEqual(childHeadsToCheck([step(5, 5, on("b")), step(1, 5, on("a"))], binding), ["b"]);
+	});
+
+	test("checks a head once when several checked steps recorded it", () => {
+		assert.deepEqual(childHeadsToCheck([step(1, 2, on("h1")), step(3, 4, on("h2")), step(5, 6, on("h1"))], binding), [
+			"h1",
+		]);
+		assert.deepEqual(childHeadsToCheck([step(1, 9, on("h")), step(2, 8, on("h"))], binding), ["h"]);
+	});
+
+	test("takes a step's start from the latest stage record that shares its replay key", () => {
+		const unstarted = (replayKey: string, completedAt: number, headCommit: string): DurableCheckpoint => ({
+			kind: "stage",
+			workflowId: "child",
+			checkpointId: `${replayKey}:task`,
+			name: replayKey,
+			replayKey,
+			completedAt,
+			output: { text: "done", changeSet: on(headCommit) },
+		});
+		const started = (replayKey: string, startedAt: number): DurableCheckpoint => ({
+			kind: "stage",
+			workflowId: "child",
+			checkpointId: `${replayKey}:stage:${startedAt}`,
+			name: replayKey,
+			replayKey,
+			startedAt,
+			completedAt: startedAt,
+		});
+		const write = [started("write", 1), unstarted("write", 4, "written")];
+		assert.deepEqual(childHeadsToCheck([...write, started("amend", 5), unstarted("amend", 8, "amended")], binding), [
+			"amended",
+		]);
+		assert.deepEqual(
+			childHeadsToCheck(
+				[...write, started("amend", 2), started("amend", 5), unstarted("amend", 8, "amended")],
+				binding,
+			),
+			["amended"],
+			"a retried step started when its last attempt did",
+		);
+		assert.deepEqual(childHeadsToCheck([...write, started("amend", 3), unstarted("amend", 8, "amended")], binding), [
+			"written",
+			"amended",
+		]);
+	});
+
+	test("checks every head when a step on the branch has no recorded start", () => {
+		assert.deepEqual(childHeadsToCheck([step(undefined, 2, on("h1")), step(3, 4, on("h2"))], binding), ["h1", "h2"]);
+	});
+
+	test("ignores other repositories, other branches, steps without a change set and non-stage checkpoints", () => {
+		const tool: DurableCheckpoint = {
+			kind: "tool",
+			workflowId: "child",
+			checkpointId: "scope:tool",
+			name: "tool",
+			argsHash: "hash",
+			completedAt: 9,
+			output: { changeSet: on("from-a-tool") },
+		};
+		assert.deepEqual(
+			childHeadsToCheck(
+				[
+					step(1, 2, on("mine")),
+					step(4, 5, { ...on("other-repo"), repo: "/repos/other" }),
+					step(5, 6, { ...on("other-branch"), branch: "feat/y" }),
+					step(undefined, 8, { ...on("unstarted-other-branch"), branch: "feat/y" }),
+					step(6, 7),
+					tool,
+				],
+				binding,
+			),
+			["mine"],
+		);
+	});
+
+	test("is empty when no completed step recorded a change on the branch", () => {
+		assert.deepEqual(childHeadsToCheck([], binding), []);
+		assert.deepEqual(
+			childHeadsToCheck([step(1, 1), step(1, 2, { ...on("elsewhere"), branch: "main" })], binding),
+			[],
 		);
 	});
 });
