@@ -77,7 +77,13 @@ async function check() {
 setTimeout(check, workerData.intervalMs);
 `;
 
-export function startBrokerWatchdog(socketPath: string, instanceId: string, logPath: string): void {
+/** A running watchdog thread. */
+export interface BrokerWatchdog {
+	/** End the thread; resolves once it has exited. */
+	stop(): Promise<void>;
+}
+
+export function startBrokerWatchdog(socketPath: string, instanceId: string, logPath: string): BrokerWatchdog | undefined {
 	try {
 		const worker = new Worker(WATCHDOG_SOURCE, {
 			eval: true,
@@ -91,15 +97,23 @@ export function startBrokerWatchdog(socketPath: string, instanceId: string, logP
 			},
 		});
 		let failed = false;
+		let stopping = false;
 		worker.on("error", (error) => {
 			failed = true;
 			console.error("Intercom broker watchdog unavailable:", error);
 		});
 		worker.on("exit", (code) => {
-			if (!failed) console.error(`Intercom broker watchdog exited unexpectedly with code ${code}`);
+			if (!failed && !stopping) console.error(`Intercom broker watchdog exited unexpectedly with code ${code}`);
 		});
 		worker.unref();
+		return {
+			stop: async () => {
+				stopping = true;
+				await worker.terminate();
+			},
+		};
 	} catch (error) {
 		console.error("Intercom broker watchdog unavailable:", error);
+		return undefined;
 	}
 }

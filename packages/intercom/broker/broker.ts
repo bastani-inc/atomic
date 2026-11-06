@@ -28,7 +28,7 @@ import {
 } from "../workflow-prediction-fields.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
-import { startBrokerWatchdog } from "./watchdog.js";
+import { type BrokerWatchdog, startBrokerWatchdog } from "./watchdog.js";
 import { retractBrokerStartAnnouncement } from "./start-announcement.js";
 import {
 	getBrokerDeliveredMessagesPath,
@@ -132,7 +132,7 @@ const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
-const MULTI_NODE_CLOSE_BOUND_MS = 2_000;
+const SHUTDOWN_CLOSE_BOUND_MS = 2_000;
 /** What a registration is answered with once this broker is closing: the client spawns the replacement and registers again. */
 const RETIRING_REFUSAL = {
   type: "registration_failed",
@@ -379,6 +379,7 @@ class IntercomBroker {
   private server: net.Server;
   private readonly instanceId = randomUUID();
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private watchdog: BrokerWatchdog | undefined;
   private boundSocketInode: number | undefined;
   private lastConnectionAt = performance.now();
   private deliveredMessages = new DeliveredMessageCache(
@@ -459,7 +460,7 @@ class IntercomBroker {
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
       console.log(`Intercom broker started (pid: ${process.pid})`);
-      startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
+      this.watchdog = startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
       if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
@@ -2933,14 +2934,14 @@ class IntercomBroker {
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
 	this.deliveredMessages.close();
-    const multiNode = this.multiNode;
-    if (multiNode === undefined) {
-      this.exitAfterShutdown();
-      return;
-    }
+    // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
+    // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's
+    // connection still holds the pipe open, finds the pipe busy and waits up to 30 s for a free instance.
+    const watchdogStopped = this.watchdog?.stop() ?? Promise.resolve();
     // Give this broker's leases up so other brokers see its sessions offline at once, within a bound.
-    const bound = new Promise<void>((resolve) => setTimeout(resolve, MULTI_NODE_CLOSE_BOUND_MS).unref());
-    void Promise.race([multiNode.close().catch(() => {}), bound]).finally(() => this.exitAfterShutdown());
+    const leasesGivenUp = this.multiNode?.close().catch(() => {}) ?? Promise.resolve();
+    const bound = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_CLOSE_BOUND_MS).unref());
+    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
   }
 
   private exitAfterShutdown(): never {
