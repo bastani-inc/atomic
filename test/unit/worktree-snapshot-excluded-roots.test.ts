@@ -5,17 +5,17 @@ import { afterEach, beforeEach, test } from "vitest";
 import {
 	captureWorktreeSnapshot,
 	type WorktreeSnapshotCapture,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
+} from "../../packages/coding-agent/src/core/worktree-snapshot/capture.js";
 import {
 	isWorkspaceGitError,
 	isWorkspaceSnapshotError,
 	rehydrateWorkspaceError,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
+} from "../../packages/coding-agent/src/core/worktree-snapshot/errors.js";
 import {
 	setWorktreeSnapshotExcludedRootsForTest,
 	worktreeSnapshotExcludedRoots,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.ts";
-import { runGit, setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
+} from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.js";
+import { runGit, setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -55,7 +55,7 @@ function unavailableReason(result: WorktreeSnapshotCapture): Error {
 }
 
 async function assertRefused(cwd: string): Promise<void> {
-	await assert.rejects(runGit(["--version"], { cwd }), (error: unknown) => {
+	await assert.rejects(runGit(["--version"], { cwd }), (error) => {
 		assert.ok(isWorkspaceSnapshotError(error), `expected not-a-repository in ${cwd}, got ${String(error)}`);
 		assert.equal(error.code, "not-a-repository");
 		assert.equal(error.subject, cwd);
@@ -154,7 +154,7 @@ test.skipIf(process.platform === "win32")(
 		const loop = sandbox.path("loop");
 		symlinkSync(loop, loop);
 		setWorktreeSnapshotExcludedRootsForTest([]);
-		await assert.rejects(runGit(["--version"], { cwd: loop }), (error: unknown) => {
+		await assert.rejects(runGit(["--version"], { cwd: loop }), (error) => {
 			assert.ok(isWorkspaceGitError(error), `expected the failed Git command, got ${String(error)}`);
 			return true;
 		});

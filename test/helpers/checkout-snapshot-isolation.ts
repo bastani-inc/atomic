@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { beforeEach } from "vitest";
-import { setWorktreeSnapshotExcludedRootsForTest } from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.ts";
+import { setWorktreeSnapshotExcludedRootsForTest } from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.js";
 
 /**
  * Every vitest project loads this file, so no test captures, verifies or restores a worktree snapshot of the checkout
