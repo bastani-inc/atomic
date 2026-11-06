@@ -60,6 +60,10 @@ test("the report tool tells the model what it is for and passes the text through
 		"Send a short report about this event to the stage that subscribed to it. Call it at most once, and only when the event matters.",
 	);
 	assert.deepEqual(Object.keys(tool.parameters.properties), ["text"]);
+	const textSchema: { type: string; description?: string } = tool.parameters.properties.text;
+	assert.equal(textSchema.type, "string");
+	assert.notEqual(textSchema.description, undefined);
+	assert.notEqual(textSchema.description, "");
 	const result = await tool.execute("call-1", { text: "deploy failed" }, undefined, undefined, undefined as never);
 	assert.deepEqual(result, {
 		content: [{ type: "text", text: "Report delivered to the subscriber." }],

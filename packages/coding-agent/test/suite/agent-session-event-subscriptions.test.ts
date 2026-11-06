@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import {
 	isSubscriptionChildUnavailableError,
 	isSubscriptionClosedError,
@@ -11,15 +11,13 @@ import {
 } from "../../src/core/event-subscriptions/errors.ts";
 import { SUBSCRIPTION_REPORT_TOOL_NAME } from "../../src/core/event-subscriptions/prompts.ts";
 import {
-	EVENT_REPORT_MESSAGE_TYPE,
-	EVENT_SUBSCRIPTION_ENTRY_TYPE,
-	EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE,
 	type EventReportDetails,
 	runThenDispose,
 	type SessionEventChild,
 } from "../../src/core/event-subscriptions/session-subscription.ts";
 import type { EventSource, SubscriptionEvent } from "../../src/core/event-subscriptions/types.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import { SettingsManager } from "../../src/core/settings-manager.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 function listSource(events: readonly SubscriptionEvent[]): EventSource {
@@ -33,7 +31,7 @@ function listSource(events: readonly SubscriptionEvent[]): EventSource {
 
 function reportsIn(harness: Harness): EventReportDetails[] {
 	return harness.session.messages
-		.filter((message) => message.role === "custom" && message.customType === EVENT_REPORT_MESSAGE_TYPE)
+		.filter((message) => message.role === "custom" && message.customType === "event_report")
 		.map((message) => (message as { details: EventReportDetails }).details);
 }
 
@@ -65,7 +63,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		);
 		const processed = harness.sessionManager
 			.getEntries()
-			.filter((entry) => entry.type === "custom" && entry.customType === EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE);
+			.filter((entry) => entry.type === "custom" && entry.customType === "event_subscription_processed");
 		assert.equal(processed.length, 30);
 	});
 
@@ -206,23 +204,24 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			() => harness.session.subscribe(listSource([]), async () => {}, { name: "late" }),
 			(error) =>
 				isSubscriptionClosedError(error) &&
-				(error as { subscriptionId: string }).subscriptionId === `${harness.session.sessionId}/late`,
+				(error as { subscriptionId: string }).subscriptionId === `${harness.session.sessionId}/late` &&
+				(error as { operation: string }).operation === "emit",
 		);
 	});
 
 	it("numbers subscriptions per name, records each one, and skips only its own processed ids (#4311)", async () => {
 		const sessionManager = SessionManager.inMemory();
-		await sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE);
-		await sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE, {
+		await sessionManager.appendCustomEntry("event_subscription_processed");
+		await sessionManager.appendCustomEntry("event_subscription_processed", {
 			subscription: "other#1",
 			eventId: "a",
 		});
 		await sessionManager.appendCustomEntry("unrelated", { subscription: "list#1", eventId: "b" });
-		await sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE, {
+		await sessionManager.appendCustomEntry("event_subscription_processed", {
 			subscription: "list#1",
 			eventId: 7,
 		});
-		await sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE, {
+		await sessionManager.appendCustomEntry("event_subscription_processed", {
 			subscription: "list#1",
 			eventId: "c",
 		});
@@ -246,7 +245,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			harness.sessionManager
 				.getEntries()
 				.flatMap((entry) =>
-					entry.type === "custom" && entry.customType === EVENT_SUBSCRIPTION_ENTRY_TYPE ? [entry.data] : [],
+					entry.type === "custom" && entry.customType === "event_subscription" ? [entry.data] : [],
 				),
 			[
 				{ subscription: "list#1", source: "list" },
@@ -265,7 +264,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			await child.report("x matters");
 		}).done;
 		const report = harness.session.messages.find(
-			(message) => message.role === "custom" && message.customType === EVENT_REPORT_MESSAGE_TYPE,
+			(message) => message.role === "custom" && message.customType === "event_report",
 		) as { display?: boolean; content?: unknown } | undefined;
 		assert.equal(report?.display, true);
 		assert.equal(report?.content, 'Report from event child "list/x" (event x):\n\nx matters');
@@ -273,7 +272,13 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			await new Promise<void>((resolve) => setTimeout(resolve, 10));
 		}
 		assert.equal(harness.session.messages.at(-1)?.role, "assistant");
-		await assert.rejects(kept!.report("too late"), (error) => isSubscriptionClosedError(error));
+		await assert.rejects(
+			kept!.report("too late"),
+			(error) =>
+				isSubscriptionClosedError(error) &&
+				error.operation === "report" &&
+				error.subscriptionId === `${harness.session.sessionId}/list#1`,
+		);
 		const bad = await harness.session
 			.subscribe(listSource([{ id: "y" }]), async (_event, child) => {
 				await child.report(5 as never);
@@ -284,6 +289,62 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			);
 		assert.equal(isSubscriptionConfigError(bad), true);
 		assert.equal((bad as SubscriptionConfigError).field, "report.text");
+		assert.equal((bad as SubscriptionConfigError).reason, "not-string");
+	});
+
+	it("sends each report as a turn-starting steer message and records the subscription under its literal entry types (#4311)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("noted")]);
+		const send = vi.spyOn(harness.session, "sendCustomMessage");
+		await harness.session.subscribe(listSource([{ id: "x" }]), async (_event, child) => {
+			await child.report("x matters");
+		}).done;
+		assert.equal(send.mock.calls.length, 1);
+		assert.deepEqual(send.mock.calls[0]?.[1], { triggerTurn: true, deliverAs: "steer" });
+		assert.equal(send.mock.calls[0]?.[0].customType, "event_report");
+		assert.deepEqual(
+			harness.sessionManager
+				.getEntries()
+				.flatMap((entry) => (entry.type === "custom" ? [[entry.customType, entry.data]] : [])),
+			[
+				["event_subscription", { subscription: "list#1", source: "list" }],
+				["event_subscription_processed", { subscription: "list#1", eventId: "x" }],
+			],
+		);
+	});
+
+	it("child.task returns the child's final text, an empty text when it gave none, and disposes every child (#4311)", async () => {
+		const flushed: string[] = [];
+		const childSettings = SettingsManager.inMemory();
+		const flush = childSettings.flush.bind(childSettings);
+		childSettings.flush = async () => {
+			flushed.push("child settings flushed");
+			await flush();
+		};
+		const harness = await createHarness({ childSessions: { settingsManager: childSettings } });
+		harnesses.push(harness);
+		let childTool: { name: string; description: string } | undefined;
+		harness.setResponses([
+			(context) => {
+				childTool = context.messages
+					.flatMap((message) => (message.role === "system" ? (message.toolsAdded ?? []) : []))
+					.find((tool) => tool.name === SUBSCRIPTION_REPORT_TOOL_NAME);
+				return fauxAssistantMessage("verdict: fine");
+			},
+			fauxAssistantMessage(""),
+		]);
+		const results: Array<{ text: string; sessionId: string }> = [];
+		await harness.session.subscribe(listSource([{ id: "a" }, { id: "b" }]), async (_event, child) => {
+			results.push(await child.task({ prompt: "Judge the event." }));
+		}).done;
+		assert.deepEqual(
+			results.map((result) => result.text),
+			["verdict: fine", ""],
+		);
+		assert.equal(new Set(results.map((result) => result.sessionId)).size, 2);
+		assert.equal(flushed.length, 2);
+		assert.match(childTool?.description ?? "", /to the session that subscribed to it/);
 	});
 
 	it("disposing the session cancels every open subscription (#4311)", async () => {

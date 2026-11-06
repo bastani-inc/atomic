@@ -69,10 +69,11 @@ export function createWakeDispatcher(host: WakeTimerHost = systemTimerHost): Wak
 		}
 	};
 
-	const pop = (): WakeEntry | undefined => {
-		const top = heap[0];
-		const last = heap.pop();
-		if (top === undefined || last === undefined || heap.length === 0) return top;
+	/** Removes the earliest entry. Callers check that the heap is not empty. */
+	const pop = (): WakeEntry => {
+		const top = heap[0]!;
+		const last = heap.pop()!;
+		if (heap.length === 0) return top;
 		heap[0] = last;
 		let index = 0;
 		for (;;) {
@@ -106,7 +107,7 @@ export function createWakeDispatcher(host: WakeTimerHost = systemTimerHost): Wak
 		const now = host.elapsed();
 		const due: WakeEntry[] = [];
 		while (heap[0] !== undefined && (heap[0].cancelled || heap[0].at <= now)) {
-			const entry = pop()!;
+			const entry = pop();
 			if (!entry.cancelled) due.push(entry);
 		}
 		arm();

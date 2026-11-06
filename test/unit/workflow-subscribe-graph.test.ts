@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterAll, test } from "vitest";
+import { isSubscriptionCheckpointHash } from "../../packages/workflows/src/durable/subscription-records.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
 import { scanPossibleStagesFromSource } from "../../packages/workflows/src/shared/possible-stages.js";
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
@@ -50,4 +51,49 @@ test("a workflow whose only tracked call is ctx.subscribe passes discovery and n
 		"export default workflow({ run: async (ctx) => { for await (const e of ctx.events(s)) {} } });",
 	);
 	assert.equal(scanPossibleStagesFromSource(eventsOnly).hasTrackedNodes, false);
+});
+
+test("discovery names stage, task, chain and parallel steps beside ctx.subscribe, but never a tool or subscription (#4311)", () => {
+	const path = join(TEST_DIR, "mixed.ts");
+	writeTextSync(
+		path,
+		`
+		export default workflow({
+			name: "mixed",
+			run: async (ctx) => {
+				await ctx.stage("plan").prompt("p");
+				await ctx.task("build", { prompt: "b" });
+				await ctx.chain([{ name: "lint", prompt: "l" }]);
+				await ctx.parallel([{ name: "test", prompt: "t" }]);
+				await ctx.tool("fetch", async () => 1);
+				await ctx.subscribe(source, async () => {}).done;
+			},
+		});
+	`,
+	);
+	const result = scanPossibleStagesFromSource(path);
+	assert.equal(result.hasTrackedNodes, true);
+	assert.deepEqual([...result.stages].sort(), ["build", "lint", "plan", "test"]);
+	const singleCalls: ReadonlyArray<readonly [string, string, readonly string[]]> = [
+		["tool-only.ts", 'await ctx.tool("fetch", async () => 1);', []],
+		["workflow-only.ts", "await ctx.workflow(child, {});", ["workflow:child"]],
+	];
+	for (const [file, call, stages] of singleCalls) {
+		const only = join(TEST_DIR, file);
+		writeTextSync(only, `export default workflow({ run: async (ctx) => { ${call} } });`);
+		const scanned = scanPossibleStagesFromSource(only);
+		assert.deepEqual({ tracked: scanned.hasTrackedNodes, stages: [...scanned.stages] }, { tracked: true, stages });
+	}
+});
+
+test("subscription records are recognised at the root and under a child workflow's scope, and nothing else is (#4311)", () => {
+	const recognised = [
+		"workflow-subscription:ci#1",
+		"workflow-subscription-event:5f2a",
+		"child-run:workflow-subscription:ci#1",
+		"child-run:workflow-subscription-event:5f2a",
+	];
+	const ordinary = ["tool:fetch", "my-workflow-subscription:x", "workflow-subscriptions", "stage:ci#1"];
+	assert.deepEqual(recognised.map(isSubscriptionCheckpointHash), [true, true, true, true]);
+	assert.deepEqual(ordinary.map(isSubscriptionCheckpointHash), [false, false, false, false]);
 });

@@ -204,6 +204,14 @@ test("serialized errors survive a process boundary and rehydrate as the same cla
 		const cause = error.cause as Error | undefined;
 		assert.equal((rebuilt.cause as Error | undefined)?.message, cause?.message);
 		assert.equal((rebuilt.cause as Error | undefined)?.name, cause?.name);
+		if (cause !== undefined) {
+			assert.deepEqual(Object.getOwnPropertyDescriptor(rebuilt, "cause"), {
+				value: rebuilt.cause,
+				writable: true,
+				enumerable: false,
+				configurable: true,
+			});
+		}
 	}
 	const chained = new SubscriptionHandlerError(
 		"s",

@@ -1114,6 +1114,7 @@ test("webhook gives up on a body over the limit without reading it all, then clo
 	const response = await rawResponse(connection);
 	assert.equal(response.status, 413);
 	assert.deepEqual(JSON.parse(response.body), { error: "payload-too-large" });
+	assert.match(connection.received().split("\r\n\r\n")[0] ?? "", /^connection: close$/im);
 	await bounded(connection.closed, "the server to close the connection");
 	assert.deepEqual(handle.events, []);
 });

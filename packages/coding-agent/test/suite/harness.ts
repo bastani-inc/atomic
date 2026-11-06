@@ -88,8 +88,11 @@ export interface HarnessOptions {
 	finishTurn?: Agent["finishTurn"];
 	/** The agent directory a session kept in a store spills oversized tool results into. */
 	storageAgentDir?: string;
-	/** Lets the session start in-process child sessions on the same faux provider. */
-	childSessions?: boolean;
+	/**
+	 * Lets the session start in-process child sessions on the same faux provider. An object overrides the options
+	 * each child session is created with.
+	 */
+	childSessions?: boolean | Partial<CreateAgentSessionOptions>;
 }
 
 export interface Harness {
@@ -218,7 +221,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		subagentPolicy: options.subagentPolicy,
 		orchestrationContext: options.orchestrationContext,
 		storageAgentDir: options.storageAgentDir,
-		...(options.childSessions === true
+		...(options.childSessions !== undefined && options.childSessions !== false
 			? {
 					childSessionOptions: (child: CreateAgentSessionOptions): CreateAgentSessionOptions => ({
 						cwd: tempDir,
@@ -230,6 +233,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 						builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
 						noTools: "builtin",
 						...child,
+						...(options.childSessions === true ? {} : options.childSessions),
 					}),
 				}
 			: {}),

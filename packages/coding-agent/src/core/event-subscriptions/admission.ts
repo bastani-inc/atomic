@@ -140,7 +140,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	};
 
 	const finish = (): void => {
-		if (stopped === undefined && (!started || intakeOpen || active > 0 || queue.length > 0)) return;
+		if (stopped === undefined && (!started || intakeOpen || queue.length > 0)) return;
 		if (active > 0 && !cancelled) return;
 		rateWake?.cancel();
 		if (stopped === undefined) done.resolve(stats());
@@ -186,7 +186,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	};
 
 	function pump(): void {
-		while (started && stopped === undefined && queue.length > 0 && active < maxConcurrent && rateAllowsNow()) {
+		while (started && queue.length > 0 && active < maxConcurrent && rateAllowsNow()) {
 			active += 1;
 			runHandler(queue.shift()!);
 		}
@@ -216,11 +216,11 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		started = true;
 		if (intakeOpen) {
 			const sourceFailed = (error: unknown): void => {
-				if (sourceStop.signal.aborted && error === sourceStop.signal.reason) closeIntake();
-				else
+				if (!sourceStop.signal.aborted || error !== sourceStop.signal.reason) {
 					stop(
 						isEventSourceError(error) ? error : new EventSourceError(input.source.id, "start", { cause: error }),
 					);
+				}
 			};
 			try {
 				const running = input.source.start(sourceStop.signal, emit);

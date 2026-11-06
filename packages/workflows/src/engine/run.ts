@@ -1026,15 +1026,14 @@ async function executeRun(
 			activeStore.recordNotice({ id, runId, level: "info", message, createdAt: Date.now() }),
 		watch: (promise) => rejectionScope.watch(promise),
 	});
-	const createdStageId = (create: () => StageContext): { readonly stage: StageContext; readonly id?: string } => {
+	const createdStageId = (
+		create: () => StageContext,
+	): { readonly stage: StageContext; readonly id: string | undefined } => {
 		const before = activeStore.run(runId)?.stages.length ?? 0;
 		const stage = create();
-		const id = activeStore.run(runId)?.stages[before]?.id;
-		return id === undefined ? { stage } : { stage, id };
+		return { stage, id: activeStore.run(runId)?.stages[before]?.id };
 	};
-	ownController.signal.addEventListener("abort", () => eventPrimitives.cancel(ownController.signal.reason), {
-		once: true,
-	});
+	ownController.signal.addEventListener("abort", () => eventPrimitives.cancel(ownController.signal.reason));
 	const ctx: WorkflowRunContext = {
 		inputs: resolvedInputs,
 		runId,

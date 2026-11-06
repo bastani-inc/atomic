@@ -84,8 +84,8 @@ function processedIds(session: AgentSession, subscription: string): ReadonlySet<
 }
 
 function attachCleanupCause(primary: unknown, cleanupCause: unknown): void {
-	if (typeof primary === "object" && primary !== null && Object.isExtensible(primary)) {
-		Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, enumerable: false });
+	if (Object.isExtensible(primary)) {
+		Object.defineProperty(primary as object, "cleanupCause", { value: cleanupCause, enumerable: false });
 	}
 }
 

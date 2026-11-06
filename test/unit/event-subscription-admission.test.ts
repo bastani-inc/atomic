@@ -662,7 +662,9 @@ test("the wake dispatcher orders equal deadlines by scheduling order, re-arms fo
 	assert.equal(dispatcher.now(), 1_000);
 	const fired: string[] = [];
 	const deadlines = [50, 10, 30, 10, 70, 30, 20, 10, 60, 40, 20, 50];
-	deadlines.forEach((delay, index) => dispatcher.schedule(delay, () => fired.push(`${delay}:${index}`)));
+	for (const [index, delay] of deadlines.entries()) {
+		dispatcher.schedule(delay, () => fired.push(`${delay}:${index}`));
+	}
 	assert.deepEqual(armed, [50, 10]);
 	advance(100);
 	assert.deepEqual(
@@ -694,4 +696,113 @@ test("the shared dispatcher sleeps on a real timer and stops it on abort", async
 	const sleeping = sharedWakeDispatcher.sleep(60_000, controller.signal);
 	controller.abort("done waiting");
 	await assert.rejects(sleeping, (error) => error === "done waiting");
+});
+
+test("close keeps the subscription open until events waiting on the rate window are handled (#4311)", async () => {
+	const time = manualTime();
+	const id = uniqueId("close-rate");
+	const handled: string[] = [];
+	const subscription = openEventSubscription({
+		id,
+		source: openSource(),
+		dispatcher: time.dispatcher,
+		admission: { maxRate: { events: 1, intervalMs: 10 } },
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	await settle();
+	for (const eventId of ["a", "b", "c"]) publishEvent(id, { id: eventId });
+	await settle();
+	assert.deepEqual(handled, ["a"]);
+	let settled = false;
+	const closing = subscription.close().then((stats) => {
+		settled = true;
+		return stats;
+	});
+	await settle();
+	assert.equal(settled, false);
+	time.advance(10);
+	await settle();
+	assert.equal(settled, false);
+	assert.deepEqual(handled, ["a", "b"]);
+	time.advance(10);
+	const stats = await closing;
+	assert.deepEqual(handled, ["a", "b", "c"]);
+	assert.deepEqual([stats.handled, stats.queued, stats.active], [3, 0, 0]);
+});
+
+/** A source that stays open until its signal aborts, then rejects with whatever `rejectWith` returns. */
+function rejectingOnStop(rejectWith: (signal: AbortSignal) => unknown): EventSource {
+	return {
+		id: "rejecting",
+		start: (signal) =>
+			new Promise<void>((_resolve, reject) => {
+				signal.addEventListener("abort", () => reject(rejectWith(signal)));
+			}),
+	};
+}
+
+test("a source that rejects with its stop reason does not cut short the events close is waiting for (#4311)", async () => {
+	const id = uniqueId("polite-close");
+	const releases: Array<() => void> = [];
+	const handled: string[] = [];
+	const subscription = openEventSubscription({
+		id,
+		source: rejectingOnStop((signal) => signal.reason),
+		admission: { maxConcurrent: 1 },
+		handle: (event) =>
+			new Promise<void>((resolve) => {
+				releases.push(() => {
+					handled.push(event.id);
+					resolve();
+				});
+			}),
+	});
+	await settle();
+	for (const eventId of ["a", "b", "c"]) publishEvent(id, { id: eventId });
+	await settle();
+	const closing = subscription.close();
+	for (let step = 0; step < 3; step++) {
+		await settle();
+		releases.shift()?.();
+	}
+	const stats = await closing;
+	assert.deepEqual(handled, ["a", "b", "c"]);
+	assert.deepEqual([stats.handled, stats.queued], [3, 0]);
+});
+
+test("a source that rejects with something other than its stop reason fails the subscription and drops waiting events (#4311)", async () => {
+	const id = uniqueId("impolite-close");
+	const cause = new Error("socket reset");
+	const releases: Array<() => void> = [];
+	const handled: string[] = [];
+	const subscription = openEventSubscription({
+		id,
+		source: rejectingOnStop(() => cause),
+		admission: { maxConcurrent: 1 },
+		handle: (event) =>
+			new Promise<void>((resolve) => {
+				releases.push(() => {
+					handled.push(event.id);
+					resolve();
+				});
+			}),
+	});
+	await settle();
+	for (const eventId of ["a", "b", "c"]) publishEvent(id, { id: eventId });
+	await settle();
+	const closing = subscription.close();
+	closing.catch(() => undefined);
+	await settle();
+	releases.shift()?.();
+	const failure = await closing.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isEventSourceError(failure), true);
+	assert.equal((failure as { code: string }).code, "source-failed");
+	assert.equal((failure as { cause: unknown }).cause, cause);
+	assert.deepEqual(handled, ["a"]);
+	assert.equal(subscription.stats().queued, 0);
 });

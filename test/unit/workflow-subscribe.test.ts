@@ -20,6 +20,10 @@ import {
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import type {
+	WorkflowEventStream,
+	WorkflowSubscription,
+} from "../../packages/workflows/src/shared/authoring-contract-events.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -488,6 +492,7 @@ test("invalid ctx.subscribe options throw SubscriptionConfigError before anythin
 			() => ctx.subscribe(listSource("s", []), async () => {}, { maxRate: { events: 1, intervalMs: 0.5 } }),
 			() => ctx.subscribe(listSource("s", []), async () => {}, { subscriber: {} as never }),
 			() => ctx.subscribe(listSource("s", []), async () => {}, { name: "" }),
+			() => ctx.subscribe(listSource("s", []), async () => {}, { name: 42 as never }),
 			() => ctx.events(listSource("s", []), { maxRate: { events: -1, intervalMs: 10 } }),
 		];
 		for (const attempt of attempts) {
@@ -511,6 +516,7 @@ test("invalid ctx.subscribe options throw SubscriptionConfigError before anythin
 			["options.maxConcurrent", "not-positive-integer"],
 			["options.maxRate.intervalMs", "not-positive-integer"],
 			["options.subscriber", "not-stage"],
+			["options.name", "not-string"],
 			["options.name", "not-string"],
 			["options.maxRate.events", "not-positive-integer"],
 		],
@@ -574,10 +580,12 @@ test("event children hang under the subscriber even when another stage settled a
 	assert.deepEqual(child.parentIds, [watcher.id]);
 });
 
-test("a subscriber declared while the run is paused still parents its event children (#4311)", async () => {
+test("a subscriber declared while the run is paused is created on resume and still parents its event children (#4311)", async () => {
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
 	const runId = "77777777-7777-4777-8777-000000004311";
+	const declared = (name: string): boolean => store.run(runId)?.stages.some((stage) => stage.name === name) === true;
+	const observed: Record<string, boolean> = {};
 	const definition = workflow({
 		name: "paused-subscriber",
 		description: "",
@@ -587,9 +595,12 @@ test("a subscriber declared while the run is paused still parents its event chil
 			await ctx.stage("anchor").prompt("start");
 			await pauseRun(runId, { store });
 			const watcher = ctx.stage("watcher");
+			observed.watcherWhilePaused = declared("watcher");
 			await resumeRun(runId, { store });
 			await watcher.prompt("watch");
-			await ctx.stage("between").prompt("unrelated");
+			const between = ctx.stage("between");
+			observed.betweenOnDeclaration = declared("between");
+			await between.prompt("unrelated");
 			await ctx.subscribe(
 				listSource("paused", [{ id: "p1" }]),
 				async (_event, child) => {
@@ -613,27 +624,48 @@ test("a subscriber declared while the run is paused still parents its event chil
 	assert.equal(result.status, "completed", result.error);
 	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
 	assert.deepEqual(result.stages.find((stage) => stage.name === "paused/p1")!.parentIds, [watcher.id]);
+	assert.deepEqual(observed, { watcherWhilePaused: false, betweenOnDeclaration: true });
 });
 
-test("a failing run stops its open subscriptions and drops their queued events (#4311)", async () => {
+test("a failing run stops its open subscriptions at once and drops their queued events (#4311)", async () => {
 	const handled: string[] = [];
+	const signals: AbortSignal[] = [];
+	const gate = Promise.withResolvers<void>();
+	const bodyError = new Error("body failed");
+	let subscription: WorkflowSubscription | undefined;
+	let doneReason: unknown;
 	const { result } = await runWorkflow(async (ctx) => {
 		await ctx.stage("anchor").prompt("start");
-		const subscription = ctx.subscribe(
-			openSource("stopping"),
+		subscription = ctx.subscribe(
+			{
+				id: "stopping",
+				start: (signal) => {
+					signals.push(signal);
+				},
+			},
 			async (event) => {
 				handled.push(event.id);
-				await new Promise((resolve) => setTimeout(resolve, 50));
+				await gate.promise;
 			},
 			{ maxConcurrent: 1 },
 		);
-		void subscription.done.catch(() => undefined);
+		void subscription.done.catch((error: unknown) => {
+			doneReason = error;
+		});
 		for (const id of ["s1", "s2", "s3"]) publishEvent(subscription.id, { id });
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		throw new Error("body failed");
+		await turnsUntil(() => handled.length === 1);
+		throw bodyError;
 	});
 	assert.equal(result.status, "failed");
-	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(signals.length, 1);
+	assert.equal(signals[0]!.aborted, true);
+	assert.deepEqual(
+		{ queued: subscription!.stats().queued, active: subscription!.stats().active },
+		{ queued: 0, active: 1 },
+	);
+	gate.resolve();
+	await turnsUntil(() => doneReason !== undefined);
+	assert.equal(doneReason, bodyError);
 	assert.deepEqual(handled, ["s1"]);
 });
 
@@ -703,6 +735,7 @@ test("subscriber, report and inline-stream inputs are validated with typed error
 		for (const attempt of [
 			() => ctx.events({ id: "", start: () => {} }),
 			() => ctx.events(listSource("e", []), { name: "" }),
+			() => ctx.events(listSource("e", []), { name: 42 as never }),
 			() => ctx.events(listSource("e", []), { maxRate: { events: 1, intervalMs: 0 } }),
 		]) {
 			try {
@@ -724,6 +757,7 @@ test("subscriber, report and inline-stream inputs are validated with typed error
 		["options.subscriber", "not-stage"],
 		["options.subscriber", "not-stage"],
 		["source", "not-event-source"],
+		["options.name", "not-string"],
 		["options.name", "not-string"],
 		["options.maxRate.intervalMs", "not-positive-integer"],
 		["report.text", "not-string"],
@@ -799,7 +833,18 @@ test("reports steer the subscriber, keep the author's custom tools, and refuse l
 		{ text: 'Report from event child "tools/t1" (event t1):\n\nt1 matters', deliverAs: "steer" },
 	]);
 	assert.deepEqual(toolNames.at(-1), ["author_tool", "report_to_subscriber"]);
-	await assert.rejects(kept!.report("late"), (error) => isSubscriptionClosedError(error));
+	await assert.rejects(kept!.report("late"), (error) => {
+		assert.equal(isSubscriptionClosedError(error), true);
+		assert.deepEqual(
+			{ operation: (error as { operation: string }).operation, code: (error as { code: string }).code },
+			{ operation: "report", code: "subscription-closed" },
+		);
+		assert.equal(
+			(error as { subscriptionId: string }).subscriptionId,
+			"99999999-9999-4999-8999-000000004311/tools#1",
+		);
+		return true;
+	});
 });
 
 test("reports without a subscriber get one notice each (#4311)", async () => {
@@ -836,6 +881,10 @@ test("reports without a subscriber get one notice each (#4311)", async () => {
 	assert.deepEqual(
 		notices.map((notice) => notice.id.split("/").at(-1)),
 		["n#1:report:1", "n#1:report:2", "n#1:report:3", "n#1:report:4"],
+	);
+	assert.deepEqual(
+		notices.map((notice) => notice.level),
+		["info", "info", "info", "info"],
 	);
 });
 
@@ -891,7 +940,7 @@ test("inline streams record their mode, honour maxRate, and close or throw clean
 	assert.deepEqual(processed.sort(), ["x"]);
 });
 
-test("an event child replayed from cache after a resume stays detached from later stages (#4311)", async () => {
+test("an event child replayed from cache after a resume stays detached while replayed main-line stages stay attached (#4311)", async () => {
 	const backend = await createMemoryTestBackend();
 	const runId = "bbbbbbbb-bbbb-4bbb-8bbb-000000004311";
 	let failFirst = true;
@@ -904,6 +953,7 @@ test("an event child replayed from cache after a resume stays detached from late
 		run: async (ctx) => {
 			const watcher = ctx.stage("watcher");
 			await watcher.prompt("watch");
+			await ctx.task("plain", { prompt: "main-line work" });
 			await ctx
 				.subscribe(
 					listSource("cached", [{ id: "c1" }]),
@@ -934,5 +984,331 @@ test("an event child replayed from cache after a resume stays detached from late
 	assert.ok(child !== undefined, JSON.stringify(second.stages.map((stage) => stage.name)));
 	const after = second.stages.find((stage) => stage.name === "after-2")!;
 	assert.equal(after.parentIds.includes(child.id), false);
+	assert.deepEqual(after.parentIds, [second.stages.find((stage) => stage.name === "plain")!.id]);
 	assert.deepEqual(child.parentIds, [second.stages.find((stage) => stage.name === "watcher")!.id]);
+});
+
+function processedEventIds(backend: MemoryJournalBackend, runId: string): string[] {
+	return backend
+		.listCheckpoints(runId)
+		.flatMap((checkpoint) =>
+			checkpoint.kind === "tool" && checkpoint.checkpointId.startsWith("workflow-subscription-event:")
+				? [(checkpoint.output as { eventId: string }).eventId]
+				: [],
+		)
+		.sort();
+}
+
+function subscriptionRecords(backend: MemoryJournalBackend, runId: string): unknown[] {
+	return backend
+		.listCheckpoints(runId)
+		.flatMap((checkpoint) =>
+			checkpoint.kind === "tool" && checkpoint.checkpointId.startsWith("workflow-subscription:")
+				? [checkpoint.output]
+				: [],
+		);
+}
+
+const EVENT_LOOP_TURNS = 1_000;
+
+function nextTurn(): Promise<void> {
+	return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/** Turns the event loop until `ready()` holds. Bounded by turns, not by a clock. */
+async function turnsUntil(ready: () => boolean): Promise<void> {
+	for (let turn = 0; turn < EVENT_LOOP_TURNS && !ready(); turn++) await nextTurn();
+	assert.equal(ready(), true, `condition not reached within ${EVENT_LOOP_TURNS} event-loop turns`);
+}
+
+async function settlesWithinTurns(promise: Promise<unknown>): Promise<boolean> {
+	let settled = false;
+	const mark = (): void => {
+		settled = true;
+	};
+	void promise.then(mark, mark);
+	for (let turn = 0; turn < EVENT_LOOP_TURNS && !settled; turn++) await nextTurn();
+	return settled;
+}
+
+/** A source that stays open after emitting `events`, recording the signal it was started with. */
+function heldOpenSource(id: string, events: readonly SubscriptionEvent[], signals: AbortSignal[]): EventSource {
+	return {
+		id,
+		start: (signal, emit) => {
+			signals.push(signal);
+			for (const event of events) emit(event);
+		},
+	};
+}
+
+test("without a subscriber, event children hang under the stages that settled before ctx.subscribe (#4311)", async () => {
+	const { result } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		await ctx.subscribe(listSource("orphans", [{ id: "o1" }]), async (_event, child) => {
+			await child.task({ prompt: "look" });
+		}).done;
+	});
+	assert.equal(result.status, "completed", result.error);
+	const anchor = result.stages.find((stage) => stage.name === "anchor")!;
+	assert.deepEqual(result.stages.find((stage) => stage.name === "orphans/o1")!.parentIds, [anchor.id]);
+});
+
+test("ctx.subscribe admits events no faster than maxRate (#4311)", async () => {
+	const started: string[] = [];
+	const stop = new Error("stop once the rate cap is observed");
+	let observed: SubscriptionStats | undefined;
+	const { result } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		const subscription = ctx.subscribe(
+			openSource("rated"),
+			async (event) => {
+				started.push(event.id);
+			},
+			{ maxRate: { events: 1, intervalMs: 3_600_000 } },
+		);
+		void subscription.done.catch(() => undefined);
+		for (const id of ["r1", "r2", "r3"]) publishEvent(subscription.id, { id });
+		await turnsUntil(() => subscription.stats().handled === 1);
+		observed = subscription.stats();
+		throw stop;
+	});
+	assert.equal(result.status, "failed");
+	assert.match(result.error ?? "", /stop once the rate cap is observed/);
+	assert.deepEqual(started, ["r1"]);
+	assert.deepEqual({ handled: observed?.handled, queued: observed?.queued }, { handled: 1, queued: 2 });
+});
+
+test("an event child's seed puts the event after the task text, or stands alone, and adds only the report tool (#4311)", async () => {
+	const seeds: string[] = [];
+	const tools: Array<Array<{ readonly name: string; readonly description: string }>> = [];
+	const definition = workflow({
+		name: "seeded-children",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await ctx.subscribe(
+				listSource("seeded", [{ id: "s1" }, { id: "s2" }]),
+				async (event, child) => {
+					await child.task(event.id === "s1" ? { task: "Triage the check." } : {});
+				},
+				{ maxConcurrent: 1 },
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId: "cccccccc-cccc-4ccc-8ccc-000000004311",
+			store: createStore(),
+			durableBackend: await createMemoryTestBackend(),
+			adapters: {
+				agentSession: {
+					create: async (options, meta) => {
+						if (meta?.stageName.startsWith("seeded/") !== true) return subscriberSession();
+						tools.push(
+							(options.customTools ?? []).map((tool) => ({
+								name: tool.name,
+								description: tool.description,
+							})),
+						);
+						return {
+							...mockSession(),
+							async prompt(text: string) {
+								seeds.push(text);
+							},
+						};
+					},
+				},
+			},
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.equal(seeds.length, 2);
+	assert.equal(seeds[0]!.startsWith("Triage the check.\n\n## Event\nSubscription: seeded\nEvent id: s1\n"), true);
+	assert.equal(seeds[1]!.startsWith("\n\n## Event\nSubscription: seeded\nEvent id: s2\n"), true);
+	for (const childTools of tools) {
+		assert.deepEqual(
+			childTools.map((tool) => tool.name),
+			[SUBSCRIPTION_REPORT_TOOL_NAME],
+		);
+		assert.match(childTools[0]!.description, /to the stage that subscribed to it/);
+	}
+});
+
+test("a resumed inline stream skips the events it already yielded (#4311)", async () => {
+	const seen: string[] = [];
+	const first = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		for await (const event of ctx.events(listSource("tail", [{ id: "a" }, { id: "b" }]))) seen.push(event.id);
+	});
+	assert.equal(first.result.status, "completed", first.result.error);
+	let duplicates = -1;
+	const second = await runWorkflow(
+		async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			const stream = ctx.events(listSource("tail", [{ id: "a" }, { id: "b" }, { id: "c" }]));
+			for await (const event of stream) seen.push(event.id);
+			duplicates = stream.stats().duplicates;
+		},
+		first.backend,
+		first.runId,
+	);
+	assert.equal(second.result.status, "completed", second.result.error);
+	assert.deepEqual(seen, ["a", "b", "c"]);
+	assert.equal(duplicates, 2);
+});
+
+test("an inline event counts as processed when the body closes the stream, not when the run ends holding it (#4311)", async () => {
+	const first = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		const closed = ctx.events(listSource("closed", [{ id: "c1" }, { id: "c2" }]));
+		assert.equal((await closed.next()).value?.id, "c1");
+		await closed.close();
+		const held = ctx.events(listSource("held", [{ id: "h1" }, { id: "h2" }]));
+		assert.equal((await held.next()).value?.id, "h1");
+	});
+	assert.equal(first.result.status, "completed", first.result.error);
+	assert.deepEqual(processedEventIds(first.backend, first.runId), ["c1"]);
+	const resumed: string[] = [];
+	const second = await runWorkflow(
+		async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			for await (const event of ctx.events(listSource("held", [{ id: "h1" }, { id: "h2" }]))) {
+				resumed.push(event.id);
+			}
+		},
+		first.backend,
+		first.runId,
+	);
+	assert.equal(second.result.status, "completed", second.result.error);
+	assert.deepEqual(resumed, ["h1", "h2"]);
+});
+
+test("a failing run releases a held inline event unprocessed and stops its source (#4311)", async () => {
+	const signals: AbortSignal[] = [];
+	let stream: WorkflowEventStream | undefined;
+	const { result, backend, runId } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		stream = ctx.events(heldOpenSource("failing-inline", [{ id: "f1" }, { id: "f2" }], signals));
+		assert.equal((await stream.next()).value?.id, "f1");
+		throw new Error("body failed while reading");
+	});
+	assert.equal(result.status, "failed");
+	assert.equal(signals[0]?.aborted, true);
+	await assert.rejects(stream!.next(), /body failed while reading/);
+	await turnsUntil(() => stream!.stats().active === 0);
+	assert.deepEqual(processedEventIds(backend, runId), []);
+});
+
+test("cancelling a run cancels its inline streams at once and releases a held event unprocessed (#4311)", async () => {
+	const controller = new AbortController();
+	const signals: AbortSignal[] = [];
+	const backend = await createMemoryTestBackend();
+	const runId = "dddddddd-dddd-4ddd-8ddd-000000004311";
+	let stream: WorkflowEventStream | undefined;
+	let sourceAbortedAtCancel: boolean | undefined;
+	const definition = workflow({
+		name: "cancelled-inline",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			stream = ctx.events(heldOpenSource("cancelled-inline", [{ id: "k1" }, { id: "k2" }], signals));
+			assert.equal((await stream.next()).value?.id, "k1");
+			controller.abort(new Error("operator cancelled"));
+			sourceAbortedAtCancel = signals[0]?.aborted;
+			await new Promise<void>(() => {});
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId,
+			store: createStore(),
+			durableBackend: backend,
+			signal: controller.signal,
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "killed");
+	assert.equal(sourceAbortedAtCancel, true);
+	await assert.rejects(stream!.next(), /operator cancelled/);
+	await turnsUntil(() => stream!.stats().active === 0);
+	assert.deepEqual(processedEventIds(backend, runId), []);
+});
+
+test("closing an inline stream while its next event is being admitted neither hangs nor yields it later (#4311)", async () => {
+	const { result } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		for (let delay = 0; delay < 64; delay++) {
+			const stream = ctx.events(listSource(`race-${delay}`, [{ id: "x" }, { id: "y" }]));
+			assert.equal((await stream.next()).value?.id, "x");
+			const pending = stream.next();
+			for (let tick = 0; tick < delay; tick++) await Promise.resolve();
+			const closing = stream.close();
+			assert.equal(await settlesWithinTurns(closing), true, `close() hung ${delay} microtasks after next()`);
+			const after = await pending;
+			assert.equal(after.done === true || after.value?.id === "y", true);
+			assert.deepEqual(await stream.next(), { value: undefined, done: true });
+		}
+	});
+	assert.equal(result.status, "completed", result.error);
+});
+
+test("a resumed subscription keeps its first durable record and writes no journal entry for it again (#4311)", async () => {
+	const first = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		await ctx.subscribe(listSource("once", [{ id: "a" }]), async () => {}, { maxConcurrent: 2 }).done;
+	});
+	assert.equal(first.result.status, "completed", first.result.error);
+	const commits: string[] = [];
+	const commitCheckpoint = first.backend.commitCheckpoint.bind(first.backend);
+	first.backend.commitCheckpoint = (checkpoint, options) => {
+		commits.push(checkpoint.checkpointId);
+		return commitCheckpoint(checkpoint, options);
+	};
+	const second = await runWorkflow(
+		async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await ctx.subscribe(listSource("once", [{ id: "a" }]), async () => {}, { maxConcurrent: 3 }).done;
+		},
+		first.backend,
+		first.runId,
+	);
+	assert.equal(second.result.status, "completed", second.result.error);
+	assert.deepEqual(subscriptionRecords(second.backend, second.runId), [
+		{ subscription: "once#1", source: "once", mode: "child", maxConcurrent: 2, maxRate: null },
+	]);
+	assert.deepEqual(
+		commits.filter((checkpointId) => checkpointId.startsWith("workflow-subscription")),
+		[],
+	);
+});
+
+test("ctx.events yields events no faster than maxRate (#4311)", async () => {
+	let observed: SubscriptionStats | undefined;
+	let tail: IteratorResult<SubscriptionEvent> | undefined;
+	const { result } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		const stream = ctx.events(listSource("rated-inline", [{ id: "1" }, { id: "2" }]), {
+			maxRate: { events: 1, intervalMs: 3_600_000 },
+		});
+		assert.equal((await stream.next()).value?.id, "1");
+		const pending = stream.next();
+		await turnsUntil(() => stream.stats().handled === 1);
+		observed = stream.stats();
+		await stream.close();
+		tail = await pending;
+	});
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual({ handled: observed?.handled, queued: observed?.queued }, { handled: 1, queued: 1 });
+	assert.deepEqual(tail, { value: undefined, done: true });
 });

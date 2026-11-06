@@ -71,12 +71,7 @@ function validateName(name: string | undefined, field: string): void {
 function validateSubscriber(subscriber: WorkflowEventSubscriber | undefined): void {
 	if (subscriber === undefined) return;
 	const candidate = subscriber as Partial<WorkflowEventSubscriber> | null;
-	if (
-		typeof candidate !== "object" ||
-		candidate === null ||
-		typeof candidate.name !== "string" ||
-		typeof candidate.sendUserMessage !== "function"
-	) {
+	if (candidate === null || typeof candidate.name !== "string" || typeof candidate.sendUserMessage !== "function") {
 		throw new SubscriptionConfigError("options.subscriber", "not-stage");
 	}
 }
@@ -133,7 +128,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		const handle: EventSubscriptionHandle = openEventSubscription({
 			id,
 			source,
-			admission: { maxConcurrent, ...(options.maxRate === undefined ? {} : { maxRate: options.maxRate }) },
+			admission: { maxConcurrent, maxRate: options.maxRate },
 			ready,
 			alreadyProcessed: (eventId) => subscriptionEventProcessed(runtime.backend, runtime.runId, key, eventId),
 			handle: async (event) => {
@@ -188,10 +183,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 	const events = (source: EventSource, options: WorkflowEventsOptions = {}): WorkflowEventStream => {
 		validateEventSource(source, "source");
 		validateName(options.name, "options.name");
-		validateSubscriptionAdmission(
-			options.maxRate === undefined ? undefined : { maxRate: options.maxRate },
-			"options",
-		);
+		validateSubscriptionAdmission({ maxRate: options.maxRate }, "options");
 		const name = options.name ?? source.id;
 		const key = nextKey(name);
 		const id = `${runtime.runId}/${key}`;
@@ -207,7 +199,6 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		let current: { readonly release: (processed: boolean) => void } | undefined;
 		let ended = false;
 		let closing = false;
-		let observed: Promise<SubscriptionStats> | undefined;
 
 		const settleWaiting = (): void => {
 			if (waiting === undefined) return;
@@ -217,7 +208,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 				waiting = undefined;
 				return;
 			}
-			if (!ended || observed === undefined) return;
+			if (!ended) return;
 			waiting.resolve(observed.then(() => ({ value: undefined, done: true })));
 			waiting = undefined;
 		};
@@ -231,7 +222,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		const handle = openEventSubscription({
 			id,
 			source,
-			admission: { maxConcurrent: 1, ...(options.maxRate === undefined ? {} : { maxRate: options.maxRate }) },
+			admission: { maxConcurrent: 1, maxRate: options.maxRate },
 			ready,
 			alreadyProcessed: (eventId) => subscriptionEventProcessed(runtime.backend, runtime.runId, key, eventId),
 			handle: async (event) => {
@@ -245,7 +236,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 				}
 			},
 		});
-		observed = runtime.watch(handle.done);
+		const observed = runtime.watch(handle.done);
 		const markEnded = (): void => {
 			ended = true;
 			settleWaiting();
