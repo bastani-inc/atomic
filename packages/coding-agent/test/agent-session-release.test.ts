@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
+import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import {
 	AgentRehydrateError,
 	type AgentReleaseConfigError,
@@ -88,6 +89,8 @@ function countingStore(
 function asStored(entries: readonly SessionEntry[]): SessionEntry[] {
 	return JSON.parse(JSON.stringify(entries)) as SessionEntry[];
 }
+
+useTemporaryAgentDir();
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {

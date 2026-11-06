@@ -401,10 +401,13 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 			dispatcher.handle("bench", async (_wakeKey, wakes) => {
 				for (const wake of wakes) delivered.push(wake.id);
 			});
-			const h = await host({
-				start: (toolCallId) => new Promise((resolve) => operations.set(toolCallId, resolve)),
-				taken: (call, sessionId) => forwardResult(dispatcher, sessionId, call.result),
-			});
+			const h = await host(
+				{
+					start: (toolCallId) => new Promise((resolve) => operations.set(toolCallId, resolve)),
+					taken: (call, sessionId) => forwardResult(dispatcher, sessionId, call.result),
+				},
+				{ spill: false },
+			);
 			const released: string[] = [];
 			const wave = async (offset: number) => {
 				h.script(AGENTS_PER_WAVE * TURNS * 2);
@@ -474,8 +477,7 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 		let last = "";
 		const sample = async () => {
 			await settledHandles();
-			const buffers = queryObjects(ArrayBuffer, { format: "count" }) as number;
-			return { buffers, bytes: process.memoryUsage().arrayBuffers, held: h.store.inner.historyBytes() };
+			return { ...liveObjects(), bytes: process.memoryUsage().arrayBuffers, held: h.store.inner.historyBytes() };
 		};
 		const waves = async (count: number, promptBytes: number) => {
 			for (let wave = 0; wave < count; wave++) {
@@ -495,7 +497,9 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 			const added = {
 				historyBytes: Buffer.byteLength(JSON.stringify((await h.store.inner.load(last)).entries)) - 2,
 				headerBytes: Buffer.byteLength(JSON.stringify(await h.store.inner.readHeader(last))),
-				buffers: Math.round((after.buffers - before.buffers) / agents),
+				buffers: Math.round((after.ArrayBuffer - before.ArrayBuffer) / agents),
+				promises: Math.round((after.Promise - before.Promise) / agents),
+				abortSignals: Math.round((after.AbortSignal - before.AbortSignal) / agents),
 				bytes: (after.bytes - before.bytes) / agents,
 				inMemory: (after.held.inMemory - before.held.inMemory) / agents,
 				onDisk: (after.held.onDisk - before.held.onDisk) / agents,
@@ -506,7 +510,7 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 	}
 
 	test(
-		"per released agent: only its header stays in memory, one buffer, however long its history",
+		"per released agent: only its header stays in memory, one buffer, no abort signal and only its call's promises, however long its history",
 		async () => {
 			const group = await releasedGroups(true);
 			const short = await group(0);
@@ -521,6 +525,8 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 				assert.ok(run.onDisk >= run.historyBytes * 0.95, `${run.onDisk} of ${run.historyBytes} bytes on disk`);
 				assert.ok(run.buffers <= 1, `${run.buffers} buffers per agent`);
 				assert.ok(run.bytes <= RELEASED_AGENT_BUFFER_BYTES, `${run.bytes} buffer bytes per agent`);
+				assert.equal(run.abortSignals, 0);
+				assert.ok(run.promises <= RELEASED_AGENT_PROMISES, `${run.promises} promises per agent`);
 			}
 		},
 		HEAP_WALK_TEST_TIMEOUT_MS,
