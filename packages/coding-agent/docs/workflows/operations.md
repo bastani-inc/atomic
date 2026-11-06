@@ -1045,8 +1045,9 @@ A worker host checks its setup once, before it opens anything, and reports every
 
 What differs for a child that runs on another host:
 
-- Its stages show in the root's graph and status, and a `ctx.ui` prompt it raises is answered from the root like any pooled prompt. Answers go to the stage's queue of inputs, which the host running the stage takes one at a time, in order; if that host dies, the next host to run the stage takes them. Opening its stage chat, steering it, and `ask_user_question` forms work only for stages on the root's own machine.
-- Its stages start without the root's Intercom routes: messages queued for them stay queued.
+- Its stages show in the root's graph and status. Everything the root sends to one of its stages goes to that stage's queue of inputs in the shared journal: answers to its `ctx.ui` prompts and `ask_user_question` forms, text from its stage chat (messages, steers and follow-ups), and Intercom messages sent to it. The host running the stage takes them one at a time, in order, and records a receipt for each. Text a stage cannot take yet because it waits for an answer, as a replacement attempt that asks its question again does, waits until that answer has gone in. If that host dies, the next host to run the stage takes what it had not finished, and each input reaches the stage's session once.
+- Its stage chat sends messages, steers and follow-ups, and shows its `ask_user_question` form, but shows no live transcript. Pausing or resuming that one stage, `/compact` and `!` commands fail with `RemoteStageCommandUnsupportedError`. Pause the whole run instead, or open the stage's post-mortem chat once it finishes.
+- An Intercom send to one of its stages is queued, then delivered through the stage's queue. A send that waits for a reply (an ask) is refused: the stage's replies cannot reach the sender. So is a send to a stage that has no Intercom access. A message the stage's session fails to take is settled as undeliverable and its sender is told, and the stage's later messages and input go on.
 - Tool processes a dead host started cannot be confirmed gone from another machine. A child whose attempt ran such processes is not replayed until a worker host or root on the dead machine confirms them gone.
 
 ## Settings

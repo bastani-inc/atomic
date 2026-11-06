@@ -9,9 +9,12 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import {
 	createPooledStageDelivery,
+	createWorkerStageDelivery,
 	type PooledStageDeliveryOptions,
 	pooledStageQueuedEntries,
+	remoteStageInbox,
 } from "../../packages/workflows/src/workers/pooled-stage-delivery.js";
+import { RemoteStageInbox } from "../../packages/workflows/src/workers/remote-stage-inbox.js";
 import { countRunListScans, holdFinishedRuns } from "../helpers/finished-runs.js";
 import { testRunId } from "../helpers/run-id.js";
 
@@ -277,4 +280,68 @@ describe("pooled stage delivery", () => {
 		);
 		assert.deepEqual(received, ["first"]);
 	});
+});
+
+test("a pooled worker's stage on the root's host holds the root's route; one on another host holds none and hands its sink to its inbox (#4391)", async () => {
+	const stage = { runId: CHILD, stageId: "agent", stageName: "agent" };
+	const forwarded: string[] = [];
+	const options = {
+		stage,
+		queued: async () => [entry("first", 1)],
+		forward: async (recipient: { readonly sessionId: string }) => {
+			forwarded.push(recipient.sessionId);
+		},
+		fail: () => {},
+	};
+	const requests: unknown[] = [];
+	const routed = await createWorkerStageDelivery({
+		...options,
+		inbox: undefined,
+		request: async (message) => {
+			requests.push(message);
+			return "capability";
+		},
+	});
+	assert.equal(routed.routeCapability, "capability");
+	assert.deepEqual(requests, [{ kind: "route", runId: CHILD }], "the root's route for the stage's run");
+	await routed.deliverPending(() => {}, { sessionId: "session-a", receivedMessageIds: [] });
+	assert.deepEqual(forwarded, ["session-a"], "the root's host drains it as well");
+	for (const capability of [undefined, 7])
+		await assert.rejects(
+			createWorkerStageDelivery({ ...options, inbox: undefined, request: async () => capability }),
+			/Worker root route is unavailable/,
+		);
+	const inbox = new RemoteStageInbox();
+	let routeAsked = false;
+	const remote = await createWorkerStageDelivery({
+		...options,
+		inbox,
+		request: async () => {
+			routeAsked = true;
+			return "capability";
+		},
+	});
+	assert.equal(routeAsked, false);
+	assert.equal("routeCapability" in remote, false, "it holds no route");
+	const received: string[] = [];
+	await remote.deliverPending(
+		(_sender, message) => {
+			received.push(message.id);
+		},
+		{ sessionId: "session-b", receivedMessageIds: [] },
+	);
+	assert.deepEqual(forwarded, ["session-a"], "no root drain is asked for on another host");
+	assert.deepEqual(
+		await inbox.deliver(
+			stage,
+			"session-b",
+			{ id: "sender-id", name: "sender" } as Sender,
+			entry("late", 2).message as Delivered,
+		),
+		{},
+	);
+	assert.deepEqual(received, ["first", "late"], "the root's later message reaches the session through its inbox");
+	assert.ok(remoteStageInbox({ host: "host-b", routes: false }) instanceof RemoteStageInbox);
+	assert.equal(remoteStageInbox({ host: "root-host", routes: true }), undefined, "the root's host holds live routes");
+	assert.equal(remoteStageInbox(undefined), undefined, "so does a pool that is not shared");
 });

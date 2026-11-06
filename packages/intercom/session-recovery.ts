@@ -308,6 +308,8 @@ function boundedBody(text: string): string {
  * history in a non-triggering notice that tells the agent the peer is gone.
  * `peers` is undefined when Intercom could not be reached. Then no sender's liveness is known, so every
  * card is deferred: it stays pending, starts no turn, and the next resume decides about it again.
+ * A card a workflow stage's pending-stage queue handed over (`stageQueued`) always replays: that queue recorded it
+ * delivered, so the session that took it over, such as a pooled stage's replacement on another host, is its only copy.
  */
 export function planIntercomRecoveryReplay(
 	pending: readonly PendingRecoveryDelivery[],
@@ -326,6 +328,11 @@ export function planIntercomRecoveryReplay(
 	for (const delivery of pending) {
 		const entry = inboundEntry(delivery);
 		if (!entry || LOCAL_RELAY_SENDERS.has(entry.from.id)) continue;
+		// A workflow stage's queue delivered it, and nothing delivers it again (#4391).
+		if (entry.stageQueued === true) {
+			decisions.push({ entryId: delivery.entryId, action: "replay" });
+			continue;
+		}
 		const key = entry.from.name?.trim().toLowerCase() ?? entry.from.id;
 		if (peers === undefined) {
 			decisions.push({ entryId: delivery.entryId, action: "defer" });

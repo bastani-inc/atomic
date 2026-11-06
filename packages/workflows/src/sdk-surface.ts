@@ -476,10 +476,15 @@ export {
 } from "./workers/admission-errors.js";
 export { loadWorkerWorkflow } from "./workers/definitions.js";
 export type {
+	RemoteStageCommand,
 	SerializedWorkerPlacementError,
 	SharedPoolOperation,
 	SharedPoolSetupErrorCode,
 	SharedPoolSetupProblem,
+	StageInputIdentity,
+	StageInputInvalidReason,
+	StageInputRefusedReason,
+	StageInputTimeoutPhase,
 	StaleStageLeaseReason,
 	WorkerPlacementConfigErrorCode,
 	WorkerPlacementConfigSource,
@@ -488,13 +493,22 @@ export type {
 	WorkspaceRestoreUnavailableReason,
 } from "./workers/placement-errors.js";
 export {
+	isRemoteStageCommandUnsupportedError,
+	isRetryableWorkerPlacementError,
 	isSharedPoolSetupError,
+	isStageInputInvalidError,
+	isStageInputRefusedError,
+	isStageInputTimeoutError,
 	isStaleStageLeaseError,
 	isWorkerPlacementConfigError,
 	isWorkerPlacementError,
 	isWorkspaceRestoreUnavailableError,
+	RemoteStageCommandUnsupportedError,
 	rehydrateWorkerPlacementError,
 	SharedPoolSetupError,
+	StageInputInvalidError,
+	StageInputRefusedError,
+	StageInputTimeoutError,
 	StaleStageLeaseError,
 	serializeWorkerPlacementError,
 	WorkerPlacementConfigError,
@@ -507,6 +521,7 @@ export type {
 	WorkflowWorkerPlacementOptions,
 } from "./workers/public-options.js";
 export { DEFAULT_PLACEMENT_CLAIM_WINDOW_MS } from "./workers/public-options.js";
+export type { PooledStageInputKind } from "./workers/stage-input-kind.js";
 export { startWorkflowWorkerHost } from "./workers/worker-host.js";
 export type {
 	SharedJournalSelection,

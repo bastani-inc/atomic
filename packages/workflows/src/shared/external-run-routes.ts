@@ -12,6 +12,12 @@ import type { Store } from "./store.js";
  */
 export interface ExternalRunRouteOwner {
 	notifyUndeliverable(payload: Record<string, unknown>): Promise<boolean>;
+	/**
+	 * Whether the run's live stage `stageId` takes Intercom messages from the run's queue rather than through a live
+	 * route: it runs on a worker host where the run's route is not announced (#4391). The bridge queues a send to it,
+	 * and the owner delivers it.
+	 */
+	deliversQueued(runId: string, stageId: string): boolean;
 }
 
 /** Entry points of the pending-stage bridge registered for one store. */

@@ -6,7 +6,7 @@ import {
 } from "../../packages/workflows/src/shared/external-run-routes.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 
-const owner = () => ({ notifyUndeliverable: async () => true });
+const owner = () => ({ notifyUndeliverable: async () => true, deliversQueued: () => false });
 
 test("releasing an earlier route claim leaves a later owner's claim on the same run in place (#3903)", () => {
 	const store = createStore();

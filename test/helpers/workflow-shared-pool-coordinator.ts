@@ -11,6 +11,7 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { type SharedPoolRoot, SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { run } from "../../packages/workflows/src/engine/run.js";
+import type { StageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type {
 	CoordinatorEvent,
 	CoordinatorInbound,
@@ -38,6 +39,31 @@ export const binding: WorkspaceBinding = {
 	tree: "t1",
 	envHash: "e1",
 };
+
+/** The brokered question the stub worker's stage waits on, as it answers a read of it (#4391). */
+export const STUB_QUESTION = {
+	promptId: "q1",
+	kind: "ask_user_question",
+	params: {
+		questions: [
+			{
+				question: "Ship it?",
+				header: "Ship",
+				multiSelect: false,
+				options: [
+					{ label: "yes", description: "Ship it now" },
+					{ label: "no", description: "Hold it" },
+				],
+			},
+		],
+	},
+};
+
+/** The receipt of a user message whose delivery op is "error-busy": the stub's stage fails it with "busy" (#4391). */
+export const USER_MESSAGE_ERROR_RECEIPT = JSON.stringify({
+	ok: false,
+	error: { name: "Error", message: "busy", fields: {} },
+});
 
 export interface Fixture {
 	readonly directory: string;
@@ -70,6 +96,8 @@ export async function fixture(
 		maxLoadPerCpu?: number;
 		maxWorkerRssBytes?: number;
 		leaseMs?: number;
+		stageControlRegistry?: StageControlRegistry;
+		stageInputTimeoutMs?: number;
 	},
 ): Promise<Fixture> {
 	const directory = makeLibsqlDirectory(`${label}-`);
@@ -105,6 +133,8 @@ export async function fixture(
 		...(options.maxLoadPerCpu === undefined ? {} : { maxLoadPerCpu: options.maxLoadPerCpu }),
 		...(options.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: options.maxWorkerRssBytes }),
 		...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
+		...(options.stageControlRegistry === undefined ? {} : { stageControlRegistry: options.stageControlRegistry }),
+		...(options.stageInputTimeoutMs === undefined ? {} : { stageInputTimeoutMs: options.stageInputTimeoutMs }),
 		workers: 1,
 		definitions: [{ definition: child, path: childPath, exportName: "boundChild" }],
 		workerEntry: stubWorker,
@@ -124,8 +154,7 @@ export async function fixture(
 				.filter(
 					(line) =>
 						line !== "" &&
-						!line.startsWith("answer ") &&
-						!line.startsWith("start ") &&
+						!/^(answer|start|question|user|intercom|received) /.test(line) &&
 						!line.startsWith("place-released "),
 				)
 				.map((line) => line.split(" ")),

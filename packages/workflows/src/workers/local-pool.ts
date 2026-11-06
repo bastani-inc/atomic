@@ -113,6 +113,7 @@ import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { appendProcessLog, removeProcessLog } from "./process-log.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
+import { RemoteStageDrains, remoteStageDrainTargets, runsOnOtherHost } from "./remote-stage-drains.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
 import type {
@@ -401,6 +402,8 @@ export class LocalWorkerPool {
 	private readonly ownedRuns = new Set<string>();
 	/** The stages each accepted publication hands prompt routing and stage registrations (#4317). */
 	private readonly openStages = new OpenStages();
+	/** Intercom drains of live stages on other hosts' workers (#4391). */
+	private readonly remoteDrains = new RemoteStageDrains();
 	/** Aborted once the pool closes, so an activity batch still applying in turns stops (#4317). */
 	private readonly disposal = new AbortController();
 	/** Stops sending this process's provider and model limits to the pool (#4023). */
@@ -471,6 +474,11 @@ export class LocalWorkerPool {
 			 * message boundary, so a test can intercept coordinator-side calls. Public options never set it.
 			 */
 			readonly coordinator?: "in-process";
+			/**
+			 * Internal, tests only: how long the root waits for the receipt of an input it queued for a stage on another
+			 * host (#4391). Public options never set it.
+			 */
+			readonly stageInputTimeoutMs?: number;
 			/**
 			 * A caller's registry (SDK `RunOpts.stageControlRegistry`) that receives a handle for
 			 * every live pooled stage. A handle opens a watch only while it is used.
@@ -617,6 +625,9 @@ export class LocalWorkerPool {
 						? {}
 						: { maxWorkerRssBytes: this.options.maxWorkerRssBytes }),
 					...(workerEntry === undefined ? {} : { workerEntry }),
+					...(this.options.stageInputTimeoutMs === undefined
+						? {}
+						: { stageInputTimeoutMs: this.options.stageInputTimeoutMs }),
 				},
 				...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
 			})) as PoolUsage;
@@ -712,6 +723,7 @@ export class LocalWorkerPool {
 			const routeOwner: ExternalRunRouteOwner = {
 				notifyUndeliverable: async (payload) =>
 					!this.closed && (await this.command({ kind: "undeliverable", payload })) === true,
+				deliversQueued: (runId, stageId) => this.runsElsewhere(runId, stageId),
 			};
 			this.releaseStageSource = registerPooledStageSource(store, {
 				acquire: (runId, stageId) => this.acquirePooledStage(runId, stageId),
@@ -946,7 +958,7 @@ export class LocalWorkerPool {
 		const signal = route.signal;
 		// The stage UI broker is loaded on first use, so pools whose stages never ask never load it.
 		const [question, { currentStageUiBroker }] = await Promise.all([
-			this.command({ kind: "stage-question", runId, stageId }) as Promise<PooledStageQuestion | undefined>,
+			this.command({ kind: "stage-question", runId, stageId, promptId }) as Promise<PooledStageQuestion | undefined>,
 			import("../shared/stage-ui-broker.js"),
 		]);
 		if (question?.promptId !== promptId || signal.aborted) return signal.aborted;
@@ -1673,6 +1685,7 @@ export class LocalWorkerPool {
 				.filter((_, index) => outcomes[index] === undefined)
 				.map(({ work, runs }) => ({ work, runs: this.openStages.visit(work, runs) }));
 			this.routePrompts(accepted);
+			this.drainRemoteStages(handoff, accepted);
 			const registry = this.options.stageControlRegistry;
 			if (registry !== undefined) {
 				this.registrations = (
@@ -1699,6 +1712,68 @@ export class LocalWorkerPool {
 		void this.flushRootRun();
 		// Views waiting for a replacement attempt reconnect once one publishes the stage (#3996).
 		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
+	}
+	/**
+	 * Whether a stage runs on another host's worker (#4391), as the root's copy of the stage says: its worker id names a
+	 * host other than this pool's. Such a stage holds no live route of the root's.
+	 */
+	private runsElsewhere(runId: string, stageId: string): boolean {
+		const worker = this.store?.run(runId)?.stages.find((stage) => stage.id === stageId)?.workerExecution?.worker;
+		return runsOnOtherHost(this.options.shared?.host, worker);
+	}
+	/**
+	 * Delivers the queued Intercom messages of live stages on other hosts' workers (#4391). Such a stage holds no live
+	 * route, so the root drains its queue into it through the stage's input queue: once its session is published, and
+	 * again whenever its queue changes. The handoff records each delivery, as for a stage on this host.
+	 */
+	private drainRemoteStages(
+		handoff: PoolStageHandoff,
+		publications: readonly { readonly work: PoolWork; readonly runs: readonly PublishedStages[] }[],
+	): void {
+		const store = this.store;
+		if (store === undefined) return;
+		const rootQueue = store.run(this.root!)?.pendingStageMessages;
+		for (const { work, runs } of publications) {
+			if (!runsOnOtherHost(this.options.shared?.host, work.worker)) continue;
+			const token: PoolWorkToken = {
+				id: work.id,
+				generation: work.generation,
+				worker: work.worker,
+				epoch: work.epoch,
+				renewedAt: work.renewedAt,
+				expiresAt: work.expiresAt,
+			};
+			const targets = remoteStageDrainTargets(
+				work.generation,
+				runs,
+				(runId) => store.run(runId)?.pendingStageMessages,
+				rootQueue,
+			);
+			for (const stage of targets.forget) this.remoteDrains.forget(stage);
+			for (const { target, stageName } of targets.drain) {
+				const { runId, stageId, sessionId } = target;
+				this.remoteDrains.offer(target, () =>
+					handoff.deliver(
+						work,
+						runId,
+						stageId,
+						stageName,
+						{ sessionId, receivedMessageIds: [] },
+						async (from, message) => {
+							await this.command({
+								kind: "stage-intercom",
+								work: token,
+								runId,
+								stageId,
+								sessionId,
+								from,
+								message,
+							});
+						},
+					),
+				);
+			}
+		}
 	}
 	/** The full work of an attempt token, recording the attempt as current when it is newer. */
 	private track(attempt: PoolWorkToken): PoolWork | undefined {

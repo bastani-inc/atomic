@@ -112,12 +112,20 @@ import {
 } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import * as placementErrors from "../../packages/workflows/src/workers/placement-errors.js";
 import {
+	isRemoteStageCommandUnsupportedError,
 	isSharedPoolSetupError,
+	isStageInputInvalidError,
+	isStageInputRefusedError,
+	isStageInputTimeoutError,
 	isStaleStageLeaseError,
 	isWorkerPlacementConfigError,
 	isWorkerPlacementError,
 	isWorkspaceRestoreUnavailableError,
+	RemoteStageCommandUnsupportedError,
 	SharedPoolSetupError,
+	StageInputInvalidError,
+	StageInputRefusedError,
+	StageInputTimeoutError,
 	StaleStageLeaseError,
 	sharedPoolProblems,
 	WorkerPlacementConfigError,
@@ -504,6 +512,70 @@ const CASES: readonly Case[] = [
 		code: "stale-stage-lease",
 		retryable: false,
 		fields: { reason: "stage-lease-replaced", root: "root", runId: "run", stageId: "stage", seq: null },
+	},
+	{
+		error: new StageInputInvalidError(
+			"malformed-payload",
+			{ kind: "user-message", runId: "run", stageId: "stage", field: "intent" },
+			{ cause: stale },
+		),
+		type: StageInputInvalidError,
+		guard: isStageInputInvalidError,
+		name: "StageInputInvalidError",
+		code: "stage-input-invalid",
+		retryable: false,
+		fields: { reason: "malformed-payload", kind: "user-message", runId: "run", stageId: "stage", field: "intent" },
+	},
+	{
+		error: new StageInputTimeoutError(
+			{ root: "root", runId: "run", stageId: "stage", seq: 4, kind: "intercom-message" },
+			{ timeoutMs: 60_000, elapsedMs: 60_014, phase: "applying" },
+		),
+		type: StageInputTimeoutError,
+		guard: isStageInputTimeoutError,
+		name: "StageInputTimeoutError",
+		code: "stage-input-timeout",
+		retryable: true,
+		fields: {
+			root: "root",
+			runId: "run",
+			stageId: "stage",
+			seq: 4,
+			kind: "intercom-message",
+			timeoutMs: 60_000,
+			elapsedMs: 60_014,
+			phase: "applying",
+		},
+	},
+	{
+		error: new StageInputRefusedError(
+			"stage-failed",
+			{ root: "root", runId: "run", stageId: "stage", seq: 2, kind: "user-message" },
+			{ detail: "session closed", cause: stale },
+		),
+		type: StageInputRefusedError,
+		guard: isStageInputRefusedError,
+		name: "StageInputRefusedError",
+		code: "stage-input-refused",
+		retryable: false,
+		fields: {
+			reason: "stage-failed",
+			root: "root",
+			runId: "run",
+			stageId: "stage",
+			seq: 2,
+			kind: "user-message",
+			detail: "session closed",
+		},
+	},
+	{
+		error: new RemoteStageCommandUnsupportedError("session", { runId: "run", stageId: "stage" }),
+		type: RemoteStageCommandUnsupportedError,
+		guard: isRemoteStageCommandUnsupportedError,
+		name: "RemoteStageCommandUnsupportedError",
+		code: "remote-stage-command-unsupported",
+		retryable: false,
+		fields: { command: "session", runId: "run", stageId: "stage" },
 	},
 	{
 		error: new TaskCleanupAdmissionTimeoutError(
@@ -1092,6 +1164,29 @@ test("every code, source, operation and reason of the shared placement errors cr
 			assert.ok(received instanceof StaleStageLeaseError, `${reason}: ${received}`);
 			assert.deepEqual([received.reason, received.seq], [reason, seq]);
 		}
+	for (const kind of ["prompt-answer", "question-read", "user-message", "intercom-message"] as const) {
+		const input = { root: "r", runId: "x", stageId: "s", seq: 3, kind };
+		for (const reason of ["unknown-kind", "malformed-payload"] as const) {
+			const received = hop(new StageInputInvalidError(reason, { kind, runId: "x", stageId: "s", field: "f" }));
+			assert.ok(received instanceof StageInputInvalidError, `${reason}: ${received}`);
+			assert.deepEqual([received.reason, received.kind], [reason, kind]);
+		}
+		for (const phase of ["unclaimed", "applying"] as const) {
+			const received = hop(new StageInputTimeoutError(input, { timeoutMs: 1, elapsedMs: 2, phase }));
+			assert.ok(received instanceof StageInputTimeoutError, `${phase}: ${received}`);
+			assert.deepEqual([received.phase, received.kind, received.seq], [phase, kind, 3]);
+		}
+		for (const reason of ["stage-not-live", "session-replaced", "stage-failed", "pool-closed"] as const) {
+			const received = hop(new StageInputRefusedError(reason, input));
+			assert.ok(received instanceof StageInputRefusedError, `${reason}: ${received}`);
+			assert.deepEqual([received.reason, received.kind, received.detail], [reason, kind, undefined]);
+		}
+	}
+	for (const command of ["pause", "resume", "session"] as const) {
+		const received = hop(new RemoteStageCommandUnsupportedError(command, { runId: "x", stageId: "s" }));
+		assert.ok(received instanceof RemoteStageCommandUnsupportedError, `${command}: ${received}`);
+		assert.equal(received.command, command);
+	}
 	const unknown = rehydrateError({
 		name: "WorkerPlacementFutureError",
 		code: "future-placement",

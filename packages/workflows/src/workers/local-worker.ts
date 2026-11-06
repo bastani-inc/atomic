@@ -43,7 +43,7 @@ import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
-import { createPooledStageDelivery, pooledStageQueuedEntries } from "./pooled-stage-delivery.js";
+import { createWorkerStageDelivery, pooledStageQueuedEntries, remoteStageInbox } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
 import {
 	WORKER_ACTIVITY_INTERVAL_MS,
@@ -54,6 +54,7 @@ import {
 	type WorkerStart,
 } from "./protocol.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
+import type { RemoteStageInbox } from "./remote-stage-inbox.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
@@ -437,6 +438,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		const turnStarted = new WeakSet<StageControlHandle>();
 		const stageControls = trackTurnStarts(createStageControlRegistry(), turnStarted);
 		let prompts: WorkerStagePrompts | undefined;
+		/** Where the current attempt's stages take Intercom messages when this host does not run the root (#4391). */
+		let remoteInbox: RemoteStageInbox | undefined;
 		const control = new WorkerControl(
 			workerControlHandlers({
 				runs: () => currentStore.runs(),
@@ -458,6 +461,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				entries: async (sessionId) => (await sessions.load(sessionId)).entries,
 				turnStarted: (handle) => turnStarted.has(handle),
 				prompts: () => prompts,
+				inbox: () => remoteInbox,
 			},
 		);
 		/** Applies control a heartbeat reply or a push carried; a failure ends the attempt it would have controlled. */
@@ -513,6 +517,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				attempt,
 				(error) => controller.abort(error),
 			);
+			// The root's Intercom routes are announced only on the root's host: a stage on another host takes the root's
+			// messages through its input queue, into this inbox (#4391).
+			const inbox = remoteStageInbox(start.shared);
+			remoteInbox = inbox;
 			let publication: Promise<void> | undefined;
 			let activityDirty = false;
 			const publish = () => {
@@ -557,22 +565,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					if (start.shared !== undefined)
 						await request({ kind: "stage-workspace", runId: meta.runId, stageId: meta.stageId });
 					if (!options.orchestrationContext?.pendingStageDelivery) return baseAdapter.create(options, meta);
-					// The root's Intercom routes are announced only on the root's host: a stage on another host starts
-					// without them, and messages queued for it stay queued for the root.
-					if (start.shared?.routes === false) {
-						const { pendingStageDelivery: _routes, ...context } = options.orchestrationContext;
-						return baseAdapter.create({ ...options, orchestrationContext: context }, meta);
-					}
 					if (options.sessionManager)
 						store.recordStageSession(meta.runId, meta.stageId, {
 							sessionId: options.sessionManager.getSessionId(),
 						});
 					await publication;
 					const identity = { runId: meta.runId, stageId: meta.stageId, stageName: meta.stageName };
-					const capability = await request({ kind: "route", runId: meta.runId });
-					if (typeof capability !== "string") throw new Error("Worker root route is unavailable");
-					const pendingStageDelivery = createPooledStageDelivery({
-						routeCapability: capability,
+					const pendingStageDelivery = await createWorkerStageDelivery({
+						stage: identity,
+						inbox,
+						request,
 						// The root's journal, read directly: a stage's startup never waits on the root itself.
 						queued: async () => {
 							await reader.catchUpWorkflow(start.root);
@@ -717,6 +719,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				stageWatches?.clear();
 				heldAttempt = undefined;
 				prompts = undefined;
+				remoteInbox = undefined;
 				activeController = undefined;
 			}
 			if (replies.attemptFenced && !replies.rootLeaseLost) {

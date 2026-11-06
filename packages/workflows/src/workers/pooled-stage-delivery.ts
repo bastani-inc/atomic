@@ -7,7 +7,8 @@ import type { Store } from "../shared/store.js";
 import { resolvePendingStageIdentity } from "../shared/store-pending-stage-delivery-methods.js";
 import type { PendingStageMessage, RunSnapshot } from "../shared/store-types.js";
 import { type RunsById, runsByIdOf } from "../shared/workflow-run-ownership.js";
-import type { WorkerDeliver, WorkerRecipient, WorkerStageDelivery } from "./protocol.js";
+import type { WorkerDeliver, WorkerRecipient, WorkerStageDelivery, WorkerStart } from "./protocol.js";
+import { RemoteStageInbox } from "./remote-stage-inbox.js";
 
 export interface PooledStageIdentity {
 	readonly runId: string;
@@ -89,7 +90,11 @@ function pooledStageHops(
 }
 
 export interface PooledStageDeliveryOptions {
-	readonly routeCapability: string;
+	/**
+	 * The root's route capability for the stage's run. Absent for a stage on a host that does not run its root, which
+	 * holds no live route: its messages arrive through `forward`'s sink (#4391).
+	 */
+	readonly routeCapability?: string;
 	/** The stage's queued entries, read where the worker can reach them without waiting on the root. */
 	readonly queued: () => Promise<readonly PendingStageMessage[]>;
 	/**
@@ -111,7 +116,7 @@ export function createPooledStageDelivery(options: PooledStageDeliveryOptions): 
 	/** Each session's latest sink: a root drain that finishes after a later drain began hands over through it. */
 	const sinks = new Map<string, WorkerDeliver>();
 	return {
-		routeCapability: options.routeCapability,
+		...(options.routeCapability === undefined ? {} : { routeCapability: options.routeCapability }),
 		async deliverPending(deliver, recipient) {
 			const sessionId = recipient?.sessionId ?? "";
 			sinks.set(sessionId, deliver);
@@ -155,4 +160,37 @@ export function createPooledStageDelivery(options: PooledStageDeliveryOptions): 
 		},
 		fail: options.fail,
 	};
+}
+
+/**
+ * Where a worker's stages take the root's Intercom messages when its host does not run the root (#4391), since only the
+ * root's host announces the root's routes. None on the root's host, whose stages hold its live routes.
+ */
+export function remoteStageInbox(shared: WorkerStart["shared"]): RemoteStageInbox | undefined {
+	return shared?.routes === false ? new RemoteStageInbox() : undefined;
+}
+
+/**
+ * The pending-stage delivery of a stage on a pooled worker. On the root's host it holds the root's live route, whose
+ * capability it requests from the root. On a host that does not run the root (#4391), whose worker is given an `inbox`,
+ * it holds none, since only the root's host announces the root's routes: the session's sink goes to `inbox`, where the
+ * root's later messages arrive through the stage's input queue. Either way the worker delivers the stage's queued
+ * messages itself before its first turn.
+ */
+export async function createWorkerStageDelivery(
+	options: Omit<PooledStageDeliveryOptions, "routeCapability"> & {
+		readonly stage: PooledStageIdentity;
+		readonly inbox: RemoteStageInbox | undefined;
+		readonly request: (message: { readonly kind: "route"; readonly runId: string }) => Promise<unknown>;
+	},
+): Promise<WorkerStageDelivery> {
+	const { stage, inbox, request, ...delivery } = options;
+	if (inbox !== undefined)
+		return createPooledStageDelivery({
+			...delivery,
+			forward: async (recipient, deliver) => inbox.register(stage, recipient.sessionId, deliver),
+		});
+	const routeCapability = await request({ kind: "route", runId: stage.runId });
+	if (typeof routeCapability !== "string") throw new Error("Worker root route is unavailable");
+	return createPooledStageDelivery({ ...delivery, routeCapability });
 }

@@ -12,6 +12,7 @@ import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
+import type { RemoteStageInbox } from "./remote-stage-inbox.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { runsWhilePaused } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
@@ -42,6 +43,8 @@ export async function admitStageUserMessage(
 	text: string,
 	intent: DeliveryIntent,
 	expandPromptTemplates: boolean | undefined,
+	/** Queue the text in its mode even when no turn reports itself under way (a stage that awaits input, #4391). */
+	queueOnly = false,
 ): Promise<StageCommandResult> {
 	const options = {
 		...(intent === "auto" ? {} : { deliverAs: intent }),
@@ -99,7 +102,7 @@ export async function admitStageUserMessage(
 	// through that admission a steer would wait for the whole turn instead of steering it.
 	// So does the stage's own turn loop between two of its turns: its admission would hold the text
 	// until the whole loop ends, after the stage's work instead of during it.
-	const busy = turnUnderway(handle);
+	const busy = queueOnly || turnUnderway(handle);
 	const delivery = (async (): Promise<StageCommandResult> => {
 		if (busy) return queue();
 		try {
@@ -215,6 +218,8 @@ export class WorkerStageWatches {
 			readonly turnStarted?: (handle: StageControlHandle) => boolean;
 			/** Where the current attempt's stages wait for human input: its store and stage UI broker. */
 			readonly prompts?: () => WorkerStagePrompts | undefined;
+			/** Where the current attempt's stages on a host that does not run the root take Intercom messages (#4391). */
+			readonly inbox?: () => RemoteStageInbox | undefined;
 		} = {},
 	) {}
 
@@ -241,15 +246,26 @@ export class WorkerStageWatches {
 			this.send({ kind: "stage-command-result", commandId: command.commandId, ...this.answer(command) });
 			return;
 		}
-		if (command.op === "deliver" || command.op === "pause" || command.op === "resume" || command.op === "session") {
+		if (
+			command.op === "deliver" ||
+			command.op === "pause" ||
+			command.op === "resume" ||
+			command.op === "session" ||
+			command.op === "user-message" ||
+			command.op === "intercom"
+		) {
 			const result =
 				command.op === "deliver"
 					? this.deliver(command)
-					: command.op === "pause"
-						? this.pause(command)
-						: command.op === "session"
-							? this.session(command)
-							: this.resume(command);
+					: command.op === "user-message"
+						? this.userMessage(command)
+						: command.op === "intercom"
+							? this.intercom(command)
+							: command.op === "pause"
+								? this.pause(command)
+								: command.op === "session"
+									? this.session(command)
+									: this.resume(command);
 			void result.then((outcome) =>
 				this.send({ kind: "stage-command-result", commandId: command.commandId, ...outcome }),
 			);
@@ -591,19 +607,13 @@ export class WorkerStageWatches {
 			turnLoopBusy: watch.handle.isTurnLoopBusy,
 			current: this.registry.get(watch.handle.runId, watch.handle.stageId) === watch.handle,
 		});
-		const admitted = Promise.resolve(this.deliveredOps(watch.handle))
-			.then((delivered) =>
-				// The session already holds this op, e.g. from before a replay: admit it at most once.
-				delivered.has(command.deliveryOp)
-					? { action: "handled" as const }
-					: this.receiptsFor(watch.handle).track(command.deliveryOp, turnUnderway(watch.handle), () =>
-							admitStageUserMessage(watch.handle, command.text, command.intent, command.expandPromptTemplates),
-						),
-			)
-			.catch(
-				(error: unknown): StageCommandResult =>
-					isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: serializeError(error) },
-			);
+		const admitted = this.admit(
+			watch.handle,
+			command.deliveryOp,
+			command.text,
+			command.intent,
+			command.expandPromptTemplates,
+		);
 		void admitted.then((outcome) =>
 			tracePooledWatch("worker.deliver.settled", {
 				op: command.deliveryOp,
@@ -613,7 +623,99 @@ export class WorkerStageWatches {
 				code: outcome.error?.code,
 			}),
 		);
-		this.ledger.set(command.deliveryOp, admitted);
+		return admitted;
+	}
+
+	/**
+	 * Admits stage chat text the root sent through the stage's input queue (#4391): the stage runs on a host that does
+	 * not run the root, so no watch carries it. Admitted at most once per op, as a watched delivery is. A stage that cannot
+	 * take it yet (its session has not started, or a replacement has not reached its own first turn) refuses it as
+	 * `StaleAttempt`, and it stays the stage's next input; one that waits for an answer meanwhile defers it
+	 * (`AwaitingInput`), so that answer goes first. A stage that waits for an answer in a turn it runs takes the text in
+	 * its mode, queued behind that answer.
+	 */
+	private async userMessage(
+		command: Extract<WorkerStageCommand, { op: "user-message" }>,
+	): Promise<StageCommandResult> {
+		const recorded = this.ledger.get(command.deliveryOp);
+		if (recorded !== undefined) return recorded;
+		const held = this.attempt();
+		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation)
+			return { refusal: "StaleAttempt" };
+		const handle = this.registry.get(command.runId, command.stageId);
+		if (this.ended(command, handle)) return { refusal: "StageNotLive" };
+		const awaitingInput = handle?.status === "awaiting_input";
+		const replaying =
+			handle !== undefined &&
+			command.attempt.generation > 1 &&
+			!handle.isStreaming &&
+			this.options.turnStarted?.(handle) !== true;
+		if (handle?.agentSession === undefined || replaying)
+			return { refusal: awaitingInput ? "AwaitingInput" : "StaleAttempt" };
+		return this.admit(
+			handle,
+			command.deliveryOp,
+			command.text,
+			command.intent,
+			command.expandPromptTemplates,
+			awaitingInput,
+		);
+	}
+
+	/**
+	 * Hands an Intercom message the root sent through the stage's input queue to the stage session it was meant for
+	 * (#4391), through the sink that session's own pending-stage delivery handed over. A stage that waits for an answer
+	 * before its session handed one over defers it (`AwaitingInput`), so that answer goes first.
+	 */
+	private async intercom(command: Extract<WorkerStageCommand, { op: "intercom" }>): Promise<StageCommandResult> {
+		const held = this.attempt();
+		const inbox = this.options.inbox?.();
+		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation || !inbox)
+			return { refusal: "StaleAttempt" };
+		const handle = this.registry.get(command.runId, command.stageId);
+		if (this.ended(command, handle)) return { refusal: "StageNotLive" };
+		const result = await inbox.deliver(command, command.sessionId, command.from, command.message);
+		return result.refusal === "StaleAttempt" && handle?.status === "awaiting_input"
+			? { refusal: "AwaitingInput" }
+			: result;
+	}
+
+	/** Whether the stage finished in this attempt: its handle or the attempt's store says so. */
+	private ended(stage: { readonly runId: string; readonly stageId: string }, handle: StageControlHandle | undefined) {
+		if (handle !== undefined && isTerminal(handle)) return true;
+		const status = this.options
+			.prompts?.()
+			?.store.run(stage.runId)
+			?.stages.find((candidate) => candidate.id === stage.stageId)?.status;
+		return status !== undefined && TERMINAL.has(status);
+	}
+
+	/**
+	 * Admits user text into `handle`'s session at most once per op, recording its receipt in the session; `queueOnly`
+	 * queues it in its mode even when no turn reports itself under way.
+	 */
+	private admit(
+		handle: StageControlHandle,
+		deliveryOp: DeliveryOpId,
+		text: string,
+		intent: DeliveryIntent,
+		expandPromptTemplates: boolean | undefined,
+		queueOnly = false,
+	): Promise<StageCommandResult> {
+		const admitted = Promise.resolve(this.deliveredOps(handle))
+			.then((delivered) =>
+				// The session already holds this op, e.g. from before a replay: admit it at most once.
+				delivered.has(deliveryOp)
+					? { action: "handled" as const }
+					: this.receiptsFor(handle).track(deliveryOp, queueOnly || turnUnderway(handle), () =>
+							admitStageUserMessage(handle, text, intent, expandPromptTemplates, queueOnly),
+						),
+			)
+			.catch(
+				(error: unknown): StageCommandResult =>
+					isTerminal(handle) ? { refusal: "StageNotLive" } : { error: serializeError(error) },
+			);
+		this.ledger.set(deliveryOp, admitted);
 		return admitted;
 	}
 

@@ -56,6 +56,10 @@ const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliv
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_ASK_REFUSAL =
 	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
+const REMOTE_STAGE_ASK_REFUSAL =
+	"Cannot ask a workflow stage that runs on another worker host: its replies cannot reach you. Use send; Atomic delivers the message through the stage's input queue.";
+const remoteStageWithoutIntercomRefusal = (target: string): string =>
+	`Workflow stage ${target} runs on another worker host without Intercom access, so it cannot receive Intercom messages`;
 const ROUTE_ANNOUNCEMENT_BATCH_MS = 25;
 const ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE = 0.2;
 /**
@@ -593,6 +597,28 @@ export function registerPendingStageIntercomBridge(
 		// for materialized pending stages; a target that resolves to a terminal stage
 		// falls through to the sticky branch so the next matching occurrence receives it.
 		const stageTerminal = stage.status === "completed" || stage.status === "skipped" || stage.status === "failed";
+		// A live stage on a worker host where the run's route is not announced has no live alias to forward to: the
+		// send is queued, and the run's owner delivers it through the stage's input queue (#4391).
+		if (
+			payload.live !== true &&
+			live &&
+			!stageTerminal &&
+			externalRunRouteOwner(activeStore, destination.run.id)?.deliversQueued(destination.run.id, stage.id) === true
+		) {
+			payload.handled = true;
+			// A stage whose session has no Intercom would never take the message: it is refused before it is queued.
+			const refusal =
+				payload.message.expectsReply === true
+					? REMOTE_STAGE_ASK_REFUSAL
+					: stage.pendingStageDeliveryAvailable === true
+						? undefined
+						: remoteStageWithoutIntercomRefusal(payload.target);
+			payload.completion =
+				refusal === undefined
+					? queueAndPersist(activeStore, resolvedEvent, workflowInvocationIntercomGroup(rootRunId), true)
+					: Promise.resolve({ outcome: "refused" as const, reason: refusal });
+			return;
+		}
 		if ((payload.live === true && stage.status !== "waiting") || (live && !stageTerminal)) {
 			payload.handled = true;
 			payload.completion = validateLiveDelivery(activeStore, resolvedEvent).then((result) =>

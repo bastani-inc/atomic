@@ -15,8 +15,10 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import {
 	createPooledStageDelivery,
+	createWorkerStageDelivery,
 	type PooledStageDeliveryOptions,
 } from "../../packages/workflows/src/workers/pooled-stage-delivery.js";
+import { RemoteStageInbox } from "../../packages/workflows/src/workers/remote-stage-inbox.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
@@ -504,7 +506,8 @@ test("a message a pooled stage's root drain hands over after startup keeps its d
 	const group = `workflow:${runId}`;
 	vi.spyOn(IntercomClient.prototype, "connect").mockResolvedValue();
 	vi.spyOn(IntercomClient.prototype, "isConnected").mockReturnValue(true);
-	vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
+	const register = vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
+	const connects: string[] = [];
 	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
 	const sender = { id: "planner", name: "planner", cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 0 };
 	// The root is busy: its drains answer only when the test hands their messages over.
@@ -531,6 +534,125 @@ test("a message a pooled stage's root drain hands over after startup keeps its d
 	const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => void | Promise<void>>>();
 	const sent: { content: string; id: string; options: { triggerTurn?: boolean; deliverAs?: string } }[] = [];
 	const branch: Array<{ type: "custom_message"; customType: string; details: { message: { id: string } } }> = [];
+	intercomHeavy(
+		{
+			on(name: string, handler: (event: never, ctx: ExtensionContext) => void | Promise<void>) {
+				handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+			},
+			registerTool() {},
+			registerCommand() {},
+			registerShortcut() {},
+			registerMessageRenderer() {},
+			appendEntry() {},
+			getSessionName: () => undefined,
+			events: createEventBus(),
+			sendMessage(
+				message: { content: string; customType: string; details: { message: { id: string } } },
+				options: { triggerTurn?: boolean; deliverAs?: string },
+			) {
+				sent.push({ content: message.content, id: message.details.message.id, options });
+				branch.push({ type: "custom_message", ...message });
+			},
+		} as never,
+		{
+			beforeConnectAttempt: (reason) => {
+				connects.push(reason);
+			},
+		},
+	);
+	const ctx = {
+		hasUI: false,
+		cwd: process.cwd(),
+		isIdle: () => true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "stage-session", getBranch: () => branch },
+		orchestrationContext: {
+			kind: "workflow-stage",
+			workflowRunId: runId,
+			workflowStageId: "review",
+			workflowStageName: "review",
+			intercomGroup: group,
+			pendingStageDelivery: delivery,
+		},
+	};
+	const fire = async (name: string) => {
+		for (const handler of handlers.get(name) ?? []) await handler({} as never, ctx as never);
+	};
+	try {
+		await fire("session_start");
+		assert.deepEqual(
+			sent.map(({ id }) => id),
+			["before-start"],
+		);
+		assert.match(sent[0]!.content, /Messages received before you started/);
+		// The stage has started. The root catches up and hands over a follow-up queued after the worker read the journal.
+		assert.ok(rootDrains.length > 0);
+		await rootDrains.at(-1)!(sender, {
+			id: "late",
+			timestamp: 2,
+			content: { text: "late follow-up" },
+			delivery: "followUp",
+		} as Parameters<(typeof rootDrains)[number]>[1]);
+		const late = sent.find(({ id }) => id === "late");
+		assert.ok(late, "the late message reached the session");
+		assert.doesNotMatch(late.content, /Messages received before you started/);
+		assert.equal(late.options.deliverAs, "followUp");
+		assert.equal(late.options.triggerTurn, true);
+		// A stage on the root's host registers its live route once, under the capability its delivery holds (#4391).
+		assert.deepEqual(
+			register.mock.calls.map(([run, , capability]) => [run, capability]),
+			[[runId, "capability"]],
+		);
+		assert.deepEqual(connects, ["startup"], "it connects at startup to register it");
+	} finally {
+		await fire("session_shutdown");
+	}
+});
+
+test("a stage on a host where its run's route is not announced registers no route, and takes its messages through its inbox once (#4391)", async () => {
+	const runId = "43910000-0000-4000-8000-000000000001";
+	const group = `workflow:${runId}`;
+	const connect = vi.spyOn(IntercomClient.prototype, "connect").mockResolvedValue();
+	const register = vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
+	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
+	const sender = { id: "planner", name: "planner", cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 0 };
+	const inbox = new RemoteStageInbox();
+	const stage = { runId, stageId: "review", stageName: "review" };
+	const asked: string[] = [];
+	const delivery = await createWorkerStageDelivery({
+		stage,
+		inbox,
+		request: async () => {
+			asked.push("route");
+			return "capability";
+		},
+		forward: async () => {
+			asked.push("forward");
+		},
+		queued: async () => [
+			{
+				id: "before-start",
+				runId,
+				stageKey: "review",
+				from: sender,
+				message: { id: "before-start", timestamp: 1, content: { text: "before-start" } },
+				queuedAt: new Date(1).toISOString(),
+				admissionOrder: 1,
+				status: "queued",
+			},
+		],
+		fail: () => {},
+	});
+	assert.equal(delivery.routeCapability, undefined, "no route capability on a host that does not run the root");
+	assert.deepEqual(asked, [], "the root's route is not asked for");
+	assert.equal(delivery.ready("stage-session"), undefined, "the stage's startup waits for nothing");
+	const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => void | Promise<void>>>();
+	const sent: { content: string; id: string; options: { triggerTurn?: boolean; deliverAs?: string } }[] = [];
+	const branch: Array<{
+		type: "custom_message";
+		customType: string;
+		details: { message: { id: string }; stageQueued?: true };
+	}> = [];
 	intercomHeavy({
 		on(name: string, handler: (event: never, ctx: ExtensionContext) => void | Promise<void>) {
 			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
@@ -570,24 +692,59 @@ test("a message a pooled stage's root drain hands over after startup keeps its d
 	};
 	try {
 		await fire("session_start");
+		assert.equal(connect.mock.calls.length, 0, "the stage connects to no broker to register a route at startup");
+		assert.equal(register.mock.calls.length, 0, "and registers no live route");
 		assert.deepEqual(
 			sent.map(({ id }) => id),
 			["before-start"],
 		);
 		assert.match(sent[0]!.content, /Messages received before you started/);
-		// The stage has started. The root catches up and hands over a follow-up queued after the worker read the journal.
-		assert.ok(rootDrains.length > 0);
-		await rootDrains.at(-1)!(sender, {
+		// The root's later message reaches the session through the inbox, live, once; the one it already holds is not sent again.
+		const late = {
 			id: "late",
 			timestamp: 2,
 			content: { text: "late follow-up" },
 			delivery: "followUp",
-		} as Parameters<(typeof rootDrains)[number]>[1]);
-		const late = sent.find(({ id }) => id === "late");
-		assert.ok(late, "the late message reached the session");
-		assert.doesNotMatch(late.content, /Messages received before you started/);
-		assert.equal(late.options.deliverAs, "followUp");
-		assert.equal(late.options.triggerTurn, true);
+		} as Parameters<Parameters<typeof inbox.register>[2]>[1];
+		assert.deepEqual(await inbox.deliver(stage, "stage-session", sender, late), {});
+		assert.deepEqual(await inbox.deliver(stage, "stage-session", sender, late), {});
+		assert.deepEqual(
+			await inbox.deliver(stage, "stage-session", sender, {
+				id: "before-start",
+				timestamp: 1,
+				content: { text: "before-start" },
+			}),
+			{},
+		);
+		assert.deepEqual(
+			sent.map(({ id }) => id),
+			["before-start", "late"],
+		);
+		assert.deepEqual(asked, [], "no root drain is asked for: the root drains through the stage's input queue");
+		assert.deepEqual(
+			branch.map((entry) => [entry.details.message.id, entry.details.stageQueued]),
+			[
+				["before-start", true],
+				["late", true],
+			],
+			"each card the stage's queue handed over says so, for a session recovery to replay it",
+		);
+		const live = sent[1]!;
+		assert.doesNotMatch(live.content, /Messages received before you started/);
+		assert.equal(live.options.deliverAs, "followUp");
+		assert.equal(live.options.triggerTurn, true);
+		// Once the session's Intercom runtime ended, a message handed over fails typed: the stage's host keeps it queued.
+		await fire("session_shutdown");
+		const retired = await inbox.deliver(stage, "stage-session", sender, {
+			id: "after-shutdown",
+			timestamp: 3,
+			content: { text: "after shutdown" },
+		});
+		assert.deepEqual(
+			[retired.refusal, retired.error?.name, retired.error?.code],
+			[undefined, "IntercomRuntimeInactiveError", "intercom_unavailable"],
+		);
+		assert.equal(sent.length, 2);
 	} finally {
 		await fire("session_shutdown");
 	}

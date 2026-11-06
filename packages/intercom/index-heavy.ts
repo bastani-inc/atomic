@@ -655,11 +655,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
-      if (receivedBeforeStageStart || recoveredAfterStageStart) throw new Error("Intercom session retired before pending-stage delivery; message remains queued");
+      if (receivedBeforeStageStart || recoveredAfterStageStart) throw new IntercomRuntimeInactiveError();
       return;
     }
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
-    const framedEntry = buildInboundEntry(from, message, channel);
+    const builtEntry = buildInboundEntry(from, message, channel);
+    const framedEntry: InboundMessageEntry =
+      receivedBeforeStageStart || recoveredAfterStageStart ? { ...builtEntry, stageQueued: true } : builtEntry;
     const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(framedEntry) : framedEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
@@ -1445,7 +1447,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 .catch(() => {});
             }
             const orchestration = contextAtStart.orchestrationContext;
-            if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
+            // A stage on a worker host where its run's route is not announced has no capability: it registers no
+            // live route, and its messages arrive through its pending-stage delivery alone.
+            const routeCapability =
+              orchestration?.kind === "workflow-stage" ? orchestration.pendingStageDelivery?.routeCapability : undefined;
+            if (orchestration?.kind === "workflow-stage" && routeCapability !== undefined) {
               // A stage name containing "/" or "*" is not a canonical path segment; register the
               // always-valid stage-id key so the stage stays live-addressable without tripping the
               // broker's single-segment key validation.
@@ -1456,7 +1462,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 await nextClient.registerLiveWorkflowStageRoute(
                   orchestration.workflowRunId,
                   liveStageKeys,
-                  orchestration.pendingStageDelivery.routeCapability,
+                  routeCapability,
                 );
               }
             }
@@ -1838,8 +1844,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     };
     redrainPendingStage = redrain;
     await deliverPending();
-    await ensureConnected("startup");
-    await deliverPending();
+    // A stage without a route capability runs where its run's route is not announced: it has no live route to
+    // register at startup, and its later messages arrive through its pending-stage delivery.
+    if (pendingStageDelivery.routeCapability !== undefined) {
+      await ensureConnected("startup");
+      await deliverPending();
+    }
     startupDrained = true;
     if (redrainRequested) {
       redrainRequested = false;

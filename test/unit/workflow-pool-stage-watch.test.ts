@@ -19,6 +19,7 @@ import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-brok
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { WorkerLostError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
+import { RemoteStageInbox } from "../../packages/workflows/src/workers/remote-stage-inbox.js";
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import { appendCoalesced } from "../../packages/workflows/src/workers/stage-watch-coalesce.js";
 import type {
@@ -1446,4 +1447,401 @@ test("a delivery whose stage ends while it is admitted answers that the stage is
 		action: undefined,
 		refusal: "StageNotLive",
 	});
+});
+
+/** The worker airlock as a host that does not run the root builds it: no watch, its attempt's store and inbox (#4391). */
+function remoteAirlock(
+	options: {
+		readonly generation?: number;
+		readonly turnStarted?: boolean;
+		readonly bare?: boolean;
+		/** The attempt's prompts are not set yet, as between two attempts. */
+		readonly promptsUnset?: boolean;
+	} = {},
+) {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const store = createStore();
+	const inbox = new RemoteStageInbox();
+	let attempt: { workId: string; generation: number } | undefined = {
+		workId: "work",
+		generation: options.generation ?? 1,
+	};
+	let withInbox = true;
+	const watches = new WorkerStageWatches(
+		registry,
+		() => attempt,
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		() => "running",
+		options.bare === true
+			? {}
+			: {
+					turnStarted: () => options.turnStarted === true,
+					prompts: () =>
+						options.promptsUnset === true
+							? undefined
+							: { store, broker: new StageUiBroker(store), fail: () => false },
+					inbox: () => (withInbox ? inbox : undefined),
+				},
+	);
+	let commandId = 0;
+	const serve = async (
+		command:
+			| {
+					readonly op: "user-message";
+					readonly deliveryOp: string;
+					readonly intent: "steer" | "followUp" | "auto";
+					readonly generation?: number;
+			  }
+			| {
+					readonly op: "intercom";
+					readonly sessionId: string;
+					readonly id: string;
+					readonly generation?: number;
+					readonly workId?: string;
+			  },
+	) => {
+		const id = ++commandId;
+		const base = {
+			kind: "stage-command" as const,
+			commandId: id,
+			attempt: {
+				workId: "workId" in command && command.workId !== undefined ? command.workId : "work",
+				generation: command.generation ?? options.generation ?? 1,
+			},
+			runId: "child",
+			stageId: "agent",
+		};
+		watches.serve(
+			command.op === "user-message"
+				? {
+						...base,
+						op: "user-message",
+						deliveryOp: command.deliveryOp as DeliveryOpId,
+						text: `text-${command.deliveryOp}`,
+						intent: command.intent,
+					}
+				: {
+						...base,
+						op: "intercom",
+						sessionId: command.sessionId,
+						from: { id: "sender" } as never,
+						message: { id: command.id } as never,
+					},
+		);
+		for (;;) {
+			const result = sent.find((message) => message.kind === "stage-command-result" && message.commandId === id);
+			if (result?.kind === "stage-command-result")
+				return { action: result.action, refusal: result.refusal, error: result.error };
+			await sleep(1);
+		}
+	};
+	return {
+		registry,
+		store,
+		inbox,
+		serve,
+		changeAttempt(next: typeof attempt) {
+			attempt = next;
+		},
+		dropInbox() {
+			withInbox = false;
+		},
+	};
+}
+
+test("a user message from the stage's input queue is admitted without a watch, in its mode, at most once per op (#4391)", async () => {
+	const airlock = remoteAirlock();
+	const stage = deliverableStage(true);
+	let session: object | undefined;
+	airlock.registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		get agentSession() {
+			return session as never;
+		},
+	});
+	assert.deepEqual(
+		await airlock.serve({ op: "user-message", deliveryOp: "early", intent: "steer" }),
+		{ action: undefined, refusal: "StaleAttempt", error: undefined },
+		"a stage whose session has not started takes nothing yet",
+	);
+	session = { isStreaming: false };
+	assert.equal((await airlock.serve({ op: "user-message", deliveryOp: "op-1", intent: "steer" })).action, "steer");
+	assert.equal((await airlock.serve({ op: "user-message", deliveryOp: "op-1", intent: "steer" })).action, "steer");
+	assert.equal(
+		(await airlock.serve({ op: "user-message", deliveryOp: "op-2", intent: "followUp" })).action,
+		"followUp",
+	);
+	assert.deepEqual(stage.admitted, [
+		{ text: "text-op-1", deliverAs: "steer" },
+		{ text: "text-op-2", deliverAs: "followUp" },
+	]);
+	assert.equal(
+		(await airlock.serve({ op: "user-message", deliveryOp: "stale", intent: "steer", generation: 2 })).refusal,
+		"StaleAttempt",
+		"a command for another attempt is refused",
+	);
+	airlock.changeAttempt(undefined);
+	assert.equal(
+		(await airlock.serve({ op: "user-message", deliveryOp: "none", intent: "steer" })).refusal,
+		"StaleAttempt",
+	);
+	airlock.changeAttempt({ workId: "work", generation: 1 });
+	stage.finish();
+	assert.equal(
+		(await airlock.serve({ op: "user-message", deliveryOp: "late", intent: "steer" })).refusal,
+		"StageNotLive",
+	);
+	assert.equal(stage.admitted.length, 2);
+});
+
+test("a replacement takes queued user text only once its replay's own turn started, and a stage the store ended takes none (#4391)", async () => {
+	for (const turnStarted of [false, true]) {
+		const airlock = remoteAirlock({ generation: 2, turnStarted });
+		const stage = deliverableStage(false);
+		airlock.registry.register({ ...stage.handle, agentSession: { isStreaming: false } as never });
+		const outcome = await airlock.serve({ op: "user-message", deliveryOp: "redelivered", intent: "auto" });
+		assert.deepEqual(
+			[outcome.action, outcome.refusal],
+			turnStarted ? ["prompt", undefined] : [undefined, "StaleAttempt"],
+		);
+	}
+	// A stage that waits for an answer takes text in its mode, queued behind that answer, never as a prompt over it; a
+	// replacement whose replay asked again before its session took a turn defers it, so the answer goes first.
+	for (const generation of [1, 2]) {
+		const awaiting = remoteAirlock({ generation });
+		const calls: string[] = [];
+		const asking = deliverableStage(false);
+		awaiting.registry.register({
+			...asking.handle,
+			get status() {
+				return "awaiting_input" as const;
+			},
+			agentSession: { isStreaming: false } as never,
+			sendUserMessage: async () => {
+				calls.push("sendUserMessage");
+				return "prompt";
+			},
+			async steer(text) {
+				calls.push(`steer ${text}`);
+			},
+			async followUp(text) {
+				calls.push(`followUp ${text}`);
+			},
+		});
+		const steer = await awaiting.serve({ op: "user-message", deliveryOp: "s", intent: "steer" });
+		const auto = await awaiting.serve({ op: "user-message", deliveryOp: "a", intent: "auto" });
+		assert.deepEqual(
+			[steer.action, steer.refusal, auto.action, auto.refusal, calls],
+			generation === 1
+				? ["steer", undefined, "followUp", undefined, ["steer text-s", "followUp text-a"]]
+				: [undefined, "AwaitingInput", undefined, "AwaitingInput", []],
+			`attempt ${generation}`,
+		);
+	}
+	const sessionless = remoteAirlock();
+	sessionless.registry.register({
+		...deliverableStage(false).handle,
+		get status() {
+			return "awaiting_input" as const;
+		},
+	});
+	assert.equal(
+		(await sessionless.serve({ op: "user-message", deliveryOp: "n", intent: "steer" })).refusal,
+		"AwaitingInput",
+		"a stage that waits for an answer before its session starts defers it too",
+	);
+	assert.equal(
+		(await sessionless.serve({ op: "intercom", sessionId: "s1", id: "m" })).refusal,
+		"AwaitingInput",
+		"and an Intercom message for a session that has not handed its sink over",
+	);
+	const streaming = remoteAirlock({ generation: 2 });
+	const busy = deliverableStage(true);
+	streaming.registry.register({ ...busy.handle, agentSession: { isStreaming: true } as never });
+	assert.equal(
+		(await streaming.serve({ op: "user-message", deliveryOp: "steer", intent: "steer" })).action,
+		"steer",
+		"a replacement already streaming its turn takes text at once",
+	);
+	const ended = remoteAirlock();
+	ended.store.recordRunStart({
+		id: "child",
+		name: "child",
+		status: "running",
+		startedAt: 0,
+		inputs: {},
+		stages: [{ id: "agent", name: "agent", status: "completed", parentIds: [] } as never],
+		toolNodes: [],
+	} as never);
+	assert.equal(
+		(await ended.serve({ op: "user-message", deliveryOp: "gone", intent: "steer" })).refusal,
+		"StageNotLive",
+	);
+	assert.equal((await ended.serve({ op: "intercom", sessionId: "s1", id: "m1" })).refusal, "StageNotLive");
+	const failing = remoteAirlock();
+	failing.registry.register({
+		...deliverableStage(false).handle,
+		agentSession: { isStreaming: false } as never,
+		sendUserMessage: async () => {
+			throw new Error("session closed");
+		},
+	});
+	const failed = await failing.serve({ op: "user-message", deliveryOp: "x", intent: "auto" });
+	assert.deepEqual(
+		[failed.action, failed.refusal, failed.error?.name, failed.error?.message],
+		[undefined, undefined, "Error", "session closed"],
+	);
+});
+
+test("text and Intercom messages for a stage this attempt has not registered, or on an airlock without the remote options, wait as stale (#4391)", async () => {
+	for (const generation of [1, 2]) {
+		const airlock = remoteAirlock({ generation });
+		assert.deepEqual(
+			[
+				(await airlock.serve({ op: "user-message", deliveryOp: `none-${generation}`, intent: "steer" })).refusal,
+				(await airlock.serve({ op: "intercom", sessionId: "s1", id: `none-${generation}` })).refusal,
+			],
+			["StaleAttempt", "StaleAttempt"],
+			`attempt ${generation}`,
+		);
+	}
+	// The attempt's store says the stage still runs: it is not taken for ended.
+	const running = remoteAirlock();
+	running.store.recordRunStart({
+		id: "child",
+		name: "child",
+		status: "running",
+		startedAt: 0,
+		inputs: {},
+		stages: [{ id: "agent", name: "agent", status: "running", parentIds: [], toolEvents: [] }],
+		toolNodes: [],
+	});
+	const stage = deliverableStage(false);
+	running.registry.register({ ...stage.handle, agentSession: { isStreaming: false } as never });
+	assert.equal((await running.serve({ op: "user-message", deliveryOp: "live", intent: "auto" })).action, "prompt");
+	running.inbox.register({ runId: "child", stageId: "agent" }, "s1", async () => {});
+	assert.deepEqual(await running.serve({ op: "intercom", sessionId: "s1", id: "m" }), {
+		action: undefined,
+		refusal: undefined,
+		error: undefined,
+	});
+	// An airlock built without an inbox, turn starts or prompts takes no Intercom message, and its replacement's
+	// stage, which has not reported its own turn, takes no text yet.
+	const bare = remoteAirlock({ generation: 2, bare: true });
+	bare.registry.register({ ...deliverableStage(false).handle, agentSession: { isStreaming: false } as never });
+	assert.deepEqual(
+		[
+			(await bare.serve({ op: "intercom", sessionId: "s1", id: "m" })).refusal,
+			(await bare.serve({ op: "user-message", deliveryOp: "bare", intent: "steer" })).refusal,
+		],
+		["StaleAttempt", "StaleAttempt"],
+	);
+});
+
+test("an Intercom message for another attempt, or with no attempt held, waits as stale; one its awaiting stage takes is taken (#4391)", async () => {
+	const airlock = remoteAirlock();
+	const stage = deliverableStage(false);
+	airlock.registry.register({
+		...stage.handle,
+		get status() {
+			return "awaiting_input" as const;
+		},
+	});
+	const received: string[] = [];
+	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s1", async (_from, message) => {
+		received.push(message.id);
+	});
+	assert.equal(
+		(await airlock.serve({ op: "intercom", sessionId: "s1", id: "other-work", workId: "other" })).refusal,
+		"StaleAttempt",
+		"another work's attempt at the same generation",
+	);
+	assert.deepEqual(
+		await airlock.serve({ op: "intercom", sessionId: "s1", id: "taken" }),
+		{ action: undefined, refusal: undefined, error: undefined },
+		"a stage that waits for an answer takes a message its session's sink is there for",
+	);
+	airlock.changeAttempt(undefined);
+	assert.equal((await airlock.serve({ op: "intercom", sessionId: "s1", id: "none" })).refusal, "StaleAttempt");
+	assert.deepEqual(received, ["taken"]);
+});
+
+test("a stage the attempt's store does not end takes text, however the store holds its run (#4391)", async () => {
+	const unset = remoteAirlock({ promptsUnset: true });
+	unset.registry.register({ ...deliverableStage(false).handle, agentSession: { isStreaming: false } as never });
+	assert.equal((await unset.serve({ op: "user-message", deliveryOp: "u", intent: "auto" })).action, "prompt");
+	const partial = remoteAirlock();
+	partial.store.recordRunStart({
+		id: "child",
+		name: "child",
+		status: "running",
+		startedAt: 0,
+		inputs: {},
+		stages: [
+			{ id: "earlier", name: "earlier", status: "completed", parentIds: [], toolEvents: [] },
+			{ id: "agent", name: "agent", status: "running", parentIds: [], toolEvents: [] },
+		],
+		toolNodes: [],
+	});
+	partial.registry.register({ ...deliverableStage(false).handle, agentSession: { isStreaming: false } as never });
+	assert.equal(
+		(await partial.serve({ op: "user-message", deliveryOp: "p", intent: "auto" })).action,
+		"prompt",
+		"another stage of the run that ended does not end this one",
+	);
+	const missing = remoteAirlock();
+	missing.store.recordRunStart({
+		id: "child",
+		name: "child",
+		status: "running",
+		startedAt: 0,
+		inputs: {},
+		stages: [{ id: "earlier", name: "earlier", status: "completed", parentIds: [], toolEvents: [] }],
+		toolNodes: [],
+	});
+	missing.registry.register({ ...deliverableStage(false).handle, agentSession: { isStreaming: false } as never });
+	assert.equal(
+		(await missing.serve({ op: "user-message", deliveryOp: "m", intent: "auto" })).action,
+		"prompt",
+		"a run that does not list the stage yet does not end it",
+	);
+});
+
+test("an Intercom message from the stage's input queue reaches the sink its session handed over (#4391)", async () => {
+	const airlock = remoteAirlock();
+	const stage = streamingStage("agent");
+	airlock.registry.register(stage.handle);
+	assert.equal(
+		(await airlock.serve({ op: "intercom", sessionId: "s1", id: "m0" })).refusal,
+		"StaleAttempt",
+		"a session that has not handed its sink over takes nothing yet",
+	);
+	const received: string[] = [];
+	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s1", async (_from, message) => {
+		received.push(message.id);
+	});
+	assert.deepEqual(await airlock.serve({ op: "intercom", sessionId: "s1", id: "m1" }), {
+		action: undefined,
+		refusal: undefined,
+		error: undefined,
+	});
+	assert.equal(
+		(await airlock.serve({ op: "intercom", sessionId: "s1", id: "m2", generation: 2 })).refusal,
+		"StaleAttempt",
+	);
+	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s2", async () => {});
+	assert.equal((await airlock.serve({ op: "intercom", sessionId: "s1", id: "m3" })).refusal, "SessionReplaced");
+	airlock.dropInbox();
+	assert.equal((await airlock.serve({ op: "intercom", sessionId: "s2", id: "m4" })).refusal, "StaleAttempt");
+	stage.finish();
+	assert.deepEqual(received, ["m1"]);
+	const finished = remoteAirlock();
+	const done = streamingStage("agent");
+	finished.registry.register(done.handle);
+	done.finish();
+	assert.equal((await finished.serve({ op: "intercom", sessionId: "s1", id: "m5" })).refusal, "StageNotLive");
 });

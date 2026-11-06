@@ -34,8 +34,10 @@ import {
 	infrastructureFaultOf,
 	WorkerLostError,
 } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import { StageInputRefusedError } from "../../packages/workflows/src/workers/placement-errors.js";
 import { isRunChanges, type RunChanges, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
 import {
+	failedInSession,
 	PoolStageHandoff,
 	type PoolStageQueue,
 	PUBLICATION_TURN_WRITES,
@@ -1521,6 +1523,95 @@ test("a drain whose transport reports a stale work lease records no delivery iss
 			(error: unknown) => error instanceof WorkerLostError,
 		);
 		assert.match(issue() ?? "", /^1 stage drain on local workers failed; .*\(worker_lost\)/);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a drain into a session the host that took the stage over refused as replaced records no delivery issue; another refusal does (#4391)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const issue = () => f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue;
+		const input = {
+			root: ROOT,
+			runId: descriptor.childRunId,
+			stageId: "stage",
+			seq: 1,
+			kind: "intercom-message" as const,
+		};
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async () => {
+				throw new StageInputRefusedError("session-replaced", input);
+			}),
+			(error: unknown) => error instanceof StageInputRefusedError,
+		);
+		assert.equal(issue(), undefined, "the replacement's own drain delivers the message");
+		assert.deepEqual(
+			f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").map((entry) => entry.message.id),
+			["direct-1"],
+			"the message stays queued",
+		);
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async () => {
+				throw new StageInputRefusedError("stage-not-live", input);
+			}),
+			(error: unknown) => error instanceof StageInputRefusedError,
+		);
+		assert.match(issue() ?? "", /^1 stage drain on local workers failed; .*\(stage-input-refused\)/);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a message the session on another host failed is settled undeliverable, once, and the drain goes on to the next (#4391)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueDirect("stage", "direct-2");
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const input = {
+			root: ROOT,
+			runId: descriptor.childRunId,
+			stageId: "stage",
+			seq: 1,
+			kind: "intercom-message" as const,
+		};
+		const handed: string[] = [];
+		await f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async (_from, message) => {
+			handed.push(message.id);
+			if (message.id === "direct-1")
+				throw new Error("drain failed", {
+					cause: new StageInputRefusedError("stage-failed", input, { detail: "card rejected" }),
+				});
+		});
+		assert.deepEqual(handed, ["direct-1", "direct-2"], "the next message is handed over");
+		const entries = f.store.run(descriptor.childRunId)?.pendingStageMessages ?? [];
+		const failed = entries.find((entry) => entry.message.id === "direct-1");
+		assert.deepEqual(
+			[failed?.status, failed?.undeliverableReason, typeof failed?.undeliverableNotificationId],
+			["undeliverable", "The stage's session failed to take it: card rejected", "string"],
+			"its sender is told once, by the run's undeliverable notice",
+		);
+		assert.equal(entries.find((entry) => entry.message.id === "direct-2")?.status, "delivered");
+		assert.deepEqual(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage"), []);
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined, "nothing is left for a later drain");
+		handed.length = 0;
+		await f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async (_from, message) => {
+			handed.push(message.id);
+		});
+		assert.deepEqual(handed, [], "a settled message is not handed over again");
+		assert.deepEqual(
+			[
+				failedInSession(new StageInputRefusedError("stage-failed", input, { detail: "busy" })),
+				failedInSession(new StageInputRefusedError("session-replaced", input)),
+				failedInSession(new Error("worker gone")),
+			],
+			["The stage's session failed to take it: busy", undefined, undefined],
+		);
 	} finally {
 		await f.close();
 	}

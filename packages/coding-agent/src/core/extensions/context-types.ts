@@ -102,8 +102,12 @@ export interface WorkflowPendingStageMessage {
 }
 
 export interface WorkflowPendingStageDelivery {
-	/** Process-private authority proving this stage belongs to the workflow run route. */
-	readonly routeCapability: string;
+	/**
+	 * Process-private authority proving this stage belongs to the workflow run route. Absent for a stage that runs on a
+	 * worker host where the run's route is not announced: Intercom registers no live route for it, and its messages
+	 * arrive only through `deliverPending`.
+	 */
+	readonly routeCapability?: string;
 	deliverPending(
 		deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 		recipient?: { readonly sessionId: string; readonly receivedMessageIds: readonly string[] },

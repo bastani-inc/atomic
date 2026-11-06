@@ -7,6 +7,7 @@ import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/int
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { STAGE_INPUT_PROMPT_ANSWER } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import { stageInputOp } from "../../packages/workflows/src/durable/journal/stage-input-kinds.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
@@ -31,8 +32,10 @@ import {
 	fixture,
 	libsql,
 	PREFIX,
+	STUB_QUESTION,
 	satellite,
 	stubWorker,
+	USER_MESSAGE_ERROR_RECEIPT,
 } from "../helpers/workflow-shared-pool-coordinator.js";
 
 vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
@@ -184,7 +187,7 @@ test(
 );
 
 test(
-	"a host takes bound work it has warm without restoring, and gives the stage its queued prompt answers (#4310)",
+	"a host takes bound work it has warm without restoring, and gives the stage its queued inputs of every kind, in order (#4310, #4391)",
 	async () => {
 		const f = await fixture("shared-coordinator-warm", { workspace: binding });
 		const warm = join(f.directory, "warm");
@@ -235,13 +238,78 @@ test(
 					op: `prompt:${promptId}`,
 					payload: JSON.stringify({ kind: "prompt", promptId, response: "yes" }),
 				});
+			// The root's other inputs follow in order (#4391): question reads, stage chat text and Intercom messages.
+			const generation = work.generation;
+			const later: { kind: "question-read" | "user-message" | "intercom-message"; id: string; payload: object }[] = [
+				{ kind: "question-read", id: "q1", payload: { promptId: "q1" } },
+				{ kind: "question-read", id: "q-other", payload: { promptId: "q-other" } },
+				{ kind: "user-message", id: "d1", payload: { deliveryOp: "d1", text: "steer this", intent: "steer" } },
+				{
+					kind: "user-message",
+					id: "stale-once",
+					payload: { deliveryOp: "stale-once", text: "later", intent: "auto" },
+				},
+				{
+					kind: "user-message",
+					id: "refuse-StageNotLive",
+					payload: { deliveryOp: "refuse-StageNotLive", text: "gone", intent: "steer" },
+				},
+				{
+					kind: "user-message",
+					id: "error-busy",
+					payload: { deliveryOp: "error-busy", text: "x", intent: "steer" },
+				},
+				{
+					kind: "intercom-message",
+					id: "session-stage:m1",
+					payload: { sessionId: "session-stage", generation, from: { id: "a" }, message: { id: "m1" } },
+				},
+				{
+					kind: "intercom-message",
+					id: "session-stage:stale-once",
+					payload: { sessionId: "session-stage", generation, from: { id: "a" }, message: { id: "stale-once" } },
+				},
+				{
+					kind: "intercom-message",
+					id: "session-stage:error-broken",
+					payload: { sessionId: "session-stage", generation, from: { id: "a" }, message: { id: "error-broken" } },
+				},
+				{
+					kind: "intercom-message",
+					id: "session-stage:refuse-SessionReplaced",
+					payload: {
+						sessionId: "session-stage",
+						generation,
+						from: { id: "a" },
+						message: { id: "refuse-SessionReplaced" },
+					},
+				},
+			];
+			for (const input of later)
+				await f.shared.appendStageInput(root.lease, {
+					work: workId,
+					runId: work.childRunId,
+					stageId: "stage",
+					kind: input.kind,
+					op: stageInputOp(input.kind, input.id, generation),
+					payload: JSON.stringify(input.payload),
+				});
+			// Text the stage defers while it waits for an answer lets that answer, queued behind it, go first.
 			await f.shared.appendStageInput(root.lease, {
 				work: workId,
 				runId: work.childRunId,
 				stageId: "stage",
-				kind: "steer",
-				op: "steer:1",
-				payload: "{}",
+				kind: "user-message",
+				op: stageInputOp("user-message", "await-answer", generation),
+				payload: JSON.stringify({ deliveryOp: "await-answer", text: "after the answer", intent: "followUp" }),
+			});
+			await f.shared.appendStageInput(root.lease, {
+				work: workId,
+				runId: work.childRunId,
+				stageId: "stage",
+				kind: STAGE_INPUT_PROMPT_ANSWER,
+				op: "prompt:unblock",
+				payload: JSON.stringify({ kind: "prompt", promptId: "unblock", response: "yes" }),
 			});
 			const settled = async () =>
 				(await f.shared.stageInputs("root", work.childRunId, "stage")).map((input) => [
@@ -256,17 +324,64 @@ test(
 				["prompt:refuse-PromptNotPending", "done", '{"ok":false,"refusal":"PromptNotPending"}'],
 				["prompt:refuse-StageNotLive", "done", '{"ok":false,"refusal":"StageNotLive"}'],
 				["prompt:p2", "done", '{"ok":true}'],
-				["steer:1", "done", '{"ok":false,"refusal":"UnsupportedInput"}'],
+				[`question:q1:${generation}`, "done", JSON.stringify({ ok: true, question: STUB_QUESTION })],
+				[`question:q-other:${generation}`, "done", '{"ok":false,"refusal":"PromptNotPending"}'],
+				[`user:d1:${generation}`, "done", '{"ok":true,"action":"steer"}'],
+				[`user:stale-once:${generation}`, "done", '{"ok":true,"action":"followUp"}'],
+				[`user:refuse-StageNotLive:${generation}`, "done", '{"ok":false,"refusal":"StageNotLive"}'],
+				[`user:error-busy:${generation}`, "done", USER_MESSAGE_ERROR_RECEIPT],
+				[`intercom:session-stage:m1:${generation}`, "done", '{"ok":true}'],
+				[`intercom:session-stage:stale-once:${generation}`, "done", '{"ok":true}'],
+				[
+					`intercom:session-stage:error-broken:${generation}`,
+					"done",
+					JSON.stringify({ ok: false, error: { name: "Error", message: "broken", fields: {} } }),
+				],
+				[
+					`intercom:session-stage:refuse-SessionReplaced:${generation}`,
+					"done",
+					'{"ok":false,"refusal":"SessionReplaced"}',
+				],
+				[`user:await-answer:${generation}`, "done", '{"ok":true,"action":"followUp"}'],
+				["prompt:unblock", "done", '{"ok":true}'],
 			]);
-			const answers = readFileSync(f.log, "utf8")
+			const applied = readFileSync(f.log, "utf8")
 				.split("\n")
-				.filter((line) => line.startsWith("answer "));
+				.filter((line) => /^(answer|question|user|intercom) /.test(line));
+			// The deferred text is offered again after each wait while its answer is not queued yet: how many times
+			// depends on when the answer is appended, so the tries before the answer are counted apart.
+			const deferredText = "user await-answer followUp after the answer";
+			const unblock = applied.indexOf(`answer ${work.childRunId} stage unblock`);
+			assert.ok(
+				applied.slice(0, unblock).filter((line) => line === deferredText).length >= 1,
+				"the text was deferred",
+			);
 			assert.deepEqual(
-				answers,
-				["p1", "stale-once", "stale-once", "refuse-PromptNotPending", "refuse-StageNotLive", "p2"].map(
-					(promptId) => `answer ${work.childRunId} stage ${promptId}`,
-				),
-				"in order, one at a time: an answer the stage could not take yet is its next input until it takes it",
+				[...applied.slice(0, unblock).filter((line) => line !== deferredText), ...applied.slice(unblock)],
+				[
+					...["p1", "stale-once", "stale-once", "refuse-PromptNotPending", "refuse-StageNotLive", "p2"].map(
+						(promptId) => `answer ${work.childRunId} stage ${promptId}`,
+					),
+					`question ${work.childRunId} stage`,
+					`question ${work.childRunId} stage`,
+					"user d1 steer steer this",
+					"user stale-once auto later",
+					"user stale-once auto later",
+					"user refuse-StageNotLive steer gone",
+					"user error-busy steer x",
+					"intercom session-stage m1",
+					"intercom session-stage stale-once",
+					"intercom session-stage stale-once",
+					"intercom session-stage error-broken",
+					"intercom session-stage refuse-SessionReplaced",
+					`answer ${work.childRunId} stage unblock`,
+					deferredText,
+				],
+				"in order, one at a time, every kind: an input the stage could not take yet is its next input until it takes it",
+			);
+			assert.ok(
+				!applied.slice(0, applied.indexOf("intercom session-stage refuse-SessionReplaced")).includes(deferredText),
+				"the deferred text is offered only once the inputs before it settled",
 			);
 			// While it holds the child, the host relays its run's activity for the root to show.
 			while (!(await f.shared.activityAfter("root", 0)).some((entry) => entry.work.id === workId)) await sleep(25);
