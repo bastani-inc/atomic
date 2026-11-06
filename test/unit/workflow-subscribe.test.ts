@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	type AgentSession,
 	type EventSource,
+	isSubscriptionClosedError,
 	isSubscriptionConfigError,
 	isSubscriptionHandlerError,
 	publishEvent,
@@ -679,4 +680,259 @@ test("cancelling the run cancels its subscriptions and aborts running handlers (
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal((doneReason as Error | undefined)?.message, "operator cancelled");
 	void handlerSignal;
+});
+
+test("subscriber, report and inline-stream inputs are validated with typed errors (#4311)", async () => {
+	const fields: string[][] = [];
+	const record = (error: unknown): void => {
+		fields.push(
+			isSubscriptionConfigError(error)
+				? [(error as { field: string }).field, (error as { reason: string }).reason]
+				: [String(error)],
+		);
+	};
+	const { result, backend, runId } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		for (const subscriber of ["stage", null, { sendUserMessage: async () => {} }, { name: "watcher" }]) {
+			try {
+				ctx.subscribe(listSource("s", []), async () => {}, { subscriber: subscriber as never });
+			} catch (error) {
+				record(error);
+			}
+		}
+		for (const attempt of [
+			() => ctx.events({ id: "", start: () => {} }),
+			() => ctx.events(listSource("e", []), { name: "" }),
+			() => ctx.events(listSource("e", []), { maxRate: { events: 1, intervalMs: 0 } }),
+		]) {
+			try {
+				attempt();
+			} catch (error) {
+				record(error);
+			}
+		}
+		await ctx
+			.subscribe(listSource("bad-report", [{ id: "r1" }]), async (_event, child) => {
+				await child.report(7 as never);
+			})
+			.done.catch((error: Error) => record(error.cause));
+	});
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(fields, [
+		["options.subscriber", "not-stage"],
+		["options.subscriber", "not-stage"],
+		["options.subscriber", "not-stage"],
+		["options.subscriber", "not-stage"],
+		["source", "not-event-source"],
+		["options.name", "not-string"],
+		["options.maxRate.intervalMs", "not-positive-integer"],
+		["report.text", "not-string"],
+	]);
+	assert.equal(
+		backend
+			.listCheckpoints(runId)
+			.filter((checkpoint) => checkpoint.checkpointId.startsWith("workflow-subscription:")).length,
+		1,
+	);
+});
+
+test("reports steer the subscriber, keep the author's custom tools, and refuse late calls (#4311)", async () => {
+	const deliveries: Array<{ readonly text: string; readonly deliverAs?: string }> = [];
+	const toolNames: string[][] = [];
+	let kept: { report(text: string): Promise<void> } | undefined;
+	const definition = workflow({
+		name: "report-delivery",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			await watcher.prompt("watch");
+			const subscriber = {
+				name: watcher.name,
+				sendUserMessage: async (text: string, options?: { readonly deliverAs?: "steer" | "followUp" }) => {
+					deliveries.push({ text, ...(options?.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }) });
+				},
+			};
+			await ctx.subscribe(
+				listSource("tools", [{ id: "t1" }]),
+				async (_event, child) => {
+					kept = child;
+					await child.task({
+						prompt: "inspect",
+						customTools: [
+							{
+								name: "author_tool",
+								label: "Author tool",
+								description: "kept",
+								parameters: { type: "object", properties: {} } as never,
+								execute: async () => ({ content: [], details: undefined }),
+							},
+						],
+					});
+					await child.report("t1 matters");
+				},
+				{ subscriber },
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId: "99999999-9999-4999-8999-000000004311",
+			store: createStore(),
+			durableBackend: await createMemoryTestBackend(),
+			adapters: {
+				agentSession: {
+					create: async (options) => {
+						toolNames.push((options.customTools ?? []).map((tool) => tool.name));
+						return subscriberSession();
+					},
+				},
+			},
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(deliveries, [
+		{ text: 'Report from event child "tools/t1" (event t1):\n\nt1 matters', deliverAs: "steer" },
+	]);
+	assert.deepEqual(toolNames.at(-1), ["author_tool", "report_to_subscriber"]);
+	await assert.rejects(kept!.report("late"), (error) => isSubscriptionClosedError(error));
+});
+
+test("reports without a subscriber get one notice each (#4311)", async () => {
+	const store = createStore();
+	const result = await run(
+		workflow({
+			name: "many-notices",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.stage("anchor").prompt("start");
+				await ctx.subscribe(
+					listSource("n", [{ id: "a" }, { id: "b" }]),
+					async (event, child) => {
+						await child.report(`${event.id} one`);
+						await child.report(`${event.id} two`);
+					},
+					{ maxConcurrent: 1 },
+				).done;
+				return {};
+			},
+		}) as WorkflowDefinition,
+		{},
+		{
+			runId: "aaaaaaaa-aaaa-4aaa-8aaa-000000004311",
+			store,
+			durableBackend: await createMemoryTestBackend(),
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	const notices = store.notices().filter((notice) => notice.runId === "aaaaaaaa-aaaa-4aaa-8aaa-000000004311");
+	assert.deepEqual(
+		notices.map((notice) => notice.id.split("/").at(-1)),
+		["n#1:report:1", "n#1:report:2", "n#1:report:3", "n#1:report:4"],
+	);
+});
+
+test("inline streams record their mode, honour maxRate, and close or throw cleanly (#4311)", async () => {
+	const seen: string[] = [];
+	const { result, backend, runId } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		const first = ctx.events(listSource("inline", [{ id: "1" }, { id: "2" }]), {
+			maxRate: { events: 5, intervalMs: 1000 },
+		});
+		assert.equal(first.id.endsWith("/inline#1"), true);
+		const stats = await first.close();
+		assert.equal(stats.handled, 0);
+		assert.deepEqual(await first.next(), { value: undefined, done: true });
+		const second = ctx.events(listSource("inline", [{ id: "3" }, { id: "4" }]));
+		const step = await second.next();
+		seen.push(step.value?.id ?? "none");
+		await assert.rejects(second.throw?.(new Error("stop reading")) ?? Promise.resolve(), /stop reading/);
+		const third = ctx.events(openSource("named-only"), { name: "custom" });
+		assert.equal(third.id.endsWith("/custom#1"), true);
+		publishEvent(third.id, { id: "x" });
+		const got = await third.next();
+		seen.push(got.value?.id ?? "none");
+		assert.deepEqual(await third.return?.(), { value: undefined, done: true });
+	});
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(seen, ["3", "x"]);
+	const records = backend
+		.listCheckpoints(runId)
+		.flatMap((checkpoint) =>
+			checkpoint.kind === "tool" && checkpoint.checkpointId.startsWith("workflow-subscription:")
+				? [checkpoint.output]
+				: [],
+		);
+	assert.deepEqual(records, [
+		{
+			subscription: "inline#1",
+			source: "inline",
+			mode: "inline",
+			maxConcurrent: 1,
+			maxRate: { events: 5, intervalMs: 1000 },
+		},
+		{ subscription: "inline#2", source: "inline", mode: "inline", maxConcurrent: 1, maxRate: null },
+		{ subscription: "custom#1", source: "named-only", mode: "inline", maxConcurrent: 1, maxRate: null },
+	]);
+	const processed = backend
+		.listCheckpoints(runId)
+		.flatMap((checkpoint) =>
+			checkpoint.kind === "tool" && checkpoint.checkpointId.startsWith("workflow-subscription-event:")
+				? [(checkpoint.output as { eventId: string }).eventId]
+				: [],
+		);
+	assert.deepEqual(processed.sort(), ["x"]);
+});
+
+test("an event child replayed from cache after a resume stays detached from later stages (#4311)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = "bbbbbbbb-bbbb-4bbb-8bbb-000000004311";
+	let failFirst = true;
+	let pass = 0;
+	const definition = workflow({
+		name: "cached-event-child",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			await watcher.prompt("watch");
+			await ctx
+				.subscribe(
+					listSource("cached", [{ id: "c1" }]),
+					async (_event, child) => {
+						await child.task({ prompt: "inspect" });
+						if (failFirst) {
+							failFirst = false;
+							throw new Error("crashed after the child finished");
+						}
+					},
+					{ subscriber: watcher },
+				)
+				.done.catch(() => undefined);
+			pass += 1;
+			await ctx.stage(`after-${pass}`).prompt("continue");
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const options = {
+		runId,
+		durableBackend: backend,
+		adapters: { agentSession: { create: async () => subscriberSession() } },
+	};
+	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
+	const second = await run(definition, {}, { ...options, store: createStore() });
+	assert.equal(second.status, "completed", second.error);
+	const child = second.stages.find((stage) => stage.name === "cached/c1");
+	assert.ok(child !== undefined, JSON.stringify(second.stages.map((stage) => stage.name)));
+	const after = second.stages.find((stage) => stage.name === "after-2")!;
+	assert.equal(after.parentIds.includes(child.id), false);
+	assert.deepEqual(child.parentIds, [second.stages.find((stage) => stage.name === "watcher")!.id]);
 });

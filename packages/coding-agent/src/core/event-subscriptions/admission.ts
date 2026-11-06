@@ -221,7 +221,6 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 					stop(
 						isEventSourceError(error) ? error : new EventSourceError(input.source.id, "start", { cause: error }),
 					);
-				pump();
 			};
 			try {
 				const running = input.source.start(sourceStop.signal, emit);

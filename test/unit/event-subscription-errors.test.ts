@@ -298,3 +298,14 @@ test("rehydration tolerates malformed fields and keeps causes on every class", (
 	assert.equal(new SubscriptionClosedError("s", "emit", { cause: "why" }).cause, "why");
 	assert.equal("cause" in new SubscriptionClosedError("s", "emit"), false);
 });
+
+test("guards require both the name and the code, and serialization skips null causes and non-string codes", () => {
+	assert.equal(isSubscriptionClosedError({ name: "OtherError", code: "subscription-closed" }), false);
+	assert.equal("cause" in serializeSubscriptionError(new SubscriptionHandlerError("s", "e", null)), false);
+	const numeric = serializeSubscriptionError(
+		new SubscriptionHandlerError("s", "e", Object.assign(new Error("n"), { code: 5 })),
+	);
+	assert.equal(numeric.cause !== undefined && "code" in numeric.cause, false);
+	const plain = deserializeSubscriptionError(serializeSubscriptionError(new SubscriptionClosedError("s", "emit")));
+	assert.equal("cause" in plain, false);
+});

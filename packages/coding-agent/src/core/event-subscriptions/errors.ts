@@ -370,7 +370,6 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				return new SubscriptionClosedError(
 					stringField(fields, "subscriptionId"),
 					stringField(fields, "operation") as SubscriptionClosedOperation,
-					{ cause },
 				);
 			case "SubscriptionConfigError":
 				return new SubscriptionConfigError(
@@ -416,6 +415,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 			}
 		}
 	})();
-	if (rebuilt.cause === undefined && cause !== undefined) Object.defineProperty(rebuilt, "cause", { value: cause });
+	if (cause !== undefined)
+		Object.defineProperty(rebuilt, "cause", { value: cause, configurable: true, writable: true });
 	return rebuilt;
 }

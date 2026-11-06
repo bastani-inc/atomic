@@ -563,3 +563,135 @@ test("close can discard events still waiting for admission", async () => {
 	assert.deepEqual(handled, ["a"]);
 	assert.deepEqual([stats.handled, stats.queued], [1, 0]);
 });
+
+test("primitive events are refused as not-object", async () => {
+	const id = uniqueId("primitive");
+	const subscription = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	assert.throws(
+		() => publishEvent(id, "event" as never),
+		(error) => isSubscriptionEventError(error) && (error as { reason: string }).reason === "not-object",
+	);
+	await subscription.close();
+});
+
+test("closing an old handle never unregisters a newer subscription with the same id", async () => {
+	const id = uniqueId("reuse-close");
+	const old = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	await old.close();
+	const handled: string[] = [];
+	const fresh = openEventSubscription({
+		id,
+		source: openSource(),
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	await old.close();
+	publishEvent(id, { id: "still-open" });
+	await fresh.close();
+	assert.deepEqual(handled, ["still-open"]);
+});
+
+test("close waits for running and queued events before settling", async () => {
+	const id = uniqueId("close-waits");
+	const releases: Array<() => void> = [];
+	const subscription = openEventSubscription({
+		id,
+		source: openSource(),
+		admission: { maxConcurrent: 1 },
+		handle: () => new Promise<void>((resolve) => releases.push(resolve)),
+	});
+	await settle();
+	for (const event of ["a", "b", "c"]) publishEvent(id, { id: event });
+	await settle();
+	let settled = false;
+	const closing = subscription.close().then((stats) => {
+		settled = true;
+		return stats;
+	});
+	for (let step = 0; step < 3; step++) {
+		await settle();
+		assert.equal(settled, false);
+		releases.shift()?.();
+	}
+	const stats = await closing;
+	assert.deepEqual([stats.handled, stats.active, stats.queued], [3, 0, 0]);
+});
+
+test("a source that rejects with its stop reason ends cleanly when the subscription closes", async () => {
+	const subscription = openEventSubscription({
+		id: uniqueId("reject-on-stop"),
+		source: {
+			id: "polite",
+			start: (signal) =>
+				new Promise<void>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason));
+				}),
+		},
+		handle: async () => {},
+	});
+	await settle();
+	const stats = await subscription.close();
+	assert.equal(stats.received, 0);
+	assert.equal(subscription.open, false);
+});
+
+test("the wake dispatcher orders equal deadlines by scheduling order, re-arms for earlier wakes, and never double counts", async () => {
+	let now = 0;
+	const active = new Map<number, { at: number; callback: () => void }>();
+	let nextTimer = 0;
+	const armed: number[] = [];
+	const dispatcher = createWakeDispatcher({
+		now: () => 1_000 + now,
+		elapsed: () => now,
+		setTimer: (callback, ms) => {
+			const key = nextTimer++;
+			armed.push(ms);
+			active.set(key, { at: now + ms, callback });
+			return { cancel: () => active.delete(key) };
+		},
+	});
+	const advance = (ms: number): void => {
+		now += ms;
+		for (const [key, timer] of [...active].sort((a, b) => a[1].at - b[1].at)) {
+			if (timer.at > now || !active.has(key)) continue;
+			active.delete(key);
+			timer.callback();
+		}
+	};
+	assert.equal(dispatcher.now(), 1_000);
+	const fired: string[] = [];
+	const deadlines = [50, 10, 30, 10, 70, 30, 20, 10, 60, 40, 20, 50];
+	deadlines.forEach((delay, index) => dispatcher.schedule(delay, () => fired.push(`${delay}:${index}`)));
+	assert.deepEqual(armed, [50, 10]);
+	advance(100);
+	assert.deepEqual(
+		fired,
+		deadlines
+			.map((delay, index) => ({ delay, index }))
+			.sort((a, b) => a.delay - b.delay || a.index - b.index)
+			.map(({ delay, index }) => `${delay}:${index}`),
+	);
+	const late = dispatcher.schedule(30, () => fired.push("late"));
+	const early = dispatcher.schedule(10, () => fired.push("early"));
+	early.cancel();
+	assert.equal(active.size, 1);
+	late.cancel();
+	assert.equal(active.size, 0);
+	const once = dispatcher.schedule(5, () => fired.push("once"));
+	advance(5);
+	once.cancel();
+	assert.equal(dispatcher.pending, 0);
+	assert.equal(fired.at(-1), "once");
+});
+
+test("the shared dispatcher sleeps on a real timer and stops it on abort", async () => {
+	const { sharedWakeDispatcher } = await import("@bastani/atomic");
+	const before = sharedWakeDispatcher.now();
+	await sharedWakeDispatcher.sleep(5, new AbortController().signal);
+	assert.ok(sharedWakeDispatcher.now() >= before);
+	const controller = new AbortController();
+	const sleeping = sharedWakeDispatcher.sleep(60_000, controller.signal);
+	controller.abort("done waiting");
+	await assert.rejects(sleeping, (error) => error === "done waiting");
+});

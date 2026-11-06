@@ -212,6 +212,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 
 	it("numbers subscriptions per name, records each one, and skips only its own processed ids (#4311)", async () => {
 		const sessionManager = SessionManager.inMemory();
+		await sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE);
 		await sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE, {
 			subscription: "other#1",
 			eventId: "a",
