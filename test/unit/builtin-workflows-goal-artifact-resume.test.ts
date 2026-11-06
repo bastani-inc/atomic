@@ -202,7 +202,7 @@ test("a fresh-id continuation replays the complete Goal artifact root and reads 
 		});
 		assert.equal(continuationArtifactDir, sourceArtifactDir);
 		assert.equal(
-			taskReadInstruction({ prompt: "review", reads: [stageArtifact] }),
+			taskReadInstruction({ prompt: "review", reads: [stageArtifact] }, true),
 			`[Read from: ${stageArtifact}]\n\n`,
 		);
 		assert.equal(await readFile(stageArtifact, "utf8"), "durable receipt");

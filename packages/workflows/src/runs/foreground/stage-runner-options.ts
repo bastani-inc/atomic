@@ -81,6 +81,7 @@ export async function stripWorkflowOnlyOptions(
 		forkFromEntryId,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
+		resumeInsideCall: _resumeInsideCall,
 		sessionStore,
 		durableReplayKey: _durableReplayKey,
 		durableAccumulatedDurationMs: _durableAccumulatedDurationMs,

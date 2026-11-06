@@ -290,7 +290,7 @@ export async function persistedSession(store: MemorySessionStore): Promise<strin
 	return manager.getSessionId();
 }
 
-export interface ResumedRigConfig extends Omit<RigConfig, "stageOptions" | "store"> {
+export interface ResumedRigConfig extends Omit<RigConfig, "store"> {
 	/** `undefined`: the transcript ends on no detachable turn; the method is absent from the session. */
 	readonly pendingTurn?: boolean;
 	/** The calls the reopened transcript ends on without a result. */
@@ -310,6 +310,7 @@ export async function makeResumedRig(
 		...config,
 		store,
 		stageOptions: {
+			...config.stageOptions,
 			resumeFromSessionId,
 			...(config.durableReplayKey === undefined ? {} : { durableReplayKey: config.durableReplayKey }),
 		},

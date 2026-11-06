@@ -15,7 +15,6 @@ import {
 } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableReleasedStageResume, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { StageWaitKind } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
-import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/shared/resume-continuation.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { StageContext, StageOptions } from "../../packages/workflows/src/shared/types.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -380,9 +379,10 @@ describe("a durable resume of a stage that waited between turns (#4309)", () => 
 			[[], []],
 		);
 		assert.equal(started[0]?.options?.resumeFromSessionId, "session-alpha");
-		// Its next prompt continues the interrupted turn.
+		// Its next call is resumed inside its turn: the stage runner continues that turn, or finishes the call (#4375).
+		assert.equal(started[0]?.options?.resumeInsideCall, true);
 		await alpha.prompt("anything");
-		assert.deepEqual(started[0]?.prompts, [RESUME_CONTINUATION_PROMPT]);
+		assert.deepEqual(started[0]?.prompts, ["anything"]);
 	});
 
 	test("each stage reads the records its previous process left once: later records and later creations of the key do not resume it again (#4309)", async () => {
@@ -410,8 +410,9 @@ describe("a durable resume of a stage that waited between turns (#4309)", () => 
 		const alpha = create("alpha", undefined, "stage:alpha:1");
 		assert.deepEqual(started[0]?.resumed, []);
 		assert.equal(started[0]?.options?.resumeFromSessionId, "session-alpha");
+		assert.equal(started[0]?.options?.resumeInsideCall, true);
 		await alpha.prompt("anything");
-		assert.deepEqual(started[0]?.prompts, [RESUME_CONTINUATION_PROMPT]);
+		assert.deepEqual(started[0]?.prompts, ["anything"]);
 	});
 
 	test("a stage with no earlier session starts with no resume options, and one with a session record resumes it with the file, time and routing it kept (#4309)", async () => {

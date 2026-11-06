@@ -40,9 +40,11 @@ interface KilledRun {
 	readonly effects: string;
 	/** Every stage's status in the resumed run's result. */
 	readonly statuses: readonly string[];
+	/** What each stage's call returned to the resumed workflow, by stage name. */
+	readonly results: Readonly<Record<string, string>>;
 }
 
-type Scenario = "tool" | "release" | "idle";
+type Scenario = "tool" | "release" | "idle" | "finished";
 
 /**
  * Start the fixture in `mode`, SIGKILL it once it writes `ready`, resume the same run in a new process, and hand back
@@ -84,6 +86,7 @@ async function killThenResume(
 		return {
 			effects: await readText(join(directory, "effects.txt")),
 			statuses: JSON.parse(await readText(join(directory, "resumed-stages.json"))) as string[],
+			results: JSON.parse(await readText(join(directory, "resumed-results.json"))) as Record<string, string>,
 		};
 	} finally {
 		if (child.exitCode === null) child.kill("SIGKILL");
@@ -138,6 +141,27 @@ async function killAndResumeBetweenTurns(runtime: "node" | "bun", scenario: "rel
 	);
 }
 
+/**
+ * Every stage (half of them tasks) got the model's final answer, and the root was killed before any stage recorded
+ * its completion. The resume reopens each stage's session, which already holds the answered turn, and finishes the
+ * stage from it: no stage is prompted again, not even with a "continue" prompt, and each returns that turn's answer.
+ */
+async function killAndResumeFinishedTurns(runtime: "node" | "bun"): Promise<void> {
+	const { effects, statuses, results } = await killThenResume(runtime, "wait", "finished-ready", "finished");
+	assert.deepEqual(perStage(effects, "prompt", "plan"), everyStage(1));
+	assert.deepEqual(perStage(effects, "prompt"), everyStage(1));
+	assert.deepEqual(perStage(effects, "open", "0"), everyStage(1));
+	assert.deepEqual(perStage(effects, "open", "2"), everyStage(1));
+	assert.deepEqual(
+		STAGE_NAMES.map((stage) => results[stage]),
+		STAGE_NAMES.map((_, index) => `answered plan ${index}`),
+	);
+	assert.deepEqual(
+		statuses,
+		STAGE_NAMES.map(() => "completed"),
+	);
+}
+
 for (const runtime of ["node", "bun"] as const) {
 	test(
 		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309)`,
@@ -152,6 +176,11 @@ for (const runtime of ["node", "bun"] as const) {
 	test(
 		`${runtime}: killing the root while ${STAGES} held stages wait released by the idle scan resumes them without sending any prompt (#4309)`,
 		() => killAndResumeBetweenTurns(runtime, "idle"),
+		PROCESS_RESTART_TIMEOUT_MS,
+	);
+	test(
+		`${runtime}: killing the root after ${STAGES} stages got the model's final answer but before they recorded their completion finishes every stage from its transcript without another model call (#4375)`,
+		() => killAndResumeFinishedTurns(runtime),
 		PROCESS_RESTART_TIMEOUT_MS,
 	);
 }

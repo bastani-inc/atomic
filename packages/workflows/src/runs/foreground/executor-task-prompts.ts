@@ -77,11 +77,12 @@ export function taskBaseDir(options: Pick<WorkflowTaskExecutionOptions, "chainDi
 	return undefined;
 }
 
-export function taskReadInstruction(options: WorkflowTaskExecutionOptions): string {
+/** The instruction naming the files a task reads; `requireFiles` refuses a file that does not exist. */
+export function taskReadInstruction(options: WorkflowTaskExecutionOptions, requireFiles: boolean): string {
 	if (options.reads === false || options.reads === undefined || options.reads.length === 0) return "";
 	const baseDir = taskBaseDir(options);
 	const files = options.reads.map((file) => resolveWorkflowPath(file, baseDir));
-	const missing = files.find((file) => !existsSync(file));
+	const missing = requireFiles ? files.find((file) => !existsSync(file)) : undefined;
 	if (missing !== undefined) {
 		throw new Error(`atomic-workflows: referenced artifact does not exist: ${missing}`);
 	}

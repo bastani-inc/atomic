@@ -20,7 +20,6 @@ import {
 } from "../../runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
 import { prepareTaskGit } from "../../runs/shared/worktree-git-runner.js";
-import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type {
 	WorkflowArtifact,
 	WorkflowChainOptions,
@@ -85,13 +84,13 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				},
 			});
 			const stage = stageHandle.context;
-			const promptText =
-				resolvedTaskOptions.resumeFromSessionId !== undefined
-					? RESUME_CONTINUATION_PROMPT
-					: applyTaskContext(
-							`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`,
-							taskPrevious(resolvedTaskOptions),
-						);
+			// A resumed task sends the prompt it was started with, which its stage compares with the transcript it reopens;
+			// the files the prompt names are checked only when the task starts.
+			const resumed = resolvedTaskOptions.resumeFromSessionId !== undefined;
+			const promptText = applyTaskContext(
+				`${taskReadInstruction(resolvedTaskOptions, !resumed)}${taskPrompt(resolvedTaskOptions)}`,
+				taskPrevious(resolvedTaskOptions),
+			);
 			const rawOutput = await stage.prompt(promptText, taskPromptOptions(resolvedTaskOptions));
 			const structured = typeof rawOutput === "string" ? undefined : rawOutput;
 			const text = truncateTaskOutput(structuredTaskOutputText(rawOutput), resolvedTaskOptions.maxOutput);

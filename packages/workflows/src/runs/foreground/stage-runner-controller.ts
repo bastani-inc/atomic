@@ -96,6 +96,7 @@ import {
 import { StageSessionPause, type StageSessionPauseResumeResult } from "./stage-runner-pause.js";
 import {
 	DetachedResultsNotSaved,
+	finalAnswerTo,
 	resultsAnsweringTranscript,
 	storedTranscript,
 	unansweredToolCallIds,
@@ -447,8 +448,8 @@ export class StageSessionController {
 	private abortDetachedCalls: ((reason: Error | DOMException | string) => void) | undefined;
 	/** Callers that need the session while it is released wait for the stage to wake. Created on first need. */
 	private releasedWaitEnded: PromiseWithResolvers<void> | undefined;
-	/** A durably resumed stage looks for detached calls its transcript ends on once, on its first prompt. */
-	private resumedDetachedCallsChecked = false;
+	/** A durably resumed stage looks at the turn its transcript ends on once, on its first prompt. */
+	private resumedCallChecked = false;
 	/** The reopening of a released stage that callers needing its session join. */
 	private rehydration: Promise<void> | undefined;
 	/** A release between turns under way: callers join it first, so the stage never reopens halfway through it. */
@@ -935,20 +936,22 @@ export class StageSessionController {
 	/**
 	 * Prompt the stage, and carry the turn across every wait on a detached tool call: the session is released while
 	 * the stage waits and reopened from the store when the results arrive, and the same turn continues without a new
-	 * user message.
+	 * user message. `continuationText` is what the stage's first call sends instead of `text` when a durable resume
+	 * replays it inside its turn ({@link resumeInterruptedCall}).
 	 */
 	async promptWithFallback(
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer = "prompt",
 		newSessionText?: string,
+		continuationText?: string,
 	): Promise<void> {
 		this.promptsInFlight += 1;
 		this.lastActivityAt = Date.now();
 		try {
 			if (reopensOnUse(this.releasedWait)) await this.rehydrate();
-			if (!(await this.resumeDetachedCalls(sdkOptions, consumer)))
-				await this.promptSegment(text, sdkOptions, consumer, newSessionText);
+			const sent = await this.resumeInterruptedCall(text, continuationText, sdkOptions, consumer);
+			if (sent !== undefined) await this.promptSegment(sent, sdkOptions, consumer, newSessionText);
 			await this.continueDetachedTurns(sdkOptions, consumer);
 		} finally {
 			this.promptsInFlight -= 1;
@@ -990,14 +993,17 @@ export class StageSessionController {
 	 * them; otherwise the calls without a result start again, with their ids and arguments, and the turn continues once
 	 * they finish, instead of the stage being prompted again. A turn whose results were all recorded continues at once.
 	 * Which calls still wait is read from the transcript the store holds, not from the context the model sees (#4309).
+	 * Any other turn is left to {@link resumedCallText}. Returns the text the call still sends, or undefined when it needs
+	 * none.
 	 */
-	private async resumeDetachedCalls(
+	private async resumeInterruptedCall(
+		text: string,
+		continuationText: string | undefined,
 		sdkOptions: PromptOptions | undefined,
 		consumer: AgentSessionConsumer,
-	): Promise<boolean> {
-		if (this.resumedDetachedCallsChecked || this.effectiveStageOptions?.resumeFromSessionId === undefined)
-			return false;
-		this.resumedDetachedCallsChecked = true;
+	): Promise<string | undefined> {
+		if (this.resumedCallChecked || this.effectiveStageOptions?.resumeFromSessionId === undefined) return text;
+		this.resumedCallChecked = true;
 		const session = await this.ensureSession(consumer);
 		const replayKey = this.effectiveStageOptions.durableReplayKey;
 		const recorded =
@@ -1009,13 +1015,36 @@ export class StageSessionController {
 				: resultsAnsweringTranscript(recorded, storedTranscript(session));
 		// A record that answers no turn the transcript waits on is spent: the calls start again and record their own.
 		if (recorded !== undefined && fromRecord === undefined) this.opts.waiting?.resultsInTranscript();
-		if (!pendingTurn) return false;
+		if (!pendingTurn) return this.resumedCallText(session, this.effectiveStageOptions, text, continuationText);
 		const calls = fromRecord === undefined ? (session.redispatchDetachedToolCalls?.() ?? []) : [];
 		const results =
 			fromRecord ??
 			(calls.length === 0 ? [] : await this.waitForDetachedCalls(calls, this.opts.waiting?.policy?.afterMs));
 		await this.continueWithResults(results, sdkOptions, consumer);
-		return true;
+		return undefined;
+	}
+
+	/**
+	 * What the call a durably resumed stage replays sends, when no detached call holds its turn open. A stage whose
+	 * previous process stopped inside the call (`resumeInsideCall`) after the model's final answer to the call's own
+	 * `text`, before the stage recorded its completion, sends nothing: that answer is the call's result, and the output
+	 * artifact the stage writes, as if the call had just produced it (#4375). One that stopped earlier in the call sends
+	 * `continuationText` when it has one, so its turn goes on rather than starting again. A schema-backed stage always
+	 * does, its structured result not being one the transcript gives back, and a stage resumed between turns sends
+	 * `text` as written.
+	 */
+	private resumedCallText(
+		session: StageSessionRuntime,
+		options: StageOptions,
+		text: string,
+		continuationText: string | undefined,
+	): string | undefined {
+		if (options.resumeInsideCall !== true) return text;
+		const answer =
+			this.structuredOutputCapture === undefined ? finalAnswerTo(storedTranscript(session), text) : undefined;
+		if (answer === undefined) return continuationText ?? text;
+		this.artifactCapture.adoptAnswer(answer);
+		return undefined;
 	}
 
 	private async continueDetachedTurns(

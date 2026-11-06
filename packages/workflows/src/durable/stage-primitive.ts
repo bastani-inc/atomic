@@ -4,7 +4,6 @@ import type { SessionStore } from "@bastani/atomic";
 import { assertStageOwnedSessionExists, type StageOwnedSession } from "../engine/run-resume-preflight.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import { readStoredStageMessages } from "../runs/foreground/stage-runner-options.js";
-import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
 import type { StageWaitToolResult } from "../shared/stage-wait.js";
 import { StageRehydrationError, StageReleasedError, type StageReleasedProperty } from "../shared/stage-wait-errors.js";
 import type { StageSnapshot } from "../shared/store-types.js";
@@ -126,22 +125,6 @@ export async function recordStageSessionCheckpoint(
 	await deps.beforeCheckpoint?.();
 	await recordCheckpointDurably(deps.backend, checkpoint);
 	return true;
-}
-
-const MID_SESSION_RESUME_PROMPT = RESUME_CONTINUATION_PROMPT;
-
-function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: boolean): T {
-	if (!enabled) return stage;
-	// Override in place: spreading would eagerly read lazy session getters before prompt().
-	const originalPrompt = stage.prompt.bind(stage);
-	Object.defineProperty(stage, "prompt", {
-		value: (_text: string, options?: Parameters<StageContext["prompt"]>[1]) =>
-			originalPrompt(MID_SESSION_RESUME_PROMPT, options as never),
-		writable: true,
-		configurable: true,
-		enumerable: true,
-	});
-	return stage;
 }
 
 /**
@@ -344,6 +327,7 @@ export function createDurableStagePrimitive(input: {
 				? {
 						resumeFromSessionId: resumeSessionId,
 						...(session?.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
+						resumeInsideCall: released === undefined,
 						routerSelection: session?.routerSelection,
 						durableAccumulatedDurationMs: session?.durationMs ?? 0,
 					}
@@ -351,7 +335,8 @@ export function createDurableStagePrimitive(input: {
 		};
 		const stage = input.stage(name, liveOptions, replayKey);
 		// Stopped between turns: replay the finished calls from the record and send the next one as written. Stopped
-		// inside a turn: continue that turn.
+		// inside a call (`resumeInsideCall`): the stage runner finishes the call from its transcript when the model
+		// already answered it, and continues its turn otherwise.
 		if (released !== undefined) stage.__resumeReleased?.(released);
 		// A session the stage kept in its own store is checked in the store the workflow passes the stage now, before
 		// any call of the stage that opens or reads a session: the run's preflight could not know that store.
@@ -366,10 +351,7 @@ export function createDurableStagePrimitive(input: {
 						sessionId: resumeSessionId,
 					})
 				: stage;
-		const live = withStageWriteBarrier(
-			withMidSessionResumePrompt(checked, resumeSessionId !== undefined && released === undefined),
-			input.beforeCall,
-		);
+		const live = withStageWriteBarrier(checked, input.beforeCall);
 		if (options?.schema === undefined) return live;
 		return wrapSchemaStageForDurability({
 			stage: live,
@@ -528,6 +510,7 @@ export function createDurableTaskPrimitive(input: {
 				? {
 						resumeFromSessionId: session.sessionId,
 						...(session.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
+						resumeInsideCall: true,
 						routerSelection: session.routerSelection,
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
