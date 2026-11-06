@@ -22,12 +22,15 @@ import { LIVE_STAGE_SECOND_DELTA } from "../fixtures/pool-live-stage-child.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: the source and the fork each cold-start a pool coordinator and a worker. */
 const TWO_POOLS = poolTestBudgetMs(2);
 const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
 const delegatingAdapter = fileURLToPath(new URL("../fixtures/delegating-run-journal-adapter.mjs", import.meta.url));
+
+useTemporaryAgentDir();
 
 for (const journalKind of ["shared", "coordination"] as const) {
 	test.skipIf(process.platform === "win32")(

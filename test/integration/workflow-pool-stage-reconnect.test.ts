@@ -35,6 +35,7 @@ import type { DeliveryOpId } from "../../packages/workflows/src/workers/stage-wa
 import { LIVE_STAGE_FIRST_DELTA } from "../fixtures/pool-live-stage-child.js";
 import { rootOf, testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: a coordinator process, worker processes, real agent stages, and a worker replacement. */
@@ -42,6 +43,8 @@ const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 180_000;
 const CONDITION_TIMEOUT_MS = 90_000;
 /** Short enough that a paused stage would lose its lease within the test if heartbeats stopped. */
 const LEASE_MS = 2_000;
+
+useTemporaryAgentDir();
 
 beforeAll(async () => {
 	const workerEntry = fileURLToPath(

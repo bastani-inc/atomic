@@ -9,6 +9,7 @@ import {
 	currentStoreBackend,
 	configureCurrentTestStoreBackend as setDurableBackend,
 } from "../helpers/store-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	buildMockPi,
@@ -20,6 +21,8 @@ import {
 	singletonStore,
 	visibleText,
 } from "./overlay-entrypoints-helpers.js";
+
+useTemporaryAgentDir();
 
 describe("/workflow resume — durable regression coverage", () => {
 	beforeEach(async () => {
