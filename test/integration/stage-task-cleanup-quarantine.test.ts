@@ -25,6 +25,7 @@ import {
 	ProcessCleanupUnconfirmedError,
 	WorkflowInfrastructureError,
 } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import { signalUnlessExited } from "../helpers/process-signal.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
@@ -217,7 +218,7 @@ async function assertNoLeakedProcesses(fixture: Fixture): Promise<void> {
 }
 
 function releaseHolder(fixture: Pick<Fixture, "dir" | "holder">): void {
-	if (fixture.holder !== undefined && processExists(fixture.holder)) process.kill(fixture.holder, "SIGKILL");
+	if (fixture.holder !== undefined) signalUnlessExited(fixture.holder, "SIGKILL");
 	removeTempDirectory(fixture.dir);
 }
 
@@ -402,7 +403,7 @@ test.runIf(process.platform === "linux")(
 			await waitUntilGone(holder);
 		} finally {
 			const holder = pidFile(dir, "holder");
-			if (holder !== undefined && processExists(holder)) process.kill(holder, "SIGKILL");
+			if (holder !== undefined) signalUnlessExited(holder, "SIGKILL");
 			const closed = await host.close("session-close");
 			removeTempDirectory(dir);
 			assert.ok(closed.ok, closed.ok ? "" : closed.error.message);
@@ -568,7 +569,7 @@ function holderHost(dir: string, admission?: ResourceAdmission, onQuarantine?: (
 		await settle(ready);
 		writeTextSync(`${dir}/release`, "");
 		const holder = pidFile(dir, "holder");
-		if (holder !== undefined && processExists(holder)) process.kill(holder, "SIGKILL");
+		if (holder !== undefined) signalUnlessExited(holder, "SIGKILL");
 		const closed = await host.close("session-close");
 		removeTempDirectory(dir);
 		assert.ok(closed.ok, closed.ok ? "" : closed.error.message);
