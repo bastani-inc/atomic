@@ -142,7 +142,8 @@ describe("which store a replayed stage's readMessages() reads (#4309)", () => {
 		);
 		await readReplayedStageMessages({ sessionStore: store }, { adapters: {}, defaultCwd: DEFAULT_CWD }, sessionId);
 
-		assert.deepEqual(cwds(), ["/stage/cwd", "/manager/cwd", "/adapter/cwd", DEFAULT_CWD]);
+		// The session manager keeps its cwd resolved (a drive-qualified path on Windows).
+		assert.deepEqual(cwds(), ["/stage/cwd", manager.getCwd(), "/adapter/cwd", DEFAULT_CWD]);
 	});
 });
 
