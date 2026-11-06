@@ -251,6 +251,7 @@ const waitErrors = [
 	"ObserverCancelled",
 ] as const;
 const reportErrors = ["StaleAttempt", "OwnerClosing", "TaskTerminal", "ReportConflict"] as const;
+const settlementErrors = ["UnknownTask", "TaskEvicted", "TaskNotSettled"] as const;
 const watchErrors = ["OwnerClosed", "StaleGeneration", "EnvironmentClosing"] as const;
 function reference(value: native.NativeTaskRef): C.NativeTaskRef {
 	return {
@@ -1249,6 +1250,14 @@ export class TaskSupervisor {
 	/** Ends a {@link retainTaskRecord} hold; a task its owner already evicted holds nothing. */
 	releaseTaskRecord(task: TaskLease): void {
 		mapped(this.#native.releaseTaskRecord(this.#task(task).native), () => undefined, []);
+	}
+	taskCompletionId(task: TaskLease): string | undefined {
+		const settled = mapped(
+			this.#native.taskSettlement(this.#task(task).native),
+			(receipt) => receipt.completionId,
+			settlementErrors,
+		);
+		return settled.ok ? settled.value : undefined;
 	}
 	async waitForTask(
 		task: TaskLease,

@@ -10,6 +10,7 @@ import { COMMAND_DETAIL_TAIL_BYTES, taskOutputText } from "./tasks/command-outpu
 import {
 	formatTaskCompletion,
 	TASK_COMPLETION_MESSAGE_TYPE,
+	type TaskCompletionEnvelope,
 	TaskCompletionOutbox,
 	taskCompletionNotice,
 } from "./tasks/completion.js";
@@ -148,6 +149,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		// notice is built from (#4385).
 		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
 		() => !waitsOnDetachedResults(this),
+		(envelope) => releaseDeliveredTaskRecord(this._agentTaskHost, envelope),
 	);
 	this._taskCompletionOutbox = outbox;
 	const heartbeat: TaskHeartbeatDelivery = {
@@ -221,6 +223,17 @@ export function deliverHeldTaskCompletions(session: AgentSession): void {
 	if (outbox === undefined || outbox.pending.length === 0 || waitsOnDetachedResults(session)) return;
 	void outbox.flushRestored();
 	void outbox.flush();
+}
+
+function releaseDeliveredTaskRecord(
+	host: AgentTaskHost | undefined,
+	envelope: Pick<TaskCompletionEnvelope, "taskId" | "completionId">,
+): void {
+	if (host === undefined) return;
+	const task = host.resolveTask(envelope.taskId);
+	if (!task.ok) return;
+	const { supervisor } = host.ownerBinding;
+	if (supervisor.taskCompletionId(task.value) === envelope.completionId) supervisor.releaseTaskRecord(task.value);
 }
 
 /**

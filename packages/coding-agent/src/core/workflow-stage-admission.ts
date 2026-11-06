@@ -131,6 +131,7 @@ export class WorkflowStageAdmissionBoundary {
 			authorizeLaunch: refuseParkedLaunch,
 			authorizeCommandLaunch: refuseParkedLaunch,
 			onTaskSettled: (ref, receipt) => {
+				host.retainTaskRecord(receipt.taskId);
 				this.parkedSettlements.push({ ownerId: ref.ownerId, receipt, kind: settledTaskKind(host, receipt) });
 			},
 		});
