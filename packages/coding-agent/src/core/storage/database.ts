@@ -23,7 +23,7 @@ export interface SqliteStatement {
 	readonly params: readonly SqliteValue[];
 }
 
-/** How one write transaction waits for the database's write lock. */
+/** How one write transaction waits for the database's write lock, and whether it may run again. */
 export interface SqliteTransactionOptions {
 	/**
 	 * How long the transaction keeps waiting for the write lock while it is held and no other connection commits,
@@ -32,6 +32,13 @@ export interface SqliteTransactionOptions {
 	 * still commits or rolls back once it runs again. Adapters without a lock wait of their own ignore it.
 	 */
 	readonly lockWaitMs?: number;
+	/**
+	 * Lets a database from `createSqliteDatabase` run the callback again, in a new transaction, when a transient
+	 * failure (`StorageTransientError`) ended the transaction before it committed, so nothing of it was written. Set it
+	 * only for a callback that does nothing but use the transaction handle: anything else it does happens once per run.
+	 * Other databases ignore it.
+	 */
+	readonly retryTransientFailures?: boolean;
 }
 
 export interface SqliteDatabase extends SqliteExecutor {

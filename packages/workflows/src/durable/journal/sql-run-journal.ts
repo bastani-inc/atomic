@@ -15,6 +15,7 @@ import {
 import {
 	JOURNAL_READ_PAGE_SIZE,
 	JOURNAL_TRANSACTION,
+	JOURNAL_WRITE_TRANSACTION,
 	type JournalAppendGuard,
 	type JournalBatchAppend,
 	NON_SNAPSHOT_EVENT_TYPES,
@@ -157,7 +158,7 @@ export class SqlRunJournal implements RunJournal {
 		this.readerFile = readerFile;
 		this.snapshotBlobs = snapshotBlobs;
 		registerSqlPoolStorage(this, {
-			transaction: (body) => this.operation(() => this.transaction(body)),
+			transaction: (body) => this.operation(() => this.database.transaction(body, JOURNAL_TRANSACTION)),
 			read: (body) => this.operation(() => this.readSnapshot(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
@@ -227,7 +228,7 @@ export class SqlRunJournal implements RunJournal {
 			`);
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
 			await SqlSnapshotBlobStore.initialize(tx, prefix);
-		}, JOURNAL_TRANSACTION);
+		}, JOURNAL_WRITE_TRANSACTION);
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -242,9 +243,12 @@ export class SqlRunJournal implements RunJournal {
 		if (this.closed) throw new StorageUnavailableError(this.descriptor, new JournalClosedError());
 	}
 
-	/** A journal write transaction, waiting out a write lock held by a stalled process (`JOURNAL_TRANSACTION`). */
+	/**
+	 * A journal write transaction, waiting out a write lock held by a stalled process and running again after a
+	 * transient failure that ended it before it committed (`JOURNAL_WRITE_TRANSACTION`).
+	 */
 	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.database.transaction(body, JOURNAL_TRANSACTION);
+		return this.database.transaction(body, JOURNAL_WRITE_TRANSACTION);
 	}
 
 	private async readSnapshot<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {

@@ -1,5 +1,6 @@
 import type { ResourceFailure, TaskCleanupError, TaskCleanupPhase } from "@bastani/atomic";
 import {
+	isStorageTransientError,
 	isStorageWriteLockTimeoutError,
 	isStorageWriterQueueUnusableError,
 	StorageUnavailableError,
@@ -462,14 +463,15 @@ export function isRetryableWorkflowError(error: unknown): boolean {
 }
 
 /**
- * Whether `value` is a storage outage: a `StorageUnavailableError`, its write-lock timeout or unusable writers' queue,
- * or an error from another process, realm or storage layer with one of those identities.
+ * Whether `value` is a storage outage: a `StorageUnavailableError`, its write-lock timeout, unusable writers' queue or
+ * transient server failure, or an error from another process, realm or storage layer with one of those identities.
  */
 export function isStorageUnavailable(value: object): boolean {
 	if (
 		value instanceof StorageUnavailableError ||
 		isStorageWriteLockTimeoutError(value) ||
-		isStorageWriterQueueUnusableError(value)
+		isStorageWriterQueueUnusableError(value) ||
+		isStorageTransientError(value)
 	)
 		return true;
 	const { name, adapter, location } = value as {
