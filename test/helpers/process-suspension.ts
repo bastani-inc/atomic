@@ -5,8 +5,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const CONTROLLER_START_TIMEOUT_MS = 30_000;
+/** How long a POSIX process may take to stop after SIGSTOP: it stops only once it is next scheduled. */
+const POSIX_STOP_TIMEOUT_MS = 5_000;
+const POSIX_STOP_POLL_MS = 10;
 
 export interface ProcessSuspender {
+	/** Stops the process, resolving once the operating system reports it stopped (see `isSuspended`). */
 	suspend(pid: number): Promise<void>;
 	resume(pid: number): Promise<void>;
 	/**
@@ -73,10 +77,21 @@ function assertPid(pid: number): void {
 	assert.ok(Number.isSafeInteger(pid) && pid > 0, `Cannot suspend or resume invalid pid ${pid}`);
 }
 
+async function posixStopped(pid: number): Promise<boolean> {
+	const { stdout } = await promisify(execFile)("ps", ["-o", "stat=", "-p", String(pid)]);
+	return stdout.trim().startsWith("T");
+}
+
 const posixSuspender: ProcessSuspender = {
 	async suspend(pid) {
 		assertPid(pid);
 		process.kill(pid, "SIGSTOP");
+		const deadline = performance.now() + POSIX_STOP_TIMEOUT_MS;
+		while (!(await posixStopped(pid))) {
+			if (performance.now() > deadline)
+				assert.fail(`pid ${pid} was not stopped ${POSIX_STOP_TIMEOUT_MS}ms after SIGSTOP`);
+			await delay(POSIX_STOP_POLL_MS);
+		}
 	},
 	async resume(pid) {
 		assertPid(pid);
@@ -84,8 +99,7 @@ const posixSuspender: ProcessSuspender = {
 	},
 	async isSuspended(pid) {
 		assertPid(pid);
-		const { stdout } = await promisify(execFile)("ps", ["-o", "stat=", "-p", String(pid)]);
-		return stdout.trim().startsWith("T");
+		return posixStopped(pid);
 	},
 	async close() {},
 };
