@@ -933,6 +933,26 @@ test("a shared placement error whose code, reason or fields are malformed is ref
 			"a workspace binding identity: remotes, head, tree and envHash",
 		],
 		[
+			{ ...restore, fields: { ...restore.fields, binding: { ...binding, head: 1 } } },
+			"error.fields.binding",
+			"a workspace binding identity: remotes, head, tree and envHash",
+		],
+		[
+			{ ...restore, fields: { ...restore.fields, binding: { ...binding, envHash: null } } },
+			"error.fields.binding",
+			"a workspace binding identity: remotes, head, tree and envHash",
+		],
+		[
+			{ ...restore, fields: { ...restore.fields, binding: { ...binding, remotes: ["https://ok.invalid/r", 1] } } },
+			"error.fields.binding",
+			"a workspace binding identity: remotes, head, tree and envHash",
+		],
+		[
+			{ ...setup, fields: { ...setup.fields, problems: [{ ...problem, hint: 1 }] } },
+			"error.fields.problems",
+			"a non-empty list of shared pool setup problems",
+		],
+		[
 			{ ...restore, fields: { ...restore.fields, claimWindowMs: "soon" } },
 			"error.fields.claimWindowMs",
 			"a finite number",
@@ -1031,6 +1051,94 @@ test("a group whose members are malformed or too many is refused, naming the mem
 	});
 	assert.ok(isPoolProtocolError(budget), "the members of one envelope share one budget");
 	assert.equal(budget.expected, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
+});
+
+test("every code, source, operation and reason of the shared placement errors crosses as sent (#4327)", () => {
+	for (const source of ["sdk", "settings", "env"] as const)
+		for (const code of [
+			"invalid-option",
+			"requires-local-workers",
+			"unsupported-option",
+			"changed-on-resume",
+		] as const) {
+			const received = hop(new WorkerPlacementConfigError(source, "field", code));
+			assert.ok(received instanceof WorkerPlacementConfigError, `${source} ${code}: ${received}`);
+			assert.deepEqual([received.source, received.code], [source, code]);
+		}
+	for (const operation of ["shared-placement", "worker-host", "resume", "local-pool"] as const)
+		for (const code of [
+			"shared-journal-required",
+			"storage-adapter-unavailable",
+			"journal-secret-unavailable",
+			"git-unavailable",
+			"process-containment-unavailable",
+			"pool-on-another-host",
+		] as const) {
+			const problem = { code, subject: `a ${code}`, hint: "Fix it.", fields: { detail: code } };
+			const received = hop(new SharedPoolSetupError(operation, [problem]));
+			assert.ok(received instanceof SharedPoolSetupError, `${operation} ${code}: ${received}`);
+			assert.deepEqual([received.operation, received.code, received.problems], [operation, code, [problem]]);
+		}
+	for (const reason of ["no-restore-port", "no-capable-host"] as const) {
+		const received = hop(new WorkspaceRestoreUnavailableError(reason, BINDING));
+		assert.ok(received instanceof WorkspaceRestoreUnavailableError, `${reason}: ${received}`);
+		assert.equal(received.reason, reason);
+		assert.deepEqual(received.binding, BINDING);
+		assert.deepEqual([received.childRunId, received.claimWindowMs], [undefined, undefined]);
+	}
+	for (const reason of ["attempt-replaced", "stage-lease-replaced"] as const)
+		for (const seq of [null, 0, 9]) {
+			const received = hop(new StaleStageLeaseError(reason, { root: "r", runId: "x", stageId: "s", seq }));
+			assert.ok(received instanceof StaleStageLeaseError, `${reason}: ${received}`);
+			assert.deepEqual([received.reason, received.seq], [reason, seq]);
+		}
+	const unknown = rehydrateError({
+		name: "WorkerPlacementFutureError",
+		code: "future-placement",
+		message: "m",
+		retryable: false,
+		family: "worker-placement",
+		fields: {},
+	});
+	assert.ok(unknown instanceof WorkerPlacementError);
+	assert.equal(unknown.retryable, false, "a retryable flag that is not true is not retryable");
+});
+
+test("a group's members are all sent, and the receiver's budget is exact at its edge (#4327)", () => {
+	const group = (count: number): SerializedError => ({
+		name: "AggregateError",
+		message: "group",
+		fields: {},
+		errors: Array.from({ length: count }, (_, index) => ({ name: "Error", message: `member ${index}`, fields: {} })),
+	});
+	const sent = serializeError(
+		new AggregateError(Array.from({ length: 4 * MAX_SERIALIZED_ERRORS }, (_, index) => new Error(`member ${index}`))),
+	);
+	assert.equal(sent.errors?.length, MAX_SERIALIZED_ERRORS - 1);
+	assert.ok(sent.errors?.every((member) => member !== undefined && typeof member.message === "string"));
+
+	const fits = rehydrateError(group(MAX_SERIALIZED_ERRORS - 1));
+	assert.ok(fits instanceof AggregateError, String(fits));
+	assert.equal(fits.errors.length, MAX_SERIALIZED_ERRORS - 1, "the envelope's last allowed error is rebuilt");
+	const refused = rehydrateError(group(MAX_SERIALIZED_ERRORS));
+	assert.ok(isPoolProtocolError(refused), String(refused));
+	assert.deepEqual(
+		[refused.field, refused.expected],
+		[`error.errors[${MAX_SERIALIZED_ERRORS - 1}]`, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`],
+		"the first error past the budget is the one named",
+	);
+
+	let nested: SerializedError = { name: "Error", message: "deepest", fields: {} };
+	for (let index = 0; index < MAX_CAUSE_DEPTH + 3; index++)
+		nested = { name: "AggregateError", message: `group ${index}`, fields: {}, errors: [nested] };
+	let levels = 0;
+	for (
+		let node: Error | undefined = rehydrateError(nested);
+		node instanceof AggregateError;
+		node = node.errors[0] as Error | undefined
+	)
+		levels++;
+	assert.equal(levels, MAX_CAUSE_DEPTH, "members past the depth bound are left out");
 });
 
 test("errors keep class and fields over two hops, worker to coordinator to root (#4327)", () => {
