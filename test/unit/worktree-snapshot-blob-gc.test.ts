@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import {
@@ -96,14 +97,38 @@ describe("the grace window protects blobs whose reference is not published yet (
 		assert.equal(await blobs().refreshBlobs([]), true);
 	});
 
-	test("the default window is one hour: a blob exactly that old goes and one ten seconds younger stays", async () => {
+	test("the default window is one hour: a blob stored over an hour ago goes and one ten seconds younger stays", async () => {
 		assert.equal(DEFAULT_BLOB_GRACE_SECONDS, 3600);
-		const [exact] = await put("exactly an hour");
-		await ageBlobs(shared.database, blobs().table, 3600);
+		const [older] = await put("over an hour old");
+		await ageBlobs(shared.database, blobs().table, 3601);
 		const [younger] = await put("ten seconds younger");
 		await shared.database.run(`UPDATE ${blobs().table} SET created_at = created_at - 3590 WHERE hash = ?`, younger!);
 
-		assert.deepEqual((await collect()).deleted, [exact]);
+		assert.deepEqual((await collect()).deleted, [older]);
+	});
+
+	test("a blob stored in the second that began exactly graceSeconds ago stays, because it can be younger than the window", async () => {
+		// The age is kept in whole seconds on the database clock, so a blob stored late in a second carries that
+		// second's start: stored at 10.9 and collected at 12.0, it is 1.1 seconds old, not 2. The database clock is
+		// fixed for the whole check, so neither load nor a tick into the next second moves the boundary.
+		const graceSeconds = 2;
+		const now = 2_000_000_000;
+		const prepare = DatabaseSync.prototype.prepare;
+		vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+			return prepare.call(this, sql.replaceAll("unixepoch()", String(now)));
+		} as typeof prepare);
+		const [sameSecond, secondBefore] = await put("stored in the boundary second", "stored a second earlier");
+		const age = (hash: string, createdAt: number) =>
+			shared.database.run(`UPDATE ${blobs().table} SET created_at = ? WHERE hash = ?`, createdAt, hash);
+		await age(sameSecond!, now - graceSeconds);
+		await age(secondBefore!, now - graceSeconds - 1);
+
+		assert.deepEqual(
+			(await collect(graceSeconds)).deleted,
+			[secondBefore],
+			"only a blob surely older than the window",
+		);
+		assert.deepEqual(await stored(), [sameSecond]);
 	});
 
 	test("graceSeconds 0 collects an unreferenced blob at once, and a larger window is honoured", async () => {
