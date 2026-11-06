@@ -3,7 +3,9 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import { isStaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -11,6 +13,7 @@ import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows
 import type { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { workspaceAffinityKey } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { sleep } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	binding,
 	COORDINATOR_TEST_TIMEOUT_MS,
@@ -25,6 +28,7 @@ vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
 }));
 
 /** A worker host's claim on a bound child and on its root while the child's workspace restores (#4310). */
+useTemporaryAgentDir();
 
 test(
 	"a host keeps a bound child's lease through a restore longer than the lease, and puts back work whose restore failed (#4310)",
@@ -142,6 +146,72 @@ test(
 				String(failures),
 			);
 		} finally {
+			await host?.stopSatellite().catch(() => {});
+			await host?.shutdown();
+			await execution.catch(() => {});
+			await f.close();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a host whose restore ends right after its root's lease moved stops serving it without waiting for its attempt's lease to lapse (#4310)",
+	async () => {
+		const f = await fixture("shared-coordinator-restore-lost-early", { workspace: binding, leaseMs: 2_000 });
+		const restored = join(f.directory, "restored");
+		mkdirSync(restored);
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "boundChild",
+			digest: await definitionDigest(childPath),
+		});
+		const { parent } = await fanOut(1)(child as never);
+		let host: PoolCoordinator | undefined;
+		const execution = run(
+			parent,
+			{},
+			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+		);
+		try {
+			const root = await f.root();
+			const failures: Error[] = [];
+			let restoring = false;
+			let workLeaseRenewalRefused!: () => void;
+			const workLeaseRenewalRefusedSignal = new Promise<void>((resolve) => {
+				workLeaseRenewalRefused = resolve;
+			});
+			const extend = SqlPoolQueue.prototype.extend;
+			vi.spyOn(SqlPoolQueue.prototype, "extend").mockImplementation(async function (this: SqlPoolQueue, ...args) {
+				try {
+					return await extend.apply(this, args);
+				} catch (error) {
+					if (restoring) workLeaseRenewalRefused();
+					throw error;
+				}
+			});
+			host = await satellite(
+				f,
+				root,
+				{
+					restore: async () => {
+						restoring = true;
+						await workLeaseRenewalRefusedSignal;
+						return restored;
+					},
+				},
+				failures,
+				"host-b",
+				1,
+			);
+			while (!restoring) await sleep(25);
+			const state = (await f.hostJournal.leaseState("root"))!;
+			assert.equal((await f.hostJournal.takeover("root", "next-incarnation", state.holderId)).status, "acquired");
+			while (!host.detached) await sleep(25);
+			assert.deepEqual(f.claims(), [], "the restored child was never handed to a worker");
+			assert.ok(failures.length > 0 && failures.every((failure) => isStaleLeaseError(failure)), String(failures));
+		} finally {
+			vi.restoreAllMocks();
 			await host?.stopSatellite().catch(() => {});
 			await host?.shutdown();
 			await execution.catch(() => {});

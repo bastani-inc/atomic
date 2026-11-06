@@ -2630,7 +2630,10 @@ export class PoolCoordinator {
 						),
 					(error: unknown) => {
 						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
-						if (isStaleLeaseError(error)) this.rootLeaseLost = true;
+						if (isStaleLeaseError(error)) {
+							this.rootLeaseLost = true;
+							this.detach(error);
+						}
 						child.send({ id: message.id, error: serializeError(error) }, replied);
 					},
 				);
