@@ -5,6 +5,7 @@ import { test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import type { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { sleep } from "../helpers/runtime.js";
@@ -189,10 +190,10 @@ test(
 			while (restoredAt === undefined) await sleep(25);
 			await sleep(300);
 			assert.deepEqual(f.claims(), [], "the replaced attempt was never handed to a worker");
-			assert.deepEqual(
-				failures.map((failure) => failure.message),
-				["Stale work lease"],
-			);
+			assert.equal(failures.length, 1);
+			const [refusal] = failures;
+			assert.ok(isStaleWorkLeaseError(refusal), String(refusal));
+			assert.equal(refusal.reason, "generation-mismatch");
 			assert.equal(host.detached, false, "the root's lease held: the host keeps serving it");
 		} finally {
 			await host?.stopSatellite().catch(() => {});

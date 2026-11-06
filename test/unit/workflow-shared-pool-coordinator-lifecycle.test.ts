@@ -8,6 +8,7 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { isWorkerRetryLimitError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
@@ -425,14 +426,12 @@ test(
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			const [failure] = outcomes as [Error];
 			assert.ok(failure instanceof Error, String(failure));
-			assert.match(
-				failure.message,
-				/^Local worker retry limit: child \S+ \(boundChild\) lost its worker on another host 3 times/,
-			);
+			assert.ok(isWorkerRetryLimitError(failure), String(failure));
 			assert.deepEqual(
-				[failure.name, (failure as Error & { code?: string }).code],
-				["WorkflowInfrastructureError", "worker_retry_limit"],
+				[failure.name, failure.code, failure.reason, failure.exportName, failure.limit],
+				["WorkerRetryLimitError", "worker_retry_limit", "worker-lost", "boundChild", 3],
 			);
+			assert.ok(failure.attempts >= failure.limit, `attempts: ${failure.attempts}`);
 			const claims = f.claims();
 			assert.ok(claims.length >= 3, `claims: ${claims.length}`);
 			assert.ok(claims.every(([claimer, id]) => claimer === "host-b" && id === claims[0]![1]));
