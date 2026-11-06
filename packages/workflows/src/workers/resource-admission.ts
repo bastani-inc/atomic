@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
 import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
+import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import { WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
@@ -232,6 +233,9 @@ export class SqlResourceAdmission {
 				if (!Number.isSafeInteger(value) || value < 1) throw new Error("Invalid resource limit");
 		for (const value of [...Object.values(options.host ?? {}), options.stageStartMaxLoadPerCpu ?? 0])
 			if (!Number.isFinite(value) || value < 0) throw new Error("Invalid host admission threshold");
+		// Cross-host reconciliation reads the pool's work and lease tables, which a root opening admission on a brand-new
+		// journal has not created yet (#4310).
+		if (options.crossHost === true) await openSqlPoolQueue(journal);
 		const admission = new SqlResourceAdmission(storage, {
 			...structuredClone({ ...options, sampleHost: undefined }),
 			sampleHost: options.sampleHost,

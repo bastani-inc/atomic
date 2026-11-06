@@ -1054,6 +1054,38 @@ test("a shared root's own sessions are released by another host once the root re
 	}
 });
 
+test("a shared root admits its sessions on a brand-new journal, before its pool's tables exist (#4310)", async () => {
+	const f = await fixture();
+	const journal = f.journals[0]!;
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	try {
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const lease = await journal.acquire("root", "incarnation-1");
+		if (lease.status !== "acquired") assert.fail("no lease");
+		const tables = () =>
+			f.databases[0]!.all<{ name: string }>(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wf_runs_work'",
+			);
+		assert.deepEqual(await tables(), [], "no pool ever ran on this journal");
+		const result = await admitWorkflowSessions(
+			backend,
+			{ runId: "root", workers: { placement: "shared" }, admission: { limits: { session: 8, process: 8 } } },
+			async () => {
+				await currentResourceAdmission()!.acquire("session");
+				return { runId: "root", status: "completed", stages: [], toolNodes: [] };
+			},
+		);
+		assert.equal(result.status, "completed");
+		const [permit] = await f.databases[0]!.all<{ root_epoch: number | null }>(
+			"SELECT root_epoch FROM wf_runs_resource_permits",
+		);
+		assert.equal(permit?.root_epoch, lease.lease.epoch, "the session was admitted across hosts");
+	} finally {
+		await backend.close();
+		await f.close();
+	}
+});
+
 test("a shared root's sessions carry its lease epoch, so its resume on another host gets their capacity back (#4310)", async () => {
 	const f = await fixture();
 	const journal = f.journals[0]!;
