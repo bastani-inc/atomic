@@ -1,4 +1,5 @@
 import {
+	type AgentRehydrateError,
 	type BackgroundCompactionError,
 	type DebugError,
 	type DecisionError,
@@ -8,6 +9,7 @@ import {
 	findGitHubCopilotError,
 	type GitHubCopilotError,
 	type GitProvisionError,
+	isAgentRehydrateError,
 	isBackgroundCompactionError,
 	isDebugError,
 	isDecisionError,
@@ -24,6 +26,7 @@ import {
 	isWriteSelectorError,
 	type LlamaServerError,
 	parseSerializedDecisionError,
+	rehydrateAgentRehydrateError,
 	rehydrateBackgroundCompactionError,
 	rehydrateDebugError,
 	rehydrateDecisionError,
@@ -36,6 +39,7 @@ import {
 	rehydrateTaskEvictedError,
 	rehydrateWorkspaceError,
 	rehydrateWriteSelectorError,
+	type SerializedAgentRehydrateError,
 	type SerializedBackgroundCompactionError,
 	type SerializedDebugError,
 	type SerializedDecisionError,
@@ -49,6 +53,7 @@ import {
 	type SessionStartError,
 	type ShellToolError,
 	type StartupBenchmarkError,
+	serializeAgentRehydrateError,
 	serializeBackgroundCompactionError,
 	serializeDebugError,
 	serializeDecisionError,
@@ -101,7 +106,7 @@ export interface SerializableErrorFamily {
 }
 
 function family<E extends Error, F extends SerializableErrorForm>(definition: {
-	readonly is: (error: unknown) => boolean;
+	readonly is: (error: Error) => boolean;
 	readonly serialize: (error: E) => F;
 	readonly rehydrate: (form: F, cause: Error | undefined) => Error | undefined;
 }): SerializableErrorFamily {
@@ -169,6 +174,11 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 			fields: { taskId: error.taskId, retainedFinishedTasks: error.retainedFinishedTasks },
 		}),
 		rehydrate: (form) => rehydrateTaskEvictedError({ ...form.fields, name: form.name, code: form.code }),
+	}),
+	"agent-rehydrate": family<AgentRehydrateError, SerializedAgentRehydrateError>({
+		is: isAgentRehydrateError,
+		serialize: serializeAgentRehydrateError,
+		rehydrate: rehydrateAgentRehydrateError,
 	}),
 	"background-compaction": family<BackgroundCompactionError, SerializedBackgroundCompactionError>({
 		is: isBackgroundCompactionError,

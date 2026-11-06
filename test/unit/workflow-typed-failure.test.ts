@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { isToolDetachmentError, isWorkspaceBindingError, ToolDetachmentError } from "@bastani/atomic";
 import { test } from "vitest";
 import { applyFailureToStage } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
+import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import {
 	readSerializedError,
 	rehydrateError,
@@ -90,6 +91,7 @@ const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	rehydrateSessionStartError: "session-start",
 	rehydrateDecisionError: "decision",
 	rehydrateTaskEvictedError: "task-evicted",
+	rehydrateAgentRehydrateError: "agent-rehydrate",
 	rehydrateBackgroundCompactionError: "background-compaction",
 	deserializeGitHubCopilotError: "github-copilot",
 	rehydrateDebugError: "debug",
@@ -179,6 +181,36 @@ test("an error rebuilt without a cause gets none, and its cleanup cause comes ba
 	});
 	const rebuilt = read(JSON.parse(JSON.stringify(serializeError(failed)))) as Error & { cleanupCause?: unknown };
 	assert.ok(rebuilt.cleanupCause instanceof ToolDetachmentError);
+});
+
+test("a family error's envelope holds only the members its form has, and its rebuilt cause is a native one (#4378)", () => {
+	const sent = serializeError(new StageReleaseError("stage-busy", { stageName: "review", stageId: undefined }));
+	assert.deepEqual(Object.keys(sent).sort(), ["code", "family", "fields", "hint", "message", "name", "retryable"]);
+	assert.deepEqual(sent.fields, { stageName: "review" });
+
+	const native = Object.getOwnPropertyDescriptor(new Error("failed", { cause: new Error("cause") }), "cause");
+	const rebuilt = read(serializeError(SERIALIZABLE_FAMILY_CASES[0]!.make()));
+	const descriptor = Object.getOwnPropertyDescriptor(rebuilt, "cause");
+	assert.ok(descriptor?.value instanceof Error);
+	assert.deepEqual({ ...descriptor, value: undefined }, { ...native, value: undefined });
+});
+
+test("a family error's causes and cleanup causes are bounded as any chain's are (#4378)", () => {
+	const deep = (levels: number): Error => {
+		let error = new Error("bottom");
+		for (let level = 0; level < levels; level++) error = new Error(`level ${level}`, { cause: error });
+		return error;
+	};
+	const length = (envelope: SerializedError | undefined): number =>
+		envelope === undefined ? 0 : 1 + length(envelope.cause);
+	const failed = Object.assign(new ToolDetachmentError("session-busy", { sessionId: "s" }, { cause: deep(20) }), {
+		cleanupCause: deep(20),
+	});
+
+	const sent = serializeError(failed);
+
+	assert.equal(length(sent), MAX_CAUSE_DEPTH);
+	assert.equal(length(sent.cleanupCause), MAX_CAUSE_DEPTH - 1);
 });
 
 test("an error without a known family in its chain, a cancellation included, has no failure detail (#4309, #4378)", () => {

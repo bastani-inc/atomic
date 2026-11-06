@@ -2246,6 +2246,7 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `session-start` | `SessionStartError`, `SessionStartTimeoutError`, `SessionStartConfigError` | `isSessionStartError` |
 | `decision` | `DecisionError` and its subclasses | `isDecisionError` |
 | `task-evicted` | `TaskEvictedError` | `isTaskEvictedError` |
+| `agent-rehydrate` | `AgentRehydrateError`, `AgentReleaseConfigError` | `isAgentRehydrateError` |
 | `background-compaction` | `BackgroundCompactionError` and its subclasses | `isBackgroundCompactionError` |
 | `github-copilot` | `GitHubCopilotError` and its subclasses | `isGitHubCopilotError` |
 | `debug` | `DebugError`, `DebugLogUnwritableError`, `DebugConfigError` | `isDebugError` |

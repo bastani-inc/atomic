@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
+	AgentRehydrateError,
 	BackgroundCompactionPersistError,
 	DebugLogUnwritableError,
 	DecisionTimeoutError,
 	EditMatchError,
 	GitHubCopilotRateLimitError,
 	GitUnavailableError,
+	isAgentRehydrateError,
 	isBackgroundCompactionPersistError,
 	isDebugLogUnwritableError,
 	isDecisionTimeoutError,
@@ -24,6 +26,7 @@ import {
 	SessionStartTimeoutError,
 	ShellTimeoutError,
 	StartupBenchmarkConfigError,
+	serializeAgentRehydrateError,
 	serializeBackgroundCompactionError,
 	serializeDebugError,
 	serializeDecisionError,
@@ -61,7 +64,7 @@ export interface FamilyCase {
 	readonly family: string;
 	readonly make: () => Error;
 	readonly type: abstract new (...args: never[]) => Error;
-	readonly guard: (value: unknown) => boolean;
+	readonly guard: (value: Error) => boolean;
 	/** The facts the error carries: its family's own JSON form, or its envelope's fields, without its causes. */
 	readonly facts: (error: Error) => unknown;
 }
@@ -193,6 +196,18 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: TaskEvictedError,
 		guard: isTaskEvictedError,
 		facts: ownFacts((error: TaskEvictedError) => ({ ...error, message: error.message })),
+	},
+	{
+		family: "agent-rehydrate",
+		make: () =>
+			new AgentRehydrateError(
+				"session-busy",
+				{ sessionId: "session-1", activity: "streaming" },
+				{ cause: new Error("still streaming") },
+			),
+		type: AgentRehydrateError,
+		guard: isAgentRehydrateError,
+		facts: ownFacts(serializeAgentRehydrateError),
 	},
 	{
 		family: "background-compaction",
