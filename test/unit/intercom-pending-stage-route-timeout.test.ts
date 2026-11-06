@@ -22,6 +22,7 @@ makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
 const { IntercomClient, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS } = await import("../../packages/intercom/broker/client.js");
 
 const RUN_ID = "route-timeout-run";
+const REGISTRATION_START_MS = 1_234;
 const GROUP = `workflow:${RUN_ID}`;
 const clients: InstanceType<typeof IntercomClient>[] = [];
 const sockets = new Set<net.Socket>();
@@ -108,6 +109,8 @@ function rosterRows(count: number) {
 test("an unanswered pending-stage route registration rejects with a typed timeout naming the run and roster size (#4376)", async () => {
 	const client = await connect();
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	// The registration starts well after the monotonic clock's origin, so its wait is measured from its own start.
+	vi.advanceTimersByTime(REGISTRATION_START_MS);
 	const registration = client.registerPendingStageRouteAcknowledged(RUN_ID, GROUP, "route-capability", rosterRows(3));
 	const outcome = registration.then(
 		() => assert.fail("the broker never answered the registration"),
@@ -151,6 +154,25 @@ test("a route registration timeout on a silent broker carries the failed health 
 	assert.equal(error.elapsedMs, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
 	assert.ok(error.cause instanceof IntercomBrokerTimeoutError);
 	assert.equal(isIntercomPendingStageRouteTimeoutError(error.cause), false);
+	assert.equal(client.isConnected(), false);
+});
+
+test("another request on a silent broker still times out with the failed health check as its cause", async () => {
+	answersHealthCheck = false;
+	const client = await connect();
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const outcome = client.listSessions().then(
+		() => assert.fail("the broker never answered the listing"),
+		(error: unknown) => error,
+	);
+	await brokerReceived("list");
+	vi.advanceTimersByTime(PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+	await brokerReceived("list_groups");
+	vi.advanceTimersByTime(PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+	const error = await outcome;
+	assert.ok(error instanceof IntercomBrokerTimeoutError);
+	assert.equal(isIntercomPendingStageRouteTimeoutError(error), false);
+	assert.ok(error.cause instanceof IntercomBrokerTimeoutError);
 	assert.equal(client.isConnected(), false);
 });
 
@@ -203,6 +225,14 @@ test("the route registration timeout guard recognizes the error by name and code
 		}),
 	);
 	assert.equal(isIntercomPendingStageRouteTimeoutError(serialized), true);
+	const renamed = new IntercomPendingStageRouteTimeoutError({
+		runId: RUN_ID,
+		stageCount: 0,
+		timeoutMs: 10,
+		elapsedMs: 10,
+	});
+	Object.defineProperty(renamed, "name", { value: "RenamedRouteTimeout" });
+	assert.equal(isIntercomPendingStageRouteTimeoutError(renamed), true, "an instance is recognized by its class");
 	assert.deepEqual(
 		{
 			runId: serialized.runId,
@@ -216,5 +246,6 @@ test("the route registration timeout guard recognizes the error by name and code
 	assert.equal(isIntercomPendingStageRouteTimeoutError({ ...serialized, name: "IntercomBrokerTimeoutError" }), false);
 	assert.equal(isIntercomPendingStageRouteTimeoutError(new IntercomBrokerTimeoutError("Connection timeout")), false);
 	assert.equal(isIntercomPendingStageRouteTimeoutError(null), false);
+	assert.equal(isIntercomPendingStageRouteTimeoutError(undefined), false);
 	assert.equal(isIntercomPendingStageRouteTimeoutError("IntercomPendingStageRouteTimeoutError"), false);
 });

@@ -183,7 +183,7 @@ export function registerPendingStageIntercomBridge(
 	 */
 	const routeReady = (runId: string): Promise<void> | undefined => {
 		const latest = routeCompletions.get(runId);
-		const unanswered = latest === undefined ? undefined : unansweredPublications.get(latest);
+		const unanswered = latest && unansweredPublications.get(latest);
 		if (unanswered === undefined || !announcementPending) {
 			announceIfPending();
 			return routeCompletions.get(runId);
