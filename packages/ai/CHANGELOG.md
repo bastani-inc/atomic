@@ -40,6 +40,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Connection errors keep their underlying cause: a request that fails before the provider answers (connection refused or reset, DNS, TLS or certificate, proxy) now reports, for example, `Connection error.: connect ECONNREFUSED 127.0.0.1:8080` instead of only `Connection error.`. The message gets the deepest error of the `cause` chain (up to 5 levels deep) and its code (upstream [#11783](https://github.com/earendil-works/pi/pull/11783))
 - OpenAI Responses requests send the session-affinity header as `session-id` instead of `session_id`. Proxies such as nginx with `underscores_in_headers off` silently dropped the underscored header, and Envoy can be set to reject it. `x-client-request-id` and `prompt_cache_key` are unchanged, and OpenAI Completions still sends `session_id` (upstream [#11793](https://github.com/earendil-works/pi/pull/11793))
 - A request aborted while its setup runs (credential resolution, lazy module loading) now ends with stop reason `aborted` instead of `error`. `lazyStream(model, setup, signal?)` takes the request's abort signal, and `lazyApi`, providers and `Models` pass it through (upstream [#8635](https://github.com/earendil-works/pi/pull/8635))
+- Fixed auto-retry not firing when a gateway reports a stream that dropped mid-reply as `... was cut short after the reply had begun`; that wording is now a retryable provider error (upstream [#11885](https://github.com/earendil-works/pi/pull/11885))
 
 ## [0.9.71] - 2026-11-03
 

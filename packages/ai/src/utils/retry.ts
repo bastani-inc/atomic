@@ -112,6 +112,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// Codex CLI mid-stream disconnect, relayed by proxies that wrap the Codex CLI,
 	// e.g. "stream disconnected before completion: stream closed before response.completed" (#11057).
 	"stream disconnected before completion",
+	// Magpie gateway relaying a dropped upstream Anthropic stream, e.g.
+	// "Claude Code's stream from Anthropic was cut short after the reply had begun" (#11879).
+	"cut short after the reply had begun",
 	"pending stream has been canceled",
 
 	// Provider-requested retry delay cap failures should flow through the outer
