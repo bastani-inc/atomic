@@ -132,7 +132,8 @@ export async function gitTranscript<T>(
  * A POSIX shell git that runs the real one, except for the failure or delay its environment selects:
  * `FAKE_GIT_MODE` picks an injected failure, and `FAKE_GIT_SLOW` (`"<subcommand> <first argument>"`) delays that
  * command by `FAKE_GIT_SLEEP` seconds, once the file `FAKE_GIT_ARMED` exists when that is set, then touches
- * `FAKE_GIT_MARKER` if it was not killed meanwhile.
+ * `FAKE_GIT_MARKER` if it was not killed meanwhile. `FAKE_GIT_HOLD` (same form) holds that command while the file
+ * `FAKE_GIT_ARMED` exists when it starts: it touches `FAKE_GIT_HELD`, then waits for the file `FAKE_GIT_RELEASE`.
  */
 function fakeGit(root: string): string {
 	const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
@@ -145,6 +146,10 @@ store="\${PWD%.tmp-*}"
 if [ -n "$FAKE_GIT_SLOW" ] && [ "$5 $6" = "$FAKE_GIT_SLOW" ] && { [ -z "$FAKE_GIT_ARMED" ] || [ -e "$FAKE_GIT_ARMED" ]; }; then
 	sleep "$FAKE_GIT_SLEEP"
 	: > "$FAKE_GIT_MARKER"
+fi
+if [ -n "$FAKE_GIT_HOLD" ] && [ "$5 $6" = "$FAKE_GIT_HOLD" ] && [ -e "$FAKE_GIT_ARMED" ]; then
+	: > "$FAKE_GIT_HELD"
+	until [ -e "$FAKE_GIT_RELEASE" ]; do sleep 0.05; done
 fi
 case "$FAKE_GIT_MODE:$5 $6" in
 "staging-fetch:fetch origin"|"unremovable-staging:fetch origin"|"winner-store:fetch origin"|"empty-store:fetch origin")

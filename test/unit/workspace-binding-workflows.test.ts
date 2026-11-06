@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -27,7 +28,7 @@ import { AuthStorage, ModelRuntime, SettingsManager } from "../../packages/codin
 import goal from "../../packages/workflows/builtin/goal.js";
 import ralph from "../../packages/workflows/builtin/ralph.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { latestChildHead } from "../../packages/workflows/src/durable/boundary-topology.js";
+import { childHeadsToCheck } from "../../packages/workflows/src/durable/boundary-topology.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
@@ -1039,6 +1040,11 @@ describe("a resumed child checks only the commit of its latest completed step (#
 		const [start] = boundaryStarts(checkpoints);
 		const binding = start?.topology?.boundary?.workspace as BoundWorkspace;
 		const heads = recordedHeads(checkpoints);
+		const completions = new Map(
+			(checkpoints as DurableStageCheckpoint[])
+				.filter((checkpoint) => recordedHeads([checkpoint]).has(checkpoint.name))
+				.map((checkpoint) => [checkpoint.name, checkpoint.completedAt]),
+		);
 		await firstBackend.close();
 		state.failFirst = false;
 		const resume = async () => {
@@ -1057,7 +1063,12 @@ describe("a resumed child checks only the commit of its latest completed step (#
 				await backend.close();
 			}
 		};
-		return { binding, head: (stage: string) => heads.get(stage)!, resume };
+		return {
+			binding,
+			head: (stage: string) => heads.get(stage)!,
+			completedAt: (stage: string) => completions.get(stage)!,
+			resume,
+		};
 	}
 
 	const inSequence =
@@ -1218,7 +1229,7 @@ describe("a resumed child checks only the commit of its latest completed step (#
 		assert.deepEqual(sessions, []);
 	});
 
-	test("parallel steps on one branch: the step that completed last is checked, not the one spawned last (#4382)", async () => {
+	test("parallel steps on one branch: every step still running when the last one started is checked (#4382)", async () => {
 		const repo = createRepository(dirs.root, "parallel-steps");
 		const fastDone = Promise.withResolvers<void>();
 		const { head, resume } = await interruptedAfterSteps(
@@ -1238,16 +1249,70 @@ describe("a resumed child checks only the commit of its latest completed step (#
 		assert.notEqual(slow, fast);
 		const { resumed, transcript, sessions } = await resume();
 		assert.equal(resumed.status, "completed", resumed.error);
-		assert.equal(checksOf(transcript, slow), 2, "the spawned-first step completed last");
-		assert.equal(checksOf(transcript, fast), 0);
+		assert.equal(checksOf(transcript, slow), 2, "the step that completed last");
+		assert.equal(checksOf(transcript, fast), 2, "the step that completed while the other was running");
 		assert.deepEqual(sessions, ["next"]);
 	});
+
+	// POSIX: the git that holds a step's change-set read is a shell script.
+	test.skipIf(process.platform === "win32")(
+		"parallel steps that save out of order: losing the commit of the step that saved first fails closed (#4382)",
+		async () => {
+			const repo = createRepository(dirs.root, "out-of-order");
+			const armed = join(dirs.root, "hold-armed");
+			const held = join(dirs.root, "hold-entered");
+			const release = join(dirs.root, "hold-released");
+			const env = {
+				FAKE_GIT_HOLD: "diff --numstat",
+				FAKE_GIT_ARMED: armed,
+				FAKE_GIT_HELD: held,
+				FAKE_GIT_RELEASE: release,
+			};
+			// "older" reads the branch head, then its change-set diff is held until "newer" has committed on top and
+			// saved, so "older" saves last with the older head.
+			const { binding, head, completedAt, resume } = await withInjectedGit(dirs.root, env, () =>
+				interruptedAfterSteps(
+					workspace({ repo, branch: "feat/out-of-order" }),
+					async (ctx) => {
+						await Promise.all([
+							ctx.task("older", { prompt: "older" }),
+							ctx.task("newer", { prompt: "newer" }).then(() => writeFileSync(release, "")),
+						]);
+					},
+					async (stage, cwd) => {
+						if (stage === "older") {
+							commitFile(cwd, "older.txt", "older\n");
+							writeFileSync(armed, "");
+							return;
+						}
+						while (!existsSync(held)) await sleep(10);
+						rmSync(armed);
+						commitFile(cwd, "newer.txt", "newer\n");
+					},
+				),
+			);
+			const [older, newer] = [head("older"), head("newer")];
+			assert.ok(isAncestor(binding.worktree, older, newer), "the step that saved first committed on top");
+			assert.ok(completedAt("older") > completedAt("newer"), "the step with the older head saved last");
+			git(binding.worktree, "reset", "-q", "--hard", older);
+			const { resumed, sessions } = await resume();
+			assert.equal(resumed.status, "failed");
+			const error = rehydrateWorkspaceError(resumed.workspaceError!);
+			assert.ok(error instanceof WorkspaceBindingError);
+			assert.equal(error.code, "drift");
+			assert.equal(error.reason, "history-rewritten");
+			assert.equal(error.fields.expected, newer, "names the commit of the step that saved first");
+			assert.equal(error.fields.actual, older);
+			assert.deepEqual(sessions, [], "nothing runs on a branch that lost a step's work");
+		},
+	);
 });
 
-describe("latestChildHead (#4382)", () => {
+describe("childHeadsToCheck (#4382)", () => {
 	const binding = { repo: "/repos/app", branch: "feat/x" } as const;
 	let sequence = 0;
 	function step(
+		startedAt: number | undefined,
 		completedAt: number,
 		changeSet?: { readonly repo: string; readonly branch: string; readonly headCommit: string },
 	): DurableCheckpoint {
@@ -1258,23 +1323,77 @@ describe("latestChildHead (#4382)", () => {
 			checkpointId: id,
 			name: id,
 			replayKey: id,
+			...(startedAt !== undefined ? { startedAt } : {}),
 			completedAt,
 			output: { text: "done", ...(changeSet !== undefined ? { changeSet } : {}) },
 		};
 	}
 	const on = (headCommit: string) => ({ ...binding, headCommit });
 
-	test("takes the step that completed last, wherever the list has it", () => {
-		assert.equal(latestChildHead([step(2, on("h2")), step(3, on("h3")), step(1, on("h1"))], binding), "h3");
+	test("checks only the latest step when the steps ran one after another, wherever the list has it", () => {
+		assert.deepEqual(childHeadsToCheck([step(3, 4, on("h2")), step(5, 6, on("h3")), step(1, 2, on("h1"))], binding), [
+			"h3",
+		]);
 	});
 
-	test("takes the later-recorded step when two completed at the same time", () => {
-		assert.equal(latestChildHead([step(1, on("h1")), step(5, on("a")), step(5, on("b"))], binding), "b");
-		assert.equal(latestChildHead([step(5, on("b")), step(5, on("a")), step(1, on("h1"))], binding), "a");
+	test("checks every step still running when the last one started, so an older head saved last hides nothing", () => {
+		assert.deepEqual(
+			childHeadsToCheck([step(1, 2, on("h1")), step(3, 9, on("older")), step(4, 6, on("newer"))], binding),
+			["older", "newer"],
+		);
 	});
 
-	test("takes the latest step's head even when an earlier step recorded the same head", () => {
-		assert.equal(latestChildHead([step(1, on("h1")), step(2, on("h2")), step(3, on("h1"))], binding), "h1");
+	test("counts a step that saved as the next one started as finished before it", () => {
+		assert.deepEqual(childHeadsToCheck([step(1, 5, on("a")), step(5, 7, on("b"))], binding), ["b"]);
+		assert.deepEqual(childHeadsToCheck([step(5, 5, on("b")), step(1, 5, on("a"))], binding), ["b"]);
+	});
+
+	test("checks a head once when several checked steps recorded it", () => {
+		assert.deepEqual(childHeadsToCheck([step(1, 2, on("h1")), step(3, 4, on("h2")), step(5, 6, on("h1"))], binding), [
+			"h1",
+		]);
+		assert.deepEqual(childHeadsToCheck([step(1, 9, on("h")), step(2, 8, on("h"))], binding), ["h"]);
+	});
+
+	test("takes a step's start from the latest stage record that shares its replay key", () => {
+		const unstarted = (replayKey: string, completedAt: number, headCommit: string): DurableCheckpoint => ({
+			kind: "stage",
+			workflowId: "child",
+			checkpointId: `${replayKey}:task`,
+			name: replayKey,
+			replayKey,
+			completedAt,
+			output: { text: "done", changeSet: on(headCommit) },
+		});
+		const started = (replayKey: string, startedAt: number): DurableCheckpoint => ({
+			kind: "stage",
+			workflowId: "child",
+			checkpointId: `${replayKey}:stage:${startedAt}`,
+			name: replayKey,
+			replayKey,
+			startedAt,
+			completedAt: startedAt,
+		});
+		const write = [started("write", 1), unstarted("write", 4, "written")];
+		assert.deepEqual(childHeadsToCheck([...write, started("amend", 5), unstarted("amend", 8, "amended")], binding), [
+			"amended",
+		]);
+		assert.deepEqual(
+			childHeadsToCheck(
+				[...write, started("amend", 2), started("amend", 5), unstarted("amend", 8, "amended")],
+				binding,
+			),
+			["amended"],
+			"a retried step started when its last attempt did",
+		);
+		assert.deepEqual(childHeadsToCheck([...write, started("amend", 3), unstarted("amend", 8, "amended")], binding), [
+			"written",
+			"amended",
+		]);
+	});
+
+	test("checks every head when a step on the branch has no recorded start", () => {
+		assert.deepEqual(childHeadsToCheck([step(undefined, 2, on("h1")), step(3, 4, on("h2"))], binding), ["h1", "h2"]);
 	});
 
 	test("ignores other repositories, other branches, steps without a change set and non-stage checkpoints", () => {
@@ -1287,24 +1406,28 @@ describe("latestChildHead (#4382)", () => {
 			completedAt: 9,
 			output: { changeSet: on("from-a-tool") },
 		};
-		assert.equal(
-			latestChildHead(
+		assert.deepEqual(
+			childHeadsToCheck(
 				[
-					step(1, on("mine")),
-					step(5, { ...on("other-repo"), repo: "/repos/other" }),
-					step(6, { ...on("other-branch"), branch: "feat/y" }),
-					step(7),
+					step(1, 2, on("mine")),
+					step(4, 5, { ...on("other-repo"), repo: "/repos/other" }),
+					step(5, 6, { ...on("other-branch"), branch: "feat/y" }),
+					step(undefined, 8, { ...on("unstarted-other-branch"), branch: "feat/y" }),
+					step(6, 7),
 					tool,
 				],
 				binding,
 			),
-			"mine",
+			["mine"],
 		);
 	});
 
-	test("is undefined when no completed step recorded a change on the branch", () => {
-		assert.equal(latestChildHead([], binding), undefined);
-		assert.equal(latestChildHead([step(1), step(2, { ...on("elsewhere"), branch: "main" })], binding), undefined);
+	test("is empty when no completed step recorded a change on the branch", () => {
+		assert.deepEqual(childHeadsToCheck([], binding), []);
+		assert.deepEqual(
+			childHeadsToCheck([step(1, 1), step(1, 2, { ...on("elsewhere"), branch: "main" })], binding),
+			[],
+		);
 	});
 });
 

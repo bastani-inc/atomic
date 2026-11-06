@@ -290,11 +290,10 @@ async function bindChildWorkspace(
 	let binding: BoundWorkspace;
 	if (recorded === undefined) binding = await resolveWorkspace(workspace, { signal });
 	else {
-		const latestHead = invocation.latestRecordedChildHead(recorded);
 		await restoreWorkspace(recorded, {
 			signal,
 			recreateMissingBranch: !invocation.recordedChildProgress(),
-			recordedHeads: latestHead === undefined ? [] : [latestHead],
+			recordedHeads: invocation.recordedChildHeads(recorded),
 		});
 		binding = recorded;
 	}
