@@ -400,6 +400,7 @@ export type {
 	SerializedErrorCause,
 	SerializedTypedError,
 } from "./core/error-contract.ts";
+export { redactUrlCredentials } from "./core/error-contract.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
 export {
 	AutoRoutingInferenceError,
