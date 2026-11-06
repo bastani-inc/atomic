@@ -12,7 +12,9 @@ const { SupervisorChannelCache } = await import("../../packages/intercom/broker/
 const { releasedReservationKey } = await import("../../packages/intercom/broker/released-children.js");
 const { deliveryTargetIdentity } = await import("../../packages/intercom/broker/send-handler.js");
 const { UNCERTAIN_RECEIPT_REASON } = await import("../../packages/intercom/broker/recipient-receipts.js");
-const { OUTBOX_CLAIM_STALE_AFTER_MS } = await import("../../packages/intercom/broker/multinode-state-store.js");
+const { BROKER_LEASE_RENEW_INTERVAL_MS, BROKER_LEASE_STALE_AFTER_MS, OUTBOX_CLAIM_STALE_AFTER_MS } = await import(
+	"../../packages/intercom/broker/multinode-state-store.js"
+);
 const { normalizeGroup } = await import("../../packages/intercom/group.js");
 const { addressesReleasedAsker, isReleasedReplyCandidate, releasedAskerReplyRefusal, releasedReplyAckOutcome } =
 	await import("../../packages/intercom/broker/released-asker-remote-replies.js");
@@ -46,6 +48,8 @@ interface Node {
 	readonly router: Router;
 	readonly sessions: Map<string, Session>;
 	readonly state: State;
+	/** This broker's own ask routes. */
+	readonly pendingQuestions: InstanceType<typeof PendingQuestionIndex>;
 	/** Write outcomes held back by `WriteFaults.defer`, to report later. */
 	readonly deferred: Array<(written: boolean) => void>;
 }
@@ -106,6 +110,7 @@ async function startNode(
 	const state = wrap(await shared.connectState());
 	const sessions = new Map<string, Session>();
 	const deferred: Array<(written: boolean) => void> = [];
+	const pendingQuestions = new PendingQuestionIndex();
 	const router = await MultiNodeRouter.start({
 		state,
 		bus: await shared.connectBus(),
@@ -121,7 +126,7 @@ async function startNode(
 				else onSettled(faults.fail?.(frame) !== true);
 			},
 			supervisorCache: new SupervisorChannelCache(),
-			pendingQuestions: new PendingQuestionIndex(),
+			pendingQuestions,
 			deliveredMessages: { lookupForTarget: () => "miss", lookupQuestionTarget: () => undefined },
 			dispatch: () => {},
 			revokeReleasedReservation: () => {},
@@ -129,7 +134,7 @@ async function startNode(
 	});
 	cleanups.push(() => router.close());
 	await flush();
-	return { router, sessions, state, deferred };
+	return { router, sessions, state, pendingQuestions, deferred };
 }
 
 async function flush(): Promise<void> {
@@ -384,6 +389,72 @@ describe("replies to released askers across nodes (#4386)", () => {
 			[],
 			"the reply goes to the owner",
 		);
+	});
+
+	test("a reply reaches the owner of a released asker that woke on the replier's broker under the same id (#4386)", async () => {
+		const { a, b, owner, replier, children } = await releasedScene();
+		const [{ child, questionId }] = children as [{ child: Session; questionId: string }];
+		const woken = reconnected(child);
+		b.sessions.set(woken.info.id, woken);
+		await b.router.sessionRegistered(woken, {
+			childName: "worker",
+			groups: new Set([CREW]),
+			authorizedBy: owner.info.id,
+		});
+		await flush();
+		const sent = reply(replier, child.info.id, questionId, { expectedRecipientId: child.info.id });
+		b.router.routeSend({ ...sent.request, localTarget: woken });
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		assert.deepEqual(sent.notFound, [], "not delivered on the local path");
+		const handoff = only(handoffsTo(owner), "handoffs");
+		assert.equal(handoff.message.id, sent.id);
+		a.router.releasedReplyAcknowledged(owner, sent.id, handoff.handoffId, true);
+		assert.equal((await settled(replier, sent.id)).type, "delivered");
+	});
+
+	test("a reply this broker's own ask routes answer takes the local path without reading the shared state (#4386)", async () => {
+		let lookups = 0;
+		const shared = await cluster();
+		const b = await startNode(shared, (state) => ({
+			...state,
+			releasedAsks: {
+				...state.releasedAsks,
+				lookup: (key) => {
+					lookups++;
+					return state.releasedAsks.lookup(key);
+				},
+			},
+		}));
+		const asker = session("asker");
+		await register(b, asker);
+		const replier = session("replier");
+		await register(b, replier);
+		const questionId = randomUUID();
+		b.pendingQuestions.record(asker.info.id, replier.info.id, questionId);
+		const sent = reply(replier, asker.info.id, questionId);
+		b.router.routeSend({ ...sent.request, localTarget: asker });
+		await vi.waitFor(() => assert.deepEqual(sent.notFound, [sent.id]), { timeout: 2_000, interval: 5 });
+		assert.equal(lookups, 0);
+	});
+
+	test("a reply does not reach another owner that reserved the released asker's name after its own owner dropped it (#4386)", async () => {
+		const { a, b, owner, replier, children } = await releasedScene();
+		const [{ child, questionId }] = children as [{ child: Session; questionId: string }];
+		a.router.restoringReleased(releasedReservationKey("worker"), owner.info.id);
+		await flush();
+		const other = session("other-owner");
+		await register(b, other);
+		reserveReleased(b, other, "worker");
+		await flush();
+		const reservation = await b.state.reservations.read(releasedReservationKey("worker"));
+		assert.equal(reservation.status === "active" && reservation.reservation.ownerSessionId, other.info.id);
+		const sent = reply(replier, child.info.id, questionId);
+		b.router.routeSend(sent.request);
+		const refused = await settled(replier, sent.id);
+		assert.ok(refused.type === "delivery_failed");
+		assert.equal(refused.reason, PENDING_REPLY_REFUSAL);
+		assert.deepEqual(handoffsTo(other), []);
+		assert.deepEqual(handoffsTo(owner), []);
 	});
 
 	test("a reply addressed by the released asker's name, in any case, reaches its owner (#4386)", async () => {
@@ -1475,9 +1546,9 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 	}
 
 	/** The child and its owner on B; one asker on A and one on C asked the child, and the owner released it. */
-	async function parkedScene(): Promise<ParkedScene> {
+	async function parkedScene(wrapB?: (state: State) => State): Promise<ParkedScene> {
 		const shared = await cluster();
-		const [a, b, c] = [await startNode(shared), await startNode(shared), await startNode(shared)];
+		const [a, b, c] = [await startNode(shared), await startNode(shared, wrapB), await startNode(shared)];
 		const owner = session("owner");
 		await register(b, owner);
 		const child = session("worker", { supervisorId: owner.info.id });
@@ -1564,6 +1635,117 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 			framesOf(scene.remoteAsker).filter((frame) => frame.type === "peer_rebound"),
 			[],
 		);
+	});
+
+	const reboundFrames = (scene: ParkedScene, woken: Session) => [
+		{
+			type: "peer_rebound",
+			replyTo: scene.questions.local,
+			previousSessionId: scene.child.info.id,
+			sessionId: woken.info.id,
+		},
+	];
+
+	async function childPresenceLive(scene: ParkedScene): Promise<boolean> {
+		const identity = deliveryTargetIdentity(scene.child);
+		const live = await scene.b.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS);
+		return live.some((lease) => lease.subject.kind === "presence" && lease.subject.targetIdentity === identity);
+	}
+
+	test("a subagent woken under another id as soon as the broker it left gives its presence up takes its asks along (#4386)", async () => {
+		const presenceGiven = Promise.withResolvers<void>();
+		const scene = await parkedScene((state) => ({
+			...state,
+			leases: {
+				...state.leases,
+				release: async (lease) => {
+					const released = await state.leases.release(lease);
+					if (lease.key.kind === "presence") await presenceGiven.promise;
+					return released;
+				},
+			},
+		}));
+		cleanups.push(async () => presenceGiven.resolve());
+		await vi.waitFor(async () => assert.equal(await childPresenceLive(scene), false), waitFor);
+		const woken = reconnected(scene.child, randomUUID());
+		await registerWoken(scene.c, woken, scene.owner);
+		presenceGiven.resolve();
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+					reboundFrames(scene, woken),
+				),
+			waitFor,
+		);
+		const matched = await scene.c.state.pendingAsks.matchesReply({
+			replySenderSessionId: woken.info.id,
+			replyTargetSessionId: scene.remoteAsker.info.id,
+			replyTo: scene.questions.remote,
+		});
+		assert.equal(matched.status, "match");
+	});
+
+	test("a subagent woken under another id while the broker it left still holds its presence takes its asks along once it has it (#4386)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const parking = Promise.withResolvers<void>();
+			const scene = await parkedScene((state) => ({
+				...state,
+				pendingAsks: {
+					...state.pendingAsks,
+					parkForTarget: async (targetSessionId, park) => {
+						await parking.promise;
+						return state.pendingAsks.parkForTarget(targetSessionId, park);
+					},
+				},
+			}));
+			cleanups.push(async () => parking.resolve());
+			const woken = reconnected(scene.child, randomUUID());
+			await registerWoken(scene.c, woken, scene.owner);
+			assert.equal(await childPresenceLive(scene), true, "the broker it left still holds its presence");
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await flush();
+			assert.equal(await childPresenceLive(scene), true, "a renewal while it is held takes nothing over");
+			parking.resolve();
+			await vi.waitFor(async () => assert.equal(await childPresenceLive(scene), false), waitFor);
+			assert.deepEqual(
+				framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+				[],
+			);
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(
+				() =>
+					assert.deepEqual(
+						framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+						reboundFrames(scene, woken),
+					),
+				waitFor,
+			);
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await flush();
+			assert.equal(
+				framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound").length,
+				1,
+				"rebinds once",
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a departing subagent whose asks cannot be parked is reported, and its presence still ends (#4386)", async () => {
+		const scene = await parkedScene((state) => ({
+			...state,
+			pendingAsks: {
+				...state.pendingAsks,
+				parkForTarget: async () => {
+					throw new Error("parking failed: shared database is unavailable");
+				},
+			},
+		}));
+		await vi.waitFor(async () => assert.equal(await childPresenceLive(scene), false), waitFor);
+		assert.ok(vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("parking failed")));
 	});
 
 	test("asks to a subagent its owner dropped, or whose owner left, end, and a later answer is refused (#4386)", async () => {

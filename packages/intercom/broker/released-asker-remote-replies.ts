@@ -113,14 +113,18 @@ async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string)
 }
 
 /**
- * The owner that holds the released asker: its reservation's owner, or, once the asker woke for another reason and its
- * reservation ended that way, the owner it left under, whose saved call still takes the reply. None once the owner
- * dropped it or left, or it is gone, as for a route on the asker's own broker.
+ * The owner that holds the released asker: the owner it left under, while that owner still holds its reservation or,
+ * once the asker woke for another reason and its reservation ended that way, whose saved call still takes the reply.
+ * None once the owner dropped it or left, another owner reserved its name, or it is gone, as for a route on the
+ * asker's own broker.
  */
 async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
 	const read = await state.reservations.read(releasedReservationKey(ask.childName));
 	if (read.status === "active") {
-		return read.reservation.gone === undefined ? ownerOfSession(state, read.reservation.ownerSessionId) : undefined;
+		const { reservation } = read;
+		return reservation.gone === undefined && reservation.ownerSessionId === ask.ownerSessionId
+			? ownerOfSession(state, ask.ownerSessionId)
+			: undefined;
 	}
 	return read.status === "ended" && read.end.outcome !== "released"
 		? ownerOfSession(state, ask.ownerSessionId)
@@ -266,13 +270,19 @@ export async function settleAsksToDeparted(
 	await state.pendingAsks.takeParked(sessionId);
 }
 
+/** A released subagent registering again under the capability its owner issued. */
+export interface ReleasedRegistration {
+	readonly childName: string;
+	readonly authorizedBy: string;
+}
+
 /**
  * The released subagent registered again, on any node, under the capability its owner issued: its parked asks follow
  * it to this session. Returns the asks whose target changed, whose askers must be told (`peer_rebound`).
  */
 export async function rebindParkedAsks(
 	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
-	registered: { readonly childName: string; readonly authorizedBy: string },
+	registered: ReleasedRegistration,
 	sessionId: string,
 ): Promise<ReboundPendingAsk[]> {
 	const rebound = await state.pendingAsks.rebindParked(

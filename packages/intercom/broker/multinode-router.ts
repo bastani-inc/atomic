@@ -32,7 +32,6 @@ import {
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
 	type OutboxRow,
-	type ReboundPendingAsk,
 	type RecipientPresenceSubject,
 	type ReleasedAskerReplyFrame,
 	type RestoringReservationLease,
@@ -44,6 +43,7 @@ import {
 	decideReleasedAskerReply,
 	isReleasedReplyCandidate,
 	keepReleasedAsks,
+	type ReleasedRegistration,
 	type ReleasedReplyDelivery,
 	type ReleasedTarget,
 	rebindParkedAsks,
@@ -249,6 +249,8 @@ interface PresenceEntry {
 	knownAt?: number;
 	/** The session's asks were failed once it turned terminal. */
 	terminal?: boolean;
+	/** #4386: a released subagent that registered before the broker it left gave up its presence rebinds once it has it. */
+	rebind?: ReleasedRegistration;
 }
 
 interface ConsumedReservation {
@@ -403,7 +405,9 @@ export class MultiNodeRouter {
 						await this.consumeReservation(consumed);
 						const { childName, authorizedBy } = consumed;
 						if (childName !== undefined && authorizedBy !== undefined) {
-							this.tellReboundAskers(session, await rebindParkedAsks(this.state, { childName, authorizedBy }, session.info.id));
+							const registration = { childName, authorizedBy };
+							if (entry.lease === undefined) entry.rebind = registration;
+							await this.rebindParked(session, registration);
 						}
 					}
 				} finally {
@@ -505,13 +509,17 @@ export class MultiNodeRouter {
 			// does: the subagent then wakes at its reply deadline.
 			await keepReleasedAsks(this.state, session).catch((error: Error) => this.report(error));
 			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
+			// #4386: asks to a released subagent are parked before its presence ends; registering again on any node takes
+			// that presence over first, so its rebinding always finds them.
+			await this.state.pendingAsks
+				.pruneSender(sessionId)
+				.then(() => settleAsksToDeparted(this.state, sessionId, released))
+				.catch((error: Error) => this.report(error));
 			if (entry.lease !== undefined) {
 				await this.state.leases.release(entry.lease);
 				await this.wakeWaitingOrigins(identity);
 			}
 			await this.recordKnown(session, entry);
-			await this.state.pendingAsks.pruneSender(sessionId);
-			await settleAsksToDeparted(this.state, sessionId, released);
 			for (const hold of holds) await this.state.heldSends.drop(hold.messageId);
 			for (const [key, mirror] of [...this.mirrored]) {
 				if (mirror.lease.ownerSessionId !== sessionId) continue;
@@ -945,6 +953,20 @@ export class MultiNodeRouter {
 		}
 	}
 
+	/**
+	 * #4386: a released asker that woke on this broker, under the id it asked with, resolves here, but its question to
+	 * this reply's sender is kept only in the shared state; a reply this broker's own ask routes do not answer goes to
+	 * its owner as on any other broker.
+	 */
+	private async routeMovedReleasedReply(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
+		if (!isReleasedReplyCandidate(request)) return false;
+		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, request.message.replyTo)) {
+			return false;
+		}
+		await Promise.all([...this.settling]);
+		return this.routeReleasedReply(request);
+	}
+
 	/** Enqueue the owner's frame; a same-id retry is answered from the row it already has, exactly as any send. */
 	private async sendReleasedReply(request: RemoteSendRequest, decision: ReleasedReplyDelivery): Promise<void> {
 		const { owner, frame } = decision;
@@ -982,8 +1004,12 @@ export class MultiNodeRouter {
 		});
 	}
 
-	/** #4386: askers on this broker follow a released subagent that registered again under another session id. */
-	private tellReboundAskers(session: BrokerConnectedSession, rebound: readonly ReboundPendingAsk[]): void {
+	/**
+	 * #4386: a released subagent registered again: its parked asks follow it here, and askers on this broker follow it
+	 * when it registered under another session id.
+	 */
+	private async rebindParked(session: BrokerConnectedSession, registration: ReleasedRegistration): Promise<void> {
+		const rebound = await rebindParkedAsks(this.state, registration, session.info.id);
 		for (const ask of rebound) {
 			const asker = this.host.sessions.get(ask.senderSessionId);
 			if (asker === undefined) continue;
@@ -1009,7 +1035,8 @@ export class MultiNodeRouter {
 
 	/**
 	 * A send that resolved to a session on this broker: a same-id retry of a send that already went through the shared
-	 * outbox (its recipient has since moved here) is answered from that row, never delivered again; any other send
+	 * outbox (its recipient has since moved here) is answered from that row, never delivered again; a reply to a
+	 * question that a released asker, since woken here, asked through another broker goes to its owner; any other send
 	 * takes the local path. A lookup the shared database does not answer within `LOCAL_RETRY_LOOKUP_BOUND_MS` takes the
 	 * local path too, and its late answer is ignored: the send has been answered once already.
 	 */
@@ -1027,7 +1054,7 @@ export class MultiNodeRouter {
 			return;
 		}
 		if (existing.status !== "found") {
-			request.notFound();
+			if (!(await this.routeMovedReleasedReply(request, target))) request.notFound();
 			return;
 		}
 		await this.answerExistingRow(
@@ -1876,7 +1903,13 @@ export class MultiNodeRouter {
 				this.serial(deliveryTargetIdentity(session), async () => {
 					if (this.presence.get(session) !== entry) return;
 					await this.acquirePresence(session, entry);
-					if (entry.lease !== undefined) this.scanIdentity(deliveryTargetIdentity(session));
+					if (entry.lease === undefined) return;
+					const { rebind } = entry;
+					if (rebind !== undefined) {
+						delete entry.rebind;
+						await this.rebindParked(session, rebind);
+					}
+					this.scanIdentity(deliveryTargetIdentity(session));
 				});
 			}
 		}
