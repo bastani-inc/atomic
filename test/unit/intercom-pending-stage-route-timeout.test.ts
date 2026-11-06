@@ -80,6 +80,8 @@ afterEach(async () => {
 	acknowledgesBeforeHealthCheck = false;
 	heldRegistrations.length = 0;
 	received.length = 0;
+	// A test that timed out must not wake on the next test's frames and move that test's clock.
+	receivedWaiters.length = 0;
 });
 
 afterAll(async () => {
@@ -202,9 +204,11 @@ test("another request on a silent broker still times out with the failed health 
 		(error: unknown) => error,
 	);
 	await brokerReceived("list");
-	vi.advanceTimersByTime(PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+	// Only to the listing's own bound: its health check must reach the broker while it still waits for an answer.
+	vi.advanceTimersToNextTimer();
 	await brokerReceived("list_groups");
-	vi.advanceTimersByTime(PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+	assert.equal(client.isConnected(), true, "the health check still waits for the broker");
+	vi.advanceTimersToNextTimer();
 	const error = await outcome;
 	assert.ok(error instanceof IntercomBrokerTimeoutError);
 	assert.equal(isIntercomPendingStageRouteTimeoutError(error), false);
