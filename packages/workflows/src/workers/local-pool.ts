@@ -1751,7 +1751,8 @@ export class LocalWorkerPool {
 				rootQueue,
 			);
 			for (const stage of targets.forget) this.remoteDrains.forget(stage);
-			// The handoff reported a failure on the root run; the child's completion records the receipts again.
+			// The handoff reported a drain failure on the root run, and an early refusal (a fenced or replaced attempt, or a
+			// replaced session) ended by design; the child's completion and settlement record the receipts again.
 			for (const { runId, stageId, stageName, recipient } of targets.record)
 				void handoff.recordReceipts(work, runId, stageId, stageName, recipient).catch(() => undefined);
 			for (const { target, stageName } of targets.drain) {

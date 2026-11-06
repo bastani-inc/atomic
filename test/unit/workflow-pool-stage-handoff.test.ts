@@ -1678,8 +1678,8 @@ function gatedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 /** Settles the store's queued messages as the root's Intercom bridge does, recording whom it told. */
-async function settleQueued(f: Awaited<ReturnType<typeof fixture>>, notified: string[]): Promise<void> {
-	await settleUndeliverablePendingStageMessages(f.store, async (entry) => {
+function settleQueued(f: Awaited<ReturnType<typeof fixture>>, notified: string[]): Promise<number> {
+	return settleUndeliverablePendingStageMessages(f.store, async (entry) => {
 		notified.push(entry.message.id);
 		return true;
 	});
@@ -1706,19 +1706,26 @@ test("a stage on another host that took its messages at startup and ended before
 		});
 		await f.handoff.publish(f.first, [childRun([ended], { status: "completed", endedAt: 2 })]);
 		const notified: string[] = [];
-		// The root's settlement runs before the root records the receipts.
+		// Even when the root's settlement runs before the handoff records the receipts, settlement marks what the
+		// stage's session received as delivered and settles only the message it never took as undeliverable.
 		await settleQueued(f, notified);
 		assert.deepEqual(
 			[
 				queuedEntry(f, descriptor.childRunId, "direct-1")?.status,
 				queuedEntry(f, descriptor.childRunId, "direct-2")?.status,
 			],
-			["queued", "undeliverable"],
+			["delivered", "undeliverable"],
 		);
 		assert.deepEqual(notified, ["direct-2"], "only the message the stage never took is reported");
+		const delivered = vi.spyOn(f.store, "markPendingStageMessageDelivered");
 		const recipient = { sessionId: "session-a", receivedMessageIds: receipts.messageIds };
 		await f.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", recipient);
 		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "delivered");
+		assert.equal(
+			delivered.mock.calls.length,
+			0,
+			"the exact receipt settlement already recorded is not written again",
+		);
 		const broadcast = () => queuedEntry(f, ROOT, "broadcast-1");
 		assert.deepEqual([broadcast()?.status, broadcast()?.deliveryCount], ["queued", 1], "the broadcast stays queued");
 		assert.equal(
@@ -1732,7 +1739,6 @@ test("a stage on another host that took its messages at startup and ended before
 		);
 		// Recording them again, or with the child's completion, writes nothing.
 		const deliveries = vi.spyOn(f.store, "recordPendingStageMessageDeliveries");
-		const delivered = vi.spyOn(f.store, "markPendingStageMessageDelivered");
 		await f.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", recipient);
 		await f.queue.complete(f.lease, f.first, {
 			runId: descriptor.childRunId,
@@ -1833,9 +1839,12 @@ test("a root whose handoff started afresh records the receipts a completed child
 		// The root's process restarted: its handoff holds no attempt of the work, and the run is the journal's.
 		const restarted = new PoolStageHandoff(f.backend, f.store, f.queue, f.lease);
 		const write = f.store.markPendingStageMessageDelivered.bind(f.store);
+		let shouldReturnFalse = false;
 		vi.spyOn(f.store, "markPendingStageMessageDelivered")
 			.mockRejectedValueOnce(new Error("journal write refused"))
-			.mockImplementation(write);
+			.mockImplementation(async (runId, stageKey, messageId, deliveredAt, backend) =>
+				shouldReturnFalse ? false : write(runId, stageKey, messageId, deliveredAt, backend),
+			);
 		await restarted.complete(f.first);
 		assert.deepEqual(
 			["direct-1", "direct-2"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
@@ -1846,6 +1855,51 @@ test("a root whose handoff started afresh records the receipts a completed child
 			f.store.run(ROOT)?.intercomDeliveryIssue ?? "",
 			/^1 stage drain on local workers failed; .*journal write refused/,
 		);
+		const notified: string[] = [];
+		shouldReturnFalse = true;
+		assert.equal(await settleQueued(f, notified), 0);
+		shouldReturnFalse = false;
+		assert.equal(await settleQueued(f, notified), 1);
+		assert.equal(await settleQueued(f, notified), 0);
+		assert.deepEqual(
+			["direct-1", "direct-2"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
+			["delivered", "delivered"],
+			"settlement records the stage's receipt that completion failed to write",
+		);
+		assert.deepEqual(notified, []);
+	} finally {
+		await f.close();
+	}
+});
+
+test("an ended stage's receipt on a cancelled run whose attempt was fenced is recorded by settlement (#4505)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueDirect("stage", "direct-2");
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1"] };
+		const ended = stage("stage", {
+			sessionId: "session-a",
+			status: "completed",
+			endedAt: 1,
+			intercomReceipts: receipts,
+		});
+		await f.handoff.publish(f.first, [childRun([ended], { status: "cancelled", endedAt: 2 })]);
+		f.handoff.fence(f.first);
+		await assert.rejects(
+			f.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+				sessionId: "session-a",
+				receivedMessageIds: receipts.messageIds,
+			}),
+		);
+		const notified: string[] = [];
+		await settleQueued(f, notified);
+		assert.deepEqual(
+			["direct-1", "direct-2"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
+			["delivered", "undeliverable"],
+		);
+		assert.deepEqual(notified, ["direct-2"]);
 	} finally {
 		await f.close();
 	}

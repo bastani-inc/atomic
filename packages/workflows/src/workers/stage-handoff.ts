@@ -453,9 +453,9 @@ export class PoolStageHandoff {
 	 * The runs this work published and the store still holds, in store order: a completion costs what the work
 	 * owns, not what the store holds, which in a long-lived host is thousands of finished runs (#4190).
 	 */
-	private ownedRunIds(work: Pick<PoolWork, "id">): string[] {
+	private ownedRunIds(work: Pick<PoolWork, "id" | "childRunId">): string[] {
 		const held: { readonly id: string; readonly position: number }[] = [];
-		for (const id of this.attempts.get(work.id)?.runs ?? []) {
+		for (const id of new Set([work.childRunId, ...(this.attempts.get(work.id)?.runs ?? [])])) {
 			const position = this.store.runPosition(id);
 			if (position !== undefined) held.push({ id, position });
 		}
