@@ -148,6 +148,15 @@ async function waitUntil(condition: () => boolean, budgetMs: number): Promise<bo
 	return true;
 }
 
+async function waitUntilAnswering(budgetMs: number): Promise<boolean> {
+	const deadline = Date.now() + budgetMs;
+	while (!(await isSocketAnswering(socketPath))) {
+		if (Date.now() >= deadline) return false;
+		await sleep(POLL_INTERVAL_MS);
+	}
+	return true;
+}
+
 async function terminate(pid: number): Promise<void> {
 	if (!isAlive(pid)) return;
 	try {
@@ -357,11 +366,8 @@ describe("a slow-starting broker beside a live one", () => {
 		assert.equal(statSync(socketPath).isSocket(), true);
 
 		const replacement = spawnBrokerDirectly();
-		assert.ok(
-			await waitUntil(() => recordedBrokerPid() === replacement.pid, BROKER_BUDGET_MS),
-			"the replacement broker never bound the stale socket path",
-		);
-		assert.equal(await isSocketAnswering(socketPath), true);
+		assert.ok(await waitUntilAnswering(BROKER_BUDGET_MS), "the replacement broker never bound the stale socket path");
+		assert.equal(recordedBrokerPid(), replacement.pid);
 	});
 
 	unixOnly(
@@ -396,6 +402,8 @@ describe("a slow-starting broker beside a live one", () => {
 
 			removePathSync(socketPath, { force: true });
 			const replacedBy = await listenOnBrokerSocket();
+			const replacedByPid = String(process.pid);
+			writeTextSync(pidPath, replacedByPid);
 			try {
 				removePathSync(replacementLock, { force: true });
 				const exitCode = await Promise.race([
@@ -414,7 +422,10 @@ describe("a slow-starting broker beside a live one", () => {
 					true,
 					"the waiting broker removed the socket bound meanwhile",
 				);
+				assert.equal(readTextSync(pidPath, "utf8"), replacedByPid, "the waiting broker claimed the pid file");
+				assert.equal(fileExistsSync(replacementLock), false, "the waiting broker kept the startup lock");
 			} finally {
+				removePathSync(pidPath, { force: true });
 				await closeServer(replacedBy);
 			}
 		},
@@ -424,10 +435,8 @@ describe("a slow-starting broker beside a live one", () => {
 		"(#3505) a broker whose socket path was taken by another broker shuts down without removing it",
 		async () => {
 			const displaced = spawnBrokerDirectly();
-			assert.ok(
-				await waitUntil(() => recordedBrokerPid() === displaced.pid, BROKER_BUDGET_MS),
-				"the broker never bound its socket",
-			);
+			assert.ok(await waitUntilAnswering(BROKER_BUDGET_MS), "the broker never bound its socket");
+			assert.equal(recordedBrokerPid(), displaced.pid);
 			const stranded = newClient();
 			let disconnected = false;
 			stranded.on("disconnected", () => {

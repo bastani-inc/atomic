@@ -396,6 +396,8 @@ class IntercomBroker {
   private multiNodeReason: string | undefined = NO_SHARED_STORAGE_REASON;
   private multiNodeFirstAttempt: Promise<void> = Promise.resolve();
   private shuttingDown = false;
+  /** Held from before this broker writes its pid file until it listens or gives up starting. */
+  private releaseStartupLock: () => void = () => {};
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
@@ -403,7 +405,19 @@ class IntercomBroker {
     this.server = net.createServer(this.handleConnection.bind(this));
   }
 
-  start(): void {
+  /**
+   * The pid file is written before the socket can accept a connection, so a client that has connected always finds
+   * it (#4409). Brokers start one at a time under the socket lock, so one that yields never claims the pid file.
+   */
+  async start(): Promise<void> {
+    this.releaseStartupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
+      onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
+    });
+    if (await isSocketAnswering(SOCKET_PATH)) {
+      this.releaseStartupLock();
+      exitBecauseLiveBrokerOwnsSocket();
+    }
+    writeFileSync(PID_PATH, String(process.pid));
     this.listen(1);
     if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
     else console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
@@ -411,17 +425,15 @@ class IntercomBroker {
     process.on("SIGINT", () => this.shutdown());
   }
 
-  private listen(attempt: number, releaseReplacementLock: () => void = () => {}): void {
+  private listen(attempt: number): void {
     const onError = (error: NodeJS.ErrnoException) => {
-      releaseReplacementLock();
       void this.recoverFromListenError(error, attempt);
     };
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
       if (process.platform !== "win32") this.boundSocketInode = statSync(SOCKET_PATH).ino;
-      releaseReplacementLock();
-      writeFileSync(PID_PATH, String(process.pid));
+      this.releaseStartupLock();
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
       console.log(`Intercom broker started (pid: ${process.pid})`);
@@ -457,9 +469,13 @@ class IntercomBroker {
 
   /** Take over only a stale socket: a path a live broker answers on is never unlinked. */
   private async recoverFromListenError(error: NodeJS.ErrnoException, attempt: number): Promise<void> {
-    if (error.code === "EADDRINUSE" && (await isSocketAnswering(SOCKET_PATH))) exitBecauseLiveBrokerOwnsSocket();
+    if (error.code === "EADDRINUSE" && (await isSocketAnswering(SOCKET_PATH))) {
+      this.abandonStart();
+      exitBecauseLiveBrokerOwnsSocket();
+    }
     if (error.code !== "EADDRINUSE" || attempt >= LISTEN_ATTEMPTS) {
       console.error(`Intercom broker could not listen on ${SOCKET_PATH}: ${error.message}`);
+      this.abandonStart();
       process.exit(1);
     }
     if (process.platform === "win32") {
@@ -467,20 +483,19 @@ class IntercomBroker {
       this.listen(attempt + 1);
       return;
     }
-    const releaseReplacementLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
-      onWait: () => console.error(`Intercom broker waiting for another broker replacing ${SOCKET_PATH}`),
-    });
-    // Another broker may have replaced the stale socket while this one waited for the lock.
-    if (await isSocketAnswering(SOCKET_PATH)) {
-      releaseReplacementLock();
-      exitBecauseLiveBrokerOwnsSocket();
-    }
+    // The startup lock is still held, so no other broker has bound the stale socket since it was probed.
     try {
       unlinkSync(SOCKET_PATH);
     } catch {
       // A clean path has no stale socket to remove.
     }
-    this.listen(attempt + 1, releaseReplacementLock);
+    this.listen(attempt + 1);
+  }
+
+  /** A broker that does not start leaves no pid file of its own and lets the next starting broker go ahead. */
+  private abandonStart(): void {
+    this.unlinkRuntimeFilesIfOwned();
+    this.releaseStartupLock();
   }
 
   private handleConnection(socket: net.Socket): void {
@@ -2637,7 +2652,7 @@ class IntercomBroker {
 // The stderr cap is already in place: `./bounded-stderr-install.js` is this file's first import.
 async function startUnlessLiveBrokerAnswers(): Promise<void> {
   if (await isSocketAnswering(SOCKET_PATH)) exitBecauseLiveBrokerOwnsSocket();
-  new IntercomBroker().start();
+  await new IntercomBroker().start();
 }
 
 void startUnlessLiveBrokerAnswers();

@@ -23,6 +23,8 @@ const BROKER_STARTUP_MS = 10_000;
 const unixEvictionTest = process.platform === "win32" ? test.skip : test;
 
 const fixtures: Array<{ agentDir: string; broker: ChildProcess }> = [];
+/** Each broker's stdout so far: it logs that it started only once its socket listens. */
+const brokerStdout = new Map<ChildProcess, string>();
 
 afterEach(async () => {
 	while (fixtures.length > 0) {
@@ -36,6 +38,7 @@ afterEach(async () => {
 			await Promise.race([exited, sleep(1_000)]);
 		}
 		rmSync(fixture.agentDir, { recursive: true, force: true });
+		brokerStdout.delete(fixture.broker);
 	}
 });
 
@@ -44,10 +47,15 @@ function spawnBroker(agentDir: string): ChildProcess {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
+	brokerStdout.set(broker, "");
+	broker.stdout?.on("data", (chunk: Buffer) => {
+		brokerStdout.set(broker, `${brokerStdout.get(broker) ?? ""}${chunk.toString()}`);
+	});
 	fixtures.push({ agentDir, broker });
 	return broker;
 }
 
+/** The pid file is written before the socket listens (#4409), so the broker is ready once it has also logged its start. */
 async function waitForBrokerPid(agentDir: string, broker: ChildProcess): Promise<number> {
 	const pidPath = getBrokerPidPath(agentDir);
 	const deadline = Date.now() + BROKER_STARTUP_MS;
@@ -55,7 +63,11 @@ async function waitForBrokerPid(agentDir: string, broker: ChildProcess): Promise
 		if (broker.exitCode !== null || broker.signalCode !== null) {
 			throw new Error(`Broker exited during startup with code ${broker.exitCode} signal ${broker.signalCode}`);
 		}
-		if (existsSync(pidPath) && broker.pid !== undefined) {
+		if (
+			existsSync(pidPath) &&
+			broker.pid !== undefined &&
+			brokerStdout.get(broker)?.includes("Intercom broker started")
+		) {
 			const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
 			if (pid === broker.pid) return pid;
 		}
