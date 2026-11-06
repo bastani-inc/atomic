@@ -1,7 +1,12 @@
 /**
  * Child process for the subscription chaos tests: one workflow whose run body subscribes to a finite event stream on
- * a SQLite run journal. Each handled event appends `<label> <event id>` to `handled.txt` with an fsync, so the parent
+ * a shared run journal. Each handled event appends `<label> <event id>` to `handled.txt` with an fsync, so the parent
  * can kill or stop this process at any point and compare side effects with the journal's processed records.
+ *
+ * The journal is the SQLite file `<directory>/journal.sqlite`, unless `ATOMIC_AGENT_DIR` points at an agent directory
+ * whose settings select another journal (for example a shared libSQL server in a distributed run). `resume` expires
+ * the crashed owner's SQLite lease; `takeover` instead waits, with no manual step, until the journal's own clock
+ * reports the owner's lease stale.
  */
 import assert from "node:assert/strict";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
@@ -25,8 +30,9 @@ const eventCount = Number(countText ?? "60");
 const handlerDelayMs = Number(delayText ?? "20");
 const maxConcurrent = Number(concurrencyText ?? "4");
 const SUBSCRIPTION_KEY = "chaos#1";
-process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
-if (mode === "resume") expireWorkflowLease(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH, runId);
+const sharedJournal = process.env.ATOMIC_AGENT_DIR !== undefined;
+if (!sharedJournal) process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+if (mode === "resume") expireWorkflowLease(join(directory, "journal.sqlite"), runId);
 const backend = await initializeDurableBackend();
 assert.ok(backend instanceof JournalDurableBackend);
 const ids = Array.from({ length: eventCount }, (_, index) => `e${index}`);
@@ -90,9 +96,15 @@ if (mode === "records") {
 		.filter((checkpoint) => checkpoint.checkpointId.startsWith("workflow-subscription-event:")).length;
 	console.log(JSON.stringify({ processed, eventRecords }));
 	await backend.close();
-} else if (mode === "resume") {
+} else if (mode === "resume" || mode === "takeover") {
 	const runtime = createExtensionRuntime({ definitions: [definition], cwd: directory, store, adapters });
-	const resumed = await runtime.resumeDurableWorkflow(runId);
+	const takeoverDeadline = Date.now() + 600_000;
+	let resumed = await runtime.resumeDurableWorkflow(runId);
+	while (mode === "takeover" && !resumed.ok && Date.now() < takeoverDeadline) {
+		await sleep(5_000);
+		await backend.hydrateWorkflow(runId);
+		resumed = await runtime.resumeDurableWorkflow(runId);
+	}
 	assert.ok(resumed.ok, JSON.stringify(resumed));
 	const deadline = Date.now() + 120_000;
 	while (store.runs().find((entry) => entry.id === runId)?.endedAt === undefined) {

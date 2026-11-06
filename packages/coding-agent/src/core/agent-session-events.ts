@@ -32,8 +32,8 @@ import {
 	type SessionEventHandler,
 	type SessionSubscribeOptions,
 	subscribeSession,
-} from "./event-subscriptions/session-subscription.ts";
-import type { EventSource, Subscription } from "./event-subscriptions/types.ts";
+} from "./event-subscriptions/session-subscription.js";
+import type { EventSource, Subscription } from "./event-subscriptions/types.js";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
