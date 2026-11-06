@@ -85,6 +85,64 @@ test.skipIf(process.platform !== "linux")(
 	},
 );
 
+test.skipIf(process.platform !== "linux").each(["known", "unknown"])(
+	"same-PID owners with %s identity never remove each other's history at exit",
+	async (identity) => {
+		const first = await owner("100");
+		if (identity === "unknown")
+			vi.mocked(fs.readlinkSync).mockImplementation(() => {
+				throw Object.assign(new Error("unknown namespace"), { code: "EACCES" });
+			});
+		const a = await first.releasedHistoryFiles(root).createDirectory();
+		assert.ok(!(a instanceof Error));
+		await a.write(1, Buffer.from("first\u0000😀"));
+		const exit = process.listeners("exit").find((listener) => !exitListeners.includes(listener));
+		assert.ok(exit);
+		const second = await owner("100");
+		if (identity === "unknown")
+			vi.mocked(fs.readlinkSync).mockImplementation(() => {
+				throw Object.assign(new Error("unknown namespace"), { code: "EACCES" });
+			});
+		const b = await second.releasedHistoryFiles(root).createDirectory();
+		assert.ok(!(b instanceof Error));
+		await b.write(1, Buffer.from("second\u0000漢字"));
+		assert.equal((await a.read(1)).toString(), "first\u0000😀");
+		assert.equal((await b.read(1)).toString(), "second\u0000漢字");
+		await a.remove();
+		exit(0);
+		assert.equal((await b.read(1)).toString(), "second\u0000漢字");
+		assert.notEqual(dirname(a.path), dirname(b.path));
+		await b.remove();
+	},
+);
+
+test.skipIf(process.platform !== "linux")(
+	"nonce-bearing and legacy directories both require positive proof of owner death",
+	async () => {
+		const module = await owner("100");
+		const directory = await module.releasedHistoryFiles(root).createDirectory();
+		assert.ok(!(directory instanceof Error));
+		const stat = fs.readFileSync(`/proc/${process.pid}/stat`, "utf8");
+		const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+		const host = dirname(dirname(directory.path));
+		const paths = ["", `-${"a".repeat(32)}`].flatMap((suffix) =>
+			[
+				{ owner: `${process.pid}-${start}`, keep: true },
+				{ owner: `${process.pid}-unknown`, keep: true },
+				{ owner: `${process.pid}-1`, keep: false },
+				{ owner: "2147483647-1", keep: false },
+			].map(({ owner, keep }) => {
+				const path = join(host, `${owner}${suffix}`);
+				fs.mkdirSync(path);
+				return { path, keep };
+			}),
+		);
+		await module.sweepReleasedHistory(root);
+		for (const { path, keep } of paths) assert.equal(fs.existsSync(path), keep, path);
+		await directory.remove();
+	},
+);
+
 test("a store recreates its missing directory on a later release", async () => {
 	const { releasedHistoryFiles } = await import("../src/core/storage/session/released-history-files.js");
 	const directory = await releasedHistoryFiles(root).createDirectory();

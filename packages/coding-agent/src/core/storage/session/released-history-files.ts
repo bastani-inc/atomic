@@ -17,8 +17,10 @@ import type { SessionHistoryDirectory, SessionHistoryFiles } from "./memory-sess
 
 /** The start time recorded for a process whose start time could not be told. */
 const UNKNOWN_START = "unknown";
-/** A process directory's name: the pid, then the start time, of the process that created it. */
-const PROCESS_DIRECTORY_NAME = /^([1-9][0-9]*)-([A-Za-z0-9]+)$/;
+/** A process directory's pid/start owner and optional instance nonce; old nonce-free names remain sweepable. */
+const PROCESS_DIRECTORY_NAME = /^([1-9][0-9]*)-([A-Za-z0-9]+)(?:-[a-f0-9]{32})?$/;
+/** Generated once for this owner, not per store: even identical pid/start pairs must never share exit cleanup. */
+const PROCESS_NONCE = randomBytes(16).toString("hex");
 /** How long a lookup of a process's start time may take before it counts as one that cannot tell. */
 const START_TIME_TIMEOUT_MS = 30_000;
 
@@ -75,7 +77,7 @@ function namespaceIdentity(): Promise<string | undefined> {
 }
 
 async function hostDirectory(agentDir: string): Promise<string> {
-	// An unknown identity is private to this process and never swept: uncertainty must not delete another owner's files.
+	// An unknown identity is never swept; the process-directory nonce still isolates owners with identical PIDs.
 	const key = (await namespaceIdentity()) ?? `${process.platform}-unknown-${process.pid}-${await ownStartTime()}`;
 	const host = hostname();
 	// Hash the complete identity: truncating a long hostname must not drop the namespace or boot from the key.
@@ -241,7 +243,7 @@ function processDirectory(agentDir: string): Promise<string | SessionSpillError>
 }
 
 async function createProcessDirectory(agentDir: string): Promise<string | SessionSpillError> {
-	const path = join(await hostDirectory(agentDir), `${process.pid}-${await ownStartTime()}`);
+	const path = join(await hostDirectory(agentDir), `${process.pid}-${await ownStartTime()}-${PROCESS_NONCE}`);
 	try {
 		await mkdir(path, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
 	} catch (cause) {
@@ -281,8 +283,8 @@ function removeAtExit(): void {
 }
 
 /**
- * Removes at once what this thread keeps on disk, as it exits. The main thread removes its process's whole directory,
- * with what its worker threads keep there, since they end with it; a worker thread removes its own stores' directories.
+ * Removes at once what this thread keeps on disk, as it exits. Main removes only the nonce-bearing directories
+ * created by itself or registered workers; a worker thread removes its own stores' directories.
  */
 function removeDirectories(): void {
 	if (isMainThread) {
@@ -386,7 +388,7 @@ function historyDirectory(path: string): SessionHistoryDirectory {
 }
 
 /**
- * Released sessions' history in `<agentDir>/released-history/<host-identity>/<pid>-<start>/`: host identity includes
+ * Released sessions' history in `<agentDir>/released-history/<host-identity>/<pid>-<start>-<nonce>/`: host identity includes
  * hostname, platform, boot, and Linux PID namespace. Store directories/files are owner-only (0700/0600) on POSIX;
  * Windows inherits the agent directory's ACL. The last handle closing removes its store directory. Main-thread exit
  * removes registered worker directories too, even after terminate(); worker-only SDK imports cannot install main
