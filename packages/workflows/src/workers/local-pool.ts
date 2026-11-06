@@ -572,9 +572,12 @@ export class LocalWorkerPool {
 				: this.dispatchSnapshots.capture(worktree, this.options.snapshots);
 		const rootSnapshot = await this.rootSnapshot;
 		// The root's snapshot is kept from collection for as long as the pool serves the root, children waiting or not:
-		// a child dispatched after a long stretch of the root's own work still carries it (#4492).
-		this.releaseRootSnapshot ??= this.dispatchSnapshots.carry(rootSnapshot);
-		this.snapshotKeeper ??= setInterval(() => this.keepCarriedSnapshots(), POOL_SUMMARY_INTERVAL_MS).unref();
+		// a child dispatched after a long stretch of the root's own work still carries it (#4492). A pool closed while
+		// the capture ran keeps nothing.
+		if (!this.closed) {
+			this.releaseRootSnapshot ??= this.dispatchSnapshots.carry(rootSnapshot);
+			this.snapshotKeeper ??= setInterval(() => this.keepCarriedSnapshots(), POOL_SUMMARY_INTERVAL_MS).unref();
+		}
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(

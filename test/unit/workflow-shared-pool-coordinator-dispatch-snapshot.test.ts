@@ -358,6 +358,61 @@ test.skipIf(process.platform === "win32")(
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
 
+test.skipIf(process.platform === "win32")(
+	"a pool closed while its root's binding is still being captured keeps nothing from collection afterwards (#4492)",
+	async () => {
+		const sandbox = new GitSandbox();
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
+		const placed = await recordedPlacement({
+			placement: "shared",
+			workspace: workspace({ repo: clone, branch: "main", base: "main", worktree: clone }),
+		});
+		const captured = Promise.withResolvers<WorktreeSnapshot | undefined>();
+		const captures = vi.spyOn(DispatchSnapshots.prototype, "capture").mockReturnValue(captured.promise);
+		const carries = vi.spyOn(DispatchSnapshots.prototype, "carry");
+		const f = await fixture("shared-dispatch-snapshot-closed-root", {
+			workspace: placed.placement.workspace!,
+			workspaceWorktree: placed.worktree,
+			snapshotRefreshMs: 0,
+		});
+		const { parent } = await fanOut(1)((await boundChild()) as never);
+		const execution = run(
+			parent,
+			{},
+			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+		);
+		try {
+			while (captures.mock.calls.length === 0) await sleep(25);
+			await f.pool.close();
+			captured.resolve(carried("closed-root", ["p-closed"], "b-closed"));
+			await execution.catch(() => {});
+			await sleep(500);
+			assert.deepEqual(
+				carries.mock.calls.filter(([snapshot]) => snapshot?.id === "closed-root"),
+				[],
+				"the closed pool does not carry the late snapshot, so nothing refreshes it",
+			);
+		} finally {
+			captured.resolve(undefined);
+			captures.mockRestore();
+			carries.mockRestore();
+			await execution.catch(() => {});
+			await f.close();
+			sandbox.dispose();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
+
+/** A snapshot record carrying only an id and the blob hashes of its chain and bundle. */
+function carried(id: string, patches: readonly string[], bundle: string): WorktreeSnapshot {
+	return {
+		id,
+		chain: patches.map((patch) => ({ tree: "t", patch, bytes: 0 })),
+		bundle: { blob: bundle, bytes: 0, commits: [] },
+	} as unknown as WorktreeSnapshot;
+}
+
 /** The failure of the one child of a root bound to `options`' worktree, run while a cold host serves it. */
 async function unrestorable(
 	label: string,
