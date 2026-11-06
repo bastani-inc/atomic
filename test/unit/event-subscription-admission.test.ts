@@ -1060,3 +1060,62 @@ test("an invalid subscription never registers its id, so the id stays usable (#4
 	const reopened = openEventSubscription({ id, source: openSource(), handle: async () => {} });
 	await reopened.close();
 });
+
+test("cancelling a subscription whose source already failed settles done while a handler ignores the abort (#4311)", async () => {
+	const sourceFailure = new Error("source went away");
+	let failSource: ((error: Error) => void) | undefined;
+	let emit: ((event: SubscriptionEvent) => void) | undefined;
+	const subscription = openEventSubscription({
+		id: uniqueId("cancel-after-failure"),
+		source: {
+			id: "failing-later",
+			start: (_signal, emitter) => {
+				emit = emitter;
+				return new Promise<void>((_resolve, reject) => {
+					failSource = reject;
+				});
+			},
+		},
+		handle: () => new Promise<void>(() => {}),
+	});
+	await settle();
+	emit!({ id: "stuck" });
+	await settle();
+	failSource!(sourceFailure);
+	await settle();
+	subscription.cancel(new DOMException("owner closed", "AbortError"));
+	await assert.rejects(subscription.done, (error) => {
+		assert.equal(isEventSourceError(error), true);
+		assert.equal((error as Error).cause, sourceFailure);
+		return true;
+	});
+	assert.equal(subscription.stats().active, 1);
+});
+
+test("a rate window longer than the host timer allows is refused as out of range (#4311)", () => {
+	const longest = 2_147_483_647;
+	assert.doesNotThrow(() => validateSubscriptionAdmission({ maxRate: { events: 1, intervalMs: longest } }, "options"));
+	assert.throws(
+		() => validateSubscriptionAdmission({ maxRate: { events: 1, intervalMs: longest + 1 } }, "options"),
+		(error) => {
+			assert.equal(isSubscriptionConfigError(error), true);
+			const { field, reason, expected, code } = error as {
+				field: string;
+				reason: string;
+				expected: string;
+				code: string;
+			};
+			assert.deepEqual(
+				{ field, reason, expected, code },
+				{
+					field: "options.maxRate.intervalMs",
+					reason: "out-of-range",
+					expected: "an integer from 1 to 2147483647 milliseconds",
+					code: "invalid-option",
+				},
+			);
+			assert.match((error as Error).message, /options\.maxRate\.intervalMs/);
+			return true;
+		},
+	);
+});

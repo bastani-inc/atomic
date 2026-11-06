@@ -27,11 +27,13 @@ export interface SubscriberReportDelivery {
  *
  * A report to a workflow stage returns as soon as the stage admits it, so the event child never waits for the turn the
  * report starts in the subscriber. A turn that fails after admission is the subscriber's failure and is recorded
- * through `turnFailed`; `release` waits for those turns.
+ * through `turnFailed`.
  */
 export interface SubscriberReports {
 	deliver(delivery: SubscriberReportDelivery): Promise<void>;
-	/** At the end of the run: waits for the turns that reports started, then lets each reopened session go. */
+	/** Before the run completes: waits for the turns that reports started, or until `cancel`. */
+	settle(): Promise<void>;
+	/** At the end of the run: lets each reopened session go once its turn ends. */
 	release(): Promise<void>;
 	/** When the run is cancelled: lets every reopened session go now. */
 	cancel(): Promise<void>;
@@ -125,7 +127,6 @@ export function createSubscriberReports(
 	};
 
 	const letGo = async (waitForTurns: boolean): Promise<void> => {
-		if (waitForTurns) await Promise.race([Promise.all([...turns]), cancelled.promise]);
 		const owned = [...reopened.values()];
 		reopened.clear();
 		for (const { stage, acquired } of owned) {
@@ -176,6 +177,13 @@ export function createSubscriberReports(
 			await untilAdmitted(stage.name, (beforeDelivery) =>
 				send.call(handle, message, { deliverAs: "steer" }, beforeDelivery),
 			);
+		},
+		async settle() {
+			let settling = true;
+			void cancelled.promise.then(() => {
+				settling = false;
+			});
+			while (settling && turns.size > 0) await Promise.race([Promise.all([...turns]), cancelled.promise]);
 		},
 		release: () => letGo(true),
 		cancel: () => {

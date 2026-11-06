@@ -73,6 +73,17 @@ function isPositiveInteger(value: unknown): boolean {
 	return Number.isInteger(value) && (value as number) > 0;
 }
 
+/** `setTimeout` treats anything above this as 1 ms, which would turn a long wait into a busy loop. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** A delay the shared wake dispatcher can wait on: a positive integer no longer than one host timer. */
+export function requireTimerMs(value: number, field: string): void {
+	if (!Number.isSafeInteger(value) || value <= 0) throw new SubscriptionConfigError(field, "not-positive-integer");
+	if (value > MAX_TIMER_MS) {
+		throw new SubscriptionConfigError(field, "out-of-range", `an integer from 1 to ${MAX_TIMER_MS} milliseconds`);
+	}
+}
+
 /** Validates an event source at the API boundary, before anything is recorded. */
 export function validateEventSource(source: EventSource, field: string): void {
 	const candidate = source as Partial<EventSource> | null | undefined;
@@ -96,9 +107,7 @@ export function validateSubscriptionAdmission(admission: SubscriptionAdmission, 
 	if (rate === undefined) return;
 	if (!isPositiveInteger(rate.events))
 		throw new SubscriptionConfigError(`${prefix}.maxRate.events`, "not-positive-integer");
-	if (!isPositiveInteger(rate.intervalMs)) {
-		throw new SubscriptionConfigError(`${prefix}.maxRate.intervalMs`, "not-positive-integer");
-	}
+	requireTimerMs(rate.intervalMs, `${prefix}.maxRate.intervalMs`);
 }
 
 function validateEvent(subscriptionId: string, event: SubscriptionEvent): void {
@@ -247,6 +256,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		cancelled = true;
 		handlerStop.abort(reason);
 		stop(reason);
+		finish();
 	};
 	openSubscriptions.set(id, emit);
 	const startSource = (): void => {

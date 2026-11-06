@@ -8,6 +8,7 @@ import { open, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { delimiter, join, resolve as resolvePath } from "node:path";
+import { requireTimerMs } from "./admission.js";
 import {
 	EventSourceError,
 	SubscriptionClosedError,
@@ -20,8 +21,6 @@ import { sharedWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.js"
 
 type JsonObject = { readonly [key: string]: SubscriptionEventPayload };
 
-/** `setTimeout` treats anything above this as 1 ms, which would turn a long interval into a busy loop. */
-const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_LOG_POLL_MS = 250;
 const MAX_LOG_READ_BYTES = 1_048_576;
 const DEFAULT_WEBHOOK_MAX_BODY_BYTES = 1_048_576;
@@ -32,13 +31,6 @@ const LOG_READ_HINT = "Check that the log file and its directory are readable by
 const GITHUB_POLL_HINT =
 	"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.";
 const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
-
-function requireTimerMs(value: number, field: string): void {
-	if (!Number.isSafeInteger(value) || value <= 0) throw new SubscriptionConfigError(field, "not-positive-integer");
-	if (value > MAX_TIMER_MS) {
-		throw new SubscriptionConfigError(field, "out-of-range", `an integer from 1 to ${MAX_TIMER_MS} milliseconds`);
-	}
-}
 
 function requireNonEmptyString(value: string, field: string): void {
 	if (typeof value !== "string" || value.length === 0) throw new SubscriptionConfigError(field, "not-string");

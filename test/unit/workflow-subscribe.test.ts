@@ -2134,3 +2134,69 @@ test("a report returns once the subscriber admits it, without waiting for the su
 		'Report from event child "alerts#1/b" (event b):\n\nb matters',
 	]);
 });
+
+test("a run settles the turns its reports started before it completes, and cancelling it meanwhile ends it (#4311)", async () => {
+	const listeners = new Set<Listener>();
+	const watcherMessages: string[] = [];
+	const emit = (type: string): void => {
+		for (const listener of [...listeners]) listener({ type });
+	};
+	const watcherSession: StageSessionRuntime = {
+		...mockSession(),
+		async prompt(text: string) {
+			emit("agent_start");
+			watcherMessages.push(text);
+			emit("agent_end");
+		},
+		async sendUserMessage(content) {
+			emit("agent_start");
+			watcherMessages.push(typeof content === "string" ? content : "");
+			await new Promise<void>(() => {});
+		},
+		subscribe(listener) {
+			listeners.add(listener as Listener);
+			return () => listeners.delete(listener as Listener);
+		},
+	};
+	let bodyReturned = false;
+	const definition = workflow({
+		name: "stalled-subscriber",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			await watcher.prompt("watch");
+			await ctx.subscribe(
+				listSource("alerts", [{ id: "a" }]),
+				async (event, child) => {
+					await child.report(`${event.id} matters`);
+				},
+				{ subscriber: watcher },
+			).done;
+			bodyReturned = true;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const runId = "acacacac-acac-4cac-8cac-0000000043aa";
+	const store = createStore();
+	const controller = new AbortController();
+	const running = run(
+		definition,
+		{},
+		{
+			runId,
+			store,
+			durableBackend: await createMemoryTestBackend(),
+			signal: controller.signal,
+			adapters: { agentSession: { create: async () => watcherSession } },
+		},
+	);
+	await turnsUntil(() => bodyReturned);
+	for (let turn = 0; turn < 50; turn++) await nextTurn();
+	assert.equal(watcherMessages.length, 2);
+	assert.equal(store.runs().find((entry) => entry.id === runId)?.status, "running");
+	controller.abort(new Error("operator cancelled"));
+	const result = await running;
+	assert.equal(result.status, "killed");
+});

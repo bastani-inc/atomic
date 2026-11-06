@@ -1348,6 +1348,7 @@ async function executeRun(
 			ownController.signal,
 		);
 		await raceAbort(eventPrimitives.closeAndDrain(), ownController.signal);
+		await raceAbort(subscriberReports.settle(), ownController.signal);
 		await drainCachedStagePersistence();
 		// The workflow is done with its stages: one still released between turns shows its own status again.
 		settleReleasedStages(runtime.wakeDispatcher);
