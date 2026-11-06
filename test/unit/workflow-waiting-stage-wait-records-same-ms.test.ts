@@ -30,7 +30,6 @@ test("results recorded in the same millisecond as the wait's start are kept, and
 		createdAt: 1_000,
 		status: "running",
 	});
-	// One frozen clock for both forced records, as when a fast tool's result arrives within the wait's first millisecond.
 	const deps = {
 		workflowId: runId,
 		backend,
@@ -53,14 +52,12 @@ test("results recorded in the same millisecond as the wait's start are kept, and
 	assert.equal(await recordStageSessionCheckpoint(deps, waiting, { force: true }), true);
 	assert.equal(await recordStageSessionCheckpoint(deps, { ...waiting, waitResults: [RESULT] }, { force: true }), true);
 
-	// The results record is its own record: a resume continues from it instead of running the tool again.
 	assert.deepEqual(durableRecordedToolResults(backend, runId).get("stage:alpha:1"), [RESULT]);
 	assert.deepEqual(
 		durableWaitingStages(backend, runId).map((stage) => stage.sessionId),
 		["session-alpha"],
 	);
 
-	// A backend that rebuilds its view from the journal alone, as a resumed process does, finds the results too.
 	const reopened = await JournalDurableBackend.open(journal);
 	assert.deepEqual(durableRecordedToolResults(reopened, runId).get("stage:alpha:1"), [RESULT]);
 	await backend.close();
@@ -132,7 +129,6 @@ test("a wait that changes kind, prompt count or calls in the same millisecond is
 		startedAt: 1_000,
 		sessionId: "session-alpha",
 	};
-	// Every wait starts at the same time; only what the stage waits on changes.
 	const waits: NonNullable<StageSnapshot["wait"]>[] = [
 		{ kind: "release", since: 3_000, promptsCompleted: 1 },
 		{ kind: "idle", since: 3_000, promptsCompleted: 1 },
@@ -151,5 +147,47 @@ test("a wait that changes kind, prompt count or calls in the same millisecond is
 		.listCheckpoints(runId)
 		.filter((checkpoint) => checkpoint.kind === "stage" && checkpoint.replayKey === "stage:alpha:1");
 	assert.equal(sessionRecords.length, waits.length);
+	await backend.close();
+});
+
+test("partial results recorded in the same millisecond keep every completed call (#4309)", async () => {
+	const journal = new MemoryRunJournal();
+	const backend = await JournalDurableBackend.open(journal);
+	const runId = crypto.randomUUID();
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "same-ms-partial",
+		inputs: {},
+		createdAt: 1_000,
+		status: "running",
+	});
+	const deps = {
+		workflowId: runId,
+		backend,
+		nextCheckpointId: createCheckpointIdGenerator(),
+		nextReplayKey: createStageReplayKeyGenerator(runId),
+		now: () => 3_000,
+	};
+	const second: StageWaitToolResult = { ...RESULT, toolCallId: "call-beta" };
+	const stage: StageSnapshot = {
+		id: "stage-alpha",
+		name: "alpha",
+		replayKey: "stage:alpha:1",
+		status: "waiting",
+		parentIds: [],
+		toolEvents: [],
+		startedAt: 1_000,
+		sessionId: "session-alpha",
+		wait: {
+			kind: "tool",
+			since: 3_000,
+			toolCalls: [RESULT, second].map(({ toolCallId, toolName }) => ({ toolCallId, toolName })),
+		},
+	};
+	await recordStageSessionCheckpoint(deps, { ...stage, waitResults: [RESULT] }, { force: true });
+	await recordStageSessionCheckpoint(deps, { ...stage, waitResults: [RESULT, second] }, { force: true });
+	assert.deepEqual(durableRecordedToolResults(backend, runId).get("stage:alpha:1"), [RESULT, second]);
+	const reopened = await JournalDurableBackend.open(journal);
+	assert.deepEqual(durableRecordedToolResults(reopened, runId).get("stage:alpha:1"), [RESULT, second]);
 	await backend.close();
 });
