@@ -120,6 +120,66 @@ test(
 	HOST_STATE_TEST_TIMEOUT_MS,
 );
 
+test("closing a host reconciles held finished records before its watchers stop (#4385)", async () => {
+	const supervisor = new TaskSupervisor();
+	const scope: C.OwnerScope = { kind: "session", sessionId: randomUUID() };
+	const host = supervisor.bindHostSession({
+		scope,
+		authorizeLaunch() {},
+		createRunner() {
+			return {
+				result: Promise.resolve<C.TaskResult>({ kind: "failed", code: "Done", message: "done" }),
+				cleanup: Promise.resolve<C.Cleanup>({ kind: "reaped" }),
+			};
+		},
+	});
+	const owner = value(supervisor.openTaskOwner(host, scope));
+	const store = new OwnerTaskStore(supervisor, owner);
+	value(store.connect());
+	const lagging = value(supervisor.watchOwnerTasks(owner));
+	lagging.drain = () => {};
+	const baseline = taskHostStateSizesForTesting(owner);
+	try {
+		for (let index = 0; index < FINISHED_TASK_RETENTION + 32; index++) {
+			const task = value(
+				await supervisor.startAgentTask(
+					owner,
+					{
+						kind: "agent",
+						agent: "worker",
+						task: `task ${index}`,
+						routerSelection: { model: "provider/model", effort: "low" },
+						requestedModel: "provider/model:low",
+						heartbeatMs: 60_000,
+					},
+					`close-operation-${index}` as C.OperationId,
+				),
+			);
+			supervisor.retainTaskRecord(task);
+			value(await supervisor.waitForTask(task, CONVERGE_TIMEOUT_MS));
+		}
+		assert.equal(taskHostStateSizesForTesting(owner).tasks, FINISHED_TASK_RETENTION + 32);
+		value(await supervisor.closeTaskOwner(owner, "session-close"));
+		store.drain();
+		assert.equal(store.snapshot?.state, "closed");
+		assert.equal(store.tasks.length, FINISHED_TASK_RETENTION);
+		assert.deepEqual(taskHostStateSizesForTesting(owner), {
+			tasks: FINISHED_TASK_RETENTION,
+			settledTasks: 0,
+			quarantinedTasks: 0,
+			unconfirmedCleanups: 0,
+			permits: 0,
+			commandStarts: 0,
+			routerSelections: baseline.routerSelections + FINISHED_TASK_RETENTION,
+			requestedModels: baseline.requestedModels + FINISHED_TASK_RETENTION,
+			launchHeartbeats: baseline.launchHeartbeats + FINISHED_TASK_RETENTION,
+		});
+	} finally {
+		store.dispose();
+		await supervisor.closeTaskOwner(owner, "session-close");
+	}
+});
+
 test("host state sizes are read only for an owner this process opened (#4385)", () => {
 	const foreign: OwnerLease = Object.freeze(Object.create(null));
 	assert.throws(() => taskHostStateSizesForTesting(foreign), {

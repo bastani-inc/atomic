@@ -267,7 +267,7 @@ fn watchers_keep_finished_tasks_until_they_processed_them_4385() {
 }
 
 #[test]
-fn a_closed_owner_trims_once_its_watchers_are_gone_4385() {
+fn a_closed_owner_delivers_its_final_retained_set_before_watchers_stop_4385() {
 	let (a, o) = owner();
 	let (lease, _) = a.watch(&o, None).unwrap();
 	let queued: Vec<_> = (0..FINISHED_TASK_RETENTION * 2)
@@ -275,7 +275,13 @@ fn a_closed_owner_trims_once_its_watchers_are_gone_4385() {
 		.collect();
 	a.begin_close(&o).unwrap();
 	let receipt = a.close_receipt(&o).unwrap().expect("unclaimed tasks reap at once");
-	assert_eq!(receipt.tasks.len(), queued.len(), "an unprocessed close keeps every record");
+	assert_eq!(receipt.tasks.len(), FINISHED_TASK_RETENTION);
+	let delivered = a.drain(&lease).unwrap();
+	assert!(delivered.reset, "the large close recovers through a final snapshot");
+	let snapshot = delivered.snapshot.unwrap();
+	assert_eq!(snapshot.state, "closed");
+	assert_eq!(snapshot.tasks.len(), FINISHED_TASK_RETENTION);
+	assert_eq!(snapshot.tasks[0].reference, a.task_ref(&queued[FINISHED_TASK_RETENTION]).unwrap());
 	a.dispose_subscription(&lease);
 	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION);
 	assert_eq!(a.close_receipt(&o).unwrap().unwrap().tasks.len(), FINISHED_TASK_RETENTION);

@@ -78,6 +78,9 @@ impl State {
 	}
 	/// The latest sequence every live watcher of the owner has processed: what it drained before its latest drain.
 	fn observed_through(&self, oi: usize) -> u64 {
+		if self.owners[oi].state == "closed" {
+			return u64::MAX;
+		}
 		self
 			.subscriptions
 			.values()
