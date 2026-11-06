@@ -90,6 +90,28 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		assert.equal(Buffer.from((await rebound.getBlob(manager.getSessionId(), hash))!).toString(), text);
 	});
 
+	test("a fork copies the blobs of the session it forked, even when the manager moves on while it writes (#4379)", async () => {
+		const source = new MemorySessionStore();
+		const { manager, hash, text } = await sessionWithOutput(source);
+		const forkedFrom = manager.getSessionId();
+		const target = new MemorySessionStore();
+		const written = Promise.withResolvers<void>();
+		const create = target.create.bind(target);
+		target.create = async (header, entries) => {
+			await written.promise;
+			return create(header, entries);
+		};
+
+		const fork = manager.forkTo("/project", target);
+		await manager.newSession();
+		written.resolve();
+		const forked = await fork;
+
+		assert.notEqual(manager.getSessionId(), forkedFrom);
+		assert.equal(forked.getHeader()?.parentSessionId, forkedFrom);
+		assert.equal(Buffer.from((await target.getBlob(forked.getSessionId(), hash))!).toString(), text);
+	});
+
 	test("a copy into a store that holds no blobs fails before anything is written (#4379)", async () => {
 		const { manager } = await sessionWithOutput(new MemorySessionStore());
 		const directory = makeTempDirectory("atomic-tool-output-jsonl-");

@@ -836,13 +836,13 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
-			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
-			const entries = this.getEntries();
-			const hashes = sessionBlobHashes(this.store, entries);
+			const source = { store: this.store, sessionId: this.sessionId, entries: this.getEntries() };
+			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
+			const hashes = sessionBlobHashes(source.store, source.entries);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);
-			manager.fileEntries.push(...entries);
+			manager.fileEntries.push(...source.entries);
 			await manager.initialize();
-			await copySessionBlobs(this.store, this.sessionId, store, manager.sessionId, hashes);
+			await copySessionBlobs(source.store, source.sessionId, store, manager.sessionId, hashes);
 			manager._buildIndex();
 			return manager;
 		});
