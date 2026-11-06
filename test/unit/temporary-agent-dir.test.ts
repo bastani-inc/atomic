@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { describe, test } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
-import { replaceEnvironmentVariable, temporaryAgentDir, useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+import {
+	installTemporaryAgentDirDefault,
+	replaceEnvironmentVariable,
+	temporaryAgentDir,
+	useTemporaryAgentDir,
+} from "../helpers/temporary-agent-dir.js";
 
 const AGENT_DIR_ENV = "ATOMIC_CODING_AGENT_DIR";
 
@@ -38,7 +43,43 @@ test("replaceEnvironmentVariable puts back a previous value, or the variable's a
 	assert.equal(Object.hasOwn(process.env, name), false);
 });
 
+describe("installTemporaryAgentDirDefault", () => {
+	test("points ATOMIC_CODING_AGENT_DIR at a new agent directory in the run directory, in place of inherited ones", () => {
+		const run = makeTempDirectory("atomic-agent-dir-default-");
+		try {
+			const env: NodeJS.ProcessEnv = {
+				ATOMIC_WORKFLOW_ARTIFACT_DIR: run,
+				ATOMIC_CODING_AGENT_DIR: "/home/u/.atomic/agent",
+				PI_CODING_AGENT_DIR: "/home/u/.pi/agent",
+				HOME: "/home/u",
+			};
+			const agentDir = installTemporaryAgentDirDefault(env);
+			assert.match(relative(run, agentDir), /^agent-home-[^/\\]{6}[/\\]\.atomic[/\\]agent$/u);
+			assert.deepEqual(env, {
+				ATOMIC_WORKFLOW_ARTIFACT_DIR: run,
+				ATOMIC_CODING_AGENT_DIR: agentDir,
+				HOME: "/home/u",
+			});
+			assert.notEqual(installTemporaryAgentDirDefault(env), agentDir);
+		} finally {
+			removeTempDirectory(run);
+		}
+	});
+
+	test("changes nothing when the run directory is unset", () => {
+		const env: NodeJS.ProcessEnv = { ATOMIC_CODING_AGENT_DIR: "/kept", PI_CODING_AGENT_DIR: "/kept-pi" };
+		assert.throws(() => installTemporaryAgentDirDefault(env), /^Error: ATOMIC_WORKFLOW_ARTIFACT_DIR is unset/u);
+		assert.deepEqual(env, { ATOMIC_CODING_AGENT_DIR: "/kept", PI_CODING_AGENT_DIR: "/kept-pi" });
+	});
+});
+
 const inherited = process.env[AGENT_DIR_ENV];
+
+test("the shared test setup gave this file an agent directory of its own before it loaded (#4473)", () => {
+	const run = process.env.ATOMIC_WORKFLOW_ARTIFACT_DIR ?? "";
+	assert.match(relative(run, inherited ?? ""), /^agent-home-[^/\\]{6}[/\\]\.atomic[/\\]agent$/u);
+	assert.equal(Object.hasOwn(process.env, "PI_CODING_AGENT_DIR"), false);
+});
 
 describe("a test file that uses useTemporaryAgentDir", () => {
 	const agentDir = useTemporaryAgentDir();

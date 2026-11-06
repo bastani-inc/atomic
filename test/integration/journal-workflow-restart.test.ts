@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
 	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	removeTempDirectory,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -24,7 +24,7 @@ for (const runtime of ["node", "bun"] as const) {
 		async () => {
 			const directory = makeTempDirectory("journal-workflow-restart-");
 			const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-			const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
+			const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 			const child = spawnProcess([...command, FIXTURE, "start", directory], { cwd: ROOT, env: environment });
 			const stdout = new Response(child.stdout).text();
 			const stderr = new Response(child.stderr).text();
@@ -56,7 +56,7 @@ for (const runtime of ["node", "bun"] as const) {
 				await child.exited;
 				await stdout;
 				await stderr;
-				removeTempDirectory(directory);
+				await removeTempRootReleasingBroker(directory);
 			}
 		},
 		PROCESS_RESTART_TIMEOUT_MS,

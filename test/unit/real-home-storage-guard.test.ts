@@ -1,25 +1,32 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { repositoryRoot } from "../../vitest.base.js";
 import type { DefaultSessionStoreOutcome } from "../fixtures/real-home-storage-guard/default-session-store.fixture.js";
 import {
-	failTestsThatOpenRealHomeStorage,
+	CHILD_VITEST_TIMEOUT_MS,
+	OPT_OUT_ENV,
+	runGuardFixture,
+} from "../fixtures/real-home-storage-guard/run-fixture.js";
+import {
+	failTestsThatTouchRealHome,
 	foldsCase,
 	installRealHomeStorageGuard,
+	isRealHomeAccessError,
 	protectedRootOf,
+	RealHomeAccessError,
 	RealHomeStorageOpenError,
 	realHomeAtomicRoots,
+	realHomeDirectories,
 	sqliteLocationPath,
 } from "../helpers/real-home-storage-guard.js";
-import { makeTempDirectory, readJson, readStreamText, removeTempDirectory, spawnProcess } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const scratch = makeTempDirectory("atomic-real-home-guard-");
 afterAll(() => removeTempDirectory(scratch));
@@ -55,12 +62,12 @@ describe("sqliteLocationPath", () => {
 	});
 });
 
-test("failTestsThatOpenRealHomeStorage checks the guard after each test and after the file's last one", () => {
+test("failTestsThatTouchRealHome checks the guard after each test and after the file's last one", () => {
 	const registered: string[] = [];
 	const checks: (() => void)[] = [];
 	let checked = 0;
-	failTestsThatOpenRealHomeStorage(
-		{ roots: [], assertNoViolations: () => checked++ },
+	failTestsThatTouchRealHome(
+		{ assertNoViolations: () => checked++ },
 		{
 			afterEach: (check) => {
 				registered.push("afterEach");
@@ -81,7 +88,11 @@ test("RealHomeStorageOpenError names the opened path, its code and the fix", () 
 	const fix =
 		"Give the test its own agent directory: point ATOMIC_CODING_AGENT_DIR at a temporary directory, or pass the store an explicit temporary path";
 	const error = new RealHomeStorageOpenError("/home/u/.atomic/workflows/journal.sqlite", "/home/u/.atomic");
+	assert.ok(error instanceof RealHomeAccessError);
 	assert.equal(error.name, "RealHomeStorageOpenError");
+	assert.equal(error.code, "real-home-storage-open");
+	assert.equal(error.path, "/home/u/.atomic/workflows/journal.sqlite");
+	assert.equal(error.protectedRoot, "/home/u/.atomic");
 	assert.equal(error.hint, fix);
 	assert.equal(
 		error.message,
@@ -89,10 +100,43 @@ test("RealHomeStorageOpenError names the opened path, its code and the fix", () 
 	);
 });
 
+describe("isRealHomeAccessError", () => {
+	test("recognizes a guard's refusal, and a copy rebuilt from its name and code", () => {
+		assert.equal(isRealHomeAccessError(new RealHomeStorageOpenError("/h/.atomic/j.sqlite", "/h/.atomic")), true);
+		const copy = Object.assign(new Error("copied"), {
+			name: "RealHomeStorageOpenError",
+			code: "real-home-storage-open",
+		});
+		assert.equal(isRealHomeAccessError(copy), true);
+		assert.equal(isRealHomeAccessError({ name: "RealHomeSettingsReadError", code: "real-home-settings-read" }), true);
+	});
+
+	test("rejects other errors, a name with another family code, and values that are not objects", () => {
+		assert.equal(isRealHomeAccessError(new Error("plain")), false);
+		assert.equal(isRealHomeAccessError({ name: "RealHomeStorageOpenError", code: "real-home-settings-read" }), false);
+		assert.equal(isRealHomeAccessError({ name: "RealHomeStorageOpenError" }), false);
+		assert.equal(isRealHomeAccessError({ code: "real-home-storage-open" }), false);
+		assert.equal(isRealHomeAccessError(Object.assign(new Error("x"), { code: "real-home-storage-open" })), false);
+		assert.equal(isRealHomeAccessError(null), false);
+		assert.equal(isRealHomeAccessError(undefined), false);
+		assert.equal(isRealHomeAccessError("RealHomeStorageOpenError"), false);
+	});
+});
+
 test("foldsCase is true exactly for the platforms whose default filesystems ignore case", () => {
 	assert.equal(foldsCase("win32"), true);
 	assert.equal(foldsCase("darwin"), true);
 	assert.equal(foldsCase("linux"), false);
+});
+
+describe("realHomeDirectories", () => {
+	test("lists the OS home, HOME, USERPROFILE and HOMEDRIVE with HOMEPATH, each once", () => {
+		assert.deepEqual(
+			realHomeDirectories({ HOME: "/posix-home", USERPROFILE: "/profile", HOMEDRIVE: "C:", HOMEPATH: "\\Users\\u" }),
+			[homedir(), "/posix-home", "/profile", "C:\\Users\\u"],
+		);
+		assert.deepEqual(realHomeDirectories({ HOME: homedir(), USERPROFILE: homedir() }), [homedir()]);
+	});
 });
 
 describe("realHomeAtomicRoots", () => {
@@ -112,6 +156,13 @@ describe("realHomeAtomicRoots", () => {
 		assert.deepEqual(realHomeAtomicRoots({ HOME: "", HOMEDRIVE: "C:" }), [join(homedir(), ".atomic")]);
 		assert.deepEqual(realHomeAtomicRoots({ HOMEPATH: "\\Users\\u", USERPROFILE: homedir() }), [
 			join(homedir(), ".atomic"),
+		]);
+	});
+
+	test("lists a root once when two homes differ only by a trailing separator", () => {
+		assert.deepEqual(realHomeAtomicRoots({ HOME: "/posix-home", USERPROFILE: "/posix-home/" }), [
+			join(homedir(), ".atomic"),
+			join("/posix-home", ".atomic"),
 		]);
 	});
 });
@@ -250,92 +301,54 @@ describe("installRealHomeStorageGuard", () => {
 	});
 });
 
-/**
- * Structural: the test starts two real vitest processes, each transforming the session storage module graph before
- * its fixture runs. Named and kept at the call site, per the per-test timeout policy in AGENTS.md.
- */
-const CHILD_VITEST_TIMEOUT_MS = 120_000;
-
-interface FixtureRun {
-	readonly exitCode: number;
-	readonly output: string;
-	readonly status: string;
-	readonly outcome: DefaultSessionStoreOutcome;
-}
-
-async function runDefaultSessionStoreFixture(name: string, env: Record<string, string>): Promise<FixtureRun> {
-	const report = join(scratch, `${name}-report.json`);
-	const outcomeFile = join(scratch, `${name}-outcome.json`);
-	const child = spawnProcess(
-		[
-			process.execPath,
-			join(repositoryRoot, "node_modules", "vitest", "vitest.mjs"),
-			"--run",
-			"--config",
-			join(repositoryRoot, "test", "fixtures", "real-home-storage-guard", "vitest.config.ts"),
-			"--reporter=json",
-			"--outputFile",
-			report,
-		],
-		{
-			cwd: repositoryRoot,
-			env: {
-				...process.env,
-				ATOMIC_CODING_AGENT_DIR: undefined,
-				PI_CODING_AGENT_DIR: undefined,
-				ATOMIC_CODING_AGENT_SESSION_DIR: undefined,
-				PI_CODING_AGENT_SESSION_DIR: undefined,
-				ATOMIC_SESSIONS_STORAGE: undefined,
-				ATOMIC_STORAGE: undefined,
-				ATOMIC_PROFILE: undefined,
-				REAL_HOME_GUARD_FIXTURE_OUTCOME: outcomeFile,
-				...env,
-			},
-			stdout: "pipe",
-			stderr: "pipe",
-		},
-	);
-	const [stdout, stderr, exitCode] = await Promise.all([
-		readStreamText(child.stdout),
-		readStreamText(child.stderr),
-		child.exited,
-	]);
-	const output = stdout + stderr;
-	const results = await readJson<{ testResults: { assertionResults: { status: string }[] }[] }>(report);
-	return {
-		exitCode,
-		output,
-		status: results.testResults[0]?.assertionResults[0]?.status ?? "missing",
-		outcome: await readJson<DefaultSessionStoreOutcome>(outcomeFile),
-	};
-}
+const SESSION_STORE_FIXTURE = "test/fixtures/real-home-storage-guard/default-session-store.fixture.ts";
 
 test(
-	"the shared test setup fails a test whose default store opens under the real home, even when the test catches it (#4445)",
+	"the shared test setup fails a test that opts out of its agent directory and opens the default store under the real home, even when the test catches it (#4445)",
 	async () => {
 		const home = join(scratch, "fixture-home");
 		const journal = join(home, ".atomic", "workflows", "journal.sqlite");
 		mkdirSync(home);
 
-		const guarded = await runDefaultSessionStoreFixture("guarded", { HOME: home, USERPROFILE: home });
-		assert.notEqual(guarded.exitCode, 0, guarded.output);
-		assert.equal(guarded.status, "failed", guarded.output);
-		assert.deepEqual(guarded.outcome, {
+		const optedOut = await runGuardFixture<DefaultSessionStoreOutcome>(SESSION_STORE_FIXTURE, scratch, "opted-out", {
+			HOME: home,
+			USERPROFILE: home,
+			[OPT_OUT_ENV]: "1",
+		});
+		assert.notEqual(optedOut.exitCode, 0, optedOut.output);
+		assert.equal(optedOut.status, "failed", optedOut.output);
+		assert.deepEqual(optedOut.outcome, {
 			opened: false,
 			failure: { name: "StorageUnavailableError", guardCode: "real-home-storage-open", guardPath: journal },
 		});
+		assert.match(optedOut.failure, /^RealHomeStorageOpenError: .*\(real-home-storage-open\)/u);
 		assert.equal(existsSync(journal), false);
+	},
+	CHILD_VITEST_TIMEOUT_MS,
+);
 
-		const agentHome = join(scratch, "fixture-agent-home");
-		const remedied = await runDefaultSessionStoreFixture("remedied", {
+test(
+	"the shared test setup opens a test's default store in an agent directory of its own, in place of an inherited real-home one (#4473)",
+	async () => {
+		const home = join(scratch, "default-home");
+		const journal = join(home, ".atomic", "workflows", "journal.sqlite");
+		const artifacts = join(scratch, "default-artifacts");
+		mkdirSync(home);
+		mkdirSync(artifacts);
+
+		const run = await runGuardFixture<DefaultSessionStoreOutcome>(SESSION_STORE_FIXTURE, scratch, "default", {
 			HOME: home,
 			USERPROFILE: home,
-			ATOMIC_CODING_AGENT_DIR: join(agentHome, ".atomic", "agent"),
+			ATOMIC_WORKFLOW_ARTIFACT_DIR: artifacts,
+			ATOMIC_CODING_AGENT_DIR: join(home, ".atomic", "agent"),
+			PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
 		});
-		assert.equal(remedied.exitCode, 0, remedied.output);
-		assert.equal(remedied.status, "passed", remedied.output);
-		assert.deepEqual(remedied.outcome, { opened: true });
-		assert.equal(existsSync(join(agentHome, ".atomic", "workflows", "journal.sqlite")), true);
+		assert.equal(run.exitCode, 0, run.output);
+		assert.equal(run.status, "passed", run.output);
+		const agentDir = run.outcome.agentDir ?? "";
+		assert.match(relative(artifacts, agentDir), /^agent-home-[^/\\]+[/\\]\.atomic[/\\]agent$/u);
+		assert.deepEqual(run.outcome, { opened: true, agentDir });
+		assert.equal(existsSync(join(dirname(agentDir), "workflows", "journal.sqlite")), true);
 		assert.equal(existsSync(journal), false);
 	},
 	CHILD_VITEST_TIMEOUT_MS,

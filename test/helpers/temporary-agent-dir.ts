@@ -4,6 +4,8 @@ import { afterAll } from "vitest";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 
 const AGENT_DIR_ENV = "ATOMIC_CODING_AGENT_DIR";
+/** The compatibility alias Atomic reads when `ATOMIC_CODING_AGENT_DIR` is unset. */
+const LEGACY_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 
 /**
  * A new agent directory, `.atomic/agent` under a fresh `agent-home-*` directory inside the run's workflow-artifact
@@ -30,6 +32,20 @@ export function replaceEnvironmentVariable(name: string, value: string): () => v
 		if (previous === undefined) delete process.env[name];
 		else process.env[name] = previous;
 	};
+}
+
+/**
+ * The shared test setup's default (#4473): before a test file's modules load, point `ATOMIC_CODING_AGENT_DIR` at a new
+ * agent directory of the file's own and drop an inherited `PI_CODING_AGENT_DIR`, so neither the test nor a child it
+ * starts with the inherited environment reads the user's agent directory or settings. A value inherited from the shell
+ * is replaced, not kept: only a test opts out, by setting or unsetting the variable itself (`useTemporaryAgentDir()`,
+ * `vi.stubEnv`, or a child's own environment). Returns the agent directory.
+ */
+export function installTemporaryAgentDirDefault(env: NodeJS.ProcessEnv = process.env): string {
+	const agentDir = temporaryAgentDir(env[ENV_WORKFLOW_ARTIFACT_DIR]);
+	env[AGENT_DIR_ENV] = agentDir;
+	delete env[LEGACY_AGENT_DIR_ENV];
+	return agentDir;
 }
 
 /**

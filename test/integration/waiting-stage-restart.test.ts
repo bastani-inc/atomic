@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
 	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	removeTempDirectory,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -60,7 +60,7 @@ async function killThenResume(
 	// Real run ids are UUIDs, which Intercom requires to route a run's stages; each test runs its own.
 	const runId = randomUUID();
 	const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-	const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
+	const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 	const child = spawnProcess([...command, FIXTURE, mode, directory, String(STAGES), runId, scenario], {
 		cwd: ROOT,
 		env: environment,
@@ -93,7 +93,7 @@ async function killThenResume(
 		await child.exited;
 		await stdout;
 		await stderr;
-		removeTempDirectory(directory);
+		await removeTempRootReleasingBroker(directory);
 	}
 }
 

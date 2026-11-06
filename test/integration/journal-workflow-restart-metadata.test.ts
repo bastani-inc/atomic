@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
 	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	removeTempDirectory,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -25,7 +25,7 @@ for (const runtime of ["node", "bun"] as const) {
 			const directory = makeTempDirectory("journal-cached-stage-");
 			const fixture = join(ROOT, "test/fixtures/journal-cached-stage-restart.ts");
 			const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-			const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
+			const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 			const seeded = spawnSyncCollect([...command, fixture, "seed", directory], {
 				cwd: ROOT,
 				env: environment,
@@ -56,7 +56,7 @@ for (const runtime of ["node", "bun"] as const) {
 				await child.exited;
 				await stdout;
 				await stderr;
-				removeTempDirectory(directory);
+				await removeTempRootReleasingBroker(directory);
 			}
 		},
 		PROCESS_RESTART_TIMEOUT_MS,
@@ -66,10 +66,12 @@ for (const runtime of ["node", "bun"] as const) {
 		async () => {
 			const directory = makeTempDirectory("journal-workflow-exit-");
 			const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
+			const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 			try {
 				for (const mode of ["pause-exit", "resume-user"]) {
 					const result = spawnSyncCollect([...command, FIXTURE, mode, directory], {
 						cwd: ROOT,
+						env: environment,
 						timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,
 					});
 					assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
@@ -77,7 +79,7 @@ for (const runtime of ["node", "bun"] as const) {
 				assert.equal(await readText(join(directory, "effects.txt")), "effect\n");
 				assert.equal(await readText(join(directory, "stages.txt")), "stage\n");
 			} finally {
-				removeTempDirectory(directory);
+				await removeTempRootReleasingBroker(directory);
 			}
 		},
 		PROCESS_RESTART_TIMEOUT_MS,
