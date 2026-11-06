@@ -58,6 +58,7 @@ import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
+import { AttemptPlace, attemptWaitsReleased } from "./waiting-workers.js";
 import { WorkerControl, workerControlHandlers } from "./worker-control.js";
 import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
 import { type PendingWorkerRequest, receiveWorkerReply, type WorkerReplyState } from "./worker-replies.js";
@@ -505,6 +506,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// Stages of this attempt raise human input here; the root answers through the airlock (#3996).
 			const stageUiBroker = new WorkerStageUiBroker(store);
 			prompts = { store, broker: stageUiBroker, fail: failablePrompts(store) };
+			// The attempt gives its place among the pool's count back while it waits released, and takes it back before it
+			// starts anything again (#4374).
+			const place = new AttemptPlace(
+				async (op) => (await request({ kind: "place", op })) === true,
+				attempt,
+				(error) => controller.abort(error),
+			);
 			let publication: Promise<void> | undefined;
 			let activityDirty = false;
 			const publish = () => {
@@ -513,10 +521,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				const current = (async () => {
 					while (activityDirty) {
 						activityDirty = false;
-						await request({
-							kind: "activity",
-							runs: withQueuedCounts(structuredClone(store.runs()), stageControls),
-						});
+						const runs = withQueuedCounts(structuredClone(store.runs()), stageControls);
+						place.observe(attemptWaitsReleased(runs));
+						await request({ kind: "activity", runs });
 					}
 				})();
 				publication = current;
@@ -594,6 +601,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const resourceAdmission: ResourceAdmission = {
 				async acquire(kind, signal, requestOptions) {
 					await awaitAdmission(signal);
+					await place.take(signal);
 					if (!admission) return async () => {};
 					try {
 						return await admission.acquire(kind, signal, requestOptions);

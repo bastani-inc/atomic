@@ -142,7 +142,7 @@ test("requests that take or end an attempt are barriers, and commits and heartbe
 	assert.deepEqual(lanes("acknowledgements"), ["controlled"]);
 	assert.deepEqual(lanes("free"), ["budget", "route"]);
 	assert.deepEqual(lanes("publications"), ["activity"]);
-	assert.deepEqual(lanes("detached"), ["delivery", "delivery-ready"]);
+	assert.deepEqual(lanes("detached"), ["delivery", "delivery-ready", "place"]);
 });
 
 /** An attempt of work `id`, with the lease it holds until `expiresAt`. */

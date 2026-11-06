@@ -47,7 +47,8 @@ export type AnsweredWorkerRequest = Exclude<WorkerRequest["kind"], OneWayWorkerM
  * transaction per worker at a time, as before, while the requests of an agent step no longer wait behind it. Admission
  * checks, activity and routes are free. A control acknowledgement also waits for the activity the worker sent before
  * it, so a control change is confirmed only once the root shows that activity. A delivery waits on the worker's own
- * acknowledgements, so it stays detached as it was outside the worker's serial chain before.
+ * acknowledgements, so it stays detached as it was outside the worker's serial chain before. A request for a place may
+ * wait until another attempt ends, so it is detached too: the end of its own attempt never waits behind it.
  */
 export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, WorkerRequestLane>> = {
 	ready: "barrier",
@@ -65,6 +66,7 @@ export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, Worker
 	route: "free",
 	delivery: "detached",
 	"delivery-ready": "detached",
+	place: "detached",
 };
 
 /** Schedules one worker's requests by {@link WorkerRequestLane}; a request that fails releases its successors too. */

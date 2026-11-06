@@ -6,7 +6,8 @@
 // each answer one line `answer <run id> <stage id> <prompt id>`; its start options, with its pid, the first entry of its
 // PATH and its SHARED_POOL_GIT_MARKER, are the line `start <json>`. With SHARED_POOL_STUB_CRASH=1 it exits with status 1
 // right after recording where its stage runs, as a worker that crashed mid-child. On the host SHARED_POOL_STUB_HANG_HOST
-// names, it never reports ready, as a worker stuck starting up.
+// names, it never reports ready, as a worker stuck starting up. With SHARED_POOL_STUB_WAITS=1 its stage waits released
+// for a tool result and the attempt gives its place back, logged as `place-released <host> <work id> <released|refused>`.
 import { appendFileSync, existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -116,9 +117,30 @@ for (;;) {
 				rootRunId: start.root,
 				parentRunId: start.root,
 				parentStageId: work.boundaryId,
+				...(process.env.SHARED_POOL_STUB_WAITS === "1"
+					? {
+							stages: [
+								{
+									id: "stage",
+									name: "stage",
+									status: "waiting",
+									wait: { kind: "tool", since: Date.now() },
+									parentIds: [],
+									toolEvents: [],
+								},
+							],
+						}
+					: {}),
 			},
 		],
 	});
+	if (process.env.SHARED_POOL_STUB_WAITS === "1") {
+		const released = await request({ kind: "place", op: "release" }).then(
+			() => "released",
+			() => "refused",
+		);
+		appendFileSync(log, `place-released ${host} ${work.id} ${released}\n`);
+	}
 	while (release !== undefined && !existsSync(release)) {
 		await offerControl(await request({ kind: "heartbeat", reports: [] }));
 		await delay(25);

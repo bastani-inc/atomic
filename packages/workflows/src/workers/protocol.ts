@@ -92,6 +92,12 @@ export type WorkerRequest = { readonly id: number } & (
 	 * its parent's error.
 	 */
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
+	/**
+	 * The attempt's place among the pool's `count`: `release` gives it back while every live stage waits released;
+	 * `reacquire` asks for one again before the attempt starts anything, and is answered `true` once granted, or `false`
+	 * when the attempt ended first.
+	 */
+	| { readonly kind: "place"; readonly op: "release" | "reacquire" }
 	| { readonly kind: "route"; readonly runId: string }
 	/** A stage of the attempt started its session: the pool records where it runs (shared pools only, #4310). */
 	| { readonly kind: "stage-workspace"; readonly runId: string; readonly stageId: string }
