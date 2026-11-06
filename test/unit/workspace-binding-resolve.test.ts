@@ -14,6 +14,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { open } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -44,6 +45,7 @@ import { redactCredentials } from "../../packages/coding-agent/src/core/workspac
 import {
 	setWorktreeAdditionWait,
 	sharedStorePath,
+	verifyWorktree,
 	WORKTREE_ADDING_REASON,
 	worktreeAdderRecord,
 } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
@@ -1863,6 +1865,385 @@ describe("interrupted worktree additions (#3109)", () => {
 			assert.equal(existsSync(path), true);
 		},
 	);
+});
+
+/** Write the admin `HEAD` git has written so far: none yet, or the placeholder git 2.43 and older write first. */
+function writeAdminHead(adminDir: string, head: string | undefined): void {
+	if (head === undefined) rmSync(join(adminDir, "HEAD"));
+	else writeFileSync(join(adminDir, "HEAD"), head);
+}
+
+const PLACEHOLDER_HEAD = `${"0".repeat(40)}\n`;
+
+/**
+ * Turn the lock of the worktree at `adminDir` into a FIFO, so a bind that reads it blocks there. `reading` settles once
+ * the bind has opened it; what the test changes before `release` happens between that read and the bind's next one.
+ */
+function pauseLockRead(adminDir: string): { readonly reading: Promise<void>; readonly release: () => Promise<void> } {
+	const lock = join(adminDir, "locked");
+	rmSync(lock, { force: true });
+	execFileSync("mkfifo", [lock]);
+	const writer = open(lock, "w");
+	return { reading: writer.then(() => undefined), release: async () => (await writer).close() };
+}
+
+describe("bindings racing an addition or its repair (#4429)", () => {
+	for (const [kind, head] of [
+		["no HEAD", undefined],
+		["git's placeholder HEAD", PLACEHOLDER_HEAD],
+	] as const)
+		test(`an addition whose git has not recorded its branch yet (${kind}) is waited for, not refused as another branch (#4429)`, async () => {
+			const repo = createRepository(dirs.root, "unrecorded-branch");
+			const path = autoWorktree(repo, "feat/unrecorded");
+			const adminDir = resolvePath(interruptedWorktree(repo, path, "feat/unrecorded", WORKTREE_ADDING_REASON));
+			writeAdminHead(adminDir, head);
+			const adder = await liveProcess();
+			try {
+				recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
+				const { result: error, commands } = await countGitCommands(() =>
+					rejection(resolveWorkspace(workspace({ repo, branch: "feat/unrecorded" }))),
+				);
+				assert.ok(isWorkspaceBindingError(error));
+				assert.equal(error.code, "incomplete-worktree");
+				assert.equal(error.reason, "addition-in-progress");
+				assert.equal(error.fields.adderPid, adder.pid);
+				assert.equal(resolvePath(String(error.fields.adminDir)), adminDir);
+				assert.equal(countOf(commands, "worktree", "remove"), 0, "a running addition is never removed");
+				assert.equal(existsSync(join(adminDir, "locked")), true);
+			} finally {
+				await stopProcess(adder);
+			}
+		});
+
+	for (const [kind, head, gitRemovals] of [
+		["no HEAD", undefined, 0],
+		["git's placeholder HEAD", PLACEHOLDER_HEAD, 1],
+	] as const)
+		test(`an addition killed before git recorded its branch (${kind}) is removed and added again (#4429)`, async () => {
+			const repo = createRepository(dirs.root, "killed-before-branch");
+			commitFile(repo, "app.txt", "app\n");
+			const path = autoWorktree(repo, "feat/early");
+			const adminDir = interruptedWorktree(repo, path, "feat/early", WORKTREE_ADDING_REASON);
+			writeAdminHead(adminDir, head);
+			recordExitedAdder(repo, path);
+			const { result, commands } = await countGitCommands(() =>
+				resolveWorkspace(workspace({ repo, branch: "feat/early" })),
+			);
+			assert.deepEqual(
+				[
+					countOf(commands, "worktree", "remove", "--force", "--force"),
+					countOf(commands, "worktree", "prune"),
+					countOf(commands, "worktree", "add"),
+					countOf(commands, "worktree", "unlock"),
+				],
+				[gitRemovals, 1, 1, 1],
+			);
+			assert.equal(result.worktree, realpathSync(path));
+			assert.equal(readFileSync(join(path, "app.txt"), "utf-8").replaceAll("\r\n", "\n"), "app\n");
+			assertCompleteWorktree(path, result.tree);
+			assert.deepEqual(
+				readdirSync(join(realpathSync(join(repo, ".git")), "worktrees")),
+				[basename(adminDir)],
+				"the interrupted addition's admin directory is gone, not left beside the new one",
+			);
+		});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"an interrupted addition without HEAD that cannot be removed fails with filesystem-failed naming the removal (#4429)",
+		async () => {
+			const repo = createRepository(dirs.root, "stuck-early");
+			const path = autoWorktree(repo, "feat/stuck-early");
+			writeAdminHead(interruptedWorktree(repo, path, "feat/stuck-early", WORKTREE_ADDING_REASON), undefined);
+			recordExitedAdder(repo, path);
+			chmodSync(dirname(path), 0o555);
+			try {
+				const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/stuck-early" })));
+				assert.ok(isWorkspaceBindingError(error));
+				assert.equal(error.code, "filesystem-failed");
+				assert.equal(error.fields.operation, "remove interrupted worktree");
+				assert.equal(error.fields.path, path);
+			} finally {
+				chmodSync(dirname(path), 0o755);
+			}
+		},
+	);
+
+	for (const [kind, leave] of [
+		["a path it has not created yet", (_repo: string, _path: string) => ""],
+		[
+			"an empty directory",
+			(_repo: string, path: string) => {
+				mkdirSync(path, { recursive: true });
+				return "";
+			},
+		],
+		[
+			"a complete worktree whose lock it already removed",
+			(repo: string, path: string) => {
+				git(repo, "worktree", "add", "-q", "-b", "feat/busy-path", path);
+				return "";
+			},
+		],
+		[
+			"a worktree whose admin directory it already removed",
+			(repo: string, path: string) => {
+				const adminDir = join(realpathSync(join(repo, ".git")), "worktrees", "removed");
+				mkdirSync(path, { recursive: true });
+				writeFileSync(join(path, ".git"), `gitdir: ${adminDir}\n`);
+				return adminDir;
+			},
+		],
+	] as const)
+		test(`a recorded git still adding or removing the worktree, at ${kind}, is waited for: nothing is used, removed or added (#4429)`, async () => {
+			const repo = createRepository(dirs.root, "busy-path");
+			const path = autoWorktree(repo, "feat/busy-path");
+			const adminDir = leave(repo, path);
+			const before = existsSync(path) ? readdirSync(path).sort() : undefined;
+			const adder = await liveProcess();
+			try {
+				recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
+				const { result: error, commands } = await countGitCommands(() =>
+					rejection(resolveWorkspace(workspace({ repo, branch: "feat/busy-path" }))),
+				);
+				assert.ok(isWorkspaceBindingError(error), String(error));
+				assert.equal(error.reason, "addition-in-progress");
+				assert.equal(error.retryable, true);
+				assert.deepEqual(
+					{ ...error.fields, worktree: resolvePath(String(error.fields.worktree)) },
+					{
+						repo,
+						repository: realpathSync(repo),
+						branch: "feat/busy-path",
+						worktree: path,
+						adminDir,
+						marker: "",
+						adderPid: adder.pid!,
+						adderHost: hostname(),
+						adderStartTime: null,
+					},
+				);
+				assert.deepEqual([countOf(commands, "worktree", "add"), countOf(commands, "worktree", "remove")], [0, 0]);
+				assert.deepEqual(existsSync(path) ? readdirSync(path).sort() : undefined, before, "the path is untouched");
+			} finally {
+				await stopProcess(adder);
+			}
+		});
+
+	test("a worktree is used once the recorded git that was still running at it has exited (#4429)", async () => {
+		const repo = createRepository(dirs.root, "exited-adder");
+		const path = autoWorktree(repo, "feat/exited");
+		git(repo, "worktree", "add", "-q", "-b", "feat/exited", path);
+		writeFileSync(join(path, "notes.txt"), "kept\n");
+		const adder = await liveProcess();
+		try {
+			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
+			const busy = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/exited" })));
+			assert.ok(isWorkspaceBindingError(busy));
+			assert.equal(busy.reason, "addition-in-progress");
+		} finally {
+			await stopProcess(adder);
+		}
+		const { result, commands } = await countGitCommands(() =>
+			resolveWorkspace(workspace({ repo, branch: "feat/exited" })),
+		);
+		assert.equal(result.worktree, realpathSync(path));
+		assert.equal(countOf(commands, "worktree", "add"), 0);
+		assert.equal(readFileSync(join(path, "notes.txt"), "utf-8"), "kept\n");
+	});
+
+	test("an empty directory at Atomic's path, left by an addition stopped before its link, is added over (#4429)", async () => {
+		const repo = createRepository(dirs.root, "linkless");
+		const path = autoWorktree(repo, "feat/linkless");
+		mkdirSync(path, { recursive: true });
+		recordExitedAdder(repo, path);
+		const { result, commands } = await countGitCommands(() =>
+			resolveWorkspace(workspace({ repo, branch: "feat/linkless" })),
+		);
+		assert.equal(countOf(commands, "worktree", "add"), 1);
+		assert.equal(result.worktree, realpathSync(path));
+		assertCompleteWorktree(path, result.tree);
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"an empty-looking directory at Atomic's path that cannot be listed fails with filesystem-failed (#4429)",
+		async () => {
+			const repo = createRepository(dirs.root, "unlistable");
+			const path = autoWorktree(repo, "feat/unlistable");
+			mkdirSync(path, { recursive: true });
+			chmodSync(path, 0o311);
+			try {
+				const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/unlistable" })));
+				assert.ok(isWorkspaceBindingError(error));
+				assert.equal(error.code, "filesystem-failed");
+				assert.deepEqual(error.fields, { operation: "read", path, errno: "EACCES" });
+			} finally {
+				chmodSync(path, 0o755);
+			}
+		},
+	);
+
+	// POSIX: the pause is a FIFO.
+	test.skipIf(process.platform === "win32")(
+		"a worktree removed while its lock is read is added again, not used as complete (#4429)",
+		async () => {
+			const repo = createRepository(dirs.root, "removed-meanwhile");
+			const path = join(dirs.root, "removed-meanwhile-worktree");
+			git(repo, "worktree", "add", "-q", "-b", "feat/gone", path);
+			const adminDir = git(path, "rev-parse", "--absolute-git-dir");
+			const pause = pauseLockRead(adminDir);
+			const { result, commands } = await countGitCommands(async () => {
+				const binding = resolveWorkspace(workspace({ repo, branch: "feat/gone", worktree: path }));
+				await pause.reading;
+				rmSync(path, { recursive: true });
+				rmSync(adminDir, { recursive: true });
+				await pause.release();
+				return binding;
+			});
+			assert.equal(result.worktree, realpathSync(path));
+			assert.equal(countOf(commands, "worktree", "add"), 1);
+			assertCompleteWorktree(path, result.tree);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a worktree removed and added again while its lock is read waits for that addition (#4429)",
+		async () => {
+			const repo = createRepository(dirs.root, "added-again");
+			const path = join(dirs.root, "added-again-worktree");
+			git(repo, "worktree", "add", "-q", "-b", "feat/again", path);
+			const adminDir = git(path, "rev-parse", "--absolute-git-dir");
+			const pause = pauseLockRead(adminDir);
+			const adder = await liveProcess();
+			try {
+				const { result: error, commands } = await countGitCommands(async () => {
+					const binding = rejection(resolveWorkspace(workspace({ repo, branch: "feat/again", worktree: path })));
+					await pause.reading;
+					rmSync(path, { recursive: true });
+					rmSync(adminDir, { recursive: true });
+					interruptedWorktree(repo, path, "feat/again", WORKTREE_ADDING_REASON, { newBranch: false });
+					recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
+					await pause.release();
+					return binding;
+				});
+				assert.ok(isWorkspaceBindingError(error), String(error));
+				assert.equal(error.reason, "addition-in-progress");
+				assert.equal(error.fields.adderPid, adder.pid);
+				assert.equal(countOf(commands, "worktree", "remove"), 0);
+			} finally {
+				await stopProcess(adder);
+			}
+		},
+	);
+
+	// POSIX: the stand-in git whose first listing fails is a shell script.
+	test.skipIf(process.platform === "win32")(
+		"a worktree listing git fails while a worktree is removed is taken again under the repository lock (#4429)",
+		async () => {
+			const repo = createRepository(dirs.root, "listing");
+			const events: string[] = [];
+			let release!: () => void;
+			const released = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let locked!: () => void;
+			const holding = new Promise<void>((resolve) => {
+				locked = resolve;
+			});
+			const holder = withRepositoryLock(realpathSync(join(repo, ".git")), async () => {
+				locked();
+				await released;
+				events.push("lock released");
+			});
+			await holding;
+			const stop = observeWorkspaceGitCommands((command) => {
+				if (command.args[0] === "worktree" && command.args[1] === "list") events.push("worktree list");
+			});
+			try {
+				const binding = await withInjectedGit(
+					dirs.root,
+					{ FAKE_GIT_MODE: "list-fails-once", FAKE_GIT_MARKER: join(dirs.root, "listed-once") },
+					async () => {
+						const pending = resolveWorkspace(workspace({ repo, branch: "feat/listed" }));
+						while (!events.includes("worktree list")) await new Promise((resolve) => setTimeout(resolve, 10));
+						await new Promise((resolve) => setTimeout(resolve, 200));
+						release();
+						await holder;
+						return pending;
+					},
+				);
+				assert.equal(binding.worktree, realpathSync(autoWorktree(repo, "feat/listed")));
+				assert.deepEqual(events, ["worktree list", "lock released", "worktree list"]);
+			} finally {
+				stop();
+				release();
+			}
+		},
+	);
+
+	test("a worktree listing that fails for a reason other than git's exit is not taken again (#4429)", async () => {
+		const repo = createRepository(dirs.root, "listing-unavailable");
+		const unavailable = new GitUnavailableError({
+			code: "not-installed",
+			platform: process.platform,
+			arch: process.arch,
+			installDir: "/opt/git",
+			systemGit: { path: "git", problem: "probe-failed" },
+		});
+		let failNextCommand = false;
+		const stop = observeWorkspaceGitCommands((command) => {
+			if (command.args[0] === "rev-parse" && command.args.includes("--show-toplevel")) failNextCommand = true;
+		});
+		const restore = setWorkspaceGitExecutableResolver(async () => {
+			if (!failNextCommand) return { path: "git", env: {} };
+			failNextCommand = false;
+			throw unavailable;
+		});
+		try {
+			const { result: error, commands } = await countGitCommands(() =>
+				rejection(resolveWorkspace(workspace({ repo, branch: "feat/unlisted" }))),
+			);
+			assert.ok(isWorkspaceBindingError(error), String(error));
+			assert.equal(error.code, "git-unavailable");
+			assert.equal(error.cause, unavailable);
+			assert.equal(countOf(commands, "worktree", "list"), 0);
+		} finally {
+			restore();
+			stop();
+		}
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"an adder record that cannot be read fails with filesystem-failed, not as if no git were adding (#4429)",
+		async () => {
+			const repo = createRepository(dirs.root, "unreadable-record");
+			const path = autoWorktree(repo, "feat/unreadable-record");
+			recordAdder(repo, path, { host: hostname(), pid: process.pid, startTime: null });
+			const record = worktreeAdderRecord(realpathSync(join(repo, ".git")), path);
+			chmodSync(record, 0o000);
+			try {
+				const { result: error, commands } = await countGitCommands(() =>
+					rejection(resolveWorkspace(workspace({ repo, branch: "feat/unreadable-record" }))),
+				);
+				assert.ok(isWorkspaceBindingError(error), String(error));
+				assert.equal(error.code, "filesystem-failed");
+				assert.deepEqual(error.fields, { operation: "read", path: record, errno: "EACCES" });
+				assert.equal(countOf(commands, "worktree", "add"), 0);
+			} finally {
+				chmodSync(record, 0o644);
+			}
+		},
+	);
+
+	test("a worktree that disappears before it is resolved fails with filesystem-failed (#4429)", async () => {
+		const repo = createRepository(dirs.root, "vanished");
+		const missing = join(dirs.root, "vanished-worktree");
+		const error = await rejection(
+			verifyWorktree({ commonDir: realpathSync(join(repo, ".git")) }, repo, missing, "main"),
+		);
+		assert.ok(isWorkspaceBindingError(error), String(error));
+		assert.equal(error.code, "filesystem-failed");
+		assert.deepEqual(error.fields, { operation: "resolve", path: missing, errno: "ENOENT" });
+	});
 });
 
 describe("workspace git phases (#3109)", () => {

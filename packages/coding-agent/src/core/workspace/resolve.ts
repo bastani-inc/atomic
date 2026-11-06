@@ -1,11 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
-import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
 import type { WorkspaceBinding } from "../worktree-snapshot/types.ts";
-import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
+import {
+	attachCleanupCause,
+	isWorkspaceBindingError,
+	WorkspaceBindingError,
+	type WorkspaceGitPhase,
+} from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
 import { processAlive, withRepositoryLock } from "./lease.ts";
 import { waitFor } from "./process.ts";
@@ -141,8 +146,9 @@ function probe(cwd: string, args: readonly string[], signal?: AbortSignal) {
 	return runWorkspaceGit({ cwd, args, phase: "probe", allowFailure: true, signal });
 }
 
+/** The canonical form of `path`, or undefined when it cannot be resolved: it does not exist, or was removed meanwhile. */
 async function canonical(path: string): Promise<string | undefined> {
-	return existsSync(path) ? realpath(path) : undefined;
+	return realpath(path).catch(() => undefined);
 }
 
 async function openLocal(
@@ -260,15 +266,20 @@ async function defaultBranch(repository: OpenRepository, repo: string, base: str
 	return branch;
 }
 
-/** Verify that `worktree` is a root worktree of `repository` checked out on `branch`. */
+/** The canonical form of `path`; one that cannot be resolved fails with a typed `filesystem-failed`. */
+function canonicalPath(path: string): Promise<string> {
+	return filesystem("resolve", path, () => realpath(path));
+}
+
+/** Verify that `worktree` is a root worktree of `repository` checked out on `branch`, and return its canonical path. */
 export async function verifyWorktree(
 	repository: { readonly commonDir: string },
 	repo: string,
 	worktree: string,
 	branch: string,
 	signal?: AbortSignal,
-): Promise<void> {
-	const root = await realpath(worktree);
+): Promise<string> {
+	const root = await canonicalPath(worktree);
 	const located = await probe(root, ["rev-parse", "--show-toplevel", "--git-common-dir"], signal);
 	if (located.status !== 0)
 		throw new WorkspaceBindingError({
@@ -277,14 +288,14 @@ export async function verifyWorktree(
 			fields: { repo, worktree, expected: repository.commonDir, actual: "not a git worktree" },
 		});
 	const [toplevel = "", commonDir = ""] = located.stdout.trim().split("\n");
-	const top = await realpath(toplevel);
+	const top = await canonicalPath(toplevel);
 	if (top !== root)
 		throw new WorkspaceBindingError({
 			code: "wrong-repository",
 			reason: "not-a-worktree-root",
 			fields: { repo, worktree, expected: root, actual: top },
 		});
-	const actual = await realpath(resolve(root, commonDir));
+	const actual = await canonicalPath(resolve(root, commonDir));
 	if (actual !== repository.commonDir)
 		throw new WorkspaceBindingError({
 			code: "wrong-repository",
@@ -298,6 +309,7 @@ export async function verifyWorktree(
 			reason: current === undefined ? "detached-head" : "different-branch",
 			fields: { repo, worktree, expected: branch, actual: current ?? "detached HEAD" },
 		});
+	return root;
 }
 
 interface ListedWorktree {
@@ -305,8 +317,16 @@ interface ListedWorktree {
 	readonly branch?: string;
 }
 
+/**
+ * Every worktree of the repository. git fails to list them while another process removes the last one, so a listing
+ * that fails is taken once more under the repository lock, where no binding removes a worktree.
+ */
 async function listWorktrees(repository: OpenRepository): Promise<ListedWorktree[]> {
-	const output = await git(repository.root, ["worktree", "list", "--porcelain"], "validate");
+	const list = () => git(repository.root, ["worktree", "list", "--porcelain"], "validate");
+	const output = await list().catch((error: unknown) => {
+		if (!isWorkspaceBindingError(error) || error.code !== "git-failed") throw error;
+		return withRepositoryLock(repository.commonDir, list);
+	});
 	const worktrees: ListedWorktree[] = [];
 	for (const block of output.split(/\n\n+/)) {
 		const lines = block.split("\n");
@@ -368,7 +388,7 @@ type WorktreeState =
 	| { readonly kind: "missing" }
 	/** Settled: a worktree, or a directory `verifyWorktree` reports on. */
 	| { readonly kind: "complete" }
-	/** The directory exists but has no `.git` yet: an addition may be starting. */
+	/** The directory has no worktree link yet: an addition may be starting. */
 	| { readonly kind: "unsettled" }
 	| { readonly kind: "interrupted"; readonly adminDir: string; readonly marker: string }
 	| { readonly kind: "orphaned"; readonly adminDir: string };
@@ -393,13 +413,13 @@ async function readState(file: string): Promise<string | undefined | "directory"
 	}
 }
 
-/** What is at `path`, judged by its `.git` link into `repository` and that worktree's lock. */
-async function worktreeState(repository: OpenRepository, path: string): Promise<WorktreeState> {
+async function readWorktreeState(repository: OpenRepository, path: string): Promise<WorktreeState> {
 	if (!existsSync(path)) return { kind: "missing" };
 	const link = await readState(join(path, ".git"));
 	if (link === undefined) return { kind: "unsettled" };
+	if (link === "directory") return { kind: "complete" };
 	const gitdir = /^gitdir: (.+)$/m.exec(link)?.[1];
-	if (gitdir === undefined) return { kind: "complete" };
+	if (gitdir === undefined) return { kind: "unsettled" };
 	const adminDir = resolve(path, gitdir.trim());
 	const parent = (await canonical(dirname(adminDir))) ?? dirname(adminDir);
 	if (parent !== join(repository.commonDir, "worktrees")) return { kind: "complete" };
@@ -408,6 +428,16 @@ async function worktreeState(repository: OpenRepository, path: string): Promise<
 	return marker === WORKTREE_ADDING_REASON || marker === GIT_ADDING_MARKER
 		? { kind: "interrupted", adminDir, marker }
 		: { kind: "complete" };
+}
+
+/**
+ * What is at `path`, judged by its `.git` link into `repository` and that worktree's lock. A worktree read complete is
+ * read again before it counts: git removes a worktree before its admin directory, so the lock of one being removed
+ * can be read gone while its link is still read, and one added again since is locked before its link exists.
+ */
+async function worktreeState(repository: OpenRepository, path: string): Promise<WorktreeState> {
+	const state = await readWorktreeState(repository, path);
+	return state.kind === "complete" ? readWorktreeState(repository, path) : state;
 }
 
 /** The git process adding a worktree, recorded so a later bind can tell whether that addition is still running. */
@@ -481,17 +511,21 @@ function parseAdder(text: string): WorktreeAdder | undefined {
 
 /**
  * The addition still running at `path`: its recorded adder while that process lives (one on another host cannot be
- * checked, so it counts as running), `null` when nothing names the adder but the checkout's index lock is still there,
- * or undefined when no addition can be running, including when its record is unreadable.
+ * checked, so it counts as running), `null` when nothing names the adder but the checkout's index lock in `adminDir` is
+ * still there, or undefined when no addition can be running, including when its record is unreadable. Records live in
+ * a directory of their own, so where something else is in its way no record can be either.
  */
 async function runningAddition(
 	repository: OpenRepository,
 	path: string,
-	adminDir: string,
+	adminDir?: string,
 ): Promise<WorktreeAdder | null | undefined> {
-	const recorded = await readState(worktreeAdderRecord(repository.commonDir, path));
+	const recorded = await readState(worktreeAdderRecord(repository.commonDir, path)).catch((error: unknown) => {
+		if (isWorkspaceBindingError(error) && error.fields.errno === "ENOTDIR") return undefined;
+		throw error;
+	});
 	if (recorded === undefined || recorded === "directory")
-		return existsSync(join(adminDir, "index.lock")) ? null : undefined;
+		return adminDir !== undefined && existsSync(join(adminDir, "index.lock")) ? null : undefined;
 	const adder = parseAdder(recorded);
 	if (adder === undefined) return undefined;
 	if (adder.host !== hostname()) return adder;
@@ -516,6 +550,23 @@ function isAtomicWorktreePath(path: string): boolean {
 	return inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
 }
 
+function incompleteFields(
+	repository: OpenRepository,
+	repo: string,
+	path: string,
+	branch: string,
+	state: WorktreeState,
+): Readonly<Record<string, string>> {
+	return {
+		repo,
+		repository: repository.root,
+		branch,
+		worktree: path,
+		adminDir: "adminDir" in state ? state.adminDir : "",
+		marker: state.kind === "interrupted" ? state.marker : "",
+	};
+}
+
 /**
  * Remove what an interrupted addition left at `path`, so it can be added again. Atomic's own interrupted additions are
  * always removed; git's, and orphaned directories, only under Atomic's worktree directory, never at a caller's path.
@@ -527,14 +578,7 @@ async function removeIncompleteWorktree(
 	branch: string,
 	state: Extract<WorktreeState, { kind: "interrupted" | "orphaned" }>,
 ): Promise<WorktreeBusy | undefined> {
-	const fields = {
-		repo,
-		repository: repository.root,
-		branch,
-		worktree: path,
-		adminDir: state.adminDir,
-		marker: state.kind === "interrupted" ? state.marker : "",
-	};
+	const fields = incompleteFields(repository, repo, path, branch, state);
 	if (fields.marker !== WORKTREE_ADDING_REASON && !isAtomicWorktreePath(path))
 		throw new WorkspaceBindingError({
 			code: "incomplete-worktree",
@@ -544,14 +588,18 @@ async function removeIncompleteWorktree(
 	if (state.kind === "interrupted") {
 		const head = await readState(join(state.adminDir, "HEAD"));
 		const added = typeof head === "string" ? /^ref: refs\/heads\/(.+)$/m.exec(head)?.[1] : undefined;
-		if (added !== branch)
+		if (added !== undefined && added !== branch)
 			throw new WorkspaceBindingError({
 				code: "wrong-branch",
 				reason: "different-branch",
-				fields: { repo, worktree: path, expected: branch, actual: added ?? "an unknown branch" },
+				fields: { repo, worktree: path, expected: branch, actual: added },
 			});
 		const adder = await runningAddition(repository, path, state.adminDir);
 		if (adder !== undefined) return { fields, adder };
+		if (head === undefined) {
+			await removeAdditionWithoutHead(path, state.adminDir);
+			return undefined;
+		}
 	}
 	if (state.kind === "orphaned") {
 		await filesystem("remove orphaned worktree", path, () => rm(path, { recursive: true }));
@@ -565,7 +613,16 @@ async function removeIncompleteWorktree(
 	return undefined;
 }
 
-/** An interrupted addition that may still be running, so it must not be repaired yet. */
+/**
+ * Remove an addition git was stopped in before it wrote the worktree's HEAD. git refuses to remove such a worktree, so
+ * it is removed the way git removes one: the worktree, then its admin directory.
+ */
+async function removeAdditionWithoutHead(path: string, adminDir: string): Promise<void> {
+	for (const directory of [path, adminDir])
+		await filesystem("remove interrupted worktree", directory, () => rm(directory, { recursive: true }));
+}
+
+/** An addition that may still be running, so its worktree must not be used or repaired yet. */
 interface WorktreeBusy {
 	readonly fields: Readonly<Record<string, string>>;
 	readonly adder: WorktreeAdder | null;
@@ -585,9 +642,10 @@ function additionInProgress(busy: WorktreeBusy): WorkspaceBindingError {
 }
 
 /**
- * Add `path` under the repository lock, removing an interrupted addition first. An addition whose git may still be
- * running is never removed: the lock is released, and the bind looks again until that git has exited or the wait
- * runs out, which fails with a retryable `addition-in-progress`.
+ * Add `path` under the repository lock, removing an interrupted addition first. Nothing is used, removed or added over
+ * while a recorded git still adds or removes the worktree, also before it has written the worktree's link or branch:
+ * the lock is released, and the bind looks again until that git has exited or the wait runs out, which fails with a
+ * retryable `addition-in-progress`. An empty directory at Atomic's path is an addition stopped before its link.
  */
 async function addWorktree(
 	repository: OpenRepository,
@@ -598,9 +656,13 @@ async function addWorktree(
 ): Promise<void> {
 	for (let probe = 1; ; probe++) {
 		const busy = await withRepositoryLock(repository.commonDir, async () => {
+			const adder = await runningAddition(repository, path);
 			const state = await worktreeState(repository, path);
-			if (state.kind === "complete" || state.kind === "unsettled") return undefined;
-			if (state.kind !== "missing") {
+			if (adder !== undefined) return { fields: incompleteFields(repository, repo, path, branch, state), adder };
+			if (state.kind === "complete") return undefined;
+			if (state.kind === "unsettled" && !(isAtomicWorktreePath(path) && (await isEmptyDirectory(path))))
+				return undefined;
+			if (state.kind === "interrupted" || state.kind === "orphaned") {
 				const running = await removeIncompleteWorktree(repository, repo, path, branch, state);
 				if (running !== undefined) return running;
 			}
@@ -631,6 +693,16 @@ export interface EnsureWorktreeSteps {
 	readonly missingBranchStart: () => Promise<string>;
 }
 
+/** Whether `path` is a complete worktree that no recorded git is still adding or removing. */
+async function isSettledWorktree(repository: OpenRepository, path: string): Promise<boolean> {
+	if ((await runningAddition(repository, path)) !== undefined) return false;
+	return (await worktreeState(repository, path)).kind === "complete";
+}
+
+async function isEmptyDirectory(path: string): Promise<boolean> {
+	return (await filesystem("read", path, () => readdir(path))).length === 0;
+}
+
 /**
  * Make `path` a verified worktree of `repository` on `branch`, adding it when it is missing. One addition per path runs
  * in this process, and one repository change at a time across processes: the repository lock is held while a shared
@@ -647,13 +719,12 @@ export async function ensureWorktree(
 	signal?: AbortSignal,
 ): Promise<string> {
 	const pending = pendingWorktrees.get(path);
-	if (pending !== undefined || (await worktreeState(repository, path)).kind !== "complete")
+	if (pending !== undefined || !(await isSettledWorktree(repository, path)))
 		await waitFor(
 			pending ?? shared(pendingWorktrees, path, () => addWorktree(repository, repo, path, branch, steps)),
 			signal,
 		);
-	await verifyWorktree(repository, repo, path, branch, signal);
-	return realpath(path);
+	return verifyWorktree(repository, repo, path, branch, signal);
 }
 
 async function worktreePath(repository: OpenRepository, requested: string, branch: string): Promise<string> {

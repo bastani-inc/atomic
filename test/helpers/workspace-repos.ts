@@ -134,6 +134,8 @@ export async function gitTranscript<T>(
  * command by `FAKE_GIT_SLEEP` seconds, once the file `FAKE_GIT_ARMED` exists when that is set, then touches
  * `FAKE_GIT_MARKER` if it was not killed meanwhile. `FAKE_GIT_HOLD` (same form) holds that command while the file
  * `FAKE_GIT_ARMED` exists when it starts: it touches `FAKE_GIT_HELD`, then waits for the file `FAKE_GIT_RELEASE`.
+ * `list-fails-once` fails the first `worktree list` and creates `FAKE_GIT_MARKER`, as git does when another process
+ * removes the last worktree while it lists them.
  */
 function fakeGit(root: string): string {
 	const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
@@ -170,6 +172,12 @@ case "$FAKE_GIT_MODE:$5 $6" in
 "remove-fails:worktree remove")
 	echo "injected remove failure" >&2
 	exit 1 ;;
+"list-fails-once:worktree list")
+	if [ ! -e "$FAKE_GIT_MARKER" ]; then
+		: > "$FAKE_GIT_MARKER"
+		echo "injected list failure" >&2
+		exit 128
+	fi ;;
 "add-dies:worktree add")
 	"$real" "$@"
 	for admin in "$PWD"/.git/worktrees/*/; do [ -e "$admin/locked" ] && : > "$admin/index.lock"; done
