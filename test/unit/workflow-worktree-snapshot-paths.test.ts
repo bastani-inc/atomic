@@ -69,7 +69,7 @@ test("only paths inside a replaced root move: relative paths, parents, siblings 
 });
 
 test.skipIf(process.platform === "win32")(
-	"without restores an absolute path comes back as given, even one whose links cannot be resolved (#4245)",
+	"without restores an absolute path comes back as given, even one whose links cannot be resolved (symbolic links need a privilege on Windows) (#4245)",
 	() => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-workflow-paths-"));
 		try {

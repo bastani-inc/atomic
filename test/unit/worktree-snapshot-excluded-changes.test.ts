@@ -171,17 +171,14 @@ describe("what counts as the same left-out content (#4245)", () => {
 		);
 	});
 
-	test.skipIf(process.platform === "win32")(
-		"a left-out file whose name looks like a pattern resets only itself, never a recorded file it would match",
-		async () => {
-			const { clone } = await sandbox.remoteWithClone();
-			sandbox.write(join(clone, "n1.txt"), "recorded\n");
-			const snapshot = captured(await captureWorktreeSnapshot(clone)).snapshot;
-			sandbox.write(join(clone, "n[1].txt"), "new and left out\n");
-			assert.equal(
-				(await verifyWorktree(snapshot, clone, { settings: { includeUntracked: false } })).tree,
-				snapshot.tree,
-			);
-		},
-	);
+	test("a left-out file whose name looks like a pattern resets only itself, never a recorded file it would match", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "n1.txt"), "recorded\n");
+		const snapshot = captured(await captureWorktreeSnapshot(clone)).snapshot;
+		sandbox.write(join(clone, "n[1].txt"), "new and left out\n");
+		assert.equal(
+			(await verifyWorktree(snapshot, clone, { settings: { includeUntracked: false } })).tree,
+			snapshot.tree,
+		);
+	});
 });

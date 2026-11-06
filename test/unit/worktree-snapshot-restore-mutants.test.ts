@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { FilesystemFault } from "../helpers/worktree-snapshot-faults.js";
+
+/** Filesystem calls that fail for one path, as a symbolic link that loops makes them. */
+const filesystem = vi.hoisted(() => ({ faults: [] as FilesystemFault[] }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const { withFilesystemFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withFilesystemFaults(
+		await importOriginal<typeof import("node:fs/promises")>(),
+		"promises",
+		["stat"],
+		() => filesystem.faults,
+	);
+});
 
 /** Every Git process the code under test starts, and an optional hook that can redirect one or schedule a fault. */
 const spawned = vi.hoisted(() => ({
@@ -59,6 +73,7 @@ beforeEach(() => {
 	spawned.closed.length = 0;
 });
 afterEach(() => {
+	filesystem.faults.length = 0;
 	spawned.hook = undefined;
 	sandbox.dispose();
 });
@@ -619,21 +634,20 @@ describe("restore inputs", () => {
 });
 
 describe("removeRestoredWorktree", () => {
-	test.skipIf(process.platform === "win32")(
-		"a path that exists but cannot be inspected is not reported as removed",
-		async () => {
-			const loop = sandbox.path("loop");
-			symlinkSync(loop, loop);
-			await assert.rejects(removeRestoredWorktree(loop, { storeDir: sandbox.path("host") }), (error: unknown) => {
-				assert.ok(isWorkspaceSnapshotError(error));
-				assert.equal(error.code, "unreadable-path");
-				assert.equal(error.subject, loop);
-				assert.equal((error.cause as NodeJS.ErrnoException).code, "ELOOP");
-				return true;
-			});
-			assert.ok(lstatSync(loop).isSymbolicLink());
-		},
-	);
+	test("a path that exists but cannot be inspected is not reported as removed", async () => {
+		const loop = sandbox.path("loop");
+		mkdirSync(loop);
+		writeFileSync(join(loop, "keep.txt"), "kept\n");
+		filesystem.faults.push({ call: "stat", path: loop, code: "ELOOP" });
+		await assert.rejects(removeRestoredWorktree(loop, { storeDir: sandbox.path("host") }), (error: unknown) => {
+			assert.ok(isWorkspaceSnapshotError(error));
+			assert.equal(error.code, "unreadable-path");
+			assert.equal(error.subject, loop);
+			assert.equal((error.cause as NodeJS.ErrnoException).code, "ELOOP");
+			return true;
+		});
+		assert.equal(readFileSync(join(loop, "keep.txt"), "utf8"), "kept\n");
+	});
 
 	test("a regular file is not a restored worktree and is left alone", async () => {
 		const file = sandbox.path("notes.txt");

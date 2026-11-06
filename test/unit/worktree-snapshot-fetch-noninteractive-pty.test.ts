@@ -100,30 +100,33 @@ async function restoreUnderPty(sshCommand?: string): Promise<{ outcome: Record<s
 	};
 }
 
-describe.skipIf(!hasScript)("a restore started from a terminal (#4245)", () => {
-	test(
-		"fetches over ssh without a controlling terminal and fails as not-fetched instead of waiting",
-		async () => {
-			const { outcome, log } = await restoreUnderPty();
-			assert.deepEqual(log, ["no-terminal"]);
-			assert.deepEqual(outcome, {
-				name: "WorkspaceRestoreError",
-				code: "commits-unavailable",
-				reason: "not-fetched",
-				causeName: "WorkspaceGitError",
-				causeCode: "git-failed",
-			});
-		},
-		PTY_RESTORE_TIMEOUT_MS + 30_000,
-	);
+describe.skipIf(!hasScript)(
+	"a restore started from a terminal (needs a pseudo-terminal from Linux `script`) (#4245)",
+	() => {
+		test(
+			"fetches over ssh without a controlling terminal and fails as not-fetched instead of waiting",
+			async () => {
+				const { outcome, log } = await restoreUnderPty();
+				assert.deepEqual(log, ["no-terminal"]);
+				assert.deepEqual(outcome, {
+					name: "WorkspaceRestoreError",
+					code: "commits-unavailable",
+					reason: "not-fetched",
+					causeName: "WorkspaceGitError",
+					causeCode: "git-failed",
+				});
+			},
+			PTY_RESTORE_TIMEOUT_MS + 30_000,
+		);
 
-	test(
-		"keeps a user's own ssh command but still takes the terminal away from it",
-		async () => {
-			const { outcome, log } = await restoreUnderPty(`${sandbox.path("bin-probe", "ssh")} -q`);
-			assert.deepEqual(log, ["no-terminal"]);
-			assert.equal(outcome.code, "commits-unavailable");
-		},
-		PTY_RESTORE_TIMEOUT_MS + 30_000,
-	);
-});
+		test(
+			"keeps a user's own ssh command but still takes the terminal away from it",
+			async () => {
+				const { outcome, log } = await restoreUnderPty(`${sandbox.path("bin-probe", "ssh")} -q`);
+				assert.deepEqual(log, ["no-terminal"]);
+				assert.equal(outcome.code, "commits-unavailable");
+			},
+			PTY_RESTORE_TIMEOUT_MS + 30_000,
+		);
+	},
+);

@@ -348,7 +348,7 @@ describe("sweeping the records an interrupted restore left", () => {
 	});
 
 	test.skipIf(process.platform === "win32")(
-		"a host directory reached through a symlink is swept: the registered path is the physical one",
+		"a host directory reached through a symlink is swept: the registered path is the physical one (symbolic links need a privilege on Windows)",
 		async () => {
 			const real = sandbox.path("real-host");
 			mkdirSync(real);
@@ -536,10 +536,10 @@ describe("a record is acted on only when it is exactly what Atomic writes", () =
 	});
 });
 
-describe.skipIf(process.platform === "win32")(
-	"a staging path is only removed when it is the registered worktree itself",
-	() => {
-		test("a staging path swapped for a symlink to a directory with a valid worktree link is retained, and that directory is untouched", async () => {
+describe("a staging path is only removed when it is the registered worktree itself", () => {
+	test.skipIf(process.platform === "win32")(
+		"a staging path swapped for a symlink to a directory with a valid worktree link is retained, and that directory is untouched (symbolic links need a privilege on Windows)",
+		async () => {
 			const host = await makeHost();
 			const id = randomUUID();
 			const staging = await stage(host.store, defaultStaging(host, id));
@@ -561,28 +561,29 @@ describe.skipIf(process.platform === "win32")(
 			assert.equal(readFileSync(join(victim, "keep.txt"), "utf8"), "user data\n");
 			assert.equal(lstatSync(staging).isSymbolicLink(), true);
 			assert.equal(existsSync(record), true);
+		},
+	);
+
+	test("a worktree that Git refuses to remove is retained with its files, not deleted behind Git's back", async () => {
+		const host = await makeHost();
+		const id = randomUUID();
+		const staging = await stage(host.store, defaultStaging(host, id));
+		rmSync(join(staging, ".git"));
+		writeFileSync(join(staging, ".git"), "gitdir: /nonexistent\n");
+		writeFileSync(join(staging, "work.txt"), "unsaved work\n");
+		const record = writeRecord(host, id, {
+			staging,
+			target: join(host.storeDir, "worktrees", "refused"),
+			store: host.store,
+			createdTarget: true,
 		});
 
-		test("a worktree that Git refuses to remove is retained with its files, not deleted behind Git's back", async () => {
-			const host = await makeHost();
-			const id = randomUUID();
-			const staging = await stage(host.store, defaultStaging(host, id));
-			writeFileSync(join(staging, ".git"), "gitdir: /nonexistent\n");
-			writeFileSync(join(staging, "work.txt"), "unsaved work\n");
-			const record = writeRecord(host, id, {
-				staging,
-				target: join(host.storeDir, "worktrees", "refused"),
-				store: host.store,
-				createdTarget: true,
-			});
+		assert.deepEqual(await sweep(host), [warning(staging)]);
 
-			assert.deepEqual(await sweep(host), [warning(staging)]);
-
-			assert.equal(readFileSync(join(staging, "work.txt"), "utf8"), "unsaved work\n");
-			assert.equal(existsSync(record), true);
-		});
-	},
-);
+		assert.equal(readFileSync(join(staging, "work.txt"), "utf8"), "unsaved work\n");
+		assert.equal(existsSync(record), true);
+	});
+});
 
 /** Runs `action` with `process.platform` set to `platform`, the way a Windows host would see path comparisons. */
 async function onPlatform<T>(platform: NodeJS.Platform, action: () => Promise<T>): Promise<T> {

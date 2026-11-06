@@ -12,42 +12,45 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-describe.skipIf(process.platform === "win32")("canonical worktree paths (#4245)", () => {
-	test("a directory reached through a link becomes its real path", () => {
-		mkdirSync(join(root, "real", "repo"), { recursive: true });
-		symlinkSync(join(root, "real"), join(root, "link"));
-		assert.equal(canonicalizeWorktreePath(join(root, "link", "repo")), join(root, "real", "repo"));
-		assert.equal(canonicalizeWorktreePath(join(root, "link", "repo", "")), join(root, "real", "repo"));
-	});
+describe.skipIf(process.platform === "win32")(
+	"canonical worktree paths (symbolic links need a privilege on Windows) (#4245)",
+	() => {
+		test("a directory reached through a link becomes its real path", () => {
+			mkdirSync(join(root, "real", "repo"), { recursive: true });
+			symlinkSync(join(root, "real"), join(root, "link"));
+			assert.equal(canonicalizeWorktreePath(join(root, "link", "repo")), join(root, "real", "repo"));
+			assert.equal(canonicalizeWorktreePath(join(root, "link", "repo", "")), join(root, "real", "repo"));
+		});
 
-	test("components that do not exist keep their spelling below the real path of what does", () => {
-		mkdirSync(join(root, "real"));
-		symlinkSync(join(root, "real"), join(root, "link"));
-		assert.equal(
-			canonicalizeWorktreePath(join(root, "link", "gone", "deeper")),
-			join(root, "real", "gone", "deeper"),
-		);
-		assert.equal(canonicalizeWorktreePath(join(root, "missing")), join(root, "missing"));
-	});
+		test("components that do not exist keep their spelling below the real path of what does", () => {
+			mkdirSync(join(root, "real"));
+			symlinkSync(join(root, "real"), join(root, "link"));
+			assert.equal(
+				canonicalizeWorktreePath(join(root, "link", "gone", "deeper")),
+				join(root, "real", "gone", "deeper"),
+			);
+			assert.equal(canonicalizeWorktreePath(join(root, "missing")), join(root, "missing"));
+		});
 
-	test("components below a regular file keep their spelling under the file's real path", () => {
-		mkdirSync(join(root, "real"));
-		writeFileSync(join(root, "real", "file"), "");
-		symlinkSync(join(root, "real"), join(root, "link"));
-		assert.equal(
-			canonicalizeWorktreePath(join(root, "link", "file", "below", "deeper")),
-			join(root, "real", "file", "below", "deeper"),
-		);
-	});
+		test("components below a regular file keep their spelling under the file's real path", () => {
+			mkdirSync(join(root, "real"));
+			writeFileSync(join(root, "real", "file"), "");
+			symlinkSync(join(root, "real"), join(root, "link"));
+			assert.equal(
+				canonicalizeWorktreePath(join(root, "link", "file", "below", "deeper")),
+				join(root, "real", "file", "below", "deeper"),
+			);
+		});
 
-	test("a link that loops fails as an unreadable path instead of being guessed", () => {
-		symlinkSync(join(root, "loop"), join(root, "loop"));
-		assert.throws(
-			() => canonicalizeWorktreePath(join(root, "loop", "repo")),
-			(error: unknown) => {
-				assertUnreadablePath(error, join(root, "loop", "repo"), "ELOOP");
-				return true;
-			},
-		);
-	});
-});
+		test("a link that loops fails as an unreadable path instead of being guessed", () => {
+			symlinkSync(join(root, "loop"), join(root, "loop"));
+			assert.throws(
+				() => canonicalizeWorktreePath(join(root, "loop", "repo")),
+				(error: unknown) => {
+					assertUnreadablePath(error, join(root, "loop", "repo"), "ELOOP");
+					return true;
+				},
+			);
+		});
+	},
+);
