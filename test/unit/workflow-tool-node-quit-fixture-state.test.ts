@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, test, vi } from "vitest";
+import { afterEach, beforeEach, type MockInstance, test, vi } from "vitest";
 import type { WorkflowSerializableValue, WorkflowToolContext } from "../../packages/workflows/src/authoring.js";
 import { fileExistsSync, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import issue2078ToolQuit from "../integration/fixtures/issue-2078-tool-quit-workflow.js";
@@ -54,11 +54,12 @@ function renameRefusal(code: string): NodeJS.ErrnoException {
 	return Object.assign(new Error(`${code}: rename refused`), { code, syscall: "rename" });
 }
 
-interface ParkedRun {
-	readonly run: Promise<unknown>;
-}
-
 type FixtureRunContext = Parameters<typeof issue2078ToolQuit.run>[0];
+type FixtureOutputs = Awaited<ReturnType<typeof issue2078ToolQuit.run>>;
+
+interface ParkedRun {
+	readonly run: Promise<FixtureOutputs>;
+}
 
 /** Start the workflow with a context that only offers `ctx.tool`, the one primitive the fixture calls. */
 async function parkHangTool(signal: AbortSignal): Promise<ParkedRun> {
@@ -79,7 +80,7 @@ const STILL_PENDING = Symbol("still pending");
  * How the run ended. The abort listener publishes synchronously and then rejects, so the run has
  * settled once the microtasks queued by `abort()` drain; a listener that threw leaves it pending.
  */
-async function settlement(run: Promise<unknown>): Promise<Error | typeof STILL_PENDING> {
+async function settlement(run: Promise<FixtureOutputs>): Promise<Error | typeof STILL_PENDING> {
 	const ended = run.then(
 		() => assert.fail("the run cannot complete while hang-tool is aborted"),
 		(error: Error) => error,
@@ -87,7 +88,7 @@ async function settlement(run: Promise<unknown>): Promise<Error | typeof STILL_P
 	return Promise.race([ended, new Promise<typeof STILL_PENDING>((resolve) => setImmediate(resolve, STILL_PENDING))]);
 }
 
-function pausesTaken(wait: { readonly mock: { readonly calls: readonly (readonly unknown[])[] } }): unknown[] {
+function pausesTaken(wait: MockInstance<typeof Atomics.wait>): (number | undefined)[] {
 	return wait.mock.calls.map((call) => call[3]);
 }
 
