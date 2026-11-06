@@ -7,17 +7,17 @@ import type {
 	AgentTool,
 	AgentToolResult,
 } from "@earendil-works/pi-agent-core";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.js";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
-import { finalizeToolResult } from "./agent-session-tool-hooks.js";
-import type { ExtensionToolContext } from "./extensions/context-types.js";
-import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.js";
-import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.js";
+import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
+import type { ExtensionToolContext } from "./extensions/context-types.ts";
+import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
+import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
 import {
 	resolveToolConcurrency,
 	type ToolConcurrencyMode,
 	type ToolExecutionScheduler,
-} from "./tools/tool-concurrency.js";
+} from "./tools/tool-concurrency.ts";
 
 /** How long a call of a `detachable` tool runs inline before the session lets it go on without the session. */
 export interface ToolDetachmentPolicy {
