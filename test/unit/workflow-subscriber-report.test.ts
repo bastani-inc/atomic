@@ -124,6 +124,7 @@ test("a report that starts an idle subscriber's turn counts as saved once that t
 	const { saved } = await delivery;
 	const isSaved = watchSettled(saved);
 	for (const event of [
+		{ type: "message_end" },
 		{ type: "message_end", message: { role: "assistant" } },
 		{ type: "message_update", message: { role: "user" } },
 	]) {

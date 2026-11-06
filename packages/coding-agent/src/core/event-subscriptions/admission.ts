@@ -229,7 +229,13 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 			stop(new SubscriptionHandlerError(id, event.id, error));
 			return;
 		}
-		const waitBeforeRecord = input.beforeRecord?.(event);
+		let waitBeforeRecord: Promise<unknown> | undefined;
+		try {
+			waitBeforeRecord = input.beforeRecord?.(event);
+		} catch (error) {
+			stop(new SubscriptionRecordError(id, "processed-event", event.id, { cause: error }));
+			return;
+		}
 		if (waitBeforeRecord === undefined) {
 			await recordHandled(event, consumed);
 			return;

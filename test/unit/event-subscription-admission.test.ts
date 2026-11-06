@@ -1261,3 +1261,28 @@ test("an event for which beforeRecord returns nothing is recorded inside its slo
 	await subscription.close();
 	assert.deepEqual(steps, ["handle a", "record a", "handle b", "record b"]);
 });
+
+test("a beforeRecord that throws before returning stops the subscription with a record error (#4311)", async () => {
+	const failure = new Error("could not look up the report");
+	const source = openSource();
+	const recorded: string[] = [];
+	const subscription = openEventSubscription({
+		id: uniqueId("before-record-throws"),
+		source,
+		handle: async () => {},
+		beforeRecord: () => {
+			throw failure;
+		},
+		recordProcessed: async (event) => {
+			recorded.push(event.id);
+		},
+	});
+	await settle();
+	source.emit({ id: "z" });
+	await assert.rejects(subscription.done, (error) => {
+		assert.equal(isSubscriptionRecordError(error), true);
+		assert.deepEqual([(error as SubscriptionRecordError).eventId, (error as Error).cause], ["z", failure]);
+		return true;
+	});
+	assert.deepEqual(recorded, []);
+});
