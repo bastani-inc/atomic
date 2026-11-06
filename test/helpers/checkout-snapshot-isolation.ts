@@ -1,11 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeEach } from "vitest";
 import { setWorktreeSnapshotExcludedRootsForTest } from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.js";
+import { installRealHomeSettingsGuard, realHomeSettingsFiles } from "./real-home-settings-guard.js";
 import {
-	failTestsThatOpenRealHomeStorage,
+	failTestsThatTouchRealHome,
 	installRealHomeStorageGuard,
 	realHomeAtomicRoots,
 } from "./real-home-storage-guard.js";
+import { installTemporaryAgentDirDefault } from "./temporary-agent-dir.js";
 
 /**
  * Every vitest project loads this file, so no test captures, verifies or restores a worktree snapshot of the checkout
@@ -24,12 +26,18 @@ beforeEach(() => {
 });
 
 /**
- * No test opens a SQLite database under the real home directory's `.atomic` root either (#4445). A store that falls
- * back to its default location, such as the session store `/workflow resume <unknown id>` opens, otherwise lands in
- * the user's own `~/.atomic/workflows/journal.sqlite`, where every test file of a shard shares it with the others and
- * with the user's sessions; on Windows its switch to the write-ahead log failed with a disk I/O error. The guard
- * rejects the open before SQLite creates the file and fails the test even when the code that opened it caught the
- * error; such a test needs its own agent directory (`useTemporaryAgentDir`). It covers this test process, not the
- * child processes a test starts. The guard module imports only Node built-ins.
+ * Every test file runs with an agent directory of its own (#4473): `ATOMIC_CODING_AGENT_DIR` points at a new
+ * directory under the run's workflow-artifact directory before the file's modules load, and child processes that
+ * inherit the environment use it too. A test opts out only by setting or unsetting the variable itself.
+ *
+ * No test opens a SQLite database under the real home directory's `.atomic` root (#4445), or reads the agent
+ * `settings.json` there or under `.pi` (#4473). A store that falls back to its default location otherwise lands in the
+ * user's own `~/.atomic/workflows/journal.sqlite`, shared with every other test file and the user's sessions, and a
+ * settings load reads the user's own settings, which fail the test when they hold a renamed key. Each guard refuses
+ * before the file is opened and fails the test even when the code that was refused caught the error, as the settings
+ * manager does. They cover this test process; children are covered by the inherited agent directory. The guard
+ * modules import only Node built-ins.
  */
-failTestsThatOpenRealHomeStorage(installRealHomeStorageGuard(realHomeAtomicRoots()), { afterEach, afterAll });
+installTemporaryAgentDirDefault();
+failTestsThatTouchRealHome(installRealHomeStorageGuard(realHomeAtomicRoots()), { afterEach, afterAll });
+failTestsThatTouchRealHome(installRealHomeSettingsGuard(realHomeSettingsFiles()), { afterEach, afterAll });

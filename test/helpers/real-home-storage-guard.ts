@@ -10,8 +10,32 @@ type SqliteLocation = ConstructorParameters<typeof DatabaseSync>[0];
 const REMEDY =
 	"Give the test its own agent directory: point ATOMIC_CODING_AGENT_DIR at a temporary directory, or pass the store an explicit temporary path";
 
+/** The stable code of each way a test can reach the real home directory's Atomic files. */
+export type RealHomeAccessCode = "real-home-storage-open" | "real-home-settings-read";
+
+const REAL_HOME_ACCESS_CODES: ReadonlyMap<string | undefined, RealHomeAccessCode> = new Map([
+	["RealHomeStorageOpenError", "real-home-storage-open"],
+	["RealHomeSettingsReadError", "real-home-settings-read"],
+]);
+
+/** A test reached a file of the user's own Atomic installation under the real home directory, and a guard refused it. */
+export abstract class RealHomeAccessError extends Error {
+	abstract readonly code: RealHomeAccessCode;
+	abstract readonly hint: string;
+	abstract readonly path: string;
+}
+
+/** Whether `error` is a real-home guard's refusal: an instance, or a copy rebuilt from its name and code elsewhere. */
+export function isRealHomeAccessError(error: unknown): error is RealHomeAccessError {
+	if (error instanceof RealHomeAccessError) return true;
+	if (typeof error !== "object" || error === null) return false;
+	const { name, code } = error as { name?: string; code?: string };
+	const expected = REAL_HOME_ACCESS_CODES.get(name);
+	return expected !== undefined && expected === code;
+}
+
 /** A test opened a SQLite database under the real home directory's Atomic root, where the user's own journal lives. */
-export class RealHomeStorageOpenError extends Error {
+export class RealHomeStorageOpenError extends RealHomeAccessError {
 	override readonly name = "RealHomeStorageOpenError" as const;
 	readonly code = "real-home-storage-open" as const;
 	readonly hint = REMEDY;
@@ -26,10 +50,33 @@ export class RealHomeStorageOpenError extends Error {
 	}
 }
 
-export interface RealHomeStorageGuard {
-	readonly roots: readonly string[];
-	/** Throw the rejections since the last check, kept even when the code that opened the database caught them. */
+/** A guard's record of what it refused. */
+export interface RealHomeViolationCheck {
+	/** Throw the refusals since the last check, kept even when the code that was refused caught them. */
 	assertNoViolations(): void;
+}
+
+export interface RealHomeStorageGuard extends RealHomeViolationCheck {
+	readonly roots: readonly string[];
+}
+
+/** Keep each refusal for the next check: one is thrown as it is, several together, and the check starts clean again. */
+export function recordViolations<Violation extends RealHomeAccessError>(
+	subject: string,
+): RealHomeViolationCheck & { record(violation: Violation): Violation } {
+	let violations: Violation[] = [];
+	return {
+		record: (violation) => {
+			violations.push(violation);
+			return violation;
+		},
+		assertNoViolations: () => {
+			const found = violations;
+			violations = [];
+			if (found.length > 1) throw new AggregateError(found, `${found.length} ${subject} were rejected`);
+			if (found.length === 1) throw found[0];
+		},
+	};
 }
 
 /** Where a test file registers the checks that run after each test and after its last one. */
@@ -38,19 +85,24 @@ export interface TestFileHooks {
 	afterAll(check: () => void): void;
 }
 
-/** Fail the test, or its file's teardown, that left a rejected real-home open behind, even one its code caught. */
-export function failTestsThatOpenRealHomeStorage(guard: RealHomeStorageGuard, hooks: TestFileHooks): void {
+/** Fail the test, or its file's teardown, that left a refused real-home access behind, even one its code caught. */
+export function failTestsThatTouchRealHome(guard: RealHomeViolationCheck, hooks: TestFileHooks): void {
 	hooks.afterEach(() => guard.assertNoViolations());
 	hooks.afterAll(() => guard.assertNoViolations());
 }
 
-/** The `.atomic` root of every home directory Atomic could resolve for this process, on Windows and POSIX alike. */
-export function realHomeAtomicRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+/** Every home directory Atomic could resolve for this process: the OS home, HOME, USERPROFILE and HOMEDRIVE+HOMEPATH. */
+export function realHomeDirectories(env: NodeJS.ProcessEnv = process.env): string[] {
 	const windowsHome = env.HOMEDRIVE && env.HOMEPATH ? `${env.HOMEDRIVE}${env.HOMEPATH}` : undefined;
 	const homes = [homedir(), env.HOME, env.USERPROFILE, windowsHome].filter(
 		(home): home is string => home !== undefined && home !== "",
 	);
-	return [...new Set(homes.map((home) => join(home, ".atomic")))];
+	return [...new Set(homes)];
+}
+
+/** The `.atomic` root of every home directory Atomic could resolve for this process, on Windows and POSIX alike. */
+export function realHomeAtomicRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+	return [...new Set(realHomeDirectories(env).map((home) => join(home, ".atomic")))];
 }
 
 /** The file a node:sqlite location opens: a path, `file:` URL, SQLite URI filename or Buffer. In-memory is `undefined`. */
@@ -70,7 +122,7 @@ export function foldsCase(platform: NodeJS.Platform): boolean {
 }
 
 /** The absolute path with symlinks and Windows short names resolved through its nearest existing ancestor. */
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
 	const absolute = resolve(path);
 	if (existsSync(absolute)) return realpathSync.native(absolute);
 	const parent = dirname(absolute);
@@ -117,24 +169,13 @@ export function installRealHomeStorageGuard(roots: readonly string[]): RealHomeS
 }
 
 function guardConstructor(sqlite: { DatabaseSync: GuardedDatabaseSync }): GuardState {
-	let violations: RealHomeStorageOpenError[] = [];
-	const guard: GuardState = {
-		roots: [],
-		assertNoViolations: () => {
-			const found = violations;
-			violations = [];
-			if (found.length > 1) throw new AggregateError(found, `${found.length} real-home SQLite opens were rejected`);
-			if (found.length === 1) throw found[0];
-		},
-	};
+	const violations = recordViolations<RealHomeStorageOpenError>("real-home SQLite opens");
+	const guard: GuardState = { roots: [], assertNoViolations: violations.assertNoViolations };
 	const guarded = new Proxy(sqlite.DatabaseSync, {
 		construct(target, args: ConstructorParameters<typeof DatabaseSync>, newTarget) {
 			const root = protectedRootOf(args[0], guard.roots);
-			if (root !== undefined) {
-				const error = new RealHomeStorageOpenError(sqliteLocationPath(args[0])!, root);
-				violations.push(error);
-				throw error;
-			}
+			if (root !== undefined)
+				throw violations.record(new RealHomeStorageOpenError(sqliteLocationPath(args[0])!, root));
 			return Reflect.construct(target, args, newTarget);
 		},
 		get: (target, key, receiver) => (key === GUARD ? guard : Reflect.get(target, key, receiver)),
