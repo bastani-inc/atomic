@@ -199,16 +199,16 @@ const HOG_HOLD_MS = 20;
 const VICTIM_TRANSACTIONS = 10;
 /** Short enough that a writer starved by the other processes fails quickly on a stall-blind deadline. */
 const VICTIM_LOCK_WAIT_MS = 5_000;
-/** The writers that may commit while one waits: each other process's turn, plus the one already holding the lock. */
+/** The writers that may commit while one is queued: each other process's turn, plus the one holding the lock. */
 const MAX_COMMITS_AHEAD = 2 * HOGS;
 const FAIRNESS_TEST_TIMEOUT_MS = 120_000;
 const PROGRESS_LOCK_WAIT_MS = 2_000;
-/** How often the test counts the other writers' commits while one of its transactions waits for the lock. */
+/** How often the test counts the other writers' commits while one of its transactions waits in the queue. */
 const OVERTAKE_CHECK_MS = 50;
 
 async function startHog(path: string, stopPath: string, clockOffsetMs = 0): Promise<SpawnedProcess> {
 	const hog = spawnProcess(
-		[process.execPath, HOG_FIXTURE, path, String(HOG_HOLD_MS), stopPath, String(clockOffsetMs)],
+		[process.execPath, HOG_FIXTURE, path, String(HOG_HOLD_MS), stopPath, String(clockOffsetMs), String(process.pid)],
 		{ stdout: "pipe", stderr: "pipe" },
 	);
 	assert.ok(hog.stdout);
@@ -229,8 +229,11 @@ async function startHog(path: string, stopPath: string, clockOffsetMs = 0): Prom
 /**
  * Runs `VICTIM_TRANSACTIONS` transactions in this process while one writer per entry of `hogClockOffsetsMs` retakes
  * the lock from another, each with its own clock that far off the system clock, and checks that no transaction here
- * waited through more than `MAX_COMMITS_AHEAD` of theirs. A transaction the others keep overtaking fails the test as
- * soon as they pass the bound, instead of waiting out a starvation that may not end.
+ * waited in the writers' queue through more than `MAX_COMMITS_AHEAD` of theirs. The queue itself says which commits
+ * those were: each of theirs records the transaction of this process's that had a ticket queued when it committed.
+ * Commits that land while a transaction is still writing its ticket are not counted, however long a loaded disk
+ * takes to write it: nobody can queue behind a ticket before it exists (#4452). A transaction the others keep
+ * overtaking fails the test as soon as they pass the bound, instead of waiting out a starvation that may not end.
  */
 async function assertWritersTakeTurns(hogClockOffsetsMs: readonly number[]): Promise<void> {
 	const directory = makeTempDirectory("journal-lock-fairness-");
@@ -240,33 +243,28 @@ async function assertWritersTakeTurns(hogClockOffsetsMs: readonly number[]): Pro
 	const hogs: SpawnedProcess[] = [];
 	let observer: DatabaseSync | undefined;
 	try {
-		await database.exec("CREATE TABLE hog(pid INTEGER); CREATE TABLE victim(n INTEGER)");
+		await database.exec("CREATE TABLE hog(pid INTEGER, queued INTEGER); CREATE TABLE victim(n INTEGER)");
 		for (const clockOffsetMs of hogClockOffsetsMs) hogs.push(await startHog(path, stopPath, clockOffsetMs));
 		const reader = new DatabaseSync(path, { readOnly: true });
 		observer = reader;
-		const countHogCommits = reader.prepare("SELECT COUNT(*) AS count FROM hog");
-		const hogCommits = () => Number(countHogCommits.get()!.count);
+		const countCommitsAhead = reader.prepare("SELECT COUNT(*) AS count FROM hog WHERE queued = ?");
+		const commitsAhead = (index: number) => Number(countCommitsAhead.get(index)!.count);
 		const overtaken: number[] = [];
 		for (let index = 0; index < VICTIM_TRANSACTIONS; index++) {
-			const before = (await database.get<{ count: number }>("SELECT COUNT(*) AS count FROM hog"))!.count;
-			let began = false;
 			const committed = database.transaction(async (tx) => {
-				began = true;
-				const after = (await tx.get<{ count: number }>("SELECT COUNT(*) AS count FROM hog"))!.count;
-				overtaken.push(after - before);
+				const ahead = await tx.get<{ count: number }>("SELECT COUNT(*) AS count FROM hog WHERE queued = ?", index);
+				overtaken.push(ahead!.count);
 				await tx.run("INSERT INTO victim VALUES (?)", index);
 			});
 			const finished = committed.then(
 				() => true,
 				() => true,
 			);
-			// Polled once begin() has run, so the count starts with this transaction asking for the lock.
-			await new Promise<void>((resolve) => setImmediate(resolve));
 			for (let done = false; !done; ) {
-				const ahead = hogCommits() - before;
-				if (!began && ahead > MAX_COMMITS_AHEAD)
+				const ahead = commitsAhead(index);
+				if (ahead > MAX_COMMITS_AHEAD)
 					assert.fail(
-						`other writers committed ${JSON.stringify([...overtaken, ahead])} times while each of this writer's transactions waited`,
+						`other writers committed ${JSON.stringify([...overtaken, ahead])} times while each of this writer's transactions waited in the queue`,
 					);
 				done = await Promise.race([finished, sleep(OVERTAKE_CHECK_MS).then(() => false)]);
 			}
@@ -275,7 +273,11 @@ async function assertWritersTakeTurns(hogClockOffsetsMs: readonly number[]): Pro
 		assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM victim"), { count: VICTIM_TRANSACTIONS });
 		assert.ok(
 			Math.max(...overtaken) <= MAX_COMMITS_AHEAD,
-			`other writers committed ${JSON.stringify(overtaken)} times while each of this writer's transactions waited`,
+			`other writers committed ${JSON.stringify(overtaken)} times while each of this writer's transactions waited in the queue`,
+		);
+		assert.ok(
+			Math.max(...overtaken) > 0,
+			`no other writer committed while a transaction of this writer's was queued, so the queue was never measured: ${JSON.stringify(overtaken)}`,
 		);
 		await writeFileEnsuringDir(stopPath, "");
 		for (const hog of hogs) assert.equal(await hog.exited, 0, await readStreamText(hog.stderr));
@@ -296,7 +298,7 @@ async function assertWritersTakeTurns(hogClockOffsetsMs: readonly number[]): Pro
 }
 
 test(
-	"writers in several processes take the write lock in turn, so a writer is not starved by one that retakes it (#3978)",
+	"writers in several processes take the write lock in turn, so a writer is not starved by one that retakes it (#3978, #4452)",
 	() => assertWritersTakeTurns(Array.from({ length: HOGS }, () => 0)),
 	FAIRNESS_TEST_TIMEOUT_MS,
 );
@@ -324,7 +326,7 @@ test(
 		const database = await openNodeSqliteDatabase(path, { lockWaitMs: PROGRESS_LOCK_WAIT_MS });
 		const hogs: SpawnedProcess[] = [];
 		try {
-			await database.exec("CREATE TABLE hog(pid INTEGER); CREATE TABLE victim(n INTEGER)");
+			await database.exec("CREATE TABLE hog(pid INTEGER, queued INTEGER); CREATE TABLE victim(n INTEGER)");
 			for (let index = 0; index < HOGS; index++) hogs.push(await startHog(path, stopPath));
 			for (let index = 0; index < VICTIM_TRANSACTIONS; index++)
 				await database.transaction((tx) => tx.run("INSERT INTO victim VALUES (?)", index));
