@@ -65,7 +65,7 @@ for (const path of ["direct", "native-wake", "fallback-timer"] as const) {
 		let iterator!: AsyncIterator<C.NativeEvent>;
 		let first!: Promise<IteratorResult<C.NativeEvent>>;
 		const initialize = () => {
-			watch = new TaskSubscription(actor, initial, () => {});
+			watch = new TaskSubscription(actor, initial, { routerSelections: new Map(), requestedModels: new Map(), launchHeartbeats: new Map() }, () => {});
 			watch.onReconcile = () => {
 				callbackCalls++;
 				if (inNativeWake) nativeReconciliations++;

@@ -115,6 +115,7 @@ type OwnerState = {
 	releases: Set<Promise<void>>;
 	releaseFailures: Error[];
 	commandStarts: Map<C.OperationId, CommandStart>;
+	launches: LaunchMetadata;
 };
 type TaskState = {
 	native: native.TaskLease;
@@ -317,35 +318,45 @@ function observation(value: native.HostObservation): C.HostObservation {
 	if (value.kind === "background" && reason) return { kind: value.kind, reason };
 	throw new Error("Invalid native host observation");
 }
-// Native records own lifecycle and mutable execution metadata. Routing provenance is
-// immutable host metadata, retained for the same environment lifetime as task records.
-const routerSelections = new Map<string, C.RouterSelection>();
-// The model each launch asked for, immutable launch metadata like its routing provenance.
-const requestedModels = new Map<string, string>();
-// Launch heartbeat cadences, keyed by owner and launch operation rather than task id: a command's
-// record can be observed before its native start resolves, and it must already carry its cadence.
-const launchHeartbeats = new Map<string, { heartbeatMs: number; taskId?: C.TaskId }>();
-function launchKey(ownerId: string, operation: string): string {
-	return `${ownerId}\0${operation}`;
-}
-/** Record a launch's cadence before native admission; returns the key to forget if admission fails. */
-function rememberLaunchHeartbeat(ownerId: C.OwnerId, operation: C.OperationId, heartbeatMs?: number) {
-	const key = launchKey(ownerId, operation);
+type LaunchHeartbeat = { heartbeatMs: number; taskId?: C.TaskId };
+/**
+ * Immutable launch metadata an owner's task records carry; native records own lifecycle and mutable execution
+ * metadata. It belongs to the owner and goes with it (#4451): an eviction or a failed launch forgets its entries, and a
+ * closed owner forgets them all.
+ */
+export type LaunchMetadata = {
+	/** Routing provenance, by task id. */
+	readonly routerSelections: Map<string, C.RouterSelection>;
+	/** The model each launch asked for, by task id. */
+	readonly requestedModels: Map<string, string>;
+	/**
+	 * Heartbeat cadences, by launch operation rather than task id: a command's record can be observed before its
+	 * native start resolves, and it must already carry its cadence.
+	 */
+	readonly launchHeartbeats: Map<string, LaunchHeartbeat>;
+};
+/** Record a launch's cadence before native admission; returns the entry this launch must forget if it fails. */
+function rememberLaunchHeartbeat(launches: LaunchMetadata, operation: C.OperationId, heartbeatMs?: number) {
 	// A replayed operation keeps the cadence of the launch that admitted it.
-	if (heartbeatMs === undefined || launchHeartbeats.has(key)) return undefined;
-	launchHeartbeats.set(key, { heartbeatMs });
-	return key;
+	if (heartbeatMs === undefined || launches.launchHeartbeats.has(operation)) return undefined;
+	const provisional: LaunchHeartbeat = { heartbeatMs };
+	launches.launchHeartbeats.set(operation, provisional);
+	return provisional;
 }
-function claimLaunchHeartbeat(ownerId: C.OwnerId, operation: C.OperationId, taskId: C.TaskId, heartbeatMs?: number) {
-	const key = launchKey(ownerId, operation);
-	if (heartbeatMs === undefined) launchHeartbeats.delete(key);
-	else launchHeartbeats.set(key, { heartbeatMs, taskId });
+function claimLaunchHeartbeat(
+	launches: LaunchMetadata,
+	operation: C.OperationId,
+	taskId: C.TaskId,
+	heartbeatMs?: number,
+) {
+	if (heartbeatMs === undefined) launches.launchHeartbeats.delete(operation);
+	else launches.launchHeartbeats.set(operation, { heartbeatMs, taskId });
 }
-function record(value: native.TaskRecord): C.TaskRecord {
+function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
-	const routerSelection = routerSelections.get(value.ref.taskId);
-	const requestedModel = requestedModels.get(value.ref.taskId);
-	const heartbeatMs = launchHeartbeats.get(launchKey(value.ref.ownerId, value.launchOperationId))?.heartbeatMs;
+	const routerSelection = launches.routerSelections.get(value.ref.taskId);
+	const requestedModel = launches.requestedModels.get(value.ref.taskId);
+	const heartbeatMs = launches.launchHeartbeats.get(value.launchOperationId)?.heartbeatMs;
 	return {
 		ref: reference(value.ref),
 		launchOperationId: value.launchOperationId as C.OperationId,
@@ -380,7 +391,7 @@ function record(value: native.TaskRecord): C.TaskRecord {
 		output: output(value.output),
 	};
 }
-function snapshot(value: native.OwnerSnapshot): C.OwnerSnapshot {
+function snapshot(value: native.OwnerSnapshot, launches: LaunchMetadata): C.OwnerSnapshot {
 	if (value.state !== "open" && value.state !== "closing" && value.state !== "closed")
 		throw new Error(`Invalid native owner state: ${value.state}`);
 	return {
@@ -388,7 +399,7 @@ function snapshot(value: native.OwnerSnapshot): C.OwnerSnapshot {
 		scope: value.scope,
 		generation: value.generation as C.Generation,
 		state: value.state,
-		tasks: value.tasks.map(record),
+		tasks: value.tasks.map((task) => record(task, launches)),
 		cursor: cursor(value.cursor),
 	};
 }
@@ -398,10 +409,10 @@ function activity(value: native.ActivityReport): C.ActivityReport {
 	// Native tagged variants are owned wire data; only attention-set has a wider generated declaration.
 	return value as C.ActivityReport;
 }
-function payload(value: native.TaskEvent): C.TaskEvent {
+function payload(value: native.TaskEvent, launches: LaunchMetadata): C.TaskEvent {
 	switch (value.kind) {
 		case "task-admitted":
-			return { kind: value.kind, task: record(value.task) };
+			return { kind: value.kind, task: record(value.task, launches) };
 		case "task-started":
 			return { kind: value.kind, ref: reference(value.ref) };
 		case "wait-started": {
@@ -437,14 +448,14 @@ function payload(value: native.TaskEvent): C.TaskEvent {
 			return { kind: value.kind };
 	}
 }
-function event(value: native.NativeEvent): C.NativeEvent {
+function event(value: native.NativeEvent, launches: LaunchMetadata): C.NativeEvent {
 	if (value.schemaVersion !== 1) throw new Error("Unsupported native task event schema");
 	return {
 		schemaVersion: 1,
 		cursor: cursor(value.cursor),
 		ownerId: value.ownerId as C.OwnerId,
 		...(value.taskId === undefined ? {} : { taskId: value.taskId as C.TaskId }),
-		payload: payload(value.payload),
+		payload: payload(value.payload, launches),
 	};
 }
 function waitOutcome(value: native.WaitOutcome): C.WaitOutcome {
@@ -577,6 +588,7 @@ const MAX_PENDING_EVENTS = 64;
 export class TaskSubscription {
 	#native: native.TaskSupervisor;
 	#lease: native.SubscriptionLease;
+	#launches: LaunchMetadata;
 	#resource = new AsyncResource("TaskSubscription");
 	#timer?: ReturnType<typeof setTimeout>;
 	#queue: C.NativeEvent[] = [];
@@ -592,11 +604,17 @@ export class TaskSubscription {
 	readonly events: AsyncIterable<C.NativeEvent>;
 	readonly lease: SubscriptionLease = new SubscriptionCapability();
 
-	constructor(actor: native.TaskSupervisor, initial: native.NativeTaskSubscription, onDispose: () => void) {
+	constructor(
+		actor: native.TaskSupervisor,
+		initial: native.NativeTaskSubscription,
+		launches: LaunchMetadata,
+		onDispose: () => void,
+	) {
 		Object.freeze(this.lease);
 		this.#native = actor;
 		this.#lease = initial.lease;
-		this.#snapshot = snapshot(initial.snapshot);
+		this.#launches = launches;
+		this.#snapshot = snapshot(initial.snapshot, launches);
 		this.#cursor = cursor(initial.cursor);
 		this.#onDispose = onDispose;
 		this.events = {
@@ -652,8 +670,8 @@ export class TaskSubscription {
 			this.dispose();
 			return;
 		}
-		const events = drained.value.events.map(event);
-		if (drained.value.snapshot) this.#snapshot = snapshot(drained.value.snapshot);
+		const events = drained.value.events.map((value) => event(value, this.#launches));
+		if (drained.value.snapshot) this.#snapshot = snapshot(drained.value.snapshot, this.#launches);
 		for (const value of events) {
 			if (BigInt(value.cursor.sequence) > BigInt(this.#snapshot.cursor.sequence))
 				this.#snapshot = applyEvent(this.#snapshot, value);
@@ -705,7 +723,7 @@ export class TaskSubscription {
 	}
 }
 
-/** Test-only: how many entries an owner's host keeps per task, and the module-wide per-task maps (#4385). */
+/** Test-only: how many entries an owner's host keeps per task, its launch metadata included (#4385, #4451). */
 export function taskHostStateSizesForTesting(owner: OwnerLease) {
 	const state = environment.owners.get(owner);
 	if (!state) throw new TypeError("Foreign owner capability");
@@ -716,9 +734,9 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		unconfirmedCleanups: state.unconfirmedCleanups.size,
 		permits: state.permits.size,
 		commandStarts: state.commandStarts.size,
-		routerSelections: routerSelections.size,
-		requestedModels: requestedModels.size,
-		launchHeartbeats: launchHeartbeats.size,
+		routerSelections: state.launches.routerSelections.size,
+		requestedModels: state.launches.requestedModels.size,
+		launchHeartbeats: state.launches.launchHeartbeats.size,
 	};
 }
 
@@ -772,6 +790,7 @@ export class TaskSupervisor {
 					releases: new Set(),
 					releaseFailures: [],
 					commandStarts: new Map(),
+					launches: { routerSelections: new Map(), requestedModels: new Map(), launchHeartbeats: new Map() },
 				};
 				this.#owners.set(owner, ownerState);
 				this.#ownerIds.set(id, owner);
@@ -843,10 +862,10 @@ export class TaskSupervisor {
 		state.tasks.delete(taskId);
 		state.settledTasks.delete(taskId);
 		state.quarantinedTasks.delete(taskId);
-		routerSelections.delete(taskId);
-		requestedModels.delete(taskId);
-		const key = launchKey(state.id, operation);
-		if (launchHeartbeats.get(key)?.taskId === taskId) launchHeartbeats.delete(key);
+		state.launches.routerSelections.delete(taskId);
+		state.launches.requestedModels.delete(taskId);
+		if (state.launches.launchHeartbeats.get(operation)?.taskId === taskId)
+			state.launches.launchHeartbeats.delete(operation);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -978,6 +997,7 @@ export class TaskSupervisor {
 		});
 		state.commandAdmissions.add(admission);
 		let held: HeldPermit | undefined;
+		let provisional: LaunchHeartbeat | undefined;
 		try {
 			held = await this.#acquireProcessPermit(
 				state,
@@ -986,7 +1006,7 @@ export class TaskSupervisor {
 			);
 			const { heartbeatMs, ...nativeIntent } = intent;
 			const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
-			const heartbeatKey = rememberLaunchHeartbeat(state.id, operation, cadence);
+			provisional = rememberLaunchHeartbeat(state.launches, operation, cadence);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
 				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
@@ -1003,16 +1023,14 @@ export class TaskSupervisor {
 				);
 			}
 			const admitted = mapped(started, (lease) => lease, startErrors);
-			if (!admitted.ok) {
-				if (heartbeatKey !== undefined) launchHeartbeats.delete(heartbeatKey);
-				return admitted;
-			}
+			if (!admitted.ok) return admitted;
 			const ref = this.#native.taskReference(admitted.value);
 			if (!ref.ok) throw new Error(ref.error.message);
 			const id = ref.value.taskId as C.TaskId;
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
-			claimLaunchHeartbeat(state.id, operation, id, cadence);
+			// A closing owner forgets its launch metadata, maybe already: a late admission adds none (#4451).
+			if (!state.closing.signal.aborted) claimLaunchHeartbeat(state.launches, operation, id, cadence);
 			let bindFailure: Error | undefined;
 			if (held?.release.bindProcess) {
 				try {
@@ -1054,6 +1072,9 @@ export class TaskSupervisor {
 			}
 			return { ok: true, value: task };
 		} finally {
+			// A launch that admitted no task of its own keeps no provisional cadence (#4451).
+			if (state.launches.launchHeartbeats.get(operation) === provisional)
+				state.launches.launchHeartbeats.delete(operation);
 			try {
 				const release = held?.release;
 				await release?.();
@@ -1143,9 +1164,9 @@ export class TaskSupervisor {
 		const id = ref.value.taskId as C.TaskId;
 		const existing = state.tasks.get(id);
 		if (existing) return { ok: true, value: existing };
-		claimLaunchHeartbeat(state.id, operation, id, cadence);
-		if (intent.routerSelection) routerSelections.set(id, Object.freeze({ ...intent.routerSelection }));
-		if (intent.requestedModel) requestedModels.set(id, intent.requestedModel);
+		claimLaunchHeartbeat(state.launches, operation, id, cadence);
+		if (intent.routerSelection) state.launches.routerSelections.set(id, Object.freeze({ ...intent.routerSelection }));
+		if (intent.requestedModel) state.launches.requestedModels.set(id, intent.requestedModel);
 		const task = new TaskCapability();
 		Object.freeze(task);
 		const taskState: TaskState = {
@@ -1419,6 +1440,11 @@ export class TaskSupervisor {
 					watch.drain();
 					watch.dispose(false);
 				}
+				// No watcher is left to read the closed owner's records, and none can start: its launch metadata goes
+				// with it (#4451).
+				state.launches.routerSelections.clear();
+				state.launches.requestedModels.clear();
+				state.launches.launchHeartbeats.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);
@@ -1454,7 +1480,7 @@ export class TaskSupervisor {
 		return mapped(
 			this.#native.watchOwnerTasks(state.native, (hint) => subscription?.wake(hint), from),
 			(initial) => {
-				subscription = new TaskSubscription(this.#native, initial, () => {
+				subscription = new TaskSubscription(this.#native, initial, state.launches, () => {
 					if (subscription) state.watches.delete(subscription);
 				});
 				state.watches.add(subscription);
