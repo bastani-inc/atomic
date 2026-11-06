@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { type FakeLibsqlServer, startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
 import { createProcessSuspender } from "../helpers/process-suspension.js";
-import { bunExecutable, readStreamText, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
+import { bunExecutable, readStreamText, type SpawnedProcess, sleep, spawnProcess } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -57,29 +57,32 @@ test(
 			stderr: "pipe",
 		});
 		const pid = child.pid!;
-		let stalls = 0;
-		let resumed: Promise<void> | undefined;
+		const opened = Promise.withResolvers<void>();
+		const stopped = Promise.withResolvers<void>();
 		try {
 			const readLine = lineReader(child);
 			assert.equal(await readLine(), "ready");
-			// Stop the writer once its first append has opened a transaction on the server: the server answers while it
-			// is stopped and expires the stream, and the writer's next statement in that transaction finds it gone.
-			fake.onOpenTransaction(async () => {
+			// Stop the writer once its first append has opened a transaction on the server: the server answers once it
+			// is stopped and expires the stream, and the writer's next statement in that transaction finds it gone. The
+			// test stops it outside the server's handler, so a failed check fails the test instead of that one request.
+			fake.onOpenTransaction(() => {
 				fake.onOpenTransaction(undefined);
-				await suspender.suspend(pid);
-				assert.equal(await suspender.isSuspended(pid), true, "the writer is stopped");
-				stalls++;
-				resumed = new Promise((resolve) => setTimeout(resolve, STALL_MS)).then(() => suspender.resume(pid));
+				opened.resolve();
+				return stopped.promise;
 			});
 			child.stdin!.write("go\n");
+			await opened.promise;
+			await suspender.suspend(pid);
+			assert.equal(await suspender.isSuspended(pid), true, "the writer is stopped");
+			stopped.resolve();
+			await sleep(STALL_MS);
+			await suspender.resume(pid);
 			const report = JSON.parse(await readLine()) as {
 				outcomes?: string[];
 				failure?: { name: string; code?: string; message: string };
 				warnings: { name: string; code?: string; outcome?: string }[];
 			};
-			await resumed;
 			assert.equal(await child.exited, 0, JSON.stringify(report.failure));
-			assert.equal(stalls, 1);
 			assert.equal(
 				fake.expiredStatements,
 				1,
@@ -106,6 +109,7 @@ test(
 				]).flat(),
 			);
 		} finally {
+			stopped.resolve();
 			if (child.exitCode === null && child.signalCode === null) {
 				await suspender.resume(pid).catch(() => undefined);
 				child.kill("SIGKILL");

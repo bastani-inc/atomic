@@ -9,7 +9,11 @@ const CONTROLLER_START_TIMEOUT_MS = 30_000;
 export interface ProcessSuspender {
 	suspend(pid: number): Promise<void>;
 	resume(pid: number): Promise<void>;
-	/** Whether the operating system reports the process stopped: every thread of it, on Windows. */
+	/**
+	 * Whether the operating system reports the process stopped. On Windows, every thread of it holds a suspension: a
+	 * thread blocked in the kernel, like one reading a pipe, keeps that wait's reason instead of "Suspended" until the
+	 * wait ends, yet it cannot run the process's code again until it is resumed.
+	 */
 	isSuspended(pid: number): Promise<boolean>;
 	close(): Promise<void>;
 }
@@ -18,15 +22,29 @@ const CONTROLLER_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 Add-Type -Namespace Atomic -Name ProcessSuspension -MemberDefinition @'
 [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenThread(uint access, bool inherit, uint tid);
 [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
 [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr handle);
 [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr handle);
+[DllImport("ntdll.dll")] public static extern int NtQueryInformationThread(IntPtr handle, int infoClass, ref uint info, int length, IntPtr returned);
 '@
 function Invoke-Operation([string]$operation, [uint32]$processId) {
   if ($operation -eq 'state') {
-    $threads = @([Diagnostics.Process]::GetProcessById($processId).Threads)
-    $suspended = @($threads | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' })
-    if ($threads.Count -gt 0 -and $suspended.Count -eq $threads.Count) { return 'suspended' }
+    $held = 0
+    foreach ($thread in @([Diagnostics.Process]::GetProcessById($processId).Threads)) {
+      # THREAD_QUERY_INFORMATION. A thread that cannot be opened has exited and runs nothing.
+      $handle = [Atomic.ProcessSuspension]::OpenThread(0x0040, $false, [uint32]$thread.Id)
+      if ($handle -eq [IntPtr]::Zero) { continue }
+      try {
+        $count = [uint32]0
+        # ThreadSuspendCount: how many suspensions the thread holds.
+        $status = [Atomic.ProcessSuspension]::NtQueryInformationThread($handle, 35, [ref]$count, 4, [IntPtr]::Zero)
+        if ($status -ne 0) { throw "NtQueryInformationThread failed for thread $($thread.Id) (NTSTATUS 0x$('{0:X8}' -f $status))" }
+        if ($count -eq 0) { return 'active' }
+        $held++
+      } finally { [void][Atomic.ProcessSuspension]::CloseHandle($handle) }
+    }
+    if ($held -gt 0) { return 'suspended' }
     return 'active'
   }
   $handle = [Atomic.ProcessSuspension]::OpenProcess(0x0800, $false, $processId)
