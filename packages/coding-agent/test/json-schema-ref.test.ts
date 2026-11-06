@@ -18,3 +18,16 @@ test("resolveSchemaRef returns undefined for remote, missing and malformed refer
 	assert.equal(resolveSchemaRef("#/$defs/missing", root), undefined);
 	assert.equal(resolveSchemaRef("#/$defs/%E0%A4%A", root), undefined);
 });
+
+test("resolveSchemaRef resolves array indexes and empty keys as JSON Pointers do", () => {
+	const first = { type: "string" };
+	const second = { type: "number" };
+	const unnamed = { type: "boolean" };
+	const schema = { anyOf: [first, second], $defs: { "": unnamed }, "": item };
+	assert.equal(resolveSchemaRef("#/anyOf/1", schema), second);
+	assert.equal(resolveSchemaRef("#/$defs/", schema), unnamed);
+	assert.equal(resolveSchemaRef("#/", schema), item);
+	for (const ref of ["#/anyOf/2", "#/anyOf/01"]) {
+		assert.equal(resolveSchemaRef(ref, schema), undefined, ref);
+	}
+});
