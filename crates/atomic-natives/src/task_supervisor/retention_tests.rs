@@ -292,3 +292,80 @@ fn canonical_ordinals_parse_only_their_own_prefix() {
 		assert_eq!(ordinal(rejected), None, "{rejected}");
 	}
 }
+
+#[test]
+fn a_held_finished_task_outlives_the_retention_until_released_4385() {
+	let (a, o) = owner();
+	let held = finished(&a, &o, "held");
+	a.retain_record(&held).unwrap();
+	let later: Vec<_> =
+		(0..FINISHED_TASK_RETENTION).map(|index| finished(&a, &o, &format!("op-{index}"))).collect();
+	assert!(a.task_ref(&held).is_ok(), "a held task is skipped, not evicted");
+	assert_eq!(
+		a.task_ref(&later[0]).unwrap_err().code,
+		"TaskEvicted",
+		"the oldest unheld task goes instead"
+	);
+	a.release_record(&held).unwrap();
+	assert!(a.task_ref(&held).is_ok(), "releasing within the retention evicts nothing");
+	finished(&a, &o, "after-release");
+	assert_eq!(a.task_ref(&held).unwrap_err().code, "TaskEvicted");
+	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION);
+}
+
+#[test]
+fn held_tasks_beyond_the_retention_are_evicted_as_they_are_released_4385() {
+	let (a, o) = owner();
+	let tasks: Vec<_> = (0..FINISHED_TASK_RETENTION + 5)
+		.map(|index| {
+			let (task, runner) = running(&a, &o, &format!("op-{index}"));
+			a.retain_record(&task).unwrap();
+			finish(&a, &runner);
+			task
+		})
+		.collect();
+	assert_eq!(
+		retained_ids(&a, &o).len(),
+		FINISHED_TASK_RETENTION + 5,
+		"held tasks are never evicted"
+	);
+	for task in &tasks {
+		a.release_record(task).unwrap();
+	}
+	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION);
+	for task in &tasks[..5] {
+		assert_eq!(a.task_ref(task).unwrap_err().code, "TaskEvicted", "the oldest go first");
+	}
+	assert!(a.task_ref(&tasks[5]).is_ok());
+}
+
+#[test]
+fn a_closing_owner_no_longer_honors_holds_4385() {
+	let (a, o) = owner();
+	for index in 0..FINISHED_TASK_RETENTION + 5 {
+		let (task, runner) = running(&a, &o, &format!("op-{index}"));
+		a.retain_record(&task).unwrap();
+		finish(&a, &runner);
+	}
+	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION + 5);
+	a.begin_close(&o).unwrap();
+	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION);
+}
+
+#[test]
+fn holds_refuse_unknown_tasks_and_ignore_evicted_ones_4385() {
+	let (a, o) = owner();
+	let first = finished(&a, &o, "first");
+	for index in 0..FINISHED_TASK_RETENTION {
+		finished(&a, &o, &format!("op-{index}"));
+	}
+	assert_eq!(a.retain_record(&first).unwrap_err().code, "TaskEvicted");
+	assert_eq!(a.release_record(&first), Ok(()));
+	let next = a.state.lock().unwrap().owners[0].tasks.next_ordinal();
+	let never_admitted = TaskLease { cap: Cap { task: Some(next), ..first.cap.clone() } };
+	assert_eq!(a.retain_record(&never_admitted).unwrap_err().code, "UnknownTask");
+	assert_eq!(a.release_record(&never_admitted).unwrap_err().code, "UnknownTask");
+	let foreign =
+		TaskLease { cap: Cap { environment: first.cap.environment + 1, ..first.cap.clone() } };
+	assert_eq!(a.release_record(&foreign).unwrap_err().code, "UnknownTask");
+}

@@ -398,6 +398,7 @@ impl Actor {
 			settlement: None,
 			cancel_cause: None,
 			cancellation_output: None,
+			held: false,
 			command: Some(command.clone()),
 		});
 		state.emit(oi, Some(reference.task_id), TaskEvent::TaskAdmitted { task: record });

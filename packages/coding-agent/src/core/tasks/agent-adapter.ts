@@ -101,6 +101,19 @@ export class AgentTaskHost {
 	resolveTask(taskId: C.TaskId): C.Result<TaskLease, C.WaitError> {
 		return this.supervisor.lookupTask(this.owner, taskId);
 	}
+	/**
+	 * Keeps a finished task's record past the finished-task retention until {@link releaseTaskRecord}, while its
+	 * completion notice is still being built (#4385). A task this owner does not hold, or never had, is left alone.
+	 */
+	retainTaskRecord(taskId: C.TaskId): void {
+		const task = this.resolveTask(taskId);
+		if (task.ok) this.supervisor.retainTaskRecord(task.value);
+	}
+	/** Ends a {@link retainTaskRecord} hold; a task this owner no longer keeps is left alone. */
+	releaseTaskRecord(taskId: C.TaskId): void {
+		const task = this.resolveTask(taskId);
+		if (task.ok) this.supervisor.releaseTaskRecord(task.value);
+	}
 
 	observeAgentLaunch(
 		taskId: C.TaskId,

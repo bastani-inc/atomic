@@ -152,6 +152,7 @@ export function formatTaskCompletion(
 /**
  * Session history retains intent even when model admission or its acknowledgement fails.
  * Intents restored from an earlier process wait for `flushRestored()`; they never ride a live flush.
+ * `delivered` runs once the notice of an envelope recorded by this process is admitted and acknowledged.
  */
 export class TaskCompletionOutbox {
 	private readonly entries = new Map<string, TaskCompletionEnvelope>();
@@ -161,15 +162,18 @@ export class TaskCompletionOutbox {
 	private readonly session: SessionManager;
 	private readonly isOpen: () => boolean;
 	private readonly admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>;
+	private readonly delivered: (envelope: TaskCompletionEnvelope) => void;
 
 	constructor(
 		session: SessionManager,
 		isOpen: () => boolean,
 		admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>,
+		delivered: (envelope: TaskCompletionEnvelope) => void = () => {},
 	) {
 		this.session = session;
 		this.isOpen = isOpen;
 		this.admit = admit;
+		this.delivered = delivered;
 		for (const envelope of pendingTaskCompletionIntents(session)) {
 			this.entries.set(envelope.completionId, envelope);
 			this.restored.add(envelope.completionId);
@@ -229,6 +233,7 @@ export class TaskCompletionOutbox {
 				await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
 				this.entries.delete(envelope.completionId);
 				this.restored.delete(envelope.completionId);
+				if (!restored) this.delivered(envelope);
 			} catch {
 				// Execution stays terminal. Explicit retry uses this same envelope and identity.
 			}

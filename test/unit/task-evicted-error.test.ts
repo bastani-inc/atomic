@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { isRetryableTaskError } from "../../packages/coding-agent/src/core/tasks/cleanup-error.js";
 import {
 	FINISHED_TASK_RETENTION,
+	findTaskEvictedError,
 	isTaskEvictedError,
 	rehydrateTaskEvictedError,
 	TaskEvictedError,
@@ -97,7 +98,30 @@ test("a wait or kill on an evicted task fails with a plain headline, a hint, and
 	assert.equal(new TaskToolError({ code: "UnknownTask", message: "UnknownTask" }, taskId).cause, undefined);
 });
 
+test("findTaskEvictedError finds the error in a failure's cause chain within eight links (#4385)", () => {
+	const evicted = new TaskEvictedError({ taskId });
+	assert.equal(findTaskEvictedError(evicted), evicted);
+	const toolFailure = new TaskToolError({ code: "TaskEvicted", message: "TaskEvicted" }, taskId);
+	assert.equal(findTaskEvictedError(toolFailure), toolFailure.cause);
+	assert.equal(findTaskEvictedError(toolFailure)?.taskId, taskId);
+	const wrap = (cause: unknown, links: number): unknown =>
+		links === 0 ? cause : wrap(new Error("wrapped", { cause }), links - 1);
+	assert.equal(findTaskEvictedError(wrap(evicted, 7)), evicted);
+	assert.equal(findTaskEvictedError(wrap(evicted, 8)), undefined);
+	const copied = JSON.parse(JSON.stringify(evicted));
+	assert.equal(findTaskEvictedError({ cause: copied }), copied);
+	for (const other of [
+		new Error("other"),
+		new TaskToolError({ code: "UnknownTask", message: "UnknownTask" }, taskId),
+		"TaskEvictedError",
+		null,
+		undefined,
+	])
+		assert.equal(findTaskEvictedError(other), undefined);
+});
+
 test("the task eviction error family is exported from @bastani/atomic (#4385)", () => {
+	assert.equal(atomic.findTaskEvictedError, findTaskEvictedError);
 	assert.equal(atomic.TaskEvictedError, TaskEvictedError);
 	assert.equal(atomic.isTaskEvictedError, isTaskEvictedError);
 	assert.equal(atomic.rehydrateTaskEvictedError, rehydrateTaskEvictedError);

@@ -71,6 +71,13 @@ export declare class TaskSupervisor {
   taskProcessGroup(task: TaskLease): {ok:true,value:number|null}|{ok:false,error:TaskFailure}
   /** Read the retained terminal receipt without registering an observation or replaying execution. */
   taskSettlement(task: TaskLease): {ok:true,value:SettlementReceipt}|{ok:false,error:TaskFailure}
+  /**
+   * Keeps a task's record past the finished-task retention until released, while an open owner's host still
+   * reads it, for example to build its completion notice. A closing owner's holds no longer count.
+   */
+  retainTaskRecord(task: TaskLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
+  /** Ends a retainTaskRecord hold. Releasing a task the owner already evicted is a no-op. */
+  releaseTaskRecord(task: TaskLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   lookupTask(owner: OwnerLease, taskId: string): {ok:true,value:TaskLease}|{ok:false,error:TaskFailure}
   /**
    * Registers the observation before returning. Await observeTaskWait separately.

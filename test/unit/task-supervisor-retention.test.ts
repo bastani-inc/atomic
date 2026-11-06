@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import * as native from "@bastani/atomic-natives";
 import { test } from "vitest";
+import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type * as C from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
 	FINISHED_TASK_RETENTION,
@@ -350,3 +351,43 @@ test.runIf(process.platform !== "win32")(
 		}
 	},
 );
+
+test("a host keeps a finished task it retains past the retention until it releases it (#4385)", async () => {
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: randomUUID() }, authorizeLaunch() {} });
+	const finish = async (operation: string) => {
+		const started = value(
+			await host.startAgentTask(agentIntent, operation as C.OperationId, () => ({
+				result: Promise.resolve(failed),
+				cleanup: Promise.resolve({ kind: "reaped" }),
+			})),
+		);
+		assert.equal(value(await host.waitForTask(started.taskId)).kind, "settled");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		return started.taskId;
+	};
+	const converged = async (expected: () => boolean) => {
+		const deadline = Date.now() + CONVERGE_TIMEOUT_MS;
+		while (!expected()) {
+			assert.ok(Date.now() < deadline, "not converged");
+			await sleep(5);
+		}
+	};
+	try {
+		host.retainTaskRecord("task-0-0-0" as C.TaskId);
+		host.releaseTaskRecord("task-0-0-0" as C.TaskId);
+		const held = await finish("held");
+		host.retainTaskRecord(held);
+		const first = await finish("first");
+		for (let index = 0; index < FINISHED_TASK_RETENTION; index++) await finish(`fill-${index}`);
+		await converged(() => !host.resolveTask(first).ok);
+		assert.equal(refusal(host.resolveTask(first)).code, "TaskEvicted", "the oldest unheld task went instead");
+		assert.ok(host.resolveTask(held).ok, "the held task is kept");
+		host.releaseTaskRecord(held);
+		await finish("after-release");
+		await converged(() => !host.resolveTask(held).ok);
+		assert.equal(refusal(host.resolveTask(held)).code, "TaskEvicted");
+		host.releaseTaskRecord(held);
+	} finally {
+		await host.close("session-close");
+	}
+});

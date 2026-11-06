@@ -70,6 +70,7 @@ export type {
 } from "./core/tasks/contracts.js";
 export {
 	FINISHED_TASK_RETENTION,
+	findTaskEvictedError,
 	isTaskEvictedError,
 	rehydrateTaskEvictedError,
 	TaskEvictedError,

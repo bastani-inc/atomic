@@ -365,6 +365,17 @@ impl NapiTaskSupervisor {
 	pub fn task_settlement(&self, env: Env, task: &TaskLease) -> DoorValue<SettlementReceipt> {
 		DoorValue(self.check(&env, "UnknownTask").and_then(|()| self.actor.task_settlement(task)))
 	}
+	/// Keeps a task's record past the finished-task retention until released, while an open owner's host still
+	/// reads it, for example to build its completion notice. A closing owner's holds no longer count.
+	#[napi(ts_return_type = "{ok:true,value:undefined}|{ok:false,error:TaskFailure}")]
+	pub fn retain_task_record(&self, env: Env, task: &TaskLease) -> DoorValue<()> {
+		DoorValue(self.check(&env, "UnknownTask").and_then(|()| self.actor.retain_record(task)))
+	}
+	/// Ends a retainTaskRecord hold. Releasing a task the owner already evicted is a no-op.
+	#[napi(ts_return_type = "{ok:true,value:undefined}|{ok:false,error:TaskFailure}")]
+	pub fn release_task_record(&self, env: Env, task: &TaskLease) -> DoorValue<()> {
+		DoorValue(self.check(&env, "UnknownTask").and_then(|()| self.actor.release_record(task)))
+	}
 	#[napi(ts_return_type = "{ok:true,value:TaskLease}|{ok:false,error:TaskFailure}")]
 	pub fn lookup_task(
 		&self,

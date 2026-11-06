@@ -682,6 +682,23 @@ export class TaskSubscription {
 	}
 }
 
+/** Test-only: how many entries an owner's host keeps per task, and the module-wide per-task maps (#4385). */
+export function taskHostStateSizesForTesting(owner: OwnerLease) {
+	const state = environment.owners.get(owner);
+	if (!state) throw new TypeError("Foreign owner capability");
+	return {
+		tasks: state.tasks.size,
+		settledTasks: state.settledTasks.size,
+		quarantinedTasks: state.quarantinedTasks.size,
+		unconfirmedCleanups: state.unconfirmedCleanups.size,
+		permits: state.permits.size,
+		commandStarts: state.commandStarts.size,
+		routerSelections: routerSelections.size,
+		requestedModels: requestedModels.size,
+		launchHeartbeats: launchHeartbeats.size,
+	};
+}
+
 function createNativeSupervisor(): native.TaskSupervisor {
 	// Keep loading separate from `new`: type-assertion erasure in the build
 	// must not move construction onto createModuleRequire instead of the class.
@@ -1193,6 +1210,17 @@ export class TaskSupervisor {
 	}
 	taskReference(task: TaskLease): C.NativeTaskRef {
 		return reference(this.#task(task).ref);
+	}
+	/**
+	 * Keeps a task's record past the finished-task retention until {@link releaseTaskRecord}, while the host still
+	 * reads it, for example to build its completion notice (#4385). The holds of a closing owner no longer count.
+	 */
+	retainTaskRecord(task: TaskLease): void {
+		mapped(this.#native.retainTaskRecord(this.#task(task).native), () => undefined, []);
+	}
+	/** Ends a {@link retainTaskRecord} hold; a task its owner already evicted holds nothing. */
+	releaseTaskRecord(task: TaskLease): void {
+		mapped(this.#native.releaseTaskRecord(this.#task(task).native), () => undefined, []);
 	}
 	async waitForTask(
 		task: TaskLease,

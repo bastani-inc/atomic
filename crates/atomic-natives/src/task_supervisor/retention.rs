@@ -36,13 +36,21 @@ impl OwnerTasks {
 	fn mark_finished(&mut self, ordinal: usize, sequence: u64) {
 		self.finished.push_back((ordinal, sequence));
 	}
-	/// Removes the oldest finished task once more than the retention are finished, if every watcher processed it.
-	fn evict_oldest(&mut self, observed_through: u64) -> Option<Task> {
-		let (ordinal, finished_at) = *self.finished.front()?;
-		if self.finished.len() <= FINISHED_TASK_RETENTION || finished_at > observed_through {
+	/// Removes the oldest finished task a host does not hold once more than the retention are finished, if every
+	/// watcher processed it. Holds count only while `honor_holds`: a closing owner delivers no more notices.
+	fn evict_oldest(&mut self, observed_through: u64, honor_holds: bool) -> Option<Task> {
+		if self.finished.len() <= FINISHED_TASK_RETENTION {
 			return None;
 		}
-		self.finished.pop_front();
+		let position = self
+			.finished
+			.iter()
+			.position(|(ordinal, _)| !(honor_holds && self.records[ordinal].held))?;
+		let (ordinal, finished_at) = self.finished[position];
+		if finished_at > observed_through {
+			return None;
+		}
+		self.finished.remove(position);
 		self.records.remove(&ordinal)
 	}
 }
@@ -83,8 +91,9 @@ impl State {
 	#[must_use]
 	pub fn retire(&mut self, oi: usize) -> Vec<Task> {
 		let observed = self.observed_through(oi);
+		let honor_holds = self.owners[oi].state == "open";
 		let mut evicted = Vec::new();
-		while let Some(task) = self.owners[oi].tasks.evict_oldest(observed) {
+		while let Some(task) = self.owners[oi].tasks.evict_oldest(observed, honor_holds) {
 			let reference = task.record.reference.clone();
 			self.emit(oi, Some(reference.task_id.clone()), TaskEvent::TaskEvicted { reference });
 			evicted.push(task);
@@ -119,5 +128,27 @@ impl State {
 			None if owner.tasks.evicted(ordinal) => Err(fail("TaskEvicted")),
 			None => Err(fail("UnknownTask")),
 		}
+	}
+}
+impl Actor {
+	/// Keeps a task's record past the retention until `release_record`, while a host still reads it.
+	pub(super) fn retain_record(&self, task: &TaskLease) -> Door<()> {
+		let mut s = self.state.lock().unwrap();
+		let (oi, ti) = s.known_task(self.id, &task.cap)?;
+		s.owners[oi].tasks[ti].held = true;
+		Ok(())
+	}
+	/// Ends a hold, evicting what the retention no longer covers. An evicted task holds nothing.
+	pub(super) fn release_record(&self, task: &TaskLease) -> Door<()> {
+		let mut s = self.state.lock().unwrap();
+		if task.cap.environment == self.id && s.evicted(&task.cap) {
+			return Ok(());
+		}
+		let (oi, ti) = s.known_task(self.id, &task.cap)?;
+		s.owners[oi].tasks[ti].held = false;
+		let evicted = s.retire(oi);
+		drop(s);
+		drop(evicted);
+		Ok(())
 	}
 }

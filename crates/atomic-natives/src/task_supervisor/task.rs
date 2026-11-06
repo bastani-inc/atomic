@@ -404,6 +404,8 @@ pub(super) struct Task {
 	// Rejected late outcomes supply output evidence, never terminal authority.
 	pub cancellation_output: Option<OutputRef>,
 	pub command: Option<Arc<process::CommandTask>>,
+	/// A host still reads this record, for example to build its completion notice: an open owner never evicts it.
+	pub held: bool,
 }
 impl Task {
 	pub fn receipt(&self) -> CancelReceipt {
@@ -503,6 +505,7 @@ impl Actor {
 			settlement: None,
 			cancel_cause: None,
 			cancellation_output: None,
+			held: false,
 			command: None,
 		});
 		s.emit(oi, Some(reference.task_id), TaskEvent::TaskAdmitted { task: record });

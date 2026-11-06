@@ -29,7 +29,7 @@ function evictionHint(retainedFinishedTasks: number): string {
  * It is not retryable: the record does not come back.
  */
 export class TaskEvictedError extends Error {
-	override readonly name = TASK_EVICTED_ERROR_NAME;
+	override readonly name = "TaskEvictedError" as const;
 	readonly code: TaskEvictedErrorCode = TASK_EVICTED_ERROR_CODE;
 	readonly retryable = false;
 	readonly hint: string;
@@ -52,6 +52,21 @@ export function isTaskEvictedError(error: unknown): error is TaskEvictedError {
 	if (typeof error !== "object" || error === null) return false;
 	const candidate = error as { readonly name?: unknown; readonly code?: unknown };
 	return candidate.name === TASK_EVICTED_ERROR_NAME && candidate.code === TASK_EVICTED_ERROR_CODE;
+}
+
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * The {@link TaskEvictedError} that is the error or sits in its `cause` chain within eight links, such as the cause of
+ * the `TaskToolError` a `wait` or `kill` of an evicted task throws; undefined when there is none.
+ */
+export function findTaskEvictedError(error: unknown): TaskEvictedError | undefined {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		if (isTaskEvictedError(current)) return current;
+		current = (current as { readonly cause?: unknown }).cause;
+	}
+	return undefined;
 }
 
 function isRetention(value: unknown): value is number {
