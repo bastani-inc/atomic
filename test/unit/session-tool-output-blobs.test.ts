@@ -8,12 +8,16 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { isSessionBlobError, SessionBlobError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import {
+	SESSION_BLOB_CHUNK_BYTES,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.ts";
 import { MAX_PERSISTED_OUTPUT_BYTES } from "../../packages/coding-agent/src/core/tools/tool-limits.js";
 import { createToolOutputRouter } from "../../packages/coding-agent/src/core/tools/tool-output-protocol.ts";
 import { countingDatabase } from "../helpers/counting-database.js";
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
+import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -70,12 +74,21 @@ async function entryRowBytes(database: SqliteDatabase, sessionId: string): Promi
 async function blobRows(
 	database: SqliteDatabase,
 	sessionId: string,
-): Promise<{ readonly count: number; readonly bytes: number; readonly stored: number }> {
-	const row = await database.get<{ count: number; bytes: number | null; stored: number | null }>(
-		"SELECT count(*) AS count, sum(bytes) AS bytes, sum(length(data)) AS stored FROM session_blobs WHERE session_id = ?",
+): Promise<{ readonly count: number; readonly bytes: number; readonly stored: number; readonly chunks: number }> {
+	const header = await database.get<{ count: number; bytes: number | null }>(
+		"SELECT count(*) AS count, sum(bytes) AS bytes FROM session_blobs WHERE session_id = ?",
 		sessionId,
 	);
-	return { count: Number(row?.count), bytes: Number(row?.bytes ?? 0), stored: Number(row?.stored ?? 0) };
+	const chunks = await database.get<{ count: number; stored: number | null }>(
+		"SELECT count(*) AS count, sum(length(data)) AS stored FROM session_blob_chunks WHERE session_id = ?",
+		sessionId,
+	);
+	return {
+		count: Number(header?.count),
+		bytes: Number(header?.bytes ?? 0),
+		stored: Number(chunks?.stored ?? 0),
+		chunks: Number(chunks?.count),
+	};
 }
 
 describe("a released stage's oversized output is a blob of its session (#4379)", () => {
@@ -101,7 +114,7 @@ describe("a released stage's oversized output is a blob of its session (#4379)",
 					// Listing reads summaries only.
 				}
 				assert.deepEqual(
-					counted.statements.filter((statement) => statement.sql.includes("session_blobs")),
+					counted.statements.filter((statement) => statement.sql.includes("session_blob")),
 					[],
 					"loading and listing never read blobs",
 				);
@@ -116,7 +129,12 @@ describe("a released stage's oversized output is a blob of its session (#4379)",
 				assert.equal(rows.length, 2, "one reference entry and one result message");
 				for (const bytes of rows)
 					assert.ok(bytes < 4096, `an entry row of ${bytes} bytes for a ${size}-byte output`);
-				assert.deepEqual(blobs, { count: 1, bytes: size, stored: size });
+				assert.deepEqual(blobs, {
+					count: 1,
+					bytes: size,
+					stored: size,
+					chunks: Math.ceil(size / SESSION_BLOB_CHUNK_BYTES),
+				});
 			}
 			const total = (rows: number[]) => rows.reduce((sum, bytes) => sum + bytes, 0);
 			// Only the size printed in the preview and recorded in the reference differs.
@@ -124,10 +142,16 @@ describe("a released stage's oversized output is a blob of its session (#4379)",
 		});
 	});
 
-	for (const [adapter, withDatabase] of [
+	type WithDatabase = (body: (subject: { readonly database: SqliteDatabase }) => Promise<void>) => Promise<void>;
+	const adapters: ReadonlyArray<readonly [string, WithDatabase]> = [
 		["SQLite", withNodeSqliteDatabase],
 		["libSQL", withLibsqlDatabase],
-	] as const) {
+		[
+			"SQLite behind a server's row and response limits",
+			(body) => withNodeSqliteDatabase(({ database }) => body({ database: rowLimitedDatabase(database).wrapped })),
+		],
+	];
+	for (const [adapter, withDatabase] of adapters) {
 		test(`an output at the persisted-output cap round-trips through ${adapter} (#4379)`, async () => {
 			await withDatabase(async ({ database }) => {
 				const store = await SqlSessionStore.open(database);

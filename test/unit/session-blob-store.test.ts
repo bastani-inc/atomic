@@ -24,12 +24,21 @@ useTemporaryAgentDir();
 async function blobRows(
 	database: SqliteDatabase,
 	sessionId: string,
-): Promise<{ readonly count: number; readonly bytes: number; readonly stored: number }> {
-	const row = await database.get<{ count: number; bytes: number | null; stored: number | null }>(
-		"SELECT count(*) AS count, sum(bytes) AS bytes, sum(length(data)) AS stored FROM session_blobs WHERE session_id = ?",
+): Promise<{ readonly count: number; readonly bytes: number; readonly stored: number; readonly chunks: number }> {
+	const header = await database.get<{ count: number; bytes: number | null }>(
+		"SELECT count(*) AS count, sum(bytes) AS bytes FROM session_blobs WHERE session_id = ?",
 		sessionId,
 	);
-	return { count: Number(row?.count), bytes: Number(row?.bytes ?? 0), stored: Number(row?.stored ?? 0) };
+	const chunks = await database.get<{ count: number; stored: number | null }>(
+		"SELECT count(*) AS count, sum(length(data)) AS stored FROM session_blob_chunks WHERE session_id = ?",
+		sessionId,
+	);
+	return {
+		count: Number(header?.count),
+		bytes: Number(header?.bytes ?? 0),
+		stored: Number(chunks?.stored ?? 0),
+		chunks: Number(chunks?.count),
+	};
 }
 
 describe("session blobs beside the snapshot blobs of a shared database (#4379)", () => {
@@ -70,7 +79,11 @@ describe("session blobs beside the snapshot blobs of a shared database (#4379)",
 				const [put, removed] = await Promise.allSettled([putting.putBlob(id, data), deleting.delete(id)]);
 				assert.equal(removed.status, "fulfilled");
 				if (put.status === "rejected") assert.ok(put.reason instanceof SessionNotFoundError);
-				assert.deepEqual(await blobRows(writer, id), { count: 0, bytes: 0, stored: 0 }, `round ${round}`);
+				assert.deepEqual(
+					await blobRows(writer, id),
+					{ count: 0, bytes: 0, stored: 0, chunks: 0 },
+					`round ${round}`,
+				);
 			}
 		} finally {
 			await writer.close();
@@ -85,6 +98,8 @@ describe("SessionBlobError (#4379)", () => {
 		const unsupported = new SessionBlobError("blobs-unsupported", { sessionId: "s", adapter: "jsonl" });
 		const missing = new SessionBlobError("blob-missing", { sessionId: "s", hash: "h" });
 		const corrupt = new SessionBlobError("blob-corrupt", { sessionId: "s", hash: "h", actualHash: "a" });
+		const incomplete = new SessionBlobError("blob-incomplete", { sessionId: "s", hash: "h", bytes: 12 });
+		const severalMissing = new SessionBlobError("blob-missing", { sessionId: "s", hash: "h", missing: 3 });
 
 		assert.equal(
 			unsupported.message,
@@ -98,6 +113,28 @@ describe("SessionBlobError (#4379)", () => {
 			corrupt.message,
 			"Session blob does not match its hash: h in session s (blob-corrupt). The exported session was changed after it was written; export it again from its source",
 		);
+		assert.equal(
+			incomplete.message,
+			"Session blob is incomplete: h (12 bytes) in session s (blob-incomplete). The store lost part of this output; run the tool again to see it",
+		);
+		assert.equal(
+			severalMissing.message,
+			"Session blob not found: h and 2 more in session s (blob-missing). The session no longer holds this output; run the tool again to see it",
+		);
+		for (const [missing, suffix] of [
+			[undefined, ""],
+			[1, ""],
+			[2, " and 1 more"],
+		] as const) {
+			assert.equal(
+				new SessionBlobError("blob-missing", { sessionId: "s", hash: "h", missing }).message.split(
+					" (blob-missing)",
+				)[0],
+				`Session blob not found: h${suffix} in session s`,
+			);
+		}
+		assert.deepEqual(Object.keys(incomplete).sort(), ["bytes", "code", "hash", "hint", "name", "sessionId"]);
+		assert.deepEqual(Object.keys(severalMissing).sort(), ["code", "hash", "hint", "missing", "name", "sessionId"]);
 		assert.deepEqual(Object.keys(unsupported).sort(), ["adapter", "code", "hint", "name", "sessionId"]);
 		assert.deepEqual(Object.keys(missing).sort(), ["code", "hash", "hint", "name", "sessionId"]);
 		assert.deepEqual(Object.keys(corrupt).sort(), ["actualHash", "code", "hash", "hint", "name", "sessionId"]);
@@ -107,7 +144,8 @@ describe("SessionBlobError (#4379)", () => {
 	test("every code crosses a process boundary as the same class, fields and cause; an unknown code keeps its name (#4379)", () => {
 		const errors = [
 			new SessionBlobError("blobs-unsupported", { sessionId: "s", adapter: "jsonl" }),
-			new SessionBlobError("blob-missing", { sessionId: "s", hash: "a".repeat(64) }),
+			new SessionBlobError("blob-missing", { sessionId: "s", hash: "a".repeat(64), missing: 4 }),
+			new SessionBlobError("blob-incomplete", { sessionId: "s", hash: "a".repeat(64), bytes: 2_500_000 }),
 			new SessionBlobError(
 				"blob-corrupt",
 				{ sessionId: "s", hash: "a".repeat(64), actualHash: "b".repeat(64) },
@@ -123,8 +161,15 @@ describe("SessionBlobError (#4379)", () => {
 			assert.equal(rehydrated.message, error.message);
 			assert.equal(rehydrated.hint, error.hint);
 			assert.deepEqual(
-				[rehydrated.sessionId, rehydrated.hash, rehydrated.actualHash, rehydrated.adapter],
-				[error.sessionId, error.hash, error.actualHash, error.adapter],
+				[
+					rehydrated.sessionId,
+					rehydrated.hash,
+					rehydrated.actualHash,
+					rehydrated.adapter,
+					rehydrated.missing,
+					rehydrated.bytes,
+				],
+				[error.sessionId, error.hash, error.actualHash, error.adapter, error.missing, error.bytes],
 			);
 			assert.equal((rehydrated.cause as Error | undefined)?.name, (error.cause as Error | undefined)?.name);
 			assert.ok(isSessionBlobError({ name: "SessionBlobError", code: error.code }));

@@ -738,6 +738,31 @@ export function registerSessionStoreConformance(
 				},
 			);
 
+			check(
+				"returns blobs of every size around a megabyte intact, each stored once (#4379)",
+				async (store, reload) => {
+					if (store.putBlob === undefined || store.getBlob === undefined) return;
+					const MiB = 1024 * 1024;
+					await store.create(header(), []);
+					const stored = new Map<number, { readonly hash: string; readonly bytes: Uint8Array }>();
+					for (const size of [1, MiB - 1, MiB, MiB + 1, 2 * MiB, 2.5 * MiB]) {
+						const bytes = Uint8Array.from({ length: size }, (_, index) => (index * 31 + size) % 251);
+						const blob = await store.putBlob("session", bytes);
+						assert.deepEqual(blob, { hash: createHash("sha256").update(bytes).digest("hex"), bytes: size });
+						assert.deepEqual(await store.putBlob("session", bytes), blob, `storing ${size} bytes again`);
+						stored.set(size, { hash: blob.hash, bytes });
+					}
+					store = await reload(store);
+					for (const [size, { hash, bytes }] of stored) {
+						const read = await store.getBlob!("session", hash);
+						assert.equal(read?.byteLength, size);
+						assert.ok(Buffer.from(read!).equals(Buffer.from(bytes)), `${size} bytes read back as stored`);
+					}
+					await store.delete("session");
+					for (const { hash } of stored.values()) assert.equal(await store.getBlob!("session", hash), undefined);
+				},
+			);
+
 			check("rejects blob reads and writes after close (#4379)", async (store) => {
 				if (store.putBlob === undefined || store.getBlob === undefined) return;
 				await store.create(header(), []);

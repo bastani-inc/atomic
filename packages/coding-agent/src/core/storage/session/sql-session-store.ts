@@ -1,7 +1,7 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
-import { StorageInvalidTextError } from "../errors.js";
+import { SessionBlobError, StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
@@ -33,12 +33,20 @@ import type {
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 export const SESSION_SCHEMA_VERSION = 1;
+/**
+ * The most bytes of a session blob one row holds. A blob is stored as a header row and rows of at most this size,
+ * so no value a statement binds or returns exceeds it: libSQL servers cap a row and a bound value (sqld's default is
+ * 5 MB) and a statement's response (10 MB), and the HTTP protocol carries a blob as base64 in JSON, about 1.4 MB for
+ * this size. A different size needs different table names, because a blob's rows are addressed by their index.
+ */
+export const SESSION_BLOB_CHUNK_BYTES = 1024 * 1024;
 export const SESSION_TABLES = Object.freeze({
 	meta: "meta",
 	sessions: "sessions",
 	entries: "entries",
 	searchTexts: "search_texts",
 	blobs: "blobs",
+	blobChunks: "blob_chunks",
 });
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
@@ -161,8 +169,12 @@ export class SqlSessionStore implements SessionStore {
 					text_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)
 				) STRICT;
 				CREATE TABLE IF NOT EXISTS ${tables.blobs} (
-					session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, data BLOB NOT NULL,
+					session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, chunks INTEGER NOT NULL,
 					PRIMARY KEY(session_id, hash)
+				) STRICT;
+				CREATE TABLE IF NOT EXISTS ${tables.blobChunks} (
+					session_id TEXT NOT NULL, hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,
+					PRIMARY KEY(session_id, hash, idx)
 				) STRICT;
 			`);
 			// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
@@ -259,6 +271,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		await this.database.transaction(async (tx) => {
+			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
@@ -266,37 +279,89 @@ export class SqlSessionStore implements SessionStore {
 		}, SESSION_TRANSACTION);
 	}
 
-	/** One row per session and hash, written only while the session exists, so `delete` leaves no blob behind. */
+	/**
+	 * Stores the blob as rows of at most {@link SESSION_BLOB_CHUNK_BYTES}, then publishes its header. Every statement
+	 * commits by itself and writes only while the session exists, so no transaction stays open across round trips and
+	 * `delete`, which removes a session's rows in one transaction, leaves none behind. A blob is readable only once its
+	 * header is there, so a writer that stops part way leaves rows of its own session that `delete` removes, and storing
+	 * the same bytes again completes or skips them. Bytes a session already holds are not sent again.
+	 */
 	async putBlob(sessionId: string, data: Uint8Array): Promise<SessionBlob> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const stored = Uint8Array.from(data);
 		const blob = { hash: await sha256Hex(stored), bytes: stored.byteLength };
-		await this.database.transaction(async (tx) => {
-			if (!(await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, sessionId))) {
-				throw new SessionNotFoundError(sessionId);
-			}
-			await tx.run(
-				`INSERT INTO ${this.tables.blobs} (session_id, hash, bytes, data) VALUES (?, ?, ?, coalesce(?, X''))
-					ON CONFLICT(session_id, hash) DO NOTHING`,
+		if (await this.blobHeader(sessionId, blob.hash)) return blob;
+		const chunks = Math.ceil(blob.bytes / SESSION_BLOB_CHUNK_BYTES);
+		const { sessions, blobs, blobChunks } = this.tables;
+		const sessionExists = `EXISTS (SELECT 1 FROM ${sessions} WHERE id = ?)`;
+		for (let index = 0; index < chunks; index++) {
+			await this.database.run(
+				`INSERT INTO ${blobChunks} (session_id, hash, idx, data) SELECT ?, ?, ?, ? WHERE ${sessionExists}
+					ON CONFLICT DO NOTHING`,
 				sessionId,
 				blob.hash,
-				blob.bytes,
-				stored,
+				index,
+				stored.subarray(index * SESSION_BLOB_CHUNK_BYTES, (index + 1) * SESSION_BLOB_CHUNK_BYTES),
+				sessionId,
 			);
-		});
+		}
+		const { changes } = await this.database.run(
+			`INSERT INTO ${blobs} (session_id, hash, bytes, chunks) SELECT ?, ?, ?, ?
+				WHERE ${sessionExists} AND (SELECT count(*) FROM ${blobChunks} WHERE session_id = ? AND hash = ?) = ?
+				ON CONFLICT DO NOTHING`,
+			sessionId,
+			blob.hash,
+			blob.bytes,
+			chunks,
+			sessionId,
+			sessionId,
+			blob.hash,
+			chunks,
+		);
+		// No header written: another writer published the same bytes, or the session was deleted while this wrote.
+		if (changes === 0 && !(await this.blobHeader(sessionId, blob.hash))) throw new SessionNotFoundError(sessionId);
 		return blob;
 	}
 
+	/**
+	 * Reads the blob a chunk at a time, each one statement returning at most {@link SESSION_BLOB_CHUNK_BYTES}. Rows
+	 * never change once written, so no transaction is needed. A session deleted meanwhile holds nothing; a header
+	 * whose rows are not all there is a `blob-incomplete` failure.
+	 */
 	async getBlob(sessionId: string, hash: string): Promise<Uint8Array | undefined> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
-			`SELECT data FROM ${this.tables.blobs} WHERE session_id = ? AND hash = ?`,
+		const header = await this.blobHeader(sessionId, hash);
+		if (header === undefined) return undefined;
+		const data = new Uint8Array(header.bytes);
+		let offset = 0;
+		for (let index = 0; index < header.chunks; index++) {
+			const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.blobChunks} WHERE session_id = ? AND hash = ? AND idx = ?`,
+				sessionId,
+				hash,
+				index,
+			);
+			if (row === undefined || offset + row.data.byteLength > data.byteLength) break;
+			data.set(row.data, offset);
+			offset += row.data.byteLength;
+		}
+		if (offset === data.byteLength) return data;
+		if ((await this.blobHeader(sessionId, hash)) === undefined) return undefined;
+		throw new SessionBlobError("blob-incomplete", { sessionId, hash, bytes: header.bytes });
+	}
+
+	private async blobHeader(
+		sessionId: string,
+		hash: string,
+	): Promise<{ readonly bytes: number; readonly chunks: number } | undefined> {
+		const row = await this.database.get<SqliteRow & { bytes: number; chunks: number }>(
+			`SELECT bytes, chunks FROM ${this.tables.blobs} WHERE session_id = ? AND hash = ?`,
 			sessionId,
 			hash,
 		);
-		return row?.data;
+		return row === undefined ? undefined : { bytes: Number(row.bytes), chunks: Number(row.chunks) };
 	}
 
 	/**
