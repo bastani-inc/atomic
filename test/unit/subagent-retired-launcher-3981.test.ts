@@ -110,11 +110,13 @@ type RunSync = SubagentExecutorRuntimeDeps["runSync"];
 
 function stageExecutor(root: string, emitter: EventEmitter, runtimeRunSync: RunSync) {
 	const notifications: string[] = [];
+	const notified = Promise.withResolvers<void>();
 	const pi = {
 		events: eventBus(emitter),
 		getSessionName: () => "stage-parent",
 		sendMessage(message: { content?: string }) {
 			notifications.push(message.content ?? "");
+			notified.resolve();
 		},
 	};
 	const unregisterNotify = registerSubagentNotify(pi as never);
@@ -136,7 +138,12 @@ function stageExecutor(root: string, emitter: EventEmitter, runtimeRunSync: RunS
 		discoverAgents: () => ({ agents: [worker] }),
 		runtime: { runSync: runtimeRunSync },
 	});
-	return { executor, notifications, unregisterNotify };
+	return { executor, notifications, notified: notified.promise, unregisterNotify };
+}
+
+/** Node reports a rejection left unhandled once the turn that left it has run its microtasks. */
+function unhandledRejectionsReported(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 function captureRejections() {
@@ -159,7 +166,7 @@ test("a detached subagent that exits after model fallback retired its launching 
 	const gate = Promise.withResolvers<void>();
 	const launch = Promise.withResolvers<RunSyncOptions>();
 	const detachedResults: SingleResult[] = [];
-	const { executor, notifications, unregisterNotify } = stageExecutor(
+	const { executor, notifications, notified, unregisterNotify } = stageExecutor(
 		root,
 		emitter,
 		async (cwd, agents, agentName, task, options) => {
@@ -203,7 +210,8 @@ test("a detached subagent that exits after model fallback retired its launching 
 		stage.retire();
 		gate.resolve();
 
-		for (let attempt = 0; attempt < 100 && notifications.length === 0; attempt++) await sleep(5);
+		await notified;
+		await unhandledRejectionsReported();
 		assert.equal(detachedResults.length, 1);
 		assert.deepEqual(rejections.stale(), []);
 		assert.equal(notifications.length, 1, "the parent still learns that its detached child finished");
@@ -211,6 +219,22 @@ test("a detached subagent that exits after model fallback retired its launching 
 	} finally {
 		gate.resolve();
 		unregisterNotify();
+		rejections.stop();
+	}
+});
+
+test("the completion check still sees a stale rejection left unhandled by the turn that delivered the notice (#4454)", async () => {
+	const rejections = captureRejections();
+	const delivered = Promise.withResolvers<void>();
+	try {
+		setImmediate(() => {
+			void Promise.reject(new Error(STALE_EXTENSION_CONTEXT_MESSAGE));
+			delivered.resolve();
+		});
+		await delivered.promise;
+		await unhandledRejectionsReported();
+		assert.equal(rejections.stale().length, 1);
+	} finally {
 		rejections.stop();
 	}
 });
