@@ -186,6 +186,7 @@ export class ModelRuntime implements Models {
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
 	private availabilityError: string | undefined;
 	private refreshSequence = 0;
+	private readonly registrationRefreshes = new Set<Promise<ModelsRefreshResult>>();
 	private constructor(
 		credentials: RuntimeCredentials,
 		config: ModelConfig,
@@ -401,18 +402,23 @@ export class ModelRuntime implements Models {
 	private async runAvailabilityRefresh(seq: number, errorSeq: number, signal: AbortSignal): Promise<boolean> {
 		const inputsGeneration = this.catalogInputsGeneration;
 		const providers = this.models.getProviders();
+		const passFailed = new AbortController();
+		const passSignal = AbortSignal.any([signal, passFailed.signal]);
 		const [available, checks, credentials] = await Promise.all([
-			this.models.getAvailable(undefined, { signal }),
+			this.models.getAvailable(undefined, { signal: passSignal }),
 			Promise.all(
 				providers.map(
 					async (provider): Promise<[string, AuthCheck | undefined]> => [
 						provider.id,
-						await this.models.checkAuth(provider.id, { signal }),
+						await this.models.checkAuth(provider.id, { signal: passSignal }),
 					],
 				),
 			),
-			this.credentials.list({ signal }),
-		]);
+			this.credentials.list({ signal: passSignal }),
+		]).catch((error: unknown) => {
+			passFailed.abort();
+			throw error;
+		});
 		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return false;
 		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
 		this.availabilityCredentials.clear();
@@ -1220,7 +1226,19 @@ export class ModelRuntime implements Models {
 	private scheduleRegistrationRefresh(): void {
 		this.markCatalogInputsChanged();
 		const sequence = ++this.refreshSequence;
-		void this.runRefresh({ allowNetwork: false }, sequence, true);
+		const refresh = this.runRefresh({ allowNetwork: false }, sequence, true);
+		this.registrationRefreshes.add(refresh);
+		void refresh.finally(() => this.registrationRefreshes.delete(refresh));
+	}
+
+	/**
+	 * Resolves once no catalog refresh started by `registerProvider`, `registerNativeProvider` or
+	 * `unregisterProvider` is running, including one a registration starts while this waits. Those
+	 * refreshes run in the background, so this is how a caller knows their credential checks and
+	 * timers are done.
+	 */
+	async whenRegistrationRefreshesSettled(): Promise<void> {
+		while (this.registrationRefreshes.size > 0) await Promise.allSettled(this.registrationRefreshes);
 	}
 
 	private async runRefresh(

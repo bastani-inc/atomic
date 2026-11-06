@@ -16,7 +16,6 @@ import {
 import { subagentRegistrySizes } from "../../packages/subagents/src/runs/foreground/subagent-registry-sizes.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { liveAsyncResources, trackAsyncResources } from "../../scripts/perf/idle-agents/async-resources.js";
-import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { launchReleasedShellWait, SHELL_TOOL } from "../helpers/released-shell-launch.js";
 import { launchReleasedTask } from "../helpers/released-task-launch.js";
@@ -107,11 +106,11 @@ test(
 			await host.close("session-close");
 		});
 		await launchReleasedTask(0, env, host, owner, dispatcher);
-		await settle();
+		await env.settleResources();
 		const afterFirst = liveAsyncResources();
 
 		for (let index = 1; index <= 6; index++) await launchReleasedTask(index, env, host, owner, dispatcher);
-		await settle();
+		await env.settleResources();
 
 		assert.deepEqual(liveAsyncResources(), afterFirst);
 	},
@@ -177,12 +176,12 @@ test(
 		});
 		const parentCommandTaskOwner = createChildCommandTaskOwner(() => host);
 		await launchReleasedShellWait(0, env, host, owner, dispatcher, parentCommandTaskOwner);
-		await settle();
+		await env.settleResources();
 		const afterFirst = liveAsyncResources();
 
 		for (let index = 1; index <= 4; index++)
 			await launchReleasedShellWait(index, env, host, owner, dispatcher, parentCommandTaskOwner);
-		await settle();
+		await env.settleResources();
 
 		assert.deepEqual(liveAsyncResources(), afterFirst);
 	},

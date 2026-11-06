@@ -124,6 +124,11 @@ per provider every four hours unless forced. To force an immediate refresh, call
 `ATOMIC_OFFLINE` (legacy alias `PI_OFFLINE`) disables model network access, and a
 `refresh()` call that omits `allowNetwork` follows that same runtime network policy.
 
+`registerProvider()`, `registerNativeProvider()` and `unregisterProvider()` return at once and
+refresh the catalog from the cache in the background, checking each provider's credentials.
+`await modelRuntime.whenRegistrationRefreshesSettled()` resolves once no such refresh is running,
+including one a registration starts while you wait.
+
 ### API Keys and OAuth
 
 `ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin compatibility facade for extensions; `await modelRegistry.complete(model, context, options)` routes a request through its runtime with the resolved provider and auth. New SDK integrations should pass `modelRuntime` to `createAgentSession` and use `modelRuntime.complete()` directly when they issue standalone requests.

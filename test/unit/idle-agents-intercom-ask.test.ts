@@ -24,7 +24,6 @@ import { subagentRegistrySizes } from "../../packages/subagents/src/runs/foregro
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { liveAsyncResources, trackAsyncResources } from "../../scripts/perf/idle-agents/async-resources.js";
-import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
@@ -168,11 +167,11 @@ test(
 			);
 		};
 		await launch(0);
-		await settle();
+		await env.settleResources();
 		const before = subagentRegistrySizes();
 		const resources = liveAsyncResources();
 		for (let index = 1; index <= 3; index++) await launch(index);
-		await settle();
+		await env.settleResources();
 		const after = subagentRegistrySizes();
 		const grown = Object.fromEntries(
 			Object.keys(after).flatMap((key) => {

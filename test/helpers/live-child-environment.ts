@@ -9,7 +9,9 @@ import { Type } from "typebox";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
+import { resetSessionTempCleanupScheduleForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
+import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 
 export interface LiveChildOptions {
 	readonly models?: ReadonlyArray<{ readonly id: string; readonly reasoning?: boolean }>;
@@ -94,5 +96,17 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 		}),
 		...extra,
 	});
-	return { root, faux, options, aborts, answers, blockStarted: () => blockStarted };
+	/**
+	 * Make a count of live resources compare the released children, not shared work caught at a different point (#4480).
+	 * Every child's session registers its extensions' providers on the shared runtime, which starts a catalog refresh in
+	 * the background whose credential checks each hold a timer until they finish: those refreshes are waited for. Every
+	 * new session also arms the one process-wide temp-directory sweep, a single debounced timer that is armed or not by
+	 * timing alone: that timer is cancelled. Then the counts must repeat.
+	 */
+	const settleResources = async () => {
+		await modelRuntime.whenRegistrationRefreshesSettled();
+		resetSessionTempCleanupScheduleForTesting();
+		await settle();
+	};
+	return { root, faux, options, aborts, answers, blockStarted: () => blockStarted, settleResources };
 }
