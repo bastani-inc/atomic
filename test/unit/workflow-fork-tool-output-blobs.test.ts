@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { sessionBlobOutput } from "../../packages/coding-agent/src/core/session-tool-output.ts";
+import { sessionBlobOutput } from "../../packages/coding-agent/src/core/session-tool-output.js";
 import { isSessionBlobError, StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";

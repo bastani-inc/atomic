@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import {
 	copySessionBlobs,
 	inlineToolOutput,
@@ -13,12 +13,12 @@ import {
 	TOOL_OUTPUT_ENTRY_TYPE,
 	takeInlineToolOutput,
 	toolOutputHashes,
-} from "../../packages/coding-agent/src/core/session-tool-output.ts";
+} from "../../packages/coding-agent/src/core/session-tool-output.js";
 import { isSessionBlobError, SessionBlobError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.ts";
+import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -311,6 +311,47 @@ describe("tool-output entries and blob copies (#4379)", () => {
 		] as unknown as SessionEntry[];
 
 		assert.deepEqual(toolOutputHashes(entries), ["a".repeat(64)]);
+	});
+
+	test("a result's blob and its reference land in one session, even when the manager starts a new one while the blob is written (#4379)", async () => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, "/project");
+		const first = manager.getSessionId();
+		const released = Promise.withResolvers<void>();
+		const putBlob = store.putBlob.bind(store);
+		store.putBlob = async (sessionId, data) => {
+			await released.promise;
+			return putBlob(sessionId, data);
+		};
+		const text = outputOf(64 * 1024);
+
+		const stored = sessionBlobOutput(manager, "call-1")!(text);
+		const started = manager.newSession();
+		released.resolve();
+		const { location } = await stored;
+		await started;
+
+		const hash = location.slice("tool-output://".length);
+		assert.notEqual(manager.getSessionId(), first);
+		assert.equal(Buffer.from((await store.getBlob(first, hash))!).toString(), text);
+		const references = (id: string) => store.load(id).then(({ entries }) => toolOutputHashes(entries));
+		assert.deepEqual(await references(first), [hash]);
+		assert.deepEqual(await references(manager.getSessionId()), []);
+	});
+
+	test("a result cannot be stored in a session whose store holds no blobs (#4379)", async () => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, "/project");
+		Object.assign(store, { putBlob: undefined });
+
+		await assert.rejects(
+			manager.appendToolOutputBlob("call-1", new Uint8Array([1])),
+			(error) =>
+				isSessionBlobError(error) &&
+				error.code === "blobs-unsupported" &&
+				error.sessionId === manager.getSessionId(),
+		);
+		assert.deepEqual(manager.getEntries(), []);
 	});
 
 	test("a store without getBlob holds no blob to copy, even for entries that reference one (#4379)", () => {

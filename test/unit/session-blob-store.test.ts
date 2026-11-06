@@ -14,7 +14,7 @@ import {
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SessionNotFoundError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
+import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { ageBlobs, openSharedSnapshotDatabase, textBlob } from "../helpers/snapshot-reference-index.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";

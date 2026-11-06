@@ -3,17 +3,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import {
 	copySessionBlobs,
 	inlineToolOutput,
 	sessionBlobOutput,
 	TOOL_OUTPUT_ENTRY_TYPE,
 	takeInlineToolOutput,
-} from "../../packages/coding-agent/src/core/session-tool-output.ts";
+} from "../../packages/coding-agent/src/core/session-tool-output.js";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.ts";
+import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 

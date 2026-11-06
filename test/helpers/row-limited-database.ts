@@ -3,7 +3,7 @@ import type {
 	SqliteExecutor,
 	SqliteRow,
 	SqliteValue,
-} from "../../packages/coding-agent/src/core/storage/database.ts";
+} from "../../packages/coding-agent/src/core/storage/database.js";
 
 /** What a server of the libSQL family refuses, as sqld does by default: its row size and response size limits. */
 export interface ServerLimits {

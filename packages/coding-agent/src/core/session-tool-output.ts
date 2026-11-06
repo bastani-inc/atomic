@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import type { SessionEntry } from "./session-manager-types.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
 import { SessionBlobError } from "./storage/errors.js";
-import type { SessionStore } from "./storage/session/types.js";
-import type { PersistToolOutput } from "./tools/oversized-tool-result.ts";
+import type { SessionBlob, SessionStore } from "./storage/session/types.js";
+import type { PersistToolOutput } from "./tools/oversized-tool-result.js";
 
 /** The `customType` of the entry that records a tool output kept as a blob of its session. */
 export const TOOL_OUTPUT_ENTRY_TYPE = "atomic.tool-output";
@@ -50,23 +50,20 @@ export function toolOutputHashes(entries: readonly SessionEntry[]): string[] {
 
 /**
  * Keeps a released stage's oversized output as a blob of its session, when the session's store holds blobs: the
- * blob first, then an entry referencing it, so a process that stops in between leaves only a blob of that session.
- * Resolves with the `tool-output://` URL the model reads it from. Undefined when the store holds no blobs.
+ * blob first, then an entry referencing it, as one mutation of the manager, so a session change cannot come between
+ * them and a process that stops in between leaves only a blob of that session. Resolves with the `tool-output://`
+ * URL the model reads it from. Undefined when the store holds no blobs.
  */
 export function sessionBlobOutput(
 	manager: {
 		getSessionStore(): SessionStore;
-		getSessionId(): string;
-		appendCustomEntry(customType: string, data: ToolOutputReference): Promise<string>;
+		appendToolOutputBlob(toolCallId: string, data: Uint8Array): Promise<SessionBlob>;
 	},
 	toolCallId: string,
 ): PersistToolOutput | undefined {
-	const store = manager.getSessionStore();
-	const putBlob = store.putBlob;
-	if (putBlob === undefined) return undefined;
+	if (manager.getSessionStore().putBlob === undefined) return undefined;
 	return async (stored) => {
-		const blob = await putBlob.call(store, manager.getSessionId(), Buffer.from(stored));
-		await manager.appendCustomEntry(TOOL_OUTPUT_ENTRY_TYPE, { toolCallId, hash: blob.hash, bytes: blob.bytes });
+		const blob = await manager.appendToolOutputBlob(toolCallId, Buffer.from(stored));
 		return { location: toolOutputUrl(blob.hash), sha256: blob.hash };
 	};
 }

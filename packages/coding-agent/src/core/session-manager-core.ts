@@ -66,10 +66,12 @@ import {
 	copySessionBlobs,
 	sessionBlobHashes,
 	storeSessionBlobs,
+	TOOL_OUTPUT_ENTRY_TYPE,
+	type ToolOutputReference,
 	takeInlineToolOutput,
 } from "./session-tool-output.ts";
 import { adoptInlineSnapshotBlobs } from "./session-worktree-snapshots.ts";
-import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
+import { SessionBlobError, type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
 	SessionFormatVersionError,
 	SessionIdMismatchError,
@@ -79,7 +81,7 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
+import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
@@ -528,6 +530,27 @@ export class SessionManager {
 			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
 			await this._appendEntry(entry);
 			return entry.id;
+		});
+	}
+
+	/**
+	 * @internal Stores `data` as a blob of the current session and appends the entry that references it, as one
+	 * mutation, so a session change cannot come between the two. The blob goes first: a process that stops in between
+	 * leaves only a blob of this session. Rejects with `blobs-unsupported` when the store holds no blobs.
+	 */
+	appendToolOutputBlob(toolCallId: string, data: Uint8Array): Promise<SessionBlob> {
+		return this.runMutation(async () => {
+			const { putBlob } = this.store;
+			if (putBlob === undefined) {
+				throw new SessionBlobError("blobs-unsupported", {
+					sessionId: this.sessionId,
+					adapter: this.store.descriptor.adapter,
+				});
+			}
+			const blob = await putBlob.call(this.store, this.sessionId, data);
+			const reference: ToolOutputReference = { toolCallId, hash: blob.hash, bytes: blob.bytes };
+			await this._appendEntry(createCustomEntry(TOOL_OUTPUT_ENTRY_TYPE, reference, this.byId, this.leafId));
+			return blob;
 		});
 	}
 

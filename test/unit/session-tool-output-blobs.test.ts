@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { sessionBlobOutput, TOOL_OUTPUT_ENTRY_TYPE } from "../../packages/coding-agent/src/core/session-tool-output.ts";
+import { sessionBlobOutput, TOOL_OUTPUT_ENTRY_TYPE } from "../../packages/coding-agent/src/core/session-tool-output.js";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { isSessionBlobError, SessionBlobError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
@@ -12,9 +12,9 @@ import {
 	SESSION_BLOB_CHUNK_BYTES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.ts";
+import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.js";
 import { MAX_PERSISTED_OUTPUT_BYTES } from "../../packages/coding-agent/src/core/tools/tool-limits.js";
-import { createToolOutputRouter } from "../../packages/coding-agent/src/core/tools/tool-output-protocol.ts";
+import { createToolOutputRouter } from "../../packages/coding-agent/src/core/tools/tool-output-protocol.js";
 import { countingDatabase } from "../helpers/counting-database.js";
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";

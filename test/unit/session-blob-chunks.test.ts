@@ -8,7 +8,7 @@ import {
 	SESSION_BLOB_CHUNK_BYTES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { createToolOutputRouter } from "../../packages/coding-agent/src/core/tools/tool-output-protocol.ts";
+import { createToolOutputRouter } from "../../packages/coding-agent/src/core/tools/tool-output-protocol.js";
 import { countingDatabase } from "../helpers/counting-database.js";
 import { rowLimitedDatabase, ServerLimitError } from "../helpers/row-limited-database.js";
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";

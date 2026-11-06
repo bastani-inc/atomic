@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { sessionBlobOutput } from "../../packages/coding-agent/src/core/session-tool-output.ts";
+import { sessionBlobOutput } from "../../packages/coding-agent/src/core/session-tool-output.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
