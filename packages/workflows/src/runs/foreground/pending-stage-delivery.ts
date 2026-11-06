@@ -7,7 +7,7 @@ type WorkflowPendingStageDeliver = Parameters<WorkflowPendingStageDelivery["deli
 type WorkflowPendingStageRecipient = Parameters<WorkflowPendingStageDelivery["deliverPending"]>[1];
 type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
 type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
-type PendingStageDeliveryCommit = <T>(action: () => Promise<T>) => Promise<T>;
+export type PendingStageDeliveryCommit = <T>(action: () => Promise<T>) => Promise<T>;
 
 import { durableBackendForRun, durableRootRunIdForRun } from "../../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
@@ -99,6 +99,12 @@ export interface WorkflowPendingStageDeliveryOptions {
 	 * stage's later messages; a sticky message stays queued for the other stages it targets.
 	 */
 	readonly undeliverable?: (error: unknown) => string | undefined;
+	/**
+	 * Told, once a drain finished, the hand-over failure of the last sticky message `undeliverable` gave a reason for in
+	 * it (#4505): such a message stays queued for the other stages it targets, so this stage's failure is reported here
+	 * rather than settled. A drain that fails is reported for its own failure instead.
+	 */
+	readonly stickyUndeliverable?: (error: Error) => void;
 }
 
 export function createWorkflowPendingStageDelivery(
@@ -244,7 +250,7 @@ export function createWorkflowPendingStageDelivery(
 			},
 			progressingCommit,
 			recipient,
-			options.undeliverable,
+			options,
 		);
 		const drain = attempt.then(
 			() => {
@@ -379,6 +385,26 @@ export function createWorkflowPendingStageDelivery(
 	};
 }
 
+/**
+ * Records the receipts of the queued messages `recipient`'s session already received, and delivers nothing (#4505):
+ * a pooled stage on a host that does not run its root takes its queued messages itself before its first turn, and can
+ * end before the root's drain reaches it. The stage's other queued messages stay queued, since a replacement attempt or
+ * a resume may still run the stage.
+ */
+export function recordPendingStageReceipts(
+	activeStore: Store,
+	runId: string,
+	stageId: string,
+	stageName: string,
+	commit: PendingStageDeliveryCommit,
+	recipient: NonNullable<WorkflowPendingStageRecipient>,
+): Promise<void> {
+	// Only received messages are recorded, and those are never handed over again.
+	return deliverPendingStageMessages(activeStore, runId, stageId, stageName, async () => {}, commit, recipient, {
+		only: recipient.receivedMessageIds,
+	});
+}
+
 async function deliverPendingStageMessages(
 	activeStore: Store,
 	runId: string,
@@ -387,7 +413,10 @@ async function deliverPendingStageMessages(
 	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 	commit: PendingStageDeliveryCommit,
 	recipient?: WorkflowPendingStageRecipient,
-	undeliverable?: WorkflowPendingStageDeliveryOptions["undeliverable"],
+	options: Pick<WorkflowPendingStageDeliveryOptions, "undeliverable" | "stickyUndeliverable"> & {
+		/** Limits the drain to the messages with these ids. */
+		readonly only?: readonly string[];
+	} = {},
 ): Promise<void> {
 	// A stage that ended before its drain ran (a pooled stage's root drain finishes in the background) still gets
 	// the receipts of the messages its session received; nothing new is delivered to it.
@@ -416,12 +445,15 @@ async function deliverPendingStageMessages(
 	]
 		.map(({ entry, index }) => ({ entry, index, order: pendingStageMessageAdmissionOrder(entry) }))
 		.sort((left, right) => left.order - right.order || left.index - right.index)
-		.map(({ entry }) => entry);
+		.map(({ entry }) => entry)
+		.filter((entry) => options.only === undefined || options.only.includes(entry.message.id));
 	const rootBackend = requireStoreDurableBackend(activeStore, runId);
 	const backend = durableBackendForRun(rootBackend, activeStore, runId);
 	if (backend === undefined) {
 		throw new Error(`atomic-workflows: workflow run ${runId} has no durable owner for pending-stage delivery`);
 	}
+	/** The last sticky message this drain's stage will never take, which stays queued for the other stages. */
+	let stickyFailure: Error | undefined;
 	for (const entry of entries) {
 		// Sticky entries are claimed per (entry, delivering stage): the stageKey is the
 		// shared target path, so without the stage identity two concurrently draining
@@ -479,9 +511,10 @@ async function deliverPendingStageMessages(
 				try {
 					await deliver(toPendingStageSender(entry), entry.message);
 				} catch (error) {
-					const reason = undeliverable?.(error);
+					const reason = options.undeliverable?.(error);
 					if (reason === undefined) throw error;
-					if (entry.sticky !== true)
+					if (entry.sticky === true) stickyFailure = error as Error;
+					else
 						await commit(() =>
 							activeStore.markPendingStageMessageUndeliverable(runId, entry.stageKey, entry.id, reason, backend),
 						);
@@ -530,6 +563,7 @@ async function deliverPendingStageMessages(
 			releaseClaim();
 		}
 	}
+	if (stickyFailure !== undefined) options.stickyUndeliverable?.(stickyFailure);
 }
 
 /**

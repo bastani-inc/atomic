@@ -578,6 +578,46 @@ test("a remote stage's inbox hands a message to the sink of the session it was m
 	assert.deepEqual(delivered, ["s1:m1", "s1-again:m1"]);
 });
 
+test("a remote stage's inbox drops a closed session's sink, and only the session that owns the sink drops it (#4505)", async () => {
+	const inbox = new RemoteStageInbox();
+	const stage = { runId: "run", stageId: "stage" };
+	const from = { id: "sender" } as Parameters<WorkerDeliver>[0];
+	const message = (id: string) => ({ id }) as Parameters<WorkerDeliver>[1];
+	const delivered: string[] = [];
+	const sink = (session: string) => async (_from: Parameters<WorkerDeliver>[0], received: { readonly id: string }) => {
+		delivered.push(`${session}:${received.id}`);
+	};
+	inbox.register(stage, "s1", sink("s1"));
+	inbox.unregister(stage, "s1");
+	const closed = await inbox.deliver(stage, "s1", from, message("m1"));
+	assert.deepEqual(
+		[closed.refusal, closed.error?.name, closed.error?.code, closed.error?.fields],
+		[undefined, "WorkflowInfrastructureError", "intercom_unavailable", { runId: "run", stageId: "stage" }],
+		"a closed session's message fails as its ended Intercom runtime would",
+	);
+	assert.equal(intercomMessageOutcome(closed), "defer", "so the stage keeps it for the session that reopens");
+	assert.deepEqual(delivered, [], "the closed session's sink is gone");
+	inbox.register(stage, "s1", sink("s1 reopened"));
+	assert.deepEqual(await inbox.deliver(stage, "s1", from, message("m2")), {}, "the same session reopened takes it");
+	// An earlier session that closes after its replacement took over leaves the replacement's sink in place.
+	inbox.register(stage, "s2", sink("s2"));
+	inbox.unregister(stage, "s1");
+	assert.deepEqual(await inbox.deliver(stage, "s2", from, message("m3")), {});
+	assert.deepEqual(await inbox.deliver(stage, "s1", from, message("m4")), { refusal: "SessionReplaced" });
+	// A closed session that another session replaced is refused as replaced, so the root drains its replacement.
+	inbox.unregister(stage, "s2");
+	inbox.register(stage, "s3", sink("s3"));
+	assert.deepEqual(await inbox.deliver(stage, "s2", from, message("m5")), { refusal: "SessionReplaced" });
+	assert.deepEqual(await inbox.deliver(stage, "s3", from, message("m6")), {});
+	// Another stage's session leaves this stage's sink, and a session that never handed one over is still waited for.
+	inbox.unregister({ ...stage, stageId: "other" }, "s3");
+	assert.deepEqual(await inbox.deliver(stage, "s3", from, message("m7")), {});
+	assert.deepEqual(await inbox.deliver({ ...stage, stageId: "other" }, "s3", from, message("m8")), {
+		refusal: "StaleAttempt",
+	});
+	assert.deepEqual(delivered, ["s1 reopened:m2", "s2:m3", "s3:m6", "s3:m7"]);
+});
+
 test("the root drains a remote stage once per state, one drain at a time, and again after a failure or a change (#4391)", async () => {
 	const drains = new RemoteStageDrains();
 	const queue: readonly PendingStageMessage[] = [];
@@ -743,6 +783,69 @@ test("the root drains only the stages on another host whose sessions take Interc
 			runsOnOtherHost("root-host", undefined),
 		],
 		[true, false, false, false, false],
+	);
+});
+
+test("the root records the receipts a stage on another host published once it ended with them under its own session (#4505)", () => {
+	const receipts = (sessionId: string, ...messageIds: string[]) => ({ sessionId, messageIds });
+	const { drain, forget, record } = remoteStageDrainTargets(
+		3,
+		[
+			{
+				id: "run",
+				stages: [
+					remoteStage("live", { intercomReceipts: receipts("session-live", "m1") }),
+					remoteStage("done", { status: "completed", intercomReceipts: receipts("session-done", "m1", "m2") }),
+					remoteStage("failed", { status: "failed", intercomReceipts: receipts("session-failed", "m3") }),
+					remoteStage("skipped", { status: "skipped", intercomReceipts: receipts("session-skipped", "m4") }),
+					remoteStage("replaced", { status: "completed", intercomReceipts: receipts("session-earlier", "m5") }),
+					remoteStage("took-none", { status: "completed" }),
+					remoteStage("no-session", { status: "completed", sessionId: undefined }),
+				],
+			},
+			{
+				id: "other",
+				stages: [remoteStage("done", { status: "completed", intercomReceipts: receipts("session-done", "m6") })],
+			},
+		],
+		() => undefined,
+		undefined,
+	);
+	assert.deepEqual(record, [
+		{
+			runId: "run",
+			stageId: "done",
+			stageName: "done name",
+			recipient: { sessionId: "session-done", receivedMessageIds: ["m1", "m2"] },
+		},
+		{
+			runId: "run",
+			stageId: "failed",
+			stageName: "failed name",
+			recipient: { sessionId: "session-failed", receivedMessageIds: ["m3"] },
+		},
+		{
+			runId: "run",
+			stageId: "skipped",
+			stageName: "skipped name",
+			recipient: { sessionId: "session-skipped", receivedMessageIds: ["m4"] },
+		},
+		{
+			runId: "other",
+			stageId: "done",
+			stageName: "done name",
+			recipient: { sessionId: "session-done", receivedMessageIds: ["m6"] },
+		},
+	]);
+	assert.deepEqual(
+		drain.map(({ target }) => target.stageId),
+		["live"],
+		"a live stage's receipts are confirmed by its drain",
+	);
+	assert.deepEqual(
+		forget.map(({ runId, stageId }) => `${runId}/${stageId}`),
+		["run/done", "run/failed", "run/skipped", "run/replaced", "run/took-none", "run/no-session", "other/done"],
+		"every ended stage is still forgotten by the drains",
 	);
 });
 

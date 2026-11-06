@@ -15,7 +15,9 @@ import {
 } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { settleUndeliverablePendingStageMessages } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import {
+	createWorkflowPendingStageDelivery,
 	PENDING_STAGE_READY_STALL_MS,
 	WorkflowPendingStageDeliveryFailedError,
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
@@ -48,6 +50,9 @@ import { poolAppendRefused, publicationRejected, staleWorkLease } from "../helpe
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 const ROOT = testRunId("pool-stage-handoff-root");
 const GROUP = `workflow:${ROOT}`;
@@ -1645,6 +1650,535 @@ test("failed stage drains are summarized once on the root run, never as a warnin
 		assert.equal(warn.mock.calls.length, 0);
 	} finally {
 		warn.mockRestore();
+		await f.close();
+	}
+});
+
+/** The handoff of `f`, whose receipts commit only once `release` is called, and which counts its receipt commits. */
+function gatedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
+	const appending = Promise.withResolvers<void>();
+	const proceed = Promise.withResolvers<void>();
+	let commits = 0;
+	const handoff = new PoolStageHandoff(
+		f.backend,
+		f.store,
+		{
+			assertCurrent: (lease, work) => f.queue.assertCurrent(lease, work),
+			result: (root, id) => f.queue.result(root, id),
+			withCurrentAppend: async (lease, work, assertSession, action) => {
+				commits++;
+				appending.resolve();
+				await proceed.promise;
+				return f.queue.withCurrentAppend(lease, work, assertSession, action);
+			},
+		},
+		f.lease,
+	);
+	return { handoff, appending: appending.promise, release: () => proceed.resolve(), commits: () => commits };
+}
+
+/** Settles the store's queued messages as the root's Intercom bridge does, recording whom it told. */
+async function settleQueued(f: Awaited<ReturnType<typeof fixture>>, notified: string[]): Promise<void> {
+	await settleUndeliverablePendingStageMessages(f.store, async (entry) => {
+		notified.push(entry.message.id);
+		return true;
+	});
+}
+
+function queuedEntry(f: Awaited<ReturnType<typeof fixture>>, runId: string, id: string) {
+	return f.store.run(runId)?.pendingStageMessages?.find((entry) => entry.message.id === id);
+}
+
+test("a stage on another host that took its messages at startup and ended before the root's drain keeps them delivered once, and their senders hear nothing (#4505)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueDirect("stage", "direct-2");
+		await f.queueBroadcast("broadcast-1");
+		// The stage took two of them before its first turn, and the publication that ended it ended its child too.
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1", "broadcast-1"] };
+		const ended = stage("stage", {
+			sessionId: "session-a",
+			status: "completed",
+			endedAt: 1,
+			intercomReceipts: receipts,
+		});
+		await f.handoff.publish(f.first, [childRun([ended], { status: "completed", endedAt: 2 })]);
+		const notified: string[] = [];
+		// The root's settlement runs before the root records the receipts.
+		await settleQueued(f, notified);
+		assert.deepEqual(
+			[
+				queuedEntry(f, descriptor.childRunId, "direct-1")?.status,
+				queuedEntry(f, descriptor.childRunId, "direct-2")?.status,
+			],
+			["queued", "undeliverable"],
+		);
+		assert.deepEqual(notified, ["direct-2"], "only the message the stage never took is reported");
+		const recipient = { sessionId: "session-a", receivedMessageIds: receipts.messageIds };
+		await f.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", recipient);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "delivered");
+		const broadcast = () => queuedEntry(f, ROOT, "broadcast-1");
+		assert.deepEqual([broadcast()?.status, broadcast()?.deliveryCount], ["queued", 1], "the broadcast stays queued");
+		assert.equal(
+			await f.backend.hasPendingStageDeliveryReceipt(ROOT, "broadcast-1", {
+				runId: descriptor.childRunId,
+				stageId: "stage",
+				sessionId: "session-a",
+				admission: "context",
+			}),
+			true,
+		);
+		// Recording them again, or with the child's completion, writes nothing.
+		const deliveries = vi.spyOn(f.store, "recordPendingStageMessageDeliveries");
+		const delivered = vi.spyOn(f.store, "markPendingStageMessageDelivered");
+		await f.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", recipient);
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			stages: [ended],
+			toolNodes: [],
+		} as never);
+		await f.handoff.complete(f.first);
+		assert.deepEqual([deliveries.mock.calls.length, delivered.mock.calls.length], [0, 0]);
+		await settleQueued(f, notified);
+		assert.deepEqual(notified, ["direct-2"]);
+		assert.deepEqual(
+			[queuedEntry(f, descriptor.childRunId, "direct-1")?.status, broadcast()?.deliveryCount],
+			["delivered", 1],
+		);
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a child whose publication ending a stage never reached the root records that stage's receipts as it completes (#4505)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([stage("stage", { sessionId: "session-a" }), stage("other", { sessionId: "session-c" })]),
+		]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueDirect("other", "direct-2");
+		await f.queueDirect("other", "direct-3");
+		await f.queueDirect("untouched", "direct-4");
+		await f.queueDirect("never-ran", "direct-5");
+		await f.queueBroadcast("broadcast-1");
+		// The root refuses the attempt's activity once its work completed, so only the result shows the stages ended.
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			stages: [
+				stage("stage", {
+					sessionId: "session-a",
+					status: "completed",
+					intercomReceipts: { sessionId: "session-a", messageIds: ["direct-1", "broadcast-1"] },
+				}),
+				// A session the stage replaced took this one; the stage took it all the same.
+				stage("other", {
+					sessionId: "session-d",
+					status: "completed",
+					intercomReceipts: { sessionId: "session-c", messageIds: ["direct-2"] },
+				}),
+				stage("untouched", { status: "completed" }),
+			],
+			toolNodes: [],
+		} as never);
+		await f.handoff.complete(f.first);
+		assert.deepEqual(
+			["direct-1", "direct-2", "direct-3"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
+			["delivered", "delivered", "queued"],
+		);
+		assert.equal(queuedEntry(f, ROOT, "broadcast-1")?.deliveryCount, 1);
+		const notified: string[] = [];
+		await settleQueued(f, notified);
+		assert.deepEqual(
+			notified,
+			["direct-3", "direct-4", "direct-5"],
+			"the child ended, and only the messages no session took are reported",
+		);
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a root whose handoff started afresh records the receipts a completed child's result reports, and reports a record that fails (#4505)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([stage("stage", { sessionId: "session-a" }), stage("other", { sessionId: "session-b" })]),
+		]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueDirect("other", "direct-2");
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			stages: [
+				stage("stage", {
+					sessionId: "session-a",
+					status: "completed",
+					intercomReceipts: { sessionId: "session-a", messageIds: ["direct-1"] },
+				}),
+				stage("other", {
+					sessionId: "session-b",
+					status: "completed",
+					intercomReceipts: { sessionId: "session-b", messageIds: ["direct-2"] },
+				}),
+			],
+			toolNodes: [],
+		} as never);
+		// The root's process restarted: its handoff holds no attempt of the work, and the run is the journal's.
+		const restarted = new PoolStageHandoff(f.backend, f.store, f.queue, f.lease);
+		const write = f.store.markPendingStageMessageDelivered.bind(f.store);
+		vi.spyOn(f.store, "markPendingStageMessageDelivered")
+			.mockRejectedValueOnce(new Error("journal write refused"))
+			.mockImplementation(write);
+		await restarted.complete(f.first);
+		assert.deepEqual(
+			["direct-1", "direct-2"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
+			["queued", "delivered"],
+			"one stage's failed record leaves its message queued and the next stage's is recorded",
+		);
+		assert.match(
+			f.store.run(ROOT)?.intercomDeliveryIssue ?? "",
+			/^1 stage drain on local workers failed; .*journal write refused/,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a child the root never held a run of has no receipts to record as it completes (#4505)", async () => {
+	const f = await fixture();
+	try {
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			stages: [
+				stage("stage", {
+					sessionId: "session-a",
+					status: "completed",
+					intercomReceipts: { sessionId: "session-a", messageIds: ["direct-1"] },
+				}),
+			],
+			toolNodes: [],
+		} as never);
+		await f.handoff.complete(f.first);
+		assert.equal(f.store.run(descriptor.childRunId), undefined);
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage's receipts are recorded after its running drain, and its child completes only once they are (#4505)", async () => {
+	const f = await fixture();
+	const gated = gatedHandoff(f);
+	try {
+		await gated.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const handed: string[] = [];
+		// A live drain of the stage reaches its first receipt and waits there.
+		const drain = gated.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, message) => {
+				handed.push(message.id);
+			},
+		);
+		await gated.appending;
+		// The stage took a message queued after that drain began at startup, and ended.
+		await f.queueDirect("stage", "direct-2");
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1", "direct-2"] };
+		const ended = stage("stage", { sessionId: "session-a", status: "completed", intercomReceipts: receipts });
+		await gated.handoff.publish(f.first, [childRun([ended])]);
+		const recording = gated.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: receipts.messageIds,
+		});
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			stages: [ended],
+			toolNodes: [],
+		} as never);
+		const caughtUp = Promise.withResolvers<void>();
+		const catchUp = f.backend.catchUpWorkflow.bind(f.backend);
+		vi.spyOn(f.backend, "catchUpWorkflow").mockImplementation(async (runId) => {
+			await catchUp(runId);
+			caughtUp.resolve();
+		});
+		let completed = false;
+		const completing = gated.handoff.complete(f.first).then(() => {
+			completed = true;
+		});
+		await caughtUp.promise;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(completed, false, "the child waits for the stage's receipts");
+		gated.release();
+		await Promise.all([drain, recording, completing]);
+		assert.deepEqual(handed, ["direct-1"], "the live drain had handed over its first message");
+		assert.deepEqual(
+			["direct-1", "direct-2"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
+			["delivered", "delivered"],
+		);
+		assert.equal(gated.commits(), 2, "the drain's receipt and the record's, none again at completion");
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		gated.release();
+		await f.close();
+	}
+});
+
+test("receipts are recorded only for the session the stage shows, of a run and attempt the root holds, and again after a failure (#4505)", async () => {
+	const f = await fixture();
+	let refuse: Error | undefined;
+	let commits = 0;
+	const handoff = new PoolStageHandoff(
+		f.backend,
+		f.store,
+		{
+			assertCurrent: (lease, work) => f.queue.assertCurrent(lease, work),
+			result: (root, id) => f.queue.result(root, id),
+			withCurrentAppend: async (lease, work, assertSession, action) => {
+				commits++;
+				const refusal = refuse;
+				refuse = undefined;
+				if (refusal !== undefined) throw refusal;
+				return f.queue.withCurrentAppend(lease, work, assertSession, action);
+			},
+		},
+		f.lease,
+	);
+	try {
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1"] };
+		const ended = stage("stage", { sessionId: "session-a", status: "completed", intercomReceipts: receipts });
+		await handoff.publish(f.first, [childRun([ended])]);
+		await f.queueDirect("stage", "direct-1");
+		const record = (runId: string, sessionId: string) =>
+			handoff.recordReceipts(f.first, runId, "stage", "stage", { sessionId, receivedMessageIds: ["direct-1"] });
+		await assert.rejects(
+			record(descriptor.childRunId, "session-b"),
+			publicationRejected({
+				reason: "session-mismatch",
+				runId: descriptor.childRunId,
+				stageId: "stage",
+				sessionId: "session-b",
+			}),
+		);
+		await assert.rejects(record("unpublished-run", "session-a"), outsideSubtree(f.first, "unpublished-run"));
+		assert.equal(commits, 0);
+		refuse = new WorkerLostError({ phase: "delivery", pid: 9 });
+		await assert.rejects(
+			record(descriptor.childRunId, "session-a"),
+			(error: unknown) => error instanceof WorkerLostError,
+		);
+		assert.match(
+			f.store.run(ROOT)?.intercomDeliveryIssue ?? "",
+			/^1 stage drain on local workers failed; .*\(worker_lost\)/,
+		);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "queued");
+		await record(descriptor.childRunId, "session-a");
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "delivered", "a later call records them");
+		await record(descriptor.childRunId, "session-a");
+		assert.equal(commits, 2, "and they are recorded once");
+		// A fenced attempt records nothing, and its refusal is no delivery issue.
+		handoff.fence(f.first);
+		await assert.rejects(
+			record(descriptor.childRunId, "session-a"),
+			staleWorkLease({ workId: f.first.id, generation: f.first.generation, reason: "fenced" }),
+		);
+		assert.match(f.store.run(ROOT)?.intercomDeliveryIssue ?? "", /^1 stage drain/);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a sticky message one stage's session failed stays queued for its other stages, and the root run shows the failure once per drain (#4505)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([stage("first", { sessionId: "session-a" }), stage("second", { sessionId: "session-b" })]),
+		]);
+		await f.queueBroadcast("broadcast-1");
+		await f.queueBroadcast("broadcast-2");
+		const input = {
+			root: ROOT,
+			runId: descriptor.childRunId,
+			stageId: "first",
+			seq: 1,
+			kind: "intercom-message" as const,
+		};
+		const issue = () => f.store.run(ROOT)?.intercomDeliveryIssue;
+		const handed: string[] = [];
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"first",
+			"first",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, message) => {
+				handed.push(`first:${message.id}`);
+				throw new StageInputRefusedError("stage-failed", input, { detail: `card ${message.id} rejected` });
+			},
+		);
+		assert.deepEqual(handed, ["first:broadcast-1", "first:broadcast-2"], "the drain goes on past each failure");
+		assert.match(issue() ?? "", /^1 stage drain on local workers failed; .*card broadcast-2 rejected/);
+		const broadcasts = () => f.store.run(ROOT)?.pendingStageMessages ?? [];
+		assert.deepEqual(
+			broadcasts().map((entry) => [entry.message.id, entry.status, entry.deliveries ?? []]),
+			[
+				["broadcast-1", "queued", []],
+				["broadcast-2", "queued", []],
+			],
+			"both stay queued, with no receipt for the stage that failed them",
+		);
+		const deliverSecond = () =>
+			f.handoff.deliver(
+				f.first,
+				descriptor.childRunId,
+				"second",
+				"second",
+				{ sessionId: "session-b", receivedMessageIds: [] },
+				async (_from, message) => {
+					handed.push(`second:${message.id}`);
+				},
+			);
+		await deliverSecond();
+		await deliverSecond();
+		assert.deepEqual(
+			handed.slice(2),
+			["second:broadcast-1", "second:broadcast-2"],
+			"the other stage takes each once",
+		);
+		assert.deepEqual(
+			broadcasts().map((entry) => entry.deliveries?.map((delivery) => delivery.stageId)),
+			[["second"], ["second"]],
+		);
+		// A drain without anyone to report to keeps the message queued and succeeds; a drain that fails is one issue.
+		const unreported = createWorkflowPendingStageDelivery(
+			f.store,
+			descriptor.childRunId,
+			"first",
+			"first",
+			undefined,
+			{
+				holdUntilDrained: true,
+				undeliverable: failedInSession,
+			},
+		);
+		await unreported.deliverPending(
+			async () => {
+				throw new StageInputRefusedError("stage-failed", input, { detail: "busy" });
+			},
+			{ sessionId: "session-a", receivedMessageIds: [] },
+		);
+		// Without a reason the stage will never take it, the failure is the drain's own.
+		const unexplained = new StageInputRefusedError("stage-failed", input, { detail: "no reason asked" });
+		await assert.rejects(
+			createWorkflowPendingStageDelivery(f.store, descriptor.childRunId, "first", "first", undefined, {
+				holdUntilDrained: true,
+			}).deliverPending(
+				async () => {
+					throw unexplained;
+				},
+				{ sessionId: "session-a", receivedMessageIds: [] },
+			),
+			(error: unknown) => error === unexplained,
+		);
+		await assert.rejects(
+			f.handoff.deliver(
+				f.first,
+				descriptor.childRunId,
+				"first",
+				"first",
+				{ sessionId: "session-a", receivedMessageIds: [] },
+				async () => {
+					throw new WorkerLostError({ phase: "delivery", pid: 7 });
+				},
+			),
+			(error: unknown) => error instanceof WorkerLostError,
+		);
+		assert.match(issue() ?? "", /^2 stage drains on local workers failed; .*\(worker_lost\)/);
+		assert.deepEqual(
+			broadcasts().map((entry) => entry.status),
+			["queued", "queued"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage's receipt record waits for every drain of the stage before it, however many wait behind the running one (#4505)", async () => {
+	const f = await fixture();
+	const commits: (() => void)[] = [];
+	let committing = Promise.withResolvers<void>();
+	const handoff = new PoolStageHandoff(
+		f.backend,
+		f.store,
+		{
+			assertCurrent: (lease, work) => f.queue.assertCurrent(lease, work),
+			result: (root, id) => f.queue.result(root, id),
+			withCurrentAppend: async (lease, work, assertSession, action) => {
+				const go = Promise.withResolvers<void>();
+				commits.push(go.resolve);
+				committing.resolve();
+				await go.promise;
+				return f.queue.withCurrentAppend(lease, work, assertSession, action);
+			},
+		},
+		f.lease,
+	);
+	const handed: string[] = [];
+	const drain = (label: string) =>
+		handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, message) => {
+				handed.push(`${label}:${message.id}`);
+			},
+		);
+	try {
+		await handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const first = drain("first");
+		await committing.promise;
+		committing = Promise.withResolvers();
+		await f.queueDirect("stage", "direct-2");
+		const second = drain("second");
+		commits[0]!();
+		await first;
+		await committing.promise;
+		// The first drain ended while the second waits on its receipt: a record of the stage's receipts waits for the
+		// second, not only for the first.
+		await f.queueDirect("stage", "direct-3");
+		const record = handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: ["direct-3"],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(commits.length, 2, "the record has not reached its receipt");
+		commits[1]!();
+		await second;
+		while (commits.length < 3) await new Promise((resolve) => setImmediate(resolve));
+		commits[2]!();
+		await record;
+		assert.deepEqual(handed, ["first:direct-1", "second:direct-2"], "the record hands nothing over");
+		assert.deepEqual(
+			["direct-1", "direct-2", "direct-3"].map((id) => queuedEntry(f, descriptor.childRunId, id)?.status),
+			["delivered", "delivered", "delivered"],
+		);
+	} finally {
+		for (const commit of commits) commit();
 		await f.close();
 	}
 });

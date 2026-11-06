@@ -1,13 +1,26 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
 import { stickyEntryTargetsStage, toPendingStageSender } from "../runs/foreground/pending-stage-delivery.js";
+import type {
+	AgentSessionAdapter,
+	StageSessionCreateResult,
+	StageSessionRuntime,
+} from "../runs/foreground/stage-runner-types.js";
 import { pendingStageMessageAdmissionOrder, pendingStageMessagesFor } from "../shared/pending-stage-delivery.js";
 import type { WorkflowBoundaryHop } from "../shared/pending-stage-status.js";
 import type { Store } from "../shared/store.js";
 import { resolvePendingStageIdentity } from "../shared/store-pending-stage-delivery-methods.js";
 import type { PendingStageMessage, RunSnapshot } from "../shared/store-types.js";
 import { type RunsById, runsByIdOf } from "../shared/workflow-run-ownership.js";
-import type { WorkerDeliver, WorkerRecipient, WorkerStageDelivery, WorkerStart } from "./protocol.js";
+import type {
+	DistributiveOmit,
+	WorkerDeliver,
+	WorkerRecipient,
+	WorkerRequest,
+	WorkerStageDelivery,
+	WorkerStart,
+} from "./protocol.js";
 import { RemoteStageInbox } from "./remote-stage-inbox.js";
 
 export interface PooledStageIdentity {
@@ -175,22 +188,133 @@ export function remoteStageInbox(shared: WorkerStart["shared"]): RemoteStageInbo
  * capability it requests from the root. On a host that does not run the root (#4391), whose worker is given an `inbox`,
  * it holds none, since only the root's host announces the root's routes: the session's sink goes to `inbox`, where the
  * root's later messages arrive through the stage's input queue. Either way the worker delivers the stage's queued
- * messages itself before its first turn.
+ * messages itself before its first turn. On such a host the messages the session took are recorded on the stage in
+ * `store`, the attempt's own, so the stage's publications carry them to the root: the root records their receipts for
+ * a stage that ends before its own drain reaches it (#4505).
  */
 export async function createWorkerStageDelivery(
 	options: Omit<PooledStageDeliveryOptions, "routeCapability"> & {
 		readonly stage: PooledStageIdentity;
 		readonly inbox: RemoteStageInbox | undefined;
+		readonly store: Pick<Store, "editRun">;
 		readonly request: (message: { readonly kind: "route"; readonly runId: string }) => Promise<unknown>;
 	},
 ): Promise<WorkerStageDelivery> {
-	const { stage, inbox, request, ...delivery } = options;
+	const { stage, inbox, store, request, ...delivery } = options;
 	if (inbox !== undefined)
 		return createPooledStageDelivery({
 			...delivery,
-			forward: async (recipient, deliver) => inbox.register(stage, recipient.sessionId, deliver),
+			forward: async (recipient, deliver) => {
+				recordStageReceipts(store, stage, recipient);
+				inbox.register(stage, recipient.sessionId, deliver);
+			},
 		});
 	const routeCapability = await request({ kind: "route", runId: stage.runId });
 	if (typeof routeCapability !== "string") throw new Error("Worker root route is unavailable");
 	return createPooledStageDelivery({ ...delivery, routeCapability });
+}
+
+/**
+ * Records on the stage the messages its session `recipient.sessionId` holds, beside those already recorded for that
+ * session; another session's record is replaced. A recipient that holds nothing new leaves the stage as it is, so the
+ * stage is not published again for it.
+ */
+function recordStageReceipts(
+	store: Pick<Store, "editRun">,
+	stage: PooledStageIdentity,
+	recipient: NonNullable<WorkerRecipient>,
+): void {
+	store.editRun(stage.runId, (run) => {
+		const snapshot = run.stages.find((candidate) => candidate.id === stage.stageId);
+		const known =
+			snapshot?.intercomReceipts?.sessionId === recipient.sessionId ? snapshot.intercomReceipts.messageIds : [];
+		const messageIds = [...new Set([...known, ...recipient.receivedMessageIds])];
+		if (snapshot === undefined || messageIds.length === known.length) return {};
+		snapshot.intercomReceipts = { sessionId: recipient.sessionId, messageIds };
+		return { stageIds: [stage.stageId] };
+	});
+}
+
+/**
+ * The session a worker created for a stage on a host that does not run its root, made to drop its sink from `inbox`
+ * once it closes, whether or not it closed cleanly (#4505): the inbox lives as long as the attempt, and a sink holds the
+ * session's delivery and, through it, the session itself. The session is changed in place, since its owners know it by
+ * identity. Without an inbox the session is returned as it is.
+ */
+export function unregisterWhenClosed(
+	created: StageSessionRuntime | StageSessionCreateResult,
+	inbox: RemoteStageInbox | undefined,
+	stage: Pick<PooledStageIdentity, "runId" | "stageId">,
+): StageSessionRuntime | StageSessionCreateResult {
+	if (inbox === undefined) return created;
+	const session = "session" in created ? created.session : created;
+	const dispose = session.dispose.bind(session);
+	session.dispose = async () => {
+		const { sessionId } = session;
+		try {
+			await dispose();
+		} finally {
+			inbox.unregister(stage, sessionId);
+		}
+	};
+	return created;
+}
+
+/** What the stage sessions of a worker's attempt are created with, from the worker that runs the attempt. */
+export interface WorkerStageAdapterPorts {
+	/** Creates each stage's session. */
+	readonly base: AgentSessionAdapter;
+	/** The attempt's own store. */
+	readonly store: Store;
+	/** Where the attempt's stages take the root's Intercom messages on a host that does not run the root (#4391). */
+	readonly inbox: RemoteStageInbox | undefined;
+	/** The shared pool the worker serves, when it serves one (#4310). */
+	readonly shared: WorkerStart["shared"];
+	readonly request: (message: DistributiveOmit<WorkerRequest, "id">, deliver?: WorkerDeliver) => Promise<unknown>;
+	/** The attempt's activity publication on its way to the root, if one is. */
+	readonly published: () => Promise<void> | undefined;
+	/** The root's journal, which the worker reads itself, so a stage's startup never waits on the root. */
+	readonly journal: PooledStageJournal & Pick<JournalDurableBackend, "catchUpWorkflow">;
+	readonly root: string;
+}
+
+/**
+ * The session adapter of a worker's attempt. A shared pool records where each stage runs, and on what binding, before
+ * its session starts (#4310). A stage that takes queued Intercom messages gets the worker's pending-stage delivery, and
+ * on a host that does not run the root, its session drops its sink from the attempt's inbox once it closes (#4505).
+ */
+export function workerStageAdapter(ports: WorkerStageAdapterPorts): AgentSessionAdapter {
+	const { base, store, inbox, request, published, journal, root } = ports;
+	return {
+		async create(options, meta) {
+			if (!meta) throw new Error("Worker stage identity is required");
+			if (ports.shared !== undefined)
+				await request({ kind: "stage-workspace", runId: meta.runId, stageId: meta.stageId });
+			if (!options.orchestrationContext?.pendingStageDelivery) return base.create(options, meta);
+			if (options.sessionManager)
+				store.recordStageSession(meta.runId, meta.stageId, { sessionId: options.sessionManager.getSessionId() });
+			await published();
+			const identity = { runId: meta.runId, stageId: meta.stageId, stageName: meta.stageName };
+			const pendingStageDelivery = await createWorkerStageDelivery({
+				stage: identity,
+				inbox,
+				store,
+				request,
+				queued: async () => {
+					await journal.catchUpWorkflow(root);
+					return pooledStageQueuedEntries(journal, store, root, identity);
+				},
+				forward: async (recipient, deliver) => {
+					await published();
+					await request({ kind: "delivery", ...identity, recipient }, deliver);
+				},
+				fail: options.orchestrationContext.pendingStageDelivery.fail,
+			});
+			const created = await base.create(
+				{ ...options, orchestrationContext: { ...options.orchestrationContext, pendingStageDelivery } },
+				meta,
+			);
+			return unregisterWhenClosed(created, inbox, identity);
+		},
+	};
 }

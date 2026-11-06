@@ -21,11 +21,18 @@ export function runsOnOtherHost(host: string | undefined, worker: string | null 
 	return host !== undefined && typeof worker === "string" && workerHost(worker) !== host;
 }
 
+/** A stage on another host that ended with receipts of its session's startup messages, which the root records (#4505). */
+export interface RemoteStageReceipts extends StageRef {
+	readonly stageName: string;
+	readonly recipient: { readonly sessionId: string; readonly receivedMessageIds: readonly string[] };
+}
+
 /**
  * The drains the root offers for the stages an attempt `generation` on another host published (#4391): one for each
  * stage whose session takes Intercom messages now, with the queues it reads. The other stages are forgotten, so their
  * next publication that can take messages drains them: a stage with no session yet, one released while it waits
- * (#4418), one whose session has no Intercom, and one that ended.
+ * (#4418), one whose session has no Intercom, and one that ended. A stage that ended with receipts its session
+ * published is recorded instead, as it may have ended before the root's drain reached it (#4505).
  */
 export function remoteStageDrainTargets(
 	generation: number,
@@ -35,9 +42,11 @@ export function remoteStageDrainTargets(
 ): {
 	readonly drain: readonly { readonly target: RemoteStageDrainTarget; readonly stageName: string }[];
 	readonly forget: readonly StageRef[];
+	readonly record: readonly RemoteStageReceipts[];
 } {
 	const drain: { readonly target: RemoteStageDrainTarget; readonly stageName: string }[] = [];
 	const forget: StageRef[] = [];
+	const record: RemoteStageReceipts[] = [];
 	for (const run of runs) {
 		const queues = [queueOf(run.id), rootQueue];
 		for (const stage of run.stages) {
@@ -51,9 +60,19 @@ export function remoteStageDrainTargets(
 			)
 				forget.push(target);
 			else drain.push({ target: { ...target, sessionId, generation, queues }, stageName: stage.name });
+			if (
+				isTerminalStageStatus(stage.status) &&
+				sessionId !== undefined &&
+				stage.intercomReceipts?.sessionId === sessionId
+			)
+				record.push({
+					...target,
+					stageName: stage.name,
+					recipient: { sessionId, receivedMessageIds: stage.intercomReceipts.messageIds },
+				});
 		}
 	}
-	return { drain, forget };
+	return { drain, forget, record };
 }
 
 interface StageDrains {

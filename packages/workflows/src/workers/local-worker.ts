@@ -32,7 +32,6 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
-import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -43,7 +42,7 @@ import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
-import { createWorkerStageDelivery, pooledStageQueuedEntries, remoteStageInbox } from "./pooled-stage-delivery.js";
+import { remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
 import {
 	WORKER_ACTIVITY_INTERVAL_MS,
@@ -558,40 +557,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				: undefined;
 			// A stage's questions (ask_user_question) wait in this attempt's broker, where the root reads them (#3996).
 			const baseAdapter = createAgentSessionAdapter({ cwd: String(work.execution.cwd) }, stageUiBroker);
-			const adapter: AgentSessionAdapter = {
-				async create(options, meta) {
-					if (!meta) throw new Error("Worker stage identity is required");
-					// A shared pool records where each stage runs, and on what binding, before its session starts (#4310).
-					if (start.shared !== undefined)
-						await request({ kind: "stage-workspace", runId: meta.runId, stageId: meta.stageId });
-					if (!options.orchestrationContext?.pendingStageDelivery) return baseAdapter.create(options, meta);
-					if (options.sessionManager)
-						store.recordStageSession(meta.runId, meta.stageId, {
-							sessionId: options.sessionManager.getSessionId(),
-						});
-					await publication;
-					const identity = { runId: meta.runId, stageId: meta.stageId, stageName: meta.stageName };
-					const pendingStageDelivery = await createWorkerStageDelivery({
-						stage: identity,
-						inbox,
-						request,
-						// The root's journal, read directly: a stage's startup never waits on the root itself.
-						queued: async () => {
-							await reader.catchUpWorkflow(start.root);
-							return pooledStageQueuedEntries(reader, store, start.root, identity);
-						},
-						forward: async (recipient, deliver) => {
-							await publication;
-							await request({ kind: "delivery", ...identity, recipient }, deliver);
-						},
-						fail: options.orchestrationContext.pendingStageDelivery.fail,
-					});
-					return baseAdapter.create(
-						{ ...options, orchestrationContext: { ...options.orchestrationContext, pendingStageDelivery } },
-						meta,
-					);
-				},
-			};
+			const adapter = workerStageAdapter({
+				base: baseAdapter,
+				store,
+				inbox,
+				shared: start.shared,
+				request,
+				published: () => publication,
+				journal: reader,
+				root: start.root,
+			});
 			const awaitAdmission = async (signal?: AbortSignal) => {
 				for (;;) {
 					signal?.throwIfAborted();

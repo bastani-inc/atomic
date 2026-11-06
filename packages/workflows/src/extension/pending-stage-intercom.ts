@@ -1239,6 +1239,8 @@ function pendingStageUndeliverableReason(
 		return undefined;
 	}
 	const stage = pendingStageDestination(run, entry);
+	// The stage's session took it on a host that does not run the root, which records its receipt (#4505).
+	if (stage?.intercomReceipts?.messageIds.includes(entry.message.id) === true) return undefined;
 	if (run.status === "cancelled") {
 		return `Workflow run ${run.id} terminated with status cancelled before stage ${entry.stageKey} started`;
 	}
