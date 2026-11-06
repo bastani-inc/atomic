@@ -48,7 +48,7 @@ test("a malformed stale record is retained, reported once, and cannot delete a u
 });
 
 test.skipIf(process.platform === "win32")(
-	"restore into a symlinked parent returns its verified destination (#4245)",
+	"restore into a symlinked parent returns its verified destination (symbolic links need a privilege on Windows) (#4245)",
 	async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "untracked.txt"), "recorded\n");
@@ -92,7 +92,7 @@ test("a plausible stale record cannot delete a directory that is not a registere
 });
 
 test.skipIf(process.platform === "win32")(
-	"a stale staging symlink never removes a different registered worktree (#4245)",
+	"a stale staging symlink never removes a different registered worktree (symbolic links need a privilege on Windows) (#4245)",
 	async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "untracked.txt"), "recorded\n");
