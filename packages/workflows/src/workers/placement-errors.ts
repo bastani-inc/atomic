@@ -524,27 +524,6 @@ export function serializeWorkerPlacementError(error: WorkerPlacementError): Seri
 	return serializeAt(error, 0);
 }
 
-/** A failure as a worker host records it for other processes: a placement error whole, any other by name and message. */
-export type RecordedFailure = NonNullable<SerializedWorkerPlacementError["cause"]>;
-
-/**
- * `error` as a worker host records it, in its stats or the shared journal; {@link rehydrateRecordedFailure} reads it
- * back.
- */
-export function recordedFailure(error: Error): RecordedFailure {
-	return error instanceof WorkerPlacementError
-		? serializeWorkerPlacementError(error)
-		: { name: error.name, message: error.message };
-}
-
-/**
- * The error a {@link recordedFailure} describes: a placement error as its own class, any other an `Error` with its name;
- * undefined for no failure.
- */
-export function rehydrateRecordedFailure(failure: RecordedFailure | undefined): Error | undefined {
-	return rehydrateCause(failure) as Error | undefined;
-}
-
 function rehydrateCause(cause: SerializedWorkerPlacementError["cause"]): unknown {
 	if (cause === undefined) return undefined;
 	if ("code" in cause) return rehydrateWorkerPlacementError(cause);

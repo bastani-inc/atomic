@@ -8,8 +8,6 @@ import {
 	isWorkerPlacementConfigError,
 	isWorkerPlacementError,
 	isWorkspaceRestoreUnavailableError,
-	recordedFailure,
-	rehydrateRecordedFailure,
 	rehydrateWorkerPlacementError,
 	type SerializedWorkerPlacementError,
 	SharedPoolSetupError,
@@ -554,36 +552,4 @@ test("an error carries only what it was given: no cause own property without one
 	);
 	const staleCopy = acrossProcesses(stale) as StaleStageLeaseError;
 	assert.equal((staleCopy.cause as Error).message, "lease taken");
-});
-
-test("a failure a worker host records comes back as its class, and a typed refusal carries it as its cause (#4416)", () => {
-	const plain = new TypeError("the remote is unreachable");
-	assert.deepEqual(recordedFailure(plain), { name: "TypeError", message: "the remote is unreachable" });
-	assert.equal(rehydrateRecordedFailure(undefined), undefined, "no failure recorded, no error");
-	const back = rehydrateRecordedFailure(JSON.parse(JSON.stringify(recordedFailure(plain))))!;
-	assert.deepEqual(
-		[back.name, back.message, back instanceof WorkerPlacementError],
-		["TypeError", "the remote is unreachable", false],
-	);
-	const refusal = new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding), {
-		cause: plain,
-	});
-	const recorded = recordedFailure(refusal);
-	assert.deepEqual(recorded, serializeWorkerPlacementError(refusal));
-	const rehydrated = rehydrateRecordedFailure(JSON.parse(JSON.stringify(recorded)));
-	assert.ok(rehydrated instanceof WorkspaceRestoreUnavailableError);
-	assert.deepEqual(
-		[rehydrated.reason, rehydrated.binding, (rehydrated.cause as Error).name],
-		["no-restore-port", refusal.binding, "TypeError"],
-	);
-	const unclaimed = new WorkspaceRestoreUnavailableError("no-capable-host", refusal.binding, {
-		childRunId: "child-1",
-		claimWindowMs: 5,
-		cause: rehydrated,
-	});
-	const crossed = rehydrateWorkerPlacementError(JSON.parse(JSON.stringify(serializeWorkerPlacementError(unclaimed))));
-	assert.ok(isWorkspaceRestoreUnavailableError(crossed));
-	assert.deepEqual([crossed.reason, crossed.childRunId, crossed.claimWindowMs], ["no-capable-host", "child-1", 5]);
-	const cause = crossed.cause;
-	assert.ok(cause instanceof WorkspaceRestoreUnavailableError && cause.reason === "no-restore-port");
 });

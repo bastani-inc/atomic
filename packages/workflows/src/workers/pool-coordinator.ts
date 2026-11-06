@@ -81,8 +81,6 @@ import {
 } from "./placement-choice.js";
 import {
 	isStaleStageLeaseError,
-	recordedFailure,
-	rehydrateRecordedFailure,
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "./placement-errors.js";
@@ -2419,7 +2417,7 @@ export class PoolCoordinator {
 	): Promise<void> {
 		const key = workspaceAffinityKey(binding);
 		const waitMs = backoff.failed(key);
-		await this.sharedPool!.recordRestoreBackoff(satellite.host, key, waitMs, recordedFailure(error)).catch(
+		await this.sharedPool!.recordRestoreBackoff(satellite.host, key, waitMs, serializeError(error)).catch(
 			(recording: Error) => satellite.placementFailed(recording),
 		);
 	}
@@ -2663,12 +2661,13 @@ export class PoolCoordinator {
 				}
 				if (live || !(await queue.failUnclaimed(lease, work))) continue;
 				this.boundWaits.delete(work.id);
+				const failure = await shared.restoreFailure(key);
 				this.failWork(
 					work,
 					new WorkspaceRestoreUnavailableError("no-capable-host", workspaceBindingIdentity(binding), {
 						childRunId: work.childRunId,
 						claimWindowMs,
-						cause: rehydrateRecordedFailure(await shared.restoreFailure(key)),
+						cause: failure === undefined ? undefined : rehydrateError(failure),
 					}),
 				);
 			}

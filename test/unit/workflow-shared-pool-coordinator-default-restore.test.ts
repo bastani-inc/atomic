@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { test, vi } from "vitest";
 import {
 	bindingOf,
+	isWorkspaceRestoreError,
 	setWorktreeSnapshotGit,
 	WorkspaceRestoreError,
 	workspace,
@@ -103,12 +104,12 @@ test(
 				[typed.code, typed.reason, typed.claimWindowMs, typed.binding.tree],
 				["workspace-restore-unavailable", "no-capable-host", 1_500, "t1"],
 			);
-			assert.equal(
-				(typed.cause as Error | undefined)?.name,
-				"WorkspaceRestoreError",
-				"its cause is the host's failure",
+			const cause = typed.cause;
+			assert.ok(isWorkspaceRestoreError(cause), `its cause is the host's failure, as its class: ${String(cause)}`);
+			assert.deepEqual(
+				[cause.code, cause.fields, cause.hint, cause.message],
+				["commits-unavailable", unreachable.fields, unreachable.hint, unreachable.message],
 			);
-			assert.equal((typed.cause as Error).message, unreachable.message);
 			assert.equal(restores, 1, "the host claimed the child once, and not again while it backed off");
 			assert.deepEqual(failures, [unreachable], "and reported the failure once");
 			assert.deepEqual(f.claims(), [], "no worker ran it");
@@ -163,8 +164,13 @@ test.skipIf(process.platform === "win32")(
 				return recorded;
 			},
 		});
-		// The host restores with the git it was given: the git this process resolves for snapshots runs nowhere.
-		setWorktreeSnapshotGit(async () => ({ path: join(f.directory, "no-such-git"), env: {} }));
+		// The host restores with the git it has: the git this process resolves for snapshots, which may download one, is
+		// never asked. The root records no snapshots of its own, so nothing else here asks for it either.
+		let resolved = 0;
+		setWorktreeSnapshotGit(async () => {
+			resolved++;
+			return sandbox.executable;
+		});
 		const lookups = vi.spyOn(SqlSharedPool.prototype, "recordedSnapshots");
 		const clears = vi.spyOn(SqlSharedPool.prototype, "clearRestoreBackoff");
 		const child = await loadWorkerDefinition({
@@ -176,7 +182,13 @@ test.skipIf(process.platform === "win32")(
 		const execution = run(
 			parent,
 			{},
-			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+			{
+				runId: "root",
+				cwd: f.directory,
+				store: createStore(),
+				durableBackend: f.backend,
+				snapshots: { enabled: false },
+			},
 		);
 		const { startWorkflowWorkerHost } = await import("../../packages/workflows/src/workers/worker-host.js");
 		let host: Awaited<ReturnType<typeof startWorkflowWorkerHost>> | undefined;
@@ -192,7 +204,6 @@ test.skipIf(process.platform === "win32")(
 				agentDir,
 				maxWorkers: 1,
 				hostId: "host-c",
-				git: { path: sandbox.executable.path, env: { ...sandbox.executable.env } as Record<string, string> },
 				workerEntry: stubWorker,
 			});
 			assert.equal((await host.stats()).restore, true, "a host with git restores by default");
@@ -216,6 +227,7 @@ test.skipIf(process.platform === "win32")(
 			assert.deepEqual(records.map((record) => record.worktree).sort(), claims.map(([, , cwd]) => cwd).sort());
 			assert.equal((await host.stats()).lastPlacementFailure, undefined);
 			assert.equal(clears.mock.calls.length, 0, "a host that never failed to restore has no backoff to clear");
+			assert.equal(resolved, 0, "the restores never asked the process to resolve, or download, a git");
 		} finally {
 			lookups.mockRestore();
 			clears.mockRestore();

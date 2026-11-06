@@ -20,8 +20,8 @@ export interface SnapshotRestoreOptions {
 	readonly blobs: SnapshotBlobStore | undefined;
 	/** Where the host keeps its object stores and the worktrees it restores. */
 	readonly storeDir: string;
-	/** The git the host was given; without it, the git every worktree snapshot operation resolves. */
-	readonly git?: WorkerHostGit;
+	/** The git the host runs, with its environment: every Git command of a restore runs it, and nothing resolves one. */
+	readonly git: WorkerHostGit;
 	/** Internal, tests only: what restores a binding instead of `restoreWorktree`. */
 	readonly restore?: (
 		binding: WorkspaceBinding,
@@ -30,11 +30,12 @@ export interface SnapshotRestoreOptions {
 }
 
 /**
- * The restore port of a worker host that was given none (#4416): #4245's `restoreWorktree` of the binding, from the
- * worktree snapshots the shared journal recorded with its tree and head, so a binding with uncommitted content
- * restores too; resolves the verified worktree's path. The snapshots of a binding that restored are read once. A
- * restore that cannot run on this host, because its git does not run, is refused with a
- * {@link WorkspaceRestoreUnavailableError} (`no-restore-port`); any other failure rejects with its own error.
+ * The restore port of a worker host that was given none (#4416): #4245's `restoreWorktree` of the binding with the
+ * host's git, from the worktree snapshots the shared journal recorded with its tree and head, so a binding with
+ * uncommitted content restores too; resolves the verified worktree's path. It never resolves or downloads a git. The
+ * snapshots of a binding that restored are read once. A restore that cannot run on this host, because its git does
+ * not run, is refused with a {@link WorkspaceRestoreUnavailableError} (`no-restore-port`); any other failure rejects
+ * with its own error.
  */
 export function snapshotRestore(options: SnapshotRestoreOptions): WorkspaceRestore {
 	const restore = options.restore ?? restoreWorktree;
@@ -49,7 +50,7 @@ export function snapshotRestore(options: SnapshotRestoreOptions): WorkspaceResto
 				blobs: options.blobs,
 				storeDir: options.storeDir,
 				signal,
-				...(options.git === undefined ? {} : { git: options.git }),
+				git: options.git,
 			}));
 		} catch (error) {
 			restored.delete(key);

@@ -1,7 +1,7 @@
 import type { WorktreeSnapshot } from "@bastani/atomic";
 import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
+import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
-import type { WorkerHostFailure } from "../../workers/worker-host-types.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
@@ -300,12 +300,7 @@ export class SqlSharedPool {
 	 * Records that `host` waits `waitMs` before it restores the binding with affinity key `binding` again, and the
 	 * failure it waits after (#4416). Until then it is no capable host for that binding.
 	 */
-	async recordRestoreBackoff(
-		host: string,
-		binding: string,
-		waitMs: number,
-		failure: WorkerHostFailure,
-	): Promise<void> {
+	async recordRestoreBackoff(host: string, binding: string, waitMs: number, failure: SerializedError): Promise<void> {
 		validateText("key", host);
 		await this.storage.transaction((tx) =>
 			tx.run(
@@ -327,14 +322,14 @@ export class SqlSharedPool {
 	}
 
 	/** The restore failure a host recorded last for the binding with affinity key `binding`, if any did (#4416). */
-	async restoreFailure(binding: string): Promise<WorkerHostFailure | undefined> {
+	async restoreFailure(binding: string): Promise<SerializedError | undefined> {
 		const row = await this.storage.read((executor) =>
 			executor.get<SqliteRow & { failure: string }>(
 				`SELECT failure FROM ${this.backoffs} WHERE binding = ? ORDER BY recorded_at DESC, rowid DESC LIMIT 1`,
 				binding,
 			),
 		);
-		return row === undefined ? undefined : (JSON.parse(String(row.failure)) as WorkerHostFailure);
+		return row === undefined ? undefined : (JSON.parse(String(row.failure)) as SerializedError);
 	}
 
 	/**

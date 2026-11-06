@@ -28,6 +28,7 @@ const binding: WorkspaceBinding = {
 const recorded = [{ id: "s1" }, { id: "s2" }] as unknown as readonly WorktreeSnapshot[];
 const blobs = new MemorySnapshotBlobStore();
 const signal = new AbortController().signal;
+const hostGit = { path: "/usr/bin/git", env: { GIT_EXEC_PATH: "/usr/libexec/git-core" } };
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -46,6 +47,7 @@ function counted(restore?: (options: RestoreWorktreeSnapshotOptions) => Promise<
 		},
 		blobs,
 		storeDir: "/host/agent/worktree-snapshots",
+		git: hostGit,
 		restore: async (_binding, options) => {
 			restores.push(options);
 			return restore === undefined ? { path: `/host/restored-${restores.length}` } : restore(options);
@@ -68,6 +70,7 @@ test("the snapshot restore restores a binding from the snapshots recorded with i
 			blobs,
 			storeDir: "/host/agent/worktree-snapshots",
 			signal,
+			git: hostGit,
 		});
 		assert.equal(options.snapshots, recorded);
 		assert.equal(options.blobs, blobs);
@@ -75,23 +78,6 @@ test("the snapshot restore restores a binding from the snapshots recorded with i
 	await port({ ...binding, head: "3" }, { signal });
 	await port({ ...binding, tree: "4" }, { signal });
 	assert.equal(lookups.length, 3, "a binding of another head or tree reads its own snapshots");
-});
-
-test("the snapshot restore runs the host's own git when it was given one (#4416)", async () => {
-	const git = { path: "/opt/git/bin/git", env: { GIT_EXEC_PATH: "/opt/git/libexec" } };
-	const seen: (RestoreWorktreeSnapshotOptions["git"] | "none")[] = [];
-	const port = snapshotRestore({
-		recorded: async () => [],
-		blobs: undefined,
-		storeDir: "/s",
-		git,
-		restore: async (_binding, options) => {
-			seen.push("git" in options ? options.git : "none");
-			return { path: "/w" };
-		},
-	});
-	await port(binding, { signal });
-	assert.deepEqual(seen, [git]);
 });
 
 test("a failed restore keeps its own error and reads the binding's snapshots again next time (#4416)", async () => {

@@ -3,6 +3,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	GitUnavailableError,
+	isGitUnavailableError,
+	WorkspaceRestoreError,
+} from "../../packages/coding-agent/src/index.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -20,12 +25,10 @@ import {
 	RUN_EVENT_TYPES,
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import {
 	isStaleStageLeaseError,
-	isWorkspaceRestoreUnavailableError,
-	recordedFailure,
-	rehydrateRecordedFailure,
 	StaleStageLeaseError,
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
@@ -824,7 +827,13 @@ test("a host that backs off from a binding's restore is no capable host for it u
 		await report("host-b");
 		assert.equal(await shared.capableHostLive("root", 60_000, key), true);
 		assert.equal(await shared.restoreFailure(key), undefined, "no host failed to restore it yet");
-		const unreachable = recordedFailure(new Error("the remote is unreachable"));
+		const unreachable = serializeError(
+			new WorkspaceRestoreError("commits-unavailable", {
+				snapshotId: null,
+				head: binding.head,
+				commits: [binding.head],
+			}),
+		);
 		await shared.recordRestoreBackoff("host-b", key, 60_000, unreachable);
 		assert.equal(await shared.capableHostLive("root", 60_000, key), false, "its only capable host backs off from it");
 		assert.equal(await shared.capableHostLive("root", 60_000, other), true, "another binding is not held back");
@@ -832,25 +841,39 @@ test("a host that backs off from a binding's restore is no capable host for it u
 		assert.equal(await shared.restoreFailure(other), undefined);
 		await report("host-c");
 		assert.equal(await shared.capableHostLive("root", 60_000, key), true, "a capable host that does not back off");
-		const refused = recordedFailure(
-			new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding)),
+		const refused = serializeError(
+			new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding), {
+				cause: new GitUnavailableError({
+					code: "not-installed",
+					platform: "linux",
+					arch: "x64",
+					installDir: "/home/user/.atomic/agent/bin/git",
+					installCommand: "sudo apt-get install -y git",
+				}),
+			}),
 		);
 		await shared.recordRestoreBackoff("host-c", key, 60_000, refused);
 		assert.equal(await shared.capableHostLive("root", 60_000, key), false);
 		const last = await shared.restoreFailure(key);
 		assert.deepEqual(last, refused, "the failure recorded last");
-		const rehydrated = rehydrateRecordedFailure(last!);
-		assert.ok(isWorkspaceRestoreUnavailableError(rehydrated));
+		const rehydrated = rehydrateError(last);
+		assert.ok(rehydrated instanceof WorkspaceRestoreUnavailableError, String(rehydrated));
 		assert.equal(rehydrated.reason, "no-restore-port");
+		assert.ok(isGitUnavailableError(rehydrated.cause), "its cause comes back as the git error it was");
+		assert.deepEqual(
+			[rehydrated.cause.code, rehydrated.cause.hint],
+			["not-installed", (refused.cause as { readonly hint: string }).hint],
+		);
 		await shared.recordRestoreBackoff("host-c", key, 0, refused);
 		assert.equal(await shared.capableHostLive("root", 60_000, key), true, "a host whose wait ended");
 		await shared.recordRestoreBackoff("host-c", key, 60_000, refused);
 		await shared.clearRestoreBackoff("host-c", key);
 		assert.equal(await shared.capableHostLive("root", 60_000, key), true, "a host that restored it again");
+		const kept = rehydrateError(await shared.restoreFailure(key));
+		assert.ok(kept instanceof WorkspaceRestoreError, "the host that still backs off keeps its failure, as its class");
 		assert.deepEqual(
-			await shared.restoreFailure(key),
-			unreachable,
-			"the host that still backs off keeps its failure",
+			[kept.code, kept.fields, kept.hint],
+			["commits-unavailable", { snapshotId: null, head: binding.head, commits: [binding.head] }, unreachable.hint],
 		);
 		await shared.forgetHost("host-b");
 		assert.equal(await shared.restoreFailure(key), undefined, "a host that stopped leaves no backoff behind");

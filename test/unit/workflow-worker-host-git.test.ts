@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, test, vi } from "vitest";
-import type { GitToolStatus, ResolvedGit } from "../../packages/coding-agent/src/index.js";
+import type { ResolvedGit } from "../../packages/coding-agent/src/index.js";
 import { GitUnavailableError, isGitUnavailableError } from "../../packages/coding-agent/src/utils/git-errors.js";
 import {
 	isSharedPoolSetupError,
@@ -16,10 +16,11 @@ import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cl
 
 const git = vi.hoisted(() => ({
 	resolutions: 0,
+	lookups: 0,
 	resolve: async (): Promise<ResolvedGit> => {
 		throw new Error("unset");
 	},
-	status: (): GitToolStatus => ({ source: "system", version: "2.45.0", path: "/usr/bin/git" }),
+	present: (): ResolvedGit => ({ source: "system", version: "2.45.0", path: "/usr/bin/git", env: {} }),
 }));
 
 vi.mock("@bastani/atomic", async (importOriginal) => ({
@@ -28,7 +29,10 @@ vi.mock("@bastani/atomic", async (importOriginal) => ({
 		git.resolutions++;
 		return git.resolve();
 	},
-	getGitStatus: () => git.status(),
+	resolveGitSync: () => {
+		git.lookups++;
+		return git.present();
+	},
 }));
 
 const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
@@ -46,7 +50,8 @@ afterEach(() => {
 	git.resolve = async () => {
 		throw new Error("unset");
 	};
-	git.status = () => ({ source: "system", version: "2.45.0", path: "/usr/bin/git" });
+	git.lookups = 0;
+	git.present = () => ({ source: "system", version: "2.45.0", path: "/usr/bin/git", env: {} });
 });
 
 /** A host's git source and whether it restores: given a restore function, by default, or with `restore: false`. */
@@ -94,16 +99,24 @@ test.skipIf(process.platform === "win32")(
 		try {
 			assert.deepEqual(await hostStats(directory, "default"), ["system", true], "the snapshot restore by default");
 			assert.deepEqual(await hostStats(directory, false), ["system", false], "none with restore: false");
-			git.status = () => ({ source: "provisioned", version: "2.45.0", path: "/home/user/.atomic/bin/git" });
+			git.present = () => ({
+				source: "provisioned",
+				version: "2.45.0",
+				path: "/home/user/.atomic/bin/git",
+				env: { GIT_EXEC_PATH: "/home/user/.atomic/bin/git/libexec" },
+			});
 			assert.deepEqual(
 				await hostStats(directory, "default"),
 				["provisioned", true],
 				"a git Atomic installed before",
 			);
-			git.status = () => ({ source: "unavailable", error: NOT_INSTALLED.toJSON() });
+			git.present = () => {
+				throw NOT_INSTALLED;
+			};
 			assert.deepEqual(await hostStats(directory, "default"), ["unavailable", false], "it starts without git");
 			assert.deepEqual(await hostStats(directory, false), ["unavailable", false]);
-			assert.equal(git.resolutions, 0, "nothing was resolved, so nothing was downloaded");
+			assert.equal(git.resolutions, 0, "resolveGit() was never asked, so nothing was downloaded");
+			assert.equal(git.lookups, 5, "each host took the git this machine has, which never downloads");
 		} finally {
 			await removeLibsqlDirectory(directory);
 		}
@@ -188,3 +201,57 @@ test("a resolveGit() failure that is not about git is not reported as missing gi
 		await removeLibsqlDirectory(directory);
 	}
 });
+
+test("a failure to look up this machine's git that is not about git is not reported as missing git (#4416)", async () => {
+	const directory = makeLibsqlDirectory();
+	const broken = new Error("lookup bug");
+	git.present = () => {
+		throw broken;
+	};
+	try {
+		await assert.rejects(
+			startWorkflowWorkerHost({
+				journal: { adapter: countingAdapter, options: { log: join(directory, "opens.log") } },
+				agentDir: join(directory, "agent"),
+				maxWorkers: 1,
+			}),
+			(error: Error) => error === broken,
+		);
+		assert.equal(git.resolutions, 0);
+	} finally {
+		await removeLibsqlDirectory(directory);
+	}
+});
+
+test.skipIf(process.platform === "win32")(
+	"a host without a restore function and without git reports no git problem with its other setup problems (#4416)",
+	async () => {
+		const directory = makeLibsqlDirectory();
+		git.present = () => {
+			throw NOT_INSTALLED;
+		};
+		try {
+			const outcome = await startWorkflowWorkerHost({
+				journal: {
+					adapter: libsql,
+					options: { url: pathToFileURL(join(directory, "shared.db")).href },
+					secrets: { authToken: { env: "ATOMIC_TEST_WORKER_HOST_TOKEN_NOT_SET" } },
+				},
+				agentDir: join(directory, "agent"),
+				maxWorkers: 1,
+			}).then(
+				() => undefined,
+				(error: Error) => error,
+			);
+			assert.ok(isSharedPoolSetupError(outcome), String(outcome));
+			assert.deepEqual(
+				outcome.problems.map((problem) => problem.code),
+				["journal-secret-unavailable"],
+			);
+			assert.equal(outcome.cause, undefined, "a git it does not need is no cause of its refusal");
+			assert.equal(git.resolutions, 0);
+		} finally {
+			await removeLibsqlDirectory(directory);
+		}
+	},
+);
