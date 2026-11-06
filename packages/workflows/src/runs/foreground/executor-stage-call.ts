@@ -249,6 +249,12 @@ export function createTrackedStageCaller(input: {
 		if (runtime.state.limiterSlot === "held") input.limiter.release();
 		runtime.state.limiterSlot = "none";
 	};
+	/** Calls still running that track the stage's lifecycle: the last of them to finish ends the stage (#4450). */
+	let lifecycleUsers = 0;
+	/** Set once the last of them starts ending the stage; a call that starts later runs as after the stage ended. */
+	let stageEnding = false;
+	/** The first failure among those calls that left the stage to a peer, recorded by the call that ends it. */
+	let overlapFailure: { readonly apply: () => void; readonly blockedResumably: boolean } | undefined;
 
 	const runTrackedCall = async <T>(
 		call: () => Promise<T>,
@@ -270,7 +276,7 @@ export function createTrackedStageCaller(input: {
 			throw err;
 		}
 
-		const trackStageLifecycle = !runtime.state.stageFinalized;
+		const trackStageLifecycle = !runtime.state.stageFinalized && !stageEnding;
 		runtime.state.sessionCheckpointed = false;
 		let applyTerminalStageState: (() => void) | undefined;
 		// Set only alongside the successful "completed" terminal state, so a failed
@@ -282,6 +288,7 @@ export function createTrackedStageCaller(input: {
 		// resumable with it, rather than ending as for a stage that closed for good.
 		let blockedResumably = false;
 		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
+		if (trackStageLifecycle) lifecycleUsers += 1;
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
 			if (
@@ -464,7 +471,13 @@ export function createTrackedStageCaller(input: {
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
 			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
 				await runtime.budget.stopAtBoundaryAsync(runtime.name);
-			const finalizedArtifact = await runtime.innerCtx.__closeGeneration(true);
+			const peersStillRunning = trackStageLifecycle && lifecycleUsers > 1;
+			if (trackStageLifecycle && !peersStillRunning) stageEnding = true;
+			// A peer's recoverable failure blocks the stage resumably, so its generation stays open for a resume.
+			const closedForGood = !(trackStageLifecycle && overlapFailure?.blockedResumably === true);
+			const finalizedArtifact = peersStillRunning
+				? undefined
+				: await runtime.innerCtx.__closeGeneration(closedForGood);
 			if (typeof result === "string" && finalizedArtifact !== undefined) result = finalizedArtifact as T;
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			if (
@@ -475,7 +488,8 @@ export function createTrackedStageCaller(input: {
 				runtime.markSkippedForParallelFailFast();
 				throw runtime.parallelFailFastError();
 			}
-			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+			if (trackStageLifecycle && runtime.state.skippedForParallelFailFast) throw runtime.parallelFailFastError();
+			if (runtime.state.stageClosedByWorkflowExit) throw runtime.signal.reason;
 			if (trackStageLifecycle) {
 				const assistantText = runtime.budget.enabled
 					? (stageResultBeforeBudget ?? runtime.innerCtx.__getLastAssistantText())
@@ -535,6 +549,18 @@ export function createTrackedStageCaller(input: {
 			throw err;
 		} finally {
 			unregisterBudgetWrapUp();
+			if (trackStageLifecycle) lifecycleUsers -= 1;
+			const endsStage = trackStageLifecycle && lifecycleUsers === 0;
+			const leftToPeer = trackStageLifecycle && !endsStage;
+			if (endsStage) {
+				stageEnding = true;
+				if (overlapFailure !== undefined) {
+					applyTerminalStageState = overlapFailure.apply;
+					blockedResumably = overlapFailure.blockedResumably;
+				}
+			} else if (applyTerminalStageState !== undefined && !terminalStateIsSuccess) {
+				overlapFailure ??= { apply: applyTerminalStageState, blockedResumably };
+			}
 			// Finalization, handle release, and limiter release are each independent.
 			// If finalizeStageSnapshot() throws, the limiter must still be released
 			// so the concurrency semaphore is not leaked.
@@ -551,31 +577,33 @@ export function createTrackedStageCaller(input: {
 			try {
 				// Drain rather than stop: a checkpoint still in flight must be awaited
 				// here, or its late rejection is discarded with the cancelled timer.
-				await runtime.drainStageSessionHeartbeat();
+				if (!leftToPeer) await runtime.drainStageSessionHeartbeat();
 			} catch (err) {
 				durableCheckpointError = { thrown: true, error: err };
 			}
 			try {
-				await runtime.innerCtx.__closeGeneration(
-					(applyTerminalStageState !== undefined && !blockedResumably) ||
-						runtime.state.stageClosedByWorkflowExit ||
-						runtime.state.skippedForParallelFailFast ||
-						runtime.exit.currentWorkflowExitAbortReason() !== undefined ||
-						runtime.signal.reason === WORKFLOW_KILLED_ABORT_REASON,
-				);
-				if (blockedResumably)
-					closeBlockedStageForGoodWhenRunEnds(runtime.activeStore, runtime.runId, async () => {
-						await runtime.innerCtx.__closeGeneration(true);
-					});
-				await runtime.captureStageSessionMeta({ awaitDurable: true });
+				if (!leftToPeer) {
+					await runtime.innerCtx.__closeGeneration(
+						(applyTerminalStageState !== undefined && !blockedResumably) ||
+							runtime.state.stageClosedByWorkflowExit ||
+							runtime.state.skippedForParallelFailFast ||
+							runtime.exit.currentWorkflowExitAbortReason() !== undefined ||
+							runtime.signal.reason === WORKFLOW_KILLED_ABORT_REASON,
+					);
+					if (blockedResumably)
+						closeBlockedStageForGoodWhenRunEnds(runtime.activeStore, runtime.runId, async () => {
+							await runtime.innerCtx.__closeGeneration(true);
+						});
+					await runtime.captureStageSessionMeta({ awaitDurable: true });
+				}
 			} catch (err) {
 				durableCheckpointError ??= { thrown: true, error: err };
 			}
 			finalizationError ??= durableCheckpointError;
-			if (trackStageLifecycle) {
+			if (endsStage) {
 				// A stage whose final durability checkpoint failed must never be
 				// persisted as `completed` while its caller receives that rejection.
-				if (durableCheckpointError !== undefined && terminalStateIsSuccess) {
+				if (durableCheckpointError !== undefined && terminalStateIsSuccess && overlapFailure === undefined) {
 					const failure = runtime.classifyExecutorFailure(durableCheckpointError.error);
 					applyTerminalStageState = () => applyFailureToStage(runtime.stageSnapshot, failure);
 				}

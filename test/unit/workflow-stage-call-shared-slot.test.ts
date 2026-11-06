@@ -92,7 +92,7 @@ test("concurrent messages to one stage hold one slot and give it back, so later 
 	assert.equal(laterStagesStartedTogether, true);
 });
 
-test("the stage's slot stays held until its last overlapping message ends (#4309)", async () => {
+test("the stage's slot stays held until its last overlapping message ends, and both messages are accepted (#4309, #4450)", async () => {
 	const entered: string[] = [];
 	const firstGate = Promise.withResolvers<void>();
 	const firstEntered = Promise.withResolvers<void>();
@@ -128,10 +128,7 @@ test("the stage's slot stays held until its last overlapping message ends (#4309
 				startedWhileSecondRan = later();
 
 				secondGate.resolve();
-				await second.then(
-					() => undefined,
-					() => undefined,
-				);
+				await second;
 				await turns(START_TURNS);
 				startedAfterBothEnded = later();
 				laterGate.resolve();
