@@ -231,7 +231,7 @@ A session that quit cleanly or crashed stays known to every broker for about 7 d
 
 - A send, ask, or reply returns at once as queued, `Message queued for <target>`, with `target: "offline session"` in the result details. An ask does not wait for an answer.
 - The message stays in the shared database and is delivered, in order, when that same Atomic session connects to Intercom again with the same home group, on any machine that uses the same storage.
-- A message queued for a [released subagent](/subagents#released-subagents) wakes it. The session that launched the subagent wakes it when it next holds sends for it, for example after that session or its broker restarts, and otherwise within about 30 seconds. The subagent then receives each queued message once, in order. A paused or quit subagent is not woken; its messages wait until it is resumed.
+- A message queued for a [released subagent](/subagents#released-subagents) wakes it. The session that launched the subagent wakes it when it next holds sends for it, for example after that session or its broker restarts, and otherwise within about 30 seconds. The subagent then receives each queued message once, in order, even when its session returns more than seven days after the subagent last connected. A paused or quit subagent is not woken; its messages wait until it is resumed.
 - The broker reports the later delivery only to a sender that is still connected. The tool result that already returned stays queued, so check with the recipient if you need confirmation.
 
 A target that no session has used in that time, or never used, still returns `Session not found`.

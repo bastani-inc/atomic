@@ -11,6 +11,7 @@ import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	type HeldSendRequest,
 	type IntercomBrokerStateStore,
+	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	reservationKeyFor,
@@ -878,6 +879,38 @@ describe("released child sends queued across faults (#4401)", () => {
 		await ownerNode.router.close();
 		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 1_000);
 		const ids = await queueSends(senderNode, sender, 3);
+
+		const restarted = await startNode(shared);
+		const reconnectedOwner = reconnected(owner);
+		restarted.sessions.set(owner.info.id, reconnectedOwner);
+		reserveReleased(restarted, reconnectedOwner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(reconnectedOwner), [WAKE]);
+
+		const back = await wakeAndRegister(restarted, reconnectedOwner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+		await receiveAll(restarted, back, ids);
+		assert.deepEqual(await rowStates(restarted, ids), ["delivered", "delivered", "delivered"]);
+		await vi.advanceTimersByTimeAsync(OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(messageIdsOf(back), ids, "nothing is delivered again");
+		assert.equal(wakeFramesOf(reconnectedOwner).length, 1);
+	});
+
+	test("sends queued for a released child still wake it and arrive once each, in order, when its owner returns after the brokers forgot the child (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		await ownerNode.router.close();
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 1_000);
+		const ids = await queueSends(senderNode, sender, 3);
+		// The owner stays away past the known-session retention; the sender's broker prunes the child's record meanwhile.
+		vi.setSystemTime(Date.now() + KNOWN_SESSION_RETENTION_MS);
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		const forgotten = await senderNode.state.knownSessions.lookup(child.info.id, Number.MAX_SAFE_INTEGER);
+		assert.deepEqual(forgotten, { status: "found", sessions: [] });
 
 		const restarted = await startNode(shared);
 		const reconnectedOwner = reconnected(owner);

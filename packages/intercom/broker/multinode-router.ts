@@ -243,6 +243,8 @@ interface MirroredReservation {
 	wake: boolean;
 	/** The session ids the owner reserved for the child besides its name: the sessions it registered as. */
 	readonly aliases: readonly string[];
+	/** The group the owner reserved the child in: the one it registered in. */
+	readonly group: string;
 	/** This broker told the owner to wake the child while this reservation stands (#4401). */
 	woken?: true;
 }
@@ -274,6 +276,14 @@ function queuedFrame(messageId: string, attemptId: string | undefined, position:
 		target: OFFLINE_SESSION_TARGET,
 		position,
 	};
+}
+
+/**
+ * The delivery identities a session that registered with `id` in `group` has, as `deliveryTargetIdentity` forms them:
+ * `id` as its return address, or as its Intercom session id when it gave none (#4401).
+ */
+function forgottenSessionIdentities(id: string, group: string): readonly string[] {
+	return [JSON.stringify(["return", id, normalizeGroup(group)]), JSON.stringify(["session", id])];
 }
 
 function returnAddressOf(identity: string): string | undefined {
@@ -607,6 +617,7 @@ export class MultiNodeRouter {
 				lease: reserved.lease,
 				wake,
 				aliases,
+				group,
 				...(woken ? { woken } : {}),
 				...(isReleasedReservationKey(capability) ? {} : { capability }),
 			});
@@ -622,25 +633,34 @@ export class MultiNodeRouter {
 	private async wakeWaitingChild(reservationKey: string): Promise<void> {
 		const mirror = this.mirrored.get(reservationKey);
 		if (mirror?.wake !== true || mirror.woken === true) return;
-		if (!(await this.sendsWaitFor(reservationKey, mirror.aliases)) || mirror.woken === true) return;
+		if (!(await this.sendsWaitFor(reservationKey, mirror.aliases, mirror.group)) || mirror.woken === true) return;
 		await this.requestWake(reservationKey, this.brokerId);
 	}
 
 	/**
 	 * Sends held for the reservation, or queued in the shared outbox for a session the child registered as while no
-	 * broker hosts that session. A session is matched only by the exact ids its owner reserved, never by name.
+	 * broker hosts that session. A session is matched only by the exact ids its owner reserved, never by name. An id no
+	 * known session holds any more, because the brokers forgot the child after `KNOWN_SESSION_RETENTION_MS` while its
+	 * owner was away, still finds the sends queued for it: under the delivery identities a session registered with that
+	 * id in the reserved group has (#4401).
 	 */
-	private async sendsWaitFor(reservationKey: string, aliases: readonly string[]): Promise<boolean> {
+	private async sendsWaitFor(reservationKey: string, aliases: readonly string[], group: string): Promise<boolean> {
 		const held = await this.state.heldSends.list(reservationKey);
 		if (held.status === "listed" && held.sends.length > 0) return true;
 		for (const alias of aliases) {
 			const known = await this.state.knownSessions.lookup(alias, KNOWN_SESSION_RETENTION_MS);
 			if (known.status !== "found") continue;
-			for (const session of known.sessions) {
-				if (session.intercomSessionId !== alias && session.atomicSessionId !== alias) continue;
-				const presence = await this.state.leases.read({ kind: "presence", targetIdentity: session.targetIdentity });
+			const matching = known.sessions.filter(
+				(session) => session.intercomSessionId === alias || session.atomicSessionId === alias,
+			);
+			const identities =
+				matching.length > 0
+					? matching.map((session) => session.targetIdentity)
+					: forgottenSessionIdentities(alias, group);
+			for (const targetIdentity of identities) {
+				const presence = await this.state.leases.read({ kind: "presence", targetIdentity });
 				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
-				const queued = await this.state.outbox.listUndelivered(session.targetIdentity);
+				const queued = await this.state.outbox.listUndelivered(targetIdentity);
 				if (queued.status === "listed" && queued.rows.length > 0) return true;
 			}
 		}
