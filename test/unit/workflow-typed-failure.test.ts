@@ -105,6 +105,7 @@ const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	rehydrateShellToolError: "shell-tool",
 	rehydrateLlamaServerError: "llama-server",
 	rehydrateStartupBenchmarkError: "startup-benchmark",
+	deserializeSubscriptionError: "subscription",
 	// Team profile errors are storage errors, and cross with the storage family.
 	rehydrateStorageError: "storage",
 	rehydrateTeamError: "storage",

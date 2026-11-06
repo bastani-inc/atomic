@@ -5,6 +5,7 @@ import {
 	DebugLogUnwritableError,
 	DecisionTimeoutError,
 	EditMatchError,
+	EventSourceError,
 	GitHubCopilotRateLimitError,
 	GitUnavailableError,
 	isAgentRehydrateError,
@@ -12,6 +13,7 @@ import {
 	isDebugLogUnwritableError,
 	isDecisionTimeoutError,
 	isEditMatchError,
+	isEventSourceError,
 	isGitHubCopilotRateLimitError,
 	isGitUnavailableError,
 	isLlamaServerUnreachableError,
@@ -33,6 +35,7 @@ import {
 	serializeFileToolError,
 	serializeGitHubCopilotError,
 	serializeSessionStartError,
+	serializeSubscriptionError,
 	serializeWorkspaceError,
 	TaskEvictedError,
 	ToolDetachmentError,
@@ -284,6 +287,18 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: StartupBenchmarkConfigError,
 		guard: isStartupBenchmarkConfigError,
 		facts: ownFacts(toJSON),
+	},
+	{
+		family: "subscription",
+		make: () =>
+			new EventSourceError("github-checks:acme/widgets#7", "poll", {
+				cause: new Error("gh exited with code 1"),
+				retryable: true,
+				detail: "gh api returned 502",
+			}),
+		type: EventSourceError,
+		guard: isEventSourceError,
+		facts: ownFacts(serializeSubscriptionError),
 	},
 ];
 
