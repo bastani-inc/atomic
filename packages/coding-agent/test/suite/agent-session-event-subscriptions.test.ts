@@ -302,6 +302,29 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		assert.ok(childToolNames.includes(SUBSCRIPTION_REPORT_TOOL_NAME), childToolNames.join(","));
 	});
 
+	it("a child session takes the options given to child.task and keeps its conversation in memory (#4311)", async () => {
+		const harness = await createHarness({ childSessions: true });
+		harnesses.push(harness);
+		const toolNames: string[][] = [];
+		harness.setResponses([
+			(context) => {
+				toolNames.push(
+					context.messages
+						.flatMap((message) => (message.role === "system" ? (message.toolsAdded ?? []) : []))
+						.map((tool) => tool.name),
+				);
+				return fauxAssistantMessage("no tools");
+			},
+		]);
+		let childSessionId = "";
+		await harness.session.subscribe(listSource([{ id: "bare-1" }]), async (_event, child) => {
+			childSessionId = (await child.task({ prompt: "Answer without tools.", noTools: "all" })).sessionId;
+		}).done;
+		assert.deepEqual(toolNames, [[]]);
+		const persisted = await harness.session.sessionManager.getSessionStore().readHeader(childSessionId);
+		assert.equal(persisted, undefined);
+	});
+
 	it("a child limited to an explicit tool list can still call report_to_subscriber (#4311)", async () => {
 		const harness = await createHarness({ childSessions: true });
 		harnesses.push(harness);
