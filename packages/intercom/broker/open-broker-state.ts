@@ -18,6 +18,7 @@ import { openSqlKnownSessionStore } from "./sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "./sql-lease-store.js";
 import { openSqlOutboxStore } from "./sql-outbox-store.js";
 import { openSqlPendingAskStore } from "./sql-pending-ask-store.js";
+import { openSqlReleasedAskStore } from "./sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "./sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "./sql-sent-message-authority.js";
 import type { WakeUpBus } from "./wake-up-bus.js";
@@ -131,6 +132,7 @@ export async function openIntercomBrokerState(
 		const heldSends = await openSqlHeldSendStore(options);
 		const reservations = await openSqlRestoringReservationStore(options);
 		const pendingAsks = await openSqlPendingAskStore(options);
+		const releasedAsks = await openSqlReleasedAskStore(options);
 		const sentMessages = await openSqlSentMessageAuthority(options);
 		const knownSessions = await openSqlKnownSessionStore(options);
 		const bus = await openDatabaseWakeUpBus({
@@ -145,6 +147,7 @@ export async function openIntercomBrokerState(
 			heldSends,
 			reservations,
 			pendingAsks,
+			releasedAsks,
 			sentMessages,
 			knownSessions,
 			close() {

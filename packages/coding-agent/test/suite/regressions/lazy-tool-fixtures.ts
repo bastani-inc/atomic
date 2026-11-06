@@ -157,6 +157,10 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-child-errors.ts"), "utf-8"),
 		);
 		writeFileSync(
+			join(tempDir, "broker", "released-reply-errors.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-reply-errors.ts"), "utf-8"),
+		);
+		writeFileSync(
 			join(tempDir, "result-renderers.ts"),
 			"export function renderIntercomToolResult() { return undefined; }\n",
 		);
@@ -165,7 +169,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 		// without a copy here fails as a Bun module-resolution error inside a spawned
 		// subprocess — once already, in `dc34574522`, taking out every Intercom case in
 		// both #1704 files on CI. Fail here instead, naming the missing file.
-		for (const [, specifier] of indexSource.matchAll(/from "\.\/([\w.-]+)\.js"/g)) {
+		for (const [, specifier] of indexSource.matchAll(/from "\.\/([\w./-]+)\.js"/g)) {
 			if (!existsSync(join(tempDir, `${specifier}.ts`))) {
 				throw new Error(`lazy-tool Intercom fixture is missing packages/intercom/${specifier}.ts`);
 			}

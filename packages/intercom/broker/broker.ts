@@ -28,7 +28,7 @@ import {
 } from "../workflow-prediction-fields.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
-import { startBrokerWatchdog } from "./watchdog.js";
+import { type BrokerWatchdog, startBrokerWatchdog } from "./watchdog.js";
 import { retractBrokerStartAnnouncement } from "./start-announcement.js";
 import {
 	getBrokerDeliveredMessagesPath,
@@ -96,6 +96,7 @@ import {
 } from "./released-children.js";
 import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
+import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -131,7 +132,7 @@ const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
-const MULTI_NODE_CLOSE_BOUND_MS = 2_000;
+const SHUTDOWN_CLOSE_BOUND_MS = 2_000;
 /** What a registration is answered with once this broker is closing: the client spawns the replacement and registers again. */
 const RETIRING_REFUSAL = {
   type: "registration_failed",
@@ -227,10 +228,6 @@ interface PendingReleasedReplyAck {
   readonly questionId: string;
   readonly childName: string;
   readonly route: ReleasedAskerReplyRoute;
-}
-
-function releasedAskerReplyRefusal(childName: string): string {
-  return `Subagent \`${childName}\` is released and no longer waiting for this reply`;
 }
 
 function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
@@ -382,6 +379,7 @@ class IntercomBroker {
   private server: net.Server;
   private readonly instanceId = randomUUID();
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private watchdog: BrokerWatchdog | undefined;
   private boundSocketInode: number | undefined;
   private lastConnectionAt = performance.now();
   private deliveredMessages = new DeliveredMessageCache(
@@ -462,7 +460,7 @@ class IntercomBroker {
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
       console.log(`Intercom broker started (pid: ${process.pid})`);
-      startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
+      this.watchdog = startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
       if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
@@ -2350,6 +2348,11 @@ class IntercomBroker {
 			if (typeof clientMessage.messageId !== "string" || typeof clientMessage.accepted !== "boolean") {
 				throw new Error("Invalid released_child_reply_ack message");
 			}
+			const owner = currentId === null ? undefined : this.sessions.get(currentId);
+			const handoffId = typeof clientMessage.handoffId === "string" ? clientMessage.handoffId : undefined;
+			if (owner !== undefined && this.multiNode?.releasedReplyAcknowledged(owner, clientMessage.messageId, handoffId, clientMessage.accepted)) {
+				break;
+			}
 			const pending = this.releasedReplyAcks.get(clientMessage.messageId);
 			if (pending?.ownerSessionId === currentId && pending.handoffId === clientMessage.handoffId) {
 				this.settleReleasedReply(clientMessage.messageId, clientMessage.accepted ? "accepted" : "refused");
@@ -2824,7 +2827,8 @@ class IntercomBroker {
     }
     const childName = departed.registrationName;
     const releasedOwner = childName === undefined ? undefined : this.restoringRecipients.releasedOwner(childName);
-    if (childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId) {
+    const parked = childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId;
+    if (parked) {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else {
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
@@ -2868,7 +2872,7 @@ class IntercomBroker {
 	}
 	this.workflowInvocationClaims.delete(sessionId);
 	this.sessions.delete(sessionId);
-	this.multiNode?.sessionLeft(departed);
+	this.multiNode?.sessionLeft(departed, parked ? { ownerSessionId: releasedOwner, childName } : undefined);
 	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	for (const send of unreserved) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
@@ -2930,14 +2934,14 @@ class IntercomBroker {
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
 	this.deliveredMessages.close();
-    const multiNode = this.multiNode;
-    if (multiNode === undefined) {
-      this.exitAfterShutdown();
-      return;
-    }
+    // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
+    // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's
+    // connection still holds the pipe open, finds the pipe busy and waits up to 30 s for a free instance.
+    const watchdogStopped = this.watchdog?.stop() ?? Promise.resolve();
     // Give this broker's leases up so other brokers see its sessions offline at once, within a bound.
-    const bound = new Promise<void>((resolve) => setTimeout(resolve, MULTI_NODE_CLOSE_BOUND_MS).unref());
-    void Promise.race([multiNode.close().catch(() => {}), bound]).finally(() => this.exitAfterShutdown());
+    const leasesGivenUp = this.multiNode?.close().catch(() => {}) ?? Promise.resolve();
+    const bound = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_CLOSE_BOUND_MS).unref());
+    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
   }
 
   private exitAfterShutdown(): never {

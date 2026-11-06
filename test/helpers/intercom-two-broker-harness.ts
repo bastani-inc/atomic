@@ -35,6 +35,7 @@ const extensionDir = join(repoRoot, "packages/intercom");
 const storageAdapterModule = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const BROKER_READY_TIMEOUT_MS = 10_000;
 const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
+const BROKER_SHUTDOWN_TIMEOUT_MS = 15_000;
 /** How long start() waits for a broker to write its lease before reporting single-node brokers. */
 const CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 const DROP_WAKEUPS_TRIGGER = "two_broker_harness_drop_wakeups";
@@ -326,6 +327,46 @@ export class TwoBrokerHarness {
 				}, fail),
 			);
 		});
+	}
+
+	async shutdownBroker(node: BrokerNode): Promise<void> {
+		const broker = this.nodes[node].broker;
+		if (!broker || broker.exitCode !== null || broker.signalCode !== null) return;
+		const exited = new Promise<void>((resolveExit, rejectExit) => {
+			broker.once("close", (code, signal) => {
+				if (code === 0 && signal === null) resolveExit();
+				else
+					rejectExit(
+						new Error(`broker ${node} did not exit cleanly after its shutdown (code ${code}, signal ${signal})`),
+					);
+			});
+		});
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				Promise.all([exited, this.requestShutdown(node)]),
+				new Promise<never>((_, rejectTimeout) => {
+					timer = setTimeout(
+						() =>
+							rejectTimeout(
+								new Error(
+									`broker ${node} did not exit within ${BROKER_SHUTDOWN_TIMEOUT_MS} ms of its shutdown request`,
+								),
+							),
+						BROKER_SHUTDOWN_TIMEOUT_MS,
+					);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
+		await vi.waitFor(
+			() => {
+				const live = this.nodes[node].clients.filter((client) => !client.disconnected);
+				if (live.length > 0) throw new Error(`clients of broker ${node} still connected: ${live.length}`);
+			},
+			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+		);
 	}
 
 	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown on POSIX (see `requestShutdown`). */

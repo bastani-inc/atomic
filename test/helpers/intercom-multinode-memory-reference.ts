@@ -17,7 +17,13 @@ import type {
 	OutboxRowState,
 	OutboxStore,
 	PendingAsk,
+	PendingAskPark,
 	PendingAskStore,
+	ReleasedAsk,
+	ReleasedAskClaim,
+	ReleasedAskRecord,
+	ReleasedAskState,
+	ReleasedAskStore,
 	ReplyRoute,
 	RestoringReservation,
 	RestoringReservationEnd,
@@ -592,7 +598,27 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 	};
 }
 
-function pendingAskStore(asks: PendingAsk[]): PendingAskStore {
+interface PendingAskEntry {
+	readonly senderSessionId: string;
+	targetSessionId: string;
+	readonly messageId: string;
+	park?: PendingAskPark;
+}
+
+const plainAsk = (entry: PendingAskEntry): PendingAsk => ({
+	senderSessionId: entry.senderSessionId,
+	targetSessionId: entry.targetSessionId,
+	messageId: entry.messageId,
+});
+
+function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
+	const invalidPark = (park: PendingAskPark): InvalidStateInput | undefined => {
+		if (park.ownerSessionId.length === 0) return invalid("empty-session-id");
+		return park.reservationKey.length === 0 ? invalid("empty-reservation-key") : undefined;
+	};
+	const parkedBy = (ownerSessionId: string, reservationKey: string | undefined) => (entry: PendingAskEntry) =>
+		entry.park?.ownerSessionId === ownerSessionId &&
+		(reservationKey === undefined || entry.park.reservationKey === reservationKey);
 	const invalidRoute = (route: ReplyRoute): InvalidStateInput | undefined => {
 		if (route.replySenderSessionId.length === 0 || route.replyTargetSessionId.length === 0) {
 			return invalid("empty-session-id");
@@ -617,7 +643,7 @@ function pendingAskStore(asks: PendingAsk[]): PendingAskStore {
 					entry.messageId === ask.messageId,
 			);
 			if (exists) return { status: "duplicate" };
-			asks.push({ ...ask });
+			asks.push(plainAsk(ask));
 			return { status: "recorded" };
 		},
 		async matchesReply(route) {
@@ -638,11 +664,152 @@ function pendingAskStore(asks: PendingAsk[]): PendingAskStore {
 			asks.splice(0, asks.length, ...kept);
 			return { status: "pruned", removed: before - kept.length };
 		},
+		async listForSender(senderSessionId) {
+			if (senderSessionId.length === 0) return invalid("empty-session-id");
+			return {
+				status: "listed",
+				asks: asks.filter((ask) => ask.senderSessionId === senderSessionId).map(plainAsk),
+			};
+		},
 		async takeForTarget(targetSessionId) {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const taken = asks.filter((ask) => ask.targetSessionId === targetSessionId);
 			asks.splice(0, asks.length, ...asks.filter((ask) => ask.targetSessionId !== targetSessionId));
-			return { status: "taken", asks: taken.map((ask) => ({ ...ask })) };
+			return { status: "taken", asks: taken.map(plainAsk) };
+		},
+		async parkForTarget(targetSessionId, park) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			const bad = invalidPark(park);
+			if (bad !== undefined) return bad;
+			let parked = 0;
+			for (const ask of asks) {
+				if (ask.targetSessionId !== targetSessionId) continue;
+				ask.park = { ownerSessionId: park.ownerSessionId, reservationKey: park.reservationKey };
+				parked++;
+			}
+			return { status: "parked", parked };
+		},
+		async rebindParked(park, targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			const bad = invalidPark(park);
+			if (bad !== undefined) return bad;
+			const rebound = asks.filter(parkedBy(park.ownerSessionId, park.reservationKey));
+			const result = rebound.map((ask) => ({
+				...plainAsk(ask),
+				targetSessionId,
+				previousTargetSessionId: ask.targetSessionId,
+			}));
+			for (const ask of rebound) {
+				ask.targetSessionId = targetSessionId;
+				delete ask.park;
+			}
+			return { status: "rebound", asks: result };
+		},
+		async takeParked(ownerSessionId, reservationKey) {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			const matches = parkedBy(ownerSessionId, reservationKey);
+			const taken = asks.filter(matches);
+			asks.splice(0, asks.length, ...asks.filter((ask) => !matches(ask)));
+			return { status: "taken", asks: taken.map(plainAsk) };
+		},
+	};
+}
+
+interface ReleasedAskEntry {
+	readonly ask: ReleasedAsk;
+	state: ReleasedAskState;
+	replyMessageId?: string;
+	claimedAt?: number;
+	readonly expiresAt: number;
+}
+
+function releasedAskStore(entries: ReleasedAskEntry[]): ReleasedAskStore {
+	const invalidKey = (questionId: string, replierSessionId: string): InvalidStateInput | undefined => {
+		if (questionId.length === 0) return invalid("empty-message-id");
+		return replierSessionId.length === 0 ? invalid("empty-session-id") : undefined;
+	};
+	const invalidClaim = (claim: ReleasedAskClaim): InvalidStateInput | undefined =>
+		invalidKey(claim.questionId, claim.replierSessionId) ??
+		(claim.replyMessageId.length === 0 ? invalid("empty-message-id") : undefined);
+	const entryOf = (questionId: string, replierSessionId: string): ReleasedAskEntry | undefined =>
+		entries.find((entry) => entry.ask.questionId === questionId && entry.ask.replierSessionId === replierSessionId);
+	const live = (entry: ReleasedAskEntry | undefined): ReleasedAskEntry | undefined =>
+		entry === undefined || (entry.state === "open" && entry.expiresAt <= Date.now()) ? undefined : entry;
+	const record = (entry: ReleasedAskEntry): ReleasedAskRecord => ({
+		...entry.ask,
+		state: entry.state,
+		...(entry.replyMessageId === undefined ? {} : { replyMessageId: entry.replyMessageId }),
+	});
+	const settle = (claim: ReleasedAskClaim, to: ReleasedAskState, from: readonly ReleasedAskState[]) => {
+		const entry = entryOf(claim.questionId, claim.replierSessionId);
+		if (entry === undefined) return { status: "missing" } as const;
+		if (!from.includes(entry.state) || entry.replyMessageId !== claim.replyMessageId)
+			return { status: "stale" } as const;
+		entry.state = to;
+		if (to === "open") delete entry.replyMessageId;
+		return { status: "settled" } as const;
+	};
+	const claimFor = (entry: ReleasedAskEntry, replyMessageId: string) => {
+		entry.state = "claimed";
+		entry.replyMessageId = replyMessageId;
+		entry.claimedAt = Date.now();
+		return { status: "claimed", ask: record(entry) } as const;
+	};
+	return {
+		async keep(asks, ttlMs) {
+			for (const ask of asks) {
+				if (ask.questionId.length === 0) return invalid("empty-message-id");
+				if (ask.askerSessionId.length === 0 || ask.replierSessionId.length === 0 || ask.ownerSessionId.length === 0)
+					return invalid("empty-session-id");
+				if (ask.childName.length === 0) return invalid("empty-child-name");
+			}
+			let kept = 0;
+			for (const ask of asks) {
+				if (entryOf(ask.questionId, ask.replierSessionId) !== undefined) continue;
+				entries.push({ ask: { ...ask }, state: "open", expiresAt: Date.now() + ttlMs });
+				kept++;
+			}
+			return { status: "kept", kept };
+		},
+		async lookup(key) {
+			const bad = invalidKey(key.questionId, key.replierSessionId);
+			if (bad !== undefined) return bad;
+			const entry = live(entryOf(key.questionId, key.replierSessionId));
+			return entry === undefined ? { status: "missing" } : { status: "found", ask: record(entry) };
+		},
+		async claim(claim) {
+			const bad = invalidClaim(claim);
+			if (bad !== undefined) return bad;
+			const entry = live(entryOf(claim.questionId, claim.replierSessionId));
+			if (entry === undefined) return { status: "missing" };
+			if (entry.state === "open") return claimFor(entry, claim.replyMessageId);
+			return { status: entry.replyMessageId === claim.replyMessageId ? "claimed" : "taken", ask: record(entry) };
+		},
+		async supersede(claim) {
+			const bad =
+				invalidClaim(claim) ?? (claim.staleReplyMessageId.length === 0 ? invalid("empty-message-id") : undefined);
+			if (bad !== undefined) return bad;
+			const entry = live(entryOf(claim.questionId, claim.replierSessionId));
+			if (entry === undefined) return { status: "missing" };
+			const stale =
+				entry.state === "claimed" &&
+				entry.replyMessageId === claim.staleReplyMessageId &&
+				ageOf(entry.claimedAt ?? Date.now()) > claim.staleAfterMs;
+			if (stale) return claimFor(entry, claim.replyMessageId);
+			return { status: entry.replyMessageId === claim.replyMessageId ? "claimed" : "taken", ask: record(entry) };
+		},
+		async answer(claim) {
+			return invalidClaim(claim) ?? settle(claim, "answered", ["claimed", "answered"]);
+		},
+		async reopen(claim) {
+			return invalidClaim(claim) ?? settle(claim, "open", ["claimed"]);
+		},
+		async prune(olderThanMs) {
+			const before = entries.length;
+			const kept = entries.filter((entry) => entry.expiresAt + olderThanMs >= Date.now());
+			entries.splice(0, entries.length, ...kept);
+			return before - kept.length;
 		},
 	};
 }
@@ -794,8 +961,13 @@ export function openMemoryRestoringReservationFixture(): Promise<SharedStoreFixt
 }
 
 export function openMemoryPendingAskFixture(): Promise<SharedStoreFixture<PendingAskStore>> {
-	const asks: PendingAsk[] = [];
+	const asks: PendingAskEntry[] = [];
 	return sharedFixture(() => pendingAskStore(asks));
+}
+
+export function openMemoryReleasedAskFixture(): Promise<SharedStoreFixture<ReleasedAskStore>> {
+	const entries: ReleasedAskEntry[] = [];
+	return sharedFixture(() => releasedAskStore(entries));
 }
 
 export function openMemorySentMessageFixture(): Promise<SharedStoreFixture<SentMessageAuthority>> {

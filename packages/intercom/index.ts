@@ -63,6 +63,23 @@ export {
 	serializeIntercomReleasedChildError,
 	UnknownReleasedChildError,
 } from "./broker/released-child-errors.js";
+export {
+	IntercomReleasedReplyError,
+	type IntercomReleasedReplyErrorCode,
+	type IntercomReleasedReplyErrorFields,
+	isIntercomReleasedReplyError,
+	isReleasedReplyAnsweredError,
+	isReleasedReplyErrorCode,
+	isReleasedReplyInFlightError,
+	isRetryableIntercomReleasedReplyError,
+	RELEASED_REPLY_ERROR_CODES,
+	ReleasedReplyAnsweredError,
+	ReleasedReplyInFlightError,
+	readSerializedIntercomReleasedReplyError,
+	rehydrateIntercomReleasedReplyError,
+	type SerializedIntercomReleasedReplyError,
+	serializeIntercomReleasedReplyError,
+} from "./broker/released-reply-errors.js";
 
 type LifecycleSnapshot<K extends keyof ForwardedEventMap> = {
 	event: ForwardedEventMap[K];

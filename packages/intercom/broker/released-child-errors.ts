@@ -125,6 +125,8 @@ function rehydrateCause(serialized: SerializedErrorCause, depth: number): Error 
 	return cause;
 }
 
+export { rehydrateCause as rehydrateErrorCause, serializeCause as serializeErrorCause };
+
 export function serializeIntercomReleasedChildError(error: IntercomReleasedChildError): SerializedIntercomReleasedChildError {
 	return {
 		name: error.name,

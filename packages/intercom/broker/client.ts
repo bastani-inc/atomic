@@ -29,6 +29,11 @@ import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { isDeliveryFailureReasonCode } from "./delivery-failure-reason.js";
 import { isReleasedChildErrorCode, ReleasedChildReservationError, releasedChildErrorFor } from "./released-child-errors.js";
+import {
+	type IntercomReleasedReplyError,
+	readSerializedIntercomReleasedReplyError,
+	rehydrateIntercomReleasedReplyError,
+} from "./released-reply-errors.js";
 import { RELEASED_CHILD_FRAME_MAX, validateReleasedChildFrame } from "./released-children.js";
 import { normalizeGroups } from "../group.js";
 import {
@@ -189,6 +194,22 @@ export {
 	UnknownReleasedChildError,
 } from "./released-child-errors.js";
 export type { IntercomReleasedChildErrorCode, SerializedIntercomReleasedChildError } from "./released-child-errors.js";
+export {
+	IntercomReleasedReplyError,
+	isIntercomReleasedReplyError,
+	isReleasedReplyAnsweredError,
+	isReleasedReplyInFlightError,
+	isRetryableIntercomReleasedReplyError,
+	ReleasedReplyAnsweredError,
+	ReleasedReplyInFlightError,
+	rehydrateIntercomReleasedReplyError,
+	serializeIntercomReleasedReplyError,
+} from "./released-reply-errors.js";
+export type {
+	IntercomReleasedReplyErrorCode,
+	IntercomReleasedReplyErrorFields,
+	SerializedIntercomReleasedReplyError,
+} from "./released-reply-errors.js";
 
 function readReleasedChildRefusal(value: unknown): ReleasedChildRefusal | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
@@ -204,6 +225,8 @@ export interface SendResult {
   queued?: boolean;
   reason?: string;
 	reasonCode?: DeliveryFailureReasonCode;
+	/** #4386: the typed refusal of a reply to a released subagent; its `code` is `reasonCode`. */
+	error?: IntercomReleasedReplyError;
 	target?: string;
   position?: number;
   /** How a queued workflow target relates to the run's stages (#4359). */
@@ -1099,20 +1122,24 @@ export class IntercomClient extends EventEmitter {
       }
       case "delivery_failed": {
 		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
+		const wireError = brokerMessage.error as JsonWireValue | undefined;
+		const error = readSerializedIntercomReleasedReplyError(wireError);
 		if (
 			typeof messageId !== "string" ||
 			(attemptId !== undefined && typeof attemptId !== "string") ||
 			typeof reason !== "string" ||
-			(reasonCode !== undefined && (typeof reasonCode !== "string" || !isDeliveryFailureReasonCode(reasonCode)))
+			(reasonCode !== undefined && (typeof reasonCode !== "string" || !isDeliveryFailureReasonCode(reasonCode))) ||
+			(wireError !== undefined && (error === undefined || error.code !== reasonCode))
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}
-		const result = {
+		const result: SendResult = {
 			id: messageId,
 			delivered: false,
 			reason,
 			...(reasonCode === undefined ? {} : { reasonCode }),
-		} as const;
+			...(error === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(error) }),
+		};
 		if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
 		else this.pendingSends.resolve(messageId, attemptId, result);
 		break;

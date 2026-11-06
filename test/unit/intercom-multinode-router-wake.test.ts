@@ -38,6 +38,7 @@ import {
 	openMemoryLeaseStoreFixture,
 	openMemoryOutboxFixture,
 	openMemoryPendingAskFixture,
+	openMemoryReleasedAskFixture,
 	openMemoryRestoringReservationFixture,
 	openMemorySentMessageFixture,
 	openMemoryWakeUpBusFixture,
@@ -123,6 +124,7 @@ async function cluster(): Promise<Cluster> {
 	const heldSends = await openMemoryHeldSendFixture();
 	const reservations = await openMemoryRestoringReservationFixture();
 	const pendingAsks = await openMemoryPendingAskFixture();
+	const releasedAsks = await openMemoryReleasedAskFixture();
 	const sentMessages = await openMemorySentMessageFixture();
 	const knownSessions = await openMemoryKnownSessionFixture();
 	const bus = await openMemoryWakeUpBusFixture();
@@ -135,6 +137,7 @@ async function cluster(): Promise<Cluster> {
 				heldSends: await heldSends.connect(),
 				reservations: await reservations.connect(),
 				pendingAsks: await pendingAsks.connect(),
+				releasedAsks: await releasedAsks.connect(),
 				sentMessages: await sentMessages.connect(),
 				knownSessions: await knownSessions.connect(),
 				close: async () => {},
