@@ -1358,6 +1358,46 @@ test("codemode summarizes output fields behind local schema references (earendil
 	}
 });
 
+test("codemode output summaries keep the keywords beside a local schema reference (#4415)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "start",
+					label: "start",
+					description: "start tool",
+					parameters: Type.Object({}),
+					outputSchema: Type.Unsafe({
+						type: "object",
+						properties: {
+							action: { $ref: "#/$defs/Action", const: "start" },
+							process: { $ref: "#/$defs/Process", properties: { pid: { type: "integer" } }, required: ["pid"] },
+							owner: { $ref: "#/$defs/Owner", type: "object" },
+						},
+						required: ["action", "process", "owner"],
+						$defs: {
+							Action: { type: "string" },
+							Process: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+							Owner: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+						},
+					}),
+					execute: async () => ({ content: [], details: {} }),
+				});
+			},
+		],
+		initialActiveToolNames: ["start", "codemode"],
+	});
+	try {
+		assert.equal(
+			harness.session.agent.state.tools.find((tool) => tool.name === "start")?.description,
+			'start tool\n\nCodemode: `tools.start(args)` resolves to `{ action: "start", process: { id, pid }, owner: { name } }`.',
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode declarations show input constraints the type cannot express (#10707)", () => {
 	const description = createCodemodeDescription([
 		{

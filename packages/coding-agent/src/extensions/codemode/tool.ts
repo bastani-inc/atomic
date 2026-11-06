@@ -213,21 +213,33 @@ function describeUnionFields(schema: unknown, root: CodemodeJsonSchema): string 
 	return described.every((fields) => fields !== undefined) ? described.join(" | ") : undefined;
 }
 /**
- * The subschema the local `$ref` chain of `schema` names in `root`, so MCP output schemas that put their models in
- * `$defs` still show field names. Remote, missing, and cyclic references stop at the schema holding them.
+ * `schema` with the subschemas its local `$ref` chain names in `root`, so MCP output schemas that put their models in
+ * `$defs` still show field names. JSON Schema applies a `$ref` together with the keywords beside it, so the schema
+ * holding a reference keeps its own keywords (`{ $ref, const: "start" }` keeps its `const`), and its `properties` and
+ * `required` add to the referenced ones. Remote, missing, boolean, and cyclic references end the chain.
  */
 function followRef(schema: unknown, root: CodemodeJsonSchema): unknown {
-	const seen = new Set<unknown>();
+	const seen = new Set<unknown>([schema]);
 	let current = schema;
-	while (typeof current === "object" && current !== null && !seen.has(current)) {
-		const ref = (current as Record<string, unknown>).$ref;
-		if (typeof ref !== "string") break;
-		const target = resolveSchemaRef(ref, root);
-		if (target === undefined) break;
-		seen.add(current);
-		current = target;
+	while (typeof current === "object" && current !== null) {
+		const { $ref, ...own } = current as Record<string, unknown>;
+		if (typeof $ref !== "string") break;
+		const target = resolveSchemaRef($ref, root);
+		if (typeof target !== "object" || seen.has(target)) break;
+		seen.add(target);
+		const combined: Record<string, unknown> = { ...target, ...own };
+		if (isSchemaObject(target.properties) && isSchemaObject(own.properties)) {
+			combined.properties = { ...target.properties, ...own.properties };
+		}
+		if (Array.isArray(target.required) && Array.isArray(own.required)) {
+			combined.required = [...target.required, ...own.required];
+		}
+		current = combined;
 	}
 	return current;
+}
+function isSchemaObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function describeScriptCall(tool: AgentTool): string {
 	return `${tool.description.trim()}\n\nCodemode: \`tools.${toCodemodeIdentifier(tool.name)}(args)\` resolves to ${describeOutput(tool.name, toCodemodeDeclaration(tool).outputSchema)}.`;
