@@ -129,8 +129,9 @@ test("global setups isolate Herdr, provider credentials and debug output, then p
 
 /**
  * Every vitest project that can reach the coding agent's snapshot Git loads the checkout isolation setup, so no test
- * records, verifies or restores a worktree snapshot of the checkout the suites run from (#4414). A config added for
- * another package must load it as well, unless that package neither is nor depends on the coding agent.
+ * records, verifies or restores a worktree snapshot of the checkout the suites run from (#4414), and no test opens a
+ * SQLite database under the real home directory's `.atomic` root (#4445). A config added for another package must
+ * load it as well, unless that package neither is nor depends on the coding agent.
  */
 test("every vitest project that can reach snapshot Git excludes the checkout from snapshots (#4414)", async () => {
 	type VitestProject = { test?: { name?: string; setupFiles?: string | string[] } };
