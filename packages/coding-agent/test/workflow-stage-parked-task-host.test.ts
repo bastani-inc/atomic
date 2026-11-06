@@ -13,7 +13,7 @@ import { afterEach, describe, test, vi } from "vitest";
 import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
-import type { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
+import { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
 import type { Cleanup, OperationId, TaskResult } from "../src/core/tasks/contracts.js";
 import { TaskSubscription } from "../src/core/tasks/supervisor.js";
@@ -273,6 +273,28 @@ describe("a released stage's task host (#4309)", () => {
 		reopened.setResponses([fauxAssistantMessage("must not run")]);
 
 		await assertNoticeWithoutTurn(reopened, /settled-before-rebind/);
+		await boundaryOf(context).close();
+	});
+
+	test("reports the owner's settled tasks only when a released stage's next session binds, not at the first bind or a later replacement (#4309)", async () => {
+		const reported = vi.spyOn(AgentTaskHost.prototype, "reportSettledTasks");
+		const context = stageContext();
+		const store = new MemorySessionStore();
+		const first = await stageSession(context, store);
+		first.session.getAgentTaskHost();
+		const sessionId = first.sessionManager.getSessionId();
+		assert.equal(reported.mock.calls.length, 0, "the first bind has nothing a parked stage missed");
+
+		parkWorkflowStageForRelease(context);
+		await first.session.dispose();
+		const reopened = await stageSession(context, store, sessionId);
+		reopened.session.getAgentTaskHost();
+		assert.equal(reported.mock.calls.length, 1, "the bind that ends the release reports once");
+
+		await reopened.session.dispose();
+		const replacement = await stageSession(context, store, sessionId);
+		replacement.session.getAgentTaskHost();
+		assert.equal(reported.mock.calls.length, 1, "a replacement of a live stage reports nothing");
 		await boundaryOf(context).close();
 	});
 
