@@ -92,6 +92,7 @@ test("a report queued into a subscriber's running turn counts as saved only when
 		{ type: "message_end", message: { role: "user" } },
 		{ type: "message_end", message: { role: "assistant", content: REPORT } },
 		{ type: "message_end", message: { role: "user", content: "another message" } },
+		{ type: "message_end", message: { role: "user", content: [{ type: "image", data: "x" }] } },
 		{ type: "message_update", message: { role: "user", content: REPORT } },
 	];
 	for (const event of notIt) {
