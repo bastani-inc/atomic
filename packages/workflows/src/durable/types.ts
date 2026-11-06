@@ -313,7 +313,9 @@ export interface DurableStageCheckpoint {
 /**
  * How a durably resumed stage starts when its previous process stopped while it waited between turns (a `release`
  * or `idle` wait): released, with its first `promptsCompleted` calls answered from the run's record instead of the
- * model. The first call past them reopens `sessionId` from the session store and runs live.
+ * model. The first call past them reopens `sessionId` from the session store and runs live. A stage that stopped
+ * waiting on a tool call (`tool`) after earlier calls finished answers those the same way, and its next call continues
+ * the turn that waits on the tool instead of sending its own text.
  */
 export interface DurableReleasedStageResume {
 	readonly wait: import("../shared/authoring-contract-stage.js").StageWaitSnapshot;

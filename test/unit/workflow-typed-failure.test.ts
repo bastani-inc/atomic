@@ -90,6 +90,7 @@ test("each family with its own JSON form is named by its envelope and has a cros
 const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	deserializeStageWaitError: "stage-wait",
 	deserializeToolDetachmentError: "tool-detachment",
+	deserializeRunEvictionError: "run-eviction",
 	rehydrateGitProvisionError: "git-provision",
 	rehydrateWorkflowGitRequiredError: "git-required",
 	rehydrateWorkspaceError: "workspace",

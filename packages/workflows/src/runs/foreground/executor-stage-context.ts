@@ -1,5 +1,6 @@
 import { formatModelLabel } from "@bastani/atomic";
 import type { DurableReleasedStageResume } from "../../durable/types.js";
+import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import { isStageReleasedError } from "../../shared/stage-wait-errors.js";
 import type { TrackedStageCaller } from "./executor-stage-call.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageNoticeInput } from "./executor-stage-types.js";
@@ -96,6 +97,11 @@ export function createStageContext(input: {
 			runtime.throwIfStageMutationBlocked();
 			const replayed = runtime.replayRecordedCall();
 			if (replayed !== undefined) return replayed.then(() => undefined);
+			// The stage's first live call after a resume inside a tool wait continues the turn waiting on the tool.
+			if (runtime.takeWaitingTurn())
+				return input
+					.runTrackedStageCall(() => innerCtx.prompt(RESUME_CONTINUATION_PROMPT), { allowFinalized: true })
+					.then(() => undefined);
 			// A stage released on a tool wait holds the message for the turn its results continue, as a streaming stage
 			// takes it into its running turn; neither is a call of its own that would finish the stage (#4309).
 			if (innerCtx.isStreaming || innerCtx.__holdsInput() === true) return sendStreamingUserMessage(text, options);

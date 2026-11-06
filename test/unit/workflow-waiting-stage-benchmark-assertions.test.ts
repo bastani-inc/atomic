@@ -8,6 +8,7 @@ import {
 	assertIdleInvariants,
 	IDLE_RESOURCE_GROWTH_PER_RUN,
 	type IdleInvariantReport,
+	parseOptions,
 } from "../../scripts/perf/waiting-stages/benchmark.js";
 
 function report(patch: {
@@ -16,11 +17,12 @@ function report(patch: {
 	baselineResources?: Record<string, number>;
 }): IdleInvariantReport {
 	return {
-		options: { agents: 1_000, wave: 500, expectRelease: true, ...patch.options },
+		options: { agents: 1_000, wave: 500, expectRelease: true, evict: false, ...patch.options },
 		idle: {
 			liveSessions: 0,
 			sessionsRetained: 0,
 			waitingStages: 1_000,
+			residentEntries: 0,
 			ciCallsPending: 1_000,
 			abortListenersPerRun: { max: 1 },
 			resources: { Timeout: 3, PipeWrap: 2 },
@@ -71,4 +73,22 @@ test("handle growth up to the per-run constant passes and transient kinds are ig
 
 test("a build that cannot release is not held to the idle invariants (#4309)", () => {
 	assertIdleInvariants(report({ options: { expectRelease: false }, idle: { liveSessions: 1_000 } }));
+});
+
+test("an evicted wave passes only when every idle agent is only its index entry (#4373)", () => {
+	assertIdleInvariants(report({ options: { evict: true }, idle: { residentEntries: 1_000 } }));
+	assert.throws(
+		() => assertIdleInvariants(report({ options: { evict: true }, idle: { residentEntries: 999 } })),
+		/999 of 1000 idle agents are only their index entry/,
+	);
+	assertIdleInvariants(report({ options: { evict: false }, idle: { residentEntries: 0 } }));
+});
+
+test("the benchmark refuses --evict with --no-release, whose resident agents could never be evicted (#4373)", () => {
+	assert.throws(
+		() => parseOptions(["--evict", "--no-release"]),
+		/--evict needs released agents: drop --no-release or --evict/,
+	);
+	assert.equal(parseOptions(["--evict"]).evict, true);
+	assert.equal(parseOptions(["--no-release"]).expectRelease, false);
 });

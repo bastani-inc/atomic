@@ -13,9 +13,10 @@ import type { StageScheduler } from "../runs/foreground/executor-scheduler.js";
 import { agentStageReplayKey, createWorkflowStageFactory } from "../runs/foreground/executor-stage-factory.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageMcpScope } from "../runs/foreground/executor-stage-types.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
+import type { RunStageResidency } from "../runs/foreground/run-residency.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
-import { StageWakeDispatcher } from "../runs/foreground/stage-wake-dispatcher.js";
+import { type StageWaitHandoff, StageWakeDispatcher } from "../runs/foreground/stage-wake-dispatcher.js";
 import type { ConcurrencyLimiter } from "../runs/shared/concurrency.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -52,6 +53,10 @@ export interface EngineRuntimeInput {
 	readonly rootBudget: RunBudgetController;
 	readonly classifyExecutorFailure: LiveStageRuntime["classifyExecutorFailure"];
 	readonly assertLiveWorkAllowed?: () => void;
+	/** What the run's eviction handed over, for a run rebuilt after it. */
+	readonly resumedWaits?: StageWaitHandoff | undefined;
+	/** The run's live stages, for a run that may be evicted while it waits. */
+	readonly stageResidency?: RunStageResidency | undefined;
 }
 
 export interface EngineSpawnAgentStageOptions {
@@ -137,7 +142,7 @@ export class EngineRuntime {
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
 		this.assertLiveWorkAllowed = input.assertLiveWorkAllowed;
 		this.replayIndex = input.replayIndex;
-		this.wakeDispatcher = new StageWakeDispatcher(input.runId, input.signal);
+		this.wakeDispatcher = new StageWakeDispatcher(input.runId, input.signal, {}, input.resumedWaits);
 
 		// The runtime only wires host-injected ports; stage sessions are still
 		// created lazily by the stage runner through input.adapters.agentSession.
@@ -164,6 +169,7 @@ export class EngineRuntime {
 			createMcpScope: (stageId, options) => this.createMcpScope(stageId, options),
 			takeTerminalArtifacts: (replayKey) => this.takeTerminalArtifacts(replayKey),
 			wakeDispatcher: this.wakeDispatcher,
+			stageResidency: input.stageResidency,
 		});
 		this.spawnWorkflowBoundary = createWorkflowBoundaryFactory({
 			runId: input.runId,

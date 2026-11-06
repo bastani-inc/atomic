@@ -10,6 +10,9 @@ import {
 	assertIdleInvariants,
 	runIdleAgentBenchmark,
 } from "../../scripts/perf/waiting-stages/benchmark.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 const AGENTS = 150;
 const TURNS = 2;
@@ -29,6 +32,7 @@ test(
 			store: "sqlite",
 			label: "invariants",
 			expectRelease: true,
+			evict: false,
 		});
 
 		assert.equal(report.idle.liveSessions, 0);
@@ -40,6 +44,32 @@ test(
 			`${report.idle.abortListenersPerRun.max} abort listeners on one run`,
 		);
 		assertIdleInvariants(report);
+	},
+	REAL_BENCHMARK_TIMEOUT_MS,
+);
+
+test(
+	"evicted waves leave every idle agent as its index entry, and the wake rebuilds them by replay without asking the model again (#4373)",
+	async () => {
+		const report = await runIdleAgentBenchmark({
+			agents: AGENTS,
+			turns: TURNS,
+			wave: AGENTS / 3,
+			store: "sqlite",
+			label: "evicted",
+			expectRelease: true,
+			evict: true,
+		});
+
+		assert.equal(report.idle.residentEntries, AGENTS);
+		assert.equal(report.idle.liveSessions, 0);
+		assert.equal(report.idle.sessionsRetained, 0);
+		assert.equal(report.idle.ciCallsPending, AGENTS);
+		assertIdleInvariants(report);
+		assert.equal(report.woken, AGENTS);
+		assert.equal(report.fakeLongToolCalls, AGENTS, "no long call ran again");
+		// Each agent's turns take two requests each, and its waiting turn one for the call and one for the answer.
+		assert.equal(report.modelRequests, AGENTS * (2 * TURNS + 2), "no turn of any agent was asked again");
 	},
 	REAL_BENCHMARK_TIMEOUT_MS,
 );

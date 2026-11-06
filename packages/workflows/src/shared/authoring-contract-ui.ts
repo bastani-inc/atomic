@@ -6,6 +6,7 @@ import type { TSchema } from "typebox";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import type { WorkflowEventPrimitives } from "./authoring-contract-events.js";
 import type {
+	EvictWhenWaiting,
 	ReleaseWhenWaiting,
 	RunStatus,
 	StageAdapters,
@@ -365,6 +366,12 @@ export interface RunOpts {
 	readonly onStageLifecycleEvent?: (runId: string, event: StageLifecycleEvent) => void;
 	/** Default `releaseWhenWaiting` for every stage of the run. Defaults to `true`. */
 	readonly releaseWhenWaiting?: ReleaseWhenWaiting;
+	/**
+	 * Evict the run from memory once its stages only wait on detached tool calls, and rebuild it by replaying its
+	 * journal when a result arrives. Defaults to `false`. A root run on a run journal only; the workflow body runs again
+	 * from the start on every rebuild, as it does on a resume after a restart.
+	 */
+	readonly evictWhenWaiting?: EvictWhenWaiting;
 	readonly onRunEnd?: (
 		runId: string,
 		status: RunStatus,

@@ -26,14 +26,17 @@ export class FakeCiService {
 	}
 
 	finishAll(): void {
-		for (const [toolCallId, deferred] of this.pending)
-			deferred.resolve({
-				toolCallId,
-				toolName: TOOL,
-				result: { content: [{ type: "text", text: "ci passed" }], details: undefined },
-				isError: false,
-			});
-		this.pending.clear();
+		for (const toolCallId of [...this.pending.keys()]) this.finish(toolCallId);
+	}
+
+	finish(toolCallId: string): void {
+		this.pending.get(toolCallId)?.resolve({
+			toolCallId,
+			toolName: TOOL,
+			result: { content: [{ type: "text", text: "ci passed" }], details: undefined },
+			isError: false,
+		});
+		this.pending.delete(toolCallId);
 	}
 }
 
@@ -51,6 +54,8 @@ export interface Counters {
 export interface DetachingAdapterOptions {
 	/** False: prompts finish their turn without a tool call. */
 	readonly detach?: boolean;
+	/** Only prompts whose text this accepts end on a call of the fake long tool; the others finish their turn. */
+	readonly detachWhen?: (text: string) => boolean;
 	/** Holds every prompt until this settles. */
 	readonly promptGate?: Promise<void>;
 	/** Fails every session creation after the first `n`. */
@@ -64,6 +69,8 @@ export interface DetachingAdapterOptions {
 	 * `AgentSession` reopened by a durable resume does.
 	 */
 	readonly resumable?: boolean;
+	/** How many calls of the fake long tool each detaching prompt ends on; one by default. */
+	readonly callsPerTurn?: number;
 }
 
 /**
@@ -88,7 +95,10 @@ export function detachingAdapters(
 				counters.peakLive = Math.max(counters.peakLive, counters.created - counters.disposed);
 				let detached: DetachedToolCall[] = [];
 				let detachable = false;
-				const toolCallId = `call-${stageName}`;
+				const callsPerTurn = adapterOptions.callsPerTurn ?? 1;
+				const toolCallIds = Array.from({ length: callsPerTurn }, (_, index) =>
+					callsPerTurn === 1 ? `call-${stageName}` : `call-${stageName}-${index + 1}`,
+				);
 				const pendingCall = (): boolean => {
 					const messages = manager.buildSessionProjection().messages;
 					const last = messages.at(-1);
@@ -103,10 +113,15 @@ export function detachingAdapters(
 						counters.userPrompts.set(stageName, (counters.userPrompts.get(stageName) ?? 0) + 1);
 						await adapterOptions.promptGate;
 						await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-						if (adapterOptions.detach === false) return;
+						if (adapterOptions.detach === false || adapterOptions.detachWhen?.(text) === false) return;
 						await manager.appendMessage({
 							role: "assistant",
-							content: [{ type: "toolCall", id: toolCallId, name: TOOL, arguments: { run: stageName } }],
+							content: toolCallIds.map((id) => ({
+								type: "toolCall" as const,
+								id,
+								name: TOOL,
+								arguments: { run: stageName },
+							})),
 							api: "faux",
 							provider: "faux",
 							model: "faux",
@@ -121,20 +136,20 @@ export function detachingAdapters(
 							stopReason: "toolUse",
 							timestamp: Date.now(),
 						});
-						const call = service.dispatch(toolCallId);
+						const calls = toolCallIds.map((id) => service.dispatch(id));
 						if (detachable) {
-							detached = [call];
+							detached = calls;
 							return;
 						}
-						const result = await call.result;
-						await manager.appendMessage({
-							role: "toolResult",
-							toolCallId: result.toolCallId,
-							toolName: result.toolName,
-							content: result.result.content,
-							isError: result.isError,
-							timestamp: Date.now(),
-						});
+						for (const result of await Promise.all(calls.map((call) => call.result)))
+							await manager.appendMessage({
+								role: "toolResult",
+								toolCallId: result.toolCallId,
+								toolName: result.toolName,
+								content: result.result.content,
+								isError: result.isError,
+								timestamp: Date.now(),
+							});
 					},
 					takeDetachedToolCalls() {
 						const taken = detached;
@@ -142,7 +157,7 @@ export function detachingAdapters(
 						return taken;
 					},
 					redispatchDetachedToolCalls() {
-						return pendingCall() ? [service.dispatch(toolCallId)] : [];
+						return pendingCall() ? toolCallIds.map((id) => service.dispatch(id)) : [];
 					},
 					async resumeDetachedTurn(results: readonly DetachedToolResult[]) {
 						counters.continued.set(stageName, (counters.continued.get(stageName) ?? 0) + 1);

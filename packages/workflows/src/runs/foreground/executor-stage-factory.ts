@@ -1,9 +1,9 @@
-import { type QuestionParams, runCallback, runSynchronousCallback } from "@bastani/atomic";
+import { type QuestionParams, type ReleasedAgentSession, runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { DurableReleasedStageResume } from "../../durable/types.js";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
-import { setStageWorkingDirectory } from "../../engine/stage-workspace.js";
+import { setStageWorkingDirectory, stageWorkingDirectory } from "../../engine/stage-workspace.js";
 import type { StageLifecycleEvent, StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
 import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
 import { workflowPendingStageRouteReady } from "../../shared/pending-stage-route-readiness.js";
@@ -51,6 +51,7 @@ import type {
 } from "./executor-stage-types.js";
 import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
+import type { RunStageResidency } from "./run-residency.js";
 import { StageAbortListeners } from "./stage-abort-listeners.js";
 import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
@@ -93,6 +94,7 @@ export function createWorkflowStageFactory(input: {
 	readonly takeTerminalArtifacts?: (replayKey: string) => readonly WorkflowArtifact[] | undefined;
 	readonly assertLiveWorkAllowed?: () => void;
 	readonly wakeDispatcher: StageWakeDispatcher;
+	readonly stageResidency?: RunStageResidency | undefined;
 }): (
 	name: string,
 	options?: StageOptions,
@@ -279,13 +281,15 @@ export function createWorkflowStageFactory(input: {
 			input.activeStore.recordStageStart(input.runId, stageSnapshot);
 		};
 		const wakeKey = stageWakeKey(input.runId, stageId);
-		wakeDispatcher.open({ runId: input.runId, stageId, wakeKey });
+		wakeDispatcher.open({ runId: input.runId, stageId, wakeKey, replayKey });
 		const giveBackSlot = (): void => {
 			if (state.limiterSlot !== "held") return;
 			state.limiterSlot = "released";
 			input.limiter.release();
 		};
 		let waitRecordFailureReported = false;
+		/** The stage's current wait could not be recorded: a replay would not find it, so its run is not evicted. */
+		let waitRecordMissing = false;
 		/** A wait record that failed every attempt: the stage carries on, and shows why its record may be behind. */
 		const degradeWaitRecord = (failure: StageWaitRecordError): void => {
 			stageSnapshot.waitRecordFailure = failure.toJSON();
@@ -295,15 +299,15 @@ export function createWorkflowStageFactory(input: {
 			console.warn(`atomic-workflows: run ${input.runId}: ${failure.message}`);
 		};
 		/**
-		 * Write one of the stage's wait records durably, tried again as a reopening is. A record that still fails does
-		 * not stop the stage; only the run's abort does, with its reason.
+		 * Write one of the stage's wait records durably, tried again as a reopening is, and say whether it was written. A
+		 * record that still fails does not stop the stage; only the run's abort does, with its reason.
 		 */
-		const recordWait = async (phase: StageWaitRecordPhase): Promise<void> => {
+		const recordWait = async (phase: StageWaitRecordPhase): Promise<boolean> => {
 			const startedAt = Date.now();
 			for (let attempt = 1; ; attempt++) {
 				try {
 					await runtime.captureStageSessionMeta({ forceDurable: true });
-					return;
+					return true;
 				} catch (error) {
 					if (input.signal.aborted) throw input.signal.reason;
 					if (attempt >= STAGE_WAIT_RETRY_ATTEMPTS) {
@@ -322,7 +326,7 @@ export function createWorkflowStageFactory(input: {
 								{ cause: error },
 							),
 						);
-						return;
+						return false;
 					}
 				}
 				await sleepOrAbort(stageWaitRetryDelayMs(attempt), input.signal);
@@ -332,7 +336,7 @@ export function createWorkflowStageFactory(input: {
 			policy: releasePolicy,
 			dispatcher: wakeDispatcher,
 			wakeKey,
-			async enter(wait) {
+			async enter(wait, restored = false) {
 				idleReleaser.unwatch(stageId);
 				stageSessionHeartbeat.stop();
 				runtime.abortListeners.detach();
@@ -340,8 +344,11 @@ export function createWorkflowStageFactory(input: {
 				const recorded: StageWaitSnapshot = { ...wait, promptsCompleted: state.promptsCompleted };
 				showWait(recorded);
 				input.activeStore.recordStageStart(input.runId, stageSnapshot);
-				await recordWait("wait-start");
-				emitLifecycleEvent({ type: "stage_waiting", stageId, stageName: name, wait: recorded });
+				if (!restored) {
+					waitRecordMissing = !(await recordWait("wait-start"));
+					emitLifecycleEvent({ type: "stage_waiting", stageId, stageName: name, wait: recorded });
+				}
+				input.stageResidency?.changed();
 			},
 			async recordResults(_wait, results) {
 				stageSnapshot.waitResults = recordStageWaitToolResults(results);
@@ -351,6 +358,7 @@ export function createWorkflowStageFactory(input: {
 				delete stageSnapshot.waitResults;
 			},
 			async leave() {
+				waitRecordMissing = false;
 				idleReleaser.forgetReleased(stageId);
 				if (state.limiterSlot === "released") {
 					await input.limiter.acquire(input.signal);
@@ -406,6 +414,7 @@ export function createWorkflowStageFactory(input: {
 						},
 					};
 		const watchIdle = (): void => {
+			input.stageResidency?.changed();
 			if (
 				idleStage === undefined ||
 				state.liveHandleReleased ||
@@ -726,8 +735,18 @@ export function createWorkflowStageFactory(input: {
 			state.promptsCompleted += 1;
 			return state.stageFinalized ? Promise.resolve(undefined) : completeFromRecord(plan.recorded);
 		};
+		/** Set for a stage resumed inside a tool wait after earlier calls: its first live call continues that turn. */
+		let waitingTurnPending = false;
 		const resumeReleased = (resume: DurableReleasedStageResume): void => {
 			if (innerCtx.__isReleased() === true || state.callsInFlight > 0 || state.stageFinalized) return;
+			if (resume.wait.kind === "tool") {
+				replay = { remaining: resume.promptsCompleted, recorded: resume.recorded };
+				waitingTurnPending = true;
+				stageSnapshot.sessionId = resume.sessionId;
+				// The records the replayed calls write keep the wait, so a replay after this one still finds it.
+				stageSnapshot.wait = resume.wait;
+				return;
+			}
 			innerCtx.__startReleased(resume.wait, resume.sessionId);
 			if (innerCtx.__isReleased() !== true) return;
 			if (resume.promptsCompleted > 0) replay = { remaining: resume.promptsCompleted, recorded: resume.recorded };
@@ -736,6 +755,13 @@ export function createWorkflowStageFactory(input: {
 			showWait(resume.wait);
 			input.activeStore.recordStageStart(input.runId, stageSnapshot);
 			emitLifecycleEvent({ type: "stage_waiting", stageId, stageName: name, wait: resume.wait });
+		};
+		const takeWaitingTurn = (): boolean => {
+			if (!waitingTurnPending) return false;
+			waitingTurnPending = false;
+			// A stage whose wait no evicted run handed over starts a new turn of its own, which no longer waits.
+			if (!wakeDispatcher.holdsToolWaitForResume(replayKey)) delete stageSnapshot.wait;
+			return true;
 		};
 		/**
 		 * Wait for the answer to the stage's readiness question. The run's idle scan releases the session once the
@@ -805,6 +831,8 @@ export function createWorkflowStageFactory(input: {
 			parallelFailFastError,
 			throwIfStageMutationBlocked,
 			replayRecordedCall,
+			takeWaitingTurn,
+			resumesEvictedWait: () => wakeDispatcher.holdsToolWaitForResume(replayKey),
 			resumeReleased,
 			awaitPromptAnswer,
 			watchIdle,
@@ -872,7 +900,29 @@ export function createWorkflowStageFactory(input: {
 		unreachableStageContexts.register(
 			context,
 			releaseWhenUnreachable(state, input.stageRegistry, input.runId, stageId),
+			state,
 		);
+		input.stageResidency?.add(stageId, {
+			evictionState: () => {
+				if (waitRecordMissing) return "busy";
+				const evictionState = innerCtx.__evictionState();
+				return evictionState === "passive" && state.callsInFlight > 0 ? "busy" : evictionState;
+			},
+			waitingOn: () => {
+				const waiting = innerCtx.__waitingOn();
+				if (waiting === undefined) return undefined;
+				const session: ReleasedAgentSession = {
+					sessionId: waiting.sessionId,
+					cwd: stageWorkingDirectory(stageSnapshot) ?? input.workflowInvocationCwd,
+					...(stageSnapshot.sessionFile === undefined ? {} : { sessionFile: stageSnapshot.sessionFile }),
+				};
+				return { calls: waiting.calls, session };
+			},
+			evict: () => {
+				unreachableStageContexts.unregister(state);
+				runtime.unregisterStageHandle();
+			},
+		});
 		return context;
 	};
 }

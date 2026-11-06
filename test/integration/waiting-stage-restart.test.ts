@@ -44,7 +44,7 @@ interface KilledRun {
 	readonly results: Readonly<Record<string, string>>;
 }
 
-type Scenario = "tool" | "release" | "idle" | "finished";
+type Scenario = "tool" | "release" | "idle" | "finished" | "evict" | "turns";
 
 /**
  * Start the fixture in `mode`, SIGKILL it once it writes `ready`, resume the same run in a new process, and hand back
@@ -162,7 +162,36 @@ async function killAndResumeFinishedTurns(runtime: "node" | "bun"): Promise<void
 	);
 }
 
+/**
+ * Every stage waited on its call and the run was evicted from memory, leaving only its index entries, when the root
+ * was killed. The resume dispatches each pending call again and continues every turn; nothing is prompted again.
+ * `turns`: each stage had finished a prompt before it waited in its next message, which the resume answers from the
+ * run's record.
+ */
+async function killWhileEvictedAndResume(runtime: "node" | "bun", scenario: "evict" | "turns"): Promise<void> {
+	const { effects, statuses } = await killThenResume(runtime, "wait", "evicted-ready", scenario);
+	assert.deepEqual(perStage(effects, "prompt", "watch"), everyStage(1));
+	assert.deepEqual(perStage(effects, "prompt", "plan"), everyStage(scenario === "turns" ? 1 : 0));
+	assert.deepEqual(perStage(effects, "prompt"), everyStage(scenario === "turns" ? 2 : 1));
+	assert.deepEqual(perStage(effects, "dispatch"), everyStage(2));
+	assert.deepEqual(perStage(effects, "continue"), everyStage(1));
+	assert.deepEqual(
+		statuses,
+		STAGE_NAMES.map(() => "completed"),
+	);
+}
+
 for (const runtime of ["node", "bun"] as const) {
+	test(
+		`${runtime}: killing the root while its run is evicted with ${STAGES} stages waiting resumes every stage without prompting again (#4373)`,
+		() => killWhileEvictedAndResume(runtime, "evict"),
+		PROCESS_RESTART_TIMEOUT_MS,
+	);
+	test(
+		`${runtime}: killing the root while its evicted stages wait on a tool after an earlier prompt answers that prompt from the record and continues the waiting turn (#4373)`,
+		() => killWhileEvictedAndResume(runtime, "turns"),
+		PROCESS_RESTART_TIMEOUT_MS,
+	);
 	test(
 		`${runtime}: killing the root while ${STAGES} stages wait released and resuming continues every stage without prompting again (#4309)`,
 		() => killAndResume(runtime, "wait"),
