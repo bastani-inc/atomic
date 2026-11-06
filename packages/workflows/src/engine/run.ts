@@ -90,6 +90,7 @@ import { workflowSource } from "../shared/workflow-source.js";
 import { admitWorkflowSessions } from "../workers/admission-binding.js";
 import { childWorkerDispatcher } from "../workers/dispatch.js";
 import { activatePublicPool, restoreWorkerOptions } from "../workers/public-pool.js";
+import { checkSharedPlacementSetup } from "../workers/shared-setup.js";
 import { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import { createChainPrimitive } from "./primitives/chain.js";
@@ -170,6 +171,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			? (availableRunDurableBackend(activeStore, opts.continuation?.source.id ?? runId) ??
 				availableStoreDurableBackendOverride(activeStore))
 			: undefined);
+	// A root with shared placement has its setup checked before its journal opens, every missing piece at once (#4310).
+	if (preset === undefined && opts.parentRun === undefined && opts.workers?.placement === "shared")
+		await checkSharedPlacementSetup(opts.journal, opts.cwd === undefined ? {} : { cwd: opts.cwd });
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
 	const execute = async () => {
 		const previous = opts.parentRun === undefined ? backend.getWorkflow(runId) : undefined;

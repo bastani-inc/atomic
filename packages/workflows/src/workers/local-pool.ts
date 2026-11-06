@@ -95,6 +95,7 @@ import {
 	openCoordinationJournal,
 	type PoolDurableJournal,
 	registerPoolJournal,
+	registerSharedPoolRoot,
 } from "./pool-journal.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { endPooledChild, endPooledRun } from "./pooled-run-end.js";
@@ -579,7 +580,7 @@ export class LocalWorkerPool {
 	private async poolJournal(root: string): Promise<RunJournal> {
 		// A shared pool keeps its tables in the root's own journal, which every host opens (#4310).
 		if (this.options.shared !== undefined) {
-			registerPoolJournal(this.backend.journal, this.backend.journal);
+			registerSharedPoolRoot(this.backend.journal, root);
 			return this.backend.journal;
 		}
 		const journal = await rootRunJournal(this.backend.journal, root);

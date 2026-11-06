@@ -31,6 +31,7 @@ import {
 	poolHostId,
 	poolStateDirectory,
 	registerPoolJournal,
+	registerSharedPoolRoot,
 } from "./pool-journal.js";
 import {
 	DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
@@ -419,7 +420,7 @@ export async function activatePublicPool(
 	let durable: PoolDurableJournal | undefined = shared;
 	let poolJournal: RunJournal = rootJournal;
 	let poolPath = local ? rootJournal.path : "";
-	if (shared !== undefined) registerPoolJournal(backend.journal, backend.journal);
+	if (shared !== undefined) registerSharedPoolRoot(backend.journal, options.runId!);
 	else if (!local) {
 		durable = poolDurableJournal(backend.journal);
 		poolPath = coordinationPath(durable);

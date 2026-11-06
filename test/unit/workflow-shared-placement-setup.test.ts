@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { SHARED_STORAGE_JOIN_HINT } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
@@ -18,10 +18,11 @@ import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/m
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import { RUN_EVENT_TYPES, type RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { admitWorkflowSessions } from "../../packages/workflows/src/workers/admission-binding.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { openWorkerJournals } from "../../packages/workflows/src/workers/local-worker.js";
 import {
@@ -48,6 +49,7 @@ import {
 	restoreWorkerOptions,
 	sharedPoolPlacement,
 } from "../../packages/workflows/src/workers/public-pool.js";
+import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
 import { probeGit, startWorkflowWorkerHost } from "../../packages/workflows/src/workers/worker-host.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -562,6 +564,104 @@ test.skipIf(process.platform === "win32")(
 	},
 	SHARED_POOL_ACTIVATION_TIMEOUT_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"two roots on one journal, one with shared placement and one without, each admit in their own pool's database (#4310)",
+	async () => {
+		const directory = makeLibsqlDirectory();
+		const journal = await resolveRunJournal({
+			agentDir: join(directory, "agent"),
+			journal: {
+				adapter: libsql,
+				options: { url: pathToFileURL(join(directory, "shared.db")).href },
+				prefix: "acme_",
+			},
+		});
+		const backend = await JournalDurableBackend.open(journal);
+		const pools: (LocalWorkerPool | undefined)[] = [];
+		try {
+			const shared: RunOpts = {
+				runId: "shared-root",
+				cwd: directory,
+				localWorkers,
+				admission: {},
+				workers: { placement: "shared" },
+			};
+			const local: RunOpts = { runId: "local-root", cwd: directory, localWorkers, admission: {} };
+			// The root without shared placement activates last, so its journal-wide registration is the latest one.
+			pools.push(await activatePublicPool(backend, shared), await activatePublicPool(backend, local));
+			const coordination = await poolJournalOf(journal);
+			assert.notEqual(coordination, journal, "the root without shared placement keeps its pool on this machine");
+			const opened: (readonly [string, RunJournal])[] = [];
+			const captured = new Error("admission captured");
+			vi.spyOn(SqlResourceAdmission, "open").mockImplementation(async (admissionJournal, options) => {
+				opened.push([options.root, admissionJournal]);
+				throw captured;
+			});
+			for (const options of [shared, local])
+				await assert.rejects(
+					admitWorkflowSessions(backend, options as RunOpts & { runId: string }, async () =>
+						assert.fail("admitted"),
+					),
+					(error: Error) => error === captured,
+				);
+			assert.deepEqual(
+				opened.map(([root, admissionJournal]) => [
+					root,
+					admissionJournal === journal,
+					admissionJournal === coordination,
+				]),
+				[
+					["shared-root", true, false],
+					["local-root", false, true],
+				],
+			);
+		} finally {
+			vi.restoreAllMocks();
+			for (const pool of pools) await pool?.close();
+			await backend.close();
+			await removeLibsqlDirectory(directory);
+		}
+	},
+	SHARED_POOL_ACTIVATION_TIMEOUT_MS,
+);
+
+test("run() checks a shared root's journal before opening it, reporting every missing piece together (#4310)", async () => {
+	const directory = makeTempDirectory("shared-placement-run-");
+	const unset = "ATOMIC_TEST_SHARED_PLACEMENT_UNSET_SECRET";
+	delete process.env[unset];
+	try {
+		const child = workflow({ name: "unpooled", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
+		const missing = join(directory, "missing-adapter.mjs");
+		const error = await refused<SharedPoolSetupError>(
+			run(
+				child,
+				{},
+				{
+					cwd: directory,
+					store: createStore(),
+					journal: { adapter: missing, secrets: { authToken: { env: unset } } },
+					localWorkers,
+					workers: { placement: "shared" },
+				},
+			),
+		);
+		assert.ok(isSharedPoolSetupError(error), String(error));
+		assert.equal(error.operation, "shared-placement");
+		assert.deepEqual(
+			error.problems.map((problem) => [problem.code, problem.fields]),
+			[
+				["storage-adapter-unavailable", { module: missing }],
+				["journal-secret-unavailable", { secret: "authToken", env: unset }],
+				...((await processContainmentAvailable())
+					? []
+					: [["process-containment-unavailable", { platform: process.platform }]]),
+			],
+		);
+	} finally {
+		removeTempDirectory(directory);
+	}
+});
 
 test("a shared root's finished stage sessions are read from its journal even where a local pool ran (#4310)", async () => {
 	const directory = makeLibsqlDirectory();

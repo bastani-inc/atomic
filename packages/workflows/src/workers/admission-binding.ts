@@ -10,7 +10,7 @@ import {
 	agentSessionAdapterDefaultCwd,
 	setAgentSessionAdapterDefaultCwd,
 } from "../runs/foreground/stage-runner-session-options.js";
-import { poolJournalFor } from "./pool-journal.js";
+import { poolJournalForRoot } from "./pool-journal.js";
 import { type AdmissionConfiguration, SqlResourceAdmission } from "./resource-admission.js";
 
 export const workflowResourceAdmission = new WeakMap<DurableWorkflowBackend, AdmissionConfiguration>();
@@ -101,15 +101,18 @@ export async function admitWorkflowSessions(
 		opts.parentRun === undefined && opts.workers?.placement === "shared"
 			? (await rootBackend.journal.leaseState(opts.runId))?.epoch
 			: undefined;
-	const admission = await SqlResourceAdmission.open(poolJournalFor(await rootRunJournal(rootBackend.journal, root)), {
-		...config,
-		root,
-		holder: randomUUID(),
-		...(rootEpoch === undefined ? {} : { crossHost: true, rootEpoch }),
-		// The root admits its sessions while it holds its lease, so it saves its limits here: a resume may have changed
-		// them, and its workers and children admit against what the root saved (#4196).
-		...(opts.parentRun === undefined ? { rootLimits: "replace" as const } : {}),
-	});
+	const admission = await SqlResourceAdmission.open(
+		poolJournalForRoot(await rootRunJournal(rootBackend.journal, root), root),
+		{
+			...config,
+			root,
+			holder: randomUUID(),
+			...(rootEpoch === undefined ? {} : { crossHost: true, rootEpoch }),
+			// The root admits its sessions while it holds its lease, so it saves its limits here: a resume may have changed
+			// them, and its workers and children admit against what the root saved (#4196).
+			...(opts.parentRun === undefined ? { rootLimits: "replace" as const } : {}),
+		},
+	);
 	return withResourceAdmission(admission, () =>
 		callback({
 			...opts,

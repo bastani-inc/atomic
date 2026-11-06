@@ -1,15 +1,8 @@
 import { execFile } from "node:child_process";
-import { constants, existsSync } from "node:fs";
-import { access } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { existsSync } from "node:fs";
 import { type GitProvisionError, getAgentDir, getGitStatus, isGitProvisionError, resolveGit } from "@bastani/atomic";
-import {
-	loadStorageAdapter,
-	StorageAdapterLoadError,
-	StorageConfigError,
-	type StorageSelection,
-} from "@bastani/atomic/storage";
-import { openSelectedRunJournal, selectRunJournal } from "../durable/journal/resolution.js";
+import type { StorageSelection } from "@bastani/atomic/storage";
+import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { type SharedPoolRoot, SqlSharedPool, type WorkerHostGitSource } from "../durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../durable/journal/types.js";
@@ -19,7 +12,6 @@ import { defaultWorkerEntry } from "./local-pool.js";
 import {
 	SharedPoolSetupError,
 	type SharedPoolSetupProblem,
-	selectionLocation,
 	serializeWorkerPlacementError,
 	sharedPoolProblems,
 	WorkerPlacementConfigError,
@@ -28,6 +20,7 @@ import {
 import { PoolCoordinator } from "./pool-coordinator.js";
 import { poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
 import { processContainmentAvailable } from "./public-pool.js";
+import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
 import type {
 	WorkerHostFailure,
 	WorkerHostGit,
@@ -127,36 +120,8 @@ async function checkHostSetup(
 	options: WorkflowWorkerHostOptions,
 	agentDir: string,
 ): Promise<{ readonly selection: Extract<StorageSelection, { kind: "adapter" }>; readonly git: WorkerHostGitSource }> {
-	const problems: SharedPoolSetupProblem[] = [];
-	let selection: StorageSelection | RunJournal;
-	try {
-		selection = selectRunJournal({ journal: options.journal, agentDir });
-	} catch (error) {
-		if (!(error instanceof StorageConfigError)) throw error;
-		throw new WorkerPlacementConfigError("sdk", "journal", "invalid-option", error.reason, { cause: error });
-	}
-	if ("createRun" in selection) problems.push(sharedPoolProblems.sharedJournalRequired("a journal object", undefined));
-	else if (selection.kind !== "adapter")
-		problems.push(
-			sharedPoolProblems.sharedJournalRequired(`a ${selection.kind} journal`, selectionLocation(selection)),
-		);
-	else {
-		try {
-			await loadStorageAdapter(selection.module, { agentDir, domain: "journal" });
-		} catch (error) {
-			if (!(error instanceof StorageAdapterLoadError)) throw error;
-			problems.push(sharedPoolProblems.adapterUnavailable(selection.module));
-		}
-		for (const [secret, ref] of Object.entries(selection.secrets ?? {})) {
-			if ("env" in ref) {
-				if (process.env[ref.env] === undefined) problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
-			} else if (
-				"file" in ref &&
-				!(await readable(isAbsolute(ref.file) ? ref.file : join(dirname(agentDir), ref.file)))
-			)
-				problems.push(sharedPoolProblems.secretUnavailable(secret, ref));
-		}
-	}
+	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const problems = await sharedSelectionProblems(selection, agentDir);
 	const git = await hostGit(options);
 	if (options.restore !== undefined && git.problem !== undefined) problems.push(git.problem);
 	if (!(await processContainmentAvailable())) problems.push(sharedPoolProblems.processContainmentUnavailable());
@@ -168,14 +133,6 @@ async function checkHostSetup(
 			git.cause === undefined ? {} : { cause: git.cause },
 		);
 	return { selection: selection as Extract<StorageSelection, { kind: "adapter" }>, git: git.source };
-}
-
-/** Whether this process can read `path`. */
-function readable(path: string): Promise<boolean> {
-	return access(path, constants.R_OK).then(
-		() => true,
-		() => false,
-	);
 }
 
 /** Whether git runs on this host through `git`: `system` when it does, `unavailable` when it does not. */
