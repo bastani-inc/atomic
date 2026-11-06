@@ -10,7 +10,11 @@ export { TEST_TIMEOUT_MS };
  * `beforeEach` installing a fresh in-memory durable backend, and needs no edit:
  * its `beforeEach` import resolves through the `bun:test` alias.
  */
-const setupFiles = ["./test/setup-workflow-durability.ts", "./test/helpers/provider-rate-limit-isolation.ts"];
+const setupFiles = [
+	"./test/setup-workflow-durability.ts",
+	"./test/helpers/provider-rate-limit-isolation.ts",
+	"./test/helpers/checkout-snapshot-isolation.ts",
+];
 
 /**
  * Integration tests start local workers from the shipped bundle, not by transpiling the workflow sources through jiti in

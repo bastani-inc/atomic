@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { delimiter, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
 import {
 	canonicalReleaseBaseRef,
@@ -124,6 +124,54 @@ test("global setups isolate Herdr, provider credentials and debug output, then p
 			[herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
 			`${name} must isolate inherited Herdr, provider credentials and debug output before preparing artifacts and natives`,
 		);
+	}
+});
+
+/**
+ * Every vitest project that can reach the coding agent's snapshot Git loads the checkout isolation setup, so no test
+ * records, verifies or restores a worktree snapshot of the checkout the suites run from (#4414). A config added for
+ * another package must load it as well, unless that package neither is nor depends on the coding agent.
+ */
+test("every vitest project that can reach snapshot Git excludes the checkout from snapshots (#4414)", async () => {
+	type VitestProject = { test?: { name?: string; setupFiles?: string | string[] } };
+	const isolation = join(root, "test/helpers/checkout-snapshot-isolation.ts");
+	const configs = [
+		"vitest.config.ts",
+		...readDirectorySync(join(root, "packages")).map((p) => `packages/${p}/vitest.config.ts`),
+	];
+	const checked: string[] = [];
+	for (const config of configs) {
+		const path = join(root, config);
+		if (!fileExistsSync(path)) continue;
+		const manifest = await readJson<{
+			name?: string;
+			dependencies?: Record<string, string>;
+			devDependencies?: Record<string, string>;
+			peerDependencies?: Record<string, string>;
+		}>(join(dirname(path), "package.json"));
+		const reachesCodingAgent =
+			config === "vitest.config.ts" ||
+			manifest.name === "@bastani/atomic" ||
+			[manifest.dependencies, manifest.devDependencies, manifest.peerDependencies].some(
+				(dependencies) => dependencies?.["@bastani/atomic"] !== undefined,
+			);
+		if (!reachesCodingAgent) continue;
+		const loaded = (await import(pathToFileURL(path).href)) as {
+			default: VitestProject & { test?: { projects?: VitestProject[] } };
+		};
+		const projects = loaded.default.test?.projects ?? [loaded.default];
+		assert.ok(projects.length > 0, `${config} declares no vitest project`);
+		for (const project of projects) {
+			const setupFiles = [project.test?.setupFiles ?? []].flat().map((file) => resolve(dirname(path), file));
+			assert.ok(
+				setupFiles.includes(isolation),
+				`${config} project ${project.test?.name ?? "(unnamed)"} must load test/helpers/checkout-snapshot-isolation.ts`,
+			);
+		}
+		checked.push(config);
+	}
+	for (const required of ["vitest.config.ts", "packages/coding-agent/vitest.config.ts"]) {
+		assert.ok(checked.includes(required), `${required} was not checked`);
 	}
 });
 

@@ -66,7 +66,9 @@ export class WorkflowProcess {
 
 	constructor(home: string, extra: Record<string, string>, fixture: string) {
 		const path = isAbsolute(fixture) ? fixture : join(moduleDir(import.meta.url), "../fixtures", fixture);
+		// A fixture whose workflow takes the default cwd must not record the checkout: setup files do not reach it (#4414).
 		this.child = spawnProcess([bunExecutable(), path], {
+			cwd: home,
 			env: {
 				...process.env,
 				HOME: home,

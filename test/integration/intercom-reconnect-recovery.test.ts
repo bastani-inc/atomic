@@ -314,7 +314,7 @@ async function waitFor<T>(
  * runtime reconnected" from "an Intercom tool call reconnected it": the probe never touches
  * the runtime under test.
  */
-async function probeSessionNames(): Promise<string[]> {
+async function probeSessionNames(group = "default"): Promise<string[]> {
 	const probe = new IntercomClient(`reconnect-probe-${Math.random().toString(16).slice(2)}`);
 	try {
 		await probe.connect({
@@ -325,8 +325,8 @@ async function probeSessionNames(): Promise<string[]> {
 			status: "idle",
 			startedAt: Date.now(),
 			lastActivity: Date.now(),
-			group: "default",
-			groups: ["default"],
+			group,
+			groups: [group],
 		});
 		const sessions = await probe.listSessions();
 		return sessions.map((session) => session.name ?? "");
@@ -632,10 +632,10 @@ test.each(["", "/worker"])(
 			const firstBroker = await waitForBroker();
 			killBroker(firstBroker);
 			await waitForBroker(firstBroker);
-			await connectVictim();
 			await waitFor("the workflow worker to re-register", async () =>
-				(await owner.listSessions()).some((session) => session.name === "multigroup-worker") ? true : undefined,
+				(await probeSessionNames(groupB)).includes("multigroup-worker") ? true : undefined,
 			);
+			await connectVictim();
 			await assertIsolated();
 		} finally {
 			await stage.disconnect();
