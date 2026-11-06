@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { readlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { constants, PerformanceObserver } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import {
 	loadStorageAdapter,
 	type SqliteDatabase,
@@ -25,7 +29,14 @@ import {
 	removeLibsqlDirectory,
 } from "../helpers/libsql-cleanup.js";
 import { libsqlDatabaseSubject } from "../helpers/libsql-database.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	moduleDir,
+	readDirectorySync,
+	removePathSync,
+	removeTempDirectory,
+	writeFileEnsuringDir,
+} from "../helpers/runtime.js";
 
 const PACKAGE_NAME = "@bastani/atomic-storage-libsql";
 const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-libsql");
@@ -179,6 +190,262 @@ test("the package redacts the auth token from an unusable database failure (#385
 test("the package requires a url option (#3857)", async () => {
 	const adapter = await packageAdapter("sessions");
 	assert.throws(() => adapter.openDatabase?.({}, { agentDir: packageRoot, domain: "sessions" }), /"url" option/);
+});
+
+/** The files under `directory` this process holds open, as Linux lists its descriptors. */
+function heldFiles(directory: string): string[] {
+	return readDirectorySync("/proc/self/fd").flatMap((descriptor) => {
+		try {
+			const target = readlinkSync(join("/proc/self/fd", descriptor));
+			return target.startsWith(directory) ? [target] : [];
+		} catch (error) {
+			// The descriptor that listed the directory is closed by the time it is read.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+			throw error;
+		}
+	});
+}
+
+/** Asserts nothing holds the files under `directory`: Windows refuses to delete a file a handle holds open. */
+function assertReleased(directory: string): void {
+	if (process.platform === "linux") assert.deepEqual(heldFiles(directory), []);
+	removePathSync(directory, { recursive: true });
+}
+
+/** Observes the full collections the runtime reports as forced, until `count` is awaited. */
+function observeForcedFullCollections(): { count(): Promise<number> } {
+	const entries: object[] = [];
+	const observer = new PerformanceObserver((list) => entries.push(...list.getEntries()));
+	observer.observe({ entryTypes: ["gc"] });
+	return {
+		async count() {
+			// The runtime reports a collection on a later turn of the event loop.
+			await new Promise((resolve) => setImmediate(resolve));
+			entries.push(...observer.takeRecords());
+			observer.disconnect();
+			return entries.filter((entry) => {
+				const { kind, flags } = (entry as { detail: { kind: number; flags: number } }).detail;
+				return (
+					kind === constants.NODE_PERFORMANCE_GC_MAJOR &&
+					(flags & constants.NODE_PERFORMANCE_GC_FLAGS_FORCED) !== 0
+				);
+			}).length;
+		},
+	};
+}
+
+test("closing a file database releases its files before close resolves (#4433)", async () => {
+	const directory = makeTempDirectory("storage-libsql-release-");
+	try {
+		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
+		await database.exec("CREATE TABLE entries(value INTEGER NOT NULL)");
+		await database.transaction(async (transaction) => {
+			await transaction.run("INSERT INTO entries VALUES (?)", 1);
+		});
+		const rejected = new Error("roll back");
+		await assert.rejects(
+			database.transaction(async (transaction) => {
+				await transaction.run("INSERT INTO entries VALUES (?)", 2);
+				throw rejected;
+			}),
+			(error) => error === rejected,
+		);
+		assert.ok(database.batch);
+		await database.batch([{ sql: "INSERT INTO entries VALUES (?)", params: [3] }]);
+		await assert.rejects(database.run("INSERT INTO entries VALUES (NULL)"), StorageUnavailableError);
+		assert.deepEqual(await database.all("SELECT value FROM entries ORDER BY value"), [{ value: 1 }, { value: 3 }]);
+		const collections = observeForcedFullCollections();
+		await database.close();
+		assertReleased(directory);
+		// The close forced a full collection, with V8's gc taken without leaving it exposed to code that runs later.
+		assert.ok((await collections.count()) > 0);
+		assert.equal(runInNewContext("typeof gc"), "undefined");
+	} finally {
+		removeTempDirectory(directory);
+	}
+});
+
+/** V8's full collection, as `node --expose-gc` exposes it. */
+function v8Collection(): () => void {
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+test("a file database closed on a Bun host collects with Bun.gc(true) (#4433)", async () => {
+	const host = globalThis as { Bun?: unknown };
+	assert.equal(host.Bun, undefined);
+	const directory = makeTempDirectory("storage-libsql-release-");
+	try {
+		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
+		await database.get("SELECT 1");
+		const collect = v8Collection();
+		const forced: unknown[] = [];
+		host.Bun = {
+			gc(force: unknown) {
+				forced.push(force);
+				collect();
+			},
+		};
+		try {
+			await database.close();
+		} finally {
+			delete host.Bun;
+		}
+		assert.deepEqual(forced, [true]);
+		assertReleased(directory);
+	} finally {
+		removeTempDirectory(directory);
+	}
+});
+
+interface Collections {
+	count: number;
+	/** Runs at the start of the next collection, before it collects; a throw fails that collection. */
+	beforeNext?: () => void;
+}
+
+/** Runs `body` with `globalThis.gc` counting the full collections the package runs, as `node --expose-gc` exposes it. */
+async function withCountedCollections(body: (collections: Collections) => Promise<void>): Promise<void> {
+	const collect = v8Collection();
+	const collections: Collections = { count: 0 };
+	const exposed = globalThis.gc;
+	globalThis.gc = (() => {
+		collections.count++;
+		const beforeNext = collections.beforeNext;
+		collections.beforeNext = undefined;
+		beforeNext?.();
+		collect();
+	}) as NodeJS.GCFunction;
+	try {
+		await body(collections);
+	} finally {
+		globalThis.gc = exposed;
+	}
+}
+
+/** File databases opened through the package, each with a statement run, and their directories removed afterwards. */
+async function withOpenedFileDatabases(
+	count: number,
+	body: (opened: { directory: string; database: SqliteDatabase }[]) => Promise<void>,
+): Promise<void> {
+	const directories = Array.from({ length: count }, () => makeTempDirectory("storage-libsql-release-"));
+	try {
+		const opened = [];
+		for (const directory of directories) {
+			const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
+			await database.get("SELECT 1");
+			opened.push({ directory, database });
+		}
+		await body(opened);
+	} finally {
+		for (const directory of directories) removeTempDirectory(directory);
+	}
+}
+
+test("file databases closed together share one collection (#4433)", async () => {
+	await withCountedCollections(async (collections) => {
+		await withOpenedFileDatabases(3, async (opened) => {
+			await Promise.all(opened.map(({ database }) => database.close()));
+			assert.equal(collections.count, 1);
+			for (const { directory } of opened) assertReleased(directory);
+		});
+	});
+});
+
+test("a file database closed while a collection runs waits for the next collection (#4433)", async () => {
+	await withCountedCollections(async (collections) => {
+		await withOpenedFileDatabases(2, async ([first, second]) => {
+			let closingSecond: Promise<void> | undefined;
+			// The second database runs a statement after the first collection has started, then closes.
+			collections.beforeNext = () => {
+				closingSecond = second!.database.get("SELECT 2").then(() => second!.database.close());
+			};
+			await first!.database.close();
+			await closingSecond;
+			assert.equal(collections.count, 2);
+			assertReleased(first!.directory);
+			assertReleased(second!.directory);
+		});
+	});
+});
+
+test("a failed collection fails only the close that waited for it (#4433)", async () => {
+	await withCountedCollections(async (collections) => {
+		await withOpenedFileDatabases(2, async ([first, second]) => {
+			const failure = new Error("fixture collection failure");
+			collections.beforeNext = () => {
+				throw failure;
+			};
+			await assert.rejects(first!.database.close(), (error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.equal(error.cause, failure);
+				return true;
+			});
+			await second!.database.close();
+			assert.equal(collections.count, 2);
+			assertReleased(first!.directory);
+			assertReleased(second!.directory);
+		});
+	});
+});
+
+test("a failed open keeps its error and attaches a failure to close it (#4433)", async () => {
+	const directory = makeTempDirectory("storage-libsql-release-");
+	try {
+		const path = join(directory, "journal.sqlite");
+		writeFileSync(path, "not a SQLite database\n".repeat(64));
+		const open = () => openPackageDatabase(pathToFileURL(path).href, "journal");
+		await withCountedCollections(async (collections) => {
+			// The client never opens: a file URL with a host names another machine.
+			await assert.rejects(openPackageDatabase("file://example.invalid/journal.sqlite", "journal"), (error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.equal(error.cleanupCause, undefined);
+				return true;
+			});
+			await assert.rejects(open(), (error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.equal(error.cleanupCause, undefined);
+				return true;
+			});
+			assert.equal(collections.count, 2);
+			const failure = new Error("fixture collection failure");
+			collections.beforeNext = () => {
+				throw failure;
+			};
+			await assert.rejects(open(), (error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.ok(error.cleanupCause instanceof StorageUnavailableError);
+				assert.equal(error.cleanupCause.cause, failure);
+				// Attached as storage attaches every cleanup cause, so an outer cleanup can still attach its own.
+				assert.equal(Object.getOwnPropertyDescriptor(error, "cleanupCause")?.configurable, true);
+				return true;
+			});
+			assert.equal(collections.count, 3);
+		});
+	} finally {
+		// The failed collection left the last open's driver for a later collection to release.
+		await removeLibsqlDirectory(directory);
+	}
+});
+
+test("closing a remote database runs no collection (#4433)", async () => {
+	const server = await recordingServer();
+	try {
+		await withCountedCollections(async (collections) => {
+			await assert.rejects(
+				openPackageDatabase(server.url, "journal"),
+				(error) => error instanceof StorageUnavailableError && error.cleanupCause === undefined,
+			);
+			assert.ok(server.seen.length > 0);
+			assert.equal(collections.count, 0);
+		});
+	} finally {
+		await server.close();
+	}
 });
 
 afterAll(async () => removeTempDirectory(await agentDirectory));

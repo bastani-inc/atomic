@@ -1,4 +1,6 @@
 // @ts-check
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToWriteAheadLog } from "@bastani/atomic/storage";
 
 /**
@@ -102,6 +104,48 @@ function driverResult(result) {
  */
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
+/** V8's `gc`, taken from a context created while `--expose-gc` is set; the flag is off again for code that runs later. */
+function exposeGc() {
+	setFlagsFromString("--expose-gc");
+	try {
+		return /** @type {() => void} */ (runInNewContext("gc"));
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+function collectGarbage() {
+	if (globalThis.gc) globalThis.gc();
+	else if (typeof Bun !== "undefined") Bun.gc(true);
+	else exposeGc()();
+}
+
+/** @type {Promise<void>} */
+let collection = Promise.resolve();
+/** @type {Promise<void> | undefined} */
+let pendingCollection;
+
+/**
+ * libsql 0.5 finalizes a statement only when the statement is garbage-collected, and a connection stays open until
+ * its last statement is finalized, so the client's `close()` leaves a `file:` database's files open and Windows
+ * refuses to delete them. This resolves after a full collection that started after the call, and the event-loop
+ * turn in which the runtime runs the native finalizers it queued. Calls made before that collection starts share it.
+ * @returns {Promise<void>}
+ */
+function releaseClosedConnections() {
+	if (!pendingCollection) {
+		pendingCollection = collection.then(collectAndFinalize, collectAndFinalize);
+		collection = pendingCollection;
+	}
+	return pendingCollection;
+}
+
+async function collectAndFinalize() {
+	pendingCollection = undefined;
+	collectGarbage();
+	await new Promise((resolve) => setImmediate(resolve));
+}
+
 /**
  * @param {LibsqlDatabaseOptions} options
  * @returns {Promise<import("@bastani/atomic/storage").SqliteDatabase>}
@@ -177,7 +221,10 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				close: () => transaction.close(),
 			};
 		},
-		close: () => client?.close(),
+		async close() {
+			client?.close();
+			if (local) await releaseClosedConnections();
+		},
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
@@ -189,7 +236,11 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		if (local) await switchToWriteAheadLog((sql) => database.exec(sql), FILE_BUSY_TIMEOUT_MS);
 		return database;
 	} catch (error) {
-		await database.close().catch(() => {});
+		await database
+			.close()
+			.catch((cleanupCause) =>
+				Object.defineProperty(/** @type {Error} */ (error), "cleanupCause", { value: cleanupCause, configurable: true }),
+			);
 		throw error;
 	}
 }
