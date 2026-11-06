@@ -13,14 +13,12 @@ import {
 	isIntercomBrokerTimeout,
 	isRecoverableIntercomDisconnect,
 } from "../../packages/intercom/recoverable-disconnect.js";
-import { makeDirectorySync, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeDirectorySync } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
-const agentDir = makeTempDirectory("ic4376-route-timeout-");
-const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-const previousPiAgentDir = process.env.PI_CODING_AGENT_DIR;
-process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
-delete process.env.PI_CODING_AGENT_DIR;
+const agentDir = useTemporaryAgentDir();
 makeDirectorySync(join(agentDir, "intercom"), { recursive: true });
+// The client resolves its broker socket from the agent directory when it loads.
 const { IntercomClient, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS } = await import("../../packages/intercom/broker/client.js");
 
 const RUN_ID = "route-timeout-run";
@@ -82,11 +80,6 @@ afterEach(async () => {
 
 afterAll(async () => {
 	await new Promise<void>((resolve) => server.close(() => resolve()));
-	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-	if (previousPiAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = previousPiAgentDir;
-	removeTempDirectory(agentDir);
 });
 
 async function connect() {

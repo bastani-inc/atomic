@@ -11,6 +11,7 @@ import {
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
@@ -28,6 +29,8 @@ const PUBLICATION_LIMIT = 8;
 const SCALE_RUN_TIMEOUT_MS = 120_000;
 /** Event-loop turns a test lets pass before it concludes that nothing more goes out. */
 const SETTLE_TURNS = 5;
+
+useTemporaryAgentDir();
 
 afterEach(() => {
 	vi.useRealTimers();
