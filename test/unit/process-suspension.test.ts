@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { createProcessSuspender } from "../helpers/process-suspension.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -43,6 +43,34 @@ test(
 			await exited;
 			await suspender.close();
 			removeTempDirectory(directory);
+		}
+	},
+	CONTROLLER_AND_CHILD_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"on POSIX, suspend resolves only once the process is stopped, when the stop lands after the signal is sent (#4383)",
+	async () => {
+		const suspender = await createProcessSuspender();
+		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 20)"], { stdio: "ignore" });
+		// SIGSTOP stops a process only once it is next scheduled; on a loaded host that can come after `ps` looks.
+		const kill = process.kill.bind(process);
+		const lateStop = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			if (signal !== "SIGSTOP") return kill(pid, signal);
+			setTimeout(() => kill(pid, signal), 150);
+			return true;
+		});
+		try {
+			const pid = child.pid;
+			assert.ok(pid !== undefined);
+			await suspender.suspend(pid);
+			assert.equal(await suspender.isSuspended(pid), true, "a suspended process is reported suspended");
+		} finally {
+			lateStop.mockRestore();
+			const exited = new Promise((resolve) => child.once("exit", resolve));
+			child.kill("SIGKILL");
+			await exited;
+			await suspender.close();
 		}
 	},
 	CONTROLLER_AND_CHILD_TIMEOUT_MS,

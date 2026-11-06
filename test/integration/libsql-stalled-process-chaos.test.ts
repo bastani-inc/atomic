@@ -71,7 +71,12 @@ test(
 				return stopped.promise;
 			});
 			child.stdin!.write("go\n");
-			await opened.promise;
+			// A writer that ends before it opens a transaction fails the test with its report, instead of a timeout.
+			const first = await Promise.race([
+				opened.promise.then(() => "opened" as const),
+				child.exited.then(() => "exited" as const),
+			]);
+			if (first === "exited") assert.fail(`the writer exited before it opened a transaction: ${await readLine()}`);
 			await suspender.suspend(pid);
 			assert.equal(await suspender.isSuspended(pid), true, "the writer is stopped");
 			stopped.resolve();
