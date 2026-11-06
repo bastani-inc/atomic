@@ -24,12 +24,15 @@ export type StartError =
 	| "SpawnFailed"
 	| "ContainmentUnavailable";
 export type StartFailure = Failure<StartError>;
+/** `TaskEvicted`: the task finished and its owner no longer keeps its record; see `TaskEvictedError`. */
 export type WaitError = Failure<
-	"UnknownTask" | "OwnerClosed" | "EnvironmentClosing" | "ScopeMismatch" | "ObserverCancelled"
+	"UnknownTask" | "TaskEvicted" | "OwnerClosed" | "EnvironmentClosing" | "ScopeMismatch" | "ObserverCancelled"
 >;
 export type YieldError = Failure<"UnknownWait" | "StaleGeneration" | "ObserverCancelled">;
-export type ForegroundError = Failure<"TaskTerminal" | "OwnerClosing" | "UnknownTask" | "ObserverCancelled">;
-export type CancelError = Failure<"UnknownTask" | "CleanupFailed">;
+export type ForegroundError = Failure<
+	"TaskTerminal" | "OwnerClosing" | "UnknownTask" | "TaskEvicted" | "ObserverCancelled"
+>;
+export type CancelError = Failure<"UnknownTask" | "TaskEvicted" | "CleanupFailed">;
 export type CloseError = Failure<"CleanupFailed" | "EnvironmentClosing">;
 export type WatchError = Failure<"OwnerClosed" | "StaleGeneration" | "EnvironmentClosing">;
 export type ReportError = Failure<"StaleAttempt" | "OwnerClosing" | "TaskTerminal" | "ReportConflict">;
@@ -42,9 +45,10 @@ export type InputError = Failure<
 	| "OperationConflict"
 	| "InputDeliveryUnknown"
 	| "UnknownTask"
+	| "TaskEvicted"
 	| "OutputUnavailable"
 >;
-export type OutputError = Failure<"UnknownTask" | "OutputUnavailable">;
+export type OutputError = Failure<"UnknownTask" | "TaskEvicted" | "OutputUnavailable">;
 export type OutputRange = { start: string; maximumBytes: number };
 export type OutputPage = {
 	requested: { start: string; end: string };
@@ -204,6 +208,8 @@ export type TaskEvent =
 	| { kind: "task-cancelling"; ref: NativeTaskRef; cause: CancelCause }
 	| { kind: "task-settled"; ref: NativeTaskRef; result: TaskResult; completionId: string }
 	| { kind: "cleanup-changed"; ref: NativeTaskRef; cleanup: Cleanup }
+	/** The owner no longer keeps this finished task's record (#4385). */
+	| { kind: "task-evicted"; ref: NativeTaskRef }
 	| { kind: "owner-closing" }
 	| { kind: "owner-closed" };
 export type NativeEvent = {

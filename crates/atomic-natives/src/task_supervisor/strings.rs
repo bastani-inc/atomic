@@ -36,6 +36,13 @@ impl JsString {
 	pub(super) fn parse_u64(&self) -> Option<u64> {
 		String::from_utf16(&self.0).ok()?.parse().ok()
 	}
+	/// The ordinal of a canonical `{prefix}{ordinal}` id: decimal digits without a sign or leading zero.
+	pub(super) fn canonical_ordinal(&self, prefix: &str) -> Option<usize> {
+		let text = String::from_utf16(&self.0).ok()?;
+		let digits = text.strip_prefix(prefix)?;
+		let ordinal = digits.parse::<usize>().ok()?;
+		(ordinal.to_string() == digits).then_some(ordinal)
+	}
 	// Match str::lines and Unicode trim's blank-line predicate, but copy the original
 	// line's units. Lone surrogates are non-whitespace; CR is removed only before LF.
 	pub(super) fn first_nonblank_line(&self) -> Option<Self> {

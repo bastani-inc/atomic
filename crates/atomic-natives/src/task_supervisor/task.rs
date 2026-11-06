@@ -404,6 +404,8 @@ pub(super) struct Task {
 	// Rejected late outcomes supply output evidence, never terminal authority.
 	pub cancellation_output: Option<OutputRef>,
 	pub command: Option<Arc<process::CommandTask>>,
+	/// A host still reads this record, for example to build its completion notice: an open owner never evicts it.
+	pub held: bool,
 }
 impl Task {
 	pub fn receipt(&self) -> CancelReceipt {
@@ -459,7 +461,7 @@ impl Actor {
 			}) {
 			return Err(fail("OwnerClosing"));
 		}
-		let ordinal = s.owners[oi].tasks.len() as u32;
+		let ordinal = s.owners[oi].tasks.next_ordinal() as u32;
 		let cap = Cap { task: Some(ordinal as usize), attempt: 1, ..owner.cap.clone() };
 		let reference = cap.reference();
 		let output = OutputRef {
@@ -503,6 +505,7 @@ impl Actor {
 			settlement: None,
 			cancel_cause: None,
 			cancellation_output: None,
+			held: false,
 			command: None,
 		});
 		s.emit(oi, Some(reference.task_id), TaskEvent::TaskAdmitted { task: record });
@@ -526,12 +529,12 @@ impl Actor {
 	}
 	pub(super) fn task_ref(&self, task: &TaskLease) -> Door<NativeTaskRef> {
 		let s = self.state.lock().unwrap();
-		let (oi, ti) = s.task(self.id, &task.cap, "UnknownTask")?;
+		let (oi, ti) = s.known_task(self.id, &task.cap)?;
 		Ok(s.owners[oi].tasks[ti].record.reference.clone())
 	}
 	pub(super) fn task_settlement(&self, task: &TaskLease) -> Door<SettlementReceipt> {
 		let s = self.state.lock().unwrap();
-		let (oi, ti) = s.task(self.id, &task.cap, "UnknownTask")?;
+		let (oi, ti) = s.known_task(self.id, &task.cap)?;
 		s.owners[oi].tasks[ti].settlement.clone().ok_or_else(|| fail("TaskNotSettled"))
 	}
 	pub(super) fn activity(
@@ -746,18 +749,22 @@ impl Actor {
 			s.settle(oi, ti, result);
 		}
 		s.set_cleanup(oi, ti, cleanup.clone());
+		let evicted = s.retire(oi);
 		drop(s);
+		drop(evicted);
 		self.changed.notify_waiters();
 		Ok(cleanup)
 	}
 	pub(super) fn cancel(&self, task: &TaskLease, cause: CancelCause) -> Door<CancelReceipt> {
 		let mut s = self.state.lock().unwrap();
-		let (oi, ti) = s.task(self.id, &task.cap, "UnknownTask")?;
+		let (oi, ti) = s.known_task(self.id, &task.cap)?;
 		s.cancel(oi, ti, cause);
 		let result = s.owners[oi].tasks[ti]
 			.cleanup_failure()
 			.map_or_else(|| Ok(s.owners[oi].tasks[ti].receipt()), Err);
+		let evicted = s.retire(oi);
 		drop(s);
+		drop(evicted);
 		self.changed.notify_waiters();
 		result
 	}
@@ -797,6 +804,7 @@ impl State {
 			Some(reference.task_id.clone()),
 			TaskEvent::CleanupChanged { reference, cleanup },
 		);
+		self.note_finished(oi, ti);
 		self.finish_close(oi);
 	}
 	pub fn settle(&mut self, oi: usize, ti: usize, result: TaskResult) -> SettlementReceipt {

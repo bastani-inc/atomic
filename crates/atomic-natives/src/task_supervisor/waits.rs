@@ -49,7 +49,7 @@ impl Actor {
 		if s.closing {
 			return Err(fail("EnvironmentClosing"));
 		}
-		let (oi, ti) = s.task(self.id, &task.cap, "UnknownTask")?;
+		let (oi, ti) = s.known_task(self.id, &task.cap)?;
 		let o = &s.owners[oi];
 		if o.state != "open" {
 			return Err(fail(if foreground { "OwnerClosing" } else { "OwnerClosed" }));
@@ -189,7 +189,10 @@ impl State {
 		if wait.cap.environment != environment {
 			return Err(fail("StaleGeneration"));
 		}
-		self.task(environment, &wait.cap, "StaleGeneration")?;
+		// A settled wait stays observable after its task is evicted; the registry entry proves the lease.
+		if self.task(environment, &wait.cap, "StaleGeneration").is_err() && !self.evicted(&wait.cap) {
+			return Err(fail("StaleGeneration"));
+		}
 		if self
 			.waits
 			.get(&wait.index)

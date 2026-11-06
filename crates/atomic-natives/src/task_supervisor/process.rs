@@ -304,7 +304,7 @@ impl Actor {
 			}) {
 			return Err(fail("OwnerClosing"));
 		}
-		let ti = state.owners[oi].tasks.len();
+		let ti = state.owners[oi].tasks.next_ordinal();
 		let cap = Cap { task: Some(ti), attempt: 1, ..owner.cap.clone() };
 		let reference = cap.reference();
 		let output = OutputRef {
@@ -398,6 +398,7 @@ impl Actor {
 			settlement: None,
 			cancel_cause: None,
 			cancellation_output: None,
+			held: false,
 			command: Some(command.clone()),
 		});
 		state.emit(oi, Some(reference.task_id), TaskEvent::TaskAdmitted { task: record });

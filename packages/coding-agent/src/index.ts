@@ -68,6 +68,15 @@ export type {
 	TaskResult,
 	WaitPolicy,
 } from "./core/tasks/contracts.js";
+export {
+	FINISHED_TASK_RETENTION,
+	findTaskEvictedError,
+	isTaskEvictedError,
+	rehydrateTaskEvictedError,
+	TaskEvictedError,
+	type TaskEvictedErrorCode,
+	type TaskEvictedErrorFields,
+} from "./core/tasks/eviction-error.js";
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
 export {
 	DEFAULT_TASK_HEARTBEAT_MS,

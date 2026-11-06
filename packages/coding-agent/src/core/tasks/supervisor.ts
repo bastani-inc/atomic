@@ -11,6 +11,7 @@ import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cle
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
+import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
 	readonly completionSource?: TaskCompletionSource;
@@ -88,6 +89,11 @@ export type TrustedTaskHost = {
 };
 type HeldPermit = { readonly admission: ResourceAdmission; readonly release: ResourcePermit };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
+type CommandStart = {
+	intent: C.CommandIntent;
+	result: Promise<C.Result<TaskLease, C.StartFailure>>;
+	task?: TaskLease;
+};
 type OwnerState = {
 	id: C.OwnerId;
 	native: native.OwnerLease;
@@ -103,12 +109,13 @@ type OwnerState = {
 	admissionWatchers: Set<() => void>;
 	releases: Set<Promise<void>>;
 	releaseFailures: Error[];
-	commandStarts: Map<C.OperationId, { intent: C.CommandIntent; result: Promise<C.Result<TaskLease, C.StartFailure>> }>;
+	commandStarts: Map<C.OperationId, CommandStart>;
 };
 type TaskState = {
 	native: native.TaskLease;
 	owner: OwnerState;
 	ref: C.NativeTaskRef;
+	operation: C.OperationId;
 	controller: AbortController;
 	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
@@ -125,7 +132,7 @@ const environment = {
 	hosts: new WeakMap<HostSession, HostState>(),
 	owners: new WeakMap<OwnerLease, OwnerState>(),
 	tasks: new WeakMap<TaskLease, TaskState>(),
-	inputs: new WeakMap<StdinLease, native.StdinLease>(),
+	inputs: new WeakMap<StdinLease, { native: native.StdinLease; taskId: C.TaskId }>(),
 	waits: new WeakMap<WaitLease, WaitState>(),
 	waitRegistry: new Map<C.WaitId, WaitLease>(),
 	ownerIds: new Map<C.OwnerId, OwnerLease>(),
@@ -209,6 +216,14 @@ function mapped<T, U, Code extends string>(
 	if (!code) throw new Error(`Unexpected native task refusal: ${result.error.code}: ${result.error.message}`);
 	return { ok: false, error: { code, message: result.error.message } };
 }
+/** A refusal of a task its owner evicted carries the {@link TaskEvictedError} message, hint included. */
+function explainEviction<T, Code extends string>(
+	result: C.Result<T, C.Failure<Code>>,
+	taskId: string,
+): C.Result<T, C.Failure<Code>> {
+	if (result.ok || result.error.code !== "TaskEvicted") return result;
+	return { ok: false, error: { code: result.error.code, message: new TaskEvictedError({ taskId }).message } };
+}
 const ownerErrors = ["ScopeMismatch", "EnvironmentClosing"] as const;
 const startErrors = [
 	"OwnerClosing",
@@ -222,7 +237,14 @@ const startErrors = [
 	"SpawnFailed",
 	"ContainmentUnavailable",
 ] as const;
-const waitErrors = ["UnknownTask", "OwnerClosed", "EnvironmentClosing", "ScopeMismatch", "ObserverCancelled"] as const;
+const waitErrors = [
+	"UnknownTask",
+	"TaskEvicted",
+	"OwnerClosed",
+	"EnvironmentClosing",
+	"ScopeMismatch",
+	"ObserverCancelled",
+] as const;
 const reportErrors = ["StaleAttempt", "OwnerClosing", "TaskTerminal", "ReportConflict"] as const;
 const watchErrors = ["OwnerClosed", "StaleGeneration", "EnvironmentClosing"] as const;
 function reference(value: native.NativeTaskRef): C.NativeTaskRef {
@@ -296,7 +318,7 @@ const routerSelections = new Map<string, C.RouterSelection>();
 const requestedModels = new Map<string, string>();
 // Launch heartbeat cadences, keyed by owner and launch operation rather than task id: a command's
 // record can be observed before its native start resolves, and it must already carry its cadence.
-const launchHeartbeats = new Map<string, number>();
+const launchHeartbeats = new Map<string, { heartbeatMs: number; taskId?: C.TaskId }>();
 function launchKey(ownerId: string, operation: string): string {
 	return `${ownerId}\0${operation}`;
 }
@@ -305,14 +327,19 @@ function rememberLaunchHeartbeat(ownerId: C.OwnerId, operation: C.OperationId, h
 	const key = launchKey(ownerId, operation);
 	// A replayed operation keeps the cadence of the launch that admitted it.
 	if (heartbeatMs === undefined || launchHeartbeats.has(key)) return undefined;
-	launchHeartbeats.set(key, heartbeatMs);
+	launchHeartbeats.set(key, { heartbeatMs });
 	return key;
+}
+function claimLaunchHeartbeat(ownerId: C.OwnerId, operation: C.OperationId, taskId: C.TaskId, heartbeatMs?: number) {
+	const key = launchKey(ownerId, operation);
+	if (heartbeatMs === undefined) launchHeartbeats.delete(key);
+	else launchHeartbeats.set(key, { heartbeatMs, taskId });
 }
 function record(value: native.TaskRecord): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
 	const routerSelection = routerSelections.get(value.ref.taskId);
 	const requestedModel = requestedModels.get(value.ref.taskId);
-	const heartbeatMs = launchHeartbeats.get(launchKey(value.ref.ownerId, value.launchOperationId));
+	const heartbeatMs = launchHeartbeats.get(launchKey(value.ref.ownerId, value.launchOperationId))?.heartbeatMs;
 	return {
 		ref: reference(value.ref),
 		launchOperationId: value.launchOperationId as C.OperationId,
@@ -397,6 +424,8 @@ function payload(value: native.TaskEvent): C.TaskEvent {
 			};
 		case "cleanup-changed":
 			return { kind: value.kind, ref: reference(value.ref), cleanup: value.cleanup };
+		case "task-evicted":
+			return { kind: value.kind, ref: reference(value.ref) };
 		case "owner-closing":
 		case "owner-closed":
 			return { kind: value.kind };
@@ -454,6 +483,10 @@ function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnap
 	}
 	const index = next.tasks.findIndex((task) => task.ref.taskId === change.ref.taskId);
 	if (index < 0) throw new Error("Native delta references a task absent from its snapshot");
+	if (change.kind === "task-evicted") {
+		next.tasks.splice(index, 1);
+		return next;
+	}
 	const task: C.TaskRecord = { ...next.tasks[index] };
 	next.tasks[index] = task;
 	switch (change.kind) {
@@ -527,6 +560,10 @@ export function quarantinedCleanups(
 		),
 		...projection.tasks.map((task) => ({ ref: task.ref, cleanup: task.cleanup })),
 	].flatMap(({ ref, cleanup }) => (cleanup.kind === "quarantined" ? [{ ref, resources: cleanup.resources }] : []));
+}
+/** Finished records a projection holds, as the native retention counts them: settled, with cleanup reaped. */
+function finishedRecords(projection: C.OwnerSnapshot): number {
+	return projection.tasks.filter((task) => task.execution.kind === "settled" && task.cleanup.kind === "reaped").length;
 }
 /** One bounded wake poll per live subscription, including a journal with no retained event. */
 const RECONCILE_INTERVAL_MS = 25;
@@ -643,7 +680,10 @@ export class TaskSubscription {
 					next({ done: false, value });
 				} else this.#queue.push(value);
 			}
-		if (this.#snapshot.state === "closed") this.dispose(false);
+		// A closed owner may still keep settlements beyond the retention until its host trims it: stop once the
+		// trimmed set has arrived (#4385).
+		if (this.#snapshot.state === "closed" && finishedRecords(this.#snapshot) <= FINISHED_TASK_RETENTION)
+			this.dispose(false);
 	}
 	dispose(clear = true): void {
 		if (this.#disposed) return;
@@ -657,6 +697,23 @@ export class TaskSubscription {
 		this.#resource.emitDestroy();
 		this.#onDispose();
 	}
+}
+
+/** Test-only: how many entries an owner's host keeps per task, and the module-wide per-task maps (#4385). */
+export function taskHostStateSizesForTesting(owner: OwnerLease) {
+	const state = environment.owners.get(owner);
+	if (!state) throw new TypeError("Foreign owner capability");
+	return {
+		tasks: state.tasks.size,
+		settledTasks: state.settledTasks.size,
+		quarantinedTasks: state.quarantinedTasks.size,
+		unconfirmedCleanups: state.unconfirmedCleanups.size,
+		permits: state.permits.size,
+		commandStarts: state.commandStarts.size,
+		routerSelections: routerSelections.size,
+		requestedModels: requestedModels.size,
+		launchHeartbeats: launchHeartbeats.size,
+	};
 }
 
 function createNativeSupervisor(): native.TaskSupervisor {
@@ -734,6 +791,9 @@ export class TaskSupervisor {
 							ownerState.unconfirmedCleanups.set(record.ref.taskId, record.cleanup.resources);
 						else ownerState.unconfirmedCleanups.delete(record.ref.taskId);
 					}
+					const retained = new Set(projection.tasks.map((record) => record.ref.taskId));
+					for (const [taskId, task] of [...ownerState.tasks])
+						if (!retained.has(taskId)) this.#forgetEvictedTask(ownerState, taskId, task);
 					this.#notifyAdmissionWatchers(ownerState);
 					for (const { ref, resources } of quarantinedCleanups(projection, events)) {
 						if (ownerState.quarantinedTasks.has(ref.taskId)) continue;
@@ -770,6 +830,22 @@ export class TaskSupervisor {
 			},
 			ownerErrors,
 		);
+	}
+	/** The native supervisor evicted this finished task (#4385): keep none of its host state either. */
+	#forgetEvictedTask(state: OwnerState, taskId: C.TaskId, task: TaskLease): void {
+		const { operation } = this.#task(task);
+		state.tasks.delete(taskId);
+		state.settledTasks.delete(taskId);
+		state.quarantinedTasks.delete(taskId);
+		routerSelections.delete(taskId);
+		requestedModels.delete(taskId);
+		const key = launchKey(state.id, operation);
+		if (launchHeartbeats.get(key)?.taskId === taskId) launchHeartbeats.delete(key);
+		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
+	}
+	#evicted(task: TaskLease): boolean {
+		const ref = this.#native.taskReference(this.#task(task).native);
+		return !ref.ok && ref.error.code === "TaskEvicted";
 	}
 	#releasePermit(state: OwnerState, taskId: C.TaskId): void {
 		const held = state.permits.get(taskId);
@@ -857,8 +933,11 @@ export class TaskSupervisor {
 	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeCommandLaunch?.(intent);
-		const known = state.commandStarts.get(operation);
-		if (known) {
+		for (let known = state.commandStarts.get(operation); known; known = state.commandStarts.get(operation)) {
+			if (known.task && this.#evicted(known.task)) {
+				this.#forgetEvictedTask(state, this.#task(known.task).ref.taskId, known.task);
+				continue;
+			}
 			if (isDeepStrictEqual(known.intent, intent)) return known.result;
 			return {
 				ok: false,
@@ -867,11 +946,15 @@ export class TaskSupervisor {
 		}
 		const snapshot = structuredClone(intent);
 		const result = this.#launchCommandTask(state, snapshot, operation, signal);
-		state.commandStarts.set(operation, { intent: snapshot, result });
+		const cached: CommandStart = { intent: snapshot, result };
+		state.commandStarts.set(operation, cached);
 		const forget = () => {
 			if (state.commandStarts.get(operation)?.result === result) state.commandStarts.delete(operation);
 		};
-		result.then((started) => started.ok || forget(), forget);
+		result.then((started) => {
+			if (started.ok) cached.task = started.value;
+			else forget();
+		}, forget);
 		return result;
 	}
 	async #launchCommandTask(
@@ -894,11 +977,8 @@ export class TaskSupervisor {
 				signal,
 			);
 			const { heartbeatMs, ...nativeIntent } = intent;
-			const heartbeatKey = rememberLaunchHeartbeat(
-				state.id,
-				operation,
-				heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.(),
-			);
+			const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
+			const heartbeatKey = rememberLaunchHeartbeat(state.id, operation, cadence);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
 				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
@@ -924,6 +1004,7 @@ export class TaskSupervisor {
 			const id = ref.value.taskId as C.TaskId;
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
+			claimLaunchHeartbeat(state.id, operation, id, cadence);
 			let bindFailure: Error | undefined;
 			if (held?.release.bindProcess) {
 				try {
@@ -945,6 +1026,7 @@ export class TaskSupervisor {
 				native: admitted.value,
 				owner: state,
 				ref: reference(ref.value),
+				operation,
 				controller: new AbortController(),
 				kind: "command",
 				statuses: new Map(),
@@ -978,26 +1060,28 @@ export class TaskSupervisor {
 		await Promise.all([...this.#owner(owner).commandAdmissions]);
 	}
 	taskStdin(task: TaskLease): C.Result<StdinLease, C.InputError> {
-		return mapped(
+		const { taskId } = this.#task(task).ref;
+		const stdin = mapped(
 			this.#native.taskStdin(this.#task(task).native),
 			(input) => {
 				const lease = new StdinCapability();
-				environment.inputs.set(lease, input);
+				environment.inputs.set(lease, { native: input, taskId });
 				return lease;
 			},
-			["TaskTerminal", "StdinClosed", "UnknownTask", "OutputUnavailable"] as const,
+			["TaskTerminal", "StdinClosed", "UnknownTask", "TaskEvicted", "OutputUnavailable"] as const,
 		);
+		return explainEviction(stdin, taskId);
 	}
 	async writeTaskInput(
 		input: StdinLease,
 		operation: C.OperationId,
 		data: C.InputData,
 	): Promise<C.Result<C.InputReceipt, C.InputError>> {
-		const lease = environment.inputs.get(input);
-		if (!lease) throw new TypeError("Foreign stdin capability");
-		return mapped(
+		const stdin = environment.inputs.get(input);
+		if (!stdin) throw new TypeError("Foreign stdin capability");
+		const written = mapped(
 			await this.#native.writeTaskInput(
-				lease,
+				stdin.native,
 				operation,
 				data.kind === "bytes" ? { kind: "bytes", bytes: Buffer.from(data.bytes) } : data,
 			),
@@ -1006,11 +1090,19 @@ export class TaskSupervisor {
 				acceptedBytes: value.acceptedBytes,
 				kind: value.kind as "bytes" | "eof",
 			}),
-			["TaskTerminal", "StdinClosed", "InputBackpressure", "OperationConflict", "InputDeliveryUnknown"] as const,
+			[
+				"TaskTerminal",
+				"StdinClosed",
+				"InputBackpressure",
+				"OperationConflict",
+				"InputDeliveryUnknown",
+				"TaskEvicted",
+			] as const,
 		);
+		return explainEviction(written, stdin.taskId);
 	}
 	async readTaskOutput(task: TaskLease, range: C.OutputRange): Promise<C.Result<C.OutputPage, C.OutputError>> {
-		return mapped(
+		const read = mapped(
 			await this.#native.readTaskOutput(this.#task(task).native, range),
 			(page) => ({
 				requested: page.requested,
@@ -1018,8 +1110,9 @@ export class TaskSupervisor {
 				omittedRanges: page.omittedRanges,
 				...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
 			}),
-			["UnknownTask", "OutputUnavailable"] as const,
+			["UnknownTask", "TaskEvicted", "OutputUnavailable"] as const,
 		);
+		return explainEviction(read, this.#task(task).ref.taskId);
 	}
 	async startAgentTask(
 		owner: OwnerLease,
@@ -1030,25 +1123,19 @@ export class TaskSupervisor {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeLaunch(intent);
 		const { heartbeatMs, ...nativeIntent } = intent;
-		const heartbeatKey = rememberLaunchHeartbeat(
-			state.id,
-			operation,
-			heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.(),
-		);
+		const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
 		const admitted = mapped(
 			this.#native.startAgentTask(state.native, nativeIntent, operation),
 			(lease) => lease,
 			startErrors,
 		);
-		if (!admitted.ok) {
-			if (heartbeatKey !== undefined) launchHeartbeats.delete(heartbeatKey);
-			return admitted;
-		}
+		if (!admitted.ok) return admitted;
 		const ref = this.#native.taskReference(admitted.value);
 		if (!ref.ok) throw new Error(ref.error.message);
 		const id = ref.value.taskId as C.TaskId;
 		const existing = state.tasks.get(id);
 		if (existing) return { ok: true, value: existing };
+		claimLaunchHeartbeat(state.id, operation, id, cadence);
 		if (intent.routerSelection) routerSelections.set(id, Object.freeze({ ...intent.routerSelection }));
 		if (intent.requestedModel) requestedModels.set(id, intent.requestedModel);
 		const task = new TaskCapability();
@@ -1057,6 +1144,7 @@ export class TaskSupervisor {
 			native: admitted.value,
 			owner: state,
 			ref: reference(ref.value),
+			operation,
 			controller: new AbortController(),
 			statuses: new Map(),
 			statusListeners: new Set(),
@@ -1144,6 +1232,17 @@ export class TaskSupervisor {
 	taskReference(task: TaskLease): C.NativeTaskRef {
 		return reference(this.#task(task).ref);
 	}
+	/**
+	 * Keeps a task's record past the finished-task retention until {@link releaseTaskRecord}, while the host still
+	 * reads it, for example to build its completion notice (#4385). The holds of a closing owner no longer count.
+	 */
+	retainTaskRecord(task: TaskLease): void {
+		mapped(this.#native.retainTaskRecord(this.#task(task).native), () => undefined, []);
+	}
+	/** Ends a {@link retainTaskRecord} hold; a task its owner already evicted holds nothing. */
+	releaseTaskRecord(task: TaskLease): void {
+		mapped(this.#native.releaseTaskRecord(this.#task(task).native), () => undefined, []);
+	}
 	async waitForTask(
 		task: TaskLease,
 		budgetMs?: number,
@@ -1158,12 +1257,17 @@ export class TaskSupervisor {
 			(lease) => this.#register(lease),
 			waitErrors,
 		);
-		return registered.ok ? this.observeTaskWait(registered.value) : registered;
+		return registered.ok
+			? this.observeTaskWait(registered.value)
+			: explainEviction(registered, this.#task(task).ref.taskId);
 	}
 	/** Resolve only a task admitted under this live owner; IDs alone confer no authority. */
 	lookupTask(owner: OwnerLease, taskId: C.TaskId): C.Result<TaskLease, C.WaitError> {
 		const state = this.#owner(owner);
-		const found = mapped(this.#native.lookupTask(state.native, taskId), () => state.tasks.get(taskId), waitErrors);
+		const found = explainEviction(
+			mapped(this.#native.lookupTask(state.native, taskId), () => state.tasks.get(taskId), waitErrors),
+			taskId,
+		);
 		if (!found.ok) return found;
 		if (!found.value) return { ok: false, error: { code: "UnknownTask", message: "No agent runner bound to task" } };
 		return { ok: true, value: found.value };
@@ -1175,7 +1279,10 @@ export class TaskSupervisor {
 		budgetMs?: number,
 		onRegistered?: (wait: WaitLease) => void,
 	): Promise<C.Result<C.WaitOutcome, C.WaitError>> {
-		const found = mapped(this.#native.lookupTask(this.#owner(owner).native, taskId), (lease) => lease, waitErrors);
+		const found = explainEviction(
+			mapped(this.#native.lookupTask(this.#owner(owner).native, taskId), (lease) => lease, waitErrors),
+			taskId,
+		);
 		if (!found.ok) return found;
 		const known = this.#owner(owner).tasks.get(taskId);
 		const registered = mapped(
@@ -1196,7 +1303,7 @@ export class TaskSupervisor {
 	}
 	async foregroundTask(task: TaskLease, budgetMs?: number): Promise<C.Result<C.WaitOutcome, C.ForegroundError>> {
 		const state = this.#task(task);
-		const errors = ["TaskTerminal", "OwnerClosing", "UnknownTask", "ObserverCancelled"] as const;
+		const errors = ["TaskTerminal", "OwnerClosing", "UnknownTask", "TaskEvicted", "ObserverCancelled"] as const;
 		const registered = mapped(
 			this.#native.foregroundTask(
 				state.native,
@@ -1208,7 +1315,7 @@ export class TaskSupervisor {
 		);
 		return registered.ok
 			? mapped(await this.observeTaskWait(registered.value), (outcome) => outcome, errors)
-			: registered;
+			: explainEviction(registered, state.ref.taskId);
 	}
 	waitId(wait: WaitLease): C.WaitId {
 		return this.#wait(wait).native.waitId as C.WaitId;
@@ -1257,10 +1364,11 @@ export class TaskSupervisor {
 		const state = this.#task(task);
 		const result = mapped(this.#native.cancelTask(state.native, cause), cancelReceipt, [
 			"UnknownTask",
+			"TaskEvicted",
 			"CleanupFailed",
 		]);
 		if (result.ok && result.value.decision === "cancellation-requested") state.controller.abort(cause);
-		return result;
+		return explainEviction(result, state.ref.taskId);
 	}
 	async closeTaskOwner(
 		owner: OwnerLease,
@@ -1280,15 +1388,21 @@ export class TaskSupervisor {
 			["CleanupFailed", "EnvironmentClosing"],
 		);
 		if (result.ok)
-			for (const task of state.tasks.values()) {
-				const completed = await this.#task(task).execution;
-				if (completed && !completed.ok)
-					throw new Error(`Runner protocol failed: ${completed.error.code}: ${completed.error.message}`);
-			}
-		if (result.ok)
-			for (const watch of state.watches) {
-				watch.drain();
-				watch.dispose(false);
+			try {
+				for (const task of state.tasks.values()) {
+					const completed = await this.#task(task).execution;
+					if (completed && !completed.ok)
+						throw new Error(`Runner protocol failed: ${completed.error.code}: ${completed.error.message}`);
+				}
+			} finally {
+				// The host hears of every task the close settled before the closed owner's finished records are trimmed
+				// to the retention, and every watcher receives the trimmed set before it stops (#4385).
+				for (const watch of [...state.watches]) watch.drain();
+				mapped(this.#native.trimClosedTaskOwner(state.native), () => undefined, []);
+				for (const watch of [...state.watches]) {
+					watch.drain();
+					watch.dispose(false);
+				}
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);

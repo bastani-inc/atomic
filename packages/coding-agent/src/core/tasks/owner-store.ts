@@ -111,6 +111,7 @@ export class OwnerTaskStore {
 			throw new Error("StaleGeneration: cannot replace a task owner projection");
 		if (this.current && BigInt(snapshot.cursor.sequence) <= BigInt(this.current.cursor.sequence)) return;
 		this.current = snapshot;
+		this.forgetEvicted(snapshot);
 		for (const event of events)
 			if (event.payload.kind === "task-settled" && !this.settlements.has(event.payload.ref.taskId))
 				this.settlements.set(event.payload.ref.taskId, BigInt(event.cursor.sequence));
@@ -134,6 +135,20 @@ export class OwnerTaskStore {
 				});
 		}
 		this.notify();
+	}
+	/** A task absent from the authoritative projection was evicted by its owner (#4385): keep none of its view state. */
+	private forgetEvicted(snapshot: OwnerSnapshot): void {
+		const retained = new Set(snapshot.tasks.map((task) => task.ref.taskId));
+		for (const id of [...this.records.keys()]) {
+			if (retained.has(id)) continue;
+			this.records.delete(id);
+			this.settlements.delete(id);
+			this.anchors.delete(id);
+			this.backgroundIds.delete(id);
+			this.activity.delete(id);
+			this.activityCursors.delete(id);
+			this.omittedActivity.delete(id);
+		}
 	}
 	private async observe(subscription: TaskSubscription): Promise<void> {
 		// Journal overflow ends the old iterator after publishing a reset snapshot.

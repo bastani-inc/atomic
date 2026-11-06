@@ -71,6 +71,13 @@ export declare class TaskSupervisor {
   taskProcessGroup(task: TaskLease): {ok:true,value:number|null}|{ok:false,error:TaskFailure}
   /** Read the retained terminal receipt without registering an observation or replaying execution. */
   taskSettlement(task: TaskLease): {ok:true,value:SettlementReceipt}|{ok:false,error:TaskFailure}
+  /**
+   * Keeps a task's record past the finished-task retention until released, while an open owner's host still
+   * reads it, for example to build its completion notice. A closing owner's holds no longer count.
+   */
+  retainTaskRecord(task: TaskLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
+  /** Ends a retainTaskRecord hold. Releasing a task the owner already evicted is a no-op. */
+  releaseTaskRecord(task: TaskLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   lookupTask(owner: OwnerLease, taskId: string): {ok:true,value:TaskLease}|{ok:false,error:TaskFailure}
   /**
    * Registers the observation before returning. Await observeTaskWait separately.
@@ -82,6 +89,12 @@ export declare class TaskSupervisor {
   yieldTaskWait(wait: WaitLease, reason: YieldReason): {ok:true,value:WaitOutcome}|{ok:false,error:TaskFailure}
   disposeTaskWait(wait: WaitLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   cancelTask(task: TaskLease, cause: CancelCause): {ok:true,value:CancelReceipt}|{ok:false,error:TaskFailure}
+  /**
+   * Trims a closed owner's finished records to the 256-task retention once its host has drained every settlement
+   * the close made, without waiting for its other watchers. Until then a closed owner keeps every settlement its
+   * watchers have not processed. An owner that is not closed is left alone.
+   */
+  trimClosedTaskOwner(owner: OwnerLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   /** Seals synchronously, then awaits independent runner cleanup acknowledgements. */
   closeTaskOwner(owner: OwnerLease, cause: OwnerCloseCause): Promise<{ok:true,value:OwnerCloseReceipt}|{ok:false,error:TaskFailure}>
   /**
@@ -735,6 +748,7 @@ export type TaskEvent =
   | { kind: 'task-cancelling'; ref: NativeTaskRef; cause: CancelCause }
   | { kind: 'task-settled'; ref: NativeTaskRef; result: TaskResult; completionId: string }
   | { kind: 'cleanup-changed'; ref: NativeTaskRef; cleanup: Cleanup }
+  | { kind: 'task-evicted'; ref: NativeTaskRef }
   | { kind: 'owner-closing' }
   | { kind: 'owner-closed' }
 

@@ -5,6 +5,11 @@
 ### Added
 
 - `Cleanup` has a `quarantined` state with the `resources` still unconfirmed: a command's result settled before its process-group exit or output drain was confirmed, and the supervisor keeps confirming in the background. Quarantine has no deadline until the owner closes or the task is stopped; it then ends `reaped`, or `failed` if cleanup is still unconfirmed 15 seconds later ([#4338](https://github.com/bastani-inc/atomic/issues/4338)).
+- `TaskEvent` has a `task-evicted` event, and every task door that refused an unknown lease or task id with `UnknownTask` refuses a finished task its owner no longer keeps with `TaskEvicted`. `retainTaskRecord(task)` keeps a task's record past the retention while a host still reads it, until `releaseTaskRecord(task)` ([#4385](https://github.com/bastani-inc/atomic/issues/4385)).
+
+### Changed
+
+- A task owner keeps its 256 most recently finished task records (settled and reaped) instead of every task it admitted, evicting the one that finished longest ago, so a long-lived owner's records stop growing with each finished task. Queued, running and cancelling tasks, tasks whose cleanup is quarantined or failed, and tasks an open owner's host still holds are never evicted; the oldest unheld finished task goes instead. A finished task stays until every live subscription of its owner has drained it and drained again, a settled wait still returns its outcome after eviction, and replaying an evicted task's launch operation admits a new task. Evicting a command deletes its output spool ([#4385](https://github.com/bastani-inc/atomic/issues/4385)).
 
 ### Fixed
 

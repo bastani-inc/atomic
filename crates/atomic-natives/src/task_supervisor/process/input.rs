@@ -176,7 +176,7 @@ impl Actor {
 	}
 	pub(super) fn command_resource(&self, task: &TaskLease) -> Door<Arc<CommandTask>> {
 		let state = self.state.lock().unwrap();
-		let (oi, ti) = state.task(self.id, &task.cap, "UnknownTask")?;
+		let (oi, ti) = state.known_task(self.id, &task.cap)?;
 		state.owners[oi].tasks[ti].command.clone().ok_or_else(|| fail("OutputUnavailable"))
 	}
 	pub(in crate::task_supervisor) fn stdin_lease(&self, task: &TaskLease) -> Door<StdinLease> {

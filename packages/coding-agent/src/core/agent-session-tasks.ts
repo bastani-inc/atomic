@@ -143,6 +143,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				}).completion;
 			}
 		},
+		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
+		// notice is built from (#4385).
+		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
 	);
 	this._taskCompletionOutbox = outbox;
 	const heartbeat: TaskHeartbeatDelivery = {
@@ -178,6 +181,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				? watched.value.snapshot.tasks.find((task) => task.ref.taskId === receipt.taskId)?.kind
 				: undefined;
 			if (watched?.ok) watched.value.dispose();
+			this._agentTaskHost?.retainTaskRecord(receipt.taskId);
 			outbox.record(ref.ownerId, receipt, kind);
 			void outbox.flush();
 		},
