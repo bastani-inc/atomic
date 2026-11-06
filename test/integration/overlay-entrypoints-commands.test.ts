@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	createMemoryTestBackend,
 	type MemoryJournalBackend as InMemoryDurableBackend,
@@ -38,6 +39,7 @@ import {
 } from "./overlay-entrypoints-helpers.js";
 
 afterEach(() => toolControlRegistry.clear());
+useTemporaryAgentDir();
 
 void [
 	buildGraphOverlayAdapter,

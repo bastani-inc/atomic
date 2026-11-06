@@ -8,7 +8,10 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 function orderedNames(snapshot: RunSnapshot): string[] {
 	return [

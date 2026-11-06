@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend as createInMemoryTestBackend } from "../../../test/helpers/workflow-journal.js";
 import { workflow } from "../../workflows/src/authoring/workflow.js";
 import { makeMcpPort } from "../../workflows/src/extension/workflow-ports.js";
@@ -32,6 +33,8 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../src/index.ts";
+
+useTemporaryAgentDir();
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent

@@ -6,6 +6,9 @@ import {
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 test("reconstructs multi-level boundary edges when durable completion order is reverse-topological", async () => {
 	const backend = await InMemoryDurableBackend.create();

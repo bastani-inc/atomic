@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createStore, run, workflow } from "./executor-shared.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
+
+useTemporaryAgentDir();
 
 test("rate-limit counts survive task results and durable completed inspection (#3864)", async () => {
 	const backend = await JournalTestBackend.create();

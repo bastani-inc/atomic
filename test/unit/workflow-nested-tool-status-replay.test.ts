@@ -6,7 +6,10 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { buildWorkflowStatusListing } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { topLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 beforeEach(() => store.clear());
 afterEach(() => store.clear());

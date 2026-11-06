@@ -13,7 +13,10 @@ import type { DurableCheckpoint, DurableStageRunTopology } from "../../packages/
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 async function registerCompleted(backend: DurableWorkflowBackend, workflowId: string): Promise<void> {
 	await backend.commitWorkflowRegistration({

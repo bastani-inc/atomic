@@ -1,6 +1,11 @@
 import { fileURLToPath } from "node:url";
-import { beforeEach } from "vitest";
+import { afterAll, afterEach, beforeEach } from "vitest";
 import { setWorktreeSnapshotExcludedRootsForTest } from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.js";
+import {
+	failTestsThatOpenRealHomeStorage,
+	installRealHomeStorageGuard,
+	realHomeAtomicRoots,
+} from "./real-home-storage-guard.js";
 
 /**
  * Every vitest project loads this file, so no test captures, verifies or restores a worktree snapshot of the checkout
@@ -17,3 +22,14 @@ setWorktreeSnapshotExcludedRootsForTest([checkout]);
 beforeEach(() => {
 	setWorktreeSnapshotExcludedRootsForTest([checkout]);
 });
+
+/**
+ * No test opens a SQLite database under the real home directory's `.atomic` root either (#4445). A store that falls
+ * back to its default location, such as the session store `/workflow resume <unknown id>` opens, otherwise lands in
+ * the user's own `~/.atomic/workflows/journal.sqlite`, where every test file of a shard shares it with the others and
+ * with the user's sessions; on Windows its switch to the write-ahead log failed with a disk I/O error. The guard
+ * rejects the open before SQLite creates the file and fails the test even when the code that opened it caught the
+ * error; such a test needs its own agent directory (`useTemporaryAgentDir`). It covers this test process, not the
+ * child processes a test starts. The guard module imports only Node built-ins.
+ */
+failTestsThatOpenRealHomeStorage(installRealHomeStorageGuard(realHomeAtomicRoots()), { afterEach, afterAll });

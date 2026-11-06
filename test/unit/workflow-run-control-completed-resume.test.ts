@@ -29,10 +29,13 @@ import {
 	currentStoreBackend,
 	configureCurrentTestStoreBackend as setDurableBackend,
 } from "../helpers/store-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	createMemoryTestBackend,
 	type MemoryJournalBackend as InMemoryDurableBackend,
 } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 let tempDir = "";
 

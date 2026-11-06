@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -12,6 +13,8 @@ import {
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { ExtensionAPI, ExtensionFactory } from "../../src/index.ts";
+
+useTemporaryAgentDir();
 
 describe("AgentSessionRuntime characterization", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];

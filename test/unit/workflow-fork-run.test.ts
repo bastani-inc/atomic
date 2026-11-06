@@ -48,7 +48,10 @@ import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 afterEach(async () => {
 	setDurableBackend(undefined);

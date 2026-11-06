@@ -13,7 +13,10 @@ import { createCheckpointIdGenerator } from "../../packages/workflows/src/durabl
 import { isStageReleasedError } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createStore, assert as exAssert, test as exTest, run, Type, workflow } from "./executor-shared.js";
+
+useTemporaryAgentDir();
 
 const WORKFLOW_ID = "wf-stage-test-001";
 

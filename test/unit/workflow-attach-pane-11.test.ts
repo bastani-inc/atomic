@@ -25,6 +25,9 @@ import { createStore, store as globalStore } from "../../packages/workflows/src/
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { readText, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 function setupCompletedRun(store: ReturnType<typeof createStore>, runId: string, sessionFile = "/tmp/a.jsonl") {
 	store.recordRunStart({
