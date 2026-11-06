@@ -1419,6 +1419,10 @@ export class TaskSupervisor {
 		}
 		return result;
 	}
+	reportSettledTasks(owner: OwnerLease): void {
+		const [watch] = this.#owner(owner).watches;
+		watch?.drain();
+	}
 	/** Every task whose cleanup failed, as the owner's live projection holds it: a closing owner cannot be watched anew. */
 	failedTaskCleanups(owner: OwnerLease): TaskCleanupFailure[] {
 		const [watch] = this.#owner(owner).watches;

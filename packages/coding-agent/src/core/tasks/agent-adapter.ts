@@ -183,6 +183,10 @@ export class AgentTaskHost {
 		return this.supervisor.watchOwnerTasks(this.owner, cursor);
 	}
 
+	reportSettledTasks(): void {
+		this.supervisor.reportSettledTasks(this.owner);
+	}
+
 	close(cause: C.OwnerCloseCause) {
 		this.heartbeats.dispose();
 		return this.supervisor.closeTaskOwner(this.owner, cause);

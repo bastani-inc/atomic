@@ -5,22 +5,29 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
-import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import type { AgentTaskHost } from "../src/core/tasks/agent-adapter.ts";
-import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.ts";
-import type { Cleanup, OperationId, TaskResult } from "../src/core/tasks/contracts.ts";
-import type { ParkedTaskSettlement, WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
-import { isToolDetachmentError, parkWorkflowStageForRelease, ToolDetachmentError } from "../src/index.ts";
-import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
+import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import type { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
+import type { Cleanup, OperationId, TaskResult } from "../src/core/tasks/contracts.js";
+import { TaskSubscription } from "../src/core/tasks/supervisor.js";
+import { type ParkedTaskSettlement, WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { isToolDetachmentError, parkWorkflowStageForRelease, ToolDetachmentError } from "../src/index.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 /** Removed after each test, once the stage's tasks have ended: Windows refuses to remove files a task still holds. */
 const harnesses: Harness[] = [];
+const gateDirectories: string[] = [];
 afterEach(async () => {
+	vi.restoreAllMocks();
 	while (harnesses.length > 0) await harnesses.pop()?.cleanup();
+	while (gateDirectories.length > 0) rmSync(gateDirectories.pop()!, { recursive: true, force: true });
 });
 
 function stageContext(): WorkflowStageOrchestrationContext {
@@ -56,12 +63,38 @@ async function stageSession(
 const bashTurn = (command: string, id: string, extra: Record<string, unknown> = {}) =>
 	fauxAssistantMessage([fauxToolCall("bash", { command, ...extra }, { id })], { stopReason: "toolUse" });
 
+function gatedBackgroundCommand(
+	text: string,
+	id: string,
+): { readonly turn: ReturnType<typeof bashTurn>; open(): void } {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-parked-gate-"));
+	gateDirectories.push(directory);
+	const gate = join(directory, "open").replaceAll("\\", "/");
+	const command = `while [ ! -e '${gate}' ]; do sleep 0.02; done; echo ${text}`;
+	return {
+		turn: bashTurn(command, id, { wait: { kind: "background" } }),
+		open: () => writeFileSync(gate, ""),
+	};
+}
+
 function toolResultsOf(harness: Harness): { readonly text: string; readonly isError: boolean }[] {
 	return harness.sessionManager
 		.buildSessionProjection()
 		.messages.flatMap((message) =>
 			message.role === "toolResult" ? [{ text: getMessageText(message), isError: message.isError }] : [],
 		);
+}
+
+async function untilSettlementParked(boundary: WorkflowStageAdmissionBoundary): Promise<void> {
+	const parked: ParkedTaskSettlement[] = [];
+	await vi.waitFor(
+		() => {
+			parked.push(...boundary.takeParkedTaskSettlements());
+			assert.equal(parked.length, 1);
+		},
+		{ timeout: 10_000, interval: 20 },
+	);
+	vi.spyOn(boundary, "takeParkedTaskSettlements").mockReturnValueOnce(parked);
 }
 
 async function untilCommandsSettled(host: AgentTaskHost): Promise<void> {
@@ -74,6 +107,62 @@ async function untilCommandsSettled(host: AgentTaskHost): Promise<void> {
 			assert.ok(commands.length > 0 && commands.every((task) => task.execution.kind === "settled"));
 		},
 		{ timeout: 10_000, interval: 20 },
+	);
+}
+
+function deferOwnerReconcileUntilRebind(): { readonly deferred: number } {
+	const state = { deferred: 0, binding: false, rebound: false };
+	const drain = TaskSubscription.prototype.drain;
+	vi.spyOn(TaskSubscription.prototype, "drain").mockImplementation(function (this: TaskSubscription) {
+		if (!state.binding && !state.rebound) {
+			state.deferred++;
+			return;
+		}
+		drain.call(this);
+	});
+	const bind = WorkflowStageAdmissionBoundary.prototype.bindAgentTaskHost;
+	vi.spyOn(WorkflowStageAdmissionBoundary.prototype, "bindAgentTaskHost").mockImplementation(function (
+		this: WorkflowStageAdmissionBoundary,
+		binding,
+	) {
+		state.binding = true;
+		try {
+			return bind.call(this, binding);
+		} finally {
+			state.binding = false;
+			state.rebound = true;
+		}
+	});
+	return {
+		get deferred() {
+			return state.deferred;
+		},
+	};
+}
+
+/** The reopened session holds the task's completion notice, and no turn answered it. */
+async function assertNoticeWithoutTurn(reopened: Harness, text: RegExp): Promise<void> {
+	await vi.waitFor(
+		() => {
+			const entries = reopened.sessionManager.getEntries();
+			assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === "task-completion-ack"));
+		},
+		{ timeout: 5_000, interval: 20 },
+	);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+
+	const notice = reopened.sessionManager
+		.getEntries()
+		.find((entry) => entry.type === "custom_message" && entry.customType === TASK_COMPLETION_MESSAGE_TYPE);
+	assert.ok(notice?.type === "custom_message", "the completion reached the reopened session");
+	assert.match(String(notice.content), text);
+	assert.equal((notice.details as { readonly taskKind?: string } | undefined)?.taskKind, "command");
+	assert.equal(reopened.getPendingResponseCount(), 1, "no turn consumed a response");
+	assert.equal(
+		reopened.sessionManager.buildSessionProjection().messages.filter((message) => message.role === "assistant")
+			.length,
+		2,
+		"no turn answered the notice: the transcript holds only the two replies of the first session",
 	);
 }
 
@@ -148,42 +237,42 @@ describe("a released stage's task host (#4309)", () => {
 		const context = stageContext();
 		const store = new MemorySessionStore();
 		const first = await stageSession(context, store);
-		first.setResponses([
-			bashTurn("sleep 0.3; echo settled-while-released", "bash-1", { wait: { kind: "background" } }),
-			fauxAssistantMessage("started it"),
-		]);
+		const command = gatedBackgroundCommand("settled-while-released", "bash-1");
+		first.setResponses([command.turn, fauxAssistantMessage("started it")]);
+		await first.session.prompt("start the build");
+		const sessionId = first.sessionManager.getSessionId();
+		parkWorkflowStageForRelease(context);
+		await first.session.dispose();
+		command.open();
+		await untilSettlementParked(boundaryOf(context));
+
+		const reopened = await stageSession(context, store, sessionId);
+		reopened.setResponses([fauxAssistantMessage("must not run")]);
+
+		await assertNoticeWithoutTurn(reopened, /settled-while-released/);
+		await boundaryOf(context).close();
+	});
+
+	test("hands a settlement the task owner had not yet reported when the next session bound as a notice that starts no turn (#4309)", async () => {
+		const context = stageContext();
+		const store = new MemorySessionStore();
+		const first = await stageSession(context, store);
+		const command = gatedBackgroundCommand("settled-before-rebind", "bash-1");
+		first.setResponses([command.turn, fauxAssistantMessage("started it")]);
 		await first.session.prompt("start the build");
 		const sessionId = first.sessionManager.getSessionId();
 		const host = first.session.getAgentTaskHost();
 		parkWorkflowStageForRelease(context);
 		await first.session.dispose();
+		const reconcile = deferOwnerReconcileUntilRebind();
+		command.open();
 		await untilCommandsSettled(host);
+		assert.ok(reconcile.deferred > 0, "reconciles of the task owner were held while the command settled");
 
 		const reopened = await stageSession(context, store, sessionId);
 		reopened.setResponses([fauxAssistantMessage("must not run")]);
 
-		await vi.waitFor(
-			() => {
-				const entries = reopened.sessionManager.getEntries();
-				assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === "task-completion-ack"));
-			},
-			{ timeout: 5_000, interval: 20 },
-		);
-		await new Promise((resolve) => setTimeout(resolve, 100));
-
-		const notice = reopened.sessionManager
-			.getEntries()
-			.find((entry) => entry.type === "custom_message" && entry.customType === TASK_COMPLETION_MESSAGE_TYPE);
-		assert.ok(notice?.type === "custom_message", "the completion reached the reopened session");
-		assert.match(String(notice.content), /settled-while-released/);
-		assert.equal((notice.details as { readonly taskKind?: string } | undefined)?.taskKind, "command");
-		assert.equal(reopened.getPendingResponseCount(), 1, "no turn consumed a response");
-		assert.equal(
-			reopened.sessionManager.buildSessionProjection().messages.filter((message) => message.role === "assistant")
-				.length,
-			2,
-			"no turn answered the notice: the transcript holds only the two replies of the first session",
-		);
+		await assertNoticeWithoutTurn(reopened, /settled-before-rebind/);
 		await boundaryOf(context).close();
 	});
 
@@ -216,10 +305,8 @@ describe("a released stage's task host (#4309)", () => {
 		const context = stageContext();
 		const store = new MemorySessionStore();
 		const first = await stageSession(context, store);
-		first.setResponses([
-			bashTurn("sleep 0.3; echo settled-while-released", "bash-1", { wait: { kind: "background" } }),
-			fauxAssistantMessage("started it"),
-		]);
+		const command = gatedBackgroundCommand("settled-while-released", "bash-1");
+		first.setResponses([command.turn, fauxAssistantMessage("started it")]);
 		await first.session.prompt("start the build");
 		const host = first.session.getAgentTaskHost();
 		let opened = 0;
@@ -239,6 +326,7 @@ describe("a released stage's task host (#4309)", () => {
 		});
 		parkWorkflowStageForRelease(context);
 		await first.session.dispose();
+		command.open();
 
 		await vi.waitFor(
 			() => {
@@ -267,15 +355,14 @@ describe("a released stage's task host (#4309)", () => {
 			() => ({ result: agentResult.promise, cleanup: agentCleanup.promise }),
 		);
 		assert.ok(started.ok, "an agent task is running beside the command");
-		first.setResponses([
-			bashTurn("sleep 0.3; echo settled-beside-agent", "bash-1", { wait: { kind: "background" } }),
-			fauxAssistantMessage("started it"),
-		]);
+		const command = gatedBackgroundCommand("settled-beside-agent", "bash-1");
+		first.setResponses([command.turn, fauxAssistantMessage("started it")]);
 		await first.session.prompt("start the build");
 		const sessionId = first.sessionManager.getSessionId();
 		parkWorkflowStageForRelease(context);
 		await first.session.dispose();
-		await untilCommandsSettled(host);
+		command.open();
+		await untilSettlementParked(boundaryOf(context));
 
 		const reopened = await stageSession(context, store, sessionId);
 

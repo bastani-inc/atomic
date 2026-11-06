@@ -72,6 +72,7 @@ export function parkWorkflowStageForRelease(orchestrationContext: OrchestrationC
 
 export class WorkflowStageAdmissionBoundary {
 	private open = true;
+	private parked = false;
 	private readonly completed: Set<string>;
 	private readonly parkedSettlements: ParkedTaskSettlement[] = [];
 	private readonly inFlight = new Map<string, Promise<void>>();
@@ -100,6 +101,8 @@ export class WorkflowStageAdmissionBoundary {
 		if (!this.taskScope) throw new Error("Workflow stage task identity is not bound");
 		const scope = this.taskScope;
 		this.taskHost ??= outsideAnySession(() => new AgentTaskHost({ ...binding, scope }));
+		if (this.parked) this.taskHost.reportSettledTasks();
+		this.parked = false;
 		this.taskHost.updateBinding({ authorizeCommandLaunch: undefined, ...binding });
 		return this.taskHost;
 	}
@@ -118,6 +121,7 @@ export class WorkflowStageAdmissionBoundary {
 		const host = this.taskHost;
 		const scope = this.taskScope;
 		if (!host || !scope) return;
+		this.parked = true;
 		const refuseParkedLaunch = (): void => {
 			throw new ToolDetachmentError("stage-parked", { sessionId: scope.sessionId });
 		};
