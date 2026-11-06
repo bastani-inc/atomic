@@ -402,18 +402,23 @@ export class ModelRuntime implements Models {
 	private async runAvailabilityRefresh(seq: number, errorSeq: number, signal: AbortSignal): Promise<boolean> {
 		const inputsGeneration = this.catalogInputsGeneration;
 		const providers = this.models.getProviders();
+		const passFailed = new AbortController();
+		const passSignal = AbortSignal.any([signal, passFailed.signal]);
 		const [available, checks, credentials] = await Promise.all([
-			this.models.getAvailable(undefined, { signal }),
+			this.models.getAvailable(undefined, { signal: passSignal }),
 			Promise.all(
 				providers.map(
 					async (provider): Promise<[string, AuthCheck | undefined]> => [
 						provider.id,
-						await this.models.checkAuth(provider.id, { signal }),
+						await this.models.checkAuth(provider.id, { signal: passSignal }),
 					],
 				),
 			),
-			this.credentials.list({ signal }),
-		]);
+			this.credentials.list({ signal: passSignal }),
+		]).catch((error: unknown) => {
+			passFailed.abort();
+			throw error;
+		});
 		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return false;
 		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
 		this.availabilityCredentials.clear();

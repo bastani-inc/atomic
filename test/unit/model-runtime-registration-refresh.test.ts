@@ -8,6 +8,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 useTemporaryAgentDir();
 
 const PROVIDER = "held-catalog";
+const FAILING_PROVIDER = "failing-catalog";
 const TURNS_FOR_AN_EARLY_ANSWER = 20;
 
 const releases: Array<() => void> = [];
@@ -106,4 +107,37 @@ test("the refresh a registration starts reads only cached catalogs, and one supe
 	await runtime.whenRegistrationRefreshesSettled();
 
 	assert.deepEqual(passes, [false], "one catalog pass, from the cache, for the two registrations");
+});
+
+test("when one credential check fails, the registration's refresh stops its other checks before the wait resolves (#4480)", async () => {
+	const credentials = AuthStorage.inMemory();
+	const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+	const read = credentials.read.bind(credentials);
+	let running = 0;
+	const heldUntilAborted = (signal: AbortSignal | undefined) => {
+		running++;
+		return new Promise<never>((_resolve, reject) => {
+			signal?.addEventListener(
+				"abort",
+				() => {
+					running--;
+					reject(signal.reason);
+				},
+				{ once: true },
+			);
+		});
+	};
+	vi.spyOn(credentials, "read").mockImplementation(async (providerId, options) => {
+		if (providerId === FAILING_PROVIDER) throw new Error("credential store unavailable");
+		if (providerId === PROVIDER) return heldUntilAborted(options?.signal);
+		return read(providerId, options);
+	});
+	vi.spyOn(credentials, "list").mockImplementation((options) => heldUntilAborted(options?.signal));
+
+	runtime.registerProvider(PROVIDER, { apiKey: "held-key" });
+	runtime.registerProvider(FAILING_PROVIDER, { apiKey: "failing-key" });
+	await runtime.whenRegistrationRefreshesSettled();
+
+	assert.equal(running, 0, "no credential read or listing of the failed pass is still running");
+	assert.notEqual(runtime.getError(), undefined, "the pass's failure is still reported");
 });
