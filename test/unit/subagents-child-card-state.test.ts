@@ -91,6 +91,8 @@ describe("indexing an owner session", () => {
 					reads += 1;
 					return sessionManager.getEntries();
 				},
+				getEntry: (id: string) => sessionManager.getEntry(id),
+				getLeafEntry: () => sessionManager.getLeafEntry(),
 			},
 		} as Pick<ExtensionContext, "sessionManager">;
 

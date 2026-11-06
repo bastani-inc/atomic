@@ -50,7 +50,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import {
 	observeSubagentChildRecord,
-	subagentChildCardRecord,
+	subagentChildRecordOf,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
@@ -3170,9 +3170,9 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 	assert.equal(h.runs.length, runsWhilePaused, "a paused child is not woken");
 	assert.deepEqual(h.latest("release4b:0")?.heldToolResults, [late]);
 	assert.deepEqual(
-		subagentChildCardRecord("release4b:0", h.latest("release4b:0")?.taskId ?? "")?.heldToolResults,
+		subagentChildRecordOf(h.sessionManager.getSessionId(), "release4b:0")?.heldToolResults,
 		[late],
-		"the child's card shows the result it holds",
+		"the child's index entry reads the record that holds the result",
 	);
 
 	const resumed = await h.call({ action: "resume", id: "release4b:0", message: "go on" });

@@ -10,15 +10,20 @@ import type { AgentSource } from "../../agents/agent-types.js";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
-import { ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
+import { isReleasedChildError, ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
+	findAppendedSubagentChildRecord,
 	isSubagentChildRecord,
+	isUnsavedSubagentChildRecord,
 	observeSubagentChildRecord,
+	registerSubagentChildRecordReader,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	subagentChildCardRecord,
+	settleSubagentChildRecord,
+	subagentChildIdsOf,
 	subagentChildRecordOf,
+	unsavedSubagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
 
 export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE, SUBAGENT_CHILD_RELEASED_STATUS };
@@ -419,14 +424,48 @@ function recordAppendFailure(record: SubagentChildRecord, error: Error): Release
 	);
 }
 
-/** Append records of one owner in order, across every sink of that owner. A failed append is counted, not lost. */
+function asRecordFailure(record: SubagentChildRecord, error: Error): ReleasedChildError {
+	return isReleasedChildError(error) ? error : recordAppendFailure(record, error);
+}
+
+/** Append `record`, already observed as its child's full latest record, and point the index at its entry. */
+async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
+	try {
+		await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+	} catch (error) {
+		throw recordAppendFailure(record, error as Error);
+	}
+	settleSubagentChildRecord(record);
+}
+
+/**
+ * Append records of one owner in order, across every sink of that owner. Each is the child's complete record: what
+ * it records merged over its latest one, so the index points at one entry (#4395). A failed append is counted, not
+ * lost.
+ */
 function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
-	observeSubagentChildRecord(record);
-	return inOrder(record.owner.sessionId, () => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(
-		(error: Error) => {
-			observeChildRecordFailure(record.owner.sessionId, recordAppendFailure(record, error));
-		},
-	);
+	const full = observeSubagentChildRecord(record);
+	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).catch((error: Error) => {
+		observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
+	});
+}
+
+/**
+ * Save one complete record of each child of `ownerSessionId` whose latest record is not saved as one entry, as when
+ * its session holds only the partial records an older Atomic wrote (#4395). Queued in the owner's append order, which
+ * a wake waits for. Settles once each is appended; a failed append is counted, not lost.
+ */
+export async function saveUnsavedSubagentChildRecords(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+): Promise<void> {
+	for (const record of unsavedSubagentChildRecordsOf(ownerSessionId))
+		void inOrder(ownerSessionId, async () => {
+			if (isUnsavedSubagentChildRecord(record)) await appendObserved(pi, record);
+		}).catch((error: Error) => {
+			observeChildRecordFailure(ownerSessionId, asRecordFailure(record, error));
+		});
+	await subagentChildRecordsAppended(ownerSessionId);
 }
 
 /** Settles once every record of this owner handed to a sink so far has been appended. */
@@ -436,7 +475,6 @@ export function subagentChildRecordsAppended(ownerSessionId: string): Promise<vo
 
 interface StageChildren {
 	readonly closeSignal: AbortSignal;
-	readonly childIds: Set<string>;
 	readonly endedForGood: () => boolean;
 	readonly end: (childId: string) => void;
 }
@@ -463,19 +501,20 @@ export function watchWorkflowStageSubagentChildren(
 	const sessionManager = ctx.sessionManager;
 	const endedForGood = () => admission.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE);
 	const end = (childId: string, persisted?: SubagentChildRecord) => {
-		const latest = subagentChildCardRecord(childId, "") ?? persisted;
+		const latest = subagentChildRecordOf(owner.sessionId, childId) ?? persisted;
 		if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
 		void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
 		// It can no longer resume, so its worktree is no longer kept for it.
 		unparkRunWorktree(latest.runId, latest.index);
 	};
-	const watched: StageChildren = { closeSignal, childIds: new Set(), endedForGood, end };
+	const watched: StageChildren = { closeSignal, endedForGood, end };
 	stageChildren.set(closeSignal, watched);
 	stageSessionsInProcess.add(owner.sessionId);
 	const endAll = () => {
 		if (!endedForGood()) return;
 		const persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
-		for (const childId of new Set([...persisted.keys(), ...watched.childIds])) end(childId, persisted.get(childId));
+		for (const childId of new Set([...persisted.keys(), ...subagentChildIdsOf(owner.sessionId)]))
+			end(childId, persisted.get(childId));
 	};
 	if (closeSignal.aborted) endAll();
 	else closeSignal.addEventListener("abort", endAll, { once: true });
@@ -527,8 +566,8 @@ export async function endWorkflowRunStageSubagentChildren(
 					state: "terminal",
 					terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 				};
-				await stageSession.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, ended);
-				observeSubagentChildRecord(ended);
+				const entryId = await stageSession.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, ended);
+				observeSubagentChildRecord(ended, false, { entryId, sessionId: stageSessionId });
 			}
 		} catch {
 			// Its session is gone or unreadable: nothing restores its children either.
@@ -545,6 +584,7 @@ export function createSubagentChildRecordSink(
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
+	registerSubagentChildRecordReader(ctx.sessionManager);
 	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
 	let appended: Promise<void> = Promise.resolve();
 	return {
@@ -557,7 +597,6 @@ export function createSubagentChildRecordSink(
 				...input,
 			};
 			appended = appendInOrder(pi, record);
-			stage?.childIds.add(record.childId);
 			// A child that settles after its stage already closed for good ends with it at once.
 			if (stage?.closeSignal.aborted) stage.end(record.childId);
 		},
@@ -601,20 +640,17 @@ export async function holdSubagentChildMessages(
 					: undefined;
 		if (kind === undefined || latest.taskId === undefined) return;
 		const held = latest.heldMessages?.taskId === latest.taskId ? latest.heldMessages : undefined;
-		const record: SubagentChildRecord = {
-			...latest,
-			heldMessages: {
-				taskId: latest.taskId,
-				messages: [...(held?.messages ?? []), ...messages],
-				taskExpands: held?.taskExpands ?? false,
-			},
-		};
-		observeSubagentChildRecord(record);
-		try {
-			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
-		} catch (error) {
-			throw recordAppendFailure(record, error as Error);
-		}
+		await appendObserved(
+			pi,
+			observeSubagentChildRecord({
+				...latest,
+				heldMessages: {
+					taskId: latest.taskId,
+					messages: [...(held?.messages ?? []), ...messages],
+					taskExpands: held?.taskExpands ?? false,
+				},
+			}),
+		);
 		outcome = kind;
 	});
 	return outcome;
@@ -642,9 +678,9 @@ export async function recordSubagentChildStatus(
 	record: SubagentChildRecord,
 	terminalStatus: string,
 ): Promise<void> {
-	const next: SubagentChildRecord = { ...record, state: "terminal", terminalStatus };
-	observeSubagentChildRecord(next);
+	const next = observeSubagentChildRecord({ ...record, state: "terminal", terminalStatus });
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
+	settleSubagentChildRecord(next);
 }
 
 /**
@@ -663,16 +699,11 @@ export async function recordSubagentChildHeldToolResults(
 	await inOrder(ownerSessionId, async () => {
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
-		const record: SubagentChildRecord = {
+		const record = observeSubagentChildRecord({
 			...latest,
 			heldToolResults: withHeldToolResults(latest.heldToolResults, heldToolResults),
-		};
-		observeSubagentChildRecord(record);
-		try {
-			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
-		} catch (error) {
-			throw recordAppendFailure(record, error as Error);
-		}
+		});
+		await appendObserved(pi, record);
 		next = record;
 	});
 	return next as SubagentChildRecord;
@@ -693,17 +724,14 @@ export async function clearSubagentChildHeldToolResults(
 			(call) => call.replyWait === undefined || !toolCallIds.includes(call.toolCallId),
 		);
 		if (kept.length === held.length && waitingOn?.length === latest.waitingOn?.length) return;
-		const record: SubagentChildRecord = {
-			...latest,
-			heldToolResults: kept,
-			...(waitingOn === undefined ? {} : { waitingOn }),
-		};
-		observeSubagentChildRecord(record);
-		try {
-			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
-		} catch (error) {
-			throw recordAppendFailure(record, error as Error);
-		}
+		await appendObserved(
+			pi,
+			observeSubagentChildRecord({
+				...latest,
+				heldToolResults: kept,
+				...(waitingOn === undefined ? {} : { waitingOn }),
+			}),
+		);
 	}).catch((error: ReleasedChildError) => {
 		observeChildRecordFailure(ownerSessionId, error);
 	});
@@ -753,7 +781,7 @@ export async function recordSubagentChildReply(
 		} catch (error) {
 			throw recordAppendFailure(record, error as Error);
 		}
-		observeSubagentChildRecord(record);
+		observeSubagentChildRecord(record, false, findAppendedSubagentChildRecord(record));
 		accepted = true;
 	});
 	return accepted;
@@ -769,14 +797,10 @@ async function appendInTurn(
 	await inOrder(ownerSessionId, async () => {
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
-		const record = next(latest);
-		if (record === undefined) return;
-		observeSubagentChildRecord(record);
-		try {
-			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
-		} catch (error) {
-			throw recordAppendFailure(record, error as Error);
-		}
+		const update = next(latest);
+		if (update === undefined) return;
+		const record = observeSubagentChildRecord(update);
+		await appendObserved(pi, record);
 		written = record;
 	});
 	return written;
@@ -827,9 +851,13 @@ export async function recordSubagentChildGone(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	record: SubagentChildRecord,
 ): Promise<void> {
-	const gone: SubagentChildRecord = { ...record, state: "terminal", terminalStatus: SUBAGENT_CHILD_GONE_STATUS };
-	observeSubagentChildRecord(gone);
+	const gone = observeSubagentChildRecord({
+		...record,
+		state: "terminal",
+		terminalStatus: SUBAGENT_CHILD_GONE_STATUS,
+	});
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, gone);
+	settleSubagentChildRecord(gone);
 }
 
 /**

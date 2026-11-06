@@ -45,6 +45,9 @@ import type {
 import type { SubagentResultRenderState } from "../../packages/subagents/src/tui/render.js";
 import { sleep } from "../helpers/runtime.js";
 
+/** How often an expanded card of a running child reads its transcript again (the card state's refresh interval). */
+const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
+
 const HYDRATION_WAIT_MS = 5_000;
 
 const definition: ToolDefinition<typeof SubagentParams, Details, SubagentResultRenderState> = {
@@ -156,25 +159,29 @@ function child(childId: string, state: SubagentRunControlChild["state"], taskId:
 	return { childId, runId, index: 0, agent: runId, state, taskId };
 }
 
-/** Rebuild a saved session the way `/resume` and `atomic --session` do, and render each subagent card. */
-function rebuildCards(manager: SessionManager, expanded = false): string[] {
+/** Rebuild a saved session the way `/resume` and `atomic --session` do: one component per subagent card. */
+function buildCards(manager: SessionManager, expanded = false): ReturnType<typeof renderChatMessageEntry>[] {
 	const entries = chatEntriesFromAgentMessages(manager.buildSessionContext().messages as AgentMessage[]);
 	return entries
 		.filter((entry) => entry.kind === "tool")
 		.map((entry) =>
-			stripVTControlCharacters(
-				renderChatMessageEntry(entry, {
-					ui: { requestRender() {} },
-					cwd: process.cwd(),
-					toolOutputExpanded: expanded,
-					getToolDefinition: (name) => (name === "subagent" ? definition : undefined),
-				})
-					.render(140)
-					.join("\n"),
-			)
-				.replace(/\s+/g, " ")
-				.trim(),
+			renderChatMessageEntry(entry, {
+				ui: { requestRender() {} },
+				cwd: process.cwd(),
+				toolOutputExpanded: expanded,
+				getToolDefinition: (name) => (name === "subagent" ? definition : undefined),
+			}),
 		);
+}
+
+/** Draw each card as it shows now. */
+function paint(cards: readonly ReturnType<typeof renderChatMessageEntry>[]): string[] {
+	return cards.map((card) => stripVTControlCharacters(card.render(140).join("\n")).replace(/\s+/g, " ").trim());
+}
+
+/** Rebuild a saved session the way `/resume` and `atomic --session` do, and render each subagent card. */
+function rebuildCards(manager: SessionManager, expanded = false): string[] {
+	return paint(buildCards(manager, expanded));
 }
 
 async function eventually(read: () => string, expected: RegExp): Promise<string> {
@@ -347,7 +354,8 @@ test("an expanded launch card shows the child's own saved transcript (#3760)", a
 
 	bindSubagentChildCards({ sessionManager: manager });
 	assert.doesNotMatch(rebuildCards(manager, false)[0]!, /Audit the parser/, "collapsed cards stay compact");
-	const expanded = await eventually(() => rebuildCards(manager, true)[0]!, /Parser audit is half done/);
+	const cards = buildCards(manager, true);
+	const expanded = await eventually(() => paint(cards)[0]!, /Parser audit is half done/);
 	assert.match(expanded, /‖ Paused · awaiting resume[\s\S]*│ › Audit the parser │ Parser audit is half done/);
 	await store.close();
 });
@@ -369,7 +377,14 @@ test("an expanded card of a running child shows messages it saves after the card
 	});
 
 	bindSubagentChildCards({ sessionManager: manager });
-	await eventually(() => rebuildCards(manager, true)[0]!, /Audit the lexer/);
+	const cards = buildCards(manager, true);
+	await eventually(() => paint(cards)[0]!, /Audit the lexer/);
+	await sleep(RUNNING_TRANSCRIPT_REFRESH_MS + 100);
+	assert.match(
+		paint(cards)[0]!,
+		/│ › Audit the lexer/,
+		"a card keeps what it read while it reads the transcript again",
+	);
 	await childSession.appendMessage({
 		role: "assistant",
 		content: [{ type: "text", text: "Lexer audit found two bugs" }],
@@ -380,7 +395,7 @@ test("an expanded card of a running child shows messages it saves after the card
 		stopReason: "stop",
 		timestamp: Date.now(),
 	});
-	const expanded = await eventually(() => rebuildCards(manager, true)[0]!, /Lexer audit found two bugs/);
+	const expanded = await eventually(() => paint(cards)[0]!, /Lexer audit found two bugs/);
 	assert.match(expanded, /│ › Audit the lexer │ Lexer audit found two bugs/);
 	await store.close();
 });

@@ -21,9 +21,11 @@ afterEach(() => {
 test("with nothing launched, every registry of the subagents extension is empty (#4326)", () => {
 	assert.deepEqual(subagentRegistrySizes(), {
 		records: 0,
+		unsavedRecords: 0,
 		taskIds: 0,
-		transcripts: 0,
 		cardOwners: 0,
+		recordReaders: 0,
+		cardWatchers: 0,
 		appendChains: 0,
 		stopRequests: 0,
 		activeRestorations: 0,

@@ -96,6 +96,8 @@ async function startRun(
 			sessionManager: {
 				getSessionId: () => `stage-${name}`,
 				getEntries: () => stage.entries,
+				getEntry: (id: string) => stage.entries.find((entry) => entry.id === id),
+				getLeafEntry: () => stage.entries.at(-1),
 			} as unknown as ExtensionContext["sessionManager"],
 			orchestrationContext: orchestration,
 		};
