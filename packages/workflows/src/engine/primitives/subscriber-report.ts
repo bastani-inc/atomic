@@ -1,10 +1,11 @@
 /** Report delivery into a subscriber stage, including one replayed from the journal after a resume. */
 
-import { SubscriptionSubscriberUnavailableError } from "@bastani/atomic";
+import { type SubscriberUnavailableReason, SubscriptionSubscriberUnavailableError } from "@bastani/atomic";
 import {
 	type AcquirePostMortemStageHandleResult,
 	acquirePostMortemStageHandle,
 	type PostMortemStageChatDeps,
+	type PostMortemUnavailableReason,
 } from "../../runs/foreground/postmortem-stage-chat.js";
 import type { StageControlHandle } from "../../runs/foreground/stage-control-registry.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
@@ -30,6 +31,13 @@ export interface SubscriberReports {
 	release(): Promise<void>;
 	/** When the run is cancelled: lets every reopened session go now. */
 	cancel(): Promise<void>;
+}
+
+type Kebab<T extends string> = T extends `${infer Head}_${infer Tail}` ? `${Head}-${Kebab<Tail>}` : T;
+
+/** The public, kebab-case spelling of why a retained session could not be reopened. */
+function unavailableReason<T extends PostMortemUnavailableReason>(reason: T): Kebab<T> & SubscriberUnavailableReason {
+	return reason.replaceAll("_", "-") as Kebab<T> & SubscriberUnavailableReason;
 }
 
 function turnEnded(handle: StageControlHandle): Promise<void> {
@@ -82,14 +90,18 @@ export function createSubscriberReports(
 			}
 			const result = await owned.acquired;
 			if (!result.ok) {
-				throw new SubscriptionSubscriberUnavailableError(delivery.subscriptionId, stage.name, result.reason);
+				throw new SubscriptionSubscriberUnavailableError(
+					delivery.subscriptionId,
+					stage.name,
+					unavailableReason(result.reason),
+				);
 			}
 			const { handle } = result.lease;
 			if (handle.sendUserMessage === undefined) {
 				throw new SubscriptionSubscriberUnavailableError(
 					delivery.subscriptionId,
 					stage.name,
-					"no_message_admission",
+					"no-message-admission",
 				);
 			}
 			await handle.sendUserMessage(delivery.message, { deliverAs: "steer" });

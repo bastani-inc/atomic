@@ -8,11 +8,17 @@
  * run). Shared mode refuses to start without an explicit agent directory, so it can never fall back to a default journal. `resume` expires
  * the crashed owner's SQLite lease; `takeover` instead waits, with no manual step, until the journal's own clock
  * reports the owner's lease stale. `steal` makes one resume attempt against a live owner and exits 0 when it is refused.
+ *
+ * Every event runs a tracked event child (`child.task`) whose scripted model answers `answer:<subscription>:<event id>`.
+ * Beside the main `chaos` subscription, two more subscriptions run at the same time whose children shared names under
+ * the old `<name>/<event id>` naming (`chaos2` with ids `x/eN` and `chaos2/x` with ids `eN`). A child that replays
+ * another subscription's answer after a resume is appended to `wrong-tree.txt`.
  */
 import assert from "node:assert/strict";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { findSubscriptionError } from "../../packages/coding-agent/src/core/event-subscriptions/errors.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -21,6 +27,7 @@ import { subscriptionEventProcessed } from "../../packages/workflows/src/durable
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 import { expireWorkflowLease } from "../helpers/workflow-lease.js";
@@ -31,6 +38,11 @@ const eventCount = Number(countText ?? "60");
 const handlerDelayMs = Number(delayText ?? "20");
 const maxConcurrent = Number(concurrencyText ?? "4");
 const SUBSCRIPTION_KEY = "chaos#1";
+const SUBSCRIPTIONS = [
+	{ name: "chaos", ids: (index: number) => `e${index}` },
+	{ name: "chaos2", ids: (index: number) => `x/e${index}` },
+	{ name: "chaos2/x", ids: (index: number) => `e${index}` },
+] as const;
 const sharedJournal = process.env.ATOMIC_CHAOS_SHARED_JOURNAL === "1";
 assert.ok(!sharedJournal || process.env.ATOMIC_CODING_AGENT_DIR, "shared mode needs ATOMIC_CODING_AGENT_DIR");
 if (!sharedJournal) process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
@@ -57,19 +69,34 @@ const definition = workflow({
 	async run(ctx) {
 		await ctx.stage("anchor").complete("anchored");
 		try {
-			await ctx.subscribe(
-				{
-					id: "chaos-source",
-					start: async (_signal, emit) => {
-						for (const id of ids) emit({ id, payload: { id } });
-					},
-				},
-				async (event) => {
-					appendDurably(join(directory, "handled.txt"), `${label} ${event.id}`);
-					await sleep(handlerDelayMs);
-				},
-				{ name: "chaos", maxConcurrent },
-			).done;
+			await Promise.all(
+				SUBSCRIPTIONS.map(
+					(subscription) =>
+						ctx.subscribe(
+							{
+								id: `${subscription.name}-source`,
+								start: async (_signal, emit) => {
+									for (let index = 0; index < eventCount; index++) {
+										const id = subscription.ids(index);
+										emit({ id, payload: { id } });
+									}
+								},
+							},
+							async (event, child) => {
+								if (subscription.name === "chaos") {
+									appendDurably(join(directory, "handled.txt"), `${label} ${event.id}`);
+								}
+								const answer = (await child.task({ prompt: "triage" })).text;
+								const expected = `answer:${subscription.name}:${event.id}`;
+								if (answer !== expected) {
+									appendDurably(join(directory, "wrong-tree.txt"), `${label} ${expected} got ${answer}`);
+								}
+								await sleep(handlerDelayMs);
+							},
+							{ name: subscription.name, maxConcurrent },
+						).done,
+				),
+			);
 		} catch (error) {
 			const typed = findSubscriptionError(error);
 			let cause: unknown = error;
@@ -88,6 +115,42 @@ const definition = workflow({
 	},
 }) as WorkflowDefinition;
 
+/** An event child's model: it reads its seeded event and answers `answer:<subscription>:<event id>`. */
+function scriptedChildSession(): StageSessionRuntime {
+	let answer = "";
+	return {
+		async prompt(text: string) {
+			const subscription = /^Subscription: (.*)$/m.exec(text)?.[1];
+			const eventId = /^Event id: (.*)$/m.exec(text)?.[1];
+			answer = `answer:${subscription}:${eventId}`;
+		},
+		async steer() {},
+		async followUp() {},
+		subscribe() {
+			return () => {};
+		},
+		sessionFile: undefined,
+		sessionId: `chaos-child-${label}`,
+		async setModel() {},
+		setThinkingLevel() {},
+		cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
+		cycleThinkingLevel: (async () => undefined) as StageSessionRuntime["cycleThinkingLevel"],
+		agent: undefined as unknown as AgentSession["agent"],
+		model: undefined as AgentSession["model"],
+		thinkingLevel: "medium" as AgentSession["thinkingLevel"],
+		messages: [] as AgentSession["messages"],
+		isStreaming: false,
+		navigateTree: (async () => ({ cancelled: false })) as StageSessionRuntime["navigateTree"],
+		compact: (async () => ({})) as unknown as StageSessionRuntime["compact"],
+		abortCompaction() {},
+		async abort() {},
+		dispose() {},
+		getLastAssistantText() {
+			return answer;
+		},
+	};
+}
+
 const adapters = {
 	complete: {
 		complete: async (text: string) => {
@@ -95,6 +158,7 @@ const adapters = {
 			return text;
 		},
 	},
+	agentSession: { create: async () => scriptedChildSession() },
 };
 const store = createStore();
 if (mode === "records") {
@@ -103,7 +167,15 @@ if (mode === "records") {
 	const eventRecords = backend
 		.listCheckpoints(runId)
 		.filter((checkpoint) => checkpoint.checkpointId.startsWith("workflow-subscription-event:")).length;
-	console.log(JSON.stringify({ processed, eventRecords }));
+	const others = Object.fromEntries(
+		SUBSCRIPTIONS.slice(1).map((subscription) => [
+			subscription.name,
+			ids.filter((_id, index) =>
+				subscriptionEventProcessed(backend, runId, `${subscription.name}#1`, subscription.ids(index)),
+			).length,
+		]),
+	);
+	console.log(JSON.stringify({ processed, eventRecords, others }));
 	await backend.close();
 } else if (mode === "steal") {
 	const runtime = createExtensionRuntime({ definitions: [definition], cwd: directory, store, adapters });

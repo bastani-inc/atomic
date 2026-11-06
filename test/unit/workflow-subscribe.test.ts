@@ -23,6 +23,7 @@ import {
 	completedWorkflowSnapshot,
 	listOpenableCompletedWorkflows,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { subscriptionEventProcessed } from "../../packages/workflows/src/durable/subscription-records.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import {
@@ -197,7 +198,7 @@ async function runAcceptance(): Promise<AcceptanceRun> {
 					create: async (options, meta) =>
 						meta?.stageName === SUBSCRIBER
 							? subscriber
-							: meta?.stageName.startsWith(`${SUBSCRIPTION}/`) === true
+							: meta?.stageName.startsWith(`${SUBSCRIPTION}#1/`) === true
 								? eventChildSession(options.customTools as readonly ToolDefinition[] | undefined, seeds)
 								: subscriberSession(),
 				},
@@ -231,7 +232,7 @@ test(
 			Array.from({ length: EVENT_COUNT / RELEVANT_EVERY }, (_, n) => n * RELEVANT_EVERY)
 				.map(
 					(index) =>
-						`Report from event child "${SUBSCRIPTION}/evt-${index}" (event evt-${index}):\n\ncheck ${index} failed`,
+						`Report from event child "${SUBSCRIPTION}#1/evt-${index}" (event evt-${index}):\n\ncheck ${index} failed`,
 				)
 				.sort(),
 		);
@@ -264,7 +265,7 @@ test(
 		const outcome = await runAcceptance();
 		const byId = new Map(outcome.stages.map((stage) => [stage.id, stage]));
 		const watcher = outcome.stages.find((stage) => stage.name === SUBSCRIBER)!;
-		const children = outcome.stages.filter((stage) => stage.name.startsWith(`${SUBSCRIPTION}/`));
+		const children = outcome.stages.filter((stage) => stage.name.startsWith(`${SUBSCRIPTION}#1/`));
 		assert.equal(children.length, EVENT_COUNT);
 		assert.equal(new Set(children.map((stage) => stage.id)).size, EVENT_COUNT);
 		assert.equal(new Set(children.map((stage) => stage.name)).size, EVENT_COUNT);
@@ -573,7 +574,7 @@ test("without a subscriber stage, reports become run notices (#4311)", async () 
 	const notices = store.notices().filter((notice) => notice.runId === "55555555-5555-4555-8555-000000004311");
 	assert.deepEqual(
 		notices.map((notice) => notice.message),
-		['Report from event child "alerts/p2" (event p2):\n\np2 needs attention'],
+		['Report from event child "alerts#1/p2" (event p2):\n\np2 needs attention'],
 	);
 });
 
@@ -592,7 +593,7 @@ test("event children hang under the subscriber even when another stage settled a
 	});
 	assert.equal(result.status, "completed", result.error);
 	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
-	const child = result.stages.find((stage) => stage.name === "graph/g1")!;
+	const child = result.stages.find((stage) => stage.name === "graph#1/g1")!;
 	assert.deepEqual(child.parentIds, [watcher.id]);
 });
 
@@ -639,7 +640,7 @@ test("a subscriber declared while the run is paused is created on resume and sti
 	);
 	assert.equal(result.status, "completed", result.error);
 	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
-	assert.deepEqual(result.stages.find((stage) => stage.name === "paused/p1")!.parentIds, [watcher.id]);
+	assert.deepEqual(result.stages.find((stage) => stage.name === "paused#1/p1")!.parentIds, [watcher.id]);
 	assert.deepEqual(observed, { watcherWhilePaused: false, betweenOnDeclaration: true });
 });
 
@@ -846,7 +847,7 @@ test("reports steer the subscriber, keep the author's custom tools, and refuse l
 	);
 	assert.equal(result.status, "completed", result.error);
 	assert.deepEqual(deliveries, [
-		{ text: 'Report from event child "tools/t1" (event t1):\n\nt1 matters', deliverAs: "steer" },
+		{ text: 'Report from event child "tools#1/t1" (event t1):\n\nt1 matters', deliverAs: "steer" },
 	]);
 	assert.deepEqual(toolNames.at(-1), ["author_tool", "report_to_subscriber"]);
 	await assert.rejects(kept!.report("late"), (error) => {
@@ -996,7 +997,7 @@ test("an event child replayed from cache after a resume stays detached while rep
 	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
 	const second = await run(definition, {}, { ...options, store: createStore() });
 	assert.equal(second.status, "completed", second.error);
-	const child = second.stages.find((stage) => stage.name === "cached/c1");
+	const child = second.stages.find((stage) => stage.name === "cached#1/c1");
 	assert.ok(child !== undefined, JSON.stringify(second.stages.map((stage) => stage.name)));
 	const after = second.stages.find((stage) => stage.name === "after-2")!;
 	assert.equal(after.parentIds.includes(child.id), false);
@@ -1067,7 +1068,7 @@ test("without a subscriber, event children hang under the stages that settled be
 	});
 	assert.equal(result.status, "completed", result.error);
 	const anchor = result.stages.find((stage) => stage.name === "anchor")!;
-	assert.deepEqual(result.stages.find((stage) => stage.name === "orphans/o1")!.parentIds, [anchor.id]);
+	assert.deepEqual(result.stages.find((stage) => stage.name === "orphans#1/o1")!.parentIds, [anchor.id]);
 });
 
 test("ctx.subscribe admits events no faster than maxRate (#4311)", async () => {
@@ -1125,7 +1126,7 @@ test("an event child's seed puts the event after the task text, or stands alone,
 			adapters: {
 				agentSession: {
 					create: async (options, meta) => {
-						if (meta?.stageName.startsWith("seeded/") !== true) return subscriberSession();
+						if (meta?.stageName.startsWith("seeded#1/") !== true) return subscriberSession();
 						tools.push(
 							(options.customTools ?? []).map((tool) => ({
 								name: tool.name,
@@ -1262,7 +1263,8 @@ test("cancelling a run cancels its inline streams at once and releases a held ev
 });
 
 test("closing an inline stream while its next event is being admitted neither hangs nor yields it later (#4311)", async () => {
-	const { result } = await runWorkflow(async (ctx) => {
+	const yielded = new Map<number, boolean>();
+	const { result, backend, runId } = await runWorkflow(async (ctx) => {
 		await ctx.stage("anchor").prompt("start");
 		for (let delay = 0; delay < 64; delay++) {
 			const stream = ctx.events(listSource(`race-${delay}`, [{ id: "x" }, { id: "y" }]));
@@ -1273,10 +1275,19 @@ test("closing an inline stream while its next event is being admitted neither ha
 			assert.equal(await settlesWithinTurns(closing), true, `close() hung ${delay} microtasks after next()`);
 			const after = await pending;
 			assert.equal(after.done === true || after.value?.id === "y", true);
+			yielded.set(delay, after.value?.id === "y");
 			assert.deepEqual(await stream.next(), { value: undefined, done: true });
 		}
 	});
 	assert.equal(result.status, "completed", result.error);
+	for (const [delay, gotY] of yielded) {
+		assert.equal(
+			subscriptionEventProcessed(backend, runId, `race-${delay}#1`, "y"),
+			gotY,
+			`y must count as processed exactly when the body saw it (delay ${delay})`,
+		);
+	}
+	assert.equal([...yielded.values()].includes(false), true);
 });
 
 test("a resumed subscription keeps its first durable record and writes no journal entry for it again (#4311)", async () => {
@@ -1433,7 +1444,7 @@ test("a subscriber declared and prompted while the run is paused parents childre
 	);
 	assert.equal(result.status, "completed", result.error);
 	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
-	assert.deepEqual(result.stages.find((stage) => stage.name === "early/x1")!.parentIds, [watcher.id]);
+	assert.deepEqual(result.stages.find((stage) => stage.name === "early#1/x1")!.parentIds, [watcher.id]);
 });
 
 interface ReplayedSubscriberCase {
@@ -1616,7 +1627,7 @@ test("a subscriber replayed after a resume takes reports in its retained session
 	assert.equal(resumed.status, "completed", resumed.error);
 	assert.deepEqual(failures, []);
 	assert.deepEqual(deliveries, [
-		{ session: "reopened", text: 'Report from event child "ci/e1" (event e1):\n\ne1 failed', deliverAs: "steer" },
+		{ session: "reopened", text: 'Report from event child "ci#1/e1" (event e1):\n\ne1 failed', deliverAs: "steer" },
 	]);
 	assert.deepEqual(
 		disposed.filter((label) => label === "reopened"),
@@ -1678,7 +1689,7 @@ test("a replayed subscriber whose session cannot be reopened fails the report wi
 			reason: (cause as { reason: string }).reason,
 			retryable: (cause as { retryable: boolean }).retryable,
 		},
-		{ code: "subscriber-unavailable", subscriber: "watcher", reason: "invalid_session", retryable: false },
+		{ code: "subscriber-unavailable", subscriber: "watcher", reason: "invalid-session", retryable: false },
 	);
 	assert.equal((cause as { subscriptionId: string }).subscriptionId, "acacacac-acac-4cac-8cac-000000004311/ci#1");
 });
@@ -1702,7 +1713,7 @@ test("a replayed subscriber whose chat handle cannot admit messages fails the re
 	assert.deepEqual(deliveries, []);
 	const cause = (failures[0] as { cause?: unknown }).cause;
 	assert.equal(isSubscriptionSubscriberUnavailableError(cause), true);
-	assert.equal((cause as { reason: string }).reason, "no_message_admission");
+	assert.equal((cause as { reason: string }).reason, "no-message-admission");
 });
 
 test("a resumed run waits for a reopened subscriber's turn before letting its session go (#4311)", async () => {
@@ -1782,5 +1793,145 @@ test("after a resume, reports to a subscriber first created in the resumed run r
 	const second = await runWorkflow(body, first.backend, first.runId);
 	assert.equal(second.result.status, "completed", second.result.error);
 	assert.equal(second.result.stages.find((stage) => stage.name === "anchor")?.replayed, true);
-	assert.deepEqual(received, ['Report from event child "late/l1" (event l1):\n\nl1 matters']);
+	assert.deepEqual(received, ['Report from event child "late#1/l1" (event l1):\n\nl1 matters']);
+});
+
+interface CollidingSubscription {
+	readonly source: string;
+	readonly name?: string;
+	readonly eventId: string;
+}
+
+/**
+ * Runs two subscriptions whose event children would share a name under a `<name>/<event id>` scheme. The second one's
+ * handler fails after its child finished, so a resume handles its event again and must replay its own child.
+ */
+async function runCollidingSubscriptions(
+	first: CollidingSubscription,
+	second: CollidingSubscription,
+	earlierName?: string,
+) {
+	const backend = await createMemoryTestBackend();
+	const runId = "c0111de0-0000-4000-8000-000000004311";
+	const answers: { first: string[]; second: string[] } = { first: [], second: [] };
+	let interruptSecond = true;
+	const subscribeOnce = (
+		ctx: Parameters<WorkflowDefinition["run"]>[0],
+		spec: CollidingSubscription,
+		which: "first" | "second",
+	) =>
+		ctx
+			.subscribe(
+				listSource(spec.source, [{ id: spec.eventId }]),
+				async (_event, child) => {
+					answers[which].push((await child.task({ prompt: `${which} instructions` })).text);
+					if (which === "second" && interruptSecond) {
+						interruptSecond = false;
+						throw new Error("interrupted after the child finished");
+					}
+				},
+				spec.name === undefined ? {} : { name: spec.name },
+			)
+			.done.catch(() => undefined);
+	const definition = workflow({
+		name: "colliding-subscriptions",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			if (earlierName !== undefined)
+				await ctx.subscribe(listSource("earlier", []), async () => {}, { name: earlierName }).done;
+			await subscribeOnce(ctx, first, "first");
+			await subscribeOnce(ctx, second, "second");
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const answeringSession = (): StageSessionRuntime => {
+		let instructions = "";
+		return {
+			...mockSession(),
+			async prompt(text: string) {
+				instructions = text.split("\n")[0]!;
+			},
+			getLastAssistantText() {
+				return `answer to ${instructions}`;
+			},
+		};
+	};
+	const options = {
+		runId,
+		durableBackend: backend,
+		adapters: { agentSession: { create: async () => answeringSession() } },
+	};
+	const initial = await run(definition, {}, { ...options, store: createStore() });
+	assert.equal(initial.status, "completed", initial.error);
+	const resumed = await run(definition, {}, { ...options, store: createStore() });
+	assert.equal(resumed.status, "completed", resumed.error);
+	return {
+		answers,
+		children: initial.stages.map((stage) => stage.name).filter((name) => name !== "anchor"),
+	};
+}
+
+for (const [label, first, second, earlierName] of [
+	[
+		"default names: webhook:/hooks + ci/abc vs webhook:/hooks/ci + abc",
+		{ source: "webhook:/hooks", eventId: "ci/abc" },
+		{ source: "webhook:/hooks/ci", eventId: "abc" },
+		undefined,
+	],
+	[
+		"names a + b/c vs a/b + c",
+		{ source: "s1", name: "a", eventId: "b/c" },
+		{ source: "s2", name: "a/b", eventId: "c" },
+		undefined,
+	],
+	[
+		"a user name ci#2 vs the second ci",
+		{ source: "s1", name: "ci#2", eventId: "e" },
+		{ source: "s2", name: "ci", eventId: "e" },
+		"ci",
+	],
+] as const) {
+	test(`event children of different subscriptions never share a durable identity: ${label} (#4311)`, async () => {
+		const { answers, children } = await runCollidingSubscriptions(first, second, earlierName);
+		assert.equal(new Set(children).size, children.length, JSON.stringify(children));
+		assert.deepEqual(answers, {
+			first: ["answer to first instructions"],
+			second: ["answer to second instructions", "answer to second instructions"],
+		});
+	});
+}
+
+test("an event child's name is the subscription key and the escaped event id (#4311)", async () => {
+	const { children } = await runCollidingSubscriptions(
+		{ source: "webhook:/hooks", eventId: "ci/abc#1 %" },
+		{ source: "webhook:/hooks", eventId: "x" },
+	);
+	assert.deepEqual(children, ["webhook:/hooks#1/ci%2Fabc%231%20%25", "webhook:/hooks#2/x"]);
+});
+
+test("a run whose only tracked work is a subscription or an inline stream completes, even when no event starts a child (#4311)", async () => {
+	const runs = [
+		async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
+			await ctx.subscribe(listSource("quiet", [{ id: "q1" }]), async () => {}).done;
+		},
+		async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
+			await ctx.subscribe(listSource("notices", [{ id: "n1" }]), async (_event, child) => {
+				await child.report("n1 matters");
+			}).done;
+		},
+		async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
+			for await (const event of ctx.events(listSource("inline-only", [{ id: "i1" }]))) void event;
+		},
+	];
+	for (const [index, body] of runs.entries()) {
+		const { result } = await runWorkflow(body, undefined, `f2f2f2f2-f2f2-4f2f-8f2f-00000000431${index}`);
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(result.stages, []);
+	}
+	const { result } = await runWorkflow(async () => {}, undefined, "f2f2f2f2-f2f2-4f2f-8f2f-000000004319");
+	assert.equal(result.status, "failed");
+	assert.match(result.error ?? "", /without creating any workflow stages or durable tool nodes/);
 });

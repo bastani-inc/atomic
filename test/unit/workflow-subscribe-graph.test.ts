@@ -27,7 +27,7 @@ test("a detached node keeps its parents but never joins the frontier (#4311)", (
 	assert.deepEqual(tracker.currentParents(), ["event-child"]);
 });
 
-test("a workflow whose only tracked call is ctx.subscribe passes discovery and names no stage (#4311)", () => {
+test("a workflow whose only tracked call is ctx.subscribe or ctx.events passes discovery and names no stage (#4311)", () => {
 	const path = join(TEST_DIR, "subscribe-only.ts");
 	writeTextSync(
 		path,
@@ -50,7 +50,8 @@ test("a workflow whose only tracked call is ctx.subscribe passes discovery and n
 		eventsOnly,
 		"export default workflow({ run: async (ctx) => { for await (const e of ctx.events(s)) {} } });",
 	);
-	assert.equal(scanPossibleStagesFromSource(eventsOnly).hasTrackedNodes, false);
+	const inline = scanPossibleStagesFromSource(eventsOnly);
+	assert.deepEqual({ tracked: inline.hasTrackedNodes, stages: [...inline.stages] }, { tracked: true, stages: [] });
 });
 
 test("discovery names stage, task, chain and parallel steps beside ctx.subscribe, but never a tool or subscription (#4311)", () => {

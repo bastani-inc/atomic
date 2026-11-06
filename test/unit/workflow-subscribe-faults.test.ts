@@ -3,10 +3,12 @@ import {
 	createWakeDispatcher,
 	type EventSource,
 	isSubscriptionHandlerError,
+	isSubscriptionRecordError,
 	openEventSubscription,
 	StorageError,
 	StorageUnavailableError,
 	type SubscriptionEvent,
+	type SubscriptionRecordError,
 } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -73,7 +75,7 @@ async function runBody(backend: MemoryJournalBackend, body: (ctx: WorkflowRunCon
 	);
 }
 
-test("disk full while recording an event fails the subscription with the storage error as cause; resume redoes only that event (#4311)", async () => {
+test("disk full while recording a handled event fails the subscription with a typed record error; resume redoes only that event (#4311)", async () => {
 	const backend = await createMemoryTestBackend();
 	const commit = backend.commitCheckpoint.bind(backend);
 	let failNext = true;
@@ -104,8 +106,24 @@ test("disk full while recording an event fails the subscription with the storage
 		}
 	});
 	assert.equal(first.status, "completed", first.error);
-	assert.equal(isSubscriptionHandlerError(failure), true);
-	assert.equal((failure as { eventId: string }).eventId, "e2");
+	assert.equal(isSubscriptionHandlerError(failure), false);
+	assert.equal(isSubscriptionRecordError(failure), true);
+	assert.deepEqual(
+		{
+			code: (failure as SubscriptionRecordError).code,
+			subscriptionId: (failure as SubscriptionRecordError).subscriptionId,
+			record: (failure as SubscriptionRecordError).record,
+			eventId: (failure as SubscriptionRecordError).eventId,
+			retryable: (failure as SubscriptionRecordError).retryable,
+		},
+		{
+			code: "record-failed",
+			subscriptionId: `${RUN_ID}/faults#1`,
+			record: "processed-event",
+			eventId: "e2",
+			retryable: true,
+		},
+	);
 	assert.equal((failure as Error).cause instanceof StorageError, true);
 	assert.deepEqual(processedIds(backend), ["e0", "e1"]);
 	assert.deepEqual(handled, ["e0", "e1", "e2"]);
@@ -124,7 +142,7 @@ test("disk full while recording an event fails the subscription with the storage
 	assert.deepEqual(processedIds(backend), ["e0", "e1", "e2", "e3", "e4", "e5"]);
 });
 
-test("a failed subscription record stops the subscription before any handler runs (#4311)", async () => {
+test("a failed subscription record stops the subscription with a typed record error before any handler runs (#4311)", async () => {
 	const backend = await createMemoryTestBackend();
 	const commit = backend.commitCheckpoint.bind(backend);
 	const storageFailure = diskFull();
@@ -144,9 +162,33 @@ test("a failed subscription record stops the subscription before any handler run
 		}
 	});
 	assert.equal(result.status, "completed", result.error);
-	assert.equal(failure, storageFailure);
+	assert.equal(isSubscriptionRecordError(failure), true);
+	assert.deepEqual(
+		{
+			record: (failure as SubscriptionRecordError).record,
+			eventId: (failure as SubscriptionRecordError).eventId,
+			retryable: (failure as SubscriptionRecordError).retryable,
+		},
+		{ record: "subscription", eventId: null, retryable: true },
+	);
+	assert.equal((failure as Error).cause, storageFailure);
 	assert.deepEqual(handled, []);
 	assert.deepEqual(processedIds(backend), []);
+});
+
+test("an unobserved journal failure in a subscription fails the run as storage unavailable, not as a handler failure (#4311)", async () => {
+	const backend = await createMemoryTestBackend();
+	const commit = backend.commitCheckpoint.bind(backend);
+	backend.commitCheckpoint = async (checkpoint: DurableCheckpoint, options) => {
+		if (checkpoint.checkpointId.startsWith("workflow-subscription-event:")) throw diskFull();
+		await commit(checkpoint, options);
+	};
+	const result = await runBody(backend, async (ctx) => {
+		await ctx.subscribe(listSource([{ id: "a" }]), async () => {}).done;
+	});
+	assert.equal(result.status, "failed");
+	assert.equal(result.failure?.code, "storage_unavailable");
+	assert.match(result.error ?? "", /record-failed/);
 });
 
 test("slow journal writes keep every event recorded once and the concurrency cap intact (#4311)", async () => {

@@ -1,5 +1,7 @@
 /** Typed failures of event subscriptions (`ctx.subscribe`, `ctx.events`, `session.subscribe`, event sources). */
 
+import { StorageUnavailableError } from "../storage/errors.js";
+
 export type SubscriptionErrorCode =
 	| "subscription-closed"
 	| "invalid-option"
@@ -8,7 +10,9 @@ export type SubscriptionErrorCode =
 	| "handler-failed"
 	| "child-unavailable"
 	| "setup-missing"
-	| "subscriber-unavailable";
+	| "subscriber-unavailable"
+	| "record-failed"
+	| "timeout";
 
 export type SubscriptionErrorName =
 	| "SubscriptionError"
@@ -19,7 +23,9 @@ export type SubscriptionErrorName =
 	| "SubscriptionHandlerError"
 	| "SubscriptionChildUnavailableError"
 	| "SubscriptionSetupError"
-	| "SubscriptionSubscriberUnavailableError";
+	| "SubscriptionSubscriberUnavailableError"
+	| "SubscriptionRecordError"
+	| "SubscriptionTimeoutError";
 
 export type SubscriptionErrorFieldValue = string | number | boolean | null;
 export type SubscriptionErrorFields = Readonly<Record<string, SubscriptionErrorFieldValue>>;
@@ -312,6 +318,30 @@ export class SubscriptionSetupError extends SubscriptionError {
 	}
 }
 
+export type SubscriberUnavailableReason =
+	| "no-adapter"
+	| "not-terminal"
+	| "no-session"
+	| "invalid-session"
+	| "closed"
+	| "no-message-admission";
+
+const SUBSCRIBER_UNAVAILABLE_HINT: Readonly<Record<SubscriberUnavailableReason, string>> = {
+	"no-adapter":
+		"The workflow host cannot start sessions here, so the replayed subscriber's session cannot be reopened; run the workflow from Atomic, or subscribe from a stage that runs in this run.",
+	"not-terminal":
+		"The subscriber stage did not complete, so its session cannot be reopened for reports; subscribe from a stage that completes, or start the run again instead of resuming it.",
+	"no-session":
+		"The subscriber stage kept no agent session to reopen; subscribe from a stage that runs an agent session in this run.",
+	"invalid-session":
+		"The subscriber's retained session could not be reopened from the session store; make the store that ran the stage available, or start the run again instead of resuming it.",
+	closed: "The run is closing, so reports can no longer be delivered; resume the run to continue.",
+	"no-message-admission":
+		"The subscriber's stage chat cannot take messages; close whatever holds that chat, or subscribe from a stage that runs in this run.",
+};
+
+const SUBSCRIBER_UNAVAILABLE_REASONS: ReadonlySet<string> = new Set(Object.keys(SUBSCRIBER_UNAVAILABLE_HINT));
+
 /** A report could not reach its subscriber stage, because that stage was replayed from a checkpoint after a resume. */
 export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
 	override readonly name = "SubscriptionSubscriberUnavailableError" as const;
@@ -319,11 +349,10 @@ export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
 	readonly subscriptionId: string;
 	readonly subscriber: string;
 	/** Why the subscriber's retained session could not take the report. */
-	readonly reason: string;
+	readonly reason: SubscriberUnavailableReason;
 
-	constructor(subscriptionId: string, subscriber: string, reason: string) {
-		const hint =
-			"The subscriber stage was replayed after a resume and its retained session could not be reopened; subscribe from a stage that runs in this run, or start the run again instead of resuming it.";
+	constructor(subscriptionId: string, subscriber: string, reason: SubscriberUnavailableReason) {
+		const hint = SUBSCRIBER_UNAVAILABLE_HINT[reason];
 		super(
 			"subscriber-unavailable",
 			failureMessage(
@@ -344,6 +373,99 @@ export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
 	}
 }
 
+export type SubscriptionRecordKind = "subscription" | "processed-event";
+
+const RECORD_HINT: Readonly<Record<SubscriptionRecordKind, string>> = {
+	subscription:
+		"The subscription was not recorded, so it did not start; make the journal or transcript storage available (see the cause), then subscribe again.",
+	"processed-event":
+		"The handler finished, but the event was not recorded and is handled again after a resume; make the journal or transcript storage available (see the cause), then resume.",
+};
+
+/**
+ * Recording a subscription or a processed event failed, so the subscription stops. A processed event whose record
+ * failed is handled again after a resume. Retryable exactly when the storage reports itself unavailable.
+ */
+export class SubscriptionRecordError extends SubscriptionError {
+	override readonly name = "SubscriptionRecordError" as const;
+	declare readonly code: "record-failed";
+	readonly subscriptionId: string;
+	readonly record: SubscriptionRecordKind;
+	readonly eventId: string | null;
+
+	constructor(
+		subscriptionId: string,
+		record: SubscriptionRecordKind,
+		eventId: string | null,
+		options?: { readonly cause?: unknown; readonly retryable?: boolean },
+	) {
+		const hint = RECORD_HINT[record];
+		super(
+			"record-failed",
+			failureMessage(
+				record === "subscription"
+					? "Recording the subscription failed"
+					: `Recording processed event ${eventId} failed`,
+				subscriptionId,
+				"record-failed",
+				hint,
+			),
+			{
+				hint,
+				retryable: options?.retryable ?? options?.cause instanceof StorageUnavailableError,
+				...(options?.cause === undefined ? {} : { cause: options.cause }),
+			},
+		);
+		this.subscriptionId = subscriptionId;
+		this.record = record;
+		this.eventId = eventId;
+	}
+
+	override fields(): SubscriptionErrorFields {
+		return { subscriptionId: this.subscriptionId, record: this.record, eventId: this.eventId };
+	}
+}
+
+export type SubscriptionTimeoutPhase = "gh-auth-check";
+
+const TIMEOUT_SUBJECT: Readonly<Record<SubscriptionTimeoutPhase, string>> = {
+	"gh-auth-check": "the GitHub login check (gh auth token)",
+};
+
+const TIMEOUT_HINT: Readonly<Record<SubscriptionTimeoutPhase, string>> = {
+	"gh-auth-check": "Check that `gh auth status` answers promptly on this machine, then subscribe again.",
+};
+
+/** A step the subscription waits on took longer than its limit. Trying again may succeed. */
+export class SubscriptionTimeoutError extends SubscriptionError {
+	override readonly name = "SubscriptionTimeoutError" as const;
+	declare readonly code: "timeout";
+	readonly phase: SubscriptionTimeoutPhase;
+	readonly timeoutMs: number;
+	readonly elapsedMs: number;
+
+	constructor(
+		phase: SubscriptionTimeoutPhase,
+		timeoutMs: number,
+		elapsedMs: number,
+		options?: { readonly cause?: unknown },
+	) {
+		const hint = TIMEOUT_HINT[phase];
+		super("timeout", failureMessage(`Timed out after ${timeoutMs} ms`, TIMEOUT_SUBJECT[phase], "timeout", hint), {
+			hint,
+			retryable: true,
+			...(options?.cause === undefined ? {} : { cause: options.cause }),
+		});
+		this.phase = phase;
+		this.timeoutMs = timeoutMs;
+		this.elapsedMs = elapsedMs;
+	}
+
+	override fields(): SubscriptionErrorFields {
+		return { phase: this.phase, timeoutMs: this.timeoutMs, elapsedMs: this.elapsedMs };
+	}
+}
+
 const CODE_BY_NAME: Readonly<Record<string, SubscriptionErrorCode>> = {
 	SubscriptionClosedError: "subscription-closed",
 	SubscriptionConfigError: "invalid-option",
@@ -353,6 +475,8 @@ const CODE_BY_NAME: Readonly<Record<string, SubscriptionErrorCode>> = {
 	SubscriptionChildUnavailableError: "child-unavailable",
 	SubscriptionSetupError: "setup-missing",
 	SubscriptionSubscriberUnavailableError: "subscriber-unavailable",
+	SubscriptionRecordError: "record-failed",
+	SubscriptionTimeoutError: "timeout",
 };
 
 const SUBSCRIPTION_ERROR_CODES: ReadonlySet<string> = new Set<SubscriptionErrorCode>(Object.values(CODE_BY_NAME));
@@ -412,6 +536,8 @@ export const isSubscriptionSubscriberUnavailableError = guard(
 	SubscriptionSubscriberUnavailableError,
 	"SubscriptionSubscriberUnavailableError",
 );
+export const isSubscriptionRecordError = guard(SubscriptionRecordError, "SubscriptionRecordError");
+export const isSubscriptionTimeoutError = guard(SubscriptionTimeoutError, "SubscriptionTimeoutError");
 
 /** First subscription error in the cause chain, if any. */
 export function findSubscriptionError(error: unknown): SubscriptionError | undefined {
@@ -465,6 +591,22 @@ function stringField(fields: SubscriptionErrorFields, key: string): string {
 	return typeof value === "string" ? value : "";
 }
 
+function numberField(fields: SubscriptionErrorFields, key: string): number {
+	const value = fields[key];
+	return typeof value === "number" ? value : 0;
+}
+
+/** The family base carrying a serialized error's own name and code, for names or values this version does not know. */
+function familyBase(serialized: SerializedSubscriptionError, cause: Error | undefined): SubscriptionError {
+	const base = new SubscriptionError(serialized.code, serialized.message, {
+		retryable: serialized.retryable,
+		hint: serialized.hint,
+		cause,
+	});
+	Object.defineProperty(base, "name", { value: serialized.name });
+	return base;
+}
+
 /** Rebuild a serialized subscription error as its own class; unknown names become the family base. */
 export function deserializeSubscriptionError(serialized: SerializedSubscriptionError): SubscriptionError {
 	const cause = rehydrateCause(serialized.cause);
@@ -513,21 +655,30 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				);
 			case "SubscriptionSetupError":
 				return new SubscriptionSetupError(stringField(fields, "missing") as SubscriptionSetupMissing);
-			case "SubscriptionSubscriberUnavailableError":
+			case "SubscriptionSubscriberUnavailableError": {
+				const reason = stringField(fields, "reason");
+				if (!SUBSCRIBER_UNAVAILABLE_REASONS.has(reason)) return familyBase(serialized, cause);
 				return new SubscriptionSubscriberUnavailableError(
 					stringField(fields, "subscriptionId"),
 					stringField(fields, "subscriber"),
-					stringField(fields, "reason"),
+					reason as SubscriberUnavailableReason,
 				);
-			default: {
-				const base = new SubscriptionError(serialized.code, serialized.message, {
-					retryable: serialized.retryable,
-					hint: serialized.hint,
-					cause,
-				});
-				Object.defineProperty(base, "name", { value: serialized.name });
-				return base;
 			}
+			case "SubscriptionRecordError":
+				return new SubscriptionRecordError(
+					stringField(fields, "subscriptionId"),
+					stringField(fields, "record") as SubscriptionRecordKind,
+					typeof fields.eventId === "string" ? fields.eventId : null,
+					{ retryable: serialized.retryable },
+				);
+			case "SubscriptionTimeoutError":
+				return new SubscriptionTimeoutError(
+					stringField(fields, "phase") as SubscriptionTimeoutPhase,
+					numberField(fields, "timeoutMs"),
+					numberField(fields, "elapsedMs"),
+				);
+			default:
+				return familyBase(serialized, cause);
 		}
 	})();
 	if (cause !== undefined)

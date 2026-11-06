@@ -6,6 +6,7 @@ import {
 	type EventSource,
 	type EventSubscriptionHandle,
 	formatEventReport,
+	isSubscriptionError,
 	openEventSubscription,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
@@ -22,6 +23,7 @@ import {
 	subscriptionEventProcessed,
 } from "../../durable/subscription-records.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
+import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import type {
 	WorkflowEventChild,
 	WorkflowEventHandler,
@@ -63,6 +65,8 @@ export interface WorkflowEventRuntime {
 }
 
 export interface WorkflowEventPrimitiveSet extends WorkflowEventPrimitives {
+	/** Subscriptions and inline streams this run opened; each is tracked work even when no event starts a child. */
+	readonly opened: number;
 	/** Stops every open source and waits for admitted events, at the end of the run body. */
 	closeAndDrain(): Promise<void>;
 	/** Cancels every open subscription when the run is cancelled: handlers abort and `done` rejects with `reason`. */
@@ -85,8 +89,18 @@ function validateSubscriber(subscriber: WorkflowEventSubscriber | undefined): vo
 	}
 }
 
+/**
+ * A subscription failure keeps the run-level classification of what caused it, so a journal that became unavailable
+ * still fails the run as `storage_unavailable` rather than as an unknown failure.
+ */
+function classifiedFailure(error: unknown): never {
+	if (isSubscriptionError(error) && error.cause !== undefined) throw classifyFailureFrom(error, error.cause);
+	throw error;
+}
+
 export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): WorkflowEventPrimitiveSet {
 	const ordinals = new Map<string, number>();
+	let opened = 0;
 	interface OpenSubscription {
 		readonly drain: () => Promise<SubscriptionStats>;
 		readonly stop: (reason: unknown) => void;
@@ -118,10 +132,10 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		validateName(options.name, "options.name");
 		validateSubscriptionAdmission(options, "options");
 		validateSubscriber(options.subscriber);
+		opened += 1;
 		const name = options.name ?? source.id;
 		const ordinal = nextOrdinal(name);
 		const key = `${name}#${ordinal}`;
-		const childPrefix = ordinal === 1 ? name : key;
 		const id = `${runtime.runId}/${key}`;
 		const subscriber = options.subscriber;
 		const frontier = Object.freeze([...runtime.currentParents()]);
@@ -146,7 +160,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 			ready,
 			alreadyProcessed: (eventId) => subscriptionEventProcessed(runtime.backend, runtime.runId, key, eventId),
 			handle: async (event) => {
-				const childName = `${childPrefix}/${event.id}`;
+				const childName = `${key}/${encodeURIComponent(event.id)}`;
 				const report = async (text: string): Promise<void> => {
 					if (typeof text !== "string") throw new SubscriptionConfigError("report.text", "not-string");
 					if (closed) throw new SubscriptionClosedError(id, "report");
@@ -185,8 +199,8 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 					report,
 				};
 				await handler(event, child);
-				await recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id);
 			},
+			recordProcessed: (event) => recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id),
 		});
 		const markClosed = (): void => {
 			closed = true;
@@ -195,7 +209,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		track({ drain: handle.close, stop: handle.stop, cancel: handle.cancel }, handle.done);
 		return {
 			id: handle.id,
-			done: runtime.watch(handle.done),
+			done: runtime.watch(handle.done.catch(classifiedFailure)),
 			stats: handle.stats,
 			close: handle.close,
 		};
@@ -205,6 +219,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		validateEventSource(source, "source");
 		validateName(options.name, "options.name");
 		validateSubscriptionAdmission({ maxRate: options.maxRate }, "options");
+		opened += 1;
 		const name = options.name ?? source.id;
 		const key = `${name}#${nextOrdinal(name)}`;
 		const id = `${runtime.runId}/${key}`;
@@ -219,7 +234,6 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		let waiting: PromiseWithResolvers<IteratorResult<SubscriptionEvent>> | undefined;
 		let current: { readonly release: (processed: boolean) => void } | undefined;
 		let ended = false;
-		let closing = false;
 
 		const settleWaiting = (): void => {
 			if (waiting === undefined) return;
@@ -247,24 +261,21 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 			ready,
 			alreadyProcessed: (eventId) => subscriptionEventProcessed(runtime.backend, runtime.runId, key, eventId),
 			handle: async (event) => {
-				if (closing) return;
 				const released = Promise.withResolvers<boolean>();
 				current = { release: released.resolve };
 				delivered.push(event);
 				settleWaiting();
-				if (await released.promise) {
-					await recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id);
-				}
+				return await released.promise;
 			},
+			recordProcessed: (event) => recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id),
 		});
-		const observed = runtime.watch(handle.done);
+		const observed = runtime.watch(handle.done.catch(classifiedFailure));
 		const markEnded = (): void => {
 			ended = true;
 			settleWaiting();
 		};
 		void handle.done.then(markEnded, markEnded);
 		const closeStream = (processed: boolean): Promise<SubscriptionStats> => {
-			closing = true;
 			delivered.length = 0;
 			releaseCurrent(processed);
 			return handle.close({ discardQueued: true });
@@ -313,6 +324,9 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 	};
 
 	return {
+		get opened() {
+			return opened;
+		},
 		subscribe,
 		events,
 		stopIntake: (reason) => {

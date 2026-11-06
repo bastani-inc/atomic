@@ -7,9 +7,12 @@ import {
 	isSubscriptionConfigError,
 	isSubscriptionEventError,
 	isSubscriptionHandlerError,
+	isSubscriptionRecordError,
 	openEventSubscription,
 	publishEvent,
+	StorageUnavailableError,
 	type SubscriptionEvent,
+	type SubscriptionRecordError,
 	validateEventSource,
 	validateSubscriptionAdmission,
 } from "@bastani/atomic";
@@ -370,13 +373,29 @@ test("events published before the subscription is ready wait; a failed ready sto
 	await subscription.close();
 
 	const storage = new Error("journal unavailable");
+	const failedId = uniqueId("ready-failed");
 	const failed = openEventSubscription({
-		id: uniqueId("ready-failed"),
+		id: failedId,
 		source: openSource(),
 		ready: Promise.reject(storage),
 		handle: async () => {},
 	});
-	await assert.rejects(failed.done, (error) => error === storage);
+	const failure = await failed.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isSubscriptionRecordError(failure), true);
+	assert.deepEqual(
+		{
+			code: (failure as SubscriptionRecordError).code,
+			record: (failure as SubscriptionRecordError).record,
+			eventId: (failure as SubscriptionRecordError).eventId,
+			subscriptionId: (failure as SubscriptionRecordError).subscriptionId,
+			retryable: (failure as SubscriptionRecordError).retryable,
+		},
+		{ code: "record-failed", record: "subscription", eventId: null, subscriptionId: failedId, retryable: false },
+	);
+	assert.equal((failure as Error).cause, storage);
 });
 
 test("subscription inputs are validated at the boundary with typed config errors", () => {
@@ -805,4 +824,239 @@ test("a source that rejects with something other than its stop reason fails the 
 	assert.equal((failure as { cause: unknown }).cause, cause);
 	assert.deepEqual(handled, ["a"]);
 	assert.equal(subscription.stats().queued, 0);
+});
+
+function unavailableStorage(): StorageUnavailableError {
+	return new StorageUnavailableError(
+		{ adapter: "sqlite", location: "journal.sqlite" },
+		Object.assign(new Error("no space left on device"), { code: "ENOSPC" }),
+		"ENOSPC",
+	);
+}
+
+test("a handled event is recorded after its handler resolves, and counts as handled once recorded (#4311)", async () => {
+	const calls: string[] = [];
+	const source = openSource();
+	const gate = Promise.withResolvers<void>();
+	const subscription = openEventSubscription({
+		id: uniqueId("record"),
+		source,
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			calls.push(`handle ${event.id}`);
+		},
+		recordProcessed: async (event) => {
+			calls.push(`record ${event.id}`);
+			await gate.promise;
+		},
+	});
+	await settle();
+	source.emit({ id: "a" });
+	await settle();
+	assert.deepEqual(calls, ["handle a", "record a"]);
+	assert.deepEqual(
+		{ handled: subscription.stats().handled, active: subscription.stats().active },
+		{ handled: 0, active: 1 },
+	);
+	gate.resolve();
+	source.emit({ id: "b" });
+	const stats = await subscription.close();
+	assert.deepEqual(calls, ["handle a", "record a", "handle b", "record b"]);
+	assert.equal(stats.handled, 2);
+});
+
+test("an event whose handler resolves false is not recorded, but still counts as handled (#4311)", async () => {
+	const recorded: string[] = [];
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("record-false"),
+		source,
+		handle: async (event) => event.id !== "left",
+		recordProcessed: async (event) => {
+			recorded.push(event.id);
+		},
+	});
+	await settle();
+	for (const id of ["kept", "left", "kept-too"]) source.emit({ id });
+	const stats = await subscription.close();
+	assert.deepEqual(recorded.sort(), ["kept", "kept-too"]);
+	assert.equal(stats.handled, 3);
+});
+
+test("a failed record stops the subscription with a SubscriptionRecordError, and the handler itself succeeded (#4311)", async () => {
+	const cause = unavailableStorage();
+	const handled: string[] = [];
+	const id = uniqueId("record-failed");
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id,
+		source,
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+		recordProcessed: async (event) => {
+			if (event.id === "bad") throw cause;
+		},
+	});
+	await settle();
+	for (const event of ["ok", "bad", "never"]) source.emit({ id: event });
+	const failure = await subscription.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isSubscriptionRecordError(failure), true);
+	assert.equal(isSubscriptionHandlerError(failure), false);
+	const record = failure as SubscriptionRecordError;
+	assert.deepEqual(
+		{
+			code: record.code,
+			record: record.record,
+			eventId: record.eventId,
+			subscriptionId: record.subscriptionId,
+			retryable: record.retryable,
+		},
+		{ code: "record-failed", record: "processed-event", eventId: "bad", subscriptionId: id, retryable: true },
+	);
+	assert.equal(record.cause, cause);
+	assert.deepEqual(handled, ["ok", "bad"]);
+	assert.equal(subscription.stats().handled, 1);
+	assert.equal(source.signal().aborted, true);
+});
+
+test("an event whose handler failed is neither recorded nor counted as handled (#4311)", async () => {
+	const recorded: string[] = [];
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("handler-failed-record"),
+		source,
+		handle: async () => {
+			throw new Error("triage crashed");
+		},
+		recordProcessed: async (event) => {
+			recorded.push(event.id);
+		},
+	});
+	await settle();
+	source.emit({ id: "x" });
+	await subscription.done.catch(() => undefined);
+	await settle();
+	assert.deepEqual(recorded, []);
+	assert.equal(subscription.stats().handled, 0);
+});
+
+test("a record that fails for another reason than unavailable storage is not retryable (#4311)", async () => {
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("record-fenced"),
+		source,
+		handle: async () => {},
+		recordProcessed: async () => {
+			throw new Error("another process owns the journal");
+		},
+	});
+	await settle();
+	source.emit({ id: "x" });
+	const failure = await subscription.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isSubscriptionRecordError(failure), true);
+	assert.equal((failure as SubscriptionRecordError).retryable, false);
+});
+
+test("cancelling while a record is pending passes the cancellation reason through, never a record error (#4311)", async () => {
+	const reason = new DOMException("owner closed", "AbortError");
+	const recording = Promise.withResolvers<void>();
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("record-cancel"),
+		source,
+		handle: async () => {},
+		recordProcessed: () => recording.promise,
+	});
+	await settle();
+	source.emit({ id: "x" });
+	await settle();
+	subscription.cancel(reason);
+	recording.reject(reason);
+	await assert.rejects(subscription.done, (error) => error === reason);
+	await settle();
+});
+
+test("a cancellation while the subscription record is still pending passes through unchanged (#4311)", async () => {
+	const reason = new DOMException("owner closed", "AbortError");
+	const ready = Promise.withResolvers<void>();
+	const subscription = openEventSubscription({
+		id: uniqueId("ready-cancel"),
+		source: openSource(),
+		ready: ready.promise,
+		handle: async () => {},
+	});
+	subscription.cancel(reason);
+	ready.reject(reason);
+	await assert.rejects(subscription.done, (error) => error === reason);
+});
+
+test("openEventSubscription validates its input before it starts anything (#4311)", () => {
+	let starts = 0;
+	const source: EventSource = {
+		id: "counted",
+		start: () => {
+			starts += 1;
+		},
+	};
+	const attempt = (input: Record<string, unknown>) => {
+		try {
+			openEventSubscription({ id: uniqueId("invalid"), source, handle: async () => {}, ...input } as never);
+		} catch (error) {
+			assert.equal(isSubscriptionConfigError(error), true);
+			const { field, reason } = error as { field: string; reason: string };
+			return [field, reason];
+		}
+		return undefined;
+	};
+	assert.deepEqual(attempt({ id: "" }), ["id", "not-string"]);
+	assert.deepEqual(attempt({ id: 7 }), ["id", "not-string"]);
+	assert.deepEqual(attempt({ source: { id: "x" } }), ["source", "not-event-source"]);
+	assert.deepEqual(attempt({ admission: { maxConcurrent: 0 } }), ["admission.maxConcurrent", "not-positive-integer"]);
+	assert.deepEqual(attempt({ admission: { maxRate: { events: 1, intervalMs: 0 } } }), [
+		"admission.maxRate.intervalMs",
+		"not-positive-integer",
+	]);
+	assert.deepEqual(attempt({ handle: "nope" }), ["handle", "not-function"]);
+	assert.deepEqual(attempt({ recordProcessed: "nope" }), ["recordProcessed", "not-function"]);
+	assert.deepEqual(attempt({ alreadyProcessed: "nope" }), ["alreadyProcessed", "not-function"]);
+	assert.equal(starts, 0);
+	const valid = openEventSubscription({
+		id: uniqueId("valid"),
+		source,
+		handle: async () => {},
+		recordProcessed: async () => {},
+		alreadyProcessed: () => false,
+	});
+	void valid.close();
+});
+
+test("invalid input is reported before a taken id is, so a bad option is never hidden by a duplicate (#4311)", async () => {
+	const id = uniqueId("invalid-before-duplicate");
+	const first = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	assert.throws(
+		() =>
+			openEventSubscription({ id, source: openSource(), admission: { maxConcurrent: 0 }, handle: async () => {} }),
+		(error) => isSubscriptionConfigError(error) && (error as { field: string }).field === "admission.maxConcurrent",
+	);
+	await first.close();
+});
+
+test("an invalid subscription never registers its id, so the id stays usable (#4311)", async () => {
+	const id = uniqueId("unregistered");
+	assert.throws(
+		() =>
+			openEventSubscription({ id, source: openSource(), admission: { maxConcurrent: 0 }, handle: async () => {} }),
+		isSubscriptionConfigError,
+	);
+	assert.throws(() => publishEvent(id, { id: "x" }), isSubscriptionClosedError);
+	const reopened = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	await reopened.close();
 });

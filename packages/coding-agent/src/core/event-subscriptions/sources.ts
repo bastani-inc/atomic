@@ -1,6 +1,6 @@
 /** Built-in event sources for `ctx.subscribe`, `ctx.events` and `session.subscribe`. */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { accessSync, constants, statSync } from "node:fs";
@@ -13,6 +13,7 @@ import {
 	SubscriptionClosedError,
 	SubscriptionConfigError,
 	SubscriptionSetupError,
+	SubscriptionTimeoutError,
 } from "./errors.js";
 import type { EmitSubscriptionEvent, EventSource, SubscriptionEvent, SubscriptionEventPayload } from "./types.js";
 import { sharedWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.js";
@@ -638,6 +639,31 @@ function ghOnPath(): boolean {
 	return (process.env.PATH ?? "").split(delimiter).some((directory) => isExecutableFile(join(directory, name)));
 }
 
+/**
+ * How long the login check at creation waits for `gh auth token`. Mutable so a test can lower it; it is not part of
+ * the public entry.
+ */
+export const ghAuthCheck = { timeoutMs: 10_000 };
+
+/**
+ * Asks `gh` whether it holds a login, locally and without the network: `gh auth token` exits non-zero when there is
+ * none. Its output is discarded, so the token never reaches this process. A token revoked on GitHub's side still
+ * shows only at the first poll.
+ */
+function requireGhLogin(): void {
+	const started = performance.now();
+	try {
+		execFileSync("gh", ["auth", "token"], { stdio: "ignore", timeout: ghAuthCheck.timeoutMs, windowsHide: true });
+	} catch (error) {
+		if (errnoCode(error) === "ETIMEDOUT") {
+			const elapsedMs = Math.round(performance.now() - started);
+			throw new SubscriptionTimeoutError("gh-auth-check", ghAuthCheck.timeoutMs, elapsedMs, { cause: error });
+		}
+		const exited = typeof Object(error).status === "number";
+		throw new SubscriptionSetupError(exited ? "gh-auth" : "gh-cli", { cause: error });
+	}
+}
+
 /** The setup `error` shows is missing, or `undefined` when the failure is not about setup. */
 function missingSetup(error: unknown): SubscriptionSetupError | undefined {
 	if (!(error instanceof GitHubCommandError)) return undefined;
@@ -722,7 +748,10 @@ function validateGitHubOptions(
 	const gh = options.gh ?? runGh;
 	if (typeof gh !== "function") throw new SubscriptionConfigError(`${name}.gh`, "not-function");
 	const dispatcher = resolveDispatcher(options.dispatcher, `${name}.dispatcher`);
-	if (options.gh === undefined && !ghOnPath()) throw new SubscriptionSetupError("gh-cli");
+	if (options.gh === undefined) {
+		if (!ghOnPath()) throw new SubscriptionSetupError("gh-cli");
+		requireGhLogin();
+	}
 	return { repo, pr, intervalMs, gh, dispatcher };
 }
 

@@ -7,8 +7,10 @@ import {
 	isSubscriptionClosedError,
 	isSubscriptionConfigError,
 	isSubscriptionHandlerError,
+	isSubscriptionRecordError,
 	type SubscriptionChildUnavailableError,
 	type SubscriptionConfigError,
+	type SubscriptionRecordError,
 } from "../../src/core/event-subscriptions/errors.ts";
 import { SUBSCRIPTION_REPORT_TOOL_NAME } from "../../src/core/event-subscriptions/prompts.ts";
 import {
@@ -29,6 +31,15 @@ function listSource(events: readonly SubscriptionEvent[]): EventSource {
 			for (const event of events) emit(event);
 		},
 	};
+}
+
+/** Waits until the session's turns end and no steered report is still queued, so every delivered report is in `messages`. */
+async function untilIdle(harness: Harness): Promise<void> {
+	for (let attempt = 0; attempt < 200; attempt++) {
+		await harness.session.agent.waitForIdle();
+		if (!harness.session.isStreaming && harness.session.pendingMessageCount === 0) return;
+	}
+	assert.fail("the session did not go idle");
 }
 
 function reportsIn(harness: Harness): EventReportDetails[] {
@@ -59,6 +70,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		assert.equal(subscription.id, `${harness.session.sessionId}/alerts#1`);
 		const stats = await subscription.done;
 		assert.deepEqual(stats, { received: 35, duplicates: 5, handled: 30, active: 0, queued: 0, reports: 3 });
+		await untilIdle(harness);
 		assert.deepEqual(
 			reportsIn(harness).map((details) => details.eventId),
 			["e0", "e10", "e20"],
@@ -67,6 +79,89 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			.getEntries()
 			.filter((entry) => entry.type === "custom" && entry.customType === "event_subscription_processed");
 		assert.equal(processed.length, 30);
+	});
+
+	it("names each child `<name>#<n>/<event id>` with the id URI-encoded, so no two subscriptions can share a child name (#4311)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage("noted")));
+		const names: string[] = [];
+		const reports: string[] = [];
+		const handler = async (_event: SubscriptionEvent, child: SessionEventChild) => {
+			names.push(child.name);
+			await child.report("matters");
+			reports.push(child.name);
+		};
+		await harness.session.subscribe(listSource([{ id: "a/b c#d" }]), handler, { name: "a" }).done;
+		await harness.session.subscribe(listSource([{ id: "c" }]), handler, { name: "a/b" }).done;
+		await harness.session.subscribe(listSource([{ id: "e" }]), handler, { name: "a" }).done;
+		assert.deepEqual(names, ["a#1/a%2Fb%20c%23d", "a/b#1/c", "a#2/e"]);
+		await untilIdle(harness);
+		assert.deepEqual(
+			reportsIn(harness).map((details) => details.child),
+			names,
+		);
+	});
+
+	it("a processed-event record that fails rejects done with a SubscriptionRecordError after the handler succeeded (#4311)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const append = harness.sessionManager.appendCustomEntry.bind(harness.sessionManager);
+		const disk = new Error("transcript volume unavailable");
+		vi.spyOn(harness.sessionManager, "appendCustomEntry").mockImplementation(async (customType, data) => {
+			if (customType === "event_subscription_processed") throw disk;
+			return append(customType, data);
+		});
+		const handled: string[] = [];
+		const subscription = harness.session.subscribe(
+			listSource([{ id: "e1" }, { id: "e2" }]),
+			async (event) => {
+				handled.push(event.id);
+			},
+			{ maxConcurrent: 1 },
+		);
+		const failure = await subscription.done.then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.equal(isSubscriptionRecordError(failure), true);
+		assert.equal(isSubscriptionHandlerError(failure), false);
+		const record = failure as SubscriptionRecordError;
+		assert.deepEqual(
+			{ code: record.code, record: record.record, eventId: record.eventId, subscriptionId: record.subscriptionId },
+			{
+				code: "record-failed",
+				record: "processed-event",
+				eventId: "e1",
+				subscriptionId: `${harness.session.sessionId}/list#1`,
+			},
+		);
+		assert.equal(record.cause, disk);
+		assert.deepEqual(handled, ["e1"]);
+		assert.equal(subscription.stats().handled, 0);
+	});
+
+	it("a subscription record that fails rejects done with a SubscriptionRecordError and handles nothing (#4311)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const disk = new Error("transcript volume unavailable");
+		vi.spyOn(harness.sessionManager, "appendCustomEntry").mockRejectedValue(disk);
+		const handled: string[] = [];
+		const failure = await harness.session
+			.subscribe(listSource([{ id: "e1" }]), async (event) => {
+				handled.push(event.id);
+			})
+			.done.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		assert.equal(isSubscriptionRecordError(failure), true);
+		assert.deepEqual(
+			{ record: (failure as SubscriptionRecordError).record, eventId: (failure as SubscriptionRecordError).eventId },
+			{ record: "subscription", eventId: null },
+		);
+		assert.equal((failure as SubscriptionRecordError).cause, disk);
+		assert.deepEqual(handled, []);
 	});
 
 	it("a session reopened on the same transcript does not process an event id twice (#4311)", async () => {
@@ -114,7 +209,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		assert.equal(results.length, 1);
 		assert.notEqual(results[0], harness.session.sessionId);
 		assert.deepEqual(reportsIn(harness), [
-			{ subscriptionId: `${harness.session.sessionId}/list#1`, eventId: "deploy-7", child: "list/deploy-7" },
+			{ subscriptionId: `${harness.session.sessionId}/list#1`, eventId: "deploy-7", child: "list#1/deploy-7" },
 		]);
 	});
 
@@ -271,7 +366,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			(message) => message.role === "custom" && message.customType === "event_report",
 		) as { display?: boolean; content?: unknown } | undefined;
 		assert.equal(report?.display, true);
-		assert.equal(report?.content, 'Report from event child "list/x" (event x):\n\nx matters');
+		assert.equal(report?.content, 'Report from event child "list#1/x" (event x):\n\nx matters');
 		for (let wait = 0; wait < 200 && harness.session.messages.at(-1)?.role !== "assistant"; wait++) {
 			await new Promise<void>((resolve) => setTimeout(resolve, 10));
 		}

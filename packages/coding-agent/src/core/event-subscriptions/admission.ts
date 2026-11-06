@@ -7,6 +7,7 @@ import {
 	SubscriptionConfigError,
 	SubscriptionEventError,
 	SubscriptionHandlerError,
+	SubscriptionRecordError,
 } from "./errors.js";
 import type {
 	EmitSubscriptionEvent,
@@ -26,13 +27,22 @@ export interface OpenEventSubscriptionInput {
 	readonly admission?: SubscriptionAdmission;
 	/**
 	 * Settles once the subscription may start: the source starts and admitted events are handled only after it
-	 * resolves (events published before then wait in the queue). A rejection stops the subscription with that error.
+	 * resolves (events published before then wait in the queue). A rejection stops the subscription with a
+	 * `SubscriptionRecordError` for the subscription record.
 	 */
 	readonly ready?: Promise<void>;
 	/** True when an earlier attempt already processed this id, from durable records. */
 	readonly alreadyProcessed?: (eventId: string) => boolean;
-	/** Handles one admitted event. `signal` aborts when the subscription is cancelled. */
-	readonly handle: (event: SubscriptionEvent, signal: AbortSignal) => Promise<void>;
+	/**
+	 * Handles one admitted event. `signal` aborts when the subscription is cancelled. Resolving `false` means the event
+	 * was not consumed, so `recordProcessed` does not run for it; any other resolution means it was handled.
+	 */
+	readonly handle: (event: SubscriptionEvent, signal: AbortSignal) => Promise<void> | Promise<boolean>;
+	/**
+	 * Records a handled event as processed, after `handle` resolved. A rejection stops the subscription with a
+	 * `SubscriptionRecordError`, not a handler failure: the handler itself succeeded.
+	 */
+	readonly recordProcessed?: (event: SubscriptionEvent) => Promise<void>;
 	/** Owner of rate-admission waits. Defaults to the process-wide dispatcher. */
 	readonly dispatcher?: WakeDispatcher;
 }
@@ -103,13 +113,29 @@ function isThenable(value: void | Promise<void>): value is Promise<void> {
 	return typeof (value as Promise<void> | undefined)?.then === "function";
 }
 
+/** Validates what `openEventSubscription` is given, before it registers or starts anything. */
+function validateOpenInput(input: OpenEventSubscriptionInput): void {
+	if (typeof input.id !== "string" || input.id.length === 0) throw new SubscriptionConfigError("id", "not-string");
+	validateEventSource(input.source, "source");
+	validateSubscriptionAdmission(input.admission ?? {}, "admission");
+	if (typeof input.handle !== "function") throw new SubscriptionConfigError("handle", "not-function");
+	if (input.recordProcessed !== undefined && typeof input.recordProcessed !== "function") {
+		throw new SubscriptionConfigError("recordProcessed", "not-function");
+	}
+	if (input.alreadyProcessed !== undefined && typeof input.alreadyProcessed !== "function") {
+		throw new SubscriptionConfigError("alreadyProcessed", "not-function");
+	}
+}
+
 /**
  * Opens a subscription and starts its source on the next microtask. Events are deduplicated by id, admitted in
  * arrival order under the concurrency and rate caps, and handed to `handle`. The first handler failure stops the
- * subscription and rejects `done` with a `SubscriptionHandlerError`; cancellation rejects it with the signal's reason.
+ * subscription and rejects `done` with a `SubscriptionHandlerError`, a failed record with a `SubscriptionRecordError`;
+ * cancellation rejects it with the signal's reason. Invalid input throws `SubscriptionConfigError` before anything starts.
  */
 export function openEventSubscription(input: OpenEventSubscriptionInput): EventSubscriptionHandle {
 	const { id } = input;
+	validateOpenInput(input);
 	if (openSubscriptions.has(id)) throw new SubscriptionConfigError("id", "duplicate-id");
 	const dispatcher = input.dispatcher ?? sharedWakeDispatcher;
 	const maxConcurrent = input.admission?.maxConcurrent ?? DEFAULT_SUBSCRIPTION_MAX_CONCURRENT;
@@ -155,19 +181,30 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		finish();
 	};
 
+	const handleEvent = async (event: SubscriptionEvent): Promise<void> => {
+		let consumed: boolean | undefined;
+		try {
+			consumed = (await input.handle(event, handlerStop.signal)) as boolean | undefined;
+		} catch (error) {
+			stop(new SubscriptionHandlerError(id, event.id, error));
+			return;
+		}
+		if (consumed !== false && input.recordProcessed !== undefined) {
+			try {
+				await input.recordProcessed(event);
+			} catch (error) {
+				stop(new SubscriptionRecordError(id, "processed-event", event.id, { cause: error }));
+				return;
+			}
+		}
+		handled += 1;
+	};
+
 	const runHandler = (event: SubscriptionEvent): void => {
-		void Promise.resolve()
-			.then(() => input.handle(event, handlerStop.signal))
-			.then(
-				() => {
-					handled += 1;
-				},
-				(error: unknown) => stop(new SubscriptionHandlerError(id, event.id, error)),
-			)
-			.finally(() => {
-				active -= 1;
-				pump();
-			});
+		void handleEvent(event).finally(() => {
+			active -= 1;
+			pump();
+		});
 	};
 
 	const rateAllowsNow = (): boolean => {
@@ -232,7 +269,11 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		pump();
 	};
 	if (input.ready === undefined) queueMicrotask(startSource);
-	else input.ready.then(startSource, stop);
+	else {
+		input.ready.then(startSource, (error: unknown) =>
+			stop(new SubscriptionRecordError(id, "subscription", null, { cause: error })),
+		);
+	}
 
 	return {
 		id,

@@ -57,6 +57,7 @@ const TRACKED_NODE_METHODS: ReadonlySet<string> = new Set([
 	"workflow",
 	"tool",
 	"subscribe",
+	"events",
 ]);
 
 export interface PossibleStagesScanOptions {
@@ -1428,7 +1429,7 @@ class PossibleStagesScanner {
 		ancestorStack: readonly string[],
 	): void {
 		this.hasTrackedNodes = true;
-		if (call.method === "tool" || call.method === "subscribe") return;
+		if (call.method === "tool" || call.method === "subscribe" || call.method === "events") return;
 		if (call.method === "workflow") {
 			this.handleWorkflowCall(call, unit, path, boundaryPrefix, depth, ancestorStack);
 			return;
@@ -1874,7 +1875,7 @@ function joinBoundary(prefix: string, segment: string): string {
 }
 
 interface CtxCall {
-	readonly method: "stage" | "task" | "chain" | "parallel" | "workflow" | "tool" | "subscribe";
+	readonly method: "stage" | "task" | "chain" | "parallel" | "workflow" | "tool" | "subscribe" | "events";
 	/** Index of the `(` token opening the argument list. */
 	readonly argsOpen: number;
 }

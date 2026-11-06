@@ -53,7 +53,14 @@ function lastJson<T>(output: Uint8Array | string): T {
 	return JSON.parse(output.toString().trim().split("\n").at(-1)!) as T;
 }
 
-function records(directory: string, runId: string): { processed: string[]; eventRecords: number } {
+/** The main `chaos` subscription plus two whose event children shared names under the old naming. */
+const SUBSCRIPTIONS = 3;
+const OTHER_SUBSCRIPTIONS_DONE = { chaos2: EVENTS, "chaos2/x": EVENTS };
+
+function records(
+	directory: string,
+	runId: string,
+): { processed: string[]; eventRecords: number; others: Record<string, number> } {
 	const result = fixture(["records", directory, runId, "inspector"]);
 	assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
 	return lastJson(result.stdout);
@@ -152,7 +159,9 @@ test(
 			assert.ok(redone.length <= MAX_CONCURRENT, `only in-flight events run again, got ${redone.length}`);
 			const after = records(directory, runId);
 			assert.deepEqual(after.processed, allIds);
-			assert.equal(after.eventRecords, EVENTS);
+			assert.equal(after.eventRecords, EVENTS * SUBSCRIPTIONS);
+			assert.deepEqual(after.others, OTHER_SUBSCRIPTIONS_DONE);
+			assert.equal(await fileExists(join(directory, "wrong-tree.txt")), false);
 			assert.equal(integrity(directory), "ok");
 			assert.deepEqual(
 				(await readText(join(directory, "anchor.txt"))).trim().split("\n"),
@@ -219,7 +228,9 @@ test.skipIf(process.platform === "win32")(
 
 			const after = records(directory, runId);
 			assert.deepEqual(after.processed, allIds);
-			assert.equal(after.eventRecords, EVENTS);
+			assert.equal(after.eventRecords, EVENTS * SUBSCRIPTIONS);
+			assert.deepEqual(after.others, OTHER_SUBSCRIPTIONS_DONE);
+			assert.equal(await fileExists(join(directory, "wrong-tree.txt")), false);
 			assert.equal(integrity(directory), "ok");
 		} finally {
 			if (owner.exitCode === null) {
@@ -262,8 +273,10 @@ test(
 				assert.deepEqual([...(handled.get(writer.label) ?? [])].sort(), [...allIds].sort());
 				const written = records(directory, writer.runId);
 				assert.deepEqual(written.processed, allIds);
-				assert.equal(written.eventRecords, EVENTS);
+				assert.equal(written.eventRecords, EVENTS * SUBSCRIPTIONS);
+				assert.deepEqual(written.others, OTHER_SUBSCRIPTIONS_DONE);
 			}
+			assert.equal(await fileExists(join(directory, "wrong-tree.txt")), false);
 			assert.equal(integrity(directory), "ok");
 		} finally {
 			for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");

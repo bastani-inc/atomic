@@ -47,7 +47,7 @@ export interface SessionEventChild {
 export type SessionEventHandler = (event: SubscriptionEvent, child: SessionEventChild) => void | Promise<void>;
 
 export interface SessionSubscribeOptions extends SubscriptionAdmission {
-	/** Names the subscription and its children. Defaults to the source id. */
+	/** Names the subscription. Its children are named `<name>#<n>/<event id>`. Defaults to the source id. */
 	readonly name?: string;
 }
 
@@ -180,7 +180,7 @@ export function subscribeSession(
 		ready,
 		alreadyProcessed: (eventId) => processed.has(eventId),
 		handle: async (event, signal) => {
-			const childName = `${name}/${event.id}`;
+			const childName = `${key}/${encodeURIComponent(event.id)}`;
 			const report = async (text: string): Promise<void> => {
 				if (typeof text !== "string") throw new SubscriptionConfigError("report.text", "not-string");
 				if (closed) throw new SubscriptionClosedError(id, "report");
@@ -218,6 +218,8 @@ export function subscribeSession(
 				report,
 			};
 			await eventHandler(event, child);
+		},
+		recordProcessed: async (event) => {
 			await session.sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE, {
 				subscription: key,
 				eventId: event.id,

@@ -1026,7 +1026,7 @@ async function executeRun(
 			defaultSessionDir: opts.defaultSessionDir,
 			pooledSessionStore: async () => {
 				const { poolSessionStore } = await import("../workers/pool-session-store.js");
-				return poolSessionStore(durableBackend);
+				return poolSessionStore(durableBackend, opts.parentRun?.rootRunId ?? runId);
 			},
 		},
 		(stage, error) =>
@@ -1371,7 +1371,7 @@ async function executeRun(
 
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
-		assertWorkflowCreatedExecution(runSnapshot);
+		assertWorkflowCreatedExecution(runSnapshot, eventPrimitives.opened);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		const returned = classifyReturnedRunStatus(result, runSnapshot);

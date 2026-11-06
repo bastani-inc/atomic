@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile, truncate, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo, connect } from "node:net";
@@ -13,12 +13,16 @@ import {
 	isRetryableSubscriptionError,
 	isSubscriptionConfigError,
 	isSubscriptionSetupError,
+	isSubscriptionTimeoutError,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
 	SubscriptionSetupError,
+	SubscriptionTimeoutError,
+	serializeSubscriptionError,
 } from "../../packages/coding-agent/src/core/event-subscriptions/errors.js";
 import {
 	type GitHubCommandRunner,
+	ghAuthCheck,
 	githubChecks,
 	githubReviews,
 	interval,
@@ -2035,10 +2039,11 @@ test("github sources stop delivering a batch of events once their signal aborts"
 	assert.deepEqual(eventIds(handle), ["review:1"]);
 });
 
-function installFakeGh(script: string): string {
+/** Installs a `gh` that answers the login check (`gh auth token`) with `authScript`, and every other call with `script`. */
+function installFakeGh(script: string, authScript = "exit 0"): string {
 	const dir = tempDir();
 	const gh = join(dir, "gh");
-	writeTextSync(gh, `#!/bin/sh\n${script}\n`);
+	writeTextSync(gh, `#!/bin/sh\nif [ "$1" = auth ]; then\n${authScript}\nfi\n${script}\n`);
 	chmodSync(gh, 0o755);
 	process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
 	return dir;
@@ -2297,3 +2302,108 @@ test("sources reject a dispatcher that cannot sleep before any wake is scheduled
 	assert.equal(configError(() => githubChecks(repoOptions)).field, "githubChecks.dispatcher");
 	assert.equal(configError(() => githubReviews(repoOptions)).reason, "not-function");
 });
+
+const GH_AUTH_TOKEN_SENTINEL = "gho_SECRETSENTINEL";
+
+function loggedGhCalls(dir: string): string[] {
+	const log = join(dir, "calls");
+	return fileExistsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : [];
+}
+
+const LOG_CALLS = `printf '%s\\n' "$*" >> "$(dirname "$0")/calls"`;
+
+test.runIf(process.platform !== "win32")(
+	"a gh without a login fails the factory at once with the login hint, after one local check and before any poll (#4311)",
+	() => {
+		const dir = installFakeGh("exit 0", `${LOG_CALLS}\nexit 1`);
+		for (const factory of [githubChecks, githubReviews]) {
+			const error = setupError(() => factory({ repo: "acme/widgets", pr: 7 }));
+			assert.deepEqual([error.code, error.missing, error.retryable], ["setup-missing", "gh-auth", false]);
+			assert.equal(error.hint, "Run `gh auth login`, then subscribe again.");
+			assert.ok(error.cause instanceof Error);
+		}
+		assert.deepEqual(loggedGhCalls(dir), ["auth token", "auth token"]);
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a logged-in gh passes the factory after exactly one `gh auth token`, and a custom runner skips the check (#4311)",
+	() => {
+		const dir = installFakeGh("exit 0", `${LOG_CALLS}\nexit 0`);
+		assert.ok(githubChecks({ repo: "acme/widgets", pr: 7 }));
+		assert.deepEqual(loggedGhCalls(dir), ["auth token"]);
+		const { gh } = fakeGh({});
+		assert.ok(githubReviews({ repo: "acme/widgets", pr: 7, gh }));
+		assert.deepEqual(loggedGhCalls(dir), ["auth token"]);
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"the token `gh auth token` prints never reaches this process: not in the error, its fields or its serialized form (#4311)",
+	() => {
+		installFakeGh(
+			"exit 0",
+			`echo ${GH_AUTH_TOKEN_SENTINEL}\necho ${GH_AUTH_TOKEN_SENTINEL} >&2\nif [ -n "$FAKE_GH_LOGGED_OUT" ]; then exit 1; fi\nexit 0`,
+		);
+		assert.ok(githubChecks({ repo: "acme/widgets", pr: 7 }));
+		process.env.FAKE_GH_LOGGED_OUT = "1";
+		try {
+			const error = setupError(() => githubChecks({ repo: "acme/widgets", pr: 7 }));
+			const everything = JSON.stringify([
+				error.message,
+				error.hint,
+				error.fields(),
+				serializeSubscriptionError(error),
+				Object.getOwnPropertyNames(error.cause).map((key) => String((error.cause as Record<string, unknown>)[key])),
+			]);
+			assert.equal(everything.includes(GH_AUTH_TOKEN_SENTINEL), false);
+			assert.equal(error.missing, "gh-auth");
+		} finally {
+			delete process.env.FAKE_GH_LOGGED_OUT;
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a gh that cannot run, or is killed, during the login check is reported as a missing gh (#4311)",
+	() => {
+		const unrunnable = tempDir();
+		writeTextSync(join(unrunnable, "gh"), "#!/nonexistent/interpreter\n");
+		chmodSync(join(unrunnable, "gh"), 0o755);
+		process.env.PATH = unrunnable;
+		const spawnFailure = setupError(() => githubChecks({ repo: "acme/widgets", pr: 7 }));
+		assert.deepEqual([spawnFailure.missing, spawnFailure.retryable], ["gh-cli", false]);
+		assert.ok(spawnFailure.cause instanceof Error);
+		installFakeGh("exit 0", "kill -9 $$");
+		const killed = setupError(() => githubReviews({ repo: "acme/widgets", pr: 7 }));
+		assert.deepEqual([killed.missing, killed.retryable], ["gh-cli", false]);
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a gh that does not answer the login check in time fails the factory with a typed timeout (#4311)",
+	() => {
+		installFakeGh("exit 0", "exec sleep 30");
+		const limit = ghAuthCheck.timeoutMs;
+		ghAuthCheck.timeoutMs = 200;
+		try {
+			let failure: unknown;
+			try {
+				githubChecks({ repo: "acme/widgets", pr: 7 });
+			} catch (error) {
+				failure = error;
+			}
+			assert.ok(failure instanceof SubscriptionTimeoutError);
+			assert.equal(isSubscriptionTimeoutError(failure), true);
+			assert.deepEqual(
+				[failure.code, failure.phase, failure.timeoutMs, failure.retryable],
+				["timeout", "gh-auth-check", 200, true],
+			);
+			assert.ok(failure.elapsedMs >= 100, `elapsed ${failure.elapsedMs}`);
+			assert.ok(failure.cause instanceof Error);
+			assert.equal(isRetryableSubscriptionError(failure), true);
+		} finally {
+			ghAuthCheck.timeoutMs = limit;
+		}
+	},
+);

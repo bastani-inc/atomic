@@ -11,17 +11,23 @@ import {
 	isSubscriptionError,
 	isSubscriptionEventError,
 	isSubscriptionHandlerError,
+	isSubscriptionRecordError,
 	isSubscriptionSetupError,
 	isSubscriptionSubscriberUnavailableError,
+	isSubscriptionTimeoutError,
 	type SerializedSubscriptionError,
+	StorageUnavailableError,
+	type SubscriberUnavailableReason,
 	SubscriptionChildUnavailableError,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
 	SubscriptionError,
 	SubscriptionEventError,
 	SubscriptionHandlerError,
+	SubscriptionRecordError,
 	SubscriptionSetupError,
 	SubscriptionSubscriberUnavailableError,
+	SubscriptionTimeoutError,
 	serializeSubscriptionError,
 } from "@bastani/atomic";
 import { test } from "vitest";
@@ -35,7 +41,17 @@ const guards = {
 	SubscriptionChildUnavailableError: isSubscriptionChildUnavailableError,
 	SubscriptionSetupError: isSubscriptionSetupError,
 	SubscriptionSubscriberUnavailableError: isSubscriptionSubscriberUnavailableError,
+	SubscriptionRecordError: isSubscriptionRecordError,
+	SubscriptionTimeoutError: isSubscriptionTimeoutError,
 } as const;
+
+function diskFull(): StorageUnavailableError {
+	return new StorageUnavailableError(
+		{ adapter: "sqlite", location: "journal.sqlite" },
+		Object.assign(new Error("no space left on device"), { code: "ENOSPC" }),
+		"ENOSPC",
+	);
+}
 
 const examples = (): readonly SubscriptionError[] => [
 	new SubscriptionClosedError("run-1/ci#1", "publish"),
@@ -49,7 +65,10 @@ const examples = (): readonly SubscriptionError[] => [
 	new SubscriptionHandlerError("run-1/ci#1", "evt-3", new TypeError("bad payload")),
 	new SubscriptionChildUnavailableError("sess-1/list#1", "sess-1"),
 	new SubscriptionSetupError("gh-cli", { cause: new Error("spawn gh ENOENT") }),
-	new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "invalid_session"),
+	new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "invalid-session"),
+	new SubscriptionRecordError("run-1/ci#1", "processed-event", "evt-3", { cause: diskFull() }),
+	new SubscriptionRecordError("run-1/ci#1", "subscription", null, { cause: new Error("lease lost") }),
+	new SubscriptionTimeoutError("gh-auth-check", 10_000, 10_003, { cause: new Error("spawnSync gh ETIMEDOUT") }),
 ];
 
 test("each subscription error has its family, literal name, stable code, fields and hint", () => {
@@ -128,7 +147,31 @@ test("each subscription error has its family, literal name, stable code, fields 
 			name: "SubscriptionSubscriberUnavailableError",
 			code: "subscriber-unavailable",
 			retryable: false,
-			fields: { subscriptionId: "run-1/ci#1", subscriber: "watcher", reason: "invalid_session" },
+			fields: { subscriptionId: "run-1/ci#1", subscriber: "watcher", reason: "invalid-session" },
+			hasHint: true,
+		},
+		{
+			family: true,
+			name: "SubscriptionRecordError",
+			code: "record-failed",
+			retryable: true,
+			fields: { subscriptionId: "run-1/ci#1", record: "processed-event", eventId: "evt-3" },
+			hasHint: true,
+		},
+		{
+			family: true,
+			name: "SubscriptionRecordError",
+			code: "record-failed",
+			retryable: false,
+			fields: { subscriptionId: "run-1/ci#1", record: "subscription", eventId: null },
+			hasHint: true,
+		},
+		{
+			family: true,
+			name: "SubscriptionTimeoutError",
+			code: "timeout",
+			retryable: true,
+			fields: { phase: "gh-auth-check", timeoutMs: 10_000, elapsedMs: 10_003 },
 			hasHint: true,
 		},
 	]);
@@ -150,7 +193,10 @@ test("rendered messages state what failed, the subject, the code and what to do"
 			"Event handler failed for event evt-3: run-1/ci#1 (handler-failed). Inspect the cause, fix the handler, then subscribe again; events already handled are not repeated.",
 			"Event child session unavailable: sess-1/list#1 (child-unavailable). Create the session with createAgentSession() so it can start child sessions, or report directly.",
 			"Subscription setup is missing: the GitHub CLI (gh) that githubChecks and githubReviews run (setup-missing). Install the GitHub CLI from https://cli.github.com (for example `brew install gh` or `winget install GitHub.cli`), then run `gh auth login`.",
-			'Subscriber stage "watcher" cannot take reports (invalid_session): run-1/ci#1 (subscriber-unavailable). The subscriber stage was replayed after a resume and its retained session could not be reopened; subscribe from a stage that runs in this run, or start the run again instead of resuming it.',
+			'Subscriber stage "watcher" cannot take reports (invalid-session): run-1/ci#1 (subscriber-unavailable). The subscriber\'s retained session could not be reopened from the session store; make the store that ran the stage available, or start the run again instead of resuming it.',
+			"Recording processed event evt-3 failed: run-1/ci#1 (record-failed). The handler finished, but the event was not recorded and is handled again after a resume; make the journal or transcript storage available (see the cause), then resume.",
+			"Recording the subscription failed: run-1/ci#1 (record-failed). The subscription was not recorded, so it did not start; make the journal or transcript storage available (see the cause), then subscribe again.",
+			"Timed out after 10000 ms: the GitHub login check (gh auth token) (timeout). Check that `gh auth status` answers promptly on this machine, then subscribe again.",
 		],
 	);
 	assert.equal(
@@ -426,7 +472,7 @@ test("setup and subscriber errors are found through a wrapping source failure (#
 	assert.equal(isSubscriptionSetupError(wrapped), true);
 	assert.equal(isEventSourceError(wrapped), true);
 	assert.equal(isRetryableSubscriptionError(wrapped), false);
-	const unavailable = new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "no_session");
+	const unavailable = new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "no-session");
 	assert.equal(isSubscriptionSubscriberUnavailableError(new SubscriptionHandlerError("s", "e", unavailable)), true);
 	assert.equal(isSubscriptionSetupError({ name: "SubscriptionSetupError", code: "setup-missing" }), true);
 	assert.equal(isSubscriptionSetupError({ name: "SubscriptionSetupError", code: "invalid-option" }), false);
@@ -439,7 +485,122 @@ test("setup and subscriber errors are found through a wrapping source failure (#
 	);
 	const rebuilt = deserializeSubscriptionError(serializeSubscriptionError(unavailable));
 	assert.equal(rebuilt instanceof SubscriptionSubscriberUnavailableError, true);
-	assert.equal((rebuilt as SubscriptionSubscriberUnavailableError).reason, "no_session");
+	assert.equal((rebuilt as SubscriptionSubscriberUnavailableError).reason, "no-session");
 	const rebuiltSetup = deserializeSubscriptionError(serializeSubscriptionError(setup)) as SubscriptionSetupError;
 	assert.equal(rebuiltSetup.missing, "gh-auth");
+});
+
+const subscriberReasons: readonly SubscriberUnavailableReason[] = [
+	"no-adapter",
+	"not-terminal",
+	"no-session",
+	"invalid-session",
+	"closed",
+	"no-message-admission",
+];
+
+test("a subscriber-unavailable error names its reason and carries the hint that fixes it (#4311)", () => {
+	const errors = subscriberReasons.map(
+		(reason) => new SubscriptionSubscriberUnavailableError("run-1/ci#1", "w", reason),
+	);
+	assert.deepEqual(
+		errors.map((error) => [error.reason, error.code, error.retryable, error.fields().reason]),
+		subscriberReasons.map((reason) => [reason, "subscriber-unavailable", false, reason]),
+	);
+	assert.deepEqual(
+		errors.map((error) => error.hint),
+		[
+			"The workflow host cannot start sessions here, so the replayed subscriber's session cannot be reopened; run the workflow from Atomic, or subscribe from a stage that runs in this run.",
+			"The subscriber stage did not complete, so its session cannot be reopened for reports; subscribe from a stage that completes, or start the run again instead of resuming it.",
+			"The subscriber stage kept no agent session to reopen; subscribe from a stage that runs an agent session in this run.",
+			"The subscriber's retained session could not be reopened from the session store; make the store that ran the stage available, or start the run again instead of resuming it.",
+			"The run is closing, so reports can no longer be delivered; resume the run to continue.",
+			"The subscriber's stage chat cannot take messages; close whatever holds that chat, or subscribe from a stage that runs in this run.",
+		],
+	);
+	assert.deepEqual(
+		errors.map((error) => error.message.includes(`(${error.reason})`) && error.message.endsWith(error.hint ?? "-")),
+		subscriberReasons.map(() => true),
+	);
+	for (const error of errors) {
+		const rebuilt = deserializeSubscriptionError(JSON.parse(JSON.stringify(serializeSubscriptionError(error))));
+		assert.equal(rebuilt instanceof SubscriptionSubscriberUnavailableError, true);
+		assert.equal((rebuilt as SubscriptionSubscriberUnavailableError).reason, error.reason);
+		assert.equal(rebuilt.hint, error.hint);
+	}
+});
+
+test("a subscriber-unavailable error with a reason this version does not know rehydrates as the family base (#4311)", () => {
+	const wire = {
+		...serializeSubscriptionError(new SubscriptionSubscriberUnavailableError("s", "w", "closed")),
+		fields: { subscriptionId: "s", subscriber: "w", reason: "from-a-newer-version" },
+	};
+	const rebuilt = deserializeSubscriptionError(wire);
+	assert.equal(rebuilt instanceof SubscriptionSubscriberUnavailableError, false);
+	assert.equal(rebuilt.constructor, SubscriptionError);
+	assert.deepEqual(
+		{ name: rebuilt.name, code: rebuilt.code },
+		{ name: "SubscriptionSubscriberUnavailableError", code: "subscriber-unavailable" },
+	);
+	assert.equal(isSubscriptionSubscriberUnavailableError(rebuilt), true);
+	assert.equal(rebuilt.message, wire.message);
+	assert.equal(rebuilt.hint, wire.hint);
+});
+
+test("a record error is retryable exactly when its cause is an unavailable storage (#4311)", () => {
+	const retryable = [
+		new SubscriptionRecordError("s", "processed-event", "e1", { cause: diskFull() }),
+		new SubscriptionRecordError("s", "subscription", null, { cause: diskFull() }),
+	];
+	const notRetryable = [
+		new SubscriptionRecordError("s", "processed-event", "e1", { cause: new Error("fenced") }),
+		new SubscriptionRecordError("s", "processed-event", "e1", { cause: "not an error object" }),
+		new SubscriptionRecordError("s", "subscription", null),
+	];
+	assert.deepEqual(
+		retryable.map((error) => isRetryableSubscriptionError(error)),
+		[true, true],
+	);
+	assert.deepEqual(
+		notRetryable.map((error) => isRetryableSubscriptionError(error)),
+		[false, false, false],
+	);
+	assert.equal(new SubscriptionRecordError("s", "processed-event", "e1", { retryable: true }).retryable, true);
+	assert.equal(Object.hasOwn(notRetryable[2]!, "cause"), false);
+	assert.equal(retryable[0]!.cause instanceof StorageUnavailableError, true);
+	const wrapped = new Error("outer", { cause: retryable[0] });
+	assert.equal(isSubscriptionRecordError(wrapped), true);
+	assert.equal(findSubscriptionError(wrapped), retryable[0]);
+	assert.equal(isSubscriptionRecordError({ name: "SubscriptionRecordError", code: "record-failed" }), true);
+	assert.equal(isSubscriptionRecordError({ name: "SubscriptionRecordError", code: "timeout" }), false);
+});
+
+test("a record error rehydrates an event id that is not text as no event id (#4311)", () => {
+	const wire = {
+		...serializeSubscriptionError(new SubscriptionRecordError("s", "subscription", null)),
+		fields: { subscriptionId: "s", record: "subscription", eventId: 7 },
+	};
+	assert.equal((deserializeSubscriptionError(wire) as SubscriptionRecordError).eventId, null);
+});
+
+test("a timeout error carries its phase, limit and elapsed time, and a guard finds it through a wrapper (#4311)", () => {
+	const spawnFailure = new Error("spawnSync gh ETIMEDOUT");
+	assert.equal(new SubscriptionTimeoutError("gh-auth-check", 500, 507, { cause: spawnFailure }).cause, spawnFailure);
+	const timeout = new SubscriptionTimeoutError("gh-auth-check", 500, 507);
+	assert.deepEqual(
+		{ code: timeout.code, phase: timeout.phase, timeoutMs: timeout.timeoutMs, elapsedMs: timeout.elapsedMs },
+		{ code: "timeout", phase: "gh-auth-check", timeoutMs: 500, elapsedMs: 507 },
+	);
+	assert.equal(isRetryableSubscriptionError(new Error("outer", { cause: timeout })), true);
+	assert.equal(isSubscriptionTimeoutError(new Error("outer", { cause: timeout })), true);
+	assert.equal(isSubscriptionTimeoutError({ name: "SubscriptionTimeoutError", code: "timeout" }), true);
+	assert.equal(isSubscriptionTimeoutError({ name: "SubscriptionTimeoutError", code: "record-failed" }), false);
+	assert.equal(Object.hasOwn(timeout, "cause"), false);
+	const rebuilt = deserializeSubscriptionError(serializeSubscriptionError(timeout)) as SubscriptionTimeoutError;
+	assert.deepEqual([rebuilt.timeoutMs, rebuilt.elapsedMs, rebuilt.phase], [500, 507, "gh-auth-check"]);
+	const unreadable = deserializeSubscriptionError({
+		...serializeSubscriptionError(timeout),
+		fields: { phase: "gh-auth-check" },
+	}) as SubscriptionTimeoutError;
+	assert.deepEqual([unreadable.timeoutMs, unreadable.elapsedMs], [0, 0]);
 });
