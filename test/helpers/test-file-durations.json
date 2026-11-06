@@ -2483,6 +2483,7 @@
 		"test/unit/workflow-shared-placement-setup.test.ts": 8975,
 		"test/unit/workflow-shared-pool-coordinator-answers-budgets.test.ts": 47291,
 		"test/unit/workflow-shared-pool-coordinator-default-restore.test.ts": 17478,
+		"test/unit/workflow-shared-pool-coordinator-dispatch-snapshot.test.ts": 33280,
 		"test/unit/workflow-shared-pool-coordinator-lifecycle.test.ts": 53546,
 		"test/unit/workflow-shared-pool-coordinator-restore-lease.test.ts": 90104,
 		"test/unit/workflow-shared-pool-coordinator-root-lease.test.ts": 58818,

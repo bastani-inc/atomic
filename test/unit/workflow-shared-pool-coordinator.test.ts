@@ -372,6 +372,7 @@ test.skipIf(process.platform === "win32")(
 		const { startWorkflowWorkerHost } = await import("../../packages/workflows/src/workers/worker-host.js");
 		let host: Awaited<ReturnType<typeof startWorkflowWorkerHost>> | undefined;
 		const given: unknown[] = [];
+		const keys: string[][] = [];
 		const git = { path: gitPath, env: { SHARED_POOL_GIT_MARKER: "host-git" } };
 		try {
 			await f.root();
@@ -388,6 +389,7 @@ test.skipIf(process.platform === "win32")(
 				git,
 				restore: async (_binding, options) => {
 					given.push(options.git);
+					keys.push(Object.keys(options).sort());
 					return restored;
 				},
 			});
@@ -395,6 +397,7 @@ test.skipIf(process.platform === "win32")(
 			const result = await execution;
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			assert.deepEqual(given, [git], "the restore port runs the host's git");
+			assert.deepEqual(keys, [["git", "signal"]], "work whose root captured nothing carries no snapshot (#4492)");
 			const [worker] = f.starts().filter((start) => (start.shared as { host: string }).host === "host-b");
 			assert.deepEqual([worker?.pathHead, worker?.gitMarker], [gitDirectory, "host-git"]);
 		} finally {

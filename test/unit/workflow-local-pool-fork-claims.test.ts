@@ -8,13 +8,16 @@ import type { ForkOptions } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test, vi } from "vitest";
+import type { BoundWorkspace } from "../../packages/coding-agent/src/index.js";
 import { ForkSessionClaimError, isForkSessionClaimError } from "../../packages/workflows/src/durable/fork-errors.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import type { PoolSessionClaim } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { failedCoordinatorReply } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
+import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -162,25 +165,30 @@ async function rootPool(registration: object, checkpoints: readonly DurableCheck
 	await pool.prepare("root");
 	const reads = vi.spyOn(backend, "readCheckpoints");
 	/** Queues the child, and returns how its run ended and the `enqueue` command the coordinator received. */
-	const queueChild = async () => {
+	const queueChild = async (extra: Pick<RunOpts, "workspace"> = {}) => {
 		const outcome = await pool
 			.run(child, work.inputs as never, {
 				runId: work.childRunId,
 				cwd: directory,
 				parentRun: { runId: "root", stageId: work.boundaryId, rootRunId: "root" },
 				durableScope: { rootWorkflowId: "root", scopePrefix: work.scope },
+				...extra,
 			})
 			.then(
 				() => undefined,
 				(error: unknown) => error,
 			);
 		const command = coordinators.at(-1)!.sent.find((message) => message.kind === "enqueue") as
-			| { readonly claimSessions?: readonly PoolSessionClaim[] }
+			| {
+					readonly claimSessions?: readonly PoolSessionClaim[];
+					readonly descriptor: { readonly execution: Readonly<Record<string, unknown>> };
+			  }
 			| undefined;
 		assert.ok(command !== undefined, "the child was queued");
 		return { outcome, command };
 	};
 	return {
+		directory,
 		reads,
 		queueChild,
 		async close() {
@@ -250,6 +258,36 @@ test("a claim the coordinator refuses fails the child with the same ForkSessionC
 		assert.deepEqual(claim.fields, refused.fields);
 		assert.equal(claim.message, refused.message);
 		assert.equal(failedCoordinatorReply(1, refused).kind, "reply");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a pool that is not shared queues a child bound to a workspace without its binding or a snapshot of its worktree (#4492)", async () => {
+	const f = await rootPool({});
+	const captures = vi.spyOn(DispatchSnapshots.prototype, "capture");
+	try {
+		const bound: BoundWorkspace = {
+			kind: "bound-workspace",
+			version: 1,
+			repo: f.directory,
+			repository: f.directory,
+			branch: "feat/child",
+			worktree: f.directory,
+			base: "main",
+			baseCommit: "c",
+			sandbox: "workspace-write",
+			remotes: [],
+			head: "h",
+			tree: "t",
+			envHash: "e",
+		};
+		const { command } = await f.queueChild({ workspace: bound });
+		const { execution } = command.descriptor;
+		assert.deepEqual(execution.workspace, bound, "it runs in its workspace on this machine");
+		assert.equal("workspaceBinding" in execution, false, "only a shared pool places a child by its binding");
+		assert.equal("workspaceSnapshot" in execution, false);
+		assert.equal(captures.mock.calls.length, 0, "and captures nothing for other hosts");
 	} finally {
 		await f.close();
 	}

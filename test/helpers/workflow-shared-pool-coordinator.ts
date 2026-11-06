@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { vi } from "vitest";
+import type { WorktreeSnapshotSettingsInput } from "../../packages/coding-agent/src/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -60,6 +61,12 @@ export async function fixture(
 		workspace?: WorkspaceBinding;
 		/** Records what the root binds its children to in the shared journal before the pool starts, and returns it. */
 		bind?: (backend: JournalDurableBackend) => Promise<WorkspaceBinding>;
+		/** The worktree of the root's binding on its host, which the root captures when it starts (#4492). */
+		workspaceWorktree?: string;
+		/** The root's worktree snapshot settings. */
+		snapshots?: WorktreeSnapshotSettingsInput;
+		/** How often the root refreshes the blobs of the snapshots its waiting children carry. */
+		snapshotRefreshMs?: number;
 		claimWindowMs?: number;
 		admission?: AdmissionConfiguration;
 		maxLoadPerCpu?: number;
@@ -94,6 +101,9 @@ export async function fixture(
 			claimWindowMs: options.claimWindowMs ?? 60_000,
 		},
 		...(bound === undefined ? {} : { workspace: bound }),
+		...(options.workspaceWorktree === undefined ? {} : { workspaceWorktree: options.workspaceWorktree }),
+		...(options.snapshots === undefined ? {} : { snapshots: options.snapshots }),
+		...(options.snapshotRefreshMs === undefined ? {} : { snapshotRefreshMs: options.snapshotRefreshMs }),
 		...(options.admission === undefined ? {} : { admission: options.admission }),
 		...(options.maxLoadPerCpu === undefined ? {} : { maxLoadPerCpu: options.maxLoadPerCpu }),
 		...(options.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: options.maxWorkerRssBytes }),

@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { isWorkspace, resolveWorkspace } from "@bastani/atomic";
+import { isBoundWorkspace, isWorkspace, resolveWorkspace } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
@@ -327,25 +327,37 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 
 /**
  * `placement` as the root records it (#4310): a `workspace({ … })` value resolved through `resolveWorkspace`, and a
- * binding, or a bound workspace, reduced to its identity fields.
+ * binding, or a bound workspace, reduced to its identity fields. `worktree` is the bound worktree on this host, which
+ * the root captures when it starts (#4492); a binding alone has none.
  */
 export async function recordedPlacement(
 	placement: WorkflowWorkerPlacementOptions,
 	signal?: AbortSignal,
-): Promise<RecordedWorkerPlacement> {
+): Promise<{ readonly placement: RecordedWorkerPlacement; readonly worktree?: string }> {
 	const workspace = placement.workspace;
-	if (workspace === undefined) return { ...placement, workspace: undefined };
+	if (workspace === undefined) return { placement: { ...placement, workspace: undefined } };
 	const binding = isWorkspace(workspace)
 		? await resolveWorkspace(workspace, signal === undefined ? {} : { signal })
 		: workspace;
-	return { ...placement, workspace: bindingIdentity(binding) };
+	return {
+		placement: { ...placement, workspace: bindingIdentity(binding) },
+		...(isBoundWorkspace(binding) ? { worktree: binding.worktree } : {}),
+	};
 }
 
-/** How a root's pool runs with shared placement on this host: its local state, host id, claim window and binding. */
+/**
+ * How a root's pool runs with shared placement on this host: its local state, host id, claim window and binding, and
+ * the binding's `worktree` on this host when it has one.
+ */
 export function sharedPoolPlacement(
 	shared: PoolDurableJournal,
 	placement: RecordedWorkerPlacement,
-): { readonly shared: SharedPoolCoordination; readonly workspace?: WorkspaceBinding } {
+	worktree?: string,
+): {
+	readonly shared: SharedPoolCoordination;
+	readonly workspace?: WorkspaceBinding;
+	readonly workspaceWorktree?: string;
+} {
 	return {
 		shared: {
 			stateDirectory: poolStateDirectory(shared.agentDir),
@@ -353,6 +365,7 @@ export function sharedPoolPlacement(
 			claimWindowMs: placement.claimWindowMs ?? DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
 		},
 		...(placement.workspace === undefined ? {} : { workspace: placement.workspace }),
+		...(worktree === undefined ? {} : { workspaceWorktree: worktree }),
 	};
 }
 
@@ -451,7 +464,7 @@ export async function activatePublicPool(
 			shared !== undefined || durable === undefined || !options.localWorkers
 				? undefined
 				: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) },
-		...(recorded === undefined ? {} : { workers: recorded }),
+		...(recorded === undefined ? {} : { workers: recorded.placement }),
 	});
 	const localWorkers = resources.localWorkers;
 	const saved = options.effectiveResources?.coordinator;
@@ -518,7 +531,9 @@ export async function activatePublicPool(
 		journalPath: poolPath,
 		...(journalShard === undefined ? {} : { journalShard }),
 		...(durable === undefined ? {} : { durable }),
-		...(shared === undefined || recorded === undefined ? {} : sharedPoolPlacement(shared, recorded)),
+		...(shared === undefined || recorded === undefined
+			? {}
+			: { ...sharedPoolPlacement(shared, recorded.placement, recorded.worktree), snapshots: options.snapshots }),
 		workers: localWorkers.count,
 		definitions,
 		admission: resources.admission ?? {},

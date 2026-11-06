@@ -5,7 +5,7 @@ import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { setDebugSetting } from "@bastani/atomic";
+import { setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
 import { JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
@@ -74,6 +74,7 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import {
 	type BoundWait,
 	boundWait,
+	carriedSnapshot,
 	choosePlacement,
 	placedExecution,
 	sharedSettlement,
@@ -2439,7 +2440,7 @@ export class PoolCoordinator {
 			lease,
 			work,
 			leaseMs,
-			(signal) => restore(binding, this.hookOptions(satellite, signal)),
+			(signal) => restore(binding, this.restoreOptions(satellite, signal, carriedSnapshot(work.execution))),
 			AbortSignal.any([this.closedSignal.signal, slot.exited.signal]),
 		);
 		// A host that closed put the child back with the rest its workers held; one whose worker exited puts it back here.
@@ -2572,6 +2573,16 @@ export class PoolCoordinator {
 	/** What a worker host's hook is given: the signal that ends the wait for it, and the git the host runs. */
 	private hookOptions(satellite: SatellitePlacement, signal: AbortSignal): WorkspaceHookOptions {
 		return satellite.git === undefined ? { signal } : { signal, git: satellite.git };
+	}
+
+	/** What a worker host's `restore` is given for work: its hook options, and the snapshot the work carries (#4492). */
+	private restoreOptions(
+		satellite: SatellitePlacement,
+		signal: AbortSignal,
+		snapshot: WorktreeSnapshot | undefined,
+	): WorkspaceHookOptions {
+		const options = this.hookOptions(satellite, signal);
+		return snapshot === undefined ? options : { ...options, snapshot };
 	}
 
 	/**

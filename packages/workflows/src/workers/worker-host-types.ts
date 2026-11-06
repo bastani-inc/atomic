@@ -32,7 +32,8 @@ export interface WorkflowWorkerHostOptions {
 	};
 	/**
 	 * Makes a binding's tree available on this host and resolves a verified worktree path, or rejects typed. Default:
-	 * the worktree snapshot restore, which rebuilds a binding's tree, uncommitted content included, from the snapshots
+	 * the worktree snapshot restore, which rebuilds the tree, uncommitted and unpushed content included, from the snapshot
+	 * the work carries (`options.snapshot`, captured by its root when it dispatched the work), or else from the snapshots
 	 * recorded in the shared journal and the binding's remotes, and runs only where this host has git already. `false`:
 	 * none. Without a restore, or without git, this host takes bound work only when its tree is warm here. A binding
 	 * whose restore fails waits a backoff before this host tries it again.

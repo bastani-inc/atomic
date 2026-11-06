@@ -122,6 +122,25 @@ function compatibleClause(definitions: number): string {
 	).join(" OR ");
 }
 /**
+ * What identifies queued work: its descriptor and boundary, without the worktree snapshot its root captured as it
+ * dispatched the work (#4492). Each dispatch, a resume's included, captures that snapshot anew, and it only says where
+ * the work's tree comes from, so the same child hashes the same whichever snapshot it carries.
+ */
+function workFingerprint(descriptor: PoolWorkDescriptor, boundary: WorkflowSerializableObject): string {
+	const { workspaceSnapshot: _snapshot, ...execution } = descriptor.execution;
+	return durableHash({ descriptor: { ...descriptor, execution }, boundary });
+}
+/**
+ * The descriptor a root enqueues work with again, keeping the worktree snapshot the `queued` descriptor carries when
+ * the root captured none this time (#4492): a root resumed with only its binding's identity has no worktree to capture,
+ * and the earlier snapshot still restores the tree of the same binding.
+ */
+function withQueuedSnapshot(descriptor: PoolWorkDescriptor, queued: string): string {
+	const workspaceSnapshot =
+		descriptor.execution.workspaceSnapshot ?? (JSON.parse(queued) as PoolWorkDescriptor).execution.workspaceSnapshot;
+	return serializeJson({ ...descriptor, execution: { ...descriptor.execution, workspaceSnapshot } });
+}
+/**
  * Which ready work a claim may take (shared placement, #4310): only work without a workspace binding, as the root's
  * own workers take it, or exactly one ready item a worker host chose by its binding. Unset: any ready work.
  */
@@ -486,7 +505,7 @@ export class SqlPoolQueue {
 		validateCheckpointInvocationFingerprint(boundary);
 		const json = serializeJson({ ...descriptor });
 		const payload = serializeJson(boundary);
-		const fingerprint = durableHash({ descriptor: JSON.parse(json), boundary: JSON.parse(payload) });
+		const fingerprint = workFingerprint(JSON.parse(json), JSON.parse(payload));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, boundary.kind, boundary.checkpointId]);
 		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
 		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
@@ -501,16 +520,23 @@ export class SqlPoolQueue {
 				childRunId,
 			);
 			if (previous) {
+				const requested = withQueuedSnapshot(descriptor, previous.descriptor);
 				const row =
 					previous.fingerprint === fingerprint
 						? previous
-						: await this.rebind(tx, lease, previous, json, JSON.parse(payload), fingerprint, options);
+						: await this.rebind(tx, lease, previous, requested, JSON.parse(payload), fingerprint, options);
 				await this.claimSessions(tx, lease.runId, row.id, descriptor, options.claimSessions);
 				if ((row.state !== "ready" && row.state !== "failed") || row.epoch >= lease.epoch) return fromRow(row);
 				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
-				// work that incarnation failed or left unfinished when its pool closed.
-				await tx.run(`UPDATE ${this.work} SET state = 'ready', epoch = ? WHERE id = ?`, lease.epoch, row.id);
-				return fromRow({ ...row, state: "ready", epoch: lease.epoch });
+				// work that incarnation failed or left unfinished when its pool closed. It carries the worktree snapshot this
+				// incarnation captured (#4492), whose blobs are fresh.
+				await tx.run(
+					`UPDATE ${this.work} SET state = 'ready', epoch = ?, descriptor = ? WHERE id = ?`,
+					lease.epoch,
+					requested,
+					row.id,
+				);
+				return fromRow({ ...row, state: "ready", epoch: lease.epoch, descriptor: requested });
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
 				`SELECT json_extract(descriptor, '$.scope') AS scope FROM ${this.work} WHERE root = ?`,
@@ -664,7 +690,7 @@ export class SqlPoolQueue {
 			digest: queued.digest,
 			execution: queuedMode === undefined ? execution : { ...execution, executionMode: queuedMode },
 		};
-		if (durableHash({ descriptor: asQueued, boundary }) !== previous.fingerprint)
+		if (workFingerprint(asQueued, boundary) !== previous.fingerprint)
 			throw new Error("Pool boundary identity conflict");
 		const entryEdited = queued.digest !== requested.digest;
 		if (previous.epoch >= lease.epoch) {
