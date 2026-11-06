@@ -225,6 +225,22 @@ interface BinderOutcome {
 	readonly causeName?: string;
 }
 
+/**
+ * Bind in this process and report it as the binders do, as plain data: a failure becomes its name, code and fields, so
+ * an assertion on it prints a readable diff rather than a typed error the test runner cannot render.
+ */
+async function bindHere(repo: string, branch: string): Promise<BinderOutcome> {
+	try {
+		const binding = await resolveWorkspace(workspace({ repo, branch }));
+		return { outcome: "bound", worktree: binding.worktree, head: binding.head, tree: binding.tree };
+	} catch (error) {
+		const { name, code, message, fields } = error as Partial<Record<"name" | "code" | "message", string>> & {
+			readonly fields?: Readonly<Record<string, unknown>>;
+		};
+		return JSON.parse(JSON.stringify({ outcome: "failed", name, code, message, fields })) as BinderOutcome;
+	}
+}
+
 /** Start the binding fixture; `first` resolves with its first JSON line. */
 function binder(args: readonly string[]): {
 	readonly child: ChildProcessWithoutNullStreams;
@@ -276,14 +292,19 @@ function assertOneCompleteWorktree(outcomes: readonly BinderOutcome[]): string {
 /** Files that take a while to check out: each one passes a smudge filter that sleeps. */
 const SLOW_FILES = 60;
 
-function slowCheckoutRepository(name: string): string {
+/**
+ * A repository whose files take a while to check out, and whose checkouts do not start before `openCheckouts`: a test
+ * acts on an addition it knows is still running, however slowly a loaded machine runs the test itself.
+ */
+function slowCheckoutRepository(name: string): { readonly repo: string; readonly openCheckouts: () => void } {
 	const repo = createRepository(dirs.root, name);
-	git(repo, "config", "filter.slow.smudge", "sleep 0.05; cat");
+	const gate = join(dirs.root, `${name}-checkouts-open`);
+	git(repo, "config", "filter.slow.smudge", `until [ -e '${gate}' ]; do sleep 0.01; done; sleep 0.05; cat`);
 	writeFileSync(join(repo, ".gitattributes"), "*.txt filter=slow\n");
 	for (let index = 0; index < SLOW_FILES; index++) writeFileSync(join(repo, `file-${index}.txt`), `${index}\n`);
 	git(repo, "add", ".");
 	git(repo, "commit", "-q", "-m", "slow to check out");
-	return repo;
+	return { repo, openCheckouts: () => writeFileSync(gate, "") };
 }
 
 /** Wait until Atomic has started adding a worktree to `repo`: git wrote Atomic's lock into its admin directory. */
@@ -296,6 +317,18 @@ async function additionStarted(repo: string): Promise<void> {
 			return existsSync(lock) && readFileSync(lock, "utf-8").trim() === WORKTREE_ADDING_REASON;
 		});
 	while (!marked()) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+/**
+ * Wait until Atomic has recorded the git adding a worktree to `repo`, and return that git's pid. Atomic records it just
+ * after starting git, so a binder killed before then leaves an addition no later bind can tell is over.
+ */
+async function recordedAdder(repo: string): Promise<number> {
+	const records = join(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "atomic-worktree-adders");
+	const named = (): string[] =>
+		existsSync(records) ? readdirSync(records).filter((name) => name.endsWith(".json")) : [];
+	while (named().length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+	return (JSON.parse(readFileSync(join(records, named()[0]!), "utf-8")) as { readonly pid: number }).pid;
 }
 
 function alive(pid: number): boolean {
@@ -329,7 +362,8 @@ describe("workspace binding across processes (#3109)", () => {
 	test(
 		"processes binding one new branch at once all get its one worktree (#3109)",
 		async () => {
-			const repo = slowCheckoutRepository("shared-branch");
+			const { repo, openCheckouts } = slowCheckoutRepository("shared-branch");
+			openCheckouts();
 			const outcomes = await Promise.all(
 				Array.from({ length: BINDERS }, () => binder(["bind", repo, "together"]).first),
 			);
@@ -392,14 +426,16 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 	test(
 		"binders after a SIGKILL in the middle of an addition repair it and all get one complete worktree (#3109)",
 		async () => {
-			const repo = slowCheckoutRepository("killed-mid-add");
+			const { repo, openCheckouts } = slowCheckoutRepository("killed-mid-add");
 			const first = binder(["bind", repo, "cut"]);
 			await additionStarted(repo);
+			await recordedAdder(repo);
 			first.child.kill("SIGKILL");
 			killGitGroups(join(dirs.home, "worktrees"));
 			assert.equal((await first.first).outcome, "silent", "the first binder died before binding");
 			const admin = join(repo, ".git", "worktrees");
 			assert.equal(readdirSync(admin).length, 1, "the killed addition left its worktree behind");
+			openCheckouts();
 			const outcomes = await Promise.all(Array.from({ length: BINDERS }, () => binder(["bind", repo, "cut"]).first));
 			const worktree = assertOneCompleteWorktree(outcomes);
 			assert.equal(readdirSync(worktree).filter((name) => name.endsWith(".txt")).length, SLOW_FILES);
@@ -410,17 +446,10 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 	test(
 		"a bind after only the binder is SIGKILLed waits for its still-running git, then gets the worktree complete (#3109)",
 		async () => {
-			const repo = slowCheckoutRepository("orphaned-git");
+			const { repo, openCheckouts } = slowCheckoutRepository("orphaned-git");
 			const first = binder(["bind", repo, "orphan"]);
 			await additionStarted(repo);
-			const records = join(
-				git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"),
-				"atomic-worktree-adders",
-			);
-			while (!existsSync(records) || readdirSync(records).filter((name) => name.endsWith(".json")).length === 0)
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			const [recordName] = readdirSync(records).filter((name) => name.endsWith(".json"));
-			const orphan = (JSON.parse(readFileSync(join(records, recordName!), "utf-8")) as { pid: number }).pid;
+			const orphan = await recordedAdder(repo);
 			first.child.kill("SIGKILL");
 			assert.equal((await first.first).outcome, "silent");
 			assert.equal(alive(orphan), true, "only the binder died; its git is still checking out");
@@ -429,10 +458,19 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 				if (command.args[0] === "worktree" && command.args[1] === "remove") removals.push(alive(orphan));
 			});
 			try {
-				const binding = await resolveWorkspace(workspace({ repo, branch: "orphan" }));
-				assert.equal(binding.tree, git(binding.worktree, "rev-parse", "HEAD^{tree}"));
-				assert.equal(git(binding.worktree, "status", "--porcelain"), "");
-				assert.equal(readdirSync(binding.worktree).filter((name) => name.endsWith(".txt")).length, SLOW_FILES);
+				const bound = bindHere(repo, "orphan");
+				openCheckouts();
+				const outcome = await bound;
+				assert.deepEqual(outcome, {
+					outcome: "bound",
+					worktree: outcome.worktree,
+					head: git(repo, "rev-parse", "orphan"),
+					tree: git(repo, "rev-parse", "orphan^{tree}"),
+				});
+				const worktree = outcome.worktree!;
+				assert.equal(outcome.tree, git(worktree, "rev-parse", "HEAD^{tree}"));
+				assert.equal(git(worktree, "status", "--porcelain"), "");
+				assert.equal(readdirSync(worktree).filter((name) => name.endsWith(".txt")).length, SLOW_FILES);
 			} finally {
 				stop();
 			}
@@ -448,7 +486,7 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 	test(
 		"binders wait while the process adding a worktree is stopped, then all get it complete (#3109)",
 		async () => {
-			const repo = slowCheckoutRepository("stopped-mid-add");
+			const { repo, openCheckouts } = slowCheckoutRepository("stopped-mid-add");
 			const first = binder(["bind", repo, "paused"]);
 			await additionStarted(repo);
 			first.child.kill("SIGSTOP");
@@ -458,6 +496,7 @@ describe.skipIf(process.platform === "win32")("worktree additions under process 
 				new Promise((resolve) => setTimeout(() => resolve("all waiting"), 1_500)),
 			]);
 			assert.equal(early, "all waiting", "nobody binds a worktree whose addition has not finished");
+			openCheckouts();
 			first.child.kill("SIGCONT");
 			assertOneCompleteWorktree([await first.first, ...(await Promise.all(others))]);
 		},
