@@ -2325,8 +2325,16 @@ test("a report returns once the subscriber admits it, without waiting for the su
 type ReopenableJournal = JournalDurableBackend & { reopen(): Promise<ReopenableJournal> };
 
 async function openLibsqlJournal(url: string): Promise<ReopenableJournal> {
-	const backend = await JournalDurableBackend.open(await SqlRunJournal.open(await openLibsqlDatabase({ url })));
+	const database = await openLibsqlDatabase({ url });
+	const backend = await JournalDurableBackend.open(await SqlRunJournal.open(database));
+	// The journal leaves the database it was given open, so closing the backend closes the database after it.
+	const closeBackend = backend.close.bind(backend);
+	let closing: Promise<void> | undefined;
 	return Object.assign(backend, {
+		close: (): Promise<void> => {
+			closing ??= closeBackend().then(() => database.close());
+			return closing;
+		},
 		async reopen(): Promise<ReopenableJournal> {
 			await backend.close();
 			return openLibsqlJournal(url);
