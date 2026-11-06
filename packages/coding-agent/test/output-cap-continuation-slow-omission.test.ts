@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
-import { createHarness, fauxModel, type Harness } from "./test-harness.ts";
+import { createHarness, fauxModel, type Harness } from "./test-harness.js";
 
 /** The continuation probe's grace period after a length-stopped response. */
 const CONTINUATION_GRACE_MS = 100;
