@@ -240,6 +240,16 @@ export class TaskToolError extends Error {
 		this.code = failure.code;
 		this.taskId = taskId;
 	}
+
+	/** The failure as data, for a result that reports it: a detached `wait` of a task that is gone carries it. */
+	toJSON(): {
+		readonly name: string;
+		readonly code: TaskToolFailureCode;
+		readonly message: string;
+		readonly taskId: string;
+	} {
+		return { name: this.name, code: this.code, message: this.message, taskId: this.taskId };
+	}
 }
 
 export interface TaskErrorPresentation {

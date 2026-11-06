@@ -47,11 +47,17 @@ interface DetachmentState {
 	policy: ToolDetachmentPolicy | undefined;
 	/** Calls detached by the session's runs and not yet taken by the host. */
 	readonly detached: Map<string, DetachedToolCall>;
-	/** How each detachable tool's work starts, by tool name. */
-	readonly executes: Map<string, DetachableExecute>;
+	/** How each detachable tool's work starts, and the session's context for a call of it, by tool name. */
+	readonly executes: Map<string, DetachableWork>;
 	readonly concurrency: Map<string, AgentTool["concurrency"]>;
 	/** For a tool that detaches only some of its calls, which ones, by tool name. */
 	readonly detachesCall: Map<string, DetachesCall>;
+}
+
+/** How a detachable tool's work starts, and the session's tool context for a call of it. */
+interface DetachableWork {
+	readonly execute: DetachableExecute;
+	readonly context: DetachableContext;
 }
 
 const states = new WeakMap<object, DetachmentState>();
@@ -95,11 +101,32 @@ function isTopLevelToolCall(session: AgentSession, toolCallId: string): boolean 
 }
 
 function errorToolResult(error: Error | DOMException | string | object): AgentToolResult {
+	const failure = typedFailure(error);
 	return {
 		content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-		details: undefined,
+		details: failure === undefined ? undefined : { error: failure },
 	};
 }
+
+/**
+ * The typed failure a detached call's error result carries in `details.error`, so a host branches on its `code`
+ * instead of its text: the error's own JSON form when it has one, otherwise its name, code and message. Undefined for
+ * an error without a string `code`.
+ */
+function typedFailure(error: Error | DOMException | string | object): DetachedCallFailure | undefined {
+	if (!(error instanceof Error)) return undefined;
+	const { code } = error as { readonly code?: unknown };
+	if (typeof code !== "string") return undefined;
+	const json = (error as { readonly toJSON?: () => DetachedCallFailure }).toJSON;
+	return typeof json === "function" ? json.call(error) : { name: error.name, code, message: error.message };
+}
+
+/** A detached call's typed failure, as its error result's `details.error` reports it. */
+export type DetachedCallFailure = {
+	readonly name: string;
+	readonly code: string;
+	readonly message: string;
+};
 
 /**
  * Runs a callback in the async context of this module's load, outside every session. A detachable call's work and
@@ -123,7 +150,7 @@ export type DetachableExecute = (
 	context: ExtensionToolContext,
 ) => ReturnType<AgentTool["execute"]>;
 
-/** The session's tool context for a call that runs inline, bound to the call's own abort signal. */
+/** The session's tool context for a call, bound to the call's own abort signal. */
 export type DetachableContext = (toolCallId: string, signal: AbortSignal) => ExtensionToolContext;
 
 /** Whether one call of a tool may detach, decided from the call's arguments. */
@@ -157,6 +184,19 @@ interface DetachedCallFacts {
 	readonly cwd: string;
 }
 
+/** The session's tool context for a call started again, or undefined once the session has closed. */
+type StartingContext = (toolCallId: string, signal: AbortSignal) => ExtensionToolContext | undefined;
+
+/** When a detachable call's work starts, and what of the session's context it has. */
+interface OperationStart {
+	/** The session's context for a call that starts inline: the work keeps it until the call detaches. */
+	readonly inlineContext?: DetachableContext;
+	/** The session's context for a call started again: the work has it only while it starts, until its first await. */
+	readonly startingContext?: StartingContext;
+	/** `now` starts the work before returning; a promise starts it once it resolves; absent, on the next tick. */
+	readonly when?: "now" | Promise<void>;
+}
+
 /*
  * The helpers below are module-level on purpose. A closure keeps every scope it is nested in, so a reaction created
  * inside a function that can see the session would keep the session reachable while the call waits.
@@ -168,15 +208,19 @@ function startOperation(
 	params: ToolParams,
 	inline: InlineSession,
 	facts: DetachedCallFacts,
-	createContext: DetachableContext | undefined,
-	start?: Promise<void>,
+	start: OperationStart,
 ): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult>; readonly signal: AbortSignal } {
 	return outsideAnySession(() => {
 		const controller = new AbortController();
-		if (createContext !== undefined) inline.context = createContext(facts.toolCallId, controller.signal);
+		if (start.inlineContext !== undefined) inline.context = start.inlineContext(facts.toolCallId, controller.signal);
 		const onUpdate = inline.onUpdate === undefined ? undefined : forwardedUpdate(inline);
 		const context = callContext(inline, facts);
-		const settled = invokeDetached(execute, facts.toolCallId, params, controller.signal, onUpdate, context, start);
+		const begin = (): ReturnType<AgentTool["execute"]> =>
+			beginWork(execute, facts.toolCallId, params, controller.signal, onUpdate, context, inline, start);
+		const settled =
+			start.when === "now"
+				? new Promise<AgentToolResult>((resolve) => resolve(begin()))
+				: (start.when ?? Promise.resolve()).then(begin);
 		return {
 			settled,
 			signal: controller.signal,
@@ -185,16 +229,23 @@ function startOperation(
 	});
 }
 
-function invokeDetached(
+function beginWork(
 	execute: DetachableExecute,
 	toolCallId: string,
 	params: ToolParams,
 	signal: AbortSignal,
 	onUpdate: ToolUpdate,
 	context: ExtensionToolContext,
-	start: Promise<void> = Promise.resolve(),
-): Promise<AgentToolResult> {
-	return start.then(() => execute(toolCallId, params, signal, onUpdate, context));
+	inline: InlineSession,
+	start: OperationStart,
+): ReturnType<AgentTool["execute"]> {
+	if (start.startingContext === undefined) return execute(toolCallId, params, signal, onUpdate, context);
+	inline.context = start.startingContext(toolCallId, signal);
+	try {
+		return execute(toolCallId, params, signal, onUpdate, context);
+	} finally {
+		inline.context = undefined;
+	}
 }
 
 /** Progress a call reports reaches the agent loop while the call runs inline; once it detaches, it is dropped. */
@@ -287,9 +338,10 @@ function releaseWhenSettled(settled: Promise<AgentToolResult>, permit: Scheduler
 
 /** Forget the session's detachable tools before its tools are registered again, so a removed tool is not one. */
 export function forgetDetachableTools(session: AgentSession): void {
-	states.get(session)?.executes.clear();
-	states.get(session)?.concurrency.clear();
-	states.get(session)?.detachesCall.clear();
+	const state = states.get(session);
+	state?.executes.clear();
+	state?.concurrency.clear();
+	state?.detachesCall.clear();
 }
 
 /**
@@ -310,7 +362,7 @@ export function detachableTool(
 	requiresReady = false,
 ): AgentTool {
 	const state = detachmentState(session);
-	state.executes.set(tool.name, execute);
+	state.executes.set(tool.name, { execute, context: createContext });
 	state.concurrency.set(tool.name, tool.concurrency);
 	if (detachesCall !== undefined) state.detachesCall.set(tool.name, detachesCall);
 	return {
@@ -327,14 +379,9 @@ export function detachableTool(
 			const inline: InlineSession = { onUpdate, context: undefined };
 			let operation: ReturnType<typeof startOperation>;
 			try {
-				operation = startOperation(
-					tool.name,
-					execute,
-					params,
-					inline,
-					detachedCallFacts(session, toolCallId),
-					createContext,
-				);
+				operation = startOperation(tool.name, execute, params, inline, detachedCallFacts(session, toolCallId), {
+					inlineContext: createContext,
+				});
 			} catch (error) {
 				permit.release();
 				throw error;
@@ -443,7 +490,7 @@ export function takeDetachedToolCalls(this: AgentSession): DetachedToolCall[] {
 /** A call of a detachable tool in the transcript, with how its tool's work starts in this session. */
 interface DetachableCall {
 	readonly toolCall: ToolCall;
-	readonly execute: DetachableExecute;
+	readonly work: DetachableWork;
 }
 
 /**
@@ -471,10 +518,10 @@ function pendingDetachableCalls(session: AgentSession): {
 	const state = states.get(session);
 	const detachable = assistant.content.flatMap((block): DetachableCall[] => {
 		if (block.type !== "toolCall") return [];
-		const execute = state?.executes.get(block.name);
-		if (execute === undefined) return [];
+		const work = state?.executes.get(block.name);
+		if (work === undefined) return [];
 		if (state?.detachesCall.get(block.name)?.(block.arguments as ToolParams) === false) return [];
-		return [{ toolCall: block as ToolCall, execute }];
+		return [{ toolCall: block as ToolCall, work }];
 	});
 	return {
 		assistant,
@@ -502,32 +549,58 @@ export function waitsOnDetachedResults(session: AgentSession): boolean {
 
 /**
  * Start again every call of a detachable tool that the transcript ends on without a result: the process that ran
- * them is gone. Each runs with its original id and arguments, so a call may run more than once. The work runs
- * detached from the start: it reports no progress and its context answers only `cwd`.
+ * them is gone. Each runs with its original id and arguments, so a call may run more than once. Hosts see each call
+ * start again, and its result is recorded as that call's once it is handed back. The work has the session's tool
+ * context only while it starts, up to its first `await`; from then on its context answers only `cwd`, and it reports
+ * no progress. A call the session's scheduler queues behind another gets that context when it starts, if the session
+ * is still open then.
  */
 export function redispatchDetachedToolCalls(this: AgentSession): DetachedToolCall[] {
-	const concurrency = states.get(this)?.concurrency;
-	return pendingDetachableCalls(this).calls.map(({ toolCall, execute }) => {
-		this._reissuedToolCallIds.add(toolCall.id);
+	const pending = pendingDetachableCalls(this).calls;
+	if (pending.length === 0) return [];
+	const { concurrency } = detachmentState(this);
+	for (const { toolCall } of pending) this._reissuedToolCallIds.add(toolCall.id);
+	this._refreshFinalizedContext();
+	return pending.map(({ toolCall, work }) => {
+		announceRestartedCall(this, toolCall);
 		const inline: InlineSession = { onUpdate: undefined, context: undefined };
 		const facts = detachedCallFacts(this, toolCall.id);
 		const params = toolCall.arguments as ToolParams;
 		const permit = takeSchedulerPermit(
 			this._toolExecutionScheduler,
-			resolveToolConcurrency(concurrency?.get(toolCall.name), params as Record<string, unknown>),
+			resolveToolConcurrency(concurrency.get(toolCall.name), params as Record<string, unknown>),
 		);
-		const { call, settled } = startOperation(
-			toolCall.name,
-			execute,
-			params,
-			inline,
-			facts,
-			undefined,
-			permit.grantedLater,
-		);
+		const { call, settled } = startOperation(toolCall.name, work.execute, params, inline, facts, {
+			startingContext: whileOpen(this, work.context),
+			when: permit.grantedLater ?? "now",
+		});
 		releaseWhenSettled(settled, permit);
 		return call;
 	});
+}
+
+/** The session's tool context, only while the session is open; a closed session's call has none. */
+function whileOpen(session: AgentSession, createContext: DetachableContext): StartingContext {
+	return (toolCallId, signal) =>
+		session._disposed || sessionGenerationClosing.has(session) ? undefined : createContext(toolCallId, signal);
+}
+
+/**
+ * Hosts see a call started again start, as they see the agent loop start one. Session listeners hear it at once, so a
+ * host that releases the session right after starting its calls again has seen them start; extensions hear it through
+ * the session's event queue, in order with its other events.
+ */
+function announceRestartedCall(session: AgentSession, toolCall: ToolCall): void {
+	const event: AgentEvent = {
+		type: "tool_execution_start",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		args: toolCall.arguments,
+	};
+	session._emit(event);
+	session._agentEventQueue = Promise.allSettled([session._agentEventQueue]).then(() =>
+		session._emitExtensionEvent(event),
+	);
 }
 
 function resultMessage(result: DetachedToolResult): ToolResultMessage {

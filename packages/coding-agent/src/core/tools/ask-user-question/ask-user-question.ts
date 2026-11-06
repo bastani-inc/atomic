@@ -80,6 +80,7 @@ export function createAskUserQuestionToolDefinition(options?: {
 		name: "ask_user_question",
 		exposure: "model-only",
 		concurrency: "exclusive",
+		detachable: true,
 		label: "Ask User Question",
 		description: `Ask the user one or more structured questions during execution. When ask_user_question or an equivalent question tool is available, all questions to the user must use that tool instead of plain text, including a short 'Proceed?' confirmation. Prefer ask_user_question when available. Use when you need to:
 1. Gather user preferences or requirements
@@ -111,7 +112,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			const typed = params as unknown as QuestionParams;
 			const stageOwned = (
 				ctx.ui as ExtensionUIContext & {
-					[STAGE_QUESTIONNAIRE]?: (sessionId: string, ui: ExtensionUIContext) => void;
+					[STAGE_QUESTIONNAIRE]?: (sessionId: string, ui: ExtensionUIContext) => ExtensionUIContext | undefined;
 				}
 			)[STAGE_QUESTIONNAIRE];
 			if (typeof stageOwned !== "function" && !(ctx.hasHumanInput ?? ctx.hasUI))
@@ -127,9 +128,9 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			}
 
 			if (typeof stageOwned === "function") {
-				stageOwned(ctx.sessionManager.getSessionId(), ctx.ui);
+				const stageUi = stageOwned(ctx.sessionManager.getSessionId(), ctx.ui) ?? ctx.ui;
 				return buildQuestionnaireResponse(
-					await presentQuestionnaire(ctx.ui, typed, signal, options?.chatAsOption),
+					await presentQuestionnaire(stageUi, typed, signal, options?.chatAsOption),
 					typed,
 				);
 			}

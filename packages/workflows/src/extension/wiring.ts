@@ -440,7 +440,7 @@ function makeStageExtensionUiContext(
 ) {
 	let questionnaireSessionId: string | undefined;
 	let questionnaireInput: StageQuestionnaireInput | undefined;
-	return {
+	const stageUi: object = {
 		[Symbol.for("atomic-coding-agent/stage-questionnaire@1")]:
 			meta === undefined
 				? undefined
@@ -453,6 +453,7 @@ function makeStageExtensionUiContext(
 								(workflowInputBridge(childUi)?.bindingRevision() ?? inheritedBindingRevision) !==
 									inheritedBindingRevision,
 						};
+						return stageUi;
 					},
 		select: ui.select ?? (async () => undefined),
 		confirm: ui.confirm ?? (async () => false),
@@ -511,6 +512,7 @@ function makeStageExtensionUiContext(
 		getFooterDataProvider: noOpUIContext.getFooterDataProvider,
 		getChatRenderSettings: ui.getChatRenderSettings ?? noOpUIContext.getChatRenderSettings,
 	};
+	return stageUi;
 }
 
 type StageModelRuntime = NonNullable<CreateAgentSessionOptions["modelRuntime"]>;

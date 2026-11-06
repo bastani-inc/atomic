@@ -22,6 +22,7 @@ export {
 	registerExtensionContextRetirementEffect,
 } from "./core/extensions/runner-context.ts";
 export type {
+	DetachableCallPredicate,
 	ToolAnnotations,
 	ToolExposure,
 	ToolLoadout,

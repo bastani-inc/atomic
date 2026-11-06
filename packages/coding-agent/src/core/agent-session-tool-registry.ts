@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { isWorkflowStageTaskOwner } from "./agent-session-tasks.js";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
 import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.js";
@@ -92,18 +93,22 @@ export function _refreshToolRegistry(
 
 	const toolRegistry = new Map<string, AgentTool>();
 	forgetDetachableTools(this);
+	// A built-in question belongs to the UI of the session that asks it, and ends with that session, except on a workflow
+	// stage, whose own UI keeps it: only there may it outlive its run.
+	const questionsDetach = isWorkflowStageTaskOwner(this);
 	for (const tool of [...wrappedBuiltInTools, ...(wrappedExtensionTools as AgentTool[])]) {
-		const abortError =
-			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool)
-				? () =>
-						runner.createContext().hasHumanInput
-							? hostInputError("HumanInputCancelled")
-							: new Error("Operation aborted")
-				: undefined;
+		const builtInQuestion =
+			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool);
+		const abortError = builtInQuestion
+			? () =>
+					runner.createContext().hasHumanInput
+						? hostInputError("HumanInputCancelled")
+						: new Error("Operation aborted")
+			: undefined;
 		const guarded = rejectMalformedToolArguments(tool, () => this.agent.state.messages);
 		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
-		const detachable = definition?.detachable;
+		const detachable = builtInQuestion && !questionsDetach ? undefined : definition?.detachable;
 		toolRegistry.set(
 			tool.name,
 			definition !== undefined && (detachable === true || typeof detachable === "function")
