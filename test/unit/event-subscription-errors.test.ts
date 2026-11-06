@@ -648,3 +648,66 @@ test("a serialized error with a value this version does not know comes back as t
 		assert.equal((rebuilt.cause as Error).message, "underlying");
 	}
 });
+
+test("every known enum value survives the wire as its own class (#4311)", () => {
+	const known: Array<[SubscriptionError, string, string]> = [
+		...(["publish", "emit", "report", "subscribe"] as const).map((operation): [SubscriptionError, string, string] => [
+			new SubscriptionClosedError("s", operation),
+			"operation",
+			operation,
+		]),
+		...(
+			[
+				"duplicate-id",
+				"duplicate-path",
+				"not-absolute-path",
+				"not-event-source",
+				"not-function",
+				"not-owner-repo",
+				"not-plain-path",
+				"not-positive-integer",
+				"not-stage",
+				"not-string",
+				"out-of-range",
+			] as const
+		).map((reason): [SubscriptionError, string, string] => [
+			new SubscriptionConfigError("f", reason),
+			"reason",
+			reason,
+		]),
+		...(["not-object", "missing-id"] as const).map((reason): [SubscriptionError, string, string] => [
+			new SubscriptionEventError("s", reason),
+			"reason",
+			reason,
+		]),
+		...(["start", "listen", "poll", "read", "request"] as const).map((phase): [SubscriptionError, string, string] => [
+			new EventSourceError("src", phase),
+			"phase",
+			phase,
+		]),
+		...(["gh-cli", "gh-auth"] as const).map((missing): [SubscriptionError, string, string] => [
+			new SubscriptionSetupError(missing),
+			"missing",
+			missing,
+		]),
+		...(["subscription", "processed-event"] as const).map((record): [SubscriptionError, string, string] => [
+			new SubscriptionRecordError("s", record, record === "subscription" ? null : "e1"),
+			"record",
+			record,
+		]),
+		[new SubscriptionTimeoutError("gh-auth-check", 10, 12), "phase", "gh-auth-check"],
+		...(
+			["no-adapter", "not-terminal", "no-session", "invalid-session", "closed", "no-message-admission"] as const
+		).map((reason): [SubscriptionError, string, string] => [
+			new SubscriptionSubscriberUnavailableError("s", "watcher", reason),
+			"reason",
+			reason,
+		]),
+	];
+	for (const [error, field, value] of known) {
+		const rebuilt = deserializeSubscriptionError(JSON.parse(JSON.stringify(serializeSubscriptionError(error))));
+		assert.equal(Object.getPrototypeOf(rebuilt), Object.getPrototypeOf(error), `${error.name} ${value}`);
+		assert.equal((rebuilt as unknown as Record<string, unknown>)[field], value);
+		assert.equal(rebuilt.message, error.message);
+	}
+});

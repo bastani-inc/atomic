@@ -598,24 +598,21 @@ function stringField(fields: SubscriptionErrorFields, key: string): string {
 	return typeof value === "string" ? value : "";
 }
 
-/** The field's value when it is one this version knows, as listed by the keys of `known`. */
+/** The field's value when it is one of the values this version knows. */
 function knownField<T extends string>(
 	fields: SubscriptionErrorFields,
 	key: string,
-	known: Readonly<Record<T, unknown>>,
+	known: readonly T[],
 ): T | undefined {
-	const value = fields[key];
-	return typeof value === "string" && Object.hasOwn(known, value) ? (value as T) : undefined;
+	return known.find((value) => value === fields[key]);
 }
 
-const CLOSED_OPERATIONS: Readonly<Record<SubscriptionClosedOperation, true>> = {
-	publish: true,
-	emit: true,
-	report: true,
-	subscribe: true,
-};
+function keysOf<T extends string>(record: Readonly<Record<T, unknown>>): readonly T[] {
+	return Object.keys(record) as T[];
+}
 
-const EVENT_REASONS: Readonly<Record<SubscriptionEventReason, true>> = { "not-object": true, "missing-id": true };
+const CLOSED_OPERATIONS: readonly SubscriptionClosedOperation[] = ["publish", "emit", "report", "subscribe"];
+const EVENT_REASONS: readonly SubscriptionEventReason[] = ["not-object", "missing-id"];
 
 function numberField(fields: SubscriptionErrorFields, key: string): number {
 	const value = fields[key];
@@ -645,7 +642,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				return new SubscriptionClosedError(stringField(fields, "subscriptionId"), operation);
 			}
 			case "SubscriptionConfigError": {
-				const reason = knownField(fields, "reason", EXPECTED_BY_REASON);
+				const reason = knownField(fields, "reason", keysOf(EXPECTED_BY_REASON));
 				if (reason === undefined) return familyBase(serialized, cause);
 				return new SubscriptionConfigError(
 					stringField(fields, "field"),
@@ -659,7 +656,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				return new SubscriptionEventError(stringField(fields, "subscriptionId"), reason);
 			}
 			case "EventSourceError": {
-				const phase = knownField(fields, "phase", DEFAULT_SOURCE_HINT);
+				const phase = knownField(fields, "phase", keysOf(DEFAULT_SOURCE_HINT));
 				if (phase === undefined) return familyBase(serialized, cause);
 				const detail = fields.detail;
 				return new EventSourceError(stringField(fields, "sourceId"), phase, {
@@ -681,12 +678,12 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 					stringField(fields, "sessionId"),
 				);
 			case "SubscriptionSetupError": {
-				const missing = knownField(fields, "missing", SETUP_HINT);
+				const missing = knownField(fields, "missing", keysOf(SETUP_HINT));
 				if (missing === undefined) return familyBase(serialized, cause);
 				return new SubscriptionSetupError(missing);
 			}
 			case "SubscriptionSubscriberUnavailableError": {
-				const reason = knownField(fields, "reason", SUBSCRIBER_UNAVAILABLE_HINT);
+				const reason = knownField(fields, "reason", keysOf(SUBSCRIBER_UNAVAILABLE_HINT));
 				if (reason === undefined) return familyBase(serialized, cause);
 				return new SubscriptionSubscriberUnavailableError(
 					stringField(fields, "subscriptionId"),
@@ -695,7 +692,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				);
 			}
 			case "SubscriptionRecordError": {
-				const record = knownField(fields, "record", RECORD_HINT);
+				const record = knownField(fields, "record", keysOf(RECORD_HINT));
 				if (record === undefined) return familyBase(serialized, cause);
 				return new SubscriptionRecordError(
 					stringField(fields, "subscriptionId"),
@@ -705,7 +702,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				);
 			}
 			case "SubscriptionTimeoutError": {
-				const phase = knownField(fields, "phase", TIMEOUT_HINT);
+				const phase = knownField(fields, "phase", keysOf(TIMEOUT_HINT));
 				if (phase === undefined) return familyBase(serialized, cause);
 				return new SubscriptionTimeoutError(
 					phase,
