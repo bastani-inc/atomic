@@ -56,6 +56,7 @@ import {
 	WorkspaceError,
 	WriteSelectorError,
 } from "@bastani/atomic";
+import { deserializeRunEvictionError, RunEvictionError, type SerializedRunEvictionError } from "./run-eviction-errors.js";
 import { deserializeStageWaitError, type SerializedStageWaitError, StageWaitError } from "./stage-wait-errors.js";
 import {
 	isWorkflowGitRequiredError,
@@ -156,6 +157,11 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		is: instanceOf(ToolDetachmentError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: deserializeToolDetachmentError,
+	}),
+	"run-eviction": family<RunEvictionError, SerializedRunEvictionError>({
+		is: instanceOf(RunEvictionError),
+		serialize: (error) => error.toJSON(),
+		rehydrate: deserializeRunEvictionError,
 	}),
 	"git-provision": family<GitProvisionError, SerializedGitProvisionError>({
 		is: instanceOf(GitProvisionError),

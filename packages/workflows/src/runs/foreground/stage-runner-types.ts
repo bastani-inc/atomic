@@ -138,6 +138,12 @@ export interface StageSessionRuntime {
 }
 
 /**
+ * What evicting a stage's run would find of the stage: `waiting-on-tool` while it waits, released, on detached calls
+ * and holds nothing else; `passive` while it has no session and nothing under way; `busy` otherwise.
+ */
+export type StageEvictionState = "waiting-on-tool" | "passive" | "busy";
+
+/**
  * The executor side of a stage that waits with its session released. The controller releases and reopens the
  * session; these hooks keep the stage's status, durable record, admission slot and listeners in step.
  */
@@ -146,8 +152,12 @@ export interface StageWaitHooks {
 	readonly policy: StageReleasePolicy | undefined;
 	readonly dispatcher: StageWakeDispatcher;
 	readonly wakeKey: string;
-	/** The session is gone: record the stage as waiting, durably, and give back its admission and listeners. */
-	enter(wait: StageWaitSnapshot): Promise<void>;
+	/**
+	 * The session is gone: record the stage as waiting, durably, and give back its admission and listeners. `restored`:
+	 * a run rebuilt after its eviction takes over a wait its journal already holds, which is not recorded or announced
+	 * again.
+	 */
+	enter(wait: StageWaitSnapshot, restored?: boolean): Promise<void>;
 	/**
 	 * The detached calls the stage waits on delivered their results: record them with the wait, durably, before the
 	 * session reopens, so a resume continues the turn from them instead of running the calls again.
@@ -345,6 +355,10 @@ export interface InternalStageContext extends StageContext {
 	__idleSince?(): number | undefined;
 	/** Internal: start a durably resumed stage released, reopening `sessionId` only when a live call needs it. */
 	__startReleased?(wait: StageWaitSnapshot, sessionId: string): void;
+	/** Internal: what evicting the stage's run would find of the stage. */
+	__evictionState?(): StageEvictionState;
+	/** Internal: the detached calls the stage waits on, released, and the session it gave up; undefined unless it does. */
+	__waitingOn?(): { readonly calls: readonly DetachedToolCall[]; readonly sessionId: string } | undefined;
 }
 
 /** The stage runner's own context: a live stage can release its session while it waits and reopen it afterwards. */
@@ -352,7 +366,14 @@ export type LiveInternalStageContext = InternalStageContext &
 	Required<
 		Pick<
 			InternalStageContext,
-			"__isReleased" | "__holdsInput" | "__releaseIdle" | "__releaseForPrompt" | "__idleSince" | "__startReleased"
+			| "__isReleased"
+			| "__holdsInput"
+			| "__releaseIdle"
+			| "__releaseForPrompt"
+			| "__idleSince"
+			| "__startReleased"
+			| "__evictionState"
+			| "__waitingOn"
 		>
 	>;
 

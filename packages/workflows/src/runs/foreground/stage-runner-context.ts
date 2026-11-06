@@ -511,5 +511,13 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		__startReleased(wait, sessionId) {
 			controller.resumeReleased(wait, sessionId);
 		},
+
+		__evictionState() {
+			return controller.evictionState();
+		},
+
+		__waitingOn() {
+			return controller.waitingOn();
+		},
 	};
 }

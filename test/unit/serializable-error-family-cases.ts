@@ -44,6 +44,7 @@ import {
 } from "@bastani/atomic";
 import { isStorageWriteLockTimeoutError, StorageWriteLockTimeoutError } from "@bastani/atomic/storage";
 import { serializeError } from "../../packages/workflows/src/shared/error-codec.js";
+import { isRunReplayError, RunReplayError } from "../../packages/workflows/src/shared/run-eviction-errors.js";
 import {
 	isStageRehydrationError,
 	StageRehydrationError,
@@ -129,6 +130,17 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		make: () => new ToolDetachmentError("session-busy", { sessionId: "session-1" }, { cause: new Error("running") }),
 		type: ToolDetachmentError,
 		guard: isToolDetachmentError,
+		facts: ownFacts(toJSON),
+	},
+	{
+		family: "run-eviction",
+		make: () =>
+			new RunReplayError(
+				{ runId: "run-1", replayKeys: ["stage:a:1"], toolCallIds: ["call-a"] },
+				{ cause: new Error("the body ended") },
+			),
+		type: RunReplayError,
+		guard: isRunReplayError,
 		facts: ownFacts(toJSON),
 	},
 	{

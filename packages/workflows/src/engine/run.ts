@@ -67,9 +67,16 @@ import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nod
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
+import {
+	admitEvictedRun,
+	EvictedRun,
+	type RunEvictionCheck,
+	RunStageResidency,
+} from "../runs/foreground/run-residency.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
 import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
+import type { StageWaitHandoff } from "../runs/foreground/stage-wake-dispatcher.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
 import { raceAbort } from "../shared/abort.js";
@@ -77,6 +84,8 @@ import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { coercePossibleStages } from "../shared/possible-stages.js";
+import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
+import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
 import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
@@ -121,6 +130,7 @@ import {
 	durableRunTopology,
 	recordDurableActiveStage,
 } from "./run-durable-topology.js";
+import { countUiCalls, type EvictedRunWake, whileEvicted } from "./run-eviction.js";
 import { deferStageUntilRunRelease } from "./run-paused-stage.js";
 import { containStageRejections, containUiRejections, openRunRejectionScope } from "./run-rejection-boundary.js";
 import { assertWaitingStageSessionsExist } from "./run-resume-preflight.js";
@@ -174,6 +184,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
+	const evictionPolicy = opts.parentRun === undefined ? parseEvictWhenWaiting(opts.evictWhenWaiting) : undefined;
+	if (evictionPolicy !== undefined && opts.continuation !== undefined)
+		throw evictionRefused(opts.evictWhenWaiting, runId, "continuation");
 	const activeStore = opts.store ?? defaultStore;
 	const preset =
 		opts.durableBackend ??
@@ -185,6 +198,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	if (preset === undefined && opts.parentRun === undefined && opts.workers?.placement === "shared")
 		await checkSharedPlacementSetup(opts.journal, opts.cwd === undefined ? {} : { cwd: opts.cwd });
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+	if (evictionPolicy !== undefined && !(backend instanceof JournalDurableBackend))
+		throw evictionRefused(opts.evictWhenWaiting, runId, "backend");
 	const waitingStages = opts.parentRun === undefined ? durableWaitingStages(backend, runId) : [];
 	if (waitingStages.length > 0) await assertWaitingStageSessionsExist(waitingStages, runId, opts);
 	const execute = async () => {
@@ -248,7 +263,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				bindStoreDurableBackend(activeStore, backend);
 			}
 			return await admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
-				executeRun(def, resolvedInputs, { ...admittedOpts, store: activeStore, runId, durableBackend: backend }),
+				executeUntilSettled(
+					def,
+					resolvedInputs,
+					{ ...admittedOpts, store: activeStore, runId, durableBackend: backend },
+					evictionPolicy,
+				),
 			);
 		} finally {
 			try {
@@ -274,11 +294,70 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		: await execute();
 }
 
+function evictionRefused(
+	value: RunOpts["evictWhenWaiting"],
+	runId: string,
+	reason: "backend" | "continuation",
+): RunEvictionConfigError {
+	return new RunEvictionConfigError({
+		source: "sdk",
+		field: "evictWhenWaiting",
+		value: JSON.stringify(value),
+		reason,
+		runId,
+	});
+}
+
+/** What every execution of one run shares: when it started and the elapsed time its first execution inherited. */
+interface RunClock {
+	readonly startedAt: number;
+	inheritedElapsedMs?: number | undefined;
+}
+
+/**
+ * Execute the run, and again by replay each time a run evicted while it waited is woken, until it ends. Between
+ * executions only the evicted run's index entries and its stages' detached call handles stay in memory.
+ */
+async function executeUntilSettled(
+	def: WorkflowDefinition,
+	resolvedInputs: ResolvedInputs,
+	opts: RunOpts & { runId: string; durableBackend: DurableWorkflowBackend },
+	policy: RunEvictionPolicy | undefined,
+): Promise<RunResult> {
+	let woken: EvictedRunWake | undefined;
+	const clock: RunClock = { startedAt: Date.now() };
+	for (;;) {
+		const execution = executeRun(
+			def,
+			resolvedInputs,
+			opts,
+			policy === undefined
+				? undefined
+				: { policy, clock, ...(woken === undefined ? {} : { resumedWaits: woken.handoff }) },
+		);
+		woken?.rebuilt();
+		const outcome = await execution;
+		if (!(outcome instanceof EvictedRun)) return outcome;
+		woken = await whileEvicted(outcome, {
+			runId: opts.runId,
+			toolControls: opts.toolControlRegistry ?? defaultToolControlRegistry,
+			signal: opts.signal,
+			cancellation: opts.cancellation,
+		});
+	}
+}
+
 async function executeRun(
 	def: WorkflowDefinition,
 	resolvedInputs: ResolvedInputs,
 	opts: RunOpts & { runId: string; durableBackend: DurableWorkflowBackend },
-): Promise<RunResult> {
+	eviction?: {
+		readonly policy: RunEvictionPolicy;
+		readonly clock: RunClock;
+		/** Set on a rebuild: the waits the evicted execution handed over. */
+		readonly resumedWaits?: StageWaitHandoff;
+	},
+): Promise<RunResult | EvictedRun> {
 	const { runId } = opts;
 	const activeStore = opts.store ?? defaultStore;
 	const adapters = opts.adapters ?? {};
@@ -335,9 +414,13 @@ async function executeRun(
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =
-		opts.parentRun === undefined
-			? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
-			: undefined;
+		eviction?.resumedWaits !== undefined
+			? eviction.clock.inheritedElapsedMs
+			: opts.parentRun === undefined
+				? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
+				: undefined;
+	if (eviction !== undefined && eviction.resumedWaits === undefined)
+		eviction.clock.inheritedElapsedMs = inheritedElapsedMs;
 	const continuationOrigin = opts.continuation !== undefined ? opts.continuation.source.origin : opts.origin;
 	const snapshotField = (field: "maxTokens" | "maxCost"): number | undefined =>
 		resolvedBudget[field] > 0 || opts.budget?.[field] !== undefined || def.budget?.[field] !== undefined
@@ -399,7 +482,7 @@ async function executeRun(
 			...pendingStageMessagesForDurableRun(rootBackend, runId, opts.parentRun?.rootRunId ?? runId),
 		],
 		...(opts.parentRun === undefined ? { possibleStages: runPossibleStages } : {}),
-		startedAt: Date.now(),
+		startedAt: eviction?.clock.startedAt ?? Date.now(),
 		...(opts.parentRun !== undefined
 			? {
 					parentRunId: opts.parentRun.runId,
@@ -676,6 +759,14 @@ async function executeRun(
 		snapshots: opts.snapshots,
 		worktreeRootMappings: opts.worktreeRootMappings,
 	};
+	/** Set once the run is evicted: its index record, which this execution returns instead of a result. */
+	let evicted: EvictedRun | undefined;
+	let bodySettled = false;
+	const uiCalls = { count: 0 };
+	const stageResidency =
+		eviction === undefined
+			? undefined
+			: new RunStageResidency(eviction.policy.afterMs, (residency) => evictIfOnlyWaiting(residency));
 	const runtime = new EngineRuntime({
 		runId,
 		depth,
@@ -702,6 +793,8 @@ async function executeRun(
 		assertLiveWorkAllowed: () => assertFrontierConsumed(),
 		rootBudget,
 		budget,
+		resumedWaits: eviction?.resumedWaits,
+		stageResidency,
 	});
 	// A stage whose previous process recorded the results its detached calls delivered continues its turn from them
 	// on resume, instead of running the calls again (#4309).
@@ -1100,7 +1193,10 @@ async function executeRun(
 			}
 			return exit.exit(options);
 		},
-		ui: containUiRejections(ui, rejectionScope),
+		ui:
+			stageResidency === undefined
+				? containUiRejections(ui, rejectionScope)
+				: countUiCalls(containUiRejections(ui, rejectionScope), uiCalls),
 		stage: (name: string, options?: StageOptions) => {
 			ownController.signal.throwIfAborted();
 			if (!scheduler.isRunPaused()) {
@@ -1158,6 +1254,28 @@ async function executeRun(
 	};
 	const runtimeSettled = Promise.withResolvers<void>();
 	let durableRootAdmitted = false;
+	/**
+	 * Evict the run once nothing of it runs but stages waiting, released, on detached tool calls: hand their waits to
+	 * the residency index and end this execution without settling anything the workflow body awaits.
+	 */
+	const evictIfOnlyWaiting = (residency: RunStageResidency): RunEvictionCheck => {
+		if (bodySettled) return "settled";
+		const outstanding =
+			scheduler.isRunPaused() ||
+			pendingChildWorkflows.size > 0 ||
+			uiCalls.count > 0 ||
+			toolControls.active(runId).length > 0;
+		const waiting = residency.waits();
+		if (waiting === "none") return "settled";
+		if (outstanding || waiting === "busy") return "busy";
+		const handoff = runtime.wakeDispatcher.evict((stageId) => residency.waitingOn(stageId));
+		if (handoff === undefined) return "busy";
+		residency.evict();
+		evicted = new EvictedRun(runId, handoff);
+		admitEvictedRun(evicted);
+		ownController.abort(new RunEvictedError({ runId }));
+		return "evicted";
+	};
 	let terminalStatusCommitted = false;
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
@@ -1273,8 +1391,9 @@ async function executeRun(
 		if (callerSignal?.aborted) onCallerAbort();
 		else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
 		if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
-		opts.onRunStart?.(runSnapshot);
-		if (opts.persistence) {
+		const rebuilt = eviction?.resumedWaits !== undefined;
+		if (!rebuilt) opts.onRunStart?.(runSnapshot);
+		if (opts.persistence && !rebuilt) {
 			await appendRunStart(opts.persistence, {
 				runId,
 				name: def.name,
@@ -1340,7 +1459,7 @@ async function executeRun(
 		});
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
-		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
+		if (opts.deferWorkflowStart === true && !rebuilt) opts.onWorkflowStartReady?.();
 		const sourceFrontierStage = opts.continuation?.source;
 		const sourceFrontierId = sourceFrontierStage?.failedStageId ?? opts.continuation?.resumeFromStageId;
 		const startupFrontierStage =
@@ -1352,9 +1471,17 @@ async function executeRun(
 			runWorkflowDefinitionCallback(def.name, runId, () => rejectionScope.run(() => def.run(ctx))),
 			ownController.signal,
 		);
+		bodySettled = true;
 		await raceAbort(eventPrimitives.closeAndDrain(), ownController.signal);
 		await raceAbort(subscriberReports.settle(), ownController.signal);
 		await drainCachedStagePersistence();
+		const unadopted = runtime.wakeDispatcher.unadoptedToolWaits();
+		if (unadopted.length > 0)
+			throw new RunReplayError({
+				runId,
+				replayKeys: unadopted.map((wait) => wait.replayKey),
+				toolCallIds: unadopted.flatMap((wait) => wait.calls.map((call) => call.toolCallId)),
+			});
 		// The workflow is done with its stages: one still released between turns shows its own status again.
 		settleReleasedStages(runtime.wakeDispatcher);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
@@ -1419,6 +1546,8 @@ async function executeRun(
 			opts.onRunEnd,
 		);
 	} catch (error) {
+		if (evicted !== undefined) return evicted;
+		bodySettled = true;
 		let err = error;
 		// A non-cooperative body/admission may reject while paused. Keep its
 		// settlement on this owner until resume; explicit cancellation still wins.
@@ -1552,6 +1681,7 @@ async function executeRun(
 		});
 		return failed;
 	} finally {
+		stageResidency?.stop();
 		// The run keeps its stages until each one whose failure it published has ended: a resume or quit must not
 		// reach a stage whose last overlapping call still runs (#4450).
 		await scheduler.pendingStageFailuresSettled();
@@ -1565,6 +1695,7 @@ async function executeRun(
 			await controlSettlements;
 			while (pendingControlPersistence.size > 0) await Promise.all(pendingControlPersistence);
 			if (
+				evicted === undefined &&
 				(durableRootAdmitted || durableBackend.getWorkflow(runId) !== undefined) &&
 				findWorkflowGracefulQuit(ownController.signal.reason) === undefined
 			) {

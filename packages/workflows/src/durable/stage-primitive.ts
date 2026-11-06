@@ -206,8 +206,9 @@ export function durableRecordedToolResults(
 
 /**
  * A stage whose previous process stopped while it waited between turns (`release` or `idle`) resumes released and
- * replays its finished calls from the record, instead of being prompted to continue. Undefined for every other stage,
- * and for a record that cannot answer the calls it says finished.
+ * replays its finished calls from the record, instead of being prompted to continue. So does a stage that stopped
+ * waiting on a tool call (`tool`) after earlier calls finished; its next call then continues the turn that waits on the
+ * tool. Undefined for every other stage, and for a record that cannot answer the calls it says finished.
  */
 function releasedStageResume(
 	checkpoint: DurableStageCheckpoint | undefined,
@@ -215,11 +216,12 @@ function releasedStageResume(
 ): DurableReleasedStageResume | undefined {
 	const wait = checkpoint?.wait;
 	const sessionId = checkpoint?.sessionId;
-	if (wait === undefined || sessionId === undefined || (wait.kind !== "release" && wait.kind !== "idle"))
-		return undefined;
+	if (wait === undefined || sessionId === undefined || wait.kind === "prompt") return undefined;
 	const promptsCompleted = wait.promptsCompleted ?? 0;
 	// A stage that completed answers at least its first call from the record; a record without that count predates it.
-	if (cached === undefined) return promptsCompleted === 0 ? { wait, sessionId, promptsCompleted } : undefined;
+	// A tool wait in the stage's first call continues that call's turn instead, as any stage stopped mid-turn does.
+	if (cached === undefined)
+		return promptsCompleted === 0 && wait.kind !== "tool" ? { wait, sessionId, promptsCompleted } : undefined;
 	if (promptsCompleted === 0) return undefined;
 	return {
 		wait,

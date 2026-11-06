@@ -2094,6 +2094,7 @@ interface RunOpts {
   readonly onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
   readonly onStageLifecycleEvent?: (runId: string, event: StageLifecycleEvent) => void;
   readonly releaseWhenWaiting?: ReleaseWhenWaiting;
+  readonly evictWhenWaiting?: EvictWhenWaiting;
   readonly onRunEnd?: (
     runId: string,
     status: RunStatus,
@@ -2186,7 +2187,7 @@ Cleanup that is confirmed late does not fail the stage; it records a `cleanup` s
 | `TaskCleanupError` | `task_cleanup_unconfirmed` | Closing a session or workflow stage, or pausing a stage, found a task whose process cleanup failed. | `phase` (`session-close`, `stage-close`, `app-shutdown`, or `stage-pause`), `failures` (`taskId` and `resources`, each with `resource`, `code`, `message`), `hint`, `retryable: true`, `cause` | Follow `hint`: confirm the listed processes have exited, then retry or resume. |
 | `TaskCleanupAdmissionTimeoutError` (a `TaskCleanupError`) | `task_cleanup_unconfirmed` | A command's admission spent five continuous seconds waiting while tasks owned by the same session or stage held permits from the same admission provider for unconfirmed cleanup. The new command never started; the earlier permits remain held. | `phase: "command-admission"`, `timeoutMs`, `elapsedMs` (continuous wait with matching unconfirmed permits held), `failures`, `hint`, `retryable: true`, `cause` | Confirm the listed resources have been released, then retry the command. Catch it with `isTaskCleanupAdmissionTimeoutError`; `isTaskCleanupError` and `isRetryableTaskError` also recognize it. `rehydrateTaskCleanupError` preserves its subtype and timing fields. |
 
-`releaseWhenWaiting` is the default for every stage of the run; see [`releaseWhenWaiting`](#releasewhenwaiting). `run()` validates it before it starts anything.
+`releaseWhenWaiting` is the default for every stage of the run; see [`releaseWhenWaiting`](#releasewhenwaiting). `run()` validates it before it starts anything. `evictWhenWaiting` evicts the run from memory while its stages only wait on detached tool calls; see [Evicting waiting runs](#evicting-waiting-runs).
 
 `onStageLifecycleEvent` receives a stage's waits:
 
@@ -2228,6 +2229,22 @@ The errors around waiting stages share the family base `StageWaitError`. Each ha
 | `StageWakeError` | `invalid-wake-kind` | `registerStageWakeKind` was given a kind that is not a non-empty string; nothing was registered | `source: "sdk"`, `field: "kind"`, `value` | Pass the kind's name, declared in `StageWakeKinds` |
 | `StageWakeError` | `invalid-wake-handler` | `registerStageWakeKind` was given a handler that is not a function; nothing was registered | `source: "sdk"`, `field: "handler"`, `kind`, `value` | Pass a function, or no handler to queue messages of the kind for the stage's next wait of it |
 
+#### Evicting waiting runs
+
+`evictWhenWaiting` lets a root run leave memory while its stages only wait on detached tool calls. [`releaseWhenWaiting`](#releasewhenwaiting) gives up each waiting stage's session; eviction also drops the run's stage objects and everything the workflow body awaits, so each waiting stage is only a small index entry: its run, stage, replay key, wait reason, the ids of the calls it waits on and of those that already have results, and its stored session, named as a released agent session names it. The calls keep running. It accepts `true` (evict after `DEFAULT_EVICT_WHEN_WAITING_AFTER_MS`, 60 seconds), `{ afterMs }` with a number of milliseconds from 0 to 2147483647, or `false`, the default.
+
+A run is evicted once, for `afterMs`, every one of its stages either waits released on a detached call or holds nothing, at least one waits on a call, and no `ctx.tool`, `ctx.ui` or `ctx.workflow` call, pause, or message held for a waiting stage is outstanding. A run that is busy beside its waiting stages is checked again every `afterMs`, and at most once a second. An evicted run stays `running`, its waiting stages show `waiting`, and the process keeps the run's lease, so no other process resumes it. The run is rebuilt in the same process when every call of one of its stages has a result, when `deliverStageWake` sends a waiting stage a message, when its run control pauses or quits it, or when its `signal` or cancellation registry kills it. Results that arrive together rebuild it once. The rebuild runs the workflow body again from the start, as a resume does: stage calls that had finished return their recorded results without asking the model, stages still waiting wait on the same calls again without reopening their sessions or running the calls again, and woken stages continue their turns. A rebuilt run is evicted again the next time it only waits. `onRunStart` and `onWorkflowStartReady` run once and the run keeps its first start time, however often it is rebuilt; stage-level callbacks such as `onStageLifecycleEvent` can repeat for stages the rebuild replays, as they do on a resume. If the process exits while a run is evicted, `/workflow resume` continues it like any run whose stages were waiting.
+
+Enable it only for a workflow body that a resume can replay. Code outside `ctx` calls runs again on every rebuild, and anything the body awaits besides `ctx` calls is dropped at eviction: code that still runs afterwards, such as a timer callback, gets `RunEvictedError` from its next `ctx` call. While a run is evicted its stages have no control handles, so stage chat and `stageControlRegistry` sends reach them only once a wake has rebuilt the run, and `deliverStageWake` to a stage that is not waiting returns `stage-not-open`.
+
+The errors share the family base `RunEvictionError`, with the same shape as the [stage wait errors](#stage-wait-errors): a stable `code`, a `hint`, `retryable`, JSON-safe `fields`, `toJSON()` and `deserializeRunEvictionError()`. The guards are `isRunEvictionError`, `isRunEvictionConfigError`, `isRunReplayError` and `isRunEvictedError`, and `findRunEvictionError(error)` returns the first one in a `cause` chain, at most eight levels deep.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `RunEvictionConfigError` | `invalid-evict-when-waiting` | `run()` was given an `evictWhenWaiting` that is not `true`, `false` or `{ afterMs }` in range (`reason: "value"`), a durable backend that is not a run journal (`"backend"`), or a `continuation` (`"continuation"`). Thrown before anything is written. `retryable: false` | `source: "sdk"`, `field`, `value`, `reason`, and `runId` for `backend` and `continuation` | Fix the value, run on a run journal, or leave `evictWhenWaiting` unset |
+| `RunReplayError` | `replay-diverged` | A rebuilt run's workflow body finished without waiting again on the detached calls of its evicted stages. The run fails with it, its `failureDetail` carries it, and the calls are aborted. `retryable: false` | `runId`, `replayKeys`, `toolCallIds` | Create and await the body's stages in the same order on every run; move anything that differs between runs, such as time, randomness or external reads, into `ctx.tool` |
+| `RunEvictedError` | `run-evicted` | Code the evicted execution still runs outside `ctx` calls called `ctx` after the run was evicted. Not a failure of the run, which the rebuild carries on | `runId` | Await every `ctx` call in the body, and keep other work out of a body that runs with `evictWhenWaiting` |
+
 `onStageSessionEvent` streams every agent-session event from each stage (for example `message_update`, `tool_execution_start`, and `tool_execution_end`), tagged with the stage's `runId` and `stageId`. `AgentSessionEvent` is exported by `@bastani/atomic`. The stream continues when a fallback model replaces a stage's session. Stages in nested `ctx.workflow(...)` runs report the child run's `runId`. Exceptions thrown by the listener, and rejections from an async listener, are ignored and do not affect the stage.
 
 The public authoring declaration intentionally excludes runtime-only executor fields such as `defaultSessionDir`, `gitWorktreeSetupCache`, `durableBackend`, `durableScope`, and `onStageSession`.
@@ -2240,6 +2257,7 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | --- | --- | --- |
 | `stage-wait` | [`StageWaitError`](#stage-wait-errors) and its subclasses | `isStageWaitError` |
 | `tool-detachment` | `ToolDetachmentError` | `isToolDetachmentError` |
+| `run-eviction` | [`RunEvictionError`](#evicting-waiting-runs) and its subclasses | `isRunEvictionError` |
 | `git-provision` | `GitProvisionError`, `GitUnavailableError`, `GitProvisionTimeoutError`, `GitProvisionConfigError` | `isGitProvisionError` |
 | `git-required` | `WorkflowGitRequiredError`, with its git provisioning error as `cause`. When that cause falls beyond the chain's depth bound, an `Error` with its name, code, message, hint, `retryable` and fields | `isWorkflowGitRequiredError` |
 | `workspace` | `WorkspaceError` and its subclasses | `isWorkspaceError` |

@@ -210,6 +210,14 @@ export interface WorkflowScopedModel {
 export type ReleaseWhenWaiting = boolean | { readonly afterMs: number };
 
 /**
+ * Whether a run whose stages only wait on detached tool calls is evicted from memory and rebuilt by replaying its
+ * journal when a result arrives. `true` evicts after the default quiet period
+ * ({@link DEFAULT_EVICT_WHEN_WAITING_AFTER_MS}), `{ afterMs }` sets it, and `false` (the default) keeps the run
+ * resident.
+ */
+export type EvictWhenWaiting = boolean | { readonly afterMs: number };
+
+/**
  * What a waiting stage waits on, with its session released:
  * - `tool`: a detached tool call; the stage is `waiting` and reopens when the result arrives.
  * - `release`: an explicit `stage.release()`; the stage is `waiting` until `rehydrate()` or its next message reopens it.

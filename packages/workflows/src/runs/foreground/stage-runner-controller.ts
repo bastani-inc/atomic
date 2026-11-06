@@ -122,6 +122,7 @@ import {
 } from "./stage-runner-structured-output.js";
 import type {
 	AgentSessionConsumer,
+	StageEvictionState,
 	StageModelFallbackMeta,
 	StageQueuedImage,
 	StageRunnerOpts,
@@ -141,6 +142,7 @@ import {
 	unresolvedContextOverflowMessage,
 } from "./stage-runner-unresolved-overflow.js";
 import { waitForStageStartup } from "./stage-startup-wait.js";
+import type { EvictedToolWait } from "./stage-wake-dispatcher.js";
 
 /** Stage extension state the subagents extension reads to end, rather than keep restorable, a closing stage's children. */
 export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-closed-for-good";
@@ -444,8 +446,8 @@ export class StageSessionController {
 	private heldWhileReleased: HeldStageInput[] | undefined;
 	/** Set while the stage waits on detached calls with its session still live: inline, or resident for the wait. */
 	private waitingInline = false;
-	/** Cancels the detached calls of the current wait; set only while the stage waits on them. */
-	private abortDetachedCalls: ((reason: Error | DOMException | string) => void) | undefined;
+	/** The detached calls of the current wait, released; set only while the stage waits on them. */
+	private detachedCallsWaitedOn: readonly DetachedToolCall[] | undefined;
 	/** Callers that need the session while it is released wait for the stage to wake. Created on first need. */
 	private releasedWaitEnded: PromiseWithResolvers<void> | undefined;
 	/** A durably resumed stage looks at the turn its transcript ends on once, on its first prompt. */
@@ -1004,8 +1006,14 @@ export class StageSessionController {
 	): Promise<string | undefined> {
 		if (this.resumedCallChecked || this.effectiveStageOptions?.resumeFromSessionId === undefined) return text;
 		this.resumedCallChecked = true;
-		const session = await this.ensureSession(consumer);
 		const replayKey = this.effectiveStageOptions.durableReplayKey;
+		const kept = this.opts.waiting?.dispatcher.takeToolWaitForResume(replayKey);
+		if (kept !== undefined) {
+			const results = await this.waitAgainOnEvictedCalls(kept, this.effectiveStageOptions.resumeFromSessionId);
+			await this.continueWithResults(results, sdkOptions, consumer);
+			return undefined;
+		}
+		const session = await this.ensureSession(consumer);
 		const recorded =
 			replayKey === undefined ? undefined : this.opts.waiting?.dispatcher.takeResultsForResume(replayKey);
 		const pendingTurn = session.hasPendingDetachedTurn?.() === true;
@@ -1045,6 +1053,25 @@ export class StageSessionController {
 		if (answer === undefined) return continuationText ?? text;
 		this.artifactCapture.adoptAnswer(answer);
 		return undefined;
+	}
+
+	/**
+	 * A stage of a run rebuilt after its eviction waits again, released, on the detached calls it waited on when the run
+	 * was evicted: still running, or finished meanwhile. Its session stays closed until their results arrive, and
+	 * nothing is recorded again for a wait the run's journal already holds.
+	 */
+	private waitAgainOnEvictedCalls(kept: EvictedToolWait, sessionId: string): Promise<readonly DetachedToolResult[]> {
+		const hooks = this.opts.waiting!;
+		const wait: StageWaitSnapshot = {
+			kind: "tool",
+			since: kept.since,
+			toolCalls: kept.calls.map((call) => ({ toolCallId: call.toolCallId, toolName: call.toolName })),
+		};
+		this.releasedWait = wait;
+		this.givenUp = wait;
+		this.reattachSessionId = sessionId;
+		hooks.dispatcher.watchToolResults(hooks.wakeKey, kept.calls);
+		return this.waitReleased(wait, kept.calls, hooks.dispatcher.park(hooks.wakeKey, "tool-results"), true);
 	}
 
 	private async continueDetachedTurns(
@@ -1237,27 +1264,34 @@ export class StageSessionController {
 		return this.waitReleased(wait, calls, woken);
 	}
 
-	/** Release the session and wait for the run's wake dispatcher to deliver the results, then reopen the session. */
+	/**
+	 * Release the session and wait for the run's wake dispatcher to deliver the results, then reopen the session.
+	 * `restored`: the wait is one the run's journal already holds, taken over by a run rebuilt after its eviction.
+	 */
 	private async waitReleased(
 		wait: StageWaitSnapshot,
 		calls: readonly DetachedToolCall[],
 		woken: Promise<{ readonly results: readonly DetachedToolResult[] }>,
+		restored = false,
 	): Promise<readonly DetachedToolResult[]> {
 		const hooks = this.opts.waiting!;
 		const { dispatcher, wakeKey } = hooks;
-		dispatcher.register({ runId: this.opts.runId, stageId: this.opts.stageId, reason: wait.kind, wakeKey });
-		this.abortDetachedCalls = (reason) => {
-			for (const call of calls) call.abort(reason);
-		};
+		dispatcher.register({
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			reason: wait.kind,
+			wakeKey,
+			since: wait.since,
+		});
 		let delivered: readonly DetachedToolResult[];
 		try {
 			await this.releaseSession(wait);
-			await hooks.enter(wait);
+			await hooks.enter(wait, restored);
+			this.detachedCallsWaitedOn = calls;
 			delivered = (await woken).results;
 		} catch (error) {
-			this.abortDetachedCalls?.(
-				error instanceof Error || typeof error === "string" ? error : this.workflowAbortReason(),
-			);
+			const reason = error instanceof Error || typeof error === "string" ? error : this.workflowAbortReason();
+			for (const call of calls) call.abort(reason);
 			// The wait ended without a wake: a later caller reopens the session as for any released stage.
 			this.releasedWait = undefined;
 			this.releasedWaitEnded?.reject(error);
@@ -1265,7 +1299,7 @@ export class StageSessionController {
 			throw error;
 		} finally {
 			dispatcher.unregister(wakeKey);
-			this.abortDetachedCalls = undefined;
+			this.detachedCallsWaitedOn = undefined;
 		}
 		await this.reopen(wait, delivered);
 		return delivered;
@@ -1466,6 +1500,32 @@ export class StageSessionController {
 	/** True while the stage waits with its session released. */
 	isReleased(): boolean {
 		return this.releasedWait !== undefined;
+	}
+
+	/**
+	 * What evicting the stage's run would find of it: `waiting-on-tool` while it waits, released, on detached calls whose
+	 * wait is recorded, and holds nothing else; `passive` while it has no session, none opening or reopening, even
+	 * between attempts, and no release under way (never opened, released between turns, or disposed); `busy` otherwise,
+	 * which keeps the run resident.
+	 */
+	evictionState(): StageEvictionState {
+		if (this.disposed) return "passive";
+		const held = this.heldWhileReleased !== undefined || this.pauseControl.isPaused();
+		if (this.detachedCallsWaitedOn !== undefined) return held ? "busy" : "waiting-on-tool";
+		const underWay =
+			held ||
+			this.session !== undefined ||
+			this.sessionPromise !== undefined ||
+			this.releasing !== undefined ||
+			this.rehydration !== undefined;
+		return underWay ? "busy" : "passive";
+	}
+
+	/** The detached calls the stage waits on, released, and the session it gave up; undefined unless it does. */
+	waitingOn(): { readonly calls: readonly DetachedToolCall[]; readonly sessionId: string } | undefined {
+		const calls = this.detachedCallsWaitedOn;
+		const sessionId = this.reattachSessionId;
+		return calls === undefined || sessionId === undefined ? undefined : { calls, sessionId };
 	}
 
 	/**

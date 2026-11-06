@@ -246,6 +246,7 @@ export { deliverStageWake } from "./runs/foreground/stage-wake-dispatcher.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";
 export type {
+	EvictWhenWaiting,
 	ReleaseWhenWaiting,
 	StageLifecycleEvent,
 	StageWaitKind,
@@ -285,6 +286,29 @@ export {
 	StageDecisionTimeoutError,
 	StageDecisionUnavailableError,
 } from "./shared/possible-stage-prediction-errors.js";
+export { DEFAULT_EVICT_WHEN_WAITING_AFTER_MS } from "./shared/run-eviction.js";
+export type {
+	RunEvictedErrorCode,
+	RunEvictionConfigErrorCode,
+	RunEvictionConfigReason,
+	RunEvictionConfigSource,
+	RunEvictionErrorCode,
+	RunEvictionErrorFields,
+	RunReplayErrorCode,
+	SerializedRunEvictionError,
+} from "./shared/run-eviction-errors.js";
+export {
+	deserializeRunEvictionError,
+	findRunEvictionError,
+	isRunEvictedError,
+	isRunEvictionConfigError,
+	isRunEvictionError,
+	isRunReplayError,
+	RunEvictedError,
+	RunEvictionConfigError,
+	RunEvictionError,
+	RunReplayError,
+} from "./shared/run-eviction-errors.js";
 export type { StageWaitToolResult } from "./shared/stage-wait.js";
 export { DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS, MAX_RELEASE_WHEN_WAITING_AFTER_MS } from "./shared/stage-wait.js";
 export type {

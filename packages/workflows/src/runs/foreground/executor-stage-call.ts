@@ -314,7 +314,12 @@ export function createTrackedStageCaller(input: {
 				const hasNoExplicitModelConfig =
 					input.options?.model === undefined && input.options?.fallbackModels === undefined;
 				const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
-				if (callOptions.eagerSession && !promptAdapterHandlesInitialPrompt && hasNoExplicitModelConfig) {
+				if (
+					callOptions.eagerSession &&
+					!promptAdapterHandlesInitialPrompt &&
+					hasNoExplicitModelConfig &&
+					!runtime.resumesEvictedWait()
+				) {
 					try {
 						await runtime.innerCtx.__ensureSession();
 					} catch (err) {

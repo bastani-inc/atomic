@@ -6,6 +6,7 @@ import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { residentStageEntries } from "../../packages/workflows/src/runs/foreground/run-residency.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import type { StageWaitKind } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -25,6 +26,10 @@ import { expireWorkflowLease } from "../helpers/workflow-lease.js";
  * gives its final answer, but in `wait` mode the call never returns, as when the process stops after the turn and
  * before the stage records its completion; the test kills the process once every stage has its answer.
  *
+ * Scenario `evict`: as `tool`, with the run evicted from memory once every stage waits; `wait` mode writes
+ * `evicted-ready` once the run's index holds an entry for every stage. Scenario `turns`: the same, but every stage first
+ * finishes a prompt and then waits on the tool in its next message.
+ *
  * `resume`: the same run resumes from the journal; the tool now finishes at once and the long wait is over. The values
  * the workflow received from its stages are written to `resumed-results.json`.
  */
@@ -35,7 +40,17 @@ const STAGES = Number(stageCountText ?? "20");
 assert.ok(runIdArgument);
 const runId = runIdArgument;
 const scenario = scenarioArgument ?? "tool";
-assert.ok(scenario === "tool" || scenario === "release" || scenario === "idle" || scenario === "finished");
+assert.ok(
+	scenario === "tool" ||
+		scenario === "release" ||
+		scenario === "idle" ||
+		scenario === "finished" ||
+		scenario === "evict" ||
+		scenario === "turns",
+);
+const evicts = scenario === "evict" || scenario === "turns";
+const callsTool = (text: string): boolean =>
+	scenario === "tool" || scenario === "evict" || (scenario === "turns" && text.startsWith("watch"));
 const TOOL = "wait_for_ci";
 const effects = join(directory, "effects.txt");
 const journalPath = join(directory, "journal.sqlite");
@@ -87,7 +102,14 @@ const usage = {
 /** The long wait the workflow holds its stages across: endless before the kill, over at once on resume. */
 const longWait = mode === "resume" ? Promise.resolve() : new Promise<void>(() => {});
 const expectedWait: StageWaitKind | undefined =
-	scenario === "tool" ? "tool" : scenario === "finished" ? undefined : scenario;
+	scenario === "tool" || evicts ? "tool" : scenario === "finished" ? undefined : scenario;
+if (mode === "wait" && evicts) {
+	const watch = setInterval(() => {
+		if (residentStageEntries().filter((entry) => entry.runId === runId).length !== STAGES) return;
+		clearInterval(watch);
+		void writeFile(join(directory, "evicted-ready"), "ready");
+	}, 10);
+}
 
 let waiting = 0;
 let answered = 0;
@@ -103,8 +125,14 @@ const definition = workflow({
 		await Promise.all(
 			Array.from({ length: STAGES }, async (_, index) => {
 				const name = `stage-${index}`;
-				if (scenario === "tool") {
+				if (scenario === "tool" || scenario === "evict") {
 					await ctx.task(name, { prompt: `watch ci ${index}` });
+					return;
+				}
+				if (scenario === "turns") {
+					const turnStage = ctx.stage(name);
+					await turnStage.prompt(`plan ${index}`);
+					await turnStage.sendUserMessage(`watch ci ${index}`);
 					return;
 				}
 				if (scenario === "finished" && index % 2 === 1) {
@@ -135,6 +163,7 @@ try {
 			// An explicitly released stage, or one that never waits, does not depend on the threshold; keep the idle scan
 			// away from it.
 			releaseWhenWaiting: { afterMs: scenario === "release" || scenario === "finished" ? 600_000 : 0 },
+			...(evicts ? { evictWhenWaiting: { afterMs: 0 } } : {}),
 			onStageLifecycleEvent: (_runId, event) => {
 				if (event.type !== "stage_waiting" || event.wait.kind !== expectedWait) return;
 				waiting += 1;
@@ -154,7 +183,7 @@ try {
 							async prompt(text: string) {
 								await appendFile(effects, `prompt ${stageName} ${promptKind(text)}\n`);
 								await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-								if (scenario !== "tool") {
+								if (!callsTool(text)) {
 									await manager.appendMessage({
 										role: "assistant",
 										content: [{ type: "text", text: `answered ${text}` }],
@@ -247,9 +276,9 @@ try {
 							getLastAssistantText: () =>
 								scenario === "finished"
 									? lastAnswer(transcript())
-									: scenario === "tool"
-										? "ci passed"
-										: "answered",
+									: scenario === "release" || scenario === "idle"
+										? "answered"
+										: "ci passed",
 						};
 					},
 				},

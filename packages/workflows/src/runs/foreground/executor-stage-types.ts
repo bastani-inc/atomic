@@ -93,6 +93,16 @@ export interface LiveStageRuntime {
 	 * process stopped: resolves to the recorded result (none for a replayed message). Undefined when the call runs live.
 	 */
 	readonly replayRecordedCall: () => Promise<DurableReleasedStageResume["recorded"]> | undefined;
+	/**
+	 * True once, for the first live call of a stage resumed inside a tool wait after earlier calls: that call continues
+	 * the turn waiting on the tool instead of sending its own text.
+	 */
+	readonly takeWaitingTurn: () => boolean;
+	/**
+	 * True while the stage of a run rebuilt after its eviction has a tool wait to take over: its next call waits on the
+	 * same detached calls again, with no session opened and nothing recorded for a wait the journal already holds.
+	 */
+	readonly resumesEvictedWait: () => boolean;
 	/** Start the stage released, as its previous process left it waiting between turns. */
 	readonly resumeReleased: (resume: DurableReleasedStageResume) => void;
 	/**

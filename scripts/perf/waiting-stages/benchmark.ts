@@ -20,6 +20,9 @@
  *
  * `--no-release` runs the same agents with `releaseWhenWaiting: false`: the resident baseline the released figures
  * compare against. Its idle invariants are not checked, since every agent keeps its session by design.
+ *
+ * `--evict` also runs each wave with `evictWhenWaiting`: once every agent of the wave waits on the long tool, the run is
+ * evicted from memory and each waiting agent is only its index entry until the wake phase rebuilds the run by replay.
  */
 import { getEventListeners } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -40,6 +43,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { InMemoryCodingAgentModelsStore } from "../../../packages/coding-agent/src/core/models-store.js";
 import { MemorySessionStore } from "../../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { residentStageEntries } from "../../../packages/workflows/src/runs/foreground/run-residency.js";
 import { createAgentSessionAdapter, run, workflow } from "../../../packages/workflows/src/sdk-surface.js";
 import type { StageLifecycleEvent } from "../../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { createStore } from "../../../packages/workflows/src/shared/store.js";
@@ -53,6 +57,8 @@ export interface Options {
 	readonly out?: string;
 	/** False for the resident baseline (`--no-release`): a wave is idle once every agent called the long tool. */
 	readonly expectRelease: boolean;
+	/** True (`--evict`): each wave's run is evicted once its agents all wait; a wave is idle once it is. */
+	readonly evict: boolean;
 }
 
 export function parseOptions(argv: readonly string[]): Options {
@@ -77,6 +83,7 @@ export function parseOptions(argv: readonly string[]): Options {
 		label: value("label") ?? "run",
 		...(out === undefined ? {} : { out: resolve(out) }),
 		expectRelease: !argv.includes("--no-release"),
+		evict: argv.includes("--evict"),
 	};
 }
 
@@ -191,11 +198,13 @@ function directoryBytes(path: string): number {
 
 /** The idle-phase fields `assertIdleInvariants` reads; `runIdleAgentBenchmark`'s report carries them. */
 export interface IdleInvariantReport {
-	readonly options: Pick<Options, "agents" | "wave" | "expectRelease">;
+	readonly options: Pick<Options, "agents" | "wave" | "expectRelease" | "evict">;
 	readonly idle: {
 		readonly liveSessions: number;
 		readonly sessionsRetained: number;
 		readonly waitingStages: number;
+		/** Waiting agents the residency index holds: every agent of an evicted wave, none otherwise. */
+		readonly residentEntries: number;
 		readonly ciCallsPending: number;
 		readonly abortListenersPerRun: { readonly max: number };
 		readonly resources: Readonly<Record<string, number>>;
@@ -223,6 +232,9 @@ export function assertIdleInvariants(report: IdleInvariantReport): void {
 	const { idle, baselineResources, options } = report;
 	const violations: string[] = [];
 	if (idle.liveSessions !== 0) violations.push(`${idle.liveSessions} sessions still live while every agent idles`);
+	if (options.evict && idle.residentEntries !== options.agents) {
+		violations.push(`${idle.residentEntries} of ${options.agents} idle agents are only their index entry`);
+	}
 	if (idle.sessionsRetained !== 0) {
 		violations.push(`${idle.sessionsRetained} disposed sessions were not garbage collected`);
 	}
@@ -335,7 +347,8 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 	const sessionFinalizer = new FinalizationRegistry<number>(() => {
 		sessionsCollected += 1;
 	});
-	const runSignals = new Set<AbortSignal>();
+	/** Weakly: an evicted run's execution must stay collectable while the benchmark measures it. */
+	const runSignals = new Set<WeakRef<AbortSignal>>();
 	const waiting = new Map<string, number>();
 	const rehydratedAt = new Map<string, number>();
 	const definition = workflow({
@@ -363,7 +376,7 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 		agentSession: {
 			async create(...args: Parameters<typeof sdkAdapter.create>) {
 				const meta = args[1];
-				if (meta?.signal !== undefined) runSignals.add(meta.signal);
+				if (meta?.signal !== undefined) runSignals.add(new WeakRef(meta.signal));
 				const created = await sdkAdapter.create(...args);
 				const session = "session" in created ? created.session : created;
 				liveSessions += 1;
@@ -394,6 +407,7 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 	const runs: {
 		readonly first: number;
 		readonly count: number;
+		readonly runId: string;
 		readonly store: ReturnType<typeof createStore>;
 		readonly result: Promise<{ readonly status: string; readonly error?: string }>;
 	}[] = [];
@@ -406,28 +420,34 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 		const callsBefore = ciCalls;
 		const waitingBefore = waiting.size;
 		const store = createStore();
+		const runId = crypto.randomUUID();
 		const result = run(
 			definition,
 			{ first: launched, count },
 			{
+				runId,
 				cwd,
 				store,
 				adapters,
 				...(options.store === "memory" ? { journal: { memory: true } } : {}),
 				releaseWhenWaiting: options.expectRelease ? { afterMs: 0 } : false,
+				...(options.evict ? { evictWhenWaiting: { afterMs: 0 } } : {}),
 				onStageLifecycleEvent: (_runId: string, event: StageLifecycleEvent) => {
 					if (event.type === "stage_waiting") waiting.set(event.stageName, Date.now());
 					else rehydratedAt.set(event.stageName, Date.now());
 				},
 			},
 		);
-		runs.push({ first: launched, count, store, result });
+		runs.push({ first: launched, count, runId, store, result });
 		let ended: { readonly status: string; readonly error?: string } | undefined;
 		void result.then((settled) => {
 			ended = settled;
 		});
+		const evicted = (): boolean => residentStageEntries().filter((entry) => entry.runId === runId).length === count;
 		const idleWave = (): boolean =>
-			ciCalls - callsBefore === count && (!options.expectRelease || waiting.size - waitingBefore === count);
+			ciCalls - callsBefore === count &&
+			(!options.expectRelease || waiting.size - waitingBefore === count) &&
+			(!options.evict || evicted());
 		while (!idleWave()) {
 			if (ended !== undefined) throw new Error(`wave ${runs.length} ended early: ${ended.status} ${ended.error}`);
 			await new Promise((resolveTick) => setTimeout(resolveTick, 25));
@@ -450,7 +470,10 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 	const idleLoop = eventLoopDelaySampler();
 	await new Promise((resolveIdle) => setTimeout(resolveIdle, 2_000));
 	const idleEventLoopDelay = idleLoop.stop();
-	const listenersPerRun = [...runSignals].map((signal) => getEventListeners(signal, "abort").length);
+	const listenersPerRun = [...runSignals].flatMap((reference) => {
+		const signal = reference.deref();
+		return signal === undefined ? [] : [getEventListeners(signal, "abort").length];
+	});
 	const heapTypes = await objectTypeCounts();
 	await settle();
 	const snapshotPath = process.env.ATOMIC_WAITING_STAGES_HEAP_SNAPSHOT;
@@ -464,6 +487,7 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 		/** Disposed sessions something still references: an idle agent should keep none. */
 		sessionsRetained: sessionsCreated - sessionsCollected - liveSessions,
 		waitingStages: waiting.size,
+		residentEntries: residentStageEntries().filter((entry) => runs.some((wave) => wave.runId === entry.runId)).length,
 		ciCallsPending: ciAnswers.size,
 		abortListenersPerRun: summarize(listenersPerRun),
 		resources: activeResources(),
@@ -501,13 +525,14 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 	const points = samples.map((sample) => ({ agents: sample.agents, bytes: sample.rssBytes }));
 	const heapPoints = samples.map((sample) => ({ agents: sample.agents, bytes: sample.heapBytes }));
 	const last = samples.at(-1)!;
+	const { out: _out, ...reportedOptions } = options;
 	const report = {
 		label: options.label,
 		runtime:
 			(globalThis as { Bun?: { version: string } }).Bun === undefined
 				? `node ${process.version}`
 				: `bun ${(globalThis as { Bun?: { version: string } }).Bun!.version}`,
-		options,
+		options: reportedOptions,
 		samples: samples.map(({ agents, rssBytes, heapBytes, seconds }) => ({ agents, rssBytes, heapBytes, seconds })),
 		rssKbPerAgent: slope(points) / 1024,
 		heapKbPerAgent: slope(heapPoints) / 1024,

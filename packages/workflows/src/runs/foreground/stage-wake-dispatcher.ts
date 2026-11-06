@@ -1,4 +1,4 @@
-import type { DetachedToolCall, DetachedToolResult } from "@bastani/atomic";
+import type { DetachedToolCall, DetachedToolResult, ReleasedAgentSession } from "@bastani/atomic";
 import type { StageWaitKind } from "../../shared/authoring-contract-stage.js";
 import { StageWakeError } from "../../shared/stage-wait-errors.js";
 import {
@@ -16,6 +16,8 @@ export interface StageWaitEntry {
 	readonly stageId: string;
 	readonly reason: StageWaitKind;
 	readonly wakeKey: string;
+	/** When the stage released its session (epoch milliseconds). */
+	readonly since?: number;
 }
 
 /** The identity of a stage's mailbox, opened when the stage starts. */
@@ -23,6 +25,47 @@ export interface StageMailboxIdentity {
 	readonly runId: string;
 	readonly stageId: string;
 	readonly wakeKey: string;
+	/** The stage's durable replay key: the identity a rebuilt run finds the stage by again. */
+	readonly replayKey?: string | undefined;
+}
+
+/**
+ * One stage's wait on detached tool calls, handed over when its run is evicted from memory: plain identity and the
+ * call handles, which belong to the tools running the calls rather than to the stage.
+ */
+export interface EvictedToolWait {
+	readonly stageId: string;
+	readonly replayKey: string;
+	readonly wakeKey: string;
+	readonly since: number;
+	/** The watch whose result subscriptions report the calls' results while the run is evicted. */
+	readonly watchId: number;
+	readonly calls: readonly DetachedToolCall[];
+	/** The ids of the calls whose results had arrived by the time the wait was handed over. */
+	readonly settledCallIds: readonly string[];
+	/** The stage's stored conversation, as a released agent session names it (#4326). */
+	readonly session: ReleasedAgentSession;
+}
+
+/** What a stage waits on, released: its detached calls, and the session it gave up. */
+export interface StageToolWait {
+	readonly calls: readonly DetachedToolCall[];
+	readonly session: ReleasedAgentSession;
+}
+
+/** Messages sent to a waiting stage while its run was evicted, in arrival order. */
+export interface PendingStageWakes {
+	readonly stageId: string;
+	readonly wakes: readonly StageWake[];
+}
+
+/**
+ * What an evicted run's stages wait on, handed from the evicted execution to the rebuilt one: their tool waits, and
+ * the messages sent to them meanwhile, by replay key.
+ */
+export interface StageWaitHandoff {
+	readonly waits: readonly EvictedToolWait[];
+	readonly wakes: ReadonlyMap<string | undefined, PendingStageWakes>;
 }
 
 /**
@@ -79,9 +122,11 @@ export function stageWakeKey(runId: string, stageId: string): string {
 	return `${runId}/${stageId}`;
 }
 
-/** What `deliverStageWake` needs of a run's dispatcher, whichever copy of this module created it. */
-interface StageWakeRoute {
+/** What a run's wake route takes, whichever copy of this module created it: its dispatcher, or its eviction record. */
+export interface StageWakeRoute {
 	deliver(wakeKey: string, wake: StageWake): StageWakeDelivery;
+	toolResultSettled(wakeKey: string, watchId: number, callId: string, result: DetachedToolResult): void;
+	toolResultFailed(wakeKey: string, watchId: number, error: unknown): void;
 }
 
 // Shared across module copies: an SDK host's import may deliver to a run started by the extension bundle.
@@ -89,6 +134,19 @@ const dispatchersKey = Symbol.for("atomic-workflows/stage-wake-dispatchers@1");
 const processState = globalThis as typeof globalThis & Record<symbol, Map<string, StageWakeRoute> | undefined>;
 const dispatchersByRun: Map<string, StageWakeRoute> = processState[dispatchersKey] ?? new Map();
 processState[dispatchersKey] = dispatchersByRun;
+
+/** Watch ids are unique in the process, so a rebuilt run's dispatcher never mistakes a result of an earlier watch. */
+let lastWatchId = 0;
+
+/** Route a run's wakes and tool results to `route` from now on, in place of whatever routed them. */
+export function routeStageWakes(runId: string, route: StageWakeRoute): void {
+	dispatchersByRun.set(runId, route);
+}
+
+/** Stop routing a run's wakes to `route`, when it still routes them. */
+export function unrouteStageWakes(runId: string, route: StageWakeRoute): void {
+	if (dispatchersByRun.get(runId) === route) dispatchersByRun.delete(runId);
+}
 
 /**
  * Send a message to a stage of a live run in this process, for example when a feature outside the stage finishes
@@ -126,19 +184,26 @@ function warnReport(report: StageWakeReport): void {
 }
 
 /**
- * Subscribe to one detached call's result. Module-level so the subscription captures only the dispatcher, the stage's
- * wake key, the watch and the call id, never the call or the stage.
+ * Subscribe to one detached call's result. Module-level so the subscription captures only the run's id, a weak
+ * reference to the dispatcher, the stage's wake key, the watch and the call id, never the call or the stage. A result
+ * that settles after the dispatcher's run was evicted reaches whatever routes the run's wakes now: its eviction record,
+ * or the dispatcher of the run rebuilt from it.
  */
 function watchToolResult(
-	dispatcher: StageWakeDispatcher,
+	runId: string,
+	dispatcher: WeakRef<StageWakeDispatcher>,
 	wakeKey: string,
 	watchId: number,
 	callId: string,
 	result: Promise<DetachedToolResult>,
 ): void {
+	const route = (): StageWakeRoute | undefined => {
+		const origin = dispatcher.deref();
+		return origin === undefined || origin.evicted ? dispatchersByRun.get(runId) : origin;
+	};
 	result.then(
-		(settled) => dispatcher.toolResultSettled(wakeKey, watchId, callId, settled),
-		(error: unknown) => dispatcher.toolResultFailed(wakeKey, watchId, error),
+		(settled) => route()?.toolResultSettled(wakeKey, watchId, callId, settled),
+		(error: unknown) => route()?.toolResultFailed(wakeKey, watchId, error),
 	);
 }
 
@@ -171,21 +236,33 @@ async function runHandler(
  * handler, and a message of a kind without a handler stays queued for the stage's next wait of its kind. The run's
  * abort signal has one listener here, however many stages wait.
  */
-export class StageWakeDispatcher {
+export class StageWakeDispatcher implements StageWakeRoute {
 	private readonly mailboxes = new Map<string, Mailbox>();
 	/** Results the run's previous process recorded for stages' waits, by replay key, until each stage resumes. */
 	private readonly resumeResults = new Map<string, readonly DetachedToolResult[]>();
+	/** Tool waits the run's eviction handed over, by replay key, until each stage waits on them again. */
+	private readonly resumeWaits = new Map<string | undefined, EvictedToolWait>();
+	/** Messages sent to stages while the run was evicted, by replay key, until each stage's mailbox opens. */
+	private readonly resumeWakes = new Map<string | undefined, PendingStageWakes>();
 	private waiting = 0;
-	private watches = 0;
+	/** Set once the run is evicted: the dispatcher no longer takes anything for it. */
+	private evictedRun = false;
 	private readonly removeAbortListener: (() => void) | undefined;
 	private readonly runId: string;
 	private readonly signal: AbortSignal | undefined;
 	private readonly report: (report: StageWakeReport) => void;
 
-	constructor(runId: string, signal: AbortSignal | undefined, options: StageWakeDispatcherOptions = {}) {
+	constructor(
+		runId: string,
+		signal: AbortSignal | undefined,
+		options: StageWakeDispatcherOptions = {},
+		resumed?: StageWaitHandoff,
+	) {
 		this.runId = runId;
 		this.signal = signal;
 		this.report = options.report ?? warnReport;
+		for (const wait of resumed?.waits ?? []) this.resumeWaits.set(wait.replayKey, wait);
+		for (const [replayKey, pending] of resumed?.wakes ?? []) this.resumeWakes.set(replayKey, pending);
 		dispatchersByRun.set(runId, this);
 		if (signal === undefined || signal.aborted) return;
 		const onAbort = (): void => this.cancelAll(abortReason(signal));
@@ -193,9 +270,22 @@ export class StageWakeDispatcher {
 		this.removeAbortListener = () => signal.removeEventListener("abort", onAbort);
 	}
 
-	/** Open a stage's mailbox when the stage starts. Messages for it queue from now on. Opening it again does nothing. */
+	/** True once the run was evicted from memory. */
+	get evicted(): boolean {
+		return this.evictedRun;
+	}
+
+	/**
+	 * Open a stage's mailbox when the stage starts. Messages for it queue from now on, after those it was sent while
+	 * its run was evicted. Opening it again does nothing.
+	 */
 	open(stage: StageMailboxIdentity): void {
-		this.mailbox(stage);
+		const mailbox = this.mailbox(stage);
+		const pending = this.resumeWakes.get(stage.replayKey);
+		if (pending === undefined) return;
+		this.resumeWakes.delete(stage.replayKey);
+		mailbox.queue.push(...pending.wakes);
+		this.drain(mailbox);
 	}
 
 	/**
@@ -255,9 +345,9 @@ export class StageWakeDispatcher {
 		const mailbox = this.mailboxes.get(wakeKey);
 		if (mailbox === undefined)
 			throw new DOMException(`atomic-workflows: stage ${wakeKey} is not open`, "InvalidStateError");
-		this.watches += 1;
+		lastWatchId += 1;
 		const watch: ToolResultsWatch = {
-			id: this.watches,
+			id: lastWatchId,
 			callIds: calls.map((call) => call.toolCallId),
 			results: new Map(),
 		};
@@ -266,16 +356,27 @@ export class StageWakeDispatcher {
 			this.finishWatch(mailbox, watch);
 			return;
 		}
-		for (const call of calls) watchToolResult(this, wakeKey, watch.id, call.toolCallId, call.result);
+		const self = new WeakRef(this);
+		for (const call of calls) watchToolResult(this.runId, self, wakeKey, watch.id, call.toolCallId, call.result);
 	}
 
 	/** @internal Record one watched call's result; delivers the stage's tool results once all have settled. */
 	toolResultSettled(wakeKey: string, watchId: number, callId: string, result: DetachedToolResult): void {
 		const mailbox = this.mailboxes.get(wakeKey);
 		const watch = mailbox?.watch;
-		if (mailbox === undefined || watch?.id !== watchId) return;
+		if (mailbox === undefined || watch?.id !== watchId) {
+			this.settleUnadoptedCall(wakeKey, watchId, callId);
+			return;
+		}
 		watch.results.set(callId, result);
 		if (watch.results.size === new Set(watch.callIds).size) this.finishWatch(mailbox, watch);
+	}
+
+	/** A call of a wait handed over by an eviction settled before its stage waits on it again: kept with the wait. */
+	private settleUnadoptedCall(wakeKey: string, watchId: number, callId: string): void {
+		for (const [replayKey, wait] of this.resumeWaits)
+			if (wait.wakeKey === wakeKey && wait.watchId === watchId && !wait.settledCallIds.includes(callId))
+				this.resumeWaits.set(replayKey, { ...wait, settledCallIds: [...wait.settledCallIds, callId] });
 	}
 
 	/**
@@ -343,12 +444,97 @@ export class StageWakeDispatcher {
 		return this.waiting;
 	}
 
-	/** Stop observing the run when it ends: every mailbox still open closes, and its unread messages are reported. */
+	/**
+	 * Hand over every stage's wait on detached tool calls, with what `waitOf` finds the stage waiting on, and stop
+	 * taking anything for the run, settling nothing: the
+	 * stages' parked waits are dropped, never rejected, so their calls keep running and nothing they await resumes.
+	 * Stages released between turns hand nothing over; replaying the run restores them. Messages queued for a stage are
+	 * handed over with it, to queue for it again once the rebuilt run opens its mailbox. Returns `undefined`, changing
+	 * nothing, while a stage holds something a replay cannot restore: a wait on anything else, a wait with its session
+	 * still live, a handler running, a cancelled wait, or messages queued for a stage without a replay key.
+	 */
+	evict(waitOf: (stageId: string) => StageToolWait | undefined): StageWaitHandoff | undefined {
+		const waits: EvictedToolWait[] = [];
+		const wakes = new Map(this.resumeWakes);
+		for (const mailbox of this.mailboxes.values()) {
+			const { entry, watch } = mailbox;
+			if (mailbox.handling || mailbox.cancelled !== undefined) return undefined;
+			if (mailbox.queue.length > 0) {
+				if (mailbox.replayKey === undefined) return undefined;
+				wakes.set(mailbox.replayKey, { stageId: mailbox.stageId, wakes: [...mailbox.queue] });
+			}
+			if (entry === undefined) {
+				if (watch !== undefined || mailbox.resolve !== undefined) return undefined;
+				continue;
+			}
+			if (entry.reason === "release" || entry.reason === "idle") continue;
+			const waiting = waitOf(mailbox.stageId);
+			if (entry.reason !== "tool" || watch === undefined || mailbox.replayKey === undefined || waiting === undefined)
+				return undefined;
+			waits.push({
+				stageId: mailbox.stageId,
+				replayKey: mailbox.replayKey,
+				wakeKey: mailbox.wakeKey,
+				since: entry.since ?? Date.now(),
+				watchId: watch.id,
+				calls: waiting.calls,
+				settledCallIds: [...watch.results.keys()],
+				session: waiting.session,
+			});
+		}
+		waits.push(...this.resumeWaits.values());
+		this.evictedRun = true;
+		this.removeAbortListener?.();
+		this.mailboxes.clear();
+		this.resumeWaits.clear();
+		this.resumeWakes.clear();
+		this.waiting = 0;
+		unrouteStageWakes(this.runId, this);
+		return { waits, wakes };
+	}
+
+	/** The tool wait the run's eviction handed over for the stage on `replayKey`, handed out once. */
+	takeToolWaitForResume(replayKey: string | undefined): EvictedToolWait | undefined {
+		const wait = this.resumeWaits.get(replayKey);
+		this.resumeWaits.delete(replayKey);
+		return wait;
+	}
+
+	/** True while the tool wait the run's eviction handed over for the stage on `replayKey` is still to be taken. */
+	holdsToolWaitForResume(replayKey: string): boolean {
+		return this.resumeWaits.has(replayKey);
+	}
+
+	/** The tool waits the run's eviction handed over that no stage has waited on again yet. */
+	unadoptedToolWaits(): EvictedToolWait[] {
+		return [...this.resumeWaits.values()];
+	}
+
+	/**
+	 * Stop observing the run when it ends: every mailbox still open closes, and its unread messages are reported. The
+	 * detached calls of a tool wait the run's eviction handed over that no stage waited on again are aborted.
+	 */
 	dispose(): void {
 		this.removeAbortListener?.();
 		for (const wakeKey of [...this.mailboxes.keys()]) this.closeMailbox(wakeKey, "run-ended");
 		this.resumeResults.clear();
-		if (dispatchersByRun.get(this.runId) === this) dispatchersByRun.delete(this.runId);
+		for (const wait of this.resumeWaits.values()) {
+			const reason = new DOMException(
+				`atomic-workflows: run ${this.runId} ended before stage ${wait.stageId} waited on its detached calls again`,
+				"AbortError",
+			);
+			for (const call of wait.calls) call.abort(reason);
+		}
+		this.resumeWaits.clear();
+		for (const pending of this.resumeWakes.values())
+			this.report({
+				reason: "run-ended",
+				runId: this.runId,
+				stageId: pending.stageId,
+				kinds: pending.wakes.map((wake) => wake.kind),
+			});
+		this.resumeWakes.clear();
+		unrouteStageWakes(this.runId, this);
 	}
 
 	/** @internal A handler failed: report it once. The stage carries on. */
@@ -366,7 +552,14 @@ export class StageWakeDispatcher {
 	private mailbox(stage: StageMailboxIdentity): Mailbox {
 		let mailbox = this.mailboxes.get(stage.wakeKey);
 		if (mailbox === undefined) {
-			mailbox = { runId: stage.runId, stageId: stage.stageId, wakeKey: stage.wakeKey, queue: [], handling: false };
+			mailbox = {
+				runId: stage.runId,
+				stageId: stage.stageId,
+				wakeKey: stage.wakeKey,
+				replayKey: stage.replayKey,
+				queue: [],
+				handling: false,
+			};
 			if (this.signal?.aborted) mailbox.cancelled = abortReason(this.signal);
 			this.mailboxes.set(stage.wakeKey, mailbox);
 		}
