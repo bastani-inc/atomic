@@ -132,6 +132,11 @@ describe("a readiness question that waits while the stage may release its sessio
 		defaultStore.clear();
 		const sessions: Sessions = { created: 0, disposed: 0 };
 		const events: StageLifecycleEvent[] = [];
+		const idle = Promise.withResolvers<void>();
+		let answered = false;
+		const stopAnswering = stageUiBroker.onStageRequestRegistered(() => {
+			answered = answer();
+		});
 		const definition = workflow({
 			name: "readiness-then-idle",
 			description: "",
@@ -139,32 +144,37 @@ describe("a readiness question that waits while the stage may release its sessio
 			outputs: {},
 			run: async (ctx) => {
 				await ctx.stage("interview").prompt("ask the user");
-				await new Promise((resolve) => setTimeout(resolve, IDLE_THRESHOLD_MS * 6));
+				await idle.promise;
 				return {};
 			},
 		});
-		const execution = run(
-			definition,
-			{},
-			{
-				store: defaultStore,
-				usePromptNodesForUi: true,
-				releaseWhenWaiting: { afterMs: IDLE_THRESHOLD_MS },
-				adapters: askingAdapters(sessions),
-				onStageLifecycleEvent: (_runId, event) => events.push(event),
-			},
-		);
-		await until(() => defaultStore.runs()[0]?.stages.some((stage) => stage.status === "awaiting_input") === true);
-		assert.equal(answer(), true);
-		const result = await execution;
+		try {
+			const result = await run(
+				definition,
+				{},
+				{
+					store: defaultStore,
+					usePromptNodesForUi: true,
+					releaseWhenWaiting: { afterMs: IDLE_THRESHOLD_MS },
+					adapters: askingAdapters(sessions),
+					onStageLifecycleEvent: (_runId, event) => {
+						events.push(event);
+						if (event.type === "stage_waiting" && event.wait.kind === "idle") idle.resolve();
+					},
+				},
+			);
 
-		assert.equal(result.status, "completed", result.error);
-		assert.deepEqual(
-			events.map((event) => [event.type, event.wait.kind]),
-			[["stage_waiting", "idle"]],
-		);
-		assert.equal(sessions.created, 1);
-		assert.equal(sessions.disposed, 1);
+			assert.equal(answered, true);
+			assert.equal(result.status, "completed", result.error);
+			assert.deepEqual(
+				events.map((event) => [event.type, event.wait.kind]),
+				[["stage_waiting", "idle"]],
+			);
+			assert.equal(sessions.created, 1);
+			assert.equal(sessions.disposed, 1);
+		} finally {
+			stopAnswering();
+		}
 	});
 
 	test("a run ended while the question waits released does not reopen the session for an answer that will not come (#4309)", async () => {
