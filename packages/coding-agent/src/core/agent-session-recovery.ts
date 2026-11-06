@@ -1,3 +1,4 @@
+import { holdPendingDetachedCalls } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	dismissProtectedStreamingCustomMessage,
@@ -46,6 +47,9 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 	const restored = await session.extensionRunner.emitSessionRecovery({ type: "session_recovery_restore", reason });
 	report.notices.push(...restored.notices);
 	if (isClosing(session)) return report;
+	// A resumed stage starts its pending detachable calls again once its turn resumes; a chat may show the stage
+	// before then, and must see them in flight, not interrupted (#4022).
+	if (reason === "workflow_stage_resume") holdPendingDetachedCalls(session);
 
 	const pending = pendingProtectedStreamingCustomMessages(session);
 	let replay = pending;

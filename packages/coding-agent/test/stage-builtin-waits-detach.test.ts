@@ -664,4 +664,35 @@ describe("a call started again after a restart (#4374)", () => {
 
 		assert.deepEqual([interruptedBefore, interruptedAfter], [true, false]);
 	});
+
+	test("is in flight in the session's context from the stage's resume recovery on, before it starts again (#4022)", async () => {
+		const store = new MemorySessionStore();
+		const crashed = await SessionManager.create(store, process.cwd());
+		await crashed.appendMessage({ role: "user", content: "pick a database", timestamp: Date.now() });
+		await crashed.appendMessage(askTurn("q-1"));
+		const restarted = await session({ context: stageContext(), store }, crashed.getSessionId());
+		const ui = stageUi();
+		await restarted.session.bindExtensions({ uiContext: ui.ui, mode: "tui" });
+		restarted.setResponses([fauxAssistantMessage("SQLite it is")]);
+		const inContext = () =>
+			restarted.session.agent.state.messages.flatMap((message) =>
+				message.role === "toolResult" && message.toolCallId === "q-1" ? [getMessageText(message)] : [],
+			);
+
+		// A stage resumed on a replacement worker recovers its session before a chat can show it; the call starts
+		// again only later, so the transcript a chat shows meanwhile, refreshed as any step of the stage's startup may
+		// refresh it, must not report the call interrupted.
+		await restarted.session.startPendingRecovery("workflow_stage_resume");
+		restarted.session.refreshContext();
+		const afterRecovery = inContext();
+		const [asked] = restarted.session.redispatchDetachedToolCalls();
+		await vi.waitFor(() => assert.equal(ui.askedBy.length, 1));
+		ui.answer(0, answer("SQLite"));
+		await restarted.session.resumeDetachedTurn([await asked!.result]);
+
+		assert.deepEqual(afterRecovery, []);
+		const answered = inContext();
+		assert.equal(answered.length, 1);
+		assert.match(answered[0]!, /SQLite/);
+	});
 });

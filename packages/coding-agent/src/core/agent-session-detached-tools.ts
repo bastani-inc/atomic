@@ -594,6 +594,19 @@ export function waitsOnDetachedResults(session: AgentSession): boolean {
 }
 
 /**
+ * Mark every call of a detachable tool that the transcript ends on without a result as in flight, not interrupted,
+ * until its result is recorded. A workflow stage resumed after its process died starts those calls again, or records
+ * the results that process saved, only once its turn resumes; a chat may show the stage's transcript before then, and
+ * must not report them interrupted meanwhile (#4022).
+ */
+export function holdPendingDetachedCalls(session: AgentSession): void {
+	const pending = pendingDetachableCalls(session).calls;
+	if (pending.length === 0) return;
+	for (const { toolCall } of pending) session._reissuedToolCallIds.add(toolCall.id);
+	session._refreshFinalizedContext();
+}
+
+/**
  * Start again every call of a detachable tool that the transcript ends on without a result: the process that ran
  * them is gone. Each runs with its original id and arguments, so a call may run more than once. Hosts see each call
  * start again, and its result is recorded as that call's once it is handed back. The work has the session's tool
