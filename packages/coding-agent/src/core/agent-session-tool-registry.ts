@@ -101,20 +101,22 @@ export function _refreshToolRegistry(
 							: new Error("Operation aborted")
 				: undefined;
 		const guarded = rejectMalformedToolArguments(tool, () => this.agent.state.messages);
+		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
 		const detachable = definition?.detachable;
-		const executable =
+		toolRegistry.set(
+			tool.name,
 			definition !== undefined && (detachable === true || typeof detachable === "function")
 				? detachableTool(
 						this,
-						guarded,
+						scheduled,
 						(id, params, signal, onUpdate, context) => definition.execute(id, params, signal, onUpdate, context),
 						(id, signal) => runner.createToolContext(id, signal),
 						typeof detachable === "function" ? (params) => detachable(params) : undefined,
 						definition.detachmentRequiresReady === true,
 					)
-				: guarded;
-		toolRegistry.set(tool.name, scheduleToolExecution(executable, this._toolExecutionScheduler, abortError));
+				: scheduled,
+		);
 	}
 	this._toolRegistry = toolRegistry;
 
