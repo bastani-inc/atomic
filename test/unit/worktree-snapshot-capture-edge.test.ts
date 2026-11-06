@@ -1,8 +1,29 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { SpawnFault, SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
+
+/** A hook that can fail one Git command the way Node reports it, or run another command in its place. */
+const spawns = vi.hoisted(() => ({
+	fault: undefined as undefined | ((request: SpawnRequest) => SpawnFault | undefined),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const { withSpawnFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withSpawnFaults(await importOriginal(), (request) => spawns.fault?.(request));
+});
+
 import { captureWorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
 import { nulFields, redactUrlCredentials, runGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import { loadSnapshotPathPolicy } from "../../packages/coding-agent/src/core/worktree-snapshot/policy.ts";
@@ -26,12 +47,19 @@ import {
 	GitSandbox,
 	gitConfigPath,
 } from "../helpers/worktree-snapshot.js";
+import { gitCommand, isProcessRunning, runningCommand, systemError } from "../helpers/worktree-snapshot-faults.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(() => {
+	spawns.fault = undefined;
+	sandbox.dispose();
+});
+
+/** How long a test waits for a Node process to start or to be gone: a start can take seconds on a loaded Windows runner. */
+const PROCESS_WAIT = { timeout: 12_000, interval: 25 };
 
 type Captured = Extract<WorktreeSnapshotCapture, { status: "captured" }>;
 function captured(result: WorktreeSnapshotCapture): Captured {
@@ -131,11 +159,12 @@ describe("an edit Git's own stat cache cannot tell from the committed file", () 
 	});
 });
 
-describe.skipIf(process.platform === "win32")("the Git runner", () => {
+describe("the Git runner", () => {
 	test("an executable that exists but cannot be run is unavailable Git, not a failed command", async () => {
 		const file = sandbox.path("not-executable");
 		writeFileSync(file, "#!/bin/sh\n");
-		chmodSync(file, 0o644);
+		spawns.fault = ({ command }) =>
+			command === file ? { error: systemError("EACCES", `spawn ${file}`, file) } : undefined;
 		setWorktreeSnapshotGit(async () => ({ path: file, env: {} }));
 		await assert.rejects(runGit(["status"], { cwd: sandbox.root }), (error: unknown) => {
 			assert.ok(isGitUnavailableError(error));
@@ -146,12 +175,21 @@ describe.skipIf(process.platform === "win32")("the Git runner", () => {
 	});
 
 	test("an aborted signal kills a running command and rejects with the signal's reason", async () => {
+		const pidFile = sandbox.path("running.pid");
+		spawns.fault = ({ args }) => (gitCommand(args)[0] === "pause" ? runningCommand(pidFile) : undefined);
 		const controller = new AbortController();
 		const reason = new Error("stop waiting");
-		setTimeout(() => controller.abort(reason), 100);
-		await assert.rejects(
-			runGit(["-c", "alias.pause=!sleep 30", "pause"], { cwd: sandbox.root, signal: controller.signal }),
-			(error: unknown) => error === reason,
+		const running = runGit(["-c", "alias.pause=!sleep 30", "pause"], {
+			cwd: sandbox.root,
+			signal: controller.signal,
+		});
+		await vi.waitFor(() => assert.ok(existsSync(pidFile), "the command never started"), PROCESS_WAIT);
+		const pid = Number(readFileSync(pidFile, "utf8"));
+		controller.abort(reason);
+		await assert.rejects(running, (error: unknown) => error === reason);
+		await vi.waitFor(
+			() => assert.equal(isProcessRunning(pid), false, "the aborted command kept running"),
+			PROCESS_WAIT,
 		);
 	});
 
@@ -182,16 +220,13 @@ describe.skipIf(process.platform === "win32")("the Git runner", () => {
 
 	test("the first line of a long or multi-line Git error is all a failure keeps, at most 300 characters", async () => {
 		const longName = "x".repeat(400);
-		await assert.rejects(
-			runGit(["config", "--file", sandbox.path("missing.cfg"), "--get", `${longName}.y`], { cwd: sandbox.root }),
-			(error: unknown) => {
-				assert.ok(isWorkspaceGitError(error));
-				assert.ok(error.fields.detail !== undefined);
-				assert.ok(String(error.fields.detail).length <= 300);
-				assert.equal(String(error.fields.detail).includes("\n"), false);
-				return true;
-			},
-		);
+		await assert.rejects(runGit(["config", "--get", longName], { cwd: sandbox.root }), (error: unknown) => {
+			assert.ok(isWorkspaceGitError(error));
+			assert.ok(error.fields.detail !== undefined);
+			assert.equal(String(error.fields.detail).length, 300);
+			assert.equal(String(error.fields.detail).includes("\n"), false);
+			return true;
+		});
 	});
 });
 
@@ -414,16 +449,20 @@ describe("snapshot blob store contract", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("the user's own Git settings during capture", () => {
+describe("the user's own Git settings during capture", () => {
 	test("a global attributes file still applies, so a capture hashes files as the user's Git does (#4245)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "note.txt"), "alpha\n");
 		const attributes = sandbox.path("global-attributes");
 		writeFileSync(attributes, "*.txt filter=host\n");
-		const { readFileSync } = await import("node:fs");
+		const filter = sandbox.path("host-filter.cjs");
+		writeFileSync(
+			filter,
+			`let text = "";\nprocess.stdin.setEncoding("utf8");\nprocess.stdin.on("data", (chunk) => (text += chunk));\nprocess.stdin.on("end", () => process.stdout.write(text.replaceAll("alpha", "omega")));\n`,
+		);
 		writeFileSync(
 			sandbox.globalConfig,
-			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\tattributesFile = ${gitConfigPath(attributes)}\n[filter "host"]\n\tclean = sed s/alpha/omega/g\n`,
+			`${readFileSync(sandbox.globalConfig, "utf8")}[core]\n\tattributesFile = ${gitConfigPath(attributes)}\n[filter "host"]\n\tclean = \\"${gitConfigPath(process.execPath)}\\" \\"${gitConfigPath(filter)}\\"\n`,
 		);
 		const result = captured(await captureWorktreeSnapshot(clone));
 		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${result.snapshot.tree}:note.txt`), "omega");

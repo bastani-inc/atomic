@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { FilesystemFault } from "../helpers/worktree-snapshot-faults.js";
+
+/** Filesystem calls that fail for one path, as a looping link or a directory without search permission makes them. */
+const filesystem = vi.hoisted(() => ({ faults: [] as FilesystemFault[] }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const { withFilesystemFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withFilesystemFaults(
+		await importOriginal<typeof import("node:fs/promises")>(),
+		"promises",
+		["lstat", "readFile", "stat"],
+		() => filesystem.faults,
+	);
+});
+
 import {
 	captureWorktreeSnapshot,
 	withScratchDirectory,
@@ -18,17 +33,15 @@ let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(() => {
+	filesystem.faults.length = 0;
+	sandbox.dispose();
+});
 
 type Captured = Extract<WorktreeSnapshotCapture, { status: "captured" }>;
 function captured(result: WorktreeSnapshotCapture): Captured {
 	assert.equal(result.status, "captured");
 	return result as Captured;
-}
-
-/** A symbolic link that points at itself: every access that follows it fails with ELOOP. */
-function selfLoop(path: string): void {
-	symlinkSync(path.split(/[\\/]/).at(-1)!, path);
 }
 
 const treePaths = async (cwd: string, tree: string): Promise<string[]> =>
@@ -60,40 +73,34 @@ describe("the scratch directory of one capture", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("filesystem failures other than absence are typed, not hidden", () => {
+describe("filesystem failures other than absence are typed, not hidden", () => {
 	test("a directory that cannot be resolved is unavailable as unreadable-path, not as not-a-repository", async () => {
 		const loop = sandbox.path("loop");
-		selfLoop(loop);
+		mkdirSync(loop);
+		filesystem.faults.push({ call: "stat", path: loop, code: "ELOOP" });
 		assertCaptureUnreadable(await captureWorktreeSnapshot(loop), loop, "ELOOP");
 	});
 
 	test("a tracked .gitattributes that cannot be read makes the capture unavailable naming it", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { ".gitattributes": "*.txt text\n", "a.txt": "a\n" });
-		unlinkSync(join(clone, ".gitattributes"));
-		selfLoop(join(clone, ".gitattributes"));
+		filesystem.faults.push({ call: "readFile", path: join(clone, ".gitattributes"), code: "ELOOP" });
 		assertCaptureUnreadable(await captureWorktreeSnapshot(clone), join(clone, ".gitattributes"), "ELOOP");
 	});
 
-	test.skipIf(process.getuid?.() === 0)(
-		"a file that Git lists but whose size cannot be read makes the capture unavailable naming that file",
-		async () => {
-			const { clone } = await sandbox.remoteWithClone();
-			const unreadable = join(clone, "listed-only");
-			mkdirSync(unreadable);
-			writeFileSync(join(unreadable, "file.txt"), "content\n");
-			chmodSync(unreadable, 0o444);
-			try {
-				assertCaptureUnreadable(await captureWorktreeSnapshot(clone), join(unreadable, "file.txt"), "EACCES");
-			} finally {
-				chmodSync(unreadable, 0o755);
-			}
-		},
-	);
+	test("a file that Git lists but whose size cannot be read makes the capture unavailable naming that file", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const unreadable = join(clone, "listed-only");
+		mkdirSync(unreadable);
+		writeFileSync(join(unreadable, "file.txt"), "content\n");
+		filesystem.faults.push({ call: "lstat", path: join(unreadable, "file.txt"), code: "EACCES" });
+		assertCaptureUnreadable(await captureWorktreeSnapshot(clone), join(unreadable, "file.txt"), "EACCES");
+	});
 
 	test("an environment input that cannot be read fails the hash with a typed error naming it", async () => {
 		const dir = sandbox.path("env-loop");
 		mkdirSync(dir);
-		selfLoop(join(dir, "package-lock.json"));
+		writeFileSync(join(dir, "package-lock.json"), "{}\n");
+		filesystem.faults.push({ call: "readFile", path: join(dir, "package-lock.json"), code: "ELOOP" });
 		await assert.rejects(computeEnvironmentHash(dir), (error: unknown) => {
 			assertUnreadablePath(error, join(dir, "package-lock.json"), "ELOOP");
 			return true;

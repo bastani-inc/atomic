@@ -1,6 +1,34 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { afterEach, beforeEach, test, vi } from "vitest";
+import type { FilesystemFault, SpawnFault, SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
+
+/**
+ * Faults where the snapshot code starts Git or checks a directory: directories this process cannot list or enter, as
+ * `chmod 000` makes them on POSIX, and a hook that can fail one Git command.
+ */
+const faults = vi.hoisted(() => ({
+	unreadable: [] as string[],
+	spawn: undefined as undefined | ((request: SpawnRequest) => SpawnFault | undefined),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const { isSameOrWithin, systemError, withSpawnFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withSpawnFaults(await importOriginal(), (request) =>
+		faults.unreadable.some((directory) => isSameOrWithin(directory, request.cwd))
+			? { error: systemError("EACCES", `spawn ${request.command}`, request.command) }
+			: faults.spawn?.(request),
+	);
+});
+
+vi.mock("node:fs", async (importOriginal) => {
+	const { withFilesystemFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withFilesystemFaults(await importOriginal<typeof import("node:fs")>(), "sync", ["accessSync"], () =>
+		faults.unreadable.map((path): FilesystemFault => ({ call: "accessSync", path, code: "EACCES" })),
+	);
+});
+
 import {
 	captureWorktreeSnapshot,
 	isGitUnavailableError,
@@ -11,7 +39,6 @@ import {
 	WorkspaceConfigError,
 	type WorktreeSnapshot,
 } from "@bastani/atomic";
-import { afterEach, beforeEach, test, vi } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
@@ -27,6 +54,7 @@ import {
 	type SqlSnapshotJournal,
 } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { failingCommand, gitCommand } from "../helpers/worktree-snapshot-faults.js";
 
 let sandbox: GitSandbox;
 let journals: SqlSnapshotJournal[];
@@ -35,6 +63,8 @@ beforeEach(() => {
 	journals = [];
 });
 afterEach(async () => {
+	faults.unreadable.length = 0;
+	faults.spawn = undefined;
 	await closeSnapshotJournals();
 	for (const journal of journals) await journal.close();
 	sandbox.dispose();
@@ -141,7 +171,7 @@ test("enabled snapshots capture the workflow checkout and commit the checkpoint 
 });
 
 test.skipIf(process.platform === "win32")(
-	"a checkout reached through a symbolic link continues the chain of its previous snapshot (#4245)",
+	"a checkout reached through a symbolic link continues the chain of its previous snapshot (symbolic links need a privilege on Windows) (#4245)",
 	async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const link = sandbox.path("via-link");
@@ -234,35 +264,28 @@ test("a directory outside any repository does not stop later captures, and a rep
 	assert.equal(missing, 1, "the loop stops at the first directory once Git is known to be missing");
 });
 
-test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-	"a checkout that cannot be read is reported as such and never stops later captures (#4245)",
-	async () => {
-		const healthy = await sandbox.remoteWithClone("healthy");
-		const unreadable = await sandbox.remoteWithClone("unreadable");
-		chmodSync(unreadable.clone, 0o000);
-		try {
-			const { record, run } = await harness({ cwd: healthy.clone });
-			const first = await record(checkpoint("a"), undefined, [unreadable.clone]);
-			assert.deepEqual(
-				first.map((snapshot) => snapshot.root),
-				[healthy.clone],
-			);
-			const reason = reasonOf(run);
-			assert.ok(isWorkspaceSnapshotError(reason));
-			assert.equal(reason.code, "unreadable-path");
-			assert.equal(reason.subject, unreadable.clone);
-			sandbox.write(join(healthy.clone, "later.txt"), "later\n");
-			const second = await record(checkpoint("b"), undefined, [unreadable.clone]);
-			assert.deepEqual(
-				second.map((snapshot) => snapshot.root),
-				[healthy.clone],
-			);
-			assert.notEqual(second[0]!.id, first[0]!.id);
-		} finally {
-			chmodSync(unreadable.clone, 0o755);
-		}
-	},
-);
+test("a checkout that cannot be read is reported as such and never stops later captures (#4245)", async () => {
+	const healthy = await sandbox.remoteWithClone("healthy");
+	const unreadable = await sandbox.remoteWithClone("unreadable");
+	faults.unreadable.push(unreadable.clone);
+	const { record, run } = await harness({ cwd: healthy.clone });
+	const first = await record(checkpoint("a"), undefined, [unreadable.clone]);
+	assert.deepEqual(
+		first.map((snapshot) => snapshot.root),
+		[healthy.clone],
+	);
+	const reason = reasonOf(run);
+	assert.ok(isWorkspaceSnapshotError(reason));
+	assert.equal(reason.code, "unreadable-path");
+	assert.equal(reason.subject, unreadable.clone);
+	sandbox.write(join(healthy.clone, "later.txt"), "later\n");
+	const second = await record(checkpoint("b"), undefined, [unreadable.clone]);
+	assert.deepEqual(
+		second.map((snapshot) => snapshot.root),
+		[healthy.clone],
+	);
+	assert.notEqual(second[0]!.id, first[0]!.id);
+});
 
 test("several directories of one repository yield one snapshot (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone("repo", { "sub/a.txt": "a\n" });
@@ -457,15 +480,9 @@ test("a resumed run continues the chain recorded in its journal, and a released 
 });
 
 test("a Git failure is reported and the checkpoint still commits; other failures reject before committing (#4245)", async () => {
-	if (process.platform === "win32") return;
 	const { clone } = await sandbox.remoteWithClone();
-	const wrapper = sandbox.path("failing-git");
-	writeFileSync(
-		wrapper,
-		`#!/bin/sh\nfor argument in "$@"; do\n  if [ "$argument" = commit-tree ]; then echo "fatal: injected failure" >&2; exit 1; fi\ndone\nexec git "$@"\n`,
-	);
-	chmodSync(wrapper, 0o755);
-	setWorktreeSnapshotGit(async () => ({ path: wrapper, env: sandbox.executable.env }));
+	faults.spawn = ({ args }) =>
+		gitCommand(args)[0] === "commit-tree" ? failingCommand(1, "fatal: injected failure\n") : undefined;
 	sandbox.write(join(clone, "a.txt"), "changed\n");
 	const { record, commits, run } = await harness({ cwd: clone });
 	const original = checkpoint("a");
@@ -477,7 +494,7 @@ test("a Git failure is reported and the checkpoint still commits; other failures
 	assert.equal(reason.code, "git-failed");
 	assert.equal(reason.operation, "commit-tree");
 
-	setWorktreeSnapshotGit(async () => sandbox.executable);
+	faults.spawn = undefined;
 	const invalid = await harness({ cwd: clone, settings: { fullEvery: 0 } });
 	await assert.rejects(
 		invalid.record(checkpoint("b")),
