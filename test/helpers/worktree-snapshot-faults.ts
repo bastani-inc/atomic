@@ -1,5 +1,6 @@
 import type * as ChildProcess from "node:child_process";
 import { EventEmitter } from "node:events";
+import type { PathLike } from "node:fs";
 import { constants } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -40,7 +41,8 @@ const SYSCALLS: Readonly<Record<string, string>> = {
 	stat: "stat",
 };
 
-type Callable = (path: unknown, ...rest: unknown[]) => unknown;
+/** A filesystem function that takes the path first: `accessSync` returns nothing, the promise functions a promise. */
+type PathFunction = (path: PathLike, ...rest: never[]) => Promise<object | string> | undefined;
 
 /**
  * `module` with each function named in `calls` failing, as Node fails it, for a path that `faults()` names, and
@@ -52,11 +54,11 @@ export function withFilesystemFaults<Module extends object>(
 	calls: readonly string[],
 	faults: () => readonly FilesystemFault[],
 ): Module {
-	const original = module as Record<string, unknown>;
-	const wrapped: Record<string, Callable> = {};
+	const original = module as Readonly<Record<string, PathFunction>>;
+	const wrapped: Record<string, PathFunction> = {};
 	for (const call of calls) {
-		const real = original[call] as Callable;
-		wrapped[call] = (path: unknown, ...rest: unknown[]) => {
+		const real = original[call]!;
+		wrapped[call] = (path, ...rest) => {
 			const fault = faults().find((entry) => entry.call === call && resolve(entry.path) === resolve(String(path)));
 			if (fault === undefined) return real(path, ...rest);
 			const error = systemError(fault.code, SYSCALLS[call] ?? call, String(path));
@@ -64,7 +66,7 @@ export function withFilesystemFaults<Module extends object>(
 			throw error;
 		};
 	}
-	const defaults = original.default as Record<string, unknown> | undefined;
+	const defaults = (module as { readonly default?: object }).default;
 	return { ...original, ...wrapped, ...(defaults ? { default: { ...defaults, ...wrapped } } : {}) } as Module;
 }
 
@@ -100,13 +102,16 @@ export function failingCommand(exitCode: number, stderr = ""): { command: string
 	};
 }
 
-/** A command that writes its process id to `pidFile` and then runs for 30 seconds unless it is killed. */
+/**
+ * A command that writes its process id to `pidFile` and then runs for 30 seconds unless it is killed. The id is written
+ * to a temporary file that is then renamed, so `pidFile` never exists without the whole id in it.
+ */
 export function runningCommand(pidFile: string): { command: string; args: string[] } {
 	return {
 		command: process.execPath,
 		args: [
 			"-e",
-			`require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 30_000);`,
+			`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)}); setTimeout(() => {}, 30_000);`,
 		],
 	};
 }
@@ -145,11 +150,7 @@ export function withSpawnFaults(
 	module: typeof ChildProcess,
 	fault: (request: SpawnRequest) => SpawnFault | undefined,
 ): typeof ChildProcess {
-	const spawn = (
-		command: string,
-		args: readonly string[],
-		options: { cwd?: string; env?: Record<string, string | undefined>; detached?: boolean },
-	) => {
+	const spawn = (command: string, args: readonly string[], options: ChildProcess.SpawnOptions) => {
 		const chosen = fault({
 			command,
 			args,
@@ -158,11 +159,7 @@ export function withSpawnFaults(
 			detached: options?.detached,
 		});
 		if (chosen !== undefined && "error" in chosen) return failedSpawn(chosen.error);
-		return (module.spawn as (...parameters: unknown[]) => unknown)(
-			chosen?.command ?? command,
-			chosen?.args ?? args,
-			options,
-		);
+		return module.spawn(chosen?.command ?? command, chosen?.args ?? args, options);
 	};
 	return { ...module, spawn } as typeof ChildProcess;
 }
