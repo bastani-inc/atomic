@@ -163,8 +163,8 @@ async function readRange(path: string, start: number, length: number): Promise<B
 /**
  * Follows a file like `tail -f`: emits each line appended after the subscription starts. A missing file is awaited
  * from offset 0. Event ids carry the start time of the follow, the file generation (it advances whenever the file is
- * truncated or recreated and offsets restart at 0) and the byte offset of the line, so a rotated file's new lines are
- * never taken for lines already handled.
+ * truncated, recreated or replaced by another file, and offsets restart at 0) and the byte offset of the line, so a
+ * rotated file's new lines are never taken for lines already handled.
  */
 export function logTail(path: string, options?: LogTailOptions): EventSource {
 	requireNonEmptyString(path, "logTail.path");
@@ -180,11 +180,16 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 			let generation = 0;
 			let consumed = 0;
 			let pending: Buffer = Buffer.alloc(0);
+			/** The followed file's device and inode, so a file renamed over it is not read from the old offset. */
+			let fileIdentity: string | undefined;
 
 			async function pollOnce(): Promise<TailChunk> {
 				try {
-					const { size } = await stat(absolutePath);
-					if (size < consumed + pending.length) {
+					const { size, dev, ino } = await stat(absolutePath);
+					const identity = `${dev}:${ino}`;
+					const replaced = fileIdentity !== undefined && identity !== fileIdentity;
+					fileIdentity = identity;
+					if (replaced || size < consumed + pending.length) {
 						generation += 1;
 						consumed = 0;
 						pending = Buffer.alloc(0);
@@ -210,12 +215,15 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 					if (consumed + pending.length > 0) generation += 1;
 					consumed = 0;
 					pending = Buffer.alloc(0);
+					fileIdentity = undefined;
 					return { lines: [], more: false };
 				}
 			}
 
 			try {
-				consumed = (await stat(absolutePath)).size;
+				const { size, dev, ino } = await stat(absolutePath);
+				consumed = size;
+				fileIdentity = `${dev}:${ino}`;
 			} catch (error) {
 				if (signal.aborted) return;
 				if (errnoCode(error) !== "ENOENT") {

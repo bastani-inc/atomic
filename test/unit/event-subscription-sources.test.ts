@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { mkdirSync, readFileSync } from "node:fs";
-import { appendFile, truncate, unlink, writeFile } from "node:fs/promises";
+import { appendFile, rename, truncate, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { delimiter, join } from "node:path";
@@ -2519,4 +2519,30 @@ test("a webhook subscription closed before its server listens has let its path g
 	const url = await replacement.listening();
 	assert.match(url, /\/hooks\/replaced$/);
 	await second.close();
+});
+
+test("logTail starts over when the file is replaced between polls by one at least as large (#4311)", async () => {
+	const directory = tempDir();
+	const file = join(directory, "rotated.log");
+	await writeFile(file, "");
+	const clock = manualDispatcher();
+	const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
+	await clock.step(POLL_MS);
+	await appendFile(file, "old one\nold partial");
+	await clock.step(POLL_MS);
+	const replacement = join(directory, "replacement.log");
+	await writeFile(replacement, "new first line\nnew second line\n");
+	await rename(replacement, file);
+	await clock.step(POLL_MS);
+	await clock.step(POLL_MS);
+	const seen = handle.events.map((event) => {
+		const [, generation, offset] = event.id.slice(`${file}:`.length).split(":");
+		return [generation, offset, (event.payload as { line: string }).line];
+	});
+	assert.deepEqual(seen, [
+		["0", "0", "old one"],
+		["1", "0", "new first line"],
+		["1", "15", "new second line"],
+	]);
+	await handle.stop();
 });
