@@ -1,5 +1,7 @@
 /** Durable `ctx.stage` / `ctx.task` replay and checkpoint helpers. */
 
+import type { SessionStore } from "@bastani/atomic";
+import { assertStageOwnedSessionExists, type StageOwnedSession } from "../engine/run-resume-preflight.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import { readStoredStageMessages } from "../runs/foreground/stage-runner-options.js";
 import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
@@ -168,6 +170,8 @@ export interface DurableWaitingStage {
 	readonly sessionId: string;
 	/** Where a file-backed store kept the transcript, when the stage recorded it. */
 	readonly sessionFile?: string;
+	/** `"stage"`: the session is in the store the stage's own `sessionStore` option supplied, not the run's. */
+	readonly sessionStorage?: "stage";
 	readonly wait: import("../shared/authoring-contract-stage.js").StageWaitSnapshot;
 }
 
@@ -188,6 +192,7 @@ export function durableWaitingStages(backend: DurableWorkflowBackend, workflowId
 			...(checkpoint.topology?.stageId === undefined ? {} : { stageId: checkpoint.topology.stageId }),
 			sessionId: checkpoint.sessionId,
 			...(checkpoint.sessionFile === undefined ? {} : { sessionFile: checkpoint.sessionFile }),
+			...(checkpoint.sessionStorage === "stage" ? { sessionStorage: "stage" as const } : {}),
 			wait: checkpoint.wait,
 		});
 	}
@@ -292,14 +297,27 @@ export function createDurableStagePrimitive(input: {
 		const released = releasedStageResume(priorSession, cached);
 		if (cached !== undefined && released === undefined) {
 			const recorded = input.recordCachedStage?.(name, replayKey, cached);
+			// A transcript the stage kept in its own store is read only from the store the workflow passes it now.
+			const ownedStore = (cached.sessionStorage ?? priorSession?.sessionStorage) === "stage";
+			const readStoredMessages = (sessionId: string): Promise<readonly object[]> =>
+				(input.readStoredMessages ?? readStoredStageMessagesWithOwnStore)(options ?? {}, sessionId);
 			return withStageWriteBarrier(
 				createCachedStageContext({
 					name,
 					runId: input.workflowId,
 					checkpoint: cached,
 					recorded,
-					readStoredMessages: (sessionId) =>
-						(input.readStoredMessages ?? readStoredStageMessagesWithOwnStore)(options ?? {}, sessionId),
+					readStoredMessages: ownedStore
+						? async (sessionId) => {
+								await assertStageOwnedSessionExists(stageOwnedStore(options), {
+									runId: input.workflowId,
+									stageName: name,
+									...(cached.topology?.stageId === undefined ? {} : { stageId: cached.topology.stageId }),
+									sessionId,
+								});
+								return readStoredMessages(sessionId);
+							}
+						: readStoredMessages,
 				}),
 				input.beforeCall,
 			);
@@ -329,8 +347,21 @@ export function createDurableStagePrimitive(input: {
 		// Stopped between turns: replay the finished calls from the record and send the next one as written. Stopped
 		// inside a turn: continue that turn.
 		if (released !== undefined) stage.__resumeReleased?.(released);
+		// A session the stage kept in its own store is checked in the store the workflow passes the stage now, before
+		// any call of the stage that opens or reads a session: the run's preflight could not know that store.
+		const checked =
+			priorSession?.sessionStorage === "stage" &&
+			resumeSessionId !== undefined &&
+			resumeSessionId === priorSession.sessionId
+				? withStageOwnedSessionCheck(stage, stageOwnedStore(options), {
+						runId: input.workflowId,
+						stageName: name,
+						...(durableStageId === undefined ? {} : { stageId: durableStageId }),
+						sessionId: resumeSessionId,
+					})
+				: stage;
 		const live = withStageWriteBarrier(
-			withMidSessionResumePrompt(stage, resumeSessionId !== undefined && released === undefined),
+			withMidSessionResumePrompt(checked, resumeSessionId !== undefined && released === undefined),
 			input.beforeCall,
 		);
 		if (options?.schema === undefined) return live;
@@ -343,6 +374,65 @@ export function createDurableStagePrimitive(input: {
 			name,
 		});
 	};
+}
+
+/** The calls of a stage that open, reopen or read its session, or change what it runs on. */
+const SESSION_CALLS = [
+	"prompt",
+	"complete",
+	"sendUserMessage",
+	"steer",
+	"followUp",
+	"setModel",
+	"setThinkingLevel",
+	"cycleModel",
+	"cycleThinkingLevel",
+	"readMessages",
+	"navigateTree",
+	"compact",
+	"rehydrate",
+] as const satisfies readonly (keyof StageContext)[];
+
+type SessionCall = (typeof SESSION_CALLS)[number];
+
+/** The store a stage's own options name for its session: its `sessionStore`, or its `sessionManager`'s store. */
+function stageOwnedStore(options: StageOptions | undefined): SessionStore | undefined {
+	return options?.sessionStore ?? options?.sessionManager?.getSessionStore();
+}
+
+/**
+ * `stage`, whose session is in its own store, with a check of the store the workflow passes it now before the first
+ * of its {@link SESSION_CALLS}: a store without the session, or none, fails such calls typed. Once the check passes,
+ * only that it passed is kept; concurrent first calls share the one check in flight.
+ */
+function withStageOwnedSessionCheck(
+	stage: StageContext,
+	store: SessionStore | undefined,
+	owned: StageOwnedSession,
+): StageContext {
+	let verified = false;
+	let inFlight: Promise<void> | undefined;
+	const verify = async (): Promise<void> => {
+		if (verified) return;
+		inFlight ??= assertStageOwnedSessionExists(store, owned).finally(() => {
+			inFlight = undefined;
+		});
+		await inFlight;
+		verified = true;
+	};
+	const wrapped = Object.create(stage) as StageContext;
+	for (const method of SESSION_CALLS) {
+		const call = stage[method] as (...args: never[]) => ReturnType<StageContext[SessionCall]>;
+		Object.defineProperty(wrapped, method, {
+			value: async (...args: never[]) => {
+				await verify();
+				return call.apply(stage, args);
+			},
+			writable: true,
+			configurable: true,
+		});
+	}
+	return wrapped;
 }
 
 function withStageWriteBarrier(stage: StageContext, beforeCall?: () => void | Promise<void>): StageContext {
@@ -801,7 +891,7 @@ function mergeCheckpointHydrationMetadata(
 	if (checkpoints.length === 0 || replayValueCheckpoint.topology?.boundary?.event === "terminal") {
 		return replayValueCheckpoint;
 	}
-	return {
+	const merged: DurableCompletedStageCheckpoint = {
 		...replayValueCheckpoint,
 		...preferredHydrationTopology(replayValueCheckpoint, checkpoints),
 		...(replayValueCheckpoint.startedAt === undefined ? metadataValue(checkpoints, "startedAt") : {}),
@@ -820,6 +910,10 @@ function mergeCheckpointHydrationMetadata(
 		...(replayValueCheckpoint.artifacts === undefined ? metadataValue(checkpoints, "artifacts") : {}),
 		...(replayValueCheckpoint.warnings === undefined ? metadataValue(checkpoints, "warnings") : {}),
 	};
+	// Any record of the stage that says its session is in its own store says so for the stage.
+	return merged.sessionStorage === undefined && checkpoints.some((checkpoint) => checkpoint.sessionStorage === "stage")
+		? { ...merged, sessionStorage: "stage" }
+		: merged;
 }
 
 function preferredHydrationTopology(

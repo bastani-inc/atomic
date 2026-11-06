@@ -41,18 +41,22 @@ async function openRunSessionStore(
  * `durableWaitingStages`, one pass over the run's records) can reopen its session: one header read per session, with
  * no write. Every missing session is reported together, in a non-retryable `StageRehydrationError`
  * (`session-not-found`) whose hint names the storage the run was started with. A session a stage kept in its own
- * file-backed directory is found by its file.
+ * file-backed directory is found by its file. A stage that kept its session in the store its own `sessionStore`
+ * option supplied is not looked up here: that store is known only once the workflow calls the stage again, and
+ * {@link assertStageOwnedSessionExists} checks it then, before the stage does any work.
  */
 export async function assertWaitingStageSessionsExist(
 	waiting: readonly DurableWaitingStage[],
 	runId: string,
 	storage: ResumeSessionStorage,
 ): Promise<void> {
+	const inRunStore = waiting.filter((stage) => stage.sessionStorage !== "stage");
+	if (inRunStore.length === 0) return;
 	const opened = await openRunSessionStore(storage);
 	try {
 		const missing: string[] = [];
 		const checked = new Set<string>();
-		for (const stage of waiting) {
+		for (const stage of inRunStore) {
 			if (checked.has(stage.sessionId)) continue;
 			checked.add(stage.sessionId);
 			if ((await opened.store.readHeader(stage.sessionId)) !== undefined) continue;
@@ -68,4 +72,38 @@ export async function assertWaitingStageSessionsExist(
 	} finally {
 		if (opened.owned) await opened.store.close();
 	}
+}
+
+/** The stage a resume checks in the store its own `sessionStore` option supplies. */
+export interface StageOwnedSession {
+	readonly runId: string;
+	readonly stageName: string;
+	readonly stageId?: string;
+	readonly sessionId: string;
+}
+
+/**
+ * Before a resumed stage that kept its session in its own `sessionStore` does any work, check that the store the
+ * workflow passes it now holds that session: one header read, with no write. A store that does not, or a call that
+ * no longer passes a store, fails with a non-retryable `StageRehydrationError` (`session-not-found`) naming the
+ * stage, instead of the stage starting over in a new session.
+ */
+export async function assertStageOwnedSessionExists(
+	store: SessionStore | undefined,
+	stage: StageOwnedSession,
+): Promise<void> {
+	if (store !== undefined && (await store.readHeader(stage.sessionId)) !== undefined) return;
+	throw new StageRehydrationError(
+		{
+			runId: stage.runId,
+			stageName: stage.stageName,
+			...(stage.stageId === undefined ? {} : { stageId: stage.stageId }),
+			sessionIds: [stage.sessionId],
+			storage:
+				store === undefined
+					? "stage sessionStore option: not passed to the resumed stage"
+					: describeStore(store, "stage sessionStore option"),
+		},
+		{ code: "session-not-found" },
+	);
 }

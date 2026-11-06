@@ -171,6 +171,9 @@ export function createWorkflowStageFactory(input: {
 			parentIds: Object.freeze(parentIds),
 			toolEvents: [],
 			pendingStageDeliveryAvailable,
+			...(options?.sessionStore === undefined && options?.sessionManager === undefined
+				? {}
+				: { sessionStorage: "stage" as const }),
 			...(shouldReplay
 				? {
 						...stageTimingFields(replaySource),

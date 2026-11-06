@@ -275,6 +275,8 @@ export interface DurableStageCheckpoint {
 	/** Resumable Atomic/Pi session metadata for in-progress LM stages. */
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
+	/** `"stage"` when the session is in the store the stage's own `sessionStore` option supplied, not the run's. */
+	readonly sessionStorage?: "stage";
 	readonly completedAt: number;
 	/** Repository states captured after this live stage or task completed. */
 	readonly worktreeSnapshots?: readonly WorktreeSnapshot[];

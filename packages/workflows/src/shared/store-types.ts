@@ -499,6 +499,11 @@ export interface StageSnapshot {
 	sessionId?: string;
 	/** Optional transcript location for display, not a session identity. */
 	sessionFile?: string;
+	/**
+	 * `"stage"` when the stage keeps its session in the store its own `sessionStore` option supplied rather than the
+	 * run's: a resume checks that session when the workflow calls the stage again, with the store it passes.
+	 */
+	readonly sessionStorage?: "stage";
 	/** Live startup phase/age. Historical snapshots do not prove an active owner. */
 	startup?: import("./stage-startup.js").StageStartupSnapshot;
 	/** Effective model id selected for this stage after fallback resolution. */
