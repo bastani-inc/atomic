@@ -587,7 +587,7 @@ interface WorkflowEventStream extends AsyncIterableIterator<SubscriptionEvent> {
 }
 ```
 
-Inline mode, for streams where every event belongs in the subscriber's own history, such as the output of a command a stage started. Each event is yielded once, in arrival order, with no child. Deduplication, `maxRate` and the journal records work as for `ctx.subscribe`. An event is marked processed when the loop, having received it, asks for the next event or leaves the loop. An event the source delivered that the loop has not received yet stays unprocessed. Give durable work inside the loop an event-specific name, for example ``ctx.task(`triage/${event.id}`, …)``: after a resume, events already handled are skipped, so a name shared by every iteration would replay another event's result.
+Inline mode, for streams where every event belongs in the subscriber's own history, such as the output of a command a stage started. Each event is yielded once, in arrival order, with no child; overlapping `next()` calls are answered one after another with successive events. Deduplication, `maxRate` and the journal records work as for `ctx.subscribe`. An event is marked processed when the loop, having received it, asks for the next event or leaves the loop. An event the source delivered that the loop has not received yet stays unprocessed. Give durable work inside the loop an event-specific name, for example ``ctx.task(`triage/${event.id}`, …)``: after a resume, events already handled are skipped, so a name shared by every iteration would replay another event's result.
 
 ```typescript
 const builder = ctx.stage("builder");

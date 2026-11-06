@@ -115,7 +115,9 @@ export function createWorkflowStageFactory(input: {
 		if (stageFailFastScope?.detached === true) input.tracker.detach(stageId);
 		const scopedParentIds =
 			options?.durableParentIds ??
-			(input.opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined);
+			(input.opts.continuation === undefined || stageFailFastScope?.detached === true
+				? stageFailFastScope?.parentIds
+				: undefined);
 		const initialParentIds = scopedParentIds === undefined ? provisionalParentIds : [...scopedParentIds];
 		if (scopedParentIds !== undefined && !sameStringSet(scopedParentIds, provisionalParentIds)) {
 			input.tracker.replaceParents(stageId, scopedParentIds);

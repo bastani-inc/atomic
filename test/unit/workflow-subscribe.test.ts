@@ -2398,3 +2398,75 @@ test("an inline event the body has not read yet is not processed by reading it o
 	assert.equal(subscriptionEventProcessed(backend, runId, "buffered#1", "b2"), false);
 	assert.equal(subscriptionEventProcessed(backend, runId, "unread#1", "u1"), false);
 });
+
+test("a continuation run parents event children under the subscriber, not the frontier (#4311)", async () => {
+	const backend = await createMemoryTestBackend();
+	let failAfter = true;
+	const definition = workflow({
+		name: "continued-subscriber",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			await watcher.prompt("watch");
+			await ctx.stage("between").prompt("unrelated");
+			await ctx.subscribe(
+				listSource("continued", [{ id: "c1" }]),
+				async (_event, child) => {
+					await child.task({ prompt: "look" });
+				},
+				{ subscriber: watcher },
+			).done;
+			await ctx.stage("after").prompt("after");
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const adapters: RunOpts["adapters"] = {
+		agentSession: {
+			create: async (_options, meta) => {
+				if (meta?.stageName === "after" && failAfter) {
+					failAfter = false;
+					throw new Error("after failed once");
+				}
+				return subscriberSession();
+			},
+		},
+	};
+	const sourceStore = createStore();
+	const first = await run(definition, {}, { store: sourceStore, durableBackend: backend, adapters });
+	assert.equal(first.status, "failed");
+	const source = sourceStore.runs().find((candidate) => candidate.id === first.runId);
+	assert.ok(source !== undefined);
+	const continued = await run(
+		definition,
+		{},
+		{
+			store: createStore(),
+			durableBackend: backend,
+			continuation: { source, resumeFromStageId: source.failedStageId },
+			adapters,
+		},
+	);
+	assert.equal(continued.status, "completed", continued.error);
+	const watcher = continued.stages.find((stage) => stage.name === "watcher")!;
+	const child = continued.stages.find((stage) => stage.name === "continued#1/c1");
+	assert.ok(child !== undefined);
+	assert.deepEqual(child.parentIds, [watcher.id]);
+});
+
+test("overlapping reads of an inline stream get successive events (#4311)", async () => {
+	const seen: string[] = [];
+	const { result } = await runWorkflow(
+		async (ctx) => {
+			const stream = ctx.events(listSource("overlap", [{ id: "o1" }, { id: "o2" }]));
+			const [first, second] = await Promise.all([stream.next(), stream.next()]);
+			for (const read of [first, second]) if (read.done !== true) seen.push(read.value.id);
+			await stream.close();
+		},
+		undefined,
+		"a2a2a2a2-a2a2-4a2a-8a2a-000000004311",
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(seen, ["o1", "o2"]);
+});

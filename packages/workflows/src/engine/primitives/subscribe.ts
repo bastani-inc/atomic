@@ -305,15 +305,25 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 			},
 			handle.done,
 		);
+		/** Reads run one after another, so overlapping `next()` calls get successive events. */
+		let reading: Promise<void> = Promise.resolve();
+		const readNext = (): Promise<IteratorResult<SubscriptionEvent>> => {
+			if (current?.read === true) releaseCurrent(true);
+			waiting ??= Promise.withResolvers<IteratorResult<SubscriptionEvent>>();
+			const result = waiting.promise;
+			settleWaiting();
+			return result;
+		};
 		const stream: WorkflowEventStream = {
 			id,
 			stats: handle.stats,
 			close: () => closeStream(true),
 			next: () => {
-				if (current?.read === true) releaseCurrent(true);
-				waiting ??= Promise.withResolvers<IteratorResult<SubscriptionEvent>>();
-				const result = waiting.promise;
-				settleWaiting();
+				const result = reading.then(readNext);
+				reading = result.then(
+					() => undefined,
+					() => undefined,
+				);
 				return result;
 			},
 			return: finish,
