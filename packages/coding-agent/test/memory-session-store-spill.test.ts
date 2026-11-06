@@ -1232,7 +1232,7 @@ describe("released history outlives no process, except one killed, until the nex
 		HOST_TIMEOUT_MS,
 	);
 
-	for (const mode of ["workers-exit", "workers-sigterm", "workers-terminate"]) {
+	for (const mode of ["workers-exit", "workers-sigterm", "workers-terminate", "workers-late-import"]) {
 		test.skipIf(process.platform === "win32" && mode === "workers-sigterm")(
 			`main-thread exit cleans worker-only stores: ${mode}`,
 			async () => {

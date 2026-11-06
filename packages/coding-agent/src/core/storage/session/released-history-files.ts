@@ -34,7 +34,13 @@ function namespaceIdentity(): Promise<string | undefined> {
 	identity ??= (async () => {
 		if (process.platform === "linux") {
 			try {
-				const namespace = /^pid:\[([0-9]+)\]$/.exec(readlinkSync("/proc/self/ns/pid"));
+				const ownNamespace = readlinkSync("/proc/self/ns/pid");
+				// NSpid lists IDs from the proc mount's namespace down to ours. More than one means a foreign view,
+				// even if the numeric IDs happen to coincide. Missing/unreadable status is not proof of a matching view.
+				const status = readFileSync("/proc/self/status", "utf8");
+				const procPid = /^NSpid:[ \t]+([0-9]+)[ \t]*$/m.exec(status);
+				if (procPid?.[1] !== String(process.pid)) return undefined;
+				const namespace = /^pid:\[([0-9]+)\]$/.exec(ownNamespace);
 				const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 				if (namespace === null || boot.length === 0) return undefined;
 				return `linux-${namespace[1]}-${boot}`;
@@ -85,13 +91,14 @@ async function hostDirectory(agentDir: string): Promise<string> {
  */
 async function processStartTime(pid: number): Promise<string | null | undefined> {
 	if (process.platform === "linux") {
+		if ((await namespaceIdentity()) === undefined) return null;
 		try {
 			// Clock ticks from boot to the process's start. `/proc` is answered by the kernel, never from a disk.
 			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
 			const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
 			return start !== undefined && /^[0-9]+$/.test(start) ? start : null;
-		} catch (error) {
-			return getErrnoCode(error) === "ENOENT" ? undefined : null;
+		} catch {
+			return null;
 		}
 	}
 	if (process.platform === "win32") {
@@ -156,13 +163,13 @@ function ownStartTime(): Promise<string> {
 	return ownStart;
 }
 
-/** Whether a process has `pid`; one that belongs to another account counts. */
-function processExists(pid: number): boolean {
+/** Whether a process has `pid`; only ESRCH proves absence, and permission failures remain unknown. */
+function processExists(pid: number): boolean | undefined {
 	try {
 		process.kill(pid, 0);
 		return true;
 	} catch (error) {
-		return getErrnoCode(error) !== "ESRCH";
+		return getErrnoCode(error) === "ESRCH" ? false : undefined;
 	}
 }
 
@@ -171,10 +178,11 @@ function processExists(pid: number): boolean {
  * and started at that time, or has that pid and one of the two start times cannot be told.
  */
 async function ownerMayRun(pid: number, start: string): Promise<boolean> {
-	const current =
-		pid === process.pid ? await ownStartTime() : processExists(pid) ? await processStartTime(pid) : undefined;
-	if (current === undefined) return false;
-	return current === null || current === UNKNOWN_START || start === UNKNOWN_START || current === start;
+	const exists = processExists(pid);
+	if (exists === false) return false;
+	if (exists === undefined) return true;
+	const current = pid === process.pid ? await ownStartTime() : await processStartTime(pid);
+	return current == null || current === UNKNOWN_START || start === UNKNOWN_START || current === start;
 }
 
 /**
@@ -253,6 +261,11 @@ registry.unref();
 if (isMainThread) {
 	registry.onmessage = ({ data }) => registerWorkerDirectory(data);
 	removeAtExit();
+	registry.postMessage({ announce: true });
+} else {
+	registry.onmessage = ({ data }) => {
+		if (data.announce === true) for (const directory of usedProcessDirectories) registry.postMessage({ directory });
+	};
 }
 
 function registerWorkerDirectory(data: { readonly directory?: string }): void {

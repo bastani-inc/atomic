@@ -160,7 +160,7 @@ test("macOS lstart fixtures keep live owners, remove reused PIDs, and preserve u
 			paths.set(pid, path);
 		}
 		await module.sweepReleasedHistory(root);
-		for (const [pid, path] of paths) assert.equal(fs.existsSync(path), ![403, 404, 415].includes(pid), `pid ${pid}`);
+		for (const [pid, path] of paths) assert.equal(fs.existsSync(path), ![403, 415].includes(pid), `pid ${pid}`);
 		for (const [command, , options] of vi.mocked(childProcess.execFile).mock.calls) {
 			if (command !== "ps") continue;
 			assert.equal((options as childProcess.ExecFileOptions).env?.LC_ALL, "C");
@@ -257,7 +257,7 @@ test.skipIf(process.platform !== "linux")(
 		const stat = actual.readFileSync(`/proc/${process.pid}/stat`, "utf8");
 		const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] as string;
 		vi.spyOn(process, "kill").mockImplementation((pid) => {
-			if (pid === 404 || pid === 405)
+			if (pid === 404 || pid === 405 || pid === 408)
 				throw Object.assign(new Error("kill failed"), { code: pid === 404 ? "ESRCH" : "EPERM" });
 			return true;
 		});
@@ -270,15 +270,42 @@ test.skipIf(process.platform !== "linux")(
 			if (path === "/proc/406/stat") return stat.replace(` ${start} `, ` prefix${start} `);
 			if (path === "/proc/407/stat") return stat.replace(` ${start} `, ` ${start}suffix `);
 			if (path === "/proc/404/stat") return stat;
+			if (path === "/proc/408/stat") return stat.replace(` ${start} `, " 1 ");
 			return actual.readFileSync(...args);
 		});
 		const directory = await module.releasedHistoryFiles(root).createDirectory();
 		assert.ok(!(directory instanceof Error));
 		const parent = dirname(dirname(directory.path));
-		for (const pid of [401, 402, 403, 404, 405, 406, 407]) fs.mkdirSync(join(parent, `${pid}-${start}`));
+		for (const pid of [401, 402, 403, 404, 405, 406, 407, 408]) fs.mkdirSync(join(parent, `${pid}-${start}`));
 		await module.sweepReleasedHistory(root);
-		for (const pid of [401, 402, 403, 404, 405, 406, 407])
-			assert.equal(fs.existsSync(join(parent, `${pid}-${start}`)), ![402, 404].includes(pid), `pid ${pid}`);
+		for (const pid of [401, 402, 403, 404, 405, 406, 407, 408])
+			assert.equal(fs.existsSync(join(parent, `${pid}-${start}`)), pid !== 404, `pid ${pid}`);
+		await directory.remove();
+	},
+);
+
+test
+	.skipIf(process.platform !== "linux")
+	.each([`NSpid:\t${process.pid + 1}\t${process.pid}\n`, `NSpid:\t${process.pid}\t${process.pid}\n`, "Name:\tnode\n"])(
+	"a mismatched or unknown proc PID view disables sweeping and start-time lookups: %j",
+	async (status) => {
+		const caseRoot = join(root, `proc-mismatch-${status.replace(/[^0-9]/g, "") || "unknown"}`);
+		const module = await owner("500");
+		const actual = await vi.importActual<typeof fs>("node:fs");
+		vi.mocked(fs.readFileSync).mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
+			const path = String(args[0]);
+			if (path === "/proc/self/status") return status;
+			if (path === "/proc/sys/kernel/random/boot_id") return "boot-a";
+			return actual.readFileSync(...args);
+		});
+		const directory = await module.releasedHistoryFiles(caseRoot).createDirectory();
+		assert.ok(!(directory instanceof Error));
+		const gone = join(dirname(dirname(directory.path)), "2147483647-1");
+		fs.mkdirSync(gone);
+		await module.sweepReleasedHistory(caseRoot);
+		assert.ok(fs.existsSync(gone));
+		assert.ok(directory.path.includes(`${process.pid}-unknown`));
+		assert.equal(vi.mocked(fs.readFileSync).mock.calls.filter(([path]) => String(path).endsWith("/stat")).length, 0);
 		await directory.remove();
 	},
 );

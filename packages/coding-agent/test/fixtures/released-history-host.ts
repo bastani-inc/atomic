@@ -6,11 +6,12 @@
  * once it has).
  */
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-// Import on the main thread except for the explicit worker-only SDK case.
+// Some cases deliberately start workers before the main thread imports the SDK.
 
 const [agentDir, mode] = (isMainThread ? process.argv.slice(2) : workerData) as [string, string];
 
-if (isMainThread && mode !== "worker-no-listener") await import("../../src/core/storage/provider.ts");
+if (isMainThread && mode !== "worker-no-listener" && mode !== "workers-late-import")
+	await import("../../src/core/storage/provider.ts");
 
 async function releaseOne(): Promise<void> {
 	const { StorageProvider } = await import("../../src/core/storage/provider.ts");
@@ -39,6 +40,11 @@ if (!isMainThread) {
 	let ready = 0;
 	for (const worker of workers) worker.on("message", async () => {
 		if (++ready !== workers.length) return;
+		if (mode === "workers-late-import") {
+			await import("../../src/core/storage/provider.ts");
+			// Allow the main-thread listener and already-running workers to exchange registrations.
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
 		process.stdout.write("all released\n");
 		if (mode === "workers-sigterm") {
 			process.on("SIGTERM", () => process.exit(143));
