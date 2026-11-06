@@ -497,3 +497,27 @@ test.skipIf(process.platform === "win32")(
 		);
 	},
 );
+
+test("an export for sharing drops bytes an entry already carries, from a session opened from an exported file (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-share-carried-");
+	const store = await sqlStore(directory, "source");
+	const manager = await SessionManager.create(store, process.cwd());
+	const harness = await createHarness({ sessionManager: manager });
+	harnesses.push(harness);
+	const carried: ToolOutputReference = {
+		toolCallId: "call-1",
+		hash: HASH,
+		bytes: Buffer.byteLength(OUTPUT),
+		base64: Buffer.from(OUTPUT).toString("base64"),
+	};
+	await manager.appendCustomEntry(TOOL_OUTPUT_ENTRY_TYPE, carried);
+
+	const shared = await harness.session.exportToJsonl(join(directory, "shared.jsonl"), { toolOutputContent: false });
+	const full = await harness.session.exportToJsonl(join(directory, "full.jsonl"));
+
+	assert.deepEqual(references(fileLines(shared)), [
+		{ toolCallId: "call-1", hash: HASH, bytes: Buffer.byteLength(OUTPUT) },
+	]);
+	assert.equal(readFileSync(shared, "utf8").includes(carried.base64!), false, "the bytes are not in the shared file");
+	assert.deepEqual(references(fileLines(full)), [carried]);
+});

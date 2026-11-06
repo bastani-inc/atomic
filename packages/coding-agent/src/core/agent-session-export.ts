@@ -21,7 +21,7 @@ import { calculateContextTokens, estimateProjectedContextTokens } from "./compac
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
-import { inlineToolOutput } from "./session-tool-output.ts";
+import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
 import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
@@ -204,7 +204,9 @@ export async function exportToJsonl(
 			: sessionSnapshotBlobs(store.snapshotBlobs, this.sessionManager.getEntries()),
 	);
 	const branchEntries =
-		options.toolOutputContent === false ? snapshotEntries : inlineToolOutput(snapshotEntries, store, sessionId);
+		options.toolOutputContent === false
+			? withoutInlineToolOutput(snapshotEntries)
+			: inlineToolOutput(snapshotEntries, store, sessionId);
 	const shareEntry = (parentId: string | null) => ({
 		type: "custom",
 		id: randomUUID(),

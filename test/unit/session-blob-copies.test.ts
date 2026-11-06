@@ -195,9 +195,12 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		const taken = takeInlineToolOutput(exported, "imported");
 		assert.deepEqual(taken.entries, entries);
 		assert.deepEqual(
-			taken.blobs.map((blob) => [blob.hash, Buffer.from(blob.data).toString()]),
+			taken.blobs.map((blob) => [blob.hash, Buffer.from(blob.read()).toString()]),
 			[[hash, text]],
 		);
+
+		const [first] = taken.blobs;
+		assert.notEqual(first!.read(), first!.read(), "each read decodes again, so none is kept");
 
 		const tampered = exported.map((entry) =>
 			entry.type === "custom" && (entry.data as { base64?: string }).base64 !== undefined
@@ -446,7 +449,7 @@ describe("tool-output entries and blob copies (#4379)", () => {
 		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { putBlob: undefined });
 
 		await assert.rejects(
-			storeSessionBlobs(blobless, "copy", [{ hash: "a".repeat(64), data: new Uint8Array([1]) }]),
+			storeSessionBlobs(blobless, "copy", [{ hash: "a".repeat(64), read: () => new Uint8Array([1]) }]),
 			(error) => isSessionBlobError(error) && error.code === "blobs-unsupported" && error.sessionId === "copy",
 		);
 		assert.equal(await store.readHeader("copy"), undefined);

@@ -21,10 +21,11 @@ export interface ToolOutputReference {
 	readonly base64?: string;
 }
 
-/** A blob's bytes on their way from one session to another, under the hash they are stored by. */
+/** A blob on its way from an exported session into another, under the hash it is stored by. */
 export interface SessionBlobCopy {
 	readonly hash: string;
-	readonly data: Uint8Array;
+	/** The blob's bytes, produced when asked for, so a copy holds one blob at a time and not all of them. */
+	readonly read: () => Uint8Array;
 }
 
 /** The URL the model reads a tool output kept as a session blob from. */
@@ -107,7 +108,7 @@ export function storeSessionBlobs(
 ): Promise<void> {
 	return writeOrDelete(store, sessionId, async () => {
 		assertSessionBlobStore(store, sessionId, blobs.length);
-		for (const blob of blobs) await store.putBlob!(sessionId, blob.data);
+		for (const blob of blobs) await store.putBlob!(sessionId, blob.read());
 	});
 }
 
@@ -191,9 +192,20 @@ export async function* inlineToolOutput(
 	reportMissingBlobs(options, sessionId, missing);
 }
 
+/** `entries` without the bytes any tool-output entry carries inline, so an export for sharing holds only previews. */
+export function withoutInlineToolOutput(entries: readonly SessionEntry[]): SessionEntry[] {
+	return entries.map((entry) => {
+		const reference = referenceOf(entry);
+		if (reference?.base64 === undefined) return entry;
+		const { base64: _carried, ...kept } = reference;
+		return { ...entry, data: kept } as SessionEntry;
+	});
+}
+
 /**
  * Takes the tool outputs an exported session carries inline out of its entries, after checking each against its
- * hash. Throws `blob-corrupt` for the first that does not match, before anything is written.
+ * hash. Throws `blob-corrupt` for the first that does not match, before anything is written. Each output is decoded
+ * for the check and dropped, and again when it is stored, so an import holds one decoded output at a time.
  */
 export function takeInlineToolOutput(
 	entries: readonly SessionEntry[],
@@ -204,12 +216,12 @@ export function takeInlineToolOutput(
 		const reference = referenceOf(entry);
 		if (typeof reference?.base64 !== "string") return entry;
 		const { base64, ...kept } = reference;
-		const data = new Uint8Array(Buffer.from(base64, "base64"));
-		const actualHash = createHash("sha256").update(data).digest("hex");
+		const decode = () => new Uint8Array(Buffer.from(base64, "base64"));
+		const actualHash = createHash("sha256").update(decode()).digest("hex");
 		if (actualHash !== reference.hash) {
 			throw new SessionBlobError("blob-corrupt", { sessionId, hash: reference.hash, actualHash });
 		}
-		blobs.set(actualHash, { hash: actualHash, data });
+		blobs.set(actualHash, { hash: actualHash, read: decode });
 		return { ...entry, data: kept } as SessionEntry;
 	});
 	return { entries: taken, blobs: [...blobs.values()] };

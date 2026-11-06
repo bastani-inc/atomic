@@ -128,7 +128,7 @@ describe.skipIf(serverUrl === undefined)("session blobs on a libSQL server (#437
 				entries.filter((entry) => entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE).length,
 				1,
 			);
-			assert.equal(sha256(blobs[0]!.data), hash);
+			assert.equal(sha256(blobs[0]!.read()), hash);
 		},
 		REAL_SERVER_BLOB_TIMEOUT_MS,
 	);
