@@ -196,7 +196,7 @@ A model named with `--model` runs as named. It falls back only to the models `--
 | `--session-store <path>` | Select a SQLite session database; relative paths resolve from the working directory |
 | `--session-prefix <prefix>` | Use a non-default table prefix with `--session-store` |
 | `--name <name>`, `-n <name>` | Set the session display name |
-| `--no-session` | Ephemeral mode; do not save |
+| `--no-session` | No resumable session; [released history may use disk](/sessions) |
 | `--storage <json>` | Select storage for this process's sessions and workflow runs, in the same JSON form as the shared `storage` setting; never saved. See [Selecting storage per process](/storage#selecting-storage-per-process) |
 | `--storage-file <path>` | Read the `--storage` selection from a JSON file; cannot be combined with `--storage` |
 

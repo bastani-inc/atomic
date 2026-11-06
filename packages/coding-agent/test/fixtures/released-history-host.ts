@@ -6,11 +6,14 @@
  * once it has).
  */
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-import { StorageProvider } from "../../src/core/storage/provider.ts";
+// Import on the main thread except for the explicit worker-only SDK case.
 
 const [agentDir, mode] = (isMainThread ? process.argv.slice(2) : workerData) as [string, string];
 
+if (isMainThread && mode !== "worker-no-listener") await import("../../src/core/storage/provider.ts");
+
 async function releaseOne(): Promise<void> {
+	const { StorageProvider } = await import("../../src/core/storage/provider.ts");
 	const store = await new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir, domain: "sessions" });
 	await store.create({ id: "s", version: 4, createdAt: "2026-11-06T00:00:00.000Z", cwd: "/repo" }, [
 		{
@@ -28,6 +31,24 @@ async function releaseOne(): Promise<void> {
 if (!isMainThread) {
 	await releaseOne();
 	parentPort?.postMessage("released");
+	if (mode === "worker-wait") setInterval(() => {}, 1000);
+} else if (mode.startsWith("workers-") || mode === "worker-no-listener") {
+	const workers = Array.from({ length: 3 }, () => new Worker(new URL(import.meta.url), {
+		workerData: [agentDir, "worker-wait"],
+	}));
+	let ready = 0;
+	for (const worker of workers) worker.on("message", async () => {
+		if (++ready !== workers.length) return;
+		process.stdout.write("all released\n");
+		if (mode === "workers-sigterm") {
+			process.on("SIGTERM", () => process.exit(143));
+			process.kill(process.pid, "SIGTERM");
+		} else {
+			if (mode === "workers-terminate" || mode === "worker-no-listener")
+				await Promise.all(workers.map((owner) => owner.terminate()));
+			process.exit(0);
+		}
+	});
 } else if (mode === "worker") {
 	const worker = new Worker(new URL(import.meta.url), { workerData: [agentDir, "in-worker"] });
 	worker.on("message", (message) => process.stdout.write(`${message}\n`));

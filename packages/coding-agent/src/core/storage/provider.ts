@@ -20,6 +20,7 @@ import { validateStoragePrefix } from "./prefix.js";
 import type { RunJournal } from "./run-journal.js";
 import type { InMemorySecretRef } from "./selection.js";
 import { selectStorage } from "./selection.js";
+import { releasedHistoryFiles } from "./session/released-history-files.js";
 import type { SessionStore } from "./session/types.js";
 
 /**
@@ -361,9 +362,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 			memory: async () =>
 				new (await import("./session/memory-session-store.js")).MemorySessionStore(
 					createSessionCwdMatcher,
-					(await import("./session/released-history-files.js")).releasedHistoryFiles(
-						context.agentDir || (await import("../../config.js")).getAgentDir(),
-					),
+					releasedHistoryFiles(context.agentDir || (await import("../../config.js")).getAgentDir()),
 				),
 			jsonl: async (dir) =>
 				(await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir, { exactDirectory: true }),

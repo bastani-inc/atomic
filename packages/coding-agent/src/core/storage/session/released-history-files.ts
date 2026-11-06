@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { readFileSync, rmdirSync, rmSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
 import { copyFile, mkdir, open, readdir, readFile, rename, rm, rmdir } from "node:fs/promises";
-import { hostname } from "node:os";
+import { hostname, release } from "node:os";
 import { join } from "node:path";
-import { isMainThread } from "node:worker_threads";
+import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
 import { getErrnoCode } from "../../tools/errno.ts";
 import {
 	SESSION_TEMP_DIR_MODE,
@@ -27,8 +27,56 @@ export function releasedHistoryDirectory(agentDir: string): string {
 	return join(agentDir, "released-history");
 }
 
-function hostDirectory(agentDir: string): string {
-	return join(releasedHistoryDirectory(agentDir), sanitizeTempPathComponent(hostname(), "host"));
+let identity: Promise<string | undefined> | undefined;
+
+/** A boot and PID namespace in which a pid/start-time pair identifies the same owner for every reader. */
+function namespaceIdentity(): Promise<string | undefined> {
+	identity ??= (async () => {
+		if (process.platform === "linux") {
+			try {
+				const namespace = /^pid:\[([0-9]+)\]$/.exec(readlinkSync("/proc/self/ns/pid"));
+				const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+				if (namespace === null || boot.length === 0) return undefined;
+				return `linux-${namespace[1]}-${boot}`;
+			} catch {
+				return undefined;
+			}
+		}
+		if (process.platform === "darwin") {
+			const boot = await run("sysctl", ["-n", "kern.boottime"]);
+			const seconds = /sec = ([0-9]+), usec = ([0-9]+)/.exec(boot.stdout);
+			return boot.ran && boot.exitCode === 0 && seconds !== null
+				? `darwin-${release()}-${seconds[1]}-${seconds[2]}`
+				: undefined;
+		}
+		if (process.platform === "win32") {
+			for (const executable of powershellCandidates()) {
+				const boot = await run(executable, [
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					"(Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToFileTimeUtc()",
+				]);
+				if (boot.ran)
+					return boot.exitCode === 0 && /^[0-9]+$/.test(boot.stdout)
+						? `win32-${release()}-${boot.stdout}`
+						: undefined;
+			}
+		}
+		return undefined;
+	})();
+	return identity;
+}
+
+async function hostDirectory(agentDir: string): Promise<string> {
+	// An unknown identity is private to this process and never swept: uncertainty must not delete another owner's files.
+	const key = (await namespaceIdentity()) ?? `${process.platform}-unknown-${process.pid}-${await ownStartTime()}`;
+	const host = hostname();
+	// Hash the complete identity: truncating a long hostname must not drop the namespace or boot from the key.
+	const digest = createHash("sha256")
+		.update(JSON.stringify([host, key]))
+		.digest("hex");
+	return join(releasedHistoryDirectory(agentDir), `${sanitizeTempPathComponent(host, "host")}-${digest}`);
 }
 
 /**
@@ -40,7 +88,8 @@ async function processStartTime(pid: number): Promise<string | null | undefined>
 		try {
 			// Clock ticks from boot to the process's start. `/proc` is answered by the kernel, never from a disk.
 			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-			return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
+			const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+			return start !== undefined && /^[0-9]+$/.test(start) ? start : null;
 		} catch (error) {
 			return getErrnoCode(error) === "ENOENT" ? undefined : null;
 		}
@@ -53,15 +102,22 @@ async function processStartTime(pid: number): Promise<string | null | undefined>
 				"-Command",
 				`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`,
 			]);
-			if (output.ran) return /^[0-9]+$/.test(output.stdout) ? output.stdout : null;
+			if (output.ran) return output.exitCode === 0 && /^[0-9]+$/.test(output.stdout) ? output.stdout : null;
 		}
 		return null;
 	}
 	const output = await run("ps", ["-o", "lstart=", "-p", String(pid)], { LC_ALL: "C", TZ: "UTC" });
-	const start = output.stdout.replace(/[^A-Za-z0-9]+/g, "");
-	if (start.length > 0) return start;
-	// `ps` exits with 1 when no process has the pid.
-	return output.ran && output.exitCode === 1 ? undefined : null;
+	if (!output.ran) return null;
+	// An unsuccessful or malformed lookup cannot establish that an owner has been replaced.
+	if (output.exitCode === 1 && output.stdout.length === 0) return undefined;
+	if (
+		output.exitCode !== 0 ||
+		!/^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)[ \t]+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ \t]+[0-9]{1,2}[ \t]+[0-9]{2}:[0-9]{2}:[0-9]{2}[ \t]+[0-9]{4}$/.test(
+			output.stdout,
+		)
+	)
+		return null;
+	return output.stdout.replace(/[^A-Za-z0-9]+/g, "");
 }
 
 /** Runs a short command; `ran` is false when it could not be started or did not finish in time. */
@@ -128,7 +184,8 @@ async function ownerMayRun(pid: number, start: string): Promise<boolean> {
  * now is left to the next sweep.
  */
 export async function sweepReleasedHistory(agentDir: string): Promise<void> {
-	const host = hostDirectory(agentDir);
+	if ((await namespaceIdentity()) === undefined) return;
+	const host = await hostDirectory(agentDir);
 	let names: string[];
 	try {
 		names = await readdir(host);
@@ -176,18 +233,33 @@ function processDirectory(agentDir: string): Promise<string | SessionSpillError>
 }
 
 async function createProcessDirectory(agentDir: string): Promise<string | SessionSpillError> {
-	const path = join(hostDirectory(agentDir), `${process.pid}-${await ownStartTime()}`);
+	const path = join(await hostDirectory(agentDir), `${process.pid}-${await ownStartTime()}`);
 	try {
 		await mkdir(path, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
 	} catch (cause) {
 		return new SessionSpillError("spill-dir-refused", { directory: path, errno: getErrnoCode(cause) }, { cause });
 	}
 	usedProcessDirectories.add(path);
+	if (!isMainThread) registry.postMessage({ directory: path });
 	removeAtExit();
 	return path;
 }
 
 let exitCleanupInstalled = false;
+
+/** Process-local, including workers whose main thread owns no store. Registration never delays a release. */
+const registry = new BroadcastChannel("atomic-released-history-directories");
+registry.unref();
+if (isMainThread) {
+	registry.onmessage = ({ data }) => registerWorkerDirectory(data);
+	removeAtExit();
+}
+
+function registerWorkerDirectory(data: { readonly directory?: string }): void {
+	if (typeof data.directory !== "string") return;
+	usedProcessDirectories.add(data.directory);
+	registry.postMessage({ registered: data.directory });
+}
 
 function removeAtExit(): void {
 	if (exitCleanupInstalled) return;
@@ -200,6 +272,13 @@ function removeAtExit(): void {
  * with what its worker threads keep there, since they end with it; a worker thread removes its own stores' directories.
  */
 function removeDirectories(): void {
+	if (isMainThread) {
+		// A worker can report readiness on its parent port before this channel's event callback runs.
+		// Node and Bun accept BroadcastChannel here; Bun's declaration still only lists MessagePort.
+		const port = registry as unknown as Parameters<typeof receiveMessageOnPort>[0];
+		for (let message = receiveMessageOnPort(port); message !== undefined; message = receiveMessageOnPort(port))
+			registerWorkerDirectory(message.message);
+	}
 	for (const path of isMainThread ? usedProcessDirectories : openDirectories) {
 		try {
 			rmSync(path, { recursive: true, force: true });
@@ -258,7 +337,8 @@ async function writeWhole(
 ): Promise<void> {
 	const staging = `${path}.partial`;
 	try {
-		if (previous !== undefined) await copyFile(previous.path, staging);
+		// FICLONE requests reflinks where supported; Node falls back to a plain copy otherwise.
+		if (previous !== undefined) await copyFile(previous.path, staging, constants.COPYFILE_FICLONE);
 		await writeAt(staging, data, previous?.bytes ?? 0);
 		await rename(staging, path);
 	} catch (error) {
@@ -271,12 +351,16 @@ function historyDirectory(path: string): SessionHistoryDirectory {
 	const fileAt = (file: number) => join(path, String(file));
 	return {
 		path,
-		write: (file, data, previous) =>
-			writeWhole(
-				fileAt(file),
-				data,
-				previous === undefined ? undefined : { path: fileAt(previous.file), bytes: previous.bytes },
-			),
+		async write(file, data, previous) {
+			const before = previous === undefined ? undefined : { path: fileAt(previous.file), bytes: previous.bytes };
+			try {
+				await writeWhole(fileAt(file), data, before);
+			} catch (error) {
+				if (getErrnoCode(error) !== "ENOENT") throw error;
+				await mkdir(path, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+				await writeWhole(fileAt(file), data, before);
+			}
+		},
 		read: (file) => readFile(fileAt(file)),
 		async removeFile(file) {
 			await rm(fileAt(file), { force: true });
@@ -289,13 +373,12 @@ function historyDirectory(path: string): SessionHistoryDirectory {
 }
 
 /**
- * Released sessions' history in files under the agent directory, in `<agentDir>/released-history/<host>/<pid>-<start>/`,
- * a directory for this process named for its pid and start time: an owner-only directory (0700) per store, with an
- * owner-only file (0600) per session. A store's directory is removed when its last handle closes, and the process's
- * directory when the process exits, through `process.exit()` too, as Atomic's own signal handlers end it; a worker
- * thread removes its own stores' directories when it exits. What a process ended any other way leaves behind, such as
- * one killed with SIGKILL, or by a signal nothing handles, is removed by the next process that opens a store over
- * the same agent directory, once no process has that pid and start time; opening one starts that sweep.
+ * Released sessions' history in `<agentDir>/released-history/<host-identity>/<pid>-<start>/`: host identity includes
+ * hostname, platform, boot, and Linux PID namespace. Store directories/files are owner-only (0700/0600) on POSIX;
+ * Windows inherits the agent directory's ACL. The last handle closing removes its store directory. Main-thread exit
+ * removes registered worker directories too, even after terminate(); worker-only SDK imports cannot install main
+ * cleanup. Normal worker exit removes its stores. A matching namespace/boot's next startup sweeps killed owners;
+ * uncertain identities and owners are always kept.
  */
 export function releasedHistoryFiles(agentDir: string): SessionHistoryFiles {
 	sweepReleasedHistoryOnce(agentDir);

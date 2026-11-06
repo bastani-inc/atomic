@@ -434,11 +434,11 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("a directory left by a store never closed is removed at exit, by one listener for the whole process", async () => {
-		vi.resetModules();
-		const fresh = await import("../src/core/storage/session/released-history-files.js");
 		const listening = () =>
 			process.listeners("exit").filter((listener) => listener.toString().includes("usedProcessDirectories"));
 		const before = listening();
+		vi.resetModules();
+		const fresh = await import("../src/core/storage/session/released-history-files.js");
 		const first = new MemorySessionStore(undefined, fresh.releasedHistoryFiles(agentDir));
 		const second = new MemorySessionStore(undefined, fresh.releasedHistoryFiles(agentDir));
 		for (const store of [first, second]) {
@@ -712,6 +712,26 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 			return true;
 		});
 		assert.deepEqual(await store.readHeader("s"), header("s"), "the session still exists");
+	});
+
+	test("a same-length edit that remains valid JSON is detected after repeated releases", async () => {
+		const store = newStore();
+		await created(store, "s", [entry("first", "1234")]);
+		await store.releaseSession("s");
+		await store.append("s", [entry("later", "5678")], { expectSeq: 1 });
+		await store.releaseSession("s");
+		const [{ path, files: names }] = spillDirectories();
+		const file = join(path, names[0] as string);
+		const original = fs.readFileSync(file, "utf8");
+		const changed = original.replace("1234", "9999");
+		assert.notEqual(changed, original);
+		assert.equal(changed.length, original.length);
+		assert.doesNotThrow(() => JSON.parse(`[${changed}]`));
+		writeFileSync(file, changed);
+		await assert.rejects(
+			store.load("s"),
+			(error: Error) => isSessionSpillError(error) && error.code === "spill-corrupt",
+		);
 	});
 
 	test("a file whose content was changed fails the load with spill-corrupt, a typed storage error", async () => {
@@ -1207,6 +1227,31 @@ describe("released history outlives no process, except one killed, until the nex
 			assert.equal(processDirectories(root).length, 1);
 			child.kill("SIGTERM");
 			assert.equal((await ended).code, 143);
+			assert.deepEqual(processDirectories(root), []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	for (const mode of ["workers-exit", "workers-sigterm", "workers-terminate"]) {
+		test.skipIf(process.platform === "win32" && mode === "workers-sigterm")(
+			`main-thread exit cleans worker-only stores: ${mode}`,
+			async () => {
+				const root = join(agentDir, mode);
+				const { ended } = await startHost(root, mode, "all released");
+				assert.equal((await ended).code, mode === "workers-sigterm" ? 143 : 0);
+				assert.deepEqual(processDirectories(root), []);
+			},
+			HOST_TIMEOUT_MS,
+		);
+	}
+
+	test(
+		"worker-only SDK imports never wait for a main listener; the next sweep cleans terminated workers",
+		async () => {
+			const root = join(agentDir, "worker-no-listener");
+			const { ended } = await startHost(root, "worker-no-listener", "all released");
+			assert.equal((await ended).code, 0);
+			await sweepReleasedHistory(root);
 			assert.deepEqual(processDirectories(root), []);
 		},
 		HOST_TIMEOUT_MS,

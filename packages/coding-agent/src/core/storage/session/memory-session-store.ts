@@ -40,6 +40,8 @@ interface StoredSession {
 	file: number;
 	/** Bytes of entries its file holds, the history before `entries`. */
 	spilledBytes: number;
+	/** Incremental FNV-1a checksum of the bytes successfully spilled, kept independently of the file. */
+	spilledChecksum: number;
 	/** The release writing its entries to its file now; a load, a delete or another release waits for it. */
 	spilling: Promise<void> | undefined;
 }
@@ -415,7 +417,7 @@ export class MemorySessionStore implements SessionStore {
 			const header = decodeHeader(record);
 			const lastSeq = record.lastSeq;
 			const held = joinEntries(record);
-			const { directory, file, spilledBytes } = record;
+			const { directory, file, spilledBytes, spilledChecksum } = record;
 			if (directory === undefined) return { header, entries: parseEntries(held), lastSeq };
 			let spilled: Uint8Array;
 			try {
@@ -427,7 +429,7 @@ export class MemorySessionStore implements SessionStore {
 				if (record.file !== file) continue;
 				throw error;
 			}
-			return { header, entries: parseHistory(directory, sessionId, spilled, held), lastSeq };
+			return { header, entries: parseHistory(directory, sessionId, spilled, held, spilledChecksum), lastSeq };
 		}
 	}
 
@@ -455,6 +457,7 @@ export class MemorySessionStore implements SessionStore {
 			record.directory = directory;
 			record.file = file;
 			record.spilledBytes += data.byteLength;
+			record.spilledChecksum = checksum(data, record.spilledChecksum);
 		} catch (cause) {
 			record.entries = [...chunks, ...record.entries];
 			spill.degraded(
@@ -493,6 +496,7 @@ export class MemorySessionStore implements SessionStore {
 			directory: undefined,
 			file: 0,
 			spilledBytes: 0,
+			spilledChecksum: 0x811c9dc5,
 			spilling: undefined,
 		};
 	}
@@ -565,9 +569,11 @@ function parseHistory(
 	sessionId: string,
 	spilled: Uint8Array,
 	held: Uint8Array,
+	expectedChecksum: number,
 ): SessionEntry[] {
+	let entries: SessionEntry[];
 	try {
-		return parseEntries(held.byteLength === 0 ? spilled : joinChunks([spilled, held]));
+		entries = parseEntries(held.byteLength === 0 ? spilled : joinChunks([spilled, held]));
 	} catch (cause) {
 		if (!(cause instanceof SyntaxError)) throw cause;
 		throw new SessionSpillError(
@@ -576,6 +582,16 @@ function parseHistory(
 			{ cause },
 		);
 	}
+	if (checksum(spilled) !== expectedChecksum)
+		throw new SessionSpillError("spill-corrupt", { directory: directory.path, sessionId, bytes: spilled.byteLength });
+	return entries;
+}
+
+/** Cheap accidental-corruption detection, not an authentication tag. Updating only the append avoids re-reading history. */
+function checksum(bytes: Uint8Array, previous = 0x811c9dc5): number {
+	let hash = previous;
+	for (let index = 0; index < bytes.byteLength; index++) hash = Math.imul(hash ^ (bytes[index] as number), 0x01000193);
+	return hash >>> 0;
 }
 
 /** The chunks as one buffer, with a comma between each two. */

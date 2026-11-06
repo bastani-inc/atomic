@@ -1,0 +1,8 @@
+{
+  "provenance": "Captured with ps -o lstart= -p $$ on GNU/Linux on 2026-11-06. These real outputs exercise the macOS lstart format via a darwin platform stub; they are not a native macOS execution claim. Production forces LC_ALL=C and TZ=UTC, regardless of the caller's locale/timezone.",
+  "samples": [
+    { "locale": "C", "timezone": "UTC", "stdout": "Fri Nov  6 22:33:19 2026\n" },
+    { "locale": "en_US.utf8", "timezone": "America/Los_Angeles", "stdout": "Fri Nov  6 14:33:19 2026\n" },
+    { "locale": "C.utf8", "timezone": "Asia/Kolkata", "stdout": "Sat Nov  7 04:03:19 2026\n" }
+  ]
+}
