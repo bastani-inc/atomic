@@ -244,6 +244,24 @@ describe("redispatched detachable calls keep their declared concurrency (#4309)"
 		});
 	}
 
+	test("a redispatched call queued behind an exclusive one still waits for its work after their session closes (#4403)", async () => {
+		const log: string[] = [];
+		const earlier = gatedTool("earlier", log, { concurrency: "exclusive", detachable: true });
+		const later = gatedTool("later", log, { concurrency: "exclusive", detachable: true });
+		later.finish();
+		const reopened = await reopenedOnCalls([earlier, later], ["earlier", "later"]);
+
+		const calls = reopened.session.redispatchDetachedToolCalls();
+		await earlier.started;
+		await reopened.session.dispose();
+		await pastZeroThreshold();
+		assert.deepEqual(log, ["earlier:start"]);
+
+		earlier.finish();
+		await Promise.all(calls.map((call) => call.result));
+		assert.deepEqual(log, ["earlier:start", "earlier:end", "later:start", "later:end"]);
+	});
+
 	test("redispatched shared calls run alongside each other", async () => {
 		const log: string[] = [];
 		const earlier = gatedTool("earlier", log, { concurrency: "shared", detachable: true });

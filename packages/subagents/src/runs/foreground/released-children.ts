@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
+	type AgentRehydrateError,
 	type AgentWake,
 	type AgentWakeDispatcher,
 	agentWakeDispatcher,
@@ -126,20 +127,45 @@ function deliverToolResult(
 	return dispatcher.deliver(wakeKey, { id: `tool-result:${toolResult.toolCallId}`, kind: "tool-result", toolResult });
 }
 
+async function deliverDetachedResult(
+	dispatcher: AgentWakeDispatcher,
+	wakeKey: string,
+	replyQuestionId: string | undefined,
+	toolResult: DetachedToolResult,
+): Promise<void> {
+	if (isReleasedReplyHandoffResult(toolResult.result.details)) return;
+	if (replyQuestionId !== undefined) dispatcher.cancel(wakeKey, releasedReplyTimeoutId(replyQuestionId));
+	await deliverToolResult(dispatcher, wakeKey, toolResult);
+}
+
+/**
+ * The one reaction a released child keeps on a call it detached. It holds the wake key and the call's reply question,
+ * not the call, its controller or the child's waiting records (#4403).
+ */
+function forwardResult(
+	dispatcher: AgentWakeDispatcher,
+	wakeKey: string,
+	result: Promise<DetachedToolResult>,
+	replyQuestionId: string | undefined,
+): void {
+	const report = (error: AgentRehydrateError) => dispatcher.reportUnobservedFailure(error);
+	void result.then(
+		(toolResult) => deliverDetachedResult(dispatcher, wakeKey, replyQuestionId, toolResult).catch(report),
+		report,
+	);
+}
+
 function forwardDetachedResult(
 	dispatcher: AgentWakeDispatcher,
 	wakeKey: string,
 	call: DetachedToolCall,
 	waitingOn: readonly SubagentChildWaitingCall[],
 ): void {
-	void call.result
-		.then((toolResult) => {
-			if (isReleasedReplyHandoffResult(toolResult.result.details)) return;
-			const wait = waitingOn.find((item) => item.toolCallId === call.toolCallId)?.replyWait;
-			if (wait !== undefined) dispatcher.cancel(wakeKey, releasedReplyTimeoutId(wait.questionId));
-			return deliverToolResult(dispatcher, wakeKey, toolResult);
-		})
-		.catch((error) => dispatcher.reportUnobservedFailure(error));
+	forwardResult(dispatcher, wakeKey, call.result, replyQuestionOf(waitingOn, call.toolCallId));
+}
+
+function replyQuestionOf(waitingOn: readonly SubagentChildWaitingCall[], toolCallId: string): string | undefined {
+	return waitingOn.find((item) => item.toolCallId === toolCallId)?.replyWait?.questionId;
 }
 
 /**

@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { queryObjects } from "node:v8";
 import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import type { DetachedToolCall, DetachedToolResult } from "../src/core/agent-session-detached-tools.js";
 import { armedIdleSessionCount } from "../src/core/agent-session-release.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -98,7 +101,15 @@ async function settledHandles(): Promise<{ timers: number; sockets: number; proc
 	return handles();
 }
 
-async function host() {
+/** How the long tool's work runs, and what the host does with a call that outlived its run. */
+interface LongCall {
+	readonly start: (toolCallId: string) => Promise<AgentToolResult>;
+	readonly taken: (call: DetachedToolCall, sessionId: string) => void;
+}
+
+const NEVER_ENDING: LongCall = { start: () => new Promise(() => {}), taken: () => {} };
+
+async function host(longCall: LongCall = NEVER_ENDING) {
 	const tempDir = join(tmpdir(), `atomic-idle-count-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 	vi.stubEnv("PI_CACHE_RETENTION", "none");
@@ -156,7 +167,7 @@ async function host() {
 			description: "Waits for CI",
 			parameters: Type.Object({ run: Type.String() }),
 			detachable: true,
-			execute: () => new Promise(() => {}),
+			execute: (toolCallId) => longCall.start(toolCallId),
 		},
 	];
 	faux.setResponses([]);
@@ -222,10 +233,12 @@ async function host() {
 		});
 		session.setToolDetachment({ afterMs: 0 });
 		for (let turn = 1; turn <= TURNS; turn++) await session.prompt(`agent ${index} turn ${turn}`);
+		const calls = session.takeDetachedToolCalls();
 		assert.deepEqual(
-			session.takeDetachedToolCalls().map((call) => call.toolName),
+			calls.map((call) => call.toolName),
 			[WAIT_TOOL],
 		);
+		for (const call of calls) longCall.taken(call, session.sessionId);
 		return session;
 	};
 	return { runtime, store, script, runAgent, live, subscriptions: () => subscriptions };
@@ -324,6 +337,110 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 		for (const session of h.live.splice(0)) await session.release();
 		assert.equal(h.subscriptions(), before);
 	});
+});
+
+/**
+ * A host's forwarding of a released agent's call, as a host that took the call does it: one reaction on the call's
+ * result that delivers it as a wake, holding the result and the agent's id, not the call.
+ */
+function forwardResult(dispatcher: AgentWakeDispatcher, sessionId: string, result: Promise<DetachedToolResult>): void {
+	void result.then((toolResult) =>
+		dispatcher.deliver(`bench:${sessionId}`, { id: `ci:${toolResult.toolCallId}`, kind: "tool-result", toolResult }),
+	);
+}
+
+const COUNTED = { Promise, AbortSignal, ArrayBuffer } as const;
+
+/**
+ * Live objects of each counted kind. Each count is a full collection and a walk of the whole heap, so the test takes
+ * three of them per sample and no more.
+ */
+function liveObjects(): Record<keyof typeof COUNTED, number> {
+	const counts = {} as Record<keyof typeof COUNTED, number>;
+	for (const [name, kind] of Object.entries(COUNTED) as [keyof typeof COUNTED, typeof Promise][])
+		counts[name] = queryObjects(kind, { format: "count" }) as number;
+	return counts;
+}
+
+/** The test walks the vitest worker's whole heap seven times; in a loaded full-suite run that outlasts the default budget. */
+const HEAP_WALK_TEST_TIMEOUT_MS = 90_000;
+
+/**
+ * On Node before 24, AsyncLocalStorage runs on promise hooks, and the engine then keeps one more promise while the
+ * call's promise adopts the tool's.
+ */
+const ADOPTION_ON_PROMISE_HOOKS = Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0;
+
+/**
+ * What one released agent may keep beyond its stored history: the long tool's own promise, the call's promise and the
+ * result it makes, and the host's forwarding reaction; no abort signal; and its history in at most log2 of its size
+ * buffers, plus its header.
+ */
+const RELEASED_AGENT_PROMISES = 4 + ADOPTION_ON_PROMISE_HOOKS;
+
+describe("a released agent keeps its history and its long call's delivery, nothing else (#4403)", () => {
+	test(
+		"per released agent: no abort signal, only the promises that deliver its call, and log2(history) buffers",
+		async () => {
+			const operations = new Map<string, (result: AgentToolResult) => void>();
+			const dispatcher = new AgentWakeDispatcher();
+			const delivered: string[] = [];
+			dispatcher.handle("bench", async (_wakeKey, wakes) => {
+				for (const wake of wakes) delivered.push(wake.id);
+			});
+			const h = await host({
+				start: (toolCallId) => new Promise((resolve) => operations.set(toolCallId, resolve)),
+				taken: (call, sessionId) => forwardResult(dispatcher, sessionId, call.result),
+			});
+			const released: string[] = [];
+			const wave = async (offset: number) => {
+				h.script(AGENTS_PER_WAVE * TURNS * 2);
+				const sessions = await Promise.all(
+					Array.from({ length: AGENTS_PER_WAVE }, (_, index) => h.runAgent(offset + index)),
+				);
+				for (const session of sessions) released.push((await session.release()).sessionId);
+			};
+
+			await wave(0);
+			await settledHandles();
+			const before = liveObjects();
+			const firstWave = new Set(operations.keys());
+			await wave(AGENTS_PER_WAVE);
+			await wave(AGENTS_PER_WAVE * 2);
+			await settledHandles();
+			const idle = liveObjects();
+
+			const agents = AGENTS_PER_WAVE * 2;
+			const perAgent = (counts: Record<keyof typeof COUNTED, number>, name: keyof typeof COUNTED) =>
+				Math.round((counts[name] - before[name]) / agents);
+			const history = (await h.store.store.load(released.at(-1) as string)).entries;
+			const historyBytes = Buffer.byteLength(JSON.stringify(history));
+			assert.equal(perAgent(idle, "AbortSignal"), 0);
+			assert.ok(
+				perAgent(idle, "Promise") <= RELEASED_AGENT_PROMISES,
+				`${perAgent(idle, "Promise")} promises per agent`,
+			);
+			assert.ok(
+				perAgent(idle, "ArrayBuffer") <= Math.floor(Math.log2(historyBytes)) + 2,
+				`${perAgent(idle, "ArrayBuffer")} buffers per agent for ${historyBytes} bytes of history`,
+			);
+
+			// What stayed is the calls' delivery: finishing the operations delivers each result and frees what it held.
+			const later = [...operations.keys()].filter((toolCallId) => !firstWave.has(toolCallId));
+			for (const toolCallId of later) {
+				const finish = operations.get(toolCallId);
+				operations.delete(toolCallId);
+				finish?.({ content: [{ type: "text", text: "green" }], details: undefined });
+			}
+			for (let turn = 0; turn < SETTLE_TURNS && delivered.length < agents; turn++)
+				await new Promise((resolve) => setImmediate(resolve));
+			assert.deepEqual(delivered.sort(), later.map((toolCallId) => `ci:${toolCallId}`).sort());
+			await settledHandles();
+			const finishedPromises = queryObjects(Promise, { format: "count" }) as number;
+			assert.equal(Math.round((finishedPromises - before.Promise) / agents), 0);
+		},
+		HEAP_WALK_TEST_TIMEOUT_MS,
+	);
 });
 
 describe("in-memory history costs its UTF-8 size (#4326)", () => {

@@ -49,7 +49,9 @@ export function isPrivateMemorySessionStore(store: SessionStore): boolean {
 /**
  * Sessions held in process memory. Each record is kept as UTF-8 JSON bytes, not a string: one character outside
  * Latin-1 makes the engine store a whole string at two bytes per character, which would double every idle agent's
- * history (#4326). An append encodes only the entries it adds, and a load joins what was appended since the last one.
+ * history (#4326). An append encodes only the entries it adds, and merges it into the buffers before it while they
+ * are less than twice its size, so a session of n bytes is held in at most log2(n) + 1 buffers, not one per append
+ * (#4403); a load joins them into one.
  */
 export class MemorySessionStore implements SessionStore {
 	private records = new Map<string, StoredSession>();
@@ -83,9 +85,18 @@ export class MemorySessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		const record = this.forWrite(sessionId, options);
 		validateSessionEntries(entries);
-		if (entries.length > 0) record.entries.push(this.encodeEntries(entries));
+		if (entries.length > 0) this.addChunk(record.entries, this.encodeEntries(entries));
 		record.lastSeq += entries.length;
 		return { lastSeq: record.lastSeq };
+	}
+
+	/** Add an append's chunk to the session's buffers. A merge that fails leaves them as they were. */
+	private addChunk(chunks: Uint8Array[], chunk: Uint8Array): void {
+		try {
+			appendChunk(chunks, chunk);
+		} catch (cause) {
+			throw new StorageUnavailableError(this.descriptor, cause as Error);
+		}
 	}
 
 	async replace(
@@ -230,17 +241,39 @@ export class MemorySessionStore implements SessionStore {
 	}
 }
 
-function joinEntries(record: StoredSession): Uint8Array {
-	if (record.entries.length <= 1) return record.entries[0] ?? NO_ENTRIES;
-	let size = record.entries.length - 1;
-	for (const chunk of record.entries) size += chunk.byteLength;
+/** The chunks as one buffer, with a comma between each two. */
+function joinChunks(chunks: readonly Uint8Array[]): Uint8Array {
+	let size = chunks.length - 1;
+	for (const chunk of chunks) size += chunk.byteLength;
 	const joined = new Uint8Array(size);
 	let offset = 0;
-	for (const [index, chunk] of record.entries.entries()) {
+	for (const [index, chunk] of chunks.entries()) {
 		if (index > 0) joined[offset++] = COMMA;
 		joined.set(chunk, offset);
 		offset += chunk.byteLength;
 	}
+	return joined;
+}
+
+/**
+ * Add an append's chunk after a session's chunks, merged with the newest of them while each is less than twice the
+ * size of what follows it. Every chunk then holds at least twice the bytes of the next, and a byte is copied again
+ * only into a chunk at least half as large again as the one it was in, so appends copy each byte O(log n) times.
+ */
+function appendChunk(chunks: Uint8Array[], chunk: Uint8Array): void {
+	let start = chunks.length;
+	let size = chunk.byteLength;
+	while (start > 0 && (chunks[start - 1] as Uint8Array).byteLength < 2 * size) {
+		start -= 1;
+		size += (chunks[start] as Uint8Array).byteLength + 1;
+	}
+	const merged = start === chunks.length ? chunk : joinChunks([...chunks.slice(start), chunk]);
+	chunks.splice(start, chunks.length - start, merged);
+}
+
+function joinEntries(record: StoredSession): Uint8Array {
+	if (record.entries.length <= 1) return record.entries[0] ?? NO_ENTRIES;
+	const joined = joinChunks(record.entries);
 	record.entries.splice(0, record.entries.length, joined);
 	return joined;
 }

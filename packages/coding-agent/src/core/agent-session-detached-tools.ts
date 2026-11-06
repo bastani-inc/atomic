@@ -53,6 +53,8 @@ interface DetachmentState {
 	readonly concurrency: Map<string, AgentTool["concurrency"]>;
 	/** For a tool that detaches only some of its calls, which ones, by tool name. */
 	readonly detachesCall: Map<string, DetachesCall>;
+	/** What the session's calls still running hold of it: their places in its tool scheduler. */
+	readonly holds: Set<CallHold>;
 }
 
 /** How a detachable tool's work starts, and the session's tool context for a call of it. */
@@ -75,6 +77,7 @@ function detachmentState(session: AgentSession): DetachmentState {
 			executes: new Map(),
 			concurrency: new Map(),
 			detachesCall: new Map(),
+			holds: new Set(),
 		};
 		states.set(session, state);
 	}
@@ -248,12 +251,60 @@ interface OperationStart {
  * inside a function that can see the session would keep the session reachable while the call waits.
  */
 
+/**
+ * What a running detachable call holds of its session: its place in the session's tool scheduler, so an exclusive
+ * call never overlaps another, and the gate its run waits on while the call runs inline. The call's one reaction to
+ * its work settling lets both go; closing the session lets the place go first, since nothing is scheduled there any
+ * more, so a call that outlives its session keeps none of the scheduler's state (#4403).
+ */
+interface CallHold {
+	permit: SchedulerPermit | undefined;
+	gate: ((value: symbol) => void) | undefined;
+	holds: Set<CallHold> | undefined;
+}
+
+function holdCall(holds: Set<CallHold>, permit: SchedulerPermit): CallHold {
+	const hold: CallHold = { permit, gate: undefined, holds };
+	holds.add(hold);
+	return hold;
+}
+
+/** The call's work settled: give its place in the scheduler back and open the gate of a run waiting inline. */
+function letGo(hold: CallHold): void {
+	const { permit, gate } = hold;
+	hold.permit = undefined;
+	hold.gate = undefined;
+	hold.holds?.delete(hold);
+	hold.holds = undefined;
+	permit?.release();
+	gate?.(INLINE);
+}
+
+/**
+ * Give back the scheduler places of the session's calls still running, once the session is closing and nothing new
+ * is scheduled on it. While a call still waits for its place behind them, as a reopened session's redispatched calls
+ * can, they all keep their places, so that call starts only once the work before it has settled. The calls go on;
+ * each still delivers its result when its work settles.
+ */
+export function releaseDetachedCallHolds(session: AgentSession): void {
+	const holds = states.get(session)?.holds;
+	if (holds === undefined || [...holds].some((hold) => hold.permit?.granted() === false)) return;
+	for (const hold of holds) {
+		const permit = hold.permit;
+		hold.permit = undefined;
+		hold.holds = undefined;
+		permit?.release();
+	}
+	holds.clear();
+}
+
 function startOperation(
 	toolName: string,
 	execute: DetachableExecute,
 	params: ToolParams,
 	inline: InlineSession,
 	facts: DetachedCallFacts,
+	hold: CallHold,
 	start: OperationStart,
 ): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult>; readonly signal: AbortSignal } {
 	return outsideAnySession(() => {
@@ -270,7 +321,12 @@ function startOperation(
 		return {
 			settled,
 			signal: controller.signal,
-			call: detachedCall(toolName, facts.toolCallId, settled, controller),
+			call: {
+				toolCallId: facts.toolCallId,
+				toolName,
+				result: settledResult(toolName, facts.toolCallId, settled, hold),
+				abort: abortWith(controller),
+			},
 		};
 	});
 }
@@ -323,32 +379,30 @@ function callContext(inline: InlineSession, facts: DetachedCallFacts): Extension
 	});
 }
 
-function detachedCall(
+/**
+ * The call's one reaction to its work settling: it lets the call's hold go and makes the call's result. It is built
+ * apart from the call's abort, so it keeps the call's names and hold, not its controller.
+ */
+function settledResult(
 	toolName: string,
 	toolCallId: string,
 	settled: Promise<AgentToolResult>,
-	controller: AbortController,
-): DetachedToolCall {
-	const result = settled.then(
-		(value): DetachedToolResult => ({ toolCallId, toolName, result: value, isError: value.isError === true }),
-		(error: Error | DOMException | string | object): DetachedToolResult => ({
-			toolCallId,
-			toolName,
-			result: errorToolResult(error),
-			isError: true,
-		}),
+	hold: CallHold,
+): Promise<DetachedToolResult> {
+	return settled.then(
+		(value): DetachedToolResult => {
+			letGo(hold);
+			return { toolCallId, toolName, result: value, isError: value.isError === true };
+		},
+		(error: Error | DOMException | string | object): DetachedToolResult => {
+			letGo(hold);
+			return { toolCallId, toolName, result: errorToolResult(error), isError: true };
+		},
 	);
-	return { toolCallId, toolName, result, abort: (reason) => controller.abort(reason) };
 }
 
-/** Resolve `gate` with INLINE once the work settles, from outside every session. */
-function openGateWhenSettled(settled: Promise<AgentToolResult>, gate: { resolve(value: symbol): void }): void {
-	outsideAnySession(() => {
-		settled.then(
-			() => gate.resolve(INLINE),
-			() => gate.resolve(INLINE),
-		);
-	});
+function abortWith(controller: AbortController): DetachedToolCall["abort"] {
+	return (reason) => controller.abort(reason);
 }
 
 const INLINE = Symbol("inline");
@@ -356,6 +410,8 @@ const DETACH = Symbol("detach");
 
 interface SchedulerPermit {
 	readonly grantedLater: Promise<void> | undefined;
+	/** Whether the scheduler has given the call its place yet. */
+	granted(): boolean;
 	release(): void;
 }
 
@@ -369,16 +425,11 @@ function takeSchedulerPermit(scheduler: ToolExecutionScheduler, mode: ToolConcur
 			granted.resolve();
 			return held.promise;
 		});
-		return { grantedLater: grantedNow ? undefined : granted.promise, release: () => held.resolve() };
-	});
-}
-
-function releaseWhenSettled(settled: Promise<AgentToolResult>, permit: SchedulerPermit): void {
-	outsideAnySession(() => {
-		settled.then(
-			() => permit.release(),
-			() => permit.release(),
-		);
+		return {
+			grantedLater: grantedNow ? undefined : granted.promise,
+			granted: () => grantedNow,
+			release: () => held.resolve(),
+		};
 	});
 }
 
@@ -397,7 +448,7 @@ export function forgetDetachableTools(session: AgentSession): void {
  *
  * The call keeps its declared concurrency: it starts once the calls before it in the session's scheduler allow, and
  * it holds its place there until its work settles, also after it detaches, so an exclusive call never overlaps another
- * call of the session.
+ * call of the session. Closing the session gives the place back.
  */
 export function detachableTool(
 	session: AgentSession,
@@ -422,25 +473,31 @@ export function detachableTool(
 				resolveToolConcurrency(tool.concurrency, params as Record<string, unknown>),
 			);
 			if (permit.grantedLater !== undefined) await permit.grantedLater;
+			const hold = holdCall(state.holds, permit);
 			const inline: InlineSession = { onUpdate, context: undefined };
 			let operation: ReturnType<typeof startOperation>;
 			try {
-				operation = startOperation(tool.name, execute, params, inline, detachedCallFacts(session, toolCallId), {
-					inlineContext: createContext,
-				});
+				operation = startOperation(
+					tool.name,
+					execute,
+					params,
+					inline,
+					detachedCallFacts(session, toolCallId),
+					hold,
+					{ inlineContext: createContext },
+				);
 			} catch (error) {
-				permit.release();
+				letGo(hold);
 				throw error;
 			}
 			const { call, settled, signal: operationSignal } = operation;
-			releaseWhenSettled(settled, permit);
 			const forwardAbort = (): void => call.abort(signal?.reason);
 			if (signal?.aborted) forwardAbort();
 			else signal?.addEventListener("abort", forwardAbort, { once: true });
 			// The run waits on this gate alone: it settles at the threshold even while the call goes on, so no reaction
 			// created in the run's context stays on the call once it detaches.
 			const gate = Promise.withResolvers<symbol>();
-			openGateWhenSettled(settled, gate);
+			hold.gate = gate.resolve;
 			let ready = !requiresReady;
 			let elapsed = false;
 			if (requiresReady)
@@ -455,6 +512,7 @@ export function detachableTool(
 			try {
 				if ((await gate.promise) === INLINE) return await settled;
 			} finally {
+				hold.gate = undefined;
 				clearTimeout(timer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
@@ -617,7 +675,7 @@ export function holdPendingDetachedCalls(session: AgentSession): void {
 export function redispatchDetachedToolCalls(this: AgentSession): DetachedToolCall[] {
 	const pending = pendingDetachableCalls(this).calls;
 	if (pending.length === 0) return [];
-	const { concurrency } = detachmentState(this);
+	const state = detachmentState(this);
 	for (const { toolCall } of pending) this._reissuedToolCallIds.add(toolCall.id);
 	this._refreshFinalizedContext();
 	return pending.map(({ toolCall, work }) => {
@@ -627,14 +685,12 @@ export function redispatchDetachedToolCalls(this: AgentSession): DetachedToolCal
 		const params = toolCall.arguments as ToolParams;
 		const permit = takeSchedulerPermit(
 			this._toolExecutionScheduler,
-			resolveToolConcurrency(concurrency.get(toolCall.name), params as Record<string, unknown>),
+			resolveToolConcurrency(state.concurrency.get(toolCall.name), params as Record<string, unknown>),
 		);
-		const { call, settled } = startOperation(toolCall.name, work.execute, params, inline, facts, {
+		return startOperation(toolCall.name, work.execute, params, inline, facts, holdCall(state.holds, permit), {
 			startingContext: whileOpen(this, work.context),
 			when: permit.grantedLater ?? "now",
-		});
-		releaseWhenSettled(settled, permit);
-		return call;
+		}).call;
 	});
 }
 
