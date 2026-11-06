@@ -216,6 +216,8 @@ The `run` function receives `ctx: WorkflowRunContext`. Prefer its high-level pri
 | Pure deterministic computation, parsing, or side-effect-free transformation | Plain TypeScript in `run` or helpers |
 | Workflow-owned filesystem writes, network mutations, external API actions, or other side effects | `ctx.tool(name, args, fn)` so a completed operation is durably cached and resume does not rerun it |
 | Fine-grained session control | `ctx.stage(name, options?)` |
+| React to an event stream (CI, reviews, logs, webhooks) without growing a stage's context | `ctx.subscribe(source, handler, options?)` |
+| Read a stream inline, when every event belongs in the run's own history | `for await (const event of ctx.events(source))` |
 
 ### `ctx.inputs`
 
@@ -486,6 +488,171 @@ Callbacks that spawn child processes or perform network I/O need an explicit `ti
 With `timeoutMs`, each retry receives a fresh signal and deadline. Run cancellation and operator abort remain cancellation rather than timeout, and a callback that completes before its deadline is unchanged. Omitting `timeoutMs` keeps the existing unbounded callback path.
 
 See [`ctx.tool` — durable cached tool execution](/workflows/operations#ctx-tool-—-durable-cached-tool-execution) for durable failure replay, process-output safety, explicit repair handoffs, and cancellation behavior.
+
+### `ctx.subscribe(source, handler, options?)`
+
+```typescript
+ctx.subscribe(
+  source: EventSource,
+  handler: (event: SubscriptionEvent, child: WorkflowEventChild) => void | Promise<void>,
+  options?: WorkflowSubscribeOptions,
+): WorkflowSubscription;
+
+interface SubscriptionEvent {
+  readonly id: string;              // events with an id already processed are dropped
+  readonly type?: string;
+  readonly payload?: JSONValue;
+}
+
+interface WorkflowEventChild {
+  readonly name: string;            // "<subscription name>/<event id>"
+  readonly subscriptionId: string;
+  readonly event: SubscriptionEvent;
+  task(options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
+  report(text: string): Promise<void>;
+}
+
+interface WorkflowSubscribeOptions {
+  readonly subscriber?: StageContext;   // stage that receives reports
+  readonly name?: string;               // defaults to source.id
+  readonly maxConcurrent?: number;      // event handlers running at once; default 4
+  readonly maxRate?: { readonly events: number; readonly intervalMs: number };
+}
+
+interface WorkflowSubscription {
+  readonly id: string;                  // pass to publishEvent()
+  readonly done: Promise<SubscriptionStats>;
+  stats(): SubscriptionStats;
+  close(): Promise<SubscriptionStats>;
+}
+
+interface SubscriptionStats {
+  readonly received: number;    // events delivered, duplicates included
+  readonly duplicates: number;
+  readonly handled: number;
+  readonly active: number;
+  readonly queued: number;
+  readonly reports: number;
+}
+```
+
+Subscribes a long-lived stage to an event stream without putting every event into that stage's context. `ctx.subscribe` returns at once and handles each event with `handler(event, child)`:
+
+- `child.task(options)` runs the event's own short-lived, tracked child stage. It takes the same options as `ctx.task`. The prompt is your handling instructions followed by the event's id, type and payload. The child stage also gets a `report_to_subscriber` tool, so its model decides whether the event matters.
+- `child.report(text)` sends a short report to the subscriber. The `report_to_subscriber` tool calls it too.
+
+The subscriber's context grows only by reports. Each report arrives as one steering message in the `subscriber` stage: `Report from event child "<name>" (event <id>):` followed by your text. A subscription without a `subscriber` records its reports as run notices instead.
+
+```typescript
+const watcher = ctx.stage("ci-watcher");
+await watcher.prompt("Watch CI for pull request 42. Fix what event reports ask you to fix.");
+
+const subscription = ctx.subscribe(
+  githubChecks({ repo: "acme/api", pr: 42 }),
+  async (event, child) => {
+    const check = event.payload as { readonly status?: string };
+    if (check.status !== "completed") return;
+    await child.task({
+      prompt: "Report a failed check only if it is new and not a known flaky test.",
+      model: "anthropic/claude-haiku-4.5",
+    });
+  },
+  { subscriber: watcher, maxConcurrent: 4, maxRate: { events: 30, intervalMs: 60_000 } },
+);
+await subscription.done;
+```
+
+**Graph.** Every `child.task` call is a new graph node whose parent is the subscriber stage (or, without a subscriber, the frontier when you subscribed). Event children never become parents of later stages, so the graph stays acyclic and the main line of the workflow does not depend on event timing.
+
+**Deduplication and durability.** The run journal records each subscription and each processed event id. An event whose id was already processed, in this run or before a resume, is dropped and counted in `duplicates`; this includes repeats from the source and from `publishEvent`. An event is marked processed when its handler finishes, so an event that was in progress when the run stopped runs again after resume.
+
+**Admission.** At most `maxConcurrent` handlers run at once. With `maxRate`, at most `events` handlers start within any `intervalMs` window. Events over either cap wait in arrival order; none are dropped.
+
+**Lifetime.** `done` resolves once the source has ended (or `close()` ran) and every admitted event has been handled. `close()` stops the source and lets queued events finish. When the run body returns, Atomic closes every open subscription and waits for its admitted events before the run completes. Cancelling or quitting the run cancels its subscriptions: their `done` rejects with the cancellation reason.
+
+**Failures.** The first handler failure stops the subscription and rejects `done` with a `SubscriptionHandlerError` whose `cause` is the handler's error. A failure you do not catch from `done` fails the run, like any unhandled workflow rejection.
+
+### `ctx.events(source, options?)`
+
+```typescript
+ctx.events(
+  source: EventSource,
+  options?: { readonly name?: string; readonly maxRate?: { readonly events: number; readonly intervalMs: number } },
+): WorkflowEventStream;
+
+interface WorkflowEventStream extends AsyncIterableIterator<SubscriptionEvent> {
+  readonly id: string;
+  stats(): SubscriptionStats;
+  close(): Promise<SubscriptionStats>;
+}
+```
+
+Inline mode, for streams where every event belongs in the subscriber's own history, such as the output of a command a stage started. Each event is yielded once, in arrival order, with no child. Deduplication, `maxRate` and the journal records work as for `ctx.subscribe`. An event is marked processed when the loop asks for the next event or leaves the loop.
+
+```typescript
+const builder = ctx.stage("builder");
+await builder.prompt("Start the release build and watch its log.");
+for await (const event of ctx.events(logTail("/tmp/release-build.log"))) {
+  const { line } = event.payload as { readonly line: string };
+  await builder.sendUserMessage(`build log: ${line}`);
+  if (line.includes("BUILD FINISHED")) break;
+}
+```
+
+Leaving the loop with `break`, `return` or a thrown error closes the stream and stops its source.
+
+### Event sources
+
+```typescript
+interface EventSource {
+  readonly id: string;
+  start(signal: AbortSignal, emit: (event: SubscriptionEvent) => void): void | Promise<void>;
+}
+```
+
+A source calls `emit` for each event. It ends when the promise `start` returns settles; a source that returns nothing runs until `signal` aborts, which is how a subscription stops it. A rejected `start` fails the subscription with an `EventSourceError`. Do not call `emit` after `signal` aborts.
+
+Built-in sources, exported from `@bastani/atomic` and `@bastani/atomic/workflows`:
+
+| Source | Events |
+|--------|--------|
+| `githubChecks({ repo, pr, intervalMs? })` | One `check_run` event per check-run state of the pull request's head commit, polled with the `gh` CLI every `intervalMs` (default 30 s). The id changes with each status and conclusion. |
+| `githubReviews({ repo, pr, intervalMs? })` | One `pull_request_review` event per submitted review, polled with `gh`. |
+| `logTail(path, { pollMs? })` | One `line` event per line appended after the subscription starts. The id is the line's byte offset, so a resumed run skips lines it already handled. |
+| `webhook({ path, port?, hostname?, maxBodyBytes? })` | One event per `POST` to `path`. The id comes from `X-GitHub-Delivery`, `X-Request-Id`, `Idempotency-Key` or the body's `id`. `listening()` resolves the URL to give the sender. Sources on the same fixed port share one server. |
+| `interval(ms)` | A `tick` event every `ms` milliseconds. |
+
+Polling sources need no timer of their own: every source and rate limit waits on one shared wake dispatcher.
+
+### `publishEvent(subscriptionId, event)`
+
+```typescript
+publishEvent(subscriptionId: string, event: SubscriptionEvent): void;
+```
+
+Delivers an event to an open subscription in this process, so an SDK host can bridge its own webhook server or queue into `ctx.subscribe`, `ctx.events` or `session.subscribe`. Pass the subscription's `id`. Events published before the subscription's journal record is written wait in its queue.
+
+```typescript
+app.post("/hooks/ci", (request, response) => {
+  publishEvent(subscriptionId, { id: request.get("X-GitHub-Delivery")!, type: "check_suite", payload: request.body });
+  response.sendStatus(202);
+});
+```
+
+### Subscription errors
+
+Every subscription failure extends `SubscriptionError` (`code`, `hint`, `retryable`, `fields()`). Branch on the class, a guard or `code`, never on the message. Guards also match errors that crossed a process boundary and search the `cause` chain. `serializeSubscriptionError` and `deserializeSubscriptionError` carry them across IPC as the same class.
+
+| Class (guard) | `code` | When | Fields | What to do |
+|---------------|--------|------|--------|------------|
+| `SubscriptionClosedError` (`isSubscriptionClosedError`) | `subscription-closed` | `publishEvent`, a source's `emit`, or `report` reached a subscription that is closed or not open in this process. | `subscriptionId`, `operation` (`publish`, `emit`, `report`) | Publish to an open subscription's `id`; stop emitting after `signal` aborts. |
+| `SubscriptionConfigError` (`isSubscriptionConfigError`) | `invalid-option` | An option is invalid. Thrown by `ctx.subscribe`, `ctx.events`, `session.subscribe` or a source factory before anything starts or is recorded. | `source` (`sdk`), `field`, `reason` | Fix the named field. |
+| `SubscriptionEventError` (`isSubscriptionEventError`) | `invalid-event` | A source or `publishEvent` passed something other than an object with a string `id`. | `subscriptionId`, `reason` (`not-object`, `missing-id`) | Emit `{ id, type?, payload? }`. |
+| `EventSourceError` (`isEventSourceError`) | `source-failed` | A source failed: `start` rejected, a poll failed, a file read failed or the webhook could not listen. | `sourceId`, `phase` (`start`, `listen`, `poll`, `read`), `detail` | Check the source's configuration and access. `retryable` is `true` for failed `gh` polls. |
+| `SubscriptionHandlerError` (`isSubscriptionHandlerError`) | `handler-failed` | Your handler threw for an event; the subscription stopped. | `subscriptionId`, `eventId`; `cause` is your error | Fix the handler and subscribe again. Processed events are not repeated. |
+| `SubscriptionChildUnavailableError` (`isSubscriptionChildUnavailableError`) | `child-unavailable` | `child.task` in `session.subscribe` ran on a session that cannot start child sessions. | `subscriptionId`, `sessionId` | Create the session with `createAgentSession()`, or call `child.report` directly. |
+
+`isRetryableSubscriptionError(error)` reads `retryable` from the first subscription error in the chain. Cancellation is never wrapped: a cancelled subscription rejects `done` with the cancellation reason itself.
 
 ### `ctx.exit(options?)`
 
@@ -2316,6 +2483,7 @@ class GraphFrontierTracker {
   onSpawn(stageId: string, stageName: string): string[];
   currentParents(): string[];
   replaceParents(stageId: string, parentIds: readonly string[]): void;
+  detach(stageId: string): void;
   onSettle(stageId: string): void;
   getNodes(): StageNode[];
   getParents(stageId: string): string[];
@@ -2329,7 +2497,7 @@ interface StageNode extends WorkflowSerializableObject {
 }
 ```
 
-Tracks inferred DAG parents from JavaScript execution order. It is a low-level engine utility for integrations that need the same frontier semantics as the workflow executor.
+Tracks inferred DAG parents from JavaScript execution order. It is a low-level engine utility for integrations that need the same frontier semantics as the workflow executor. `detach(stageId)` keeps a spawned node out of the frontier: it keeps its parents, but later nodes never depend on it. Event children of `ctx.subscribe` are detached.
 
 ### Execution policies
 

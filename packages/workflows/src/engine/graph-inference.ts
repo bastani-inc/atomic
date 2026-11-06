@@ -18,6 +18,7 @@ export class GraphFrontierTracker {
 	private frontier: Set<string> = new Set();
 	private stageParents: Map<string, string[]> = new Map();
 	private nodes: Map<string, StageNode> = new Map();
+	private detached: Set<string> = new Set();
 
 	/**
 	 * Call when ctx.stage(name) is invoked.
@@ -70,10 +71,21 @@ export class GraphFrontierTracker {
 	}
 
 	/**
+	 * Keep a spawned node out of the frontier. It retains its parents, but later
+	 * stages never depend on it and its settlement consumes nothing; event
+	 * children of a subscription use this so the main line stays independent of
+	 * event timing.
+	 */
+	detach(stageId: string): void {
+		this.detached.add(stageId);
+	}
+
+	/**
 	 * Call when the stage's Promise settles.
 	 * Removes the stage's parents from the frontier and adds stageId to frontier.
 	 */
 	onSettle(stageId: string): void {
+		if (this.detached.has(stageId)) return;
 		const parents = this.stageParents.get(stageId) ?? [];
 		// Remove parents from frontier (they are now consumed)
 		for (const parentId of parents) {
@@ -110,5 +122,6 @@ export class GraphFrontierTracker {
 		this.frontier.clear();
 		this.stageParents.clear();
 		this.nodes.clear();
+		this.detached.clear();
 	}
 }

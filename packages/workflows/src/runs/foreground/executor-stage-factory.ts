@@ -112,6 +112,7 @@ export function createWorkflowStageFactory(input: {
 		const releasePolicy = resolveStageReleasePolicy(options?.releaseWhenWaiting, runReleasePolicy, name);
 		const stageId = options?.durableStageId ?? crypto.randomUUID();
 		const provisionalParentIds = input.tracker.onSpawn(stageId, name);
+		if (stageFailFastScope?.detached === true) input.tracker.detach(stageId);
 		const scopedParentIds =
 			options?.durableParentIds ??
 			(input.opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined);

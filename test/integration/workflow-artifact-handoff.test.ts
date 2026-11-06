@@ -248,7 +248,7 @@ test.each([
 			responses: [REPORT, CLARIFICATION],
 		});
 		// A compatible adapter can expose completed messages without emitting events.
-		if (!emitsEvents) producer.session.subscribe = () => () => {};
+		if (!emitsEvents) Object.defineProperty(producer.session, "subscribe", { value: () => () => {} });
 		const history = assistantMessageWithUsage("HISTORY-ONLY unrelated branch answer", {
 			input: 0,
 			output: 0,

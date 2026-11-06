@@ -27,6 +27,13 @@ import {
 	replacementAbortContent,
 } from "./agent-session-types.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
+import {
+	cancelSessionSubscriptions,
+	type SessionEventHandler,
+	type SessionSubscribeOptions,
+	subscribeSession,
+} from "./event-subscriptions/session-subscription.ts";
+import type { EventSource, Subscription } from "./event-subscriptions/types.ts";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -630,12 +637,31 @@ export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent)
 }
 
 /**
- * Subscribe to agent events.
- * Session persistence is handled internally (saves messages on message_end).
- * Multiple listeners can be added. Returns unsubscribe function for this listener.
+ * Subscribe to agent events, or to an event stream.
+ *
+ * With a listener: session persistence is handled internally (saves messages on message_end), multiple listeners
+ * can be added, and the result unsubscribes this listener.
+ *
+ * With an `EventSource` and a handler: each event is handled by `handler(event, child)`, where `child` can run a
+ * short-lived child session and report back into this session; see `subscribeSession`.
  */
-
-export function subscribe(this: AgentSession, listener: AgentSessionEventListener): () => void {
+export function subscribe(
+	this: AgentSession,
+	source: EventSource,
+	handler: SessionEventHandler,
+	options?: SessionSubscribeOptions,
+): Subscription;
+export function subscribe(this: AgentSession, listener: AgentSessionEventListener): () => void;
+export function subscribe(
+	this: AgentSession,
+	listenerOrSource: AgentSessionEventListener | EventSource,
+	handler?: SessionEventHandler,
+	options?: SessionSubscribeOptions,
+): (() => void) | Subscription {
+	if (typeof listenerOrSource !== "function") {
+		return subscribeSession(this, listenerOrSource, handler, options);
+	}
+	const listener = listenerOrSource;
 	this._eventListeners.push(listener);
 
 	// Return unsubscribe function for this specific listener
@@ -695,6 +721,7 @@ export function closeAgentSession(
 			}
 		};
 		await attempt("lifetime", () => abortSessionWork(session, event.reason === "quit"));
+		await attempt("event subscriptions", () => cancelSessionSubscriptions(session));
 		await attempt("shell abort", () => abortBash.call(session));
 		await attempt("abort", () => abortCurrentGeneration.call(session));
 		await attempt("reload rollback", () => drainSessionReload(session));

@@ -1219,6 +1219,24 @@ type DebugValue
 type DebugErrorCode
 type DebugSettingSource
 
+// Event subscriptions (session.subscribe, ctx.subscribe, ctx.events)
+type EventSource
+type SubscriptionEvent
+type Subscription
+type SubscriptionStats
+type SessionEventChild
+type SessionEventHandler
+type SessionSubscribeOptions
+githubChecks, githubReviews, logTail, webhook, interval
+publishEvent
+createWakeDispatcher, sharedWakeDispatcher
+SubscriptionError, SubscriptionClosedError, SubscriptionConfigError, SubscriptionEventError
+EventSourceError, SubscriptionHandlerError, SubscriptionChildUnavailableError
+isSubscriptionError, isSubscriptionClosedError, isSubscriptionConfigError, isSubscriptionEventError
+isEventSourceError, isSubscriptionHandlerError, isSubscriptionChildUnavailableError
+isRetryableSubscriptionError, serializeSubscriptionError, deserializeSubscriptionError
+type SubscriptionErrorCode
+
 // Tool factories
 createCodingTools
 createReadOnlyTools

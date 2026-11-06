@@ -1,0 +1,453 @@
+import assert from "node:assert/strict";
+import {
+	createWakeDispatcher,
+	type EventSource,
+	isEventSourceError,
+	isSubscriptionClosedError,
+	isSubscriptionConfigError,
+	isSubscriptionEventError,
+	isSubscriptionHandlerError,
+	openEventSubscription,
+	publishEvent,
+	type SubscriptionEvent,
+	validateEventSource,
+	validateSubscriptionAdmission,
+} from "@bastani/atomic";
+import { test } from "vitest";
+import { EventSourceError } from "../../packages/coding-agent/src/core/event-subscriptions/errors.js";
+
+/** A host whose time moves only when the test advances it. */
+function manualTime() {
+	let now = 0;
+	const timers: Array<{ at: number; callback: () => void; cancelled: boolean }> = [];
+	const dispatcher = createWakeDispatcher({
+		now: () => now,
+		elapsed: () => now,
+		setTimer: (callback, ms) => {
+			const timer = { at: now + ms, callback, cancelled: false };
+			timers.push(timer);
+			return {
+				cancel: () => {
+					timer.cancelled = true;
+				},
+			};
+		},
+	});
+	return {
+		dispatcher,
+		advance(ms: number) {
+			now += ms;
+			for (const timer of timers.splice(0).sort((a, b) => a.at - b.at)) {
+				if (timer.cancelled) continue;
+				if (timer.at <= now) timer.callback();
+				else timers.push(timer);
+			}
+		},
+	};
+}
+
+function openSource(): EventSource & { emit: (event: SubscriptionEvent) => void; signal: () => AbortSignal } {
+	let emitter: ((event: SubscriptionEvent) => void) | undefined;
+	let started: AbortSignal | undefined;
+	return {
+		id: "manual",
+		start: (signal, emit) => {
+			emitter = emit;
+			started = signal;
+		},
+		emit: (event) => emitter!(event),
+		signal: () => started!,
+	};
+}
+
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+let sequence = 0;
+const uniqueId = (name: string) => `test-${name}-${++sequence}`;
+
+test("events with an id already seen or already processed are dropped as duplicates", async () => {
+	const handled: string[] = [];
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("dedupe"),
+		source,
+		alreadyProcessed: (eventId) => eventId === "durable",
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	await settle();
+	for (const id of ["a", "b", "a", "durable", "c", "b"]) source.emit({ id });
+	const stats = await subscription.close();
+	assert.deepEqual(handled, ["a", "b", "c"]);
+	assert.deepEqual(stats, { received: 6, duplicates: 3, handled: 3, active: 0, queued: 0, reports: 0 });
+});
+
+test("no more than maxConcurrent handlers run at once, and they start in arrival order", async () => {
+	const started: string[] = [];
+	const releases: Array<() => void> = [];
+	let active = 0;
+	let peak = 0;
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("concurrency"),
+		source,
+		admission: { maxConcurrent: 3 },
+		handle: async (event) => {
+			started.push(event.id);
+			active += 1;
+			peak = Math.max(peak, active);
+			await new Promise<void>((resolve) => releases.push(resolve));
+			active -= 1;
+		},
+	});
+	await settle();
+	for (let index = 0; index < 10; index++) source.emit({ id: `e${index}` });
+	await settle();
+	assert.equal(subscription.stats().active, 3);
+	assert.equal(subscription.stats().queued, 7);
+	while (started.length < 10 || releases.length > 0) {
+		releases.shift()?.();
+		await settle();
+	}
+	const stats = await subscription.close();
+	assert.equal(peak, 3);
+	assert.deepEqual(
+		started,
+		Array.from({ length: 10 }, (_, index) => `e${index}`),
+	);
+	assert.equal(stats.handled, 10);
+});
+
+test("maxRate admits at most `events` starts per window; the rest wait in order and none are dropped", async () => {
+	const time = manualTime();
+	const started: string[] = [];
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("rate"),
+		source,
+		dispatcher: time.dispatcher,
+		admission: { maxConcurrent: 10, maxRate: { events: 2, intervalMs: 1000 } },
+		handle: async (event) => {
+			started.push(event.id);
+		},
+	});
+	await settle();
+	for (const id of ["a", "b", "c", "d", "e"]) source.emit({ id });
+	await settle();
+	assert.deepEqual(started, ["a", "b"]);
+	assert.equal(subscription.stats().queued, 3);
+	time.advance(999);
+	await settle();
+	assert.deepEqual(started, ["a", "b"]);
+	time.advance(1);
+	await settle();
+	assert.deepEqual(started, ["a", "b", "c", "d"]);
+	time.advance(1000);
+	await settle();
+	assert.deepEqual(started, ["a", "b", "c", "d", "e"]);
+	const stats = await subscription.close();
+	assert.equal(stats.handled, 5);
+	assert.equal(time.dispatcher.pending, 0);
+});
+
+test("the first handler failure stops the subscription with a SubscriptionHandlerError carrying the cause", async () => {
+	const cause = new Error("triage crashed");
+	const handled: string[] = [];
+	const source = openSource();
+	const id = uniqueId("failure");
+	const subscription = openEventSubscription({
+		id,
+		source,
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			handled.push(event.id);
+			if (event.id === "bad") throw cause;
+		},
+	});
+	await settle();
+	for (const event of ["ok", "bad", "never"]) source.emit({ id: event });
+	const failure = await subscription.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isSubscriptionHandlerError(failure), true);
+	assert.equal((failure as { code: string }).code, "handler-failed");
+	assert.equal((failure as { eventId: string }).eventId, "bad");
+	assert.equal((failure as { subscriptionId: string }).subscriptionId, id);
+	assert.equal((failure as Error).cause, cause);
+	assert.deepEqual(handled, ["ok", "bad"]);
+	assert.equal(source.signal().aborted, true);
+	assert.throws(() => publishEvent(id, { id: "late" }), isSubscriptionClosedError);
+});
+
+test("cancellation rejects done with the reason itself and aborts running handlers", async () => {
+	const reason = new DOMException("owner closed", "AbortError");
+	let handlerSignal: AbortSignal | undefined;
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("cancel"),
+		source,
+		handle: (_event, signal) => {
+			handlerSignal = signal;
+			return new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+		},
+	});
+	await settle();
+	source.emit({ id: "slow" });
+	await settle();
+	subscription.cancel(reason);
+	await assert.rejects(subscription.done, (error) => error === reason);
+	assert.equal(handlerSignal?.aborted, true);
+	assert.equal(source.signal().aborted, true);
+});
+
+test("stop waits for running handlers, drops queued events, then rejects with the given reason", async () => {
+	let release: (() => void) | undefined;
+	const handled: string[] = [];
+	const source = openSource();
+	const subscription = openEventSubscription({
+		id: uniqueId("stop"),
+		source,
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			handled.push(event.id);
+		},
+	});
+	await settle();
+	source.emit({ id: "running" });
+	source.emit({ id: "queued" });
+	await settle();
+	const reason = new Error("run failed");
+	subscription.stop(reason);
+	let settled = false;
+	void subscription.done.then(
+		() => {
+			settled = true;
+		},
+		() => {
+			settled = true;
+		},
+	);
+	await settle();
+	assert.equal(settled, false);
+	release?.();
+	await assert.rejects(subscription.done, (error) => error === reason);
+	assert.deepEqual(handled, ["running"]);
+});
+
+test("a failing source is wrapped once as EventSourceError, phase start, with its cause", async () => {
+	const cause = new Error("socket closed");
+	const plain = openEventSubscription({
+		id: uniqueId("source-plain"),
+		source: { id: "flaky", start: async () => Promise.reject(cause) },
+		handle: async () => {},
+	});
+	const failure = await plain.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isEventSourceError(failure), true);
+	assert.deepEqual(
+		[(failure as EventSourceError).sourceId, (failure as EventSourceError).phase, (failure as Error).cause],
+		["flaky", "start", cause],
+	);
+	const typed = new EventSourceError("gh", "poll", { detail: "gh exited with code 1", retryable: true });
+	const passthrough = openEventSubscription({
+		id: uniqueId("source-typed"),
+		source: {
+			id: "gh",
+			start: () => {
+				throw typed;
+			},
+		},
+		handle: async () => {},
+	});
+	await assert.rejects(passthrough.done, (error) => error === typed);
+});
+
+test("a source that resolves ends the subscription once its events are handled", async () => {
+	const handled: string[] = [];
+	const subscription = openEventSubscription({
+		id: uniqueId("finite"),
+		source: {
+			id: "finite",
+			start: async (_signal, emit) => {
+				emit({ id: "1" });
+				emit({ id: "2" });
+			},
+		},
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	const stats = await subscription.done;
+	assert.deepEqual(handled, ["1", "2"]);
+	assert.equal(stats.handled, 2);
+	assert.equal(subscription.open, false);
+});
+
+test("a source that returns nothing stays open until close, and refuses events afterwards", async () => {
+	const source = openSource();
+	const id = uniqueId("open");
+	const subscription = openEventSubscription({ id, source, handle: async () => {} });
+	await settle();
+	source.emit({ id: "1" });
+	await settle();
+	assert.equal(subscription.open, true);
+	const stats = await subscription.close();
+	assert.equal(stats.handled, 1);
+	assert.equal(source.signal().aborted, true);
+	let refused: unknown;
+	try {
+		source.emit({ id: "2" });
+	} catch (error) {
+		refused = error;
+	}
+	assert.equal(isSubscriptionClosedError(refused), true);
+	assert.deepEqual(
+		[(refused as { operation: string }).operation, (refused as { subscriptionId: string }).subscriptionId],
+		["emit", id],
+	);
+});
+
+test("publishEvent delivers to an open subscription and refuses unknown ids and malformed events", async () => {
+	const handled: string[] = [];
+	const id = uniqueId("publish");
+	const subscription = openEventSubscription({
+		id,
+		source: openSource(),
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	publishEvent(id, { id: "hook-1", type: "push", payload: { ref: "main" } });
+	assert.throws(
+		() => publishEvent(id, null as never),
+		(error) => isSubscriptionEventError(error) && (error as { reason: string }).reason === "not-object",
+	);
+	assert.throws(
+		() => publishEvent(id, { payload: 1 } as never),
+		(error) => isSubscriptionEventError(error) && (error as { reason: string }).reason === "missing-id",
+	);
+	assert.throws(
+		() => publishEvent(`${id}-missing`, { id: "x" }),
+		(error) =>
+			isSubscriptionClosedError(error) &&
+			(error as { operation: string }).operation === "publish" &&
+			(error as { subscriptionId: string }).subscriptionId === `${id}-missing`,
+	);
+	await subscription.close();
+	assert.deepEqual(handled, ["hook-1"]);
+});
+
+test("events published before the subscription is ready wait; a failed ready stops it with that error", async () => {
+	const ready = Promise.withResolvers<void>();
+	const handled: string[] = [];
+	const id = uniqueId("ready");
+	const subscription = openEventSubscription({
+		id,
+		source: openSource(),
+		ready: ready.promise,
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	publishEvent(id, { id: "early" });
+	await settle();
+	assert.deepEqual(handled, []);
+	assert.equal(subscription.stats().queued, 1);
+	ready.resolve();
+	await settle();
+	assert.deepEqual(handled, ["early"]);
+	await subscription.close();
+
+	const storage = new Error("journal unavailable");
+	const failed = openEventSubscription({
+		id: uniqueId("ready-failed"),
+		source: openSource(),
+		ready: Promise.reject(storage),
+		handle: async () => {},
+	});
+	await assert.rejects(failed.done, (error) => error === storage);
+});
+
+test("subscription inputs are validated at the boundary with typed config errors", () => {
+	const fieldOf = (run: () => void) => {
+		try {
+			run();
+		} catch (error) {
+			assert.equal(isSubscriptionConfigError(error), true);
+			return [(error as { field: string }).field, (error as { reason: string }).reason];
+		}
+		return undefined;
+	};
+	assert.deepEqual(
+		fieldOf(() => validateEventSource({ id: "x" } as never, "source")),
+		["source", "not-event-source"],
+	);
+	assert.deepEqual(
+		fieldOf(() => validateEventSource(undefined as never, "source")),
+		["source", "not-event-source"],
+	);
+	assert.equal(
+		fieldOf(() => validateEventSource({ id: "x", start: () => {} }, "source")),
+		undefined,
+	);
+	assert.deepEqual(
+		fieldOf(() => validateSubscriptionAdmission({ maxConcurrent: 1.5 }, "options")),
+		["options.maxConcurrent", "not-positive-integer"],
+	);
+	assert.deepEqual(
+		fieldOf(() => validateSubscriptionAdmission({ maxRate: { events: 0, intervalMs: 5 } }, "options")),
+		["options.maxRate.events", "not-positive-integer"],
+	);
+	assert.deepEqual(
+		fieldOf(() => validateSubscriptionAdmission({ maxRate: { events: 1, intervalMs: -5 } }, "options")),
+		["options.maxRate.intervalMs", "not-positive-integer"],
+	);
+	assert.equal(
+		fieldOf(() => validateSubscriptionAdmission({ maxConcurrent: 2, maxRate: { events: 1, intervalMs: 5 } }, "o")),
+		undefined,
+	);
+	const id = uniqueId("duplicate");
+	const first = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	assert.deepEqual(
+		fieldOf(() => openEventSubscription({ id, source: openSource(), handle: async () => {} })),
+		["id", "duplicate-id"],
+	);
+	void first.close();
+});
+
+test("the wake dispatcher runs wakes in deadline order on one timer and leaves nothing behind", async () => {
+	const time = manualTime();
+	const fired: string[] = [];
+	time.dispatcher.schedule(30, () => fired.push("late"));
+	time.dispatcher.schedule(10, () => fired.push("early"));
+	const cancelled = time.dispatcher.schedule(20, () => fired.push("cancelled"));
+	time.dispatcher.schedule(10, () => fired.push("early-second"));
+	assert.equal(time.dispatcher.pending, 4);
+	cancelled.cancel();
+	cancelled.cancel();
+	assert.equal(time.dispatcher.pending, 3);
+	time.advance(10);
+	assert.deepEqual(fired, ["early", "early-second"]);
+	time.advance(25);
+	assert.deepEqual(fired, ["early", "early-second", "late"]);
+	assert.equal(time.dispatcher.pending, 0);
+
+	const controller = new AbortController();
+	const sleeping = time.dispatcher.sleep(50, controller.signal);
+	assert.equal(time.dispatcher.pending, 1);
+	controller.abort("stop");
+	await assert.rejects(sleeping, (error) => error === "stop");
+	assert.equal(time.dispatcher.pending, 0);
+	const waking = time.dispatcher.sleep(5, new AbortController().signal);
+	time.advance(5);
+	await waking;
+	await assert.rejects(time.dispatcher.sleep(5, AbortSignal.abort("already")), (error) => error === "already");
+	assert.equal(time.dispatcher.pending, 0);
+});

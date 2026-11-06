@@ -5,6 +5,7 @@ export {
 	type CacheWarmingDecisionEventResult,
 	type CacheWarmingStatus,
 } from "./core/cache-warmer.ts";
+export * from "./core/event-subscriptions/index.js";
 export type { ExecuteToolOptions, ExtensionToolContext } from "./core/extensions/context-types.ts";
 export type {
 	HostDiagnostic,

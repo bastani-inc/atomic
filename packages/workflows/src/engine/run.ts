@@ -84,6 +84,7 @@ import { workflowObservationRuntime } from "../shared/store-factory.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
+	StageContext,
 	StageOptions,
 	WorkflowDefinition,
 	WorkflowInputValues,
@@ -102,6 +103,7 @@ import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBo
 import { createChainPrimitive } from "./primitives/chain.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createParallelPrimitive } from "./primitives/parallel.js";
+import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
@@ -1013,6 +1015,26 @@ async function executeRun(
 	ownController.signal.addEventListener("abort", () => rejectionScope.ignore(ownController.signal.reason), {
 		once: true,
 	});
+	const stageIdByContext = new WeakMap<object, () => string | undefined>();
+	const eventPrimitives = createWorkflowEventPrimitives({
+		runId,
+		backend: durableBackend,
+		task: (name, options, scope) => rejectionScope.watch(gatedTask(name, options, scope)),
+		currentParents: () => tracker.currentParents(),
+		subscriberStageId: (subscriber) => stageIdByContext.get(subscriber)?.(),
+		recordReportNotice: (id, message) =>
+			activeStore.recordNotice({ id, runId, level: "info", message, createdAt: Date.now() }),
+		watch: (promise) => rejectionScope.watch(promise),
+	});
+	const createdStageId = (create: () => StageContext): { readonly stage: StageContext; readonly id?: string } => {
+		const before = activeStore.run(runId)?.stages.length ?? 0;
+		const stage = create();
+		const id = activeStore.run(runId)?.stages[before]?.id;
+		return id === undefined ? { stage } : { stage, id };
+	};
+	ownController.signal.addEventListener("abort", () => eventPrimitives.cancel(ownController.signal.reason), {
+		once: true,
+	});
 	const ctx: WorkflowRunContext = {
 		inputs: resolvedInputs,
 		runId,
@@ -1032,19 +1054,31 @@ async function executeRun(
 		ui: containUiRejections(ui, rejectionScope),
 		stage: (name: string, options?: StageOptions) => {
 			ownController.signal.throwIfAborted();
-			if (!scheduler.isRunPaused()) return containStageRejections(durableStage(name, options), rejectionScope);
+			if (!scheduler.isRunPaused()) {
+				const created = createdStageId(() => durableStage(name, options));
+				const context = containStageRejections(created.stage, rejectionScope);
+				stageIdByContext.set(context, () => created.id);
+				return context;
+			}
 			// Reserve declaration order now, even if methods are invoked in reverse.
 			const replayKey = stageReplayKeyGenerator(name);
-			return containStageRejections(
+			let deferredId: string | undefined;
+			const context = containStageRejections(
 				deferStageUntilRunRelease({
 					name,
-					create: () => durableStage(name, options, replayKey),
+					create: () => {
+						const created = createdStageId(() => durableStage(name, options, replayKey));
+						deferredId = created.id;
+						return created.stage;
+					},
 					isPaused: scheduler.isRunPaused,
 					waitForRelease: waitForRunRelease,
 					signal: ownController.signal,
 				}),
 				rejectionScope,
 			);
+			stageIdByContext.set(context, () => deferredId);
+			return context;
 		},
 		task: (...args) => rejectionScope.watch(gatedTask(...args)),
 		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
@@ -1069,6 +1103,8 @@ async function executeRun(
 			// that a subsequent quit needs to drain.
 			return rejectionScope.contain(whenRunning(() => tool(...args)));
 		},
+		subscribe: (...args) => eventPrimitives.subscribe(...args),
+		events: (...args) => eventPrimitives.events(...args),
 		...(opts.models !== undefined ? { models: opts.models } : {}),
 	};
 	const runtimeSettled = Promise.withResolvers<void>();
@@ -1267,6 +1303,7 @@ async function executeRun(
 			runWorkflowDefinitionCallback(def.name, runId, () => rejectionScope.run(() => def.run(ctx))),
 			ownController.signal,
 		);
+		await raceAbort(eventPrimitives.closeAndDrain(), ownController.signal);
 		await drainCachedStagePersistence();
 		// The workflow is done with its stages: one still released between turns shows its own status again.
 		settleReleasedStages(runtime.wakeDispatcher);
@@ -1367,6 +1404,7 @@ async function executeRun(
 			return suspendForGracefulQuit(gracefulQuit);
 		}
 		if (ownerClosing && err instanceof Error && isSessionClosedError(err)) return await suspendForClosedSession(err);
+		eventPrimitives.stopIntake(err);
 		if (selectedTerminalEvent.kind === "failure" && pendingChildWorkflows.size > 0 && !ownController.signal.aborted) {
 			ownController.abort(err);
 		}

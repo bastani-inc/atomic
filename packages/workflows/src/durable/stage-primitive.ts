@@ -489,7 +489,11 @@ export function createDurableTaskPrimitive(input: {
 		readonly controller: AbortController;
 		readonly settled: Promise<void>;
 	}) => () => void;
-}): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
+}): (
+	name: string,
+	options: WorkflowTaskOptions,
+	stageFailFastScope?: ParallelFailFastScope,
+) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
 		options: WorkflowTaskOptions,
@@ -1065,6 +1069,7 @@ export function recordCachedStageWithTracker(
 	const sourceStageId = checkpoint.topology?.run?.runId === runId ? checkpoint.topology.stageId : undefined;
 	const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
 	let parentIds = tracker.onSpawn(stageId, name);
+	if (stageFailFastScope?.detached === true) tracker.detach(stageId);
 	const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
 	const run = store.run(runId);
 	const restored = sourceParents?.map(

@@ -7,6 +7,7 @@
  */
 
 export type { Static, TSchema } from "typebox";
+export * from "./authoring-contract-events.js";
 export * from "./authoring-contract-stage.js";
 export * from "./authoring-contract-ui.js";
 export type { EffectiveBudget, ResolveBudgetLayers, WorkflowBudget } from "./budget.js";

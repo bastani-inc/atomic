@@ -4,6 +4,7 @@ import type { AgentSessionEvent, KeybindingsManager, ModelRouterOutput, Theme } 
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
+import type { WorkflowEventPrimitives } from "./authoring-contract-events.js";
 import type {
 	ReleaseWhenWaiting,
 	RunStatus,
@@ -128,6 +129,10 @@ export interface WorkflowRunContext<
 	 *
 	 */
 	tool: WorkflowToolPrimitive;
+	/** Handle each event of a stream in its own short-lived tracked child stage. */
+	subscribe: WorkflowEventPrimitives["subscribe"];
+	/** Inline mode: iterate a stream's events in the run body itself. */
+	events: WorkflowEventPrimitives["events"];
 }
 
 /** Serializable process details copied from an exhausted `ctx.tool` callback error. */

@@ -123,6 +123,63 @@ export {
 	workspace,
 	workspaceChangeSet,
 } from "@bastani/atomic";
+export type {
+	EmitSubscriptionEvent,
+	EventSource,
+	EventSourcePhase,
+	GitHubCommandRunner,
+	GitHubPullRequestSourceOptions,
+	LogTailOptions,
+	ScheduledWake,
+	SerializedSubscriptionError,
+	SerializedSubscriptionErrorCause,
+	SourceTimingOptions,
+	Subscription,
+	SubscriptionAdmission,
+	SubscriptionClosedOperation,
+	SubscriptionConfigReason,
+	SubscriptionErrorCode,
+	SubscriptionErrorFields,
+	SubscriptionErrorFieldValue,
+	SubscriptionErrorName,
+	SubscriptionEvent,
+	SubscriptionEventPayload,
+	SubscriptionEventReason,
+	SubscriptionRate,
+	SubscriptionStats,
+	WakeDispatcher,
+	WebhookEventSource,
+	WebhookOptions,
+} from "@bastani/atomic";
+export {
+	createWakeDispatcher,
+	deserializeSubscriptionError,
+	EventSourceError,
+	findSubscriptionError,
+	githubChecks,
+	githubReviews,
+	interval,
+	isEventSourceError,
+	isRetryableSubscriptionError,
+	isSubscriptionChildUnavailableError,
+	isSubscriptionClosedError,
+	isSubscriptionConfigError,
+	isSubscriptionError,
+	isSubscriptionEventError,
+	isSubscriptionHandlerError,
+	logTail,
+	publishEvent,
+	SUBSCRIPTION_REPORT_TOOL_NAME,
+	SubscriptionChildUnavailableError,
+	SubscriptionClosedError,
+	SubscriptionConfigError,
+	SubscriptionError,
+	SubscriptionEventError,
+	SubscriptionHandlerError,
+	serializeSubscriptionError,
+	sharedWakeDispatcher,
+	webhook,
+} from "@bastani/atomic";
 export type { Static, TSchema } from "typebox";
 export type {
 	ObserveRunJournalRead,
@@ -195,6 +252,12 @@ export type {
 	WorkflowDetails,
 	WorkflowDetailsMode,
 	WorkflowDetailsStatus,
+	WorkflowEventChild,
+	WorkflowEventHandler,
+	WorkflowEventPrimitives,
+	WorkflowEventStream,
+	WorkflowEventSubscriber,
+	WorkflowEventsOptions,
 	WorkflowExecutionMode,
 	WorkflowExecutionPolicy,
 	WorkflowExitOptions,
@@ -230,6 +293,8 @@ export type {
 	WorkflowSerializablePrimitive,
 	WorkflowSerializableValue,
 	WorkflowSharedTaskDefaults,
+	WorkflowSubscribeOptions,
+	WorkflowSubscription,
 	WorkflowTaskContext,
 	WorkflowTaskContextInput,
 	WorkflowTaskOptions,
@@ -726,6 +791,7 @@ export declare class GraphFrontierTracker {
 	onSpawn(stageId: string, stageName: string): string[];
 	currentParents(): string[];
 	replaceParents(stageId: string, parentIds: readonly string[]): void;
+	detach(stageId: string): void;
 	onSettle(stageId: string): void;
 	getNodes(): StageNode[];
 	getParents(stageId: string): string[];

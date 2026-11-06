@@ -26,6 +26,7 @@ import type {
 import { convertToLlm } from "../../src/core/messages.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../../src/core/models-store.ts";
+import type { CreateAgentSessionOptions } from "../../src/core/sdk-types.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
@@ -87,6 +88,8 @@ export interface HarnessOptions {
 	finishTurn?: Agent["finishTurn"];
 	/** The agent directory a session kept in a store spills oversized tool results into. */
 	storageAgentDir?: string;
+	/** Lets the session start in-process child sessions on the same faux provider. */
+	childSessions?: boolean;
 }
 
 export interface Harness {
@@ -215,6 +218,20 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		subagentPolicy: options.subagentPolicy,
 		orchestrationContext: options.orchestrationContext,
 		storageAgentDir: options.storageAgentDir,
+		...(options.childSessions === true
+			? {
+					childSessionOptions: (child: CreateAgentSessionOptions): CreateAgentSessionOptions => ({
+						cwd: tempDir,
+						agentDir: tempDir,
+						modelRuntime,
+						model,
+						settingsManager: SettingsManager.inMemory(options.settings),
+						resourceLoader: createTestResourceLoader(),
+						noTools: "builtin",
+						...child,
+					}),
+				}
+			: {}),
 	});
 
 	const events: AgentSessionEvent[] = [];
