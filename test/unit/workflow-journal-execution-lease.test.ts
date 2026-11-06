@@ -11,6 +11,7 @@ import {
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -49,7 +50,7 @@ test("rejected same-id SDK inputs preserve the active execution lease (#3647)", 
 	const running = run(
 		definition,
 		{ value: "valid" },
-		{ runId: "active", store: createStore(), durableBackend: backend },
+		{ runId: "active", store: createStore(), durableBackend: backend, cwd: directory },
 	);
 	try {
 		await started.promise;
@@ -60,6 +61,11 @@ test("rejected same-id SDK inputs preserve the active execution lease (#3647)", 
 		assert.equal((await contender.acquire("active", "contender")).status, "held");
 		release.resolve();
 		assert.equal((await running).status, "completed");
+		assert.deepEqual(
+			await listWorkflowSnapshotBoundaries(backend.journal, "active"),
+			[],
+			"the run records no worktree snapshot of the repository checkout",
+		);
 	} finally {
 		release.resolve();
 		await running.catch((error: Error) => {
@@ -295,6 +301,7 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 			durableBackend: backend,
 			toolControlRegistry: controls,
 			jobs,
+			cwd: directory,
 			onRawSettled: () => finishRetiredJob.promise,
 		},
 	);
@@ -321,9 +328,14 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		await releasedWrites.promise;
 		assert.deepEqual(await readJournalEntries(backend.journal, runId), pausedEntries);
 		assert.equal(await backend.workflowOwnership(runId), "available", "retired writes cannot reacquire a free lease");
+		assert.deepEqual(
+			await listWorkflowSnapshotBoundaries(backend.journal, runId),
+			[],
+			"the run records no worktree snapshot for the resume to verify or restore",
+		);
 		const resumed = await resumeDurableWorkflow(runId, {
 			registry: createRegistry().register(definition),
-			baseRunOpts: { store, toolControlRegistry: controls },
+			baseRunOpts: { store, toolControlRegistry: controls, cwd: directory },
 			durableBackend: backend,
 			jobs,
 			onRunAccepted: (id) => {
@@ -398,7 +410,7 @@ test("completed detached runs release their lease for deletion without unlocking
 	runDetached(
 		definition,
 		{ hold: true },
-		{ runId: "active", origin: "user", store: createStore(), durableBackend: backend, jobs },
+		{ runId: "active", origin: "user", store: createStore(), durableBackend: backend, jobs, cwd: directory },
 	);
 	const active = jobs.get("active")!;
 	try {
@@ -414,6 +426,7 @@ test("completed detached runs release their lease for deletion without unlocking
 				store: createStore(),
 				durableBackend: backend,
 				jobs,
+				cwd: directory,
 				onRawSettled: async (_ok, result, error) => {
 					completed = result;
 					if (error instanceof Error) completionError = error;
@@ -430,6 +443,11 @@ test("completed detached runs release their lease for deletion without unlocking
 		await completedJob.promise;
 		assert.ifError(completionError);
 		assert.equal(completed?.status, "completed");
+		assert.deepEqual(
+			await listWorkflowSnapshotBoundaries(backend.journal, "completed"),
+			[],
+			"the run records no worktree snapshot of the repository checkout",
+		);
 		assert.equal((await contender.acquire("active", "contender")).status, "held");
 		await successor.hydrateWorkflow("completed");
 		assert.equal(successor.getWorkflow("completed")?.status, "completed");
