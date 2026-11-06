@@ -44,7 +44,9 @@ const removeFrom = <Key>(index: Map<Key, Set<Entry>>, key: Key, entry: Entry): v
 };
 
 export class ReleasedAskerReplies {
-	private readonly entries = new Set<Entry>();
+	/** Routes in deadline order: expiry stops at the first route that has not expired. */
+	private entries = new Set<Entry>();
+	private latestExpiresAt = 0;
 	private readonly byQuestion = new Map<string, Set<Entry>>();
 	private readonly byChild = new Map<string, Set<Entry>>();
 	private readonly byOwner = new Map<string, Set<Entry>>();
@@ -81,7 +83,7 @@ export class ReleasedAskerReplies {
 				expiresAt: this.now() + this.ttlMs,
 				ownerSessionId,
 			};
-			this.entries.add(entry);
+			this.add(entry);
 			addTo(this.byQuestion, entry.questionId, entry);
 			addTo(this.byChild, childKey, entry);
 			if (ownerSessionId !== undefined) addTo(this.byOwner, ownerSessionId, entry);
@@ -137,7 +139,7 @@ export class ReleasedAskerReplies {
 			return;
 		}
 		const entry: Entry = { ...route, ownerSessionId, childKey: normalizeReservationTarget(route.childName) };
-		this.entries.add(entry);
+		this.add(entry);
 		addTo(this.byQuestion, entry.questionId, entry);
 		addTo(this.byChild, entry.childKey, entry);
 		if (ownerSessionId !== undefined) addTo(this.byOwner, ownerSessionId, entry);
@@ -173,6 +175,7 @@ export class ReleasedAskerReplies {
 
 	clear(): void {
 		this.entries.clear();
+		this.latestExpiresAt = 0;
 		this.byQuestion.clear();
 		this.byChild.clear();
 		this.byOwner.clear();
@@ -181,6 +184,18 @@ export class ReleasedAskerReplies {
 	private recordOverflow(): void {
 		this.droppedRoutes += 1;
 		if (this.droppedRoutes === 1) this.onFirstOverflow();
+	}
+
+	private add(entry: Entry): void {
+		if (entry.expiresAt >= this.latestExpiresAt) {
+			this.entries.add(entry);
+			this.latestExpiresAt = entry.expiresAt;
+			return;
+		}
+		const ordered = [...this.entries];
+		const position = ordered.findIndex((existing) => existing.expiresAt > entry.expiresAt);
+		ordered.splice(position, 0, entry);
+		this.entries = new Set(ordered);
 	}
 
 	private expire(): void {

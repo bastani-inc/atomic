@@ -108,6 +108,46 @@ describe("released asker reply routes (#4326)", () => {
 		assert.deepEqual(routes.sizes(), EMPTY);
 	});
 
+	test("a refused reply that is restored behind a newer route still expires on its own deadline and frees its place (#4326)", () => {
+		const time = clock();
+		const routes = new ReleasedAskerReplies(time.now, TTL_MS, 2);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("old")], OWNER);
+		const route = routes.take("old", REPLIER, ASKER);
+		assert.ok(route);
+		time.advance(TTL_MS / 2);
+		routes.keep({ sessionId: OTHER, childName: "subagent-other-1" }, [question("newer", REPLIER, OTHER)], OWNER);
+		routes.restore(route, OWNER);
+		assert.equal(routes.sizes().routes, 2);
+		time.advance(TTL_MS / 2);
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("fresh")], OWNER), 1);
+		assert.equal(routes.droppedRoutes, 0);
+		assert.deepEqual(routes.sizes(), { routes: 2, questions: 2, children: 2, owners: 1 });
+		assert.equal(routes.take("old", REPLIER, ASKER), undefined);
+	});
+
+	test("routes restored newest first each expire on their own deadline (#4326)", () => {
+		const time = clock();
+		const routes = new ReleasedAskerReplies(time.now, TTL_MS, 100_000);
+		const kept = [];
+		for (let index = 0; index < 50; index += 1) {
+			const name = `subagent-ordered-${index}`;
+			routes.keep({ sessionId: ASKER, childName: name }, [question(`q${index}`)], OWNER);
+			const route = routes.take(`q${index}`, REPLIER, ASKER);
+			assert.ok(route);
+			kept.push(route);
+			time.advance(10);
+		}
+		for (const route of [...kept].reverse()) routes.restore(route, OWNER);
+		assert.equal(routes.sizes().routes, 50);
+		time.advance(TTL_MS - 250);
+		routes.keep({ sessionId: OTHER, childName: "subagent-probe" }, [question("probe", REPLIER, OTHER)], OWNER);
+		assert.equal(routes.sizes().routes, 25, "the 26 oldest routes expired and the probe was kept");
+		for (const route of kept) {
+			const alive = route.expiresAt > time.now();
+			assert.equal(routes.take(route.questionId, REPLIER, ASKER) !== undefined, alive, route.questionId);
+		}
+	});
+
 	test("a route expires with the reply timeout, attached or not (#4326)", () => {
 		const time = clock();
 		const routes = new ReleasedAskerReplies(time.now, TTL_MS);
