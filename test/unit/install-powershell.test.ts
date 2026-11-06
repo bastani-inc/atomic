@@ -862,8 +862,11 @@ const powershellEngines = findPowerShellEngines();
 const powershellExecutable = powershellEngines.find(
 	(engine) => process.platform === "win32" && engine.major === 5,
 )?.executable;
-const powershellTest = powershellExecutable === undefined ? test.skip : test;
 const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
+const runOrSkipPowerShellFixture = powershellExecutable === undefined ? test.skip : test;
+function powershellTest(name: string, fn: () => void, timeout = POWERSHELL_FIXTURE_TIMEOUT_MS): void {
+	runOrSkipPowerShellFixture(name, fn, timeout);
+}
 const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
 const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
 const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
