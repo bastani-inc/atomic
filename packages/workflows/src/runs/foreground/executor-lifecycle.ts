@@ -238,7 +238,7 @@ function runFailureMetadataFromFailure(
 	failure: WorkflowFailure,
 	failedStage: StageSnapshot | undefined,
 ): RunFailureMetadata {
-	const failureDetail = failedStage === undefined ? typedFailureDetail(failure.cause) : failedStage.failureDetail;
+	const failureDetail = typedFailureDetail(failure.cause);
 	return {
 		errorMessage: failedStage?.error ?? failure.userMessage,
 		failureKind: failure.kind,

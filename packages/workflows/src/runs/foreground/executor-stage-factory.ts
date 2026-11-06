@@ -51,8 +51,8 @@ import type {
 } from "./executor-stage-types.js";
 import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
-import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import { StageAbortListeners } from "./stage-abort-listeners.js";
+import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 import { type IdleStage, stageIdleReleaser } from "./stage-idle-release.js";
 import {
@@ -248,7 +248,10 @@ export function createWorkflowStageFactory(input: {
 			// A stage waiting on a human keeps showing that it awaits input; its `wait` marks the released session.
 			if (wait.kind === "prompt") return;
 			// A stage released between turns goes back to how it was when it is rehydrated, or when the workflow ends.
-			statusBeforeRelease = wait.kind === "tool" ? undefined : stageSnapshot.status;
+			statusBeforeRelease =
+				wait.kind !== "tool" || stageSnapshot.status === "completed" || stageSnapshot.status === "failed"
+					? stageSnapshot.status
+					: undefined;
 			if (stageSnapshot.status !== "paused") stageSnapshot.status = "waiting";
 			if (wait.kind !== "tool") idleReleaser.trackReleased(stageId, settleReleased);
 		};

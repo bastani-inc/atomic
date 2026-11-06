@@ -847,6 +847,7 @@ export {
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
+export { parkWorkflowStageForRelease } from "./core/workflow-stage-admission.ts";
 // Workspace bindings (#3109)
 export {
 	type AcquireWorkspaceWriterLeaseOptions,
@@ -914,7 +915,6 @@ export {
 	workspaceChangeSet,
 	workspaceSessionCwd,
 } from "./core/workspace/index.ts";
-export { parkWorkflowStageForRelease } from "./core/workflow-stage-admission.ts";
 export {
 	findLlamaServerError,
 	isLlamaServerError,

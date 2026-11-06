@@ -1280,6 +1280,10 @@ export class StageSessionController {
 		// The stage's task host stops reaching for the session it is about to lose; the next session rebinds it.
 		if (this.sharedOrchestrationContext !== undefined) parkWorkflowStageForRelease(this.sharedOrchestrationContext);
 		await disposeStageSession(current);
+		const compaction = stageSessionCompaction(current);
+		if (compaction !== undefined) {
+			for (const listener of this.pendingListeners) listener({ type: "background_compaction", compaction });
+		}
 	}
 
 	/** Reopen the released stage once, however many callers need its session: they all join the same reopening. */
@@ -2902,7 +2906,7 @@ export class StageSessionController {
 				this.opts.defaultSessionDir,
 				this.meta,
 				this.opts.pendingStageDelivery,
-				this.startupWait.signal,
+				this.residency.startupWait.signal,
 			)) as StageSessionCreateOptions;
 			this.callerSessionManager = createOptions.sessionManager;
 			created = await adapter.create(createOptions, {

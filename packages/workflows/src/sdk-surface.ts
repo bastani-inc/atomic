@@ -177,7 +177,14 @@ export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage
 export { deliverStageWake } from "./runs/foreground/stage-wake-dispatcher.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";
-export type { WorkflowDecisionRequest } from "./shared/authoring-contract-stage.js";
+export type {
+	ReleaseWhenWaiting,
+	StageLifecycleEvent,
+	StageWaitKind,
+	StageWaitSnapshot,
+	StageWaitToolCall,
+	WorkflowDecisionRequest,
+} from "./shared/authoring-contract-stage.js";
 export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,
@@ -197,13 +204,6 @@ export {
 	StageDecisionTimeoutError,
 	StageDecisionUnavailableError,
 } from "./shared/possible-stage-prediction-errors.js";
-export type {
-	ReleaseWhenWaiting,
-	StageLifecycleEvent,
-	StageWaitKind,
-	StageWaitSnapshot,
-	StageWaitToolCall,
-} from "./shared/authoring-contract-stage.js";
 export type { StageWaitToolResult } from "./shared/stage-wait.js";
 export { DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS, MAX_RELEASE_WHEN_WAITING_AFTER_MS } from "./shared/stage-wait.js";
 export type {

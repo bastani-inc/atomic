@@ -356,6 +356,13 @@ export declare function run<
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
 export type {
+	ReleaseWhenWaiting,
+	StageLifecycleEvent,
+	StageWaitKind,
+	StageWaitSnapshot,
+	StageWaitToolCall,
+} from "./shared/authoring-contract-stage.js";
+export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,
 	StageDecisionAnswerErrorReason,
@@ -384,13 +391,6 @@ export {
 	rehydrateWorkflowGitRequiredError,
 	WorkflowGitRequiredError,
 } from "./shared/workflow-git-required-error.js";
-export type {
-	ReleaseWhenWaiting,
-	StageLifecycleEvent,
-	StageWaitKind,
-	StageWaitSnapshot,
-	StageWaitToolCall,
-} from "./shared/authoring-contract-stage.js";
 /** Milliseconds a stage waits on a tool call inline before it releases its session, unless configured otherwise. */
 export declare const DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS: 60000;
 /** The largest `releaseWhenWaiting.afterMs`, 2³¹−1 ms (about 24.8 days): the longest delay a timer honours. */

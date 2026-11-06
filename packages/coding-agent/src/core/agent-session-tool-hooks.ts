@@ -16,8 +16,8 @@ import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
-import { workspaceSandboxDenial } from "./workspace/session.ts";
 import { getReleasedStageBlobDir } from "./tools/tool-output-blobs.ts";
+import { workspaceSandboxDenial } from "./workspace/session.ts";
 
 /**
  * Where a released stage's oversized result is spilled when its session is kept in a persistent store: a per-session

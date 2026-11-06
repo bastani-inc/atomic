@@ -73,9 +73,9 @@ import {
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
+import { removeReleasedStageBlobs } from "./tools/tool-output-blobs.ts";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
-import { removeReleasedStageBlobs } from "./tools/tool-output-blobs.ts";
 
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.

@@ -200,6 +200,30 @@ describe("when a stage that holds its session may be released (#4309)", () => {
 		assert.equal(rig.ctx.__idleSince?.(), undefined);
 	});
 
+	test("publishes the compaction state left by disposal when a stage releases its session (#4309)", async () => {
+		const compaction: { state: "running" | "idle" } = { state: "running" };
+		const rig = makeRig({
+			customize: () => ({
+				compaction,
+				dispose() {
+					compaction.state = "idle";
+				},
+			}),
+		});
+		const states: string[] = [];
+		rig.ctx.subscribe((event) => {
+			if (event.type === "background_compaction") states.push(event.compaction.state);
+		});
+		try {
+			await rig.ctx.prompt("first");
+			assert.deepEqual(states, ["running"]);
+			await rig.ctx.release();
+			assert.deepEqual(states, ["running", "idle"]);
+		} finally {
+			await rig.ctx.__dispose();
+		}
+	});
+
 	test("a stage with a prompt in flight is not idle, and is idle again from the moment that prompt ended (#4309)", async () => {
 		const gate = Promise.withResolvers<void>();
 		const rig = makeRig({ promptGate: gate.promise });
