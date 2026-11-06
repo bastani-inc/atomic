@@ -19,6 +19,7 @@ import { createTestResourceLoader } from "./utilities.ts";
 const REQUEST_AUTH_PREPARATION_TIMEOUT_MS = 15_000;
 const FIRST_AUTH_DELAY_MS = 14_000;
 const DEFAULT_AGENT_RETRY_BACKOFF_MS = 14_000;
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 /**
  * How long a wait may take for real session-store I/O (lock directories and JSONL
@@ -33,6 +34,19 @@ async function waitForIo(condition: () => boolean): Promise<void> {
 	const deadline = performance.now() + IO_SETTLE_HEADROOM_MS;
 	while (!condition() && performance.now() < deadline) await sleep(1);
 	expect(condition()).toBe(true);
+}
+
+async function expectSettledWithinIoHeadroom(work: Promise<unknown>): Promise<void> {
+	const headroom = new AbortController();
+	try {
+		const outcome = await Promise.race([
+			work.then(() => "settled" as const),
+			sleep(IO_SETTLE_HEADROOM_MS, "stalled" as const, { signal: headroom.signal }),
+		]);
+		expect(outcome).toBe("settled");
+	} finally {
+		headroom.abort();
+	}
 }
 
 function watchRetryTimers(): (dispatch?: boolean) => number {
@@ -192,7 +206,7 @@ describe("createAgentSession request-auth cancellation", () => {
 			compaction: { enabled: false },
 		});
 		const manager = await SessionManager.create(dir, join(dir, "sessions"));
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: dir,
 			agentDir: dir,
 			modelRuntime: runtime,
@@ -203,9 +217,11 @@ describe("createAgentSession request-auth cancellation", () => {
 			resourceLoader: createTestResourceLoader(),
 			tools: tools.map((tool) => tool.name),
 			customTools: tools,
+			builtins: NO_BUILTINS,
 		});
 		if (bindUi) await session.bindExtensions(bindUi);
 		cleanup.push(() => session.dispose());
+		expect(extensionsResult.extensions.map((extension) => extension.path)).toEqual([]);
 		return { session, runtime, credentials, manager, calls: () => calls, refreshes: () => refreshes };
 	}
 
@@ -222,7 +238,7 @@ describe("createAgentSession request-auth cancellation", () => {
 			);
 	}
 
-	it("stops waiting after session.abort but persists an already-started OAuth rotation (#3429)", async () => {
+	it("stops waiting after session.abort but persists an already-started OAuth rotation (#3429) (#4423)", async () => {
 		const entered = deferred();
 		const late = deferred<unknown>();
 		let signal: AbortSignal | undefined;
@@ -237,21 +253,12 @@ describe("createAgentSession request-auth cancellation", () => {
 		const prompt = f.session.prompt("go");
 		await vi.advanceTimersByTimeAsync(0);
 		await entered.promise;
-		let stopped = false;
-		let promptStopped = false;
-		void prompt.then(() => {
-			promptStopped = true;
-		});
-		const abort = f.session.abort().then(() => {
-			stopped = true;
-		});
+		const abort = f.session.abort();
 		await vi.advanceTimersByTimeAsync(100);
-		await waitForIo(() => stopped && promptStopped);
 		try {
+			await expectSettledWithinIoHeadroom(Promise.all([abort, prompt]));
 			expect(signal).toBeInstanceOf(AbortSignal);
 			expect(signal?.aborted).toBe(false);
-			expect(stopped).toBe(true);
-			expect(promptStopped).toBe(true);
 		} finally {
 			late.resolve({
 				type: "oauth",
