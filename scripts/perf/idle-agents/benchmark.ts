@@ -13,7 +13,8 @@
  *   node --expose-gc --import jiti/register scripts/perf/idle-agents/benchmark.ts --agents 1000 --store sqlite
  *
  * `--mode resident` keeps every agent live instead of releasing it: the behaviour before #4326, for comparison.
- * `--store memory` keeps history in memory (comparable to Infinity's 107 KB); `--store sqlite` is the default
+ * `--store memory` is the in-memory session store as Atomic opens it for a memory selection (comparable to Infinity's
+ * 107 KB), which keeps a released session's history in a temporary file since #4502; `--store sqlite` is the default
  * node:sqlite session store in a temporary file (history on disk). `--workers N` creates the agents on N worker
  * threads of this one process, each with its own store, to reach large counts sooner; every sample adds up the heap,
  * handles and listeners of all threads, and RSS is the whole process. Run under Node: Bun reports no active handles.

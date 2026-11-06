@@ -23,7 +23,7 @@ import {
 import { createEventBus } from "../../../packages/coding-agent/src/core/event-bus.js";
 import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { MemorySessionStore } from "../../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { StorageProvider } from "../../../packages/coding-agent/src/core/storage/provider.js";
 import { SqlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../../../packages/coding-agent/src/core/storage/session/types.js";
 import { liveAsyncResources, trackAsyncResources } from "./async-resources.js";
@@ -86,6 +86,14 @@ export interface AgentHost {
 	close(): Promise<void>;
 }
 
+/** The in-memory session store as Atomic opens one for a `{ kind: "memory" }` selection. */
+export function memoryStore(): Promise<SessionStore> {
+	return new StorageProvider().openSessionStore(
+		{ kind: "memory" },
+		{ agentDir: process.env.ATOMIC_CODING_AGENT_DIR as string, domain: "sessions" },
+	);
+}
+
 /**
  * Hand a detached call's result to the dispatcher, once, when its operation finishes. Module-level so the reaction
  * closes over a session id and the dispatcher, never over the session.
@@ -122,7 +130,7 @@ export async function createAgentHost(options: HostOptions): Promise<AgentHost> 
 	mkdirSync(cwd, { recursive: true });
 	const sqlitePath = join(options.root, `journal-${options.index}.sqlite`);
 	const database = options.store === "sqlite" ? await openNodeSqliteDatabase(sqlitePath) : undefined;
-	const store: SessionStore = database === undefined ? new MemorySessionStore() : await SqlSessionStore.open(database);
+	const store: SessionStore = database === undefined ? await memoryStore() : await SqlSessionStore.open(database);
 
 	/** The event bus every session's extensions subscribe to, counting live subscriptions. */
 	const sharedBus = createEventBus();
