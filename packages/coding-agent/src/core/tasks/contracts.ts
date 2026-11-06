@@ -33,6 +33,8 @@ export type ForegroundError = Failure<
 	"TaskTerminal" | "OwnerClosing" | "UnknownTask" | "TaskEvicted" | "ObserverCancelled"
 >;
 export type CancelError = Failure<"UnknownTask" | "TaskEvicted" | "CleanupFailed">;
+/** A hold on a task record its owner already evicted, which no hold brings back; see `TaskEvictedError`. */
+export type RetainError = Failure<"TaskEvicted">;
 export type CloseError = Failure<"CleanupFailed" | "EnvironmentClosing">;
 export type WatchError = Failure<"OwnerClosed" | "StaleGeneration" | "EnvironmentClosing">;
 export type ReportError = Failure<"StaleAttempt" | "OwnerClosing" | "TaskTerminal" | "ReportConflict">;
