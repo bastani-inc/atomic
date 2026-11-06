@@ -70,7 +70,11 @@ for (const scenario of ["success", "failure", "borrowed destination"] as const) 
 				await assert.rejects(store.load(session.getSessionId()), { name: "StoreClosedError" });
 			}
 			if (borrowed) assert.ok(await borrowed.readHeader(session.getSessionId()));
-			assert.equal(databaseClose.mock.calls.length, borrowed ? 0 : 2);
+			assert.equal(
+				databaseClose.mock.calls.length,
+				borrowed ? 0 : 1,
+				"the source store stays open while the copy runs, so both stores share one database, closed once",
+			);
 		} finally {
 			for (const acquisition of acquisitions.mock.results) await (await acquisition.value).close();
 			await borrowed?.close();
