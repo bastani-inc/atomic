@@ -13,6 +13,8 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { FINISHED_TASK_RETENTION } from "../../packages/coding-agent/src/core/tasks/eviction-error.js";
+import { taskHostStateSizesForTesting } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import {
 	formatReleasedReply,
@@ -3058,6 +3060,54 @@ test("pause and quit of a released child only record the stop; resume continues 
 		"a stopped released child still continues the turn it waited in",
 	);
 });
+
+/** More released children than an owner keeps finished tasks for, so a record kept per released child fails. */
+const RELEASED_PAST_RETENTION = FINISHED_TASK_RETENTION + 16;
+/** Hundreds of real child sessions, each released and its native task settled, one after another. */
+const RELEASED_PAST_RETENTION_TIMEOUT_MS = 120_000;
+/** How long the owner's host may take to evict the last released children's records once their cleanup is reaped. */
+const RETENTION_CONVERGE_MS = 20_000;
+
+test(
+	"released children keep no task record past the owner's retention, and the earliest still resumes (#4326)",
+	async () => {
+		const h = harness();
+		h.releaseOriginal = true;
+		const { owner } = h.host.ownerBinding;
+		const processWide = taskHostStateSizesForTesting(owner);
+		for (let index = 0; index < RELEASED_PAST_RETENTION; index++) {
+			await settled(h, await h.admit(`retained${index}`));
+			await h.waitForLatest(
+				`retained${index}:0`,
+				(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+			);
+		}
+
+		const deadline = Date.now() + RETENTION_CONVERGE_MS;
+		while (taskHostStateSizesForTesting(owner).tasks > FINISHED_TASK_RETENTION) {
+			assert.ok(Date.now() < deadline, `not converged: ${JSON.stringify(taskHostStateSizesForTesting(owner))}`);
+			await sleep(10);
+		}
+		assert.deepEqual(taskHostStateSizesForTesting(owner), {
+			tasks: FINISHED_TASK_RETENTION,
+			settledTasks: FINISHED_TASK_RETENTION,
+			quarantinedTasks: 0,
+			unconfirmedCleanups: 0,
+			permits: 0,
+			commandStarts: 0,
+			routerSelections: processWide.routerSelections,
+			requestedModels: processWide.requestedModels,
+			launchHeartbeats: processWide.launchHeartbeats,
+		});
+
+		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		await settled(h, resumedTaskId(resumed));
+		assert.equal(h.runs.at(-1)?.task, "carry on");
+		assert.equal(h.runs.at(-1)?.options.resumeSession, true);
+	},
+	RELEASED_PAST_RETENTION_TIMEOUT_MS,
+);
 
 test("pause and quit with all: true include released children (#4326)", async () => {
 	const h = harness();
