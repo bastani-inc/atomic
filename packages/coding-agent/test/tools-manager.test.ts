@@ -148,9 +148,12 @@ describe("managed tool downloads", () => {
 		mocks.arch.mockReturnValue(architecture);
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 404 }));
 
-		await expect(ensureTool(tool)).resolves.toBeUndefined();
+		assert.equal(await ensureTool(tool), undefined);
 
-		expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([releaseUrl]);
+		assert.deepEqual(
+			fetchMock.mock.calls.map(([input]) => String(input)),
+			[releaseUrl],
+		);
 	});
 
 	it("resolves the version from the release page redirect", async () => {
