@@ -26,7 +26,7 @@ import {
 	isWorkspaceRestoreUnavailableError,
 	type WorkspaceRestoreUnavailableError,
 } from "../../packages/workflows/src/workers/placement-errors.js";
-import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
+import { closeCoordinationJournals, poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { recordedPlacement } from "../../packages/workflows/src/workers/public-pool.js";
 import type { startWorkflowWorkerHost } from "../../packages/workflows/src/workers/worker-host.js";
 import { sleep } from "../helpers/runtime.js";
@@ -491,6 +491,8 @@ test("a non-shared pool on a remote journal prepares without a mirrored lease or
 		assert.deepEqual(await recordedRootSnapshots(f), []);
 	} finally {
 		await pool.close();
+		// The pool opened its coordination database, which this process keeps open until it closes its pools' databases.
+		await closeCoordinationJournals();
 		await f.close();
 	}
 });
