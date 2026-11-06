@@ -9,8 +9,6 @@ export const COMMAND = [process.execPath, "--import", "jiti/register", FIXTURE];
 export const EVENTS = 60;
 export const MAX_CONCURRENT = 4;
 export const HANDLER_DELAY_MS = "25";
-/** Structural: each scenario starts, faults and restarts real Node processes on a SQLite journal. */
-export const CHAOS_SCENARIO_TIMEOUT_MS = 240_000;
 export const PROCESS_PHASE_TIMEOUT_MS = 90_000;
 
 export type Handled = ReadonlyMap<string, readonly string[]>;

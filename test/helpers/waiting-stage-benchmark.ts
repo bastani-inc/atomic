@@ -7,8 +7,3 @@
  */
 export const BENCHMARK_AGENTS = 75;
 export const BENCHMARK_TURNS = 2;
-/**
- * Structural cost: every agent is a stage running a real `AgentSession` against the SQLite session store and journal,
- * the benchmark collects the heap between phases, and it idles for two seconds to sample event-loop delay.
- */
-export const REAL_BENCHMARK_TIMEOUT_MS = 120_000;

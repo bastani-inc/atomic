@@ -13,13 +13,15 @@ import {
 	runIdleAgentBenchmark,
 } from "../../scripts/perf/waiting-stages/benchmark.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
-import {
-	BENCHMARK_AGENTS as AGENTS,
-	REAL_BENCHMARK_TIMEOUT_MS,
-	BENCHMARK_TURNS as TURNS,
-} from "../helpers/waiting-stage-benchmark.js";
+import { BENCHMARK_AGENTS as AGENTS, BENCHMARK_TURNS as TURNS } from "../helpers/waiting-stage-benchmark.js";
 
 useTemporaryAgentDir();
+
+/**
+ * Structural cost: every agent is a stage running a real `AgentSession` against the SQLite session store and journal,
+ * the benchmark collects the heap between phases, and it idles for two seconds to sample event-loop delay.
+ */
+const REAL_BENCHMARK_TIMEOUT_MS = 120_000;
 
 test(
 	"idle agents hold no live or retained session and no per-agent handle or listener on the real runtime (#4309)",

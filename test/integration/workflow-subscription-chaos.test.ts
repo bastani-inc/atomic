@@ -6,7 +6,6 @@ import {
 	allIds,
 	assertEveryChildSeeded,
 	assertReports,
-	CHAOS_SCENARIO_TIMEOUT_MS,
 	COMMAND,
 	EVENTS,
 	fixture,
@@ -21,6 +20,9 @@ import {
 	SUBSCRIPTIONS,
 	waitForHandled,
 } from "../helpers/workflow-subscription-chaos.js";
+
+/** Structural: each scenario starts, faults and restarts real Node processes on a SQLite journal. */
+const CHAOS_SCENARIO_TIMEOUT_MS = 240_000;
 
 test(
 	"SIGKILL mid-subscription, then resume: recorded events are never handled again and none are lost (#4311)",

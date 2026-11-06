@@ -6,7 +6,6 @@ import {
 	allIds,
 	assertEveryChildSeeded,
 	assertReports,
-	CHAOS_SCENARIO_TIMEOUT_MS,
 	COMMAND,
 	EVENTS,
 	fixture,
@@ -22,6 +21,9 @@ import {
 	stopOutsideTransaction,
 	waitForHandled,
 } from "../helpers/workflow-subscription-chaos.js";
+
+/** Structural: each scenario starts, faults and restarts real Node processes on a SQLite journal. */
+const CHAOS_SCENARIO_TIMEOUT_MS = 240_000;
 
 test.skipIf(process.platform === "win32")(
 	"SIGSTOP the owner: a skewed clock cannot steal its lease; a takeover fences it with a typed error on SIGCONT (#4311)",

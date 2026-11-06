@@ -6,7 +6,6 @@ import {
 	allIds,
 	assertEveryChildSeeded,
 	assertReports,
-	CHAOS_SCENARIO_TIMEOUT_MS,
 	COMMAND,
 	EVENTS,
 	handledByLabel,
@@ -16,6 +15,9 @@ import {
 	records,
 	SUBSCRIPTIONS,
 } from "../helpers/workflow-subscription-chaos.js";
+
+/** Structural: each scenario starts, faults and restarts real Node processes on a SQLite journal. */
+const CHAOS_SCENARIO_TIMEOUT_MS = 240_000;
 
 test(
 	"concurrent writer processes on one journal each record every event exactly once (#4311)",
