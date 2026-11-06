@@ -162,6 +162,7 @@ export function createWakeDispatcher(host: WakeTimerHost = systemTimerHost): Wak
 		}
 		arm();
 		for (const entry of due) {
+			if (entry.cancelled) continue;
 			live -= 1;
 			entry.cancelled = true;
 			entry.wake();

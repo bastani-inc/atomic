@@ -246,6 +246,62 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		assert.equal(EVENT_SUBSCRIPTION_CHILD_ENTRY_TYPE, "event_subscription_child");
 	});
 
+	it("a report to a session in the middle of a turn is saved in the transcript before report() returns (#4311)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const turnStarted = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		harness.setResponses([
+			async () => {
+				turnStarted.resolve();
+				await release.promise;
+				return fauxAssistantMessage("busy turn done");
+			},
+			fauxAssistantMessage("took the report"),
+		]);
+		const busy = harness.session.prompt("Stay busy.");
+		await turnStarted.promise;
+		const savedWhenReported: number[] = [];
+		const subscription = harness.session.subscribe(listSource([{ id: "while-busy" }]), async (_event, child) => {
+			await child.report("deploy failed while you were busy");
+			savedWhenReported.push(
+				harness.session.sessionManager
+					.getEntries()
+					.filter((entry) => "customType" in entry && entry.customType === "event_report").length,
+			);
+		});
+		await subscription.done;
+		release.resolve();
+		await busy;
+		assert.deepEqual(savedWhenReported, [1]);
+	});
+
+	it("a child session keeps the session's own custom tools next to report_to_subscriber (#4311)", async () => {
+		const parentTool = {
+			name: "check_ci",
+			label: "Check CI",
+			description: "Checks CI.",
+			parameters: { type: "object", properties: {} } as never,
+			execute: async () => ({ content: [], details: undefined }),
+		};
+		const harness = await createHarness({ childSessions: { customTools: [parentTool] } });
+		harnesses.push(harness);
+		let childToolNames: string[] = [];
+		harness.setResponses([
+			(context) => {
+				childToolNames = context.messages
+					.flatMap((message) => (message.role === "system" ? (message.toolsAdded ?? []) : []))
+					.map((tool) => tool.name);
+				return fauxAssistantMessage("checked");
+			},
+		]);
+		await harness.session.subscribe(listSource([{ id: "ci-1" }]), async (_event, child) => {
+			await child.task({ prompt: "Check CI." });
+		}).done;
+		assert.ok(childToolNames.includes("check_ci"), childToolNames.join(","));
+		assert.ok(childToolNames.includes(SUBSCRIPTION_REPORT_TOOL_NAME), childToolNames.join(","));
+	});
+
 	it("a child limited to an explicit tool list can still call report_to_subscriber (#4311)", async () => {
 		const harness = await createHarness({ childSessions: true });
 		harnesses.push(harness);
@@ -453,7 +509,7 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			await child.report("x matters");
 		}).done;
 		assert.equal(send.mock.calls.length, 1);
-		assert.deepEqual(send.mock.calls[0]?.[1], { triggerTurn: true, deliverAs: "steer" });
+		assert.deepEqual(send.mock.calls[0]?.[1], { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true });
 		assert.equal(send.mock.calls[0]?.[0].customType, "event_report");
 		assert.deepEqual(
 			harness.sessionManager

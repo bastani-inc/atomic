@@ -169,6 +169,8 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	let intakeOpen = true;
 	let started = false;
 	let stopped: { readonly error: unknown } | undefined;
+	/** Settles once a started source has ended and let go of what it held, such as a webhook route. */
+	let sourceReleased: Promise<void> = Promise.resolve();
 	const done = Promise.withResolvers<SubscriptionStats>();
 
 	const stats = (): SubscriptionStats => ({ received, duplicates, handled, active, queued: queue.length, reports });
@@ -183,8 +185,8 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		if (stopped === undefined && (!started || intakeOpen || queue.length > 0)) return;
 		if (active > 0 && !cancelled) return;
 		rateWake?.cancel();
-		if (stopped === undefined) done.resolve(stats());
-		else done.reject(stopped.error);
+		if (stopped !== undefined) done.reject(stopped.error);
+		else void sourceReleased.then(() => done.resolve(stats()));
 	};
 
 	const stop = (error: unknown): void => {
@@ -277,7 +279,10 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 			};
 			try {
 				const running = input.source.start(sourceStop.signal, emit);
-				if (isThenable(running)) running.then(closeIntake, sourceFailed).then(pump);
+				if (isThenable(running)) {
+					sourceReleased = Promise.resolve(running).then(closeIntake, sourceFailed);
+					void sourceReleased.then(pump);
+				}
 			} catch (error) {
 				sourceFailed(error);
 			}

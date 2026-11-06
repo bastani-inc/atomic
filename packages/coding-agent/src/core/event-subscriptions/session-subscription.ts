@@ -210,7 +210,7 @@ export function subscribeSession(
 						display: true,
 						details,
 					},
-					{ triggerTurn: true, deliverAs: "steer" },
+					{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
 				);
 				handle.recordReport();
 				eventReports += 1;
@@ -224,13 +224,16 @@ export function subscribeSession(
 					if (resolve === undefined) throw new SubscriptionChildUnavailableError(id, session.sessionId);
 					const { SessionManager } = await import("../session-manager.ts");
 					const { prompt, ...childOptions } = taskOptions;
+					const inherited = resolve({
+						...childOptions,
+						...(childOptions.tools === undefined ? {} : { tools: toolsWithReport(childOptions.tools) }),
+						sessionManager: SessionManager.inMemory(session._cwd),
+					});
 					const result = await runChildSession(
-						resolve({
-							...childOptions,
-							...(childOptions.tools === undefined ? {} : { tools: toolsWithReport(childOptions.tools) }),
-							sessionManager: SessionManager.inMemory(session._cwd),
-							customTools: [createSubscriberReportTool(report, "session")],
-						}),
+						{
+							...inherited,
+							customTools: [...(inherited.customTools ?? []), createSubscriberReportTool(report, "session")],
+						},
 						seedEventPrompt(prompt, name, event),
 						signal,
 					);

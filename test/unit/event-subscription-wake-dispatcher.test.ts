@@ -116,3 +116,23 @@ test("a signal from an owned abort controller gets no listener, and aborting it 
 	assert.deepEqual(late, ["already aborted"]);
 	await assert.rejects(dispatcher.sleep(10, owner.signal), (error) => error === "closed");
 });
+
+test("a wake cancelled by another wake due at the same time does not run, and pending never goes negative (#4311)", () => {
+	vi.useFakeTimers();
+	const dispatcher = createWakeDispatcher();
+	const ran: string[] = [];
+	let second: { cancel(): void } | undefined;
+	dispatcher.schedule(10, () => {
+		ran.push("first");
+		second?.cancel();
+	});
+	second = dispatcher.schedule(10, () => ran.push("second"));
+	dispatcher.schedule(20, () => ran.push("third"));
+	assert.equal(dispatcher.pending, 3);
+	vi.advanceTimersByTime(10);
+	assert.deepEqual(ran, ["first"]);
+	assert.equal(dispatcher.pending, 1);
+	vi.advanceTimersByTime(10);
+	assert.deepEqual(ran, ["first", "third"]);
+	assert.equal(dispatcher.pending, 0);
+});

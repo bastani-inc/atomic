@@ -2508,3 +2508,15 @@ test("idle subscriptions hold no abort listener: sleeping sources and listening 
 		[true, true, true, true],
 	);
 });
+
+test("a webhook subscription closed before its server listens has let its path go when close resolves (#4311)", async () => {
+	const path = "/hooks/replaced";
+	const first = openEventSubscription({ id: "webhook-replaced-1", source: webhook({ path }), handle: async () => {} });
+	await Promise.resolve();
+	await first.close();
+	const replacement = webhook({ path });
+	const second = openEventSubscription({ id: "webhook-replaced-2", source: replacement, handle: async () => {} });
+	const url = await replacement.listening();
+	assert.match(url, /\/hooks\/replaced$/);
+	await second.close();
+});
