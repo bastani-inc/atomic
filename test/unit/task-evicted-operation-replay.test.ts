@@ -3,14 +3,21 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as native from "@bastani/atomic-natives";
 import { test, vi } from "vitest";
+import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type * as C from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { FINISHED_TASK_RETENTION } from "../../packages/coding-agent/src/core/tasks/eviction-error.js";
+import {
+	FINISHED_TASK_RETENTION,
+	TaskEvictedError,
+} from "../../packages/coding-agent/src/core/tasks/eviction-error.js";
 import {
 	type TaskLease,
 	TaskSupervisor,
 	taskHostStateSizesForTesting,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { sleep } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 const CONVERGE_TIMEOUT_MS = 10_000;
 const agentIntent = { kind: "agent" as const, agent: "worker", task: "work" };
@@ -21,6 +28,11 @@ function value<T, E>(result: C.Result<T, E>): T {
 	assert.equal(result.ok, true, result.ok ? undefined : JSON.stringify(result.error));
 	if (!result.ok) throw new Error("refused");
 	return result.value;
+}
+
+/** The refusal of a door that names a task its owner evicted, carrying the {@link TaskEvictedError} message. */
+function evicted(taskId: string) {
+	return { ok: false, error: { code: "TaskEvicted", message: new TaskEvictedError({ taskId }).message } };
 }
 
 async function harness(processAdmission?: Promise<void>) {
@@ -50,7 +62,7 @@ async function harness(processAdmission?: Promise<void>) {
 	const owner = value(supervisor.openTaskOwner(host, scope));
 	const idOf = (task: TaskLease) => supervisor.taskReference(task).taskId;
 	const settle = async (task: TaskLease) => {
-		supervisor.retainTaskRecord(task);
+		value(supervisor.retainTaskRecord(task));
 		assert.equal(value(await supervisor.waitForTask(task, CONVERGE_TIMEOUT_MS)).kind, "settled");
 		return task;
 	};
@@ -59,9 +71,18 @@ async function harness(processAdmission?: Promise<void>) {
 		watch.dispose();
 		return watch.snapshot.tasks.find((item) => item.ref.taskId === idOf(task));
 	};
-	const evict = async (first: TaskLease) => {
+	/** Finishes as many tasks as the retention keeps, each held. */
+	const fill = async () => {
+		const fillers: TaskLease[] = [];
 		for (let index = 0; index < FINISHED_TASK_RETENTION; index++)
-			await settle(value(await supervisor.startAgentTask(owner, agentIntent, `fill-${index}` as C.OperationId)));
+			fillers.push(
+				await settle(value(await supervisor.startAgentTask(owner, agentIntent, `fill-${index}` as C.OperationId))),
+			);
+		return fillers;
+	};
+	/** Evicts `first` behind held fillers, which it returns. */
+	const evict = async (first: TaskLease) => {
+		const fillers = await fill();
 		const watch = value(supervisor.watchOwnerTasks(owner));
 		const deadline = Date.now() + CONVERGE_TIMEOUT_MS;
 		const finished = () =>
@@ -78,11 +99,32 @@ async function harness(processAdmission?: Promise<void>) {
 		const lookup = supervisor.lookupTask(owner, idOf(first) as C.TaskId);
 		assert.equal(lookup.ok ? undefined : lookup.error.code, "TaskEvicted", "the native supervisor evicted it");
 		assert.equal(taskHostStateSizesForTesting(owner).tasks, before, "the host has not seen the eviction");
+		return fillers;
 	};
-	return { supervisor, owner, defaults, permits, idOf, settle, record, evict };
+	/** Ends these holds, so the retention evicts these tasks before any task that finishes after them. */
+	const release = (tasks: readonly TaskLease[]) => {
+		for (const task of tasks) supervisor.releaseTaskRecord(task);
+	};
+	/**
+	 * Waits until the task finished, its result settled and its cleanup reaped, and then drains its owner twice, so the
+	 * retention may evict it before anyone holds it: on a loaded machine a fast command can finish, and its owner drain
+	 * it twice, before its launch resolves to its caller (#4472). A task its owner no longer lists was evicted already.
+	 */
+	const exposeToEviction = async (task: TaskLease) => {
+		const deadline = Date.now() + CONVERGE_TIMEOUT_MS;
+		const finished = (item = record(task)) =>
+			!item || (item.execution.kind === "settled" && item.cleanup.kind === "reaped");
+		while (!finished()) {
+			assert.ok(Date.now() < deadline, "not finished");
+			await sleep(5);
+		}
+		supervisor.failedTaskCleanups(owner);
+		supervisor.failedTaskCleanups(owner);
+	};
+	return { supervisor, owner, defaults, permits, idOf, settle, record, fill, evict, release, exposeToEviction };
 }
 
-test("a command replayed after its native eviction, before the host saw it, starts one fresh command (#4385)", async () => {
+test("a command replayed after its native eviction, before the host saw it, starts one fresh command (#4385, #4472)", async () => {
 	const h = await harness();
 	try {
 		const changed: C.CommandIntent = { ...commandIntent, description: "changed" };
@@ -90,7 +132,7 @@ test("a command replayed after its native eviction, before the host saw it, star
 		assert.equal(value(await h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED)), first);
 		const conflict = await h.supervisor.startCommandTask(h.owner, changed, REPLAYED);
 		assert.equal(conflict.ok ? undefined : conflict.error.code, "OperationConflict", "a kept task's intent holds");
-		await h.evict(first);
+		h.release(await h.evict(first));
 		h.defaults.heartbeatMs = 120_000;
 		const [replay, concurrent] = await Promise.all([
 			h.supervisor.startCommandTask(h.owner, changed, REPLAYED),
@@ -148,15 +190,17 @@ test("an agent replayed without a cadence after its native eviction carries none
 	}
 });
 
-test("a command launched under an evicted agent's operation keeps its cache and cadence when the host forgets the agent (#4385)", async () => {
+test("a command launched under an evicted agent's operation keeps its cache and cadence when the host forgets the agent (#4385, #4472)", async () => {
 	const h = await harness();
 	try {
 		const agent = await h.settle(
 			value(await h.supervisor.startAgentTask(h.owner, { ...agentIntent, heartbeatMs: 60_000 }, REPLAYED)),
 		);
-		await h.evict(agent);
+		h.release(await h.evict(agent));
 		h.defaults.heartbeatMs = 120_000;
-		const command = await h.settle(value(await h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED)));
+		const command = value(await h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED));
+		await h.exposeToEviction(command);
+		await h.settle(command);
 		h.supervisor.failedTaskCleanups(h.owner);
 		assert.equal(h.record(command)?.heartbeatMs, 120_000);
 		assert.equal(taskHostStateSizesForTesting(h.owner).commandStarts, 1, "the command's cache stays");
@@ -164,6 +208,52 @@ test("a command launched under an evicted agent's operation keeps its cache and 
 		assert.equal(value(await h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED)), command);
 	} finally {
 		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+test("a hold on a task its owner evicted after its launch resolved refuses with TaskEvicted (#4472)", async () => {
+	const h = await harness();
+	try {
+		await h.fill();
+		const late = value(await h.supervisor.startAgentTask(h.owner, agentIntent, REPLAYED));
+		await h.exposeToEviction(late);
+		assert.deepEqual(h.supervisor.retainTaskRecord(late), evicted(h.idOf(late)));
+	} finally {
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+test("a hold on a task its closing owner evicted despite an earlier hold refuses with TaskEvicted (#4472)", async () => {
+	const h = await harness();
+	try {
+		const first = await h.settle(value(await h.supervisor.startAgentTask(h.owner, agentIntent, REPLAYED)));
+		await h.fill();
+		value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+		assert.deepEqual(h.supervisor.retainTaskRecord(first), evicted(h.idOf(first)));
+	} finally {
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+test("a host's hold on a task its owner evicts after the host resolved it returns TaskEvicted (#4472)", async () => {
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: randomUUID() }, authorizeLaunch() {} });
+	const hold = vi
+		.spyOn(native.TaskSupervisor.prototype, "retainTaskRecord")
+		.mockReturnValue({ ok: false, error: { code: "TaskEvicted", message: "evicted after its lookup" } });
+	try {
+		const { taskId } = value(
+			await host.startAgentTask(agentIntent, REPLAYED, () => ({
+				result: Promise.resolve({ kind: "failed", code: "Done", message: "done" }),
+				cleanup: Promise.resolve({ kind: "reaped" }),
+			})),
+		);
+		assert.deepEqual(host.retainTaskRecord(taskId), evicted(taskId));
+		const unknown = host.retainTaskRecord("task-unknown" as C.TaskId);
+		assert.equal(unknown.ok ? undefined : unknown.error.code, "UnknownTask", "the lookup's own refusal");
+		assert.equal(hold.mock.calls.length, 1, "a task the host cannot resolve reaches no native hold");
+	} finally {
+		hold.mockRestore();
+		await host.close("session-close");
 	}
 });
 

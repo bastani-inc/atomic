@@ -1263,10 +1263,14 @@ export class TaskSupervisor {
 	}
 	/**
 	 * Keeps a task's record past the finished-task retention until {@link releaseTaskRecord}, while the host still
-	 * reads it, for example to build its completion notice (#4385). The holds of a closing owner no longer count.
+	 * reads it, for example to build its completion notice (#4385). The holds of a closing owner no longer count. A task
+	 * its owner already evicted takes no hold and refuses with `TaskEvicted`: an eviction can land between a host's
+	 * decision to hold a task and this call, from another thread's cleanup, another watcher's drain or the owner's close
+	 * (#4472).
 	 */
-	retainTaskRecord(task: TaskLease): void {
-		mapped(this.#native.retainTaskRecord(this.#task(task).native), () => undefined, []);
+	retainTaskRecord(task: TaskLease): C.Result<void, C.RetainError> {
+		const held = mapped(this.#native.retainTaskRecord(this.#task(task).native), () => undefined, ["TaskEvicted"]);
+		return explainEviction(held, this.#task(task).ref.taskId);
 	}
 	/** Ends a {@link retainTaskRecord} hold; a task its owner already evicted holds nothing. */
 	releaseTaskRecord(task: TaskLease): void {

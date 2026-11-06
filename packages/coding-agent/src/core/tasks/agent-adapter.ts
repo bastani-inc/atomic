@@ -125,11 +125,13 @@ export class AgentTaskHost {
 	}
 	/**
 	 * Keeps a finished task's record past the finished-task retention until {@link releaseTaskRecord}, while its
-	 * completion notice is still being built (#4385). A task this owner does not hold, or never had, is left alone.
+	 * completion notice is still being built (#4385). A task this owner does not hold, or never had, is left alone and
+	 * the refusal returned: a task the owner already evicted, also one it evicts while this call resolves it, refuses
+	 * with `TaskEvicted` (#4472).
 	 */
-	retainTaskRecord(taskId: C.TaskId): void {
+	retainTaskRecord(taskId: C.TaskId): C.Result<void, C.WaitError> {
 		const task = this.resolveTask(taskId);
-		if (task.ok) this.supervisor.retainTaskRecord(task.value);
+		return task.ok ? this.supervisor.retainTaskRecord(task.value) : task;
 	}
 	/** Ends a {@link retainTaskRecord} hold; a task this owner no longer keeps is left alone. */
 	releaseTaskRecord(taskId: C.TaskId): void {
