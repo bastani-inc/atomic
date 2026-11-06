@@ -3,10 +3,12 @@ import type {
 	SqliteExecutor,
 	SqliteRow,
 	SqliteStatement,
+	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
 } from "./database.js";
 import {
+	StorageConfigError,
 	StorageError,
 	type StorageFailureCause,
 	StorageInvalidTextError,
@@ -73,17 +75,32 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	redact?(text: string): string;
 	/**
 	 * Optional. Recognizes a failure a driver call threw as one that passes, from the failure's own fields, before the
-	 * facade redacts it. The call then fails with `StorageTransientError`.
+	 * facade redacts it. The call then fails with `StorageTransientError`, and a call that wrote nothing runs again.
 	 */
 	transientFailure?(failure: StorageFailureCause): SqliteDriverTransientFailure | undefined;
 }
 
-/** One run of a call: which run it is. */
-interface Attempt {
-	readonly number: number;
+/**
+ * How many times the facade runs a call that a transient failure ended before it wrote anything, the first run
+ * included. A transaction runs again only when its options allow it (`retryTransientFailures`).
+ */
+export const STORAGE_TRANSIENT_RETRY_ATTEMPTS = 5;
+/** The wait before the second run, in milliseconds; each later wait is twice as long as the one before. */
+const STORAGE_TRANSIENT_RETRY_BASE_DELAY_MS = 250;
+/** Each wait varies by up to this fraction either way, so processes that failed together do not retry together. */
+const STORAGE_TRANSIENT_RETRY_JITTER = 0.2;
+
+/** How long the facade waits after the failed run `attempt` (1-based) before it runs the call again. */
+function transientRetryDelayMs(attempt: number): number {
+	const jitter = 1 + STORAGE_TRANSIENT_RETRY_JITTER * (2 * Math.random() - 1);
+	return Math.round(STORAGE_TRANSIENT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) * jitter);
 }
 
-const FIRST_ATTEMPT: Attempt = { number: 1 };
+/** One run of a call: which run it is, and the first transient failure it met. */
+interface Attempt {
+	readonly number: number;
+	transient?: StorageTransientError;
+}
 
 /**
  * A redactor that replaces every non-empty secret, and its URI-encoded and URI-decoded forms, with `[redacted]`.
@@ -136,6 +153,19 @@ function normalizeRow(row: ArrayLike<SqliteDriverValue>, columns: readonly strin
 	return Object.fromEntries(columns.map((column, index) => [column, normalizeValue(row[index] ?? null)]));
 }
 
+/** Rejects a `retryTransientFailures` that is not a boolean, before the transaction is queued. */
+function retriesTransientFailures(options: SqliteTransactionOptions | undefined): boolean {
+	const retry = options?.retryTransientFailures;
+	if (retry !== undefined && typeof retry !== "boolean")
+		throw new StorageConfigError(
+			"sdk",
+			"retryTransientFailures",
+			"boolean-required",
+			"Pass true or false, or omit it",
+		);
+	return retry === true;
+}
+
 /** Serializes operations in call order; a failed operation does not stop the ones queued after it. */
 class CallQueue {
 	private tail: Promise<void> = Promise.resolve();
@@ -160,6 +190,9 @@ class DriverDatabase implements SqliteDatabase {
 	private readonly redact: (text: string) => string;
 	private readonly queue = new CallQueue();
 	private closePromise?: Promise<void>;
+	/** Ends the wait before a call runs again, when closing begins during it. */
+	private wakeRetry?: () => void;
+	private retryReported = false;
 	private readonly executor: SqliteExecutor;
 	readonly batch?: (statements: readonly SqliteStatement[]) => Promise<SqliteRow[][]>;
 
@@ -171,7 +204,7 @@ class DriverDatabase implements SqliteDatabase {
 			driver,
 			(operation) => {
 				if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
-				return this.queue.push(() => operation(FIRST_ATTEMPT));
+				return this.queue.push(() => this.retrying(operation, true));
 			},
 			true,
 		);
@@ -185,16 +218,57 @@ class DriverDatabase implements SqliteDatabase {
 	): Promise<SqliteRow[][]> {
 		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 		const bound = statements.map((statement) => ({ sql: statement.sql, params: snapshotParams(statement.params) }));
-		return this.queue.push(async () => {
-			for (const statement of bound) {
-				const invalidIndex = statement.params.findIndex(
-					(value) => typeof value === "string" && value.includes("\0"),
-				);
-				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
+		return this.queue.push(() =>
+			this.retrying(async (attempt) => {
+				for (const statement of bound) {
+					const invalidIndex = statement.params.findIndex(
+						(value) => typeof value === "string" && value.includes("\0"),
+					);
+					if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
+				}
+				const results = await this.call(() => batch(bound), attempt, true);
+				return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
+			}, true),
+		);
+	}
+
+	/**
+	 * Runs `operation` again while a transient failure ended its run before it wrote anything, waiting longer before
+	 * each run, and only when `replay` allows it. Gives up with the last run's failure after
+	 * `STORAGE_TRANSIENT_RETRY_ATTEMPTS` runs, or once closing begins.
+	 */
+	private async retrying<T>(operation: (attempt: Attempt) => Promise<T>, replay: boolean): Promise<T> {
+		for (let number = 1; ; number++) {
+			const attempt: Attempt = { number };
+			try {
+				return await operation(attempt);
+			} catch (failure) {
+				const transient = attempt.transient;
+				if (!replay || transient?.outcome !== "not-applied" || !(await this.backoff(transient))) throw failure;
 			}
-			const results = await this.call(() => batch(bound), FIRST_ATTEMPT, true);
-			return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
+		}
+	}
+
+	/**
+	 * Waits before the run after `failure`'s, and says whether to run again: not after the last run, nor once closing
+	 * begins, which also ends a wait under way. The first transient failure that makes the database run a call again is
+	 * emitted as a process warning.
+	 */
+	private async backoff(failure: StorageTransientError): Promise<boolean> {
+		if (failure.attempts >= STORAGE_TRANSIENT_RETRY_ATTEMPTS || this.closePromise) return false;
+		if (!this.retryReported) {
+			this.retryReported = true;
+			process.emitWarning(failure);
+		}
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, transientRetryDelayMs(failure.attempts));
+			this.wakeRetry = () => {
+				clearTimeout(timer);
+				resolve();
+			};
 		});
+		this.wakeRetry = undefined;
+		return this.closePromise === undefined;
 	}
 
 	/**
@@ -209,8 +283,8 @@ class DriverDatabase implements SqliteDatabase {
 			const safe = redactCause(cause as StorageFailureCause, this.redact);
 			if (attempt !== undefined) {
 				const transient = this.driver.transientFailure?.(cause as StorageFailureCause);
-				if (transient !== undefined)
-					throw new StorageTransientError(
+				if (transient !== undefined) {
+					const failure = new StorageTransientError(
 						this.descriptor,
 						{
 							code: transient.code,
@@ -219,6 +293,9 @@ class DriverDatabase implements SqliteDatabase {
 						},
 						safe,
 					);
+					attempt.transient ??= failure;
+					throw failure;
+				}
 			}
 			throw new StorageUnavailableError(this.descriptor, safe);
 		}
@@ -268,9 +345,18 @@ class DriverDatabase implements SqliteDatabase {
 		return this.executor.all<T>(sql, ...params);
 	}
 
-	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
+	transaction<T>(
+		callback: (transaction: SqliteExecutor) => Promise<T>,
+		options?: SqliteTransactionOptions,
+	): Promise<T> {
 		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
-		return this.queue.push(() => this.runTransaction(callback, FIRST_ATTEMPT));
+		let replay: boolean;
+		try {
+			replay = retriesTransientFailures(options);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		return this.queue.push(() => this.retrying((attempt) => this.runTransaction(callback, attempt), replay));
 	}
 
 	private async runTransaction<T>(
@@ -307,12 +393,15 @@ class DriverDatabase implements SqliteDatabase {
 			await close().catch(() => {});
 			throw failure;
 		}
+		// A committed transaction never runs again, whatever failed in it before the commit.
+		attempt.transient = undefined;
 		await close();
 		return result;
 	}
 
 	close(): Promise<void> {
 		this.closePromise ??= this.queue.drained().then(() => this.call(() => this.driver.close()));
+		this.wakeRetry?.();
 		return this.closePromise;
 	}
 }
@@ -322,8 +411,10 @@ class DriverDatabase implements SqliteDatabase {
  * outside active transactions, snapshots binary parameters at call time, rejects NUL text, returns safe-range integers
  * as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, maps driver
  * failures to `StorageUnavailableError` with credentials redacted, and reports failed rollbacks with
- * `StorageRollbackError`. A failure the driver recognizes as transient is a `StorageTransientError`. Closing rejects
- * new calls, drains accepted work, then closes the driver once.
+ * `StorageRollbackError`. A failure the driver recognizes as transient is a `StorageTransientError`; a statement, a
+ * batch, or a transaction whose options allow it runs again, up to `STORAGE_TRANSIENT_RETRY_ATTEMPTS` times in all,
+ * while such a failure ended it before it wrote anything. Closing rejects new calls, stops those retries, drains
+ * accepted work, then closes the driver once.
  */
 export function createSqliteDatabase(driver: SqliteDriver): SqliteDatabase {
 	return new DriverDatabase(driver, driver.redact?.bind(driver) ?? ((text) => text));

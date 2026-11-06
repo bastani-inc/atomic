@@ -1,6 +1,6 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
@@ -63,6 +63,11 @@ const LISTING_COLUMNS =
 export const LISTING_FETCH_BATCH = 500;
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
 const LISTING_SCOPES = 8;
+/**
+ * Session reads and writes use nothing but their transaction, so one that a transient failure of a database server
+ * ended before it committed runs again (#4383); `append` and `replace` check `expectSeq` again on each run.
+ */
+const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
 
 function summaryFromRow(row: SummaryRow): SessionSummary {
 	const header = JSON.parse(row.header_json) as SessionRecordHeader;
@@ -181,7 +186,7 @@ export class SqlSessionStore implements SessionStore {
 			const texts = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, header.id, entries, 0, texts);
 			return { lastSeq: entries.length };
-		});
+		}, SESSION_TRANSACTION);
 	}
 
 	async append(
@@ -203,7 +208,7 @@ export class SqlSessionStore implements SessionStore {
 			);
 			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
 			return { lastSeq };
-		});
+		}, SESSION_TRANSACTION);
 	}
 
 	async replace(
@@ -224,13 +229,13 @@ export class SqlSessionStore implements SessionStore {
 			const texts = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, sessionId, entries, 0, texts);
 			return { lastSeq: entries.length };
-		});
+		}, SESSION_TRANSACTION);
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.database.transaction((tx) => this.read(tx, sessionId));
+		return this.database.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
@@ -250,7 +255,7 @@ export class SqlSessionStore implements SessionStore {
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
-		});
+		}, SESSION_TRANSACTION);
 	}
 
 	/**

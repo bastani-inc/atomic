@@ -25,6 +25,17 @@ export const JOURNAL_READ_PAGE_SIZE = 256;
  */
 export const JOURNAL_TRANSACTION: SqliteTransactionOptions = { lockWaitMs: 10 * 60_000 };
 
+/**
+ * A run journal's own write transaction: it waits for the write lock as {@link JOURNAL_TRANSACTION} does, and runs
+ * again when a transient failure of a database server ended it before it committed, such as a libSQL server expiring
+ * the stream of a process stopped mid-transaction (#4383). Its bodies use nothing but the transaction handle, a run
+ * that ended this way wrote nothing to duplicate, and each run checks the lease again before it writes.
+ */
+export const JOURNAL_WRITE_TRANSACTION: SqliteTransactionOptions = {
+	...JOURNAL_TRANSACTION,
+	retryTransientFailures: true,
+};
+
 /** Event types the durable backend folds without replacing the run's handle; every other event carries it. */
 export const NON_SNAPSHOT_EVENT_TYPES = [
 	RUN_EVENT_TYPES.checkpointRecorded,

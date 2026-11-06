@@ -331,7 +331,7 @@ export type StorageTransientOutcome = "not-applied" | "unknown";
 export interface StorageTransientErrorDetails {
 	readonly code: StorageTransientErrorCode;
 	readonly outcome: StorageTransientOutcome;
-	/** Which run of the call failed, counting from 1. */
+	/** Which run of the call failed, counting from 1: a call that applied nothing runs again, up to a limit. */
 	readonly attempts: number;
 }
 
@@ -345,7 +345,8 @@ const TRANSIENT_HINTS: Readonly<Record<StorageTransientOutcome, string>> = {
 /**
  * A call to a database server failed for a reason that passes: the server ended an idle stream or a transaction that
  * kept the write lock, or the connection could not be made or broke. `outcome` says whether the call may have written
- * anything. It is a `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix.
+ * anything. A database from `createSqliteDatabase` runs a call that wrote nothing again before it fails with this
+ * error. It is a `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix.
  */
 export class StorageTransientError extends StorageUnavailableError {
 	override readonly name = "StorageTransientError" as const;
