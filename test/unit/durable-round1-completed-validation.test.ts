@@ -8,6 +8,9 @@ import {
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 async function seedCompletedBoundary(
 	backend: InMemoryDurableBackend,

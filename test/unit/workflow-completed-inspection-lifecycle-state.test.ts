@@ -9,10 +9,13 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	createMemoryTestBackend,
 	type MemoryJournalBackend as InMemoryDurableBackend,
 } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 interface Admission {
 	readonly content?: string;

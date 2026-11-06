@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
+import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { type SessionInfo, SessionManager } from "../src/core/session-manager.js";
+
+useTemporaryAgentDir();
 
 test("publishes sorted partial sessions without leaking hidden sessions or other directories", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-progressive-"));

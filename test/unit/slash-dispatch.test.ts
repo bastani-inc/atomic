@@ -18,3 +18,6 @@ import "./slash-dispatch-tool-continuation-blocked.js";
 import "./slash-dispatch-tool-finalize.js";
 import "./slash-dispatch-headless-basic.js";
 import "./slash-dispatch-headless-control.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();

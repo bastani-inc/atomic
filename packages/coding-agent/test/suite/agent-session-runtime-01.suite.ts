@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -20,6 +21,8 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../../src/index.ts";
+
+useTemporaryAgentDir();
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent

@@ -12,7 +12,10 @@ import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/w
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createStore, test as exTest, run, Type, workflow } from "./executor-shared.js";
+
+useTemporaryAgentDir();
 
 function isStageCheckpoint(checkpoint: DurableCheckpoint): checkpoint is DurableStageCheckpoint {
 	return checkpoint.kind === "stage";

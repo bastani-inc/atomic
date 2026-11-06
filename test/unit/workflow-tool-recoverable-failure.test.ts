@@ -13,7 +13,10 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowToolFailure } from "../../packages/workflows/src/shared/types.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+
+useTemporaryAgentDir();
 
 describe("ctx.tool recoverable failures", () => {
 	test("returns a typed failure after retries while the workflow continues", async () => {
