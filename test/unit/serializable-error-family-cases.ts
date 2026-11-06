@@ -37,7 +37,7 @@ import {
 	serializeDecisionError,
 	serializeFileToolError,
 	serializeGitHubCopilotError,
-	serializeIntercomBrokerSuccessorTimeoutError,
+	serializeIntercomBrokerError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
 	serializeWorkspaceError,
@@ -325,7 +325,7 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		facts: ownFacts(toJSON),
 	},
 	{
-		family: "intercom-broker-successor",
+		family: "intercom-broker",
 		make: () =>
 			new IntercomBrokerSuccessorTimeoutError(
 				{ timeoutMs: 10_000, elapsedMs: 10_500, attempts: 14 },
@@ -333,7 +333,7 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 			),
 		type: IntercomBrokerSuccessorTimeoutError,
 		guard: isIntercomBrokerSuccessorTimeoutError,
-		facts: ownFacts(serializeIntercomBrokerSuccessorTimeoutError),
+		facts: ownFacts(serializeIntercomBrokerError),
 	},
 ];
 

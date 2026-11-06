@@ -72,7 +72,7 @@ A broker retires after five seconds without sessions, or when it is restarted or
 | --- | --- | --- | --- | --- |
 | `IntercomBrokerSuccessorTimeoutError` | `broker-successor-timeout` | A broker retired while a workflow run's route connection registered with it, and no replacement broker accepted the registration within 10 seconds. | `phase` (`"registration"`), `timeoutMs`, `elapsedMs`, `attempts`, `hint`, `retryable: true`; `cause` is the last attempt's failure | Run `atomic intercom restart` to replace the broker, then resume the run. |
 
-It is exported from `@bastani/atomic` with `isIntercomBrokerSuccessorTimeoutError()`, `serializeIntercomBrokerSuccessorTimeoutError()` and `rehydrateIntercomBrokerSuccessorTimeoutError()`.
+It belongs to the `IntercomBrokerError` family. Both classes are exported from `@bastani/atomic` with `isIntercomBrokerError()`, `isIntercomBrokerSuccessorTimeoutError()`, `isRetryableIntercomBrokerError()`, `serializeIntercomBrokerError()` and `rehydrateIntercomBrokerError()`. A member of the family that this version does not know arrives from another process as `IntercomBrokerError`, with its own `name` and `code`.
 
 ## How It Works
 

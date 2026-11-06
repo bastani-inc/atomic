@@ -9,7 +9,7 @@ import {
 	EditToolError,
 	GitHubCopilotError,
 	GitProvisionError,
-	IntercomBrokerSuccessorTimeoutError,
+	IntercomBrokerError,
 	isGitProvisionError,
 	isSerializedBackgroundCompactionError,
 	LlamaServerError,
@@ -20,7 +20,7 @@ import {
 	rehydrateDecisionError,
 	rehydrateEditToolError,
 	rehydrateGitProvisionError,
-	rehydrateIntercomBrokerSuccessorTimeoutError,
+	rehydrateIntercomBrokerError,
 	rehydrateLlamaServerError,
 	rehydrateSessionStartError,
 	rehydrateShellToolError,
@@ -36,7 +36,7 @@ import {
 	type SerializedFileToolError,
 	type SerializedGitHubCopilotError,
 	type SerializedGitProvisionError,
-	type SerializedIntercomBrokerSuccessorTimeoutError,
+	type SerializedIntercomBrokerError,
 	type SerializedSessionStartError,
 	type SerializedSubscriptionError,
 	type SerializedTaskToolError,
@@ -53,7 +53,7 @@ import {
 	serializeDecisionError,
 	serializeFileToolError,
 	serializeGitHubCopilotError,
-	serializeIntercomBrokerSuccessorTimeoutError,
+	serializeIntercomBrokerError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
 	serializeWorkspaceError,
@@ -271,13 +271,10 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		serialize: (error) => error.toJSON(),
 		rehydrate: rehydrateTaskToolError,
 	}),
-	"intercom-broker-successor": family<
-		IntercomBrokerSuccessorTimeoutError,
-		SerializedIntercomBrokerSuccessorTimeoutError
-	>({
-		is: instanceOf(IntercomBrokerSuccessorTimeoutError),
-		serialize: serializeIntercomBrokerSuccessorTimeoutError,
-		rehydrate: rehydrateIntercomBrokerSuccessorTimeoutError,
+	"intercom-broker": family<IntercomBrokerError, SerializedIntercomBrokerError>({
+		is: instanceOf(IntercomBrokerError),
+		serialize: serializeIntercomBrokerError,
+		rehydrate: rehydrateIntercomBrokerError,
 	}),
 } as const satisfies Readonly<Record<string, SerializableErrorFamily>>;
 
