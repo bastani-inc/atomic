@@ -266,25 +266,90 @@ fn watchers_keep_finished_tasks_until_they_processed_them_4385() {
 	);
 }
 
+/// Retained tasks a drain leaves a watcher with that held `before` of them: a reset's snapshot, or its evictions.
+fn retained_after(drained: SubscriptionDrain, before: usize) -> usize {
+	match drained.snapshot {
+		Some(snapshot) => snapshot.tasks.len(),
+		None => {
+			before
+				- drained
+					.events
+					.iter()
+					.filter(|event| matches!(event.payload, TaskEvent::TaskEvicted { .. }))
+					.count()
+		},
+	}
+}
+
 #[test]
-fn a_closed_owner_delivers_its_final_retained_set_before_watchers_stop_4385() {
+fn a_closed_owner_keeps_every_settlement_until_its_host_trims_it_4385() {
 	let (a, o) = owner();
 	let (lease, _) = a.watch(&o, None).unwrap();
+	let (lagging, _) = a.watch(&o, None).unwrap();
 	let queued: Vec<_> = (0..FINISHED_TASK_RETENTION * 2)
 		.map(|index| a.start(&o, intent(), format!("op-{index}").into()).unwrap())
 		.collect();
 	a.begin_close(&o).unwrap();
 	let receipt = a.close_receipt(&o).unwrap().expect("unclaimed tasks reap at once");
-	assert_eq!(receipt.tasks.len(), FINISHED_TASK_RETENTION);
+	assert_eq!(receipt.tasks.len(), queued.len(), "the close keeps every settlement it made");
 	let delivered = a.drain(&lease).unwrap();
 	assert!(delivered.reset, "the large close recovers through a final snapshot");
 	let snapshot = delivered.snapshot.unwrap();
 	assert_eq!(snapshot.state, "closed");
-	assert_eq!(snapshot.tasks.len(), FINISHED_TASK_RETENTION);
-	assert_eq!(snapshot.tasks[0].reference, a.task_ref(&queued[FINISHED_TASK_RETENTION]).unwrap());
+	assert_eq!(snapshot.tasks.len(), queued.len(), "the watcher sees every settled task");
+	assert_eq!(retained_after(a.drain(&lease).unwrap(), queued.len()), queued.len());
+	assert_eq!(
+		retained_ids(&a, &o).len(),
+		queued.len(),
+		"the lagging watcher has not drained the close"
+	);
+	a.trim_closed(&o).unwrap();
+	assert_eq!(
+		retained_ids(&a, &o).len(),
+		FINISHED_TASK_RETENTION,
+		"the host's trim waits for no watcher"
+	);
+	assert_eq!(
+		retained_after(a.drain(&lease).unwrap(), queued.len()),
+		FINISHED_TASK_RETENTION,
+		"the watcher receives the trim before it stops"
+	);
+	assert!(
+		queued[..FINISHED_TASK_RETENTION].iter().all(|task| a.task_ref(task).is_err()),
+		"the oldest finished tasks were evicted"
+	);
+	a.dispose_subscription(&lease);
+	a.dispose_subscription(&lagging);
+	assert_eq!(a.close_receipt(&o).unwrap().unwrap().tasks.len(), FINISHED_TASK_RETENTION);
+}
+
+#[test]
+fn a_closed_owner_trims_once_its_watchers_are_gone_4385() {
+	let (a, o) = owner();
+	let (lease, _) = a.watch(&o, None).unwrap();
+	for index in 0..FINISHED_TASK_RETENTION * 2 {
+		a.start(&o, intent(), format!("op-{index}").into()).unwrap();
+	}
+	a.begin_close(&o).unwrap();
+	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION * 2);
 	a.dispose_subscription(&lease);
 	assert_eq!(retained_ids(&a, &o).len(), FINISHED_TASK_RETENTION);
-	assert_eq!(a.close_receipt(&o).unwrap().unwrap().tasks.len(), FINISHED_TASK_RETENTION);
+}
+
+#[test]
+fn trimming_an_owner_that_is_not_closed_keeps_its_records_4385() {
+	let (a, o) = owner();
+	let (lease, _) = a.watch(&o, None).unwrap();
+	for index in 0..FINISHED_TASK_RETENTION + 4 {
+		finished(&a, &o, &format!("op-{index}"));
+	}
+	a.trim_closed(&o).unwrap();
+	assert_eq!(
+		retained_ids(&a, &o).len(),
+		FINISHED_TASK_RETENTION + 4,
+		"an open owner waits for its watcher"
+	);
+	a.dispose_subscription(&lease);
 }
 
 #[test]

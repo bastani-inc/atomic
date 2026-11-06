@@ -48,6 +48,8 @@ pub(super) struct Owner {
 	pub scope: OwnerScope,
 	pub state: String,
 	pub tasks: OwnerTasks,
+	/// The closed owner's host drained every settlement of its close and asked for its records to be trimmed (#4385).
+	pub settlements_drained: bool,
 }
 impl Actor {
 	pub(super) fn bind(&self, scope: OwnerScope) -> HostSession {
@@ -80,6 +82,7 @@ impl Actor {
 			scope,
 			state: "open".into(),
 			tasks: OwnerTasks::default(),
+			settlements_drained: false,
 		});
 		Ok(OwnerLease { cap })
 	}

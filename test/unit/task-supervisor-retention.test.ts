@@ -241,6 +241,28 @@ test("a burst of finishes beyond the retention still delivers every completion b
 	}
 });
 
+test("closing an owner tells its host of every task the close settled before trimming to the retention (#4385)", async () => {
+	const h = await harness({ dispatch: false });
+	const total = FINISHED_TASK_RETENTION * 2;
+	const tasks: TaskLease[] = [];
+	for (let index = 0; index < total; index++) tasks.push(await h.start(`closing-${index}`));
+	const ids = tasks.map((task) => idOf(h, task));
+	try {
+		value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+		assert.equal(h.notices.length, total, "one notice per task the close cancelled");
+		assert.deepEqual(new Set(h.notices), new Set(ids));
+		assert.equal(h.store.snapshot?.state, "closed");
+		assert.deepEqual(
+			h.store.tasks.map((task) => task.ref.taskId),
+			ids.slice(-FINISHED_TASK_RETENTION),
+			"/tasks keeps the newest finished tasks of the closed owner",
+		);
+		assert.equal(refusal(h.supervisor.lookupTask(h.owner, ids[0] as C.TaskId)).code, "TaskEvicted");
+	} finally {
+		await h.close();
+	}
+});
+
 test("/tasks drops an evicted row as its eviction arrives and keeps the newest finished tasks (#4385)", async () => {
 	const h = await harness({ dispatch: true });
 	try {

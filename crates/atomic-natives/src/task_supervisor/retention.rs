@@ -77,8 +77,9 @@ impl State {
 		}
 	}
 	/// The latest sequence every live watcher of the owner has processed: what it drained before its latest drain.
+	/// A closed owner counts as processed once its host drained the close's settlements and asked for the trim.
 	fn observed_through(&self, oi: usize) -> u64 {
-		if self.owners[oi].state == "closed" {
+		if self.owners[oi].state == "closed" && self.owners[oi].settlements_drained {
 			return u64::MAX;
 		}
 		self
@@ -149,6 +150,23 @@ impl Actor {
 		}
 		let (oi, ti) = s.known_task(self.id, &task.cap)?;
 		s.owners[oi].tasks[ti].held = false;
+		let evicted = s.retire(oi);
+		drop(s);
+		drop(evicted);
+		Ok(())
+	}
+	/// Trims a closed owner's finished records to the retention once its host has drained every settlement the close
+	/// made, without waiting for its other watchers. An owner that is not closed is left alone.
+	pub(super) fn trim_closed(&self, owner: &OwnerLease) -> Door<()> {
+		let mut s = self.state.lock().unwrap();
+		if s.closing {
+			return Err(fail("EnvironmentClosing"));
+		}
+		let oi = s.owner(self.id, &owner.cap, "EnvironmentClosing")?;
+		if s.owners[oi].state != "closed" {
+			return Ok(());
+		}
+		s.owners[oi].settlements_drained = true;
 		let evicted = s.retire(oi);
 		drop(s);
 		drop(evicted);

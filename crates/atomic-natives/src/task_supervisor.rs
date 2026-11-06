@@ -462,6 +462,13 @@ impl NapiTaskSupervisor {
 	) -> DoorValue<CancelReceipt> {
 		DoorValue(self.check(&env, "UnknownTask").and_then(|()| self.actor.cancel(task, cause)))
 	}
+	/// Trims a closed owner's finished records to the 256-task retention once its host has drained every settlement
+	/// the close made, without waiting for its other watchers. Until then a closed owner keeps every settlement its
+	/// watchers have not processed. An owner that is not closed is left alone.
+	#[napi(ts_return_type = "{ok:true,value:undefined}|{ok:false,error:TaskFailure}")]
+	pub fn trim_closed_task_owner(&self, env: Env, owner: &OwnerLease) -> DoorValue<()> {
+		DoorValue(self.check(&env, "EnvironmentClosing").and_then(|()| self.actor.trim_closed(owner)))
+	}
 	/// Seals synchronously, then awaits independent runner cleanup acknowledgements.
 	#[napi(
 		ts_return_type = "Promise<{ok:true,value:OwnerCloseReceipt}|{ok:false,error:TaskFailure}>"

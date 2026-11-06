@@ -11,7 +11,7 @@ import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cle
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
-import { TaskEvictedError } from "./eviction-error.js";
+import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
 	readonly completionSource?: TaskCompletionSource;
@@ -561,6 +561,10 @@ export function quarantinedCleanups(
 		...projection.tasks.map((task) => ({ ref: task.ref, cleanup: task.cleanup })),
 	].flatMap(({ ref, cleanup }) => (cleanup.kind === "quarantined" ? [{ ref, resources: cleanup.resources }] : []));
 }
+/** Finished records a projection holds, as the native retention counts them: settled, with cleanup reaped. */
+function finishedRecords(projection: C.OwnerSnapshot): number {
+	return projection.tasks.filter((task) => task.execution.kind === "settled" && task.cleanup.kind === "reaped").length;
+}
 /** One bounded wake poll per live subscription, including a journal with no retained event. */
 const RECONCILE_INTERVAL_MS = 25;
 const MAX_PENDING_EVENTS = 64;
@@ -676,7 +680,10 @@ export class TaskSubscription {
 					next({ done: false, value });
 				} else this.#queue.push(value);
 			}
-		if (this.#snapshot.state === "closed") this.dispose(false);
+		// A closed owner may still keep settlements beyond the retention until its host trims it: stop once the
+		// trimmed set has arrived (#4385).
+		if (this.#snapshot.state === "closed" && finishedRecords(this.#snapshot) <= FINISHED_TASK_RETENTION)
+			this.dispose(false);
 	}
 	dispose(clear = true): void {
 		if (this.#disposed) return;
@@ -1381,15 +1388,21 @@ export class TaskSupervisor {
 			["CleanupFailed", "EnvironmentClosing"],
 		);
 		if (result.ok)
-			for (const task of state.tasks.values()) {
-				const completed = await this.#task(task).execution;
-				if (completed && !completed.ok)
-					throw new Error(`Runner protocol failed: ${completed.error.code}: ${completed.error.message}`);
-			}
-		if (result.ok)
-			for (const watch of state.watches) {
-				watch.drain();
-				watch.dispose(false);
+			try {
+				for (const task of state.tasks.values()) {
+					const completed = await this.#task(task).execution;
+					if (completed && !completed.ok)
+						throw new Error(`Runner protocol failed: ${completed.error.code}: ${completed.error.message}`);
+				}
+			} finally {
+				// The host hears of every task the close settled before the closed owner's finished records are trimmed
+				// to the retention, and every watcher receives the trimmed set before it stops (#4385).
+				for (const watch of [...state.watches]) watch.drain();
+				mapped(this.#native.trimClosedTaskOwner(state.native), () => undefined, []);
+				for (const watch of [...state.watches]) {
+					watch.drain();
+					watch.dispose(false);
+				}
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);

@@ -89,6 +89,12 @@ export declare class TaskSupervisor {
   yieldTaskWait(wait: WaitLease, reason: YieldReason): {ok:true,value:WaitOutcome}|{ok:false,error:TaskFailure}
   disposeTaskWait(wait: WaitLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   cancelTask(task: TaskLease, cause: CancelCause): {ok:true,value:CancelReceipt}|{ok:false,error:TaskFailure}
+  /**
+   * Trims a closed owner's finished records to the 256-task retention once its host has drained every settlement
+   * the close made, without waiting for its other watchers. Until then a closed owner keeps every settlement its
+   * watchers have not processed. An owner that is not closed is left alone.
+   */
+  trimClosedTaskOwner(owner: OwnerLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   /** Seals synchronously, then awaits independent runner cleanup acknowledgements. */
   closeTaskOwner(owner: OwnerLease, cause: OwnerCloseCause): Promise<{ok:true,value:OwnerCloseReceipt}|{ok:false,error:TaskFailure}>
   /**
