@@ -241,6 +241,10 @@ interface MirroredReservation {
 	lease: RestoringReservationLease;
 	readonly capability?: string;
 	wake: boolean;
+	/** The session ids the owner reserved for the child besides its name: the sessions it registered as. */
+	readonly aliases: readonly string[];
+	/** This broker told the owner to wake the child while this reservation stands (#4401). */
+	woken?: true;
 }
 
 /** How a mirrored reservation differs from a plain restoring one. */
@@ -569,7 +573,7 @@ export class MultiNodeRouter {
 		const owner = this.host.sessions.get(ownerSessionId);
 		const wake = options.wake === true;
 		this.serial(`reservation:${reservationKey}`, async () => {
-			const wasWakeable = this.mirrored.get(reservationKey)?.wake === true;
+			const previous = this.mirrored.get(reservationKey);
 			const reserved = await this.state.reservations.reserve({
 				reservationKey,
 				ownerSessionId,
@@ -595,15 +599,49 @@ export class MultiNodeRouter {
 				await this.wakeHeldOrigins(reservationKey);
 				return;
 			}
+			const woken =
+				wake && previous?.woken === true && previous.lease.fencingToken === reserved.lease.fencingToken;
 			this.mirrored.set(reservationKey, {
 				lease: reserved.lease,
 				wake,
+				aliases,
+				...(woken ? { woken } : {}),
 				...(isReleasedReservationKey(capability) ? {} : { capability }),
 			});
-			if (!wake || wasWakeable) return;
-			const listed = await this.state.heldSends.list(reservationKey);
-			if (listed.status === "listed" && listed.sends.length > 0) await this.requestWake(reservationKey, this.brokerId);
+			await this.wakeWaitingChild(reservationKey);
 		});
+	}
+
+	/**
+	 * #4401: ask the owner to wake a released child it reserved here while sends wait for it, once per reservation.
+	 * Derived from the shared state on every reserve and backup poll, so a broker that restarted, or a new owner
+	 * process that reserves the child again, replays a wake a crash lost.
+	 */
+	private async wakeWaitingChild(reservationKey: string): Promise<void> {
+		const mirror = this.mirrored.get(reservationKey);
+		if (mirror?.wake !== true || mirror.woken === true) return;
+		if (await this.sendsWaitFor(reservationKey, mirror.aliases)) await this.requestWake(reservationKey, this.brokerId);
+	}
+
+	/**
+	 * Sends held for the reservation, or queued in the shared outbox for a session the child registered as while no
+	 * broker hosts that session. A session is matched only by the exact ids its owner reserved, never by name.
+	 */
+	private async sendsWaitFor(reservationKey: string, aliases: readonly string[]): Promise<boolean> {
+		const held = await this.state.heldSends.list(reservationKey);
+		if (held.status === "listed" && held.sends.length > 0) return true;
+		for (const alias of aliases) {
+			const known = await this.state.knownSessions.lookup(alias, KNOWN_SESSION_RETENTION_MS);
+			if (known.status !== "found") continue;
+			for (const session of known.sessions) {
+				if (session.intercomSessionId !== alias && session.atomicSessionId !== alias) continue;
+				const presence = await this.state.leases.read({ kind: "presence", targetIdentity: session.targetIdentity });
+				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
+				const queued = await this.state.outbox.listUndelivered(session.targetIdentity);
+				if (queued.status === "listed" && queued.rows.length > 0) return true;
+			}
+		}
+		return false;
 	}
 
 	/** Ask the broker that owns a released child's reservation to wake it; this broker when it is the owner. */
@@ -621,12 +659,13 @@ export class MultiNodeRouter {
 		for (const request of taken.requests) {
 			const owner = this.host.sessions.get(request.ownerSessionId);
 			if (owner === undefined) continue;
-			const capability = this.mirrored.get(request.reservationKey)?.capability;
+			const mirror = this.mirrored.get(request.reservationKey);
 			this.host.write(owner.socket, {
 				type: "restoring_recipient_wake",
 				childName: request.childName,
-				...(capability === undefined ? {} : { capability }),
+				...(mirror?.capability === undefined ? {} : { capability: mirror.capability }),
 			});
+			if (mirror !== undefined) mirror.woken = true;
 		}
 	}
 
@@ -1654,6 +1693,9 @@ export class MultiNodeRouter {
 		this.scanAll();
 		await this.checkOutcomes();
 		await this.checkHolds();
+		for (const reservationKey of this.mirrored.keys()) {
+			this.serial(`reservation:${reservationKey}`, () => this.wakeWaitingChild(reservationKey));
+		}
 		await this.state.outbox.prune(DELIVERED_MESSAGE_TTL_MS);
 		await this.state.sentMessages.prune(DELIVERED_MESSAGE_TTL_MS);
 		await this.state.reservations.prune(DELIVERED_MESSAGE_TTL_MS);
