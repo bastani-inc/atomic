@@ -1,15 +1,27 @@
 /**
  * Main-thread lag measurement and bounds for the local-worker pool load gate (test/helpers/pool-load-gate.ts).
  */
+import assert from "node:assert/strict";
 import { type Histogram, monitorEventLoopDelay } from "node:perf_hooks";
 
 /**
  * Main-thread lag bounds, asserted separately over each window the gate measures: worker startup (pool start until
- * every worker is active), the sustained traffic window, the heartbeat-only window and run completion. The max bound
- * fails a single stall; the p99 bound fails lag that is common rather than one or two ticks (see LAG_TAIL_SAMPLES).
+ * every worker is active), the sustained traffic window, the heartbeat-only window and run completion. The p99 bound
+ * fails lag that is common rather than one or two ticks (see LAG_TAIL_SAMPLES). The limit fails stalls that repeat:
+ * more than LAG_TICKS_OVER_LIMIT_ALLOWED ticks at or over it. The ceiling fails a single stall long enough to be a
+ * freeze on its own.
  */
 export const MAIN_THREAD_LAG_P99_BOUND_MS = 100;
-export const MAIN_THREAD_LAG_MAX_BOUND_MS = 250;
+export const MAIN_THREAD_LAG_LIMIT_MS = 250;
+/**
+ * One tick per window may reach MAIN_THREAD_LAG_LIMIT_MS. While 150 workers start, a loaded runner keeps the root
+ * waiting for a core: in instrumented startup windows, every stall of 200 ms or more (up to 395 ms) spent 64–87% of
+ * its time in the run queue and at most 87 ms running, with no blocking I/O and no full garbage collection. One such
+ * stall can cross the limit (#4417: 322 ms, with p99 at 4.4 ms); stalls that repeat cross it more than once.
+ */
+export const LAG_TICKS_OVER_LIMIT_ALLOWED = 1;
+/** No tick may reach this, however few do: a second without a turn of the event loop is unresponsive on its own. */
+export const MAIN_THREAD_LAG_CEILING_MS = 1_000;
 /** Event-loop delay sampling resolution; reported lag excludes this interval. */
 export const LAG_RESOLUTION_MS = 5;
 /**
@@ -32,6 +44,27 @@ export interface LagWindow {
 	readonly tailPercentile: number;
 	/** Lag at `tailPercentile`. */
 	readonly tailMs: number;
+	/** Ticks whose lag reached MAIN_THREAD_LAG_LIMIT_MS. */
+	readonly ticksOverLimit: number;
+}
+
+/** The delay `monitorEventLoopDelay` records for a tick with this much lag, in nanoseconds. */
+const recordedDelay = (lagMs: number) => (lagMs + LAG_RESOLUTION_MS) * 1e6;
+
+/** The `rank`-th smallest recorded delay, 1-based: HdrHistogram rounds `percentile / 100 * count` to the rank. */
+const delayAtRank = (histogram: Histogram, rank: number) => histogram.percentile((100 * rank) / histogram.count);
+
+/** How many recorded delays reach `delay`, found by bisecting ranks rather than reading every tick. */
+function ticksReaching(histogram: Histogram, delay: number): number {
+	if (!(histogram.max >= delay)) return 0;
+	let first = 1;
+	let last = histogram.count;
+	while (first < last) {
+		const middle = Math.floor((first + last) / 2);
+		if (delayAtRank(histogram, middle) >= delay) last = middle;
+		else first = middle + 1;
+	}
+	return histogram.count - first + 1;
 }
 
 /** Lag of a window from its event-loop delay histogram, in milliseconds, without the sampling interval. */
@@ -47,6 +80,7 @@ export function summarizeLag(histogram: Histogram, durationMs: number): LagWindo
 		maxMs: lag(histogram.max),
 		tailPercentile,
 		tailMs: lag(histogram.percentile(tailPercentile)),
+		ticksOverLimit: ticksReaching(histogram, recordedDelay(MAIN_THREAD_LAG_LIMIT_MS)),
 	};
 }
 
@@ -60,14 +94,65 @@ export function measureLag(): () => LagWindow {
 	};
 }
 
-/** Why a window breaks the lag bounds, or undefined when it holds them. */
-export function lagViolation(name: string, window: LagWindow): string | undefined {
-	const context = `${window.samples} ticks over ${window.durationMs} ms`;
+/** The bound a window breaks, with the measurement that breaks it. */
+export type LagViolation =
+	| {
+			readonly kind: "tail";
+			readonly percentile: number;
+			readonly lagMs: number;
+			readonly boundMs: typeof MAIN_THREAD_LAG_P99_BOUND_MS;
+	  }
+	| {
+			readonly kind: "ticks-over-limit";
+			readonly ticks: number;
+			readonly allowed: typeof LAG_TICKS_OVER_LIMIT_ALLOWED;
+			readonly limitMs: typeof MAIN_THREAD_LAG_LIMIT_MS;
+	  }
+	| {
+			readonly kind: "ceiling";
+			readonly maxMs: number;
+			readonly ceilingMs: typeof MAIN_THREAD_LAG_CEILING_MS;
+	  };
+
+/** The first bound a window breaks, or undefined when it holds them all. */
+export function lagViolation(window: LagWindow): LagViolation | undefined {
 	if (!(window.tailMs < MAIN_THREAD_LAG_P99_BOUND_MS)) {
-		return `${name}: main-thread lag p${window.tailPercentile} ${window.tailMs} ms exceeds ${MAIN_THREAD_LAG_P99_BOUND_MS} ms (p99 ${window.p99Ms} ms, max ${window.maxMs} ms, ${context})`;
+		return {
+			kind: "tail",
+			percentile: window.tailPercentile,
+			lagMs: window.tailMs,
+			boundMs: MAIN_THREAD_LAG_P99_BOUND_MS,
+		};
 	}
-	if (!(window.maxMs < MAIN_THREAD_LAG_MAX_BOUND_MS)) {
-		return `${name}: main-thread lag max ${window.maxMs} ms exceeds ${MAIN_THREAD_LAG_MAX_BOUND_MS} ms (p99 ${window.p99Ms} ms, ${context})`;
+	if (window.ticksOverLimit > LAG_TICKS_OVER_LIMIT_ALLOWED) {
+		return {
+			kind: "ticks-over-limit",
+			ticks: window.ticksOverLimit,
+			allowed: LAG_TICKS_OVER_LIMIT_ALLOWED,
+			limitMs: MAIN_THREAD_LAG_LIMIT_MS,
+		};
+	}
+	if (!(window.maxMs < MAIN_THREAD_LAG_CEILING_MS)) {
+		return { kind: "ceiling", maxMs: window.maxMs, ceilingMs: MAIN_THREAD_LAG_CEILING_MS };
 	}
 	return undefined;
+}
+
+/** A failure message for the window `name` that breaks `violation`. */
+export function describeLagViolation(name: string, window: LagWindow, violation: LagViolation): string {
+	const context = `p99 ${window.p99Ms} ms, max ${window.maxMs} ms, ${window.ticksOverLimit} ticks at or over ${MAIN_THREAD_LAG_LIMIT_MS} ms, ${window.samples} ticks over ${window.durationMs} ms`;
+	switch (violation.kind) {
+		case "tail":
+			return `${name}: main-thread lag p${violation.percentile} ${violation.lagMs} ms exceeds ${violation.boundMs} ms (${context})`;
+		case "ticks-over-limit":
+			return `${name}: ${violation.ticks} main-thread stalls reached ${violation.limitMs} ms; ${violation.allowed} is allowed (${context})`;
+		case "ceiling":
+			return `${name}: main-thread lag max ${violation.maxMs} ms reached the ${violation.ceilingMs} ms ceiling (${context})`;
+	}
+}
+
+/** Fails the test, naming the window `name` and the bound it breaks, unless `window` holds every bound. */
+export function assertLag(name: string, window: LagWindow): void {
+	const violation = lagViolation(window);
+	if (violation !== undefined) assert.fail(describeLagViolation(name, window, violation));
 }

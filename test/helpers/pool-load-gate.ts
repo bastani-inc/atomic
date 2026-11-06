@@ -44,7 +44,7 @@ import {
 	acquirePooledStage,
 	type PooledStageLease,
 } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
-import { type LagWindow, lagViolation, measureLag } from "./event-loop-lag.js";
+import { assertLag, measureLag } from "./event-loop-lag.js";
 import { IntercomBrokerFixture } from "./intercom-broker-fixture.js";
 import { testRunId } from "./run-id.js";
 import {
@@ -252,10 +252,6 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 		} catch {
 			return [];
 		}
-	};
-	const assertLag = (name: string, window: LagWindow) => {
-		const violation = lagViolation(name, window);
-		if (violation !== undefined) assert.fail(violation);
 	};
 	const store = createStore();
 	const rootRunId = testRunId(`pool-load-gate-root-${watches}${options.pane === true ? "-pane" : ""}`);
