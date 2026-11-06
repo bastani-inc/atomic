@@ -18,8 +18,13 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { causeChain } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import {
+	isQuarantinedCapacityError,
+	isRetryableWorkflowError,
+	isWorkerRetryLimitError,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -144,12 +149,24 @@ test.skipIf(process.platform === "win32")(
 			const failure = outcome!.status === "rejected" ? (outcome!.reason as Error) : undefined;
 			assert.ok(failure instanceof Error);
 			assert.ok(isRetryableWorkflowError(failure), String(failure));
-			assert.match(
-				failure.message,
-				new RegExp(
-					`Local worker retry limit: child \\S+ \\(child\\) failed on a fault of the pool on every attempt \\(last: Local worker process cleanup unconfirmed; process permit refused after \\d+ ms: admission\\.limits\\.process \\(1\\) is held by quarantined permits of process groups ${group.group} that survived SIGKILL\\)`,
-				),
+			// The retry limit failed the child: its own code, with the quarantine refusal of the last attempt as its cause.
+			const limit = causeChain(failure).find(isWorkerRetryLimitError);
+			assert.ok(limit, String(failure));
+			assert.equal(
+				(failure as { readonly code?: unknown }).code,
+				"worker_retry_limit",
+				"the child fails on its retry limit, whatever the last fault's message quoted (#4327)",
 			);
+			assert.equal(limit.code, "worker_retry_limit");
+			assert.equal(limit.reason, "pool-fault");
+			assert.equal(limit.exportName, "child");
+			assert.equal(limit.attempts, 3);
+			assert.equal(limit.limit, 3);
+			const refusal = limit.cause;
+			assert.ok(isQuarantinedCapacityError(refusal), String(refusal));
+			assert.equal(refusal.code, "worker_cleanup_unconfirmed");
+			assert.deepEqual(refusal.limits, ["admission.limits.process (1)"]);
+			assert.deepEqual(refusal.processGroups, [group.group]);
 			assert.deepEqual(workRow(path, root), { state: "failed", generation: 3 });
 			assert.equal(
 				readTextSync(join(directory, "attempts.log"), "utf8").trim().split("\n").length,

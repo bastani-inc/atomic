@@ -104,6 +104,14 @@ test.each([
 			assert.equal(workerRuns.length, starts.length);
 			assert.ok(workerRuns.every((snapshot) => snapshot.stages.some((stage) => stage.name === "agent")));
 			assert.equal(store.activeRunId(), null);
+			if (!crash) {
+				// Children that completed ended no attempt early: the pool heard no fenced request. Its last report of its
+				// counts arrives as it closes.
+				await pool.close();
+				const requests = pool.coordinationStats()?.requests;
+				assert.ok(requests?.claim !== undefined, "the coordinator reported what its workers asked");
+				assert.equal(requests.fenced, undefined, "no attempt of a completed child was fenced");
+			}
 			assert.deepEqual(
 				starts.map((entry) => (entry.kind === "stage" ? entry.topology?.sourceOrder : -1)).sort(),
 				crash && !during ? [0, 1, 2, 3, 4] : [0, 1],

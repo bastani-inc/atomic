@@ -9,7 +9,9 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { isStaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { rehydrateError, type SerializedError } from "../../packages/workflows/src/shared/error-codec.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -85,7 +87,9 @@ test.skipIf(process.platform === "win32")(
 				const send = this.send.bind(this) as (message: object, ...rest: unknown[]) => boolean;
 				const pid = this.pid;
 				this.send = ((message: object, ...rest: unknown[]) => {
-					if ((message as { readonly rootLeaseLost?: boolean }).rootLeaseLost === true && pid !== undefined)
+					// The refusal itself says the root's lease is gone: a stale root lease, typed across the IPC.
+					const refusal = (message as { readonly error?: SerializedError }).error;
+					if (refusal !== undefined && isStaleLeaseError(rehydrateError(refusal)) && pid !== undefined)
 						leaseLostReplies.add(pid);
 					return send(message, ...rest);
 				}) as typeof this.send;

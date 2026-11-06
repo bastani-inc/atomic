@@ -19,6 +19,11 @@ export function defaultStartupTimeoutMs(workers: number, host: HostCapacity = cu
 	return Math.min(MAX_DEFAULT_STARTUP_TIMEOUT_MS, Math.ceil(BASE_STARTUP_TIMEOUT_MS * oversubscription));
 }
 
-export function startupTimeoutMessage(startupTimeoutMs: number): string {
-	return `Local worker startup timed out after ${startupTimeoutMs} ms: workers were too slow to start, usually because the machine is busy or the pool is large for its cores. Raise workflows.localWorkers.startupTimeoutMs (localWorkers.startupTimeoutMs in the SDK) to allow more time`;
+/**
+ * How long a worker that missed its startup deadline was waited for, from its spawn to when the deadline's timer
+ * fired. The timer runs on the event loop's clock, which can read slightly behind the spawn, so the result is never
+ * less than the deadline it fired for.
+ */
+export function startupWaitedMs(timeoutMs: number, spawnedAt: number, firedAt: number): number {
+	return Math.max(timeoutMs, Math.round(firedAt - spawnedAt));
 }

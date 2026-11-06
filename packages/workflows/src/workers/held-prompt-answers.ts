@@ -5,10 +5,10 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { PooledStageQuestion } from "./stage-watch-types.js";
 
 /** What became of a prompt: the user's response, or the error its root UI failed with. */
-export type HeldPromptOutcome = { readonly response: WorkflowSerializableValue } | { readonly error: string };
+export type HeldPromptOutcome = { readonly response: WorkflowSerializableValue } | { readonly error: Error };
 
 /** What became of a brokered question: the user's answer, or the error its form host failed with. */
-export type HeldQuestionOutcome = { readonly answer: StageInputAnswer } | { readonly error: string };
+export type HeldQuestionOutcome = { readonly answer: StageInputAnswer } | { readonly error: Error };
 
 /** An answer the user gave a pooled stage's prompt, or its UI's failure, that its attempt never received. */
 type HeldAnswer =

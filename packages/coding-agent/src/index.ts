@@ -233,6 +233,7 @@ export type {
 	DetachedToolResult,
 	ToolDetachmentPolicy,
 } from "./core/agent-session-detached-tools.ts";
+export { AgentSessionBusyError, isAgentSessionBusyError } from "./core/agent-session-busy-error.ts";
 // Auth and model runtime
 export { AuthStorage, readStoredCredential } from "./core/auth-storage.ts";
 export {

@@ -11,11 +11,11 @@ import {
 	openSqlPoolQueue,
 	type PoolWork,
 	type SqlPoolQueue,
-	STALE_WORK_LEASE,
 } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type SqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { type Lease, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
+import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import {
 	makeTempDirectory,
@@ -33,7 +33,7 @@ const ROOT = "root";
 const POOL_TIMEOUT_MS = 10 * 60_000;
 const running = poolWorkFixture("running");
 const finished = poolWorkFixture("finished");
-const staleWork = { message: STALE_WORK_LEASE };
+const staleWork = staleWorkLease();
 const CONCURRENT_WRITERS = 8;
 /** Fences the writers commit while the pool keeps reading, before they are stopped. */
 const FENCES_UNDER_READS = 200;
@@ -155,7 +155,7 @@ async function generation(f: ChaosRoot): Promise<number> {
 function refusal<T>(action: Promise<T>): Promise<string> {
 	return action.then(
 		() => "authorized",
-		(error: Error) => (error instanceof StaleLeaseError ? "StaleLeaseError" : error.message),
+		(error: Error) => error.name,
 	);
 }
 
@@ -178,7 +178,7 @@ test.skipIf(process.platform === "win32")(
 			holder.stdin!.end("commit\n");
 			assert.equal(await readLine(holder), "committed");
 			assert.equal(await holder.exited, 0, await readStreamText(holder.stderr));
-			assert.equal(await extended, STALE_WORK_LEASE);
+			assert.equal(await extended, "StaleWorkLeaseError");
 			await assert.rejects(f.pool.assertCurrent(f.lease, f.attempt), staleWork);
 			await f.pool.assertCurrent(f.lease, { ...f.attempt, generation: f.attempt.generation + 1 });
 		} finally {
@@ -261,7 +261,7 @@ test(
 				if (outcome === "authorized")
 					assert.ok(!refusedGenerations.has(observed), "a read authorized an attempt it had refused");
 				else {
-					assert.equal(outcome, STALE_WORK_LEASE);
+					assert.equal(outcome, "StaleWorkLeaseError");
 					refusedGenerations.add(observed);
 				}
 				const control = await f.pool.control(f.lease);
@@ -348,7 +348,7 @@ test(
 			}
 			await write(`UPDATE wf_leases SET renewed_at = ${storeNow} WHERE run_id = '${ROOT}'`);
 			for (const [skewMs, expected] of [
-				[-60_000, STALE_WORK_LEASE],
+				[-60_000, "StaleWorkLeaseError"],
 				[60_000, "authorized"],
 			] as const) {
 				await write(`UPDATE wf_runs_work SET expires_at = ${storeNow} + (${skewMs}) WHERE id = '${f.attempt.id}'`);

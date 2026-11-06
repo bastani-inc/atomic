@@ -21,7 +21,8 @@ process.on("message", (reply) => {
 	}
 	const receiver = pending.get(reply.id);
 	pending.delete(reply.id);
-	if (reply.error) receiver?.reject(new Error(reply.error));
+	// A refusal arrives as the pool IPC's serialized error envelope (packages/workflows/src/shared/error-codec.ts).
+	if (reply.error) receiver?.reject(Object.assign(new Error(reply.error.message), { name: reply.error.name, code: reply.error.code }));
 	else receiver?.resolve(reply.value);
 });
 let recycled = false;

@@ -248,7 +248,11 @@ test.skipIf(process.platform === "win32")(
 			process.kill(coordinatorPid, "SIGKILL");
 			const result = await pooled.execution;
 			assert.equal(result.status, "failed");
-			assert.match(String(result.error), /Local worker pool coordinator exited \(SIGKILL\)/);
+			assert.equal(result.failure?.code, "worker_lost");
+			assert.match(
+				String(result.error),
+				/pool coordinator process \d+ exited \(SIGKILL\), log \S+coordinator\.log \(worker_lost\)/,
+			);
 			const deadline = performance.now() + PROCESS_EXIT_TIMEOUT_MS;
 			while (workers.some(alive)) {
 				if (performance.now() > deadline) assert.fail("workers outlived their coordinator");

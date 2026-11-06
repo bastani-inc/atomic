@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { WorkerStartupTimeoutError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import {
 	BASE_STARTUP_TIMEOUT_MS,
 	defaultStartupTimeoutMs,
 	MAX_DEFAULT_STARTUP_TIMEOUT_MS,
-	startupTimeoutMessage,
+	startupWaitedMs,
 } from "../../packages/workflows/src/workers/startup-timeout.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
@@ -20,10 +21,14 @@ test("the default worker startup deadline scales with pool size and load per cor
 });
 
 test("a worker startup timeout says workers were too slow and names the setting (#3962)", () => {
-	const message = startupTimeoutMessage(30_000);
-	assert.match(message, /^Local worker startup timed out after 30000 ms/);
-	assert.match(message, /too slow to start/);
-	assert.match(message, /workflows\.localWorkers\.startupTimeoutMs/);
+	const error = new WorkerStartupTimeoutError({ logPath: "/w.log", timeoutMs: 30_000, elapsedMs: 30_004 });
+	assert.equal(error.code, "worker_startup_failed");
+	assert.equal(error.timeoutMs, 30_000);
+	assert.equal(error.elapsedMs, 30_004);
+	assert.equal(error.phase, "startup");
+	assert.match(error.hint, /too slow to start/);
+	assert.match(error.hint, /workflows\.localWorkers\.startupTimeoutMs/);
+	assert.ok(error.message.endsWith(error.hint));
 });
 
 test("waiting on a pooled run fails fast with the run's own error once the run has failed (#3962)", async () => {
@@ -72,4 +77,10 @@ test("waiting on a pooled run surfaces a run rejection while a condition check i
 		untilOrRunEnds(condition, Promise.reject(new Error("coordinator exited")), 60_000),
 		/coordinator exited/,
 	);
+});
+
+test("a missed startup deadline reports the time waited from spawn, never less than the deadline (#4327)", () => {
+	assert.equal(startupWaitedMs(500, 10_000, 10_499.4), 500, "a timer firing a little early still waited the deadline");
+	assert.equal(startupWaitedMs(500, 10_000, 10_700.4), 700);
+	assert.equal(startupWaitedMs(500, 10_000, 10_700.6), 701);
 });

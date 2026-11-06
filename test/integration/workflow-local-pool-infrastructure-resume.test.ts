@@ -18,6 +18,11 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import {
+	isWorkerLostError,
+	WorkerRetryLimitError,
+	WorkflowInfrastructureError,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -93,6 +98,7 @@ test.skipIf(process.platform === "win32")(
 			digest: await definitionDigest(childPath),
 		});
 		const statuses: string[] = [];
+		const failures: unknown[] = [];
 		const parent = workflow({
 			name: "pool-infrastructure-resume-root",
 			description: "Root over a pooled child that failed on a pool fault",
@@ -100,7 +106,10 @@ test.skipIf(process.platform === "win32")(
 			outputs: {},
 			async run(ctx) {
 				// The fault lasts the whole first incarnation: the child fails there on every attempt.
-				const result = await ctx.workflow(child, { inputs: { directory, persistent: true } });
+				const result = await ctx.workflow(child, { inputs: { directory, persistent: true } }).catch((error) => {
+					failures.push(error);
+					throw error;
+				});
 				statuses.push(result.status);
 				if (result.status !== "completed") throw new Error(`child ${result.status}`);
 				return {};
@@ -127,6 +136,19 @@ test.skipIf(process.platform === "win32")(
 					{ runId, cwd: directory, store: createStore(), durableBackend: first, signal: budget },
 				);
 				assert.equal(failed.status, "failed", JSON.stringify(failed));
+				// The child ran out of attempts on the pool's fault: typed at every level, never classified by its text.
+				assert.equal(failures.length, 1);
+				const limit = failures[0];
+				assert.ok(limit instanceof WorkerRetryLimitError, String(limit));
+				assert.equal(limit.code, "worker_retry_limit");
+				assert.equal(limit.reason, "pool-fault");
+				assert.equal(limit.attempts, 3);
+				const fault = limit.cause;
+				assert.ok(fault instanceof WorkflowInfrastructureError, String(fault));
+				assert.equal(fault.code, "worker_lost", "the fault the child's run recorded, not the retry limit's");
+				// The child threw WorkerLostError: it arrives as that class with its fields, not a code-only rebuild.
+				assert.ok(isWorkerLostError(fault), String(fault));
+				assert.equal(fault.phase, "delivery");
 			} finally {
 				await firstPool.close().catch(() => {});
 				await first.close();

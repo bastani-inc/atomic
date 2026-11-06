@@ -5,7 +5,7 @@ import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createStore, workflow } from "../../packages/workflows/src/index.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { isLocalWorkerOptionsError } from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
+import { isLocalWorkerOptionsError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const definition = workflow({

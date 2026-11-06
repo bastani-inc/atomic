@@ -1,10 +1,8 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { workflow } from "@bastani/atomic/workflows";
+import { WorkerLostError, workflow } from "@bastani/atomic/workflows";
 
-/** The message a stage of a 0.9.57 pool failed with when a busy host closed its startup delivery under it. */
-export const INFRASTRUCTURE_FAULT = "Worker exited before delivery acknowledgement";
 
 /**
  * A pooled child that fails on a pool infrastructure fault, then completes. By default only its first run fails: the
@@ -25,7 +23,8 @@ export const faultedChild = workflow({
 			if (ctx.inputs.persistent === true ? existsSync(join(ctx.inputs.directory, "recovered")) : existsSync(marker))
 				return true;
 			writeFileSync(marker, "");
-			throw new Error(INFRASTRUCTURE_FAULT);
+			// A pool infrastructure fault, typed as a busy host closing a stage's startup delivery under it reports it.
+			throw new WorkerLostError({ phase: "delivery" });
 		});
 		return { runs: 2 };
 	},

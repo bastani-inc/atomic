@@ -8,7 +8,8 @@ import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
-import { WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
+import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+import { AdmissionHolderStoppedError, QuarantinedCapacityError } from "../shared/workflow-infrastructure-error.js";
 import {
 	WorkflowAdmissionConfigError,
 	type WorkflowAdmissionMismatchReason,
@@ -61,20 +62,15 @@ interface QuarantinedCapacity {
 	readonly groups: readonly number[];
 }
 
-/**
- * A process admission refused because, for {@link QUARANTINED_CAPACITY_WAIT_MS}, only quarantined permits held the
- * capacity it waited for. It is a retryable fault of the pool, not of the work that asked: a pooled child's attempt
- * ends on it and the child replays within its attempt limit.
- */
-export class QuarantinedCapacityError extends WorkflowInfrastructureError {
-	constructor(capacity: readonly QuarantinedCapacity[], waitedMs: number) {
-		const limits = capacity.map(({ limit }) => limit).join(" and ");
-		const groups = [...new Set(capacity.flatMap(({ groups }) => groups))].join(", ");
-		super(
-			"worker_cleanup_unconfirmed",
-			`Local worker process cleanup unconfirmed; process permit refused after ${Math.round(waitedMs)} ms: ${limits} ${capacity.length === 1 ? "is" : "are"} held by quarantined permits of process groups ${groups} that survived SIGKILL`,
-		);
-	}
+function quarantinedCapacityError(
+	capacity: readonly QuarantinedCapacity[],
+	waitedMs: number,
+): QuarantinedCapacityError {
+	return new QuarantinedCapacityError({
+		limits: capacity.map(({ limit }) => limit),
+		processGroups: [...new Set(capacity.flatMap(({ groups }) => groups))],
+		waitedMs,
+	});
 }
 
 /** A waiter whose owner `reconcile` saw dead or with a lapsed lease. A live owner's waiter rejoins the queue (#4179). */
@@ -86,19 +82,6 @@ const FENCED_WAITER_REASON = "abandoned waiter fenced";
  */
 const FENCED_WAITER_RETENTION_MS = 10 * 60_000;
 
-/**
- * A waiting admission whose permit the pool released for good while it waited: its holder was stopped (worker exit,
- * host reboot), not refused by the work. A retryable fault of the pool: a pooled child's attempt ends on it and the
- * child replays within its attempt limit (#4179).
- */
-export class AdmissionHolderStoppedError extends WorkflowInfrastructureError {
-	constructor(reason: string | undefined) {
-		super(
-			"stale_work_lease",
-			`Stale resource admission attempt: the admission holder was stopped${reason === undefined ? "" : ` (${reason})`}`,
-		);
-	}
-}
 const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How often an admission whose attempt lease is late asks again whether it was renewed. */
 const LATE_ATTEMPT_POLL_MS = 100;
@@ -361,7 +344,14 @@ export class SqlResourceAdmission {
 	}
 	private async assertCurrentAttempt(tx: SqliteExecutor): Promise<boolean> {
 		const standing = await this.attemptStanding(tx);
-		if (standing === "stale") throw new Error("Stale resource admission attempt");
+		const { root, attempt } = this.options;
+		if (standing === "stale" && attempt !== undefined)
+			throw new StaleWorkLeaseError({
+				root,
+				workId: attempt.id,
+				generation: attempt.generation,
+				reason: "superseded",
+			});
 		return standing === "current";
 	}
 	/** Resolves once the attempt is current, waiting out a late lease; rejects once it is stale. */
@@ -419,9 +409,12 @@ export class SqlResourceAdmission {
 			const permit = await tx.get(`SELECT state, reason FROM ${this.permits} WHERE operation = ?`, operation);
 			if (permit?.state === "released" && permit.reason === FENCED_WAITER_REASON)
 				await tx.run(`UPDATE ${this.permits} SET state = 'waiting', reason = NULL WHERE operation = ?`, operation);
-			else if (permit === undefined) throw new AdmissionHolderStoppedError("permit no longer recorded");
+			else if (permit === undefined)
+				throw new AdmissionHolderStoppedError({ permitReason: "permit no longer recorded" });
 			else if (permit.state !== "waiting")
-				throw new AdmissionHolderStoppedError(permit.reason === null ? undefined : String(permit.reason));
+				throw new AdmissionHolderStoppedError({
+					permitReason: permit.reason === null ? undefined : String(permit.reason),
+				});
 		};
 		await this.storage.transaction(async (tx) => {
 			await tx.run(
@@ -474,7 +467,7 @@ export class SqlResourceAdmission {
 							LATE_ATTEMPT_REASON,
 							operation,
 						);
-						if (waiting.changes !== 1) throw new AdmissionHolderStoppedError(undefined);
+						if (waiting.changes !== 1) throw new AdmissionHolderStoppedError({});
 						return false;
 					}
 					let reason = hostReason;
@@ -556,7 +549,7 @@ export class SqlResourceAdmission {
 						stageStart ? 1 : 0,
 						operation,
 					);
-					if (updated.changes !== 1) throw new AdmissionHolderStoppedError(undefined);
+					if (updated.changes !== 1) throw new AdmissionHolderStoppedError({});
 					return !reason;
 				});
 				if (granted) {
@@ -571,7 +564,7 @@ export class SqlResourceAdmission {
 					const now = performance.now();
 					quarantinedSince ??= now;
 					if (now - quarantinedSince >= QUARANTINED_CAPACITY_WAIT_MS)
-						throw new QuarantinedCapacityError(quarantined, now - quarantinedSince);
+						throw quarantinedCapacityError(quarantined, now - quarantinedSince);
 				}
 				await delay(50 + Math.floor(Math.random() * 25), undefined, { signal });
 			}

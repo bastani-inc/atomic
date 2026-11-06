@@ -2,12 +2,10 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AuthStorage, DefaultResourceLoader, ModelRuntime, SettingsManager } from "@bastani/atomic";
-import { workflow } from "@bastani/atomic/workflows";
+import { WorkerLostError, workflow } from "@bastani/atomic/workflows";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { Type } from "typebox";
 
-/** A fault of the pool, as a lost delivery reports it: the attempt that meets it ends and the child replays. */
-export const FENCED_STAGE_FAULT = "Worker exited before delivery acknowledgement";
 
 /** The next free `<prefix>-<n>` marker in `directory`, created; returns `n`. */
 function mark(directory: string, prefix: string): number {
@@ -119,7 +117,8 @@ export const child = workflow({
 			text.catch(() => {});
 			while (!existsSync(join(directory, "turn-1"))) await delay(25);
 			await ctx.tool("deliver", {}, async () => {
-				throw new Error(FENCED_STAGE_FAULT);
+				// A fault of the pool, as a lost delivery reports it: the attempt that meets it ends and the child replays.
+				throw new WorkerLostError({ phase: "delivery" });
 			});
 		}
 		return { text: await text };

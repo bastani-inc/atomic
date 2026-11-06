@@ -310,7 +310,7 @@ export async function resumeCrashedRoot(
 			deadline,
 		);
 		const stderr = await expectExitedCleanly(resumed);
-		assert.doesNotMatch(stderr, /Stale work lease|cleanup was not confirmed/);
+		assert.doesNotMatch(stderr, /stale_work_lease|cleanup was not confirmed/);
 		const outcome = await readJson<{
 			status: string;
 			children: { status: string; firstPid: number; finalPid: number }[];

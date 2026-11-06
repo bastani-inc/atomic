@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
 	type AgentSession,
+	AgentSessionBusyError,
 	type AgentSessionEvent,
 	bindOwnerTaskStore,
 	buildSkillCatalog,
@@ -13,8 +14,10 @@ import {
 	type StageControlHandle,
 	type StageControlStatus,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { WorkerLostError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import { appendCoalesced } from "../../packages/workflows/src/workers/stage-watch-coalesce.js";
@@ -750,11 +753,11 @@ test.each([
 			isStreaming: false,
 			async sendUserMessage() {
 				calls.push("sendUserMessage");
-				throw new Error("Agent is already processing a prompt. Use steer() or followUp() to queue messages.");
+				throw new AgentSessionBusyError();
 			},
 			async prompt() {
 				calls.push("prompt");
-				throw new Error("Agent is already processing a prompt.");
+				throw new AgentSessionBusyError();
 			},
 			async steer() {
 				calls.push("steer");
@@ -771,6 +774,50 @@ test.each([
 		assert.deepEqual(calls, ["sendUserMessage", expectedCall]);
 	},
 );
+
+test("a refusal that only reads like a busy session fails the delivery instead of queueing it (#4327)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	const calls: string[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		isStreaming: false,
+		async sendUserMessage() {
+			calls.push("sendUserMessage");
+			throw new Error("Agent is already processing a prompt. Use steer() or followUp() to queue messages.");
+		},
+		async steer() {
+			calls.push("steer");
+		},
+		async followUp() {
+			calls.push("followUp");
+		},
+	});
+	openWatch(watches);
+	watches.serve({
+		kind: "stage-command",
+		commandId: 2,
+		attempt: { workId: "work", generation: 1 },
+		op: "deliver",
+		watch: "watch-1" as WatchId,
+		deliveryOp: "op-worded" as DeliveryOpId,
+		text: "text",
+		intent: "steer",
+	});
+	while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2)) await sleep(1);
+	const answered = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 2);
+	assert.ok(answered?.kind === "stage-command-result");
+	assert.equal(answered.action, undefined);
+	assert.equal(answered.error?.name, "Error");
+	assert.equal(
+		answered.error?.message,
+		"Agent is already processing a prompt. Use steer() or followUp() to queue messages.",
+	);
+	assert.deepEqual(calls, ["sendUserMessage"]);
+});
 
 test("between two turns of the stage's own loop, a steer and a follow-up are queued in their mode, not held until the loop ends (#3996)", async () => {
 	const { registry, sent, watches } = airlock();
@@ -1000,7 +1047,7 @@ test("a session command for a stage whose session is still starting says so inst
 	while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2)) await sleep(1);
 	const answered = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 2);
 	assert.equal(
-		answered?.kind === "stage-command-result" ? answered.error : undefined,
+		answered?.kind === "stage-command-result" ? answered.error?.message : undefined,
 		'Stage "agent" is still starting on its local worker; try again shortly.',
 	);
 });
@@ -1252,4 +1299,151 @@ test("a task that settles as its attempt ends is shown settled, not left running
 		watches.clear();
 		await tasks.dispose();
 	}
+});
+
+test("a stage command that fails on a live stage answers with the typed failure across the IPC (#4327)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	const refusal = new WorkerLostError({ phase: "delivery", pid: 3 });
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		async pause() {
+			throw refusal;
+		},
+		async resume() {
+			throw refusal;
+		},
+		agentSession: {
+			async compact() {
+				throw refusal;
+			},
+		} as never,
+	});
+	openWatch(watches);
+	const answer = async (commandId: number, command: Record<string, unknown>) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			watch: "watch-1" as WatchId,
+			...command,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+		for (;;) {
+			const found = sent.find(
+				(message) => message.kind === "stage-command-result" && message.commandId === commandId,
+			);
+			if (found?.kind === "stage-command-result") return found;
+			await sleep(1);
+		}
+	};
+	for (const [commandId, command] of [
+		[2, { op: "pause" }],
+		[3, { op: "session", command: { kind: "compact" } }],
+		[4, { op: "resume" }],
+		[5, { op: "resume", message: { deliveryOp: "op-resume" as DeliveryOpId, text: "go on" } }],
+	] as const) {
+		const result = await answer(commandId, command);
+		assert.equal(result.refusal, undefined, JSON.stringify(command));
+		const error = rehydrateError(result.error);
+		assert.ok(error instanceof WorkerLostError, `${JSON.stringify(command)}: ${String(error)}`);
+		assert.equal(error.pid, 3);
+	}
+	const tasks = await answer(6, { op: "session", command: { kind: "task", taskId: "task", action: "show" } });
+	assert.equal(tasks.error?.name, "Error");
+	assert.equal(tasks.error?.message, 'Stage "agent" has no background tasks.');
+});
+
+test("a stage command whose stage ends while it runs answers that the stage is no longer live (#4327)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	const ending = async () => {
+		stage.finish();
+		throw new Error("the stage ended");
+	};
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		pause: ending,
+		resume: ending,
+		agentSession: { compact: ending } as never,
+	});
+	openWatch(watches);
+	const answer = async (commandId: number, command: Record<string, unknown>) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			watch: "watch-1" as WatchId,
+			...command,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+		for (;;) {
+			const found = sent.find(
+				(message) => message.kind === "stage-command-result" && message.commandId === commandId,
+			);
+			if (found?.kind === "stage-command-result") return found;
+			await sleep(1);
+		}
+	};
+	const pause = await answer(2, { op: "pause" });
+	assert.equal(pause.refusal, "StageNotLive");
+	assert.equal(pause.error, undefined);
+});
+
+test("compaction and resume of a stage that ends while they run answer that it is no longer live (#4327)", async () => {
+	for (const command of [{ op: "session", command: { kind: "compact" } }, { op: "resume" }] as const) {
+		const { registry, sent, watches } = airlock();
+		const stage = streamingStage("agent");
+		const ending = async () => {
+			stage.finish();
+			throw new Error("the stage ended");
+		};
+		registry.register({
+			...stage.handle,
+			get status() {
+				return stage.handle.status;
+			},
+			resume: ending,
+			agentSession: { compact: ending } as never,
+		});
+		openWatch(watches);
+		watches.serve({
+			kind: "stage-command",
+			commandId: 2,
+			attempt: { workId: "work", generation: 1 },
+			watch: "watch-1" as WatchId,
+			...command,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+		while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2))
+			await sleep(1);
+		const answered = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 2);
+		assert.ok(answered?.kind === "stage-command-result");
+		assert.equal(answered.refusal, "StageNotLive", JSON.stringify(command));
+		assert.equal(answered.error, undefined);
+	}
+});
+
+test("a delivery whose stage ends while it is admitted answers that the stage is no longer live (#4327)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		isStreaming: false,
+		async sendUserMessage() {
+			stage.finish();
+			throw new Error("the stage ended");
+		},
+	});
+	openWatch(watches);
+	assert.deepEqual(await deliver(sent, watches, 2, "op-ended", "steer"), {
+		action: undefined,
+		refusal: "StageNotLive",
+	});
 });

@@ -172,6 +172,11 @@ export interface RunOpts
 	onStageSession?: (runId: string, snapshot: StageSnapshot, options?: StageSessionCheckpointOptions) => unknown;
 	/** Receives every stage agent-session event, including fallback replacement and child workflow stages. */
 	onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
+	/**
+	 * Internal: receives each error the run classifies as a failure, once, with its classification. A pooled worker keeps
+	 * the typed fault a run failed on this way, where the run's result keeps only its code.
+	 */
+	onFailureClassified?: (error: unknown, failure: import("../../shared/workflow-failures.js").WorkflowFailure) => void;
 	onRunEnd?: (
 		runId: string,
 		status: RunStatus,

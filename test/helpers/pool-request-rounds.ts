@@ -20,6 +20,7 @@ import type { SessionMessageEntry } from "@bastani/atomic";
 import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import type { PoolControl, PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import type {
 	DistributiveOmit,
 	WorkerInbound,
@@ -174,9 +175,9 @@ export class SimulatedRequestRefusedError extends Error {
 	readonly code = "request-refused" as const;
 	constructor(
 		readonly request: WorkerRequest["kind"],
-		readonly reason: string,
+		refusal: Error,
 	) {
-		super(`Pool coordinator refused a simulated worker's ${request} request: ${reason}`);
+		super(`Pool coordinator refused a simulated worker's ${request} request: ${refusal.name}`, { cause: refusal });
 	}
 }
 
@@ -456,6 +457,6 @@ export class SimulatedPoolWorker {
 		if (pending === undefined) return;
 		this.pending.delete(message.id);
 		if (message.error === undefined) pending.reply.resolve(message.value);
-		else pending.reply.reject(new SimulatedRequestRefusedError(pending.kind, message.error));
+		else pending.reply.reject(new SimulatedRequestRefusedError(pending.kind, rehydrateError(message.error)));
 	}
 }

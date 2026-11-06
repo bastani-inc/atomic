@@ -18,11 +18,12 @@ import {
 	openSqlPoolQueue,
 	type PoolWork,
 	type SqlPoolQueue,
-	STALE_WORK_LEASE,
 } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type SqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type Lease, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
+import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { poolNotInitialized, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -34,7 +35,7 @@ const ROUNDS = 5;
 const SQLITE_BUSY = 5;
 const SQLITE_IOERR = 10;
 const SQLITE_READONLY = 8;
-const staleWork = { message: STALE_WORK_LEASE };
+const staleWork = staleWorkLease();
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -226,7 +227,7 @@ test.each(["file", "memory", "facade"] as const)(
 			await f.journal.createRun({ ...header, runId: "unpooled" });
 			const unpooled = await f.journal.acquire("unpooled", "coordinator");
 			if (unpooled.status !== "acquired") assert.fail("lease not acquired");
-			await assert.rejects(f.pool.control(unpooled.lease), /Pool not initialized/);
+			await assert.rejects(f.pool.control(unpooled.lease), poolNotInitialized("unpooled"));
 
 			const storageOf = sqlPoolStorage(f.journal)!;
 			const write = (sql: string) => storageOf.transaction((tx) => tx.run(sql));
@@ -362,7 +363,7 @@ test("a failed read keeps its own error when its rollback fails too, with the ro
 			(error: unknown) => error,
 		);
 		assert.ok(refused instanceof Error);
-		assert.equal(refused.message, STALE_WORK_LEASE);
+		assert.ok(isStaleWorkLeaseError(refused), String(refused));
 		const attached = Object.getOwnPropertyDescriptor(refused, "cleanupCause");
 		assertReaderRollbackFailure(attached?.value);
 		assert.deepEqual(
@@ -413,7 +414,7 @@ test("a reader whose rollback fails is closed and replaced, so the reads queued 
 			f.pool.control(f.lease),
 		]);
 		assert.ok(refused instanceof Error);
-		assert.equal(refused.message, STALE_WORK_LEASE);
+		assert.ok(isStaleWorkLeaseError(refused), String(refused));
 		assertReaderRollbackFailure((refused as Error & { readonly cleanupCause?: unknown }).cleanupCause);
 		assert.deepEqual(control, { state: "running", revision: 0 });
 		assert.deepEqual(closed, [failed.reader], "the retired reader is closed");
@@ -435,7 +436,7 @@ test("a retired reader that also fails to close keeps the read's error, with the
 			(error: unknown) => error,
 		);
 		assert.ok(refused instanceof Error);
-		assert.equal(refused.message, STALE_WORK_LEASE);
+		assert.ok(isStaleWorkLeaseError(refused), String(refused));
 		const rollbackFailure = (refused as Error & { readonly cleanupCause?: unknown }).cleanupCause;
 		assertReaderRollbackFailure(rollbackFailure);
 		const closeFailure = (rollbackFailure as StorageUnavailableError).cleanupCause;

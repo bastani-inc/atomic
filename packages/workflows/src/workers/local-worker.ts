@@ -36,12 +36,9 @@ import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import {
-	failedOnInfrastructureFault,
-	infrastructureFaultMessage,
-	workflowInfrastructureFault,
-} from "../shared/workflow-infrastructure-error.js";
+import { WorkAttemptFencedError } from "../shared/worker-pool-errors.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
+import { AttemptFence, endedAttemptRefusal } from "./attempt-fence.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
@@ -57,12 +54,13 @@ import {
 	type WorkerStart,
 } from "./protocol.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
-import { AdmissionHolderStoppedError, QuarantinedCapacityError, SqlResourceAdmission } from "./resource-admission.js";
+import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
 import { WorkerControl, workerControlHandlers } from "./worker-control.js";
 import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
+import { type PendingWorkerRequest, receiveWorkerReply, type WorkerReplyState } from "./worker-replies.js";
 
 /** Stamps each published stage with its handle's queued message count, for the root's graph. */
 function withQueuedCounts(runs: readonly RunSnapshot[], stageControls: StageControlRegistry): readonly RunSnapshot[] {
@@ -72,14 +70,6 @@ function withQueuedCounts(runs: readonly RunSnapshot[], stageControls: StageCont
 			if (count > 0) stage.queuedUserMessageCount = count;
 		}
 	return runs;
-}
-
-/** A reply fenced the worker's attempt: another attempt owns the work, or none does. Not a worker fault. */
-class WorkAttemptFencedError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "WorkAttemptFencedError";
-	}
 }
 
 /**
@@ -219,7 +209,10 @@ function attemptCheckpoints(scope: string): CheckpointSelection {
  * the whole attempt (its run store, broker and session adapter), well after its child ended (#4197). Once released, the
  * admission refuses what a late caller asks of it, as the attempt it belonged to no longer runs.
  */
-function releasableAdmission(admission: ResourceAdmission): {
+export function releasableAdmission(
+	admission: ResourceAdmission,
+	work: Pick<PoolWork, "id" | "generation">,
+): {
 	readonly admission: ResourceAdmission;
 	release(): void;
 } {
@@ -228,7 +221,7 @@ function releasableAdmission(admission: ResourceAdmission): {
 		admission: {
 			acquire: (kind, signal, options) =>
 				current === undefined
-					? Promise.reject(new WorkAttemptFencedError("Work attempt ended"))
+					? Promise.reject(new WorkAttemptFencedError({ workId: work.id, generation: work.generation }))
 					: current.acquire(kind, signal, options),
 		},
 		release() {
@@ -283,14 +276,13 @@ export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart):
 
 async function runWorker(start: WorkerStart): Promise<void> {
 	let sequence = 0;
-	/** Set once any reply fences the current attempt; the attempt then ends without failing the worker (#3979). */
-	let attemptFenced = false;
-	/** Set once a reply reports the root's lease gone; the worker then ends cleanly instead of crashing (#3979). */
-	let rootLeaseLost = false;
-	const pending = new Map<
-		number,
-		{ resolve: (reply: WorkerReply["value"]) => void; reject: (error: Error) => void; deliver?: WorkerDeliver }
-	>();
+	/** Set by replies: a fenced attempt ends without failing the worker, and a lost root lease ends it cleanly (#3979). */
+	const replies: WorkerReplyState = { attemptFenced: false, rootLeaseLost: false };
+	/** The attempt this worker runs, which a refusal of its requests fences. */
+	let heldAttempt: PoolWork | undefined;
+	const pending = new Map<number, PendingWorkerRequest>();
+	/** Sends a message nothing answers: a stage watch's traffic and a delivery's acknowledgement. */
+	const tell = (message: WorkerRequest) => process.send?.(message);
 	let stageWatches: WorkerStageWatches | undefined;
 	/** Applies pool control the coordinator pushed; set once the worker can apply control. */
 	let receiveControl: ((control: PoolControl) => void) | undefined;
@@ -312,38 +304,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			stageWatches?.serve(message);
 			return;
 		}
-		const reply = message;
-		const receiver = pending.get(reply.id);
-		if (reply.delivery) {
-			const delivery = reply.delivery;
-			void Promise.resolve()
-				.then(() => {
-					if (!receiver?.deliver) throw new Error("Worker delivery receiver is gone");
-					return receiver.deliver(delivery.from, delivery.message);
-				})
-				.then(
-					() => process.send?.({ id: 0, kind: "delivery-ack", deliveryId: delivery.id }),
-					(error: Error) =>
-						process.send?.({ id: 0, kind: "delivery-ack", deliveryId: delivery.id, error: error.message }),
-				);
-			return;
-		}
-		pending.delete(reply.id);
-		if (reply.error && reply.rootLeaseLost) {
-			rootLeaseLost = true;
-			attemptFenced = true;
-			receiver?.reject(new WorkAttemptFencedError(reply.error));
-		} else if (reply.error && (reply.fenced || workflowInfrastructureFault(reply.error) !== undefined)) {
-			// A fenced attempt, or a fault of the pool rather than of the child (a lost worker, a refused journal write):
-			// the attempt ends and the child replays from its last checkpoint, as many times as a refused attempt may.
-			attemptFenced = true;
-			receiver?.reject(new WorkAttemptFencedError(reply.error));
-		} else if (reply.error) receiver?.reject(new Error(reply.error));
-		else receiver?.resolve(reply.value);
+		// The root's lease is gone, or the attempt is fenced by a fault of the pool rather than of the child (a stale
+		// work lease, a lost worker, refused storage): the attempt ends and the child replays from its last checkpoint,
+		// as many times as a refused attempt may.
+		void receiveWorkerReply(message, pending, replies, heldAttempt, tell);
 	});
 	/** Set once the worker ends between children to give its memory back; the pool starts a fresh one (#4197). */
 	let recycled = false;
-	process.on("disconnect", () => process.exit(rootLeaseLost || recycled ? 0 : 1));
+	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled ? 0 : 1));
 	const request = (message: Request, deliver?: WorkerDeliver): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
@@ -464,7 +432,6 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		// only after the replay's own prompt, so the replay is not preceded by redelivered text (#3996).
 		const turnStarted = new WeakSet<StageControlHandle>();
 		const stageControls = trackTurnStarts(createStageControlRegistry(), turnStarted);
-		let heldAttempt: PoolWork | undefined;
 		let prompts: WorkerStagePrompts | undefined;
 		const control = new WorkerControl(
 			workerControlHandlers({
@@ -481,7 +448,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		stageWatches = new WorkerStageWatches(
 			stageControls,
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
-			(message) => process.send?.({ ...message, id: 0 }),
+			(message) => tell({ ...message, id: 0 }),
 			() => control.state,
 			{
 				entries: async (sessionId) => (await sessions.load(sessionId)).entries,
@@ -507,8 +474,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			}
 			await reader.catchUpWorkflow(start.root);
 			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
-			attemptFenced = false;
-			let poolFault: string | undefined;
+			replies.attemptFenced = false;
 			if (!work) {
 				await delay(25 + Math.random() * 25);
 				continue;
@@ -526,8 +492,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// Every write of this attempt goes through here. Once the attempt is ended at the pool, none goes further: a
 			// fenced attempt's stage session still closing would otherwise write into the attempt this worker serves next.
 			let writable = true;
+			const attempt = { workId: work.id, generation: work.generation };
+			const fence = new AttemptFence(replies, attempt);
 			const write: typeof commit = (mutation) =>
-				writable ? commit(mutation) : Promise.reject(new WorkAttemptFencedError("Work attempt ended"));
+				writable ? commit(mutation) : Promise.reject(new WorkAttemptFencedError(attempt));
 			const backend = attemptBackend(write);
 			currentStore = store;
 			// Stages of this attempt raise human input here; the root answers through the airlock (#3996).
@@ -630,20 +598,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						// (#4179): a fault of the pool, so the attempt ends as one that failed on it and the child replays within
 						// its attempt limit, whatever the caller (a stage's tool, which may report it to its model and go on)
 						// does with the error.
-						if (
-							(error instanceof QuarantinedCapacityError || error instanceof AdmissionHolderStoppedError) &&
-							!attemptFenced
-						) {
-							poolFault = error.message;
-							attemptFenced = true;
-							controller.abort(new WorkAttemptFencedError(error.message));
-						}
+						fence.refuseAdmission(error, controller);
 						throw error;
 					}
 				},
 			};
 			// The attempt runs under this admission; it is let go of when the attempt ends (#4197).
-			const attemptAdmission = releasableAdmission(resourceAdmission);
+			const attemptAdmission = releasableAdmission(resourceAdmission, work);
 			const admitted = admittedSessionAdapter(adapter, attemptAdmission.admission, async (signal) => {
 				await awaitAdmission(signal);
 				await admission?.validate(signal);
@@ -666,10 +627,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				stageWatches?.sweep();
 				publish();
 			}, WORKER_ACTIVITY_INTERVAL_MS);
-			// A fenced attempt has no lease left to keep while its stage sessions close: its refusals are expected.
+			// A fenced attempt has no lease left to keep while its stage sessions close: its refusals are expected. Once
+			// the worker no longer holds the attempt, a refusal arrives as the stale lease itself, not fenced.
 			const closingHeartbeat = tolerantHeartbeat(
 				() => request({ kind: "heartbeat", reports: usageReports() }),
-				(error) => error instanceof WorkAttemptFencedError,
+				endedAttemptRefusal,
 				(error) =>
 					console.warn("atomic-workflows: a heartbeat failed while an attempt's stage sessions closed", error),
 			);
@@ -679,9 +641,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					controller.signal.throwIfAborted();
 					await delay(25);
 				}
+				// The errors the run fails on, so a pool fault its result keeps only the code of is sent typed.
+				const classified: unknown[] = [];
 				const result = await withResourceAdmission(attemptAdmission.admission, () =>
 					run(definitions[index]!, work.inputs, {
 						...(work.execution as RunOpts),
+						onFailureClassified: (error) => classified.push(error),
 						...(start.promptNodes === true ? { usePromptNodesForUi: true } : {}),
 						runId: work.childRunId,
 						durableBackend: backend,
@@ -718,15 +683,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				}
 				// A fenced attempt aborted its run, so `result` is that abort, not the child's outcome: it is never
 				// completed with it, even when its lease was renewed meanwhile; the fenced path below replays the child.
-				if (attemptFenced) throw new WorkAttemptFencedError("Work attempt fenced before completion");
 				// A run that failed on a fault of the pool (a stale lease or admission, a lost delivery, refused storage)
 				// did not fail on its own logic, so that failure is not its outcome either: the attempt ends the same way
 				// and the child replays within its attempt limit, instead of keeping a recoverable fault as final.
-				if (failedOnInfrastructureFault(result)) {
-					poolFault = infrastructureFaultMessage(result);
-					attemptFenced = true;
-					throw new WorkAttemptFencedError(poolFault);
-				}
+				const ended = fence.instead(result, classified);
+				if (ended !== undefined) throw ended;
 				// The child is done on this worker: what its run left open closes while the attempt still holds its lease,
 				// and the worker's stage registry forgets it before the worker serves another child (#4197). A session
 				// still closing after the bound writes nothing more: its writes would land in the attempt served next.
@@ -734,7 +695,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				writable = false;
 				await request({ kind: "complete", result });
 			} catch (error) {
-				if (!attemptFenced) throw error;
+				if (!replies.attemptFenced) throw error;
 				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.
 				controller.abort(error);
 			} finally {
@@ -746,14 +707,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				prompts = undefined;
 				activeController = undefined;
 			}
-			if (attemptFenced && !rootLeaseLost) {
+			if (replies.attemptFenced && !replies.rootLeaseLost) {
 				await heartbeat.stop();
 				await control.settled();
 				// The fenced attempt's stages never run again here: its replay opens its own sessions. Close theirs now, so
 				// their session permits go back before this worker serves the replay, instead of when the worker exits.
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
-				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
+				await request(fence.request());
 			}
 			attemptAdmission.release();
 			// The attempt's prompt reservations end with it: a replay asks its pending prompts again (#3996), and the
@@ -762,7 +723,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			attempts++;
 			// The attempt's checkpoints stay in the journal; the worker's next attempt reads its own.
 			await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
-			if (rootLeaseLost) break;
+			if (replies.rootLeaseLost) break;
 			// Between children, a worker past its memory limit ends and the pool starts a fresh one in its place: what it
 			// grew to stays with it, whatever held it (#4197).
 			const rssBytes = process.memoryUsage.rss();
@@ -778,12 +739,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	} catch (error) {
 		// The root released its lease (teardown) or lost it to another incarnation: nothing is left to serve, and
 		// this is not a worker fault, so the worker ends cleanly instead of crashing (#3979).
-		if (!rootLeaseLost) throw error;
+		if (!replies.rootLeaseLost) throw error;
 	} finally {
 		await reader.close();
 		await sessions.close();
 		if (poolJournal !== journal) await poolJournal.close().catch(() => {});
 	}
 	// Closing the channel ends the process (exit code 0) instead of waiting for the pool to disconnect it.
-	if (rootLeaseLost || recycled) process.disconnect?.();
+	if (replies.rootLeaseLost || recycled) process.disconnect?.();
 }

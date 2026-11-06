@@ -466,6 +466,7 @@ async function executeRun(
 			classified = classifyWorkflowFailure(new Error(unknownErrorMessage(error)));
 		}
 		classifiedFailures.set(error, classified);
+		opts.onFailureClassified?.(error, classified);
 		return classified;
 	};
 	// Only the registration's owner may remove it, and only while it is still the

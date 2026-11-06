@@ -132,11 +132,11 @@ test("a coordinator gives the queued child's work the claimed copy, and refuses 
 			[error.code, error.reason, error.sessionId, error.rootRunId, error.childRunId, error.scope],
 			["session-claim-refused", "missing", "missing", "root", work.childRunId, work.scope],
 		);
-		assert.equal(error.message, refused.error);
+		assert.equal(error.message, refused.error?.message);
 		assert.deepEqual(await c.queued(), [], "a refused claim queues nothing");
 
 		const accepted = await c.command({ kind: "enqueue", descriptor: work, boundary, claimSessions: [claim("copy")] });
-		assert.equal(accepted.error, undefined, accepted.error);
+		assert.equal(accepted.error, undefined, accepted.error?.message);
 		const queued = (accepted.value as { readonly work: { readonly id: string } }).work;
 		assert.equal((await c.owner("copy"))?.work, queued.id, "the child's work owns the fork's copy");
 	} finally {
@@ -149,7 +149,7 @@ test("a coordinator queues a child without claims and gives it no session (#4321
 	try {
 		await c.stageCopy("copy");
 		const reply = await c.command({ kind: "enqueue", descriptor: work, boundary });
-		assert.equal(reply.error, undefined, reply.error);
+		assert.equal(reply.error, undefined, reply.error?.message);
 		assert.equal((await c.queued()).length, 1);
 		assert.equal(await c.owner("copy"), undefined);
 	} finally {
@@ -157,11 +157,10 @@ test("a coordinator queues a child without claims and gives it no session (#4321
 	}
 });
 
-test("a coordinator's failure outside the fork family still reaches the root as its message only (#4321)", async () => {
+test("a coordinator's failure outside the fork family still reaches the root as a plain error with its message (#4321)", async () => {
 	const c = await coordinator();
 	try {
 		const reply = await c.command({ kind: "enqueue", descriptor: { ...work, childRunId: "unrelated" }, boundary });
-		assert.equal(reply.forkError, undefined);
 		const error = coordinatorReplyError(reply);
 		assert.equal(error.constructor, Error);
 		assert.match(error.message, /boundary identity mismatch/);

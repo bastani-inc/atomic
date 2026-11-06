@@ -58,7 +58,7 @@ test.skipIf(process.platform === "win32")(
 				Date.now() + LEASE_STALL.waitMs,
 			);
 			const stderr = await expectExitedCleanly(root);
-			assert.doesNotMatch(stderr, /Stale work lease/);
+			assert.doesNotMatch(stderr, /stale_work_lease/);
 			const outcome = await readJson<ResumeOutcome>(join(directory, "outcome.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const [child] = outcome.children;

@@ -15,6 +15,7 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { admittedSessionAdapter } from "../../packages/workflows/src/workers/admission-binding.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import {
@@ -312,7 +313,10 @@ test("a stale worker attempt cannot inherit a predecessor's capacity (#3869)", a
 		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", work.id);
 		assert.equal(await pool.expire(acquired.lease, work), true);
 
-		await assert.rejects(adapter.create({}, { ...makeMeta(), replacesSession: predecessor }), /Stale/);
+		await assert.rejects(
+			adapter.create({}, { ...makeMeta(), replacesSession: predecessor }),
+			staleWorkLease({ root: "root", workId: work.id, generation: work.generation, reason: "superseded" }),
+		);
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
 
 		await predecessor.release();

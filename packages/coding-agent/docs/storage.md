@@ -471,7 +471,7 @@ Journal errors include:
 
 | Error | Fields and response |
 |---|---|
-| `StaleLeaseError` | `runId`, `heldEpoch`, `currentEpoch`. Stop writing under stale ownership. |
+| `StaleLeaseError` | `code: "stale_lease"`, `runId`, `heldEpoch`, `currentEpoch`, `hint`. Stop writing under stale ownership. `isStaleLeaseError(error)` also recognizes one from another process. |
 | `JournalCasConflictError` | `runId`, `expectedSeq`, `actualSeq`. Reload the run before retrying a conflicting operation. |
 | `RunNotFoundError` | `runId`. Check the selected journal and ID. |
 | `JournalSchemaVersionError` | `domain`, `found`, `supported`. No automatic schema migration. |

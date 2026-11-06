@@ -1,24 +1,12 @@
 import type { ProviderRateLimitObservation } from "@bastani/atomic";
-import {
-	isJournalStoreError,
-	rehydrateJournalStoreError,
-	type SerializedJournalStoreError,
-	serializeJournalStoreError,
-} from "@bastani/atomic/storage";
-import {
-	isForkError,
-	rehydrateForkError,
-	type SerializedForkError,
-	serializeForkError,
-} from "../durable/fork-errors.js";
 import type { PoolControl, PoolSessionClaim, PoolWork, PoolWorkDescriptor } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import type { Lease } from "../durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
+import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
-import type { SerializedWorkerPlacementError } from "./placement-errors.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
@@ -197,41 +185,29 @@ export type CoordinatorNotice =
 	| {
 			readonly kind: "published";
 			readonly batch: number;
-			readonly rejected: readonly { readonly workId: string; readonly generation: number; readonly error: string }[];
+			/** Publications the root refused, each bound to the attempt that published it. */
+			readonly rejected: readonly {
+				readonly workId: string;
+				readonly generation: number;
+				readonly error: SerializedError;
+			}[];
 	  };
 
 export interface CoordinatorReply {
 	readonly kind: "reply";
 	readonly id: number;
 	readonly value?: unknown;
-	readonly error?: string;
-	/** A journal store failure, serialized so the root rehydrates it into its typed class. */
-	readonly failure?: SerializedJournalStoreError;
-	/** A failure of the fork family, in its wire form, so the root rejects with the same class (#4321). */
-	readonly forkError?: SerializedForkError;
+	readonly error?: SerializedError;
 }
 
-/**
- * The reply to a command that failed: a journal store or fork error crosses as its wire form, any other failure as its
- * message.
- */
-export function failedCoordinatorReply(id: number, error: Error): CoordinatorReply {
-	return {
-		kind: "reply",
-		id,
-		error: error.message,
-		...(isJournalStoreError(error) ? { failure: serializeJournalStoreError(error) } : {}),
-		...(isForkError(error) ? { forkError: serializeForkError(error) } : {}),
-	};
+/** The reply to a command that failed: its error on the pool's one envelope, so the root rejects with the same class. */
+export function failedCoordinatorReply(id: number, error: unknown): CoordinatorReply {
+	return { kind: "reply", id, error: serializeError(error) };
 }
 
-/**
- * The error a failed reply stands for on the root: the journal store or fork error it carried, as its own class, or its
- * message.
- */
-export function coordinatorReplyError(reply: Pick<CoordinatorReply, "error" | "failure" | "forkError">): Error {
-	if (reply.failure !== undefined) return rehydrateJournalStoreError(reply.failure);
-	return reply.forkError === undefined ? new Error(reply.error) : rehydrateForkError(reply.forkError);
+/** The error a failed reply stands for on the root, as the class the coordinator threw. */
+export function coordinatorReplyError(reply: Pick<CoordinatorReply, "error">): Error {
+	return rehydrateError(reply.error);
 }
 
 /** An attempt's latest publication as its worker sent it: every run it holds, in full. */
@@ -285,14 +261,9 @@ export type CoordinatorEvent =
 			readonly result: WorkflowSerializableObject;
 			readonly usage?: PoolUsage;
 	  }
-	| { readonly kind: "failure"; readonly error: string }
-	/** One child failed without failing the pool; `placement` carries a typed placement error across the boundary. */
-	| {
-			readonly kind: "work-failure";
-			readonly workId: string;
-			readonly error: string;
-			readonly placement?: SerializedWorkerPlacementError;
-	  }
+	| { readonly kind: "failure"; readonly error: SerializedError }
+	/** One child failed without failing the pool. */
+	| { readonly kind: "work-failure"; readonly workId: string; readonly error: SerializedError }
 	/**
 	 * A worker's cleanup could not be confirmed (it outlived SIGKILL, or its tool process groups did): a health event of
 	 * the pool, which retires and replaces the worker. It fails no child. Also sent once when `maxWorkerRssBytes` is
@@ -314,7 +285,7 @@ export interface CoordinatorRequestReply {
 	readonly kind: "request-reply";
 	readonly id: number;
 	readonly value?: unknown;
-	readonly error?: string;
+	readonly error?: SerializedError;
 }
 
 export type CoordinatorInbound = CoordinatorCommand | CoordinatorNotice | CoordinatorRequestReply;
