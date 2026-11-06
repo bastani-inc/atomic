@@ -403,6 +403,12 @@ export interface StageSnapshot {
 	/** Background compaction state of the stage's session (#4330), the same shape RPC `get_state` reports. */
 	compaction?: SerializedBackgroundCompactionState;
 	/**
+	 * The Intercom messages the stage's session `sessionId` took before its first turn, by message id, as the worker of
+	 * a pooled stage on a host that does not run its root publishes them: the root records their receipts when the
+	 * stage ends before the root's own drain reaches it (#4505).
+	 */
+	intercomReceipts?: { readonly sessionId: string; readonly messageIds: readonly string[] };
+	/**
 	 * Parent stage ids. Treat as immutable from consumer code; the executor may
 	 * replace the frozen array before a stage starts when late topology inference
 	 * refreshes parents, so do not cache this reference across store updates.

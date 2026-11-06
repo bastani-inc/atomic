@@ -1723,7 +1723,7 @@ test("text and Intercom messages for a stage this attempt has not registered, or
 	const stage = deliverableStage(false);
 	running.registry.register({ ...stage.handle, agentSession: { isStreaming: false } as never });
 	assert.equal((await running.serve({ op: "user-message", deliveryOp: "live", intent: "auto" })).action, "prompt");
-	running.inbox.register({ runId: "child", stageId: "agent" }, "s1", async () => {});
+	running.inbox.register({ runId: "child", stageId: "agent" }, "s1", async () => {}, {});
 	assert.deepEqual(await running.serve({ op: "intercom", sessionId: "s1", id: "m" }), {
 		action: undefined,
 		refusal: undefined,
@@ -1752,9 +1752,14 @@ test("an Intercom message for another attempt, or with no attempt held, waits as
 		},
 	});
 	const received: string[] = [];
-	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s1", async (_from, message) => {
-		received.push(message.id);
-	});
+	airlock.inbox.register(
+		{ runId: "child", stageId: "agent" },
+		"s1",
+		async (_from, message) => {
+			received.push(message.id);
+		},
+		{},
+	);
 	assert.equal(
 		(await airlock.serve({ op: "intercom", sessionId: "s1", id: "other-work", workId: "other" })).refusal,
 		"StaleAttempt",
@@ -1821,9 +1826,14 @@ test("an Intercom message from the stage's input queue reaches the sink its sess
 		"a session that has not handed its sink over takes nothing yet",
 	);
 	const received: string[] = [];
-	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s1", async (_from, message) => {
-		received.push(message.id);
-	});
+	airlock.inbox.register(
+		{ runId: "child", stageId: "agent" },
+		"s1",
+		async (_from, message) => {
+			received.push(message.id);
+		},
+		{},
+	);
 	assert.deepEqual(await airlock.serve({ op: "intercom", sessionId: "s1", id: "m1" }), {
 		action: undefined,
 		refusal: undefined,
@@ -1833,7 +1843,7 @@ test("an Intercom message from the stage's input queue reaches the sink its sess
 		(await airlock.serve({ op: "intercom", sessionId: "s1", id: "m2", generation: 2 })).refusal,
 		"StaleAttempt",
 	);
-	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s2", async () => {});
+	airlock.inbox.register({ runId: "child", stageId: "agent" }, "s2", async () => {}, {});
 	assert.equal((await airlock.serve({ op: "intercom", sessionId: "s1", id: "m3" })).refusal, "SessionReplaced");
 	airlock.dropInbox();
 	assert.equal((await airlock.serve({ op: "intercom", sessionId: "s2", id: "m4" })).refusal, "StaleAttempt");

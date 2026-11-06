@@ -3,9 +3,13 @@ import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import {
+	openSqlPoolQueue,
+	type PoolWork,
+	type SqlPoolQueue,
+} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
+import { bindRunDurableBackend, durableBackendForRun } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { rehydrateError, type SerializedError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -58,6 +62,8 @@ function childRun(stages: StageSnapshot[]): RunSnapshot {
 /** The parts of a pool this file drives directly, as its coordinator and the root's store would. */
 interface PoolInternals {
 	root?: string;
+	store?: ReturnType<typeof createStore>;
+	queue?: SqlPoolQueue;
 	coordinator?: { readonly port: { send(message: CoordinatorNotice): void } };
 	handoff?: PoolStageHandoff;
 	readonly works: Map<string, PoolWork>;
@@ -66,8 +72,11 @@ interface PoolInternals {
 	routePrompts(publications: readonly { readonly work: PoolWork; readonly runs: readonly PublishedStages[] }[]): void;
 }
 
-/** The pool's side of activity a coordinator sends, with the pool's handoff over a real root journal. */
-async function activityPool() {
+/**
+ * The pool's side of activity a coordinator sends, with the pool's handoff over a real root journal. With `host`, the
+ * pool is the root's pool of a shared placement on that host, whose root store and queue it holds (#4505).
+ */
+async function activityPool(options: { readonly host?: string } = {}) {
 	const directory = makeTempDirectory("local-pool-activity-");
 	const path = join(directory, "journal.sqlite");
 	const database = await openNodeSqliteDatabase(path);
@@ -99,6 +108,7 @@ async function activityPool() {
 		stages: [
 			stage(descriptor.boundaryId, {
 				name: "child",
+				replayKey: descriptor.scope,
 				workflowChildRun: { alias: "child", workflow: "child", runId: descriptor.childRunId },
 			}),
 		],
@@ -106,8 +116,22 @@ async function activityPool() {
 	bindRunDurableBackend(root, backend);
 	bindStoreDurableBackend(store, backend);
 	store.recordRunStart(root);
-	const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 1, definitions: [] });
+	const pool = new LocalWorkerPool(
+		backend,
+		options.host === undefined
+			? { journalPath: path, workers: 1, definitions: [] }
+			: {
+					durable: { selection: "{}", agentDir: directory },
+					shared: { stateDirectory: directory, host: options.host, claimWindowMs: 0 },
+					workers: 1,
+					definitions: [],
+				},
+	);
 	const internals = pool as never as PoolInternals;
+	if (options.host !== undefined) {
+		internals.store = store;
+		internals.queue = queue;
+	}
 	const notices: CoordinatorNotice[] = [];
 	// A pool hears its coordinator's activity only once it prepared its root.
 	internals.root = ROOT;
@@ -125,6 +149,24 @@ async function activityPool() {
 				runs.map((run) => [run.id, run.stages.map((entry) => entry.id)]),
 			),
 		known: () => internals.works.set(work.id, work),
+		/** Records the handoff's receipt records, which a publication starts without waiting for them. */
+		recordings: () => vi.spyOn(internals.handoff!, "recordReceipts"),
+		async queueDirect(stageKey: string, id: string) {
+			const group = `workflow:${ROOT}`;
+			const queued = await store.queueStageMessage(
+				{
+					runId: descriptor.childRunId,
+					stageKey,
+					from: { id: "planner", name: "planner", group },
+					message: { id, timestamp: 1, content: { text: id } },
+					queuedAt: new Date().toISOString(),
+				},
+				group,
+				group,
+				durableBackendForRun(backend, store, descriptor.childRunId)!,
+			);
+			assert.equal(queued?.ok, true);
+		},
 		receive: (event: CoordinatorEvent) => internals.receive(event),
 		async publish(runs: readonly PublishedRun[]) {
 			const token = (({ id, generation, worker, epoch, renewedAt, expiresAt }: PoolWork) => ({
@@ -266,6 +308,52 @@ test("a pool that closes stops applying an activity batch between turns (#4317)"
 		setImmediate(() => void pool.close());
 		await assert.rejects(pool.receive({ kind: "activity", batch: 99, entries }), { name: "AbortError" });
 		assert.equal(pool.store.run(descriptor.childRunId)?.label, "second");
+	} finally {
+		await pool.dispose();
+	}
+});
+
+test("a stage on another host that ended with its startup receipts has them recorded as its publication is applied, before its child ends (#4505)", async () => {
+	const pool = await activityPool({ host: "root-host" });
+	try {
+		pool.known();
+		assert.deepEqual(await pool.publish([childRun([stage("stage", { sessionId: "session-a" })])]), []);
+		await pool.queueDirect("stage", "direct-1");
+		await pool.queueDirect("stage", "direct-2");
+		const recordings = pool.recordings();
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1"] };
+		const ended = stage("stage", { sessionId: "session-a", status: "completed", intercomReceipts: receipts });
+		assert.deepEqual(await pool.publish([childRun([ended])]), []);
+		assert.equal(recordings.mock.calls.length, 1, "the publication that ended the stage records its receipts");
+		await recordings.mock.results[0]!.value;
+		const status = (id: string) =>
+			pool.store.run(descriptor.childRunId)?.pendingStageMessages?.find((entry) => entry.message.id === id)?.status;
+		assert.deepEqual(
+			[status("direct-1"), status("direct-2")],
+			["delivered", "queued"],
+			"only what the session took is recorded",
+		);
+		assert.equal(pool.store.run(descriptor.childRunId)?.status, "running", "the child has not ended");
+		assert.equal(pool.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+		// Receipts of another session of the stage are not the stage's session's to record.
+		const replaced = { sessionId: "session-b", messageIds: ["direct-2"] };
+		assert.deepEqual(await pool.publish([childRun([{ ...ended, intercomReceipts: replaced }])]), []);
+		assert.equal(recordings.mock.calls.length, 1);
+	} finally {
+		await pool.dispose();
+	}
+});
+
+test("the root's own host records no receipts a stage on it published: its worker's drain records them (#4505)", async () => {
+	const pool = await activityPool({ host: "" });
+	try {
+		pool.known();
+		assert.deepEqual(await pool.publish([childRun([stage("stage", { sessionId: "session-a" })])]), []);
+		const recordings = pool.recordings();
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1"] };
+		const ended = stage("stage", { sessionId: "session-a", status: "completed", intercomReceipts: receipts });
+		assert.deepEqual(await pool.publish([childRun([ended])]), []);
+		assert.equal(recordings.mock.calls.length, 0);
 	} finally {
 		await pool.dispose();
 	}

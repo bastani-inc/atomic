@@ -618,10 +618,21 @@ test("a stage on a host where its run's route is not announced registers no rout
 	const sender = { id: "planner", name: "planner", cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 0 };
 	const inbox = new RemoteStageInbox();
 	const stage = { runId, stageId: "review", stageName: "review" };
+	const store = createStore();
+	store.recordRunStart({
+		id: runId,
+		name: "child",
+		inputs: {},
+		status: "running",
+		startedAt: 0,
+		stages: [{ id: "review", name: "review", status: "running", parentIds: [], toolEvents: [] }],
+		toolNodes: [],
+	});
 	const asked: string[] = [];
 	const delivery = await createWorkerStageDelivery({
 		stage,
 		inbox,
+		store,
 		request: async () => {
 			asked.push("route");
 			return "capability";
@@ -699,6 +710,11 @@ test("a stage on a host where its run's route is not announced registers no rout
 			["before-start"],
 		);
 		assert.match(sent[0]!.content, /Messages received before you started/);
+		assert.deepEqual(
+			store.run(runId)?.stages[0]?.intercomReceipts,
+			{ sessionId: "stage-session", messageIds: ["before-start"] },
+			"the stage records what its session took under the session the root addresses it by (#4505)",
+		);
 		// The root's later message reaches the session through the inbox, live, once; the one it already holds is not sent again.
 		const late = {
 			id: "late",

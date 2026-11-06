@@ -1225,6 +1225,10 @@ function pendingStageDestination(
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+function receivedByStageSession(run: ReturnType<Store["runs"]>[number], entry: PendingStageMessage): boolean {
+	return pendingStageDestination(run, entry)?.intercomReceipts?.messageIds.includes(entry.message.id) === true;
+}
+
 function pendingStageUndeliverableReason(
 	run: ReturnType<Store["runs"]>[number],
 	entry: PendingStageMessage,
@@ -1252,6 +1256,8 @@ function pendingStageUndeliverableReason(
 }
 
 function needsUndeliverableSettlement(run: ReturnType<Store["runs"]>[number], entry: PendingStageMessage): boolean {
+	// A stage whose session took the message on another host published its receipt (#4505): once the run or stage can no
+	// longer drain, settlement records the delivery if the handoff's record has not already done so.
 	if (entry.status === "queued") return pendingStageUndeliverableReason(run, entry) !== undefined;
 	return (
 		entry.status === "undeliverable" &&
@@ -1342,6 +1348,20 @@ async function settleRuns(
 			if (entry.status === "queued") {
 				const reason = pendingStageUndeliverableReason(run, entry);
 				if (reason === undefined) continue;
+				if (receivedByStageSession(run, entry)) {
+					if (
+						await activeStore.markPendingStageMessageDelivered(
+							run.id,
+							entry.stageKey,
+							entry.id,
+							new Date().toISOString(),
+							backend,
+						)
+					) {
+						settled += 1;
+					}
+					continue;
+				}
 				if (
 					await activeStore.markPendingStageMessageUndeliverable(run.id, entry.stageKey, entry.id, reason, backend)
 				) {

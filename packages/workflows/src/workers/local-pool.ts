@@ -1724,7 +1724,8 @@ export class LocalWorkerPool {
 	/**
 	 * Delivers the queued Intercom messages of live stages on other hosts' workers (#4391). Such a stage holds no live
 	 * route, so the root drains its queue into it through the stage's input queue: once its session is published, and
-	 * again whenever its queue changes. The handoff records each delivery, as for a stage on this host.
+	 * again whenever its queue changes. The handoff records each delivery, as for a stage on this host, and records the
+	 * receipts a stage that ended published, since it may have ended before its drain (#4505).
 	 */
 	private drainRemoteStages(
 		handoff: PoolStageHandoff,
@@ -1750,6 +1751,10 @@ export class LocalWorkerPool {
 				rootQueue,
 			);
 			for (const stage of targets.forget) this.remoteDrains.forget(stage);
+			// The handoff reported a drain failure on the root run, and an early refusal (a fenced or replaced attempt, or a
+			// replaced session) ended by design; the child's completion and settlement record the receipts again.
+			for (const { runId, stageId, stageName, recipient } of targets.record)
+				void handoff.recordReceipts(work, runId, stageId, stageName, recipient).catch(() => undefined);
 			for (const { target, stageName } of targets.drain) {
 				const { runId, stageId, sessionId } = target;
 				this.remoteDrains.offer(target, () =>

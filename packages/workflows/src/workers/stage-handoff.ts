@@ -5,7 +5,11 @@ import type { PoolWork, SqlPoolQueue } from "../durable/journal/sql-pool-queue.j
 import type { Lease } from "../durable/journal/types.js";
 import { parseWorkflowChildResult } from "../durable/workflow-child-result.js";
 import type { RunResult } from "../runs/foreground/executor-types.js";
-import { createWorkflowPendingStageDelivery } from "../runs/foreground/pending-stage-delivery.js";
+import {
+	createWorkflowPendingStageDelivery,
+	type PendingStageDeliveryCommit,
+	recordPendingStageReceipts,
+} from "../runs/foreground/pending-stage-delivery.js";
 import {
 	rotateWorkflowPendingStageRouteCapability,
 	workflowPendingStageRouteCapability,
@@ -89,6 +93,8 @@ interface Attempt {
 	readonly hosts: Map<string, string>;
 	/** Runs with stages the attempt has not ended: a renewal relabels them whether a publication names them or not. */
 	readonly openRuns: Set<string>;
+	/** The stage sessions whose published receipts the root recorded, or is recording, for this attempt (#4505). */
+	readonly receipts: Set<string>;
 	fenced: boolean;
 }
 
@@ -251,42 +257,107 @@ export class PoolStageHandoff {
 		transport: PoolStageTransport,
 	): Promise<void> {
 		const attempt = await this.begin(work);
-		this.requireOwned(work, attempt, runId);
-		const stage = JSON.stringify([runId, stageId]);
-		const target = { runId, stageId, sessionId: recipient.sessionId };
-		if (attempt.sessions.get(stage) !== recipient.sessionId) throw this.rejected(work, "session-mismatch", target);
-		const assertSession = () => this.assertSession(work, attempt, runId, stageId, recipient.sessionId);
-		const previous = this.drains.get(stage) ?? Promise.resolve();
-		const drain = previous
-			.catch(() => undefined)
-			.then(async () => {
+		const assertSession = this.drainedSession(work, attempt, runId, stageId, recipient.sessionId);
+		await this.drain(attempt, runId, stageId, recipient.sessionId, async () => {
+			await this.queue.assertCurrent(this.lease, work);
+			assertSession();
+			await this.delivery(attempt, work, runId, stageId, stageName).deliverPending(async (from, message) => {
+				await transport(from, message);
 				await this.queue.assertCurrent(this.lease, work);
 				assertSession();
-				await this.delivery(attempt, work, runId, stageId, stageName).deliverPending(async (from, message) => {
-					await transport(from, message);
-					await this.queue.assertCurrent(this.lease, work);
-					assertSession();
-				}, recipient);
-			});
-		this.drains.set(stage, drain);
+			}, recipient);
+		});
+	}
+
+	/**
+	 * Records the receipts a stage on another host published when it ended before the root's drain reached it (#4505):
+	 * its session `recipient.sessionId` took those messages before its first turn, so each is recorded as delivered to
+	 * it, and nothing is handed over. Each stage session's receipts are recorded once per attempt, after the stage's
+	 * running drains, and a failure is reported as a failed drain's is and lets a later call record them. An attempt
+	 * whose work completed meanwhile still records them, as its stage's receipts must not be lost.
+	 */
+	async recordReceipts(
+		work: PoolWork,
+		runId: string,
+		stageId: string,
+		stageName: string,
+		recipient: PendingRecipient,
+	): Promise<void> {
+		const attempt = this.enter(work);
+		const assertSession = this.drainedSession(work, attempt, runId, stageId, recipient.sessionId);
+		const recorded = JSON.stringify([runId, stageId, recipient.sessionId]);
+		if (attempt.receipts.has(recorded)) return;
+		attempt.receipts.add(recorded);
 		try {
-			await drain;
+			await this.drain(attempt, runId, stageId, recipient.sessionId, async () => {
+				assertSession();
+				await recordPendingStageReceipts(
+					this.store,
+					runId,
+					stageId,
+					stageName,
+					this.commitFor(work, attempt, runId, stageId, recipient.sessionId),
+					recipient,
+				);
+			});
 		} catch (error) {
-			// An attempt that was fenced or replaced, whether the handoff or the pool's receipt guard refused it, or a
-			// session that was replaced, here or on the host that took the stage over (#4391), ends its drain by design.
-			// A refused coordinator authority is still reported.
-			const current = this.attempts.get(work.id) === attempt && !attempt.fenced;
-			if (
-				current &&
-				attempt.sessions.get(stage) === recipient.sessionId &&
-				!causedByStaleWorkLease(error) &&
-				stageInputRefusedReason(error) !== "session-replaced"
-			)
-				this.recordDeliveryIssue(error as Error);
+			attempt.receipts.delete(recorded);
+			throw error;
+		}
+	}
+
+	/**
+	 * Refuses a drain of a run the attempt never published, or into a session other than the one its stage shows, and
+	 * returns the check each step of the drain repeats: the attempt is current and the stage still shows the session.
+	 */
+	private drainedSession(
+		work: PoolWork,
+		attempt: Attempt,
+		runId: string,
+		stageId: string,
+		sessionId: string,
+	): () => void {
+		this.requireOwned(work, attempt, runId);
+		if (attempt.sessions.get(JSON.stringify([runId, stageId])) !== sessionId)
+			throw this.rejected(work, "session-mismatch", { runId, stageId, sessionId });
+		return () => this.assertSession(work, attempt, runId, stageId, sessionId);
+	}
+
+	/** Runs `drain` once the stage's earlier drains settled; its failure is reported unless it ended by design. */
+	private async drain(
+		attempt: Attempt,
+		runId: string,
+		stageId: string,
+		sessionId: string,
+		drain: () => Promise<void>,
+	): Promise<void> {
+		const stage = JSON.stringify([runId, stageId]);
+		const running = (this.drains.get(stage) ?? Promise.resolve()).catch(() => undefined).then(drain);
+		this.drains.set(stage, running);
+		try {
+			await running;
+		} catch (error) {
+			this.reportDrainFailure(attempt, stage, sessionId, error as Error);
 			throw error;
 		} finally {
-			if (this.drains.get(stage) === drain) this.drains.delete(stage);
+			if (this.drains.get(stage) === running) this.drains.delete(stage);
 		}
+	}
+
+	/**
+	 * Reports a drain's failure as a delivery issue, unless the drain ended by design: an attempt that was fenced or
+	 * replaced, whether the handoff or the pool's receipt guard refused it, or a session that was replaced, here or on the
+	 * host that took the stage over (#4391). A refused coordinator authority is still reported.
+	 */
+	private reportDrainFailure(attempt: Attempt, stage: string, sessionId: string | undefined, error: Error): void {
+		if (
+			this.attempts.get(attempt.workId) === attempt &&
+			!attempt.fenced &&
+			attempt.sessions.get(stage) === sessionId &&
+			!causedByStaleWorkLease(error) &&
+			stageInputRefusedReason(error) !== "session-replaced"
+		)
+			this.recordDeliveryIssue(error);
 	}
 
 	/**
@@ -306,6 +377,7 @@ export class PoolStageHandoff {
 		const result = (await this.queue.result(root, work.id)) as RunResult | undefined;
 		await this.backend.catchUpWorkflow(root);
 		if (result === undefined) return;
+		await this.recordResultReceipts(work, result);
 		const terminals = new Map<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>();
 		// Terminal boundaries settle the child's own nested runs; a child without any skips the scan of every
 		// root checkpoint, which made the completion of a wide fan-out quadratic in its width. The root keeps only its
@@ -319,6 +391,28 @@ export class PoolStageHandoff {
 				terminals.set(child.runId, { status: child.status, outputs: child.outputs });
 		}
 		this.store.batch(() => this.settle(work, result, terminals));
+	}
+
+	/**
+	 * Records the receipts the child's result reports for its stages on another host before the child settles (#4505):
+	 * the publication that showed such a stage ended may never have reached the root, which refuses an attempt's
+	 * activity once its work completed. A stage's running drains settle first, and receipts the attempt recorded already
+	 * are not recorded again. The result is final, so no attempt is checked; a failure is reported on the root run. A
+	 * child the root never held a run of has no queued messages to record.
+	 */
+	private async recordResultReceipts(work: Pick<PoolWork, "id" | "childRunId">, result: RunResult): Promise<void> {
+		if (this.store.run(work.childRunId) === undefined) return;
+		const recorded = this.attempts.get(work.id)?.receipts;
+		for (const stage of result.stages) {
+			const receipts = stage.intercomReceipts;
+			if (receipts === undefined) continue;
+			await this.drains.get(JSON.stringify([work.childRunId, stage.id]))?.catch(() => undefined);
+			if (recorded?.has(JSON.stringify([work.childRunId, stage.id, receipts.sessionId])) === true) continue;
+			await recordPendingStageReceipts(this.store, work.childRunId, stage.id, stage.name, (action) => action(), {
+				sessionId: receipts.sessionId,
+				receivedMessageIds: receipts.messageIds,
+			}).catch((error: Error) => this.recordDeliveryIssue(error));
+		}
 	}
 
 	private settle(
@@ -359,9 +453,9 @@ export class PoolStageHandoff {
 	 * The runs this work published and the store still holds, in store order: a completion costs what the work
 	 * owns, not what the store holds, which in a long-lived host is thousands of finished runs (#4190).
 	 */
-	private ownedRunIds(work: Pick<PoolWork, "id">): string[] {
+	private ownedRunIds(work: Pick<PoolWork, "id" | "childRunId">): string[] {
 		const held: { readonly id: string; readonly position: number }[] = [];
-		for (const id of this.attempts.get(work.id)?.runs ?? []) {
+		for (const id of new Set([work.childRunId, ...(this.attempts.get(work.id)?.runs ?? [])])) {
 			const position = this.store.runPosition(id);
 			if (position !== undefined) held.push({ id, position });
 		}
@@ -760,6 +854,7 @@ export class PoolStageHandoff {
 			views: new Map(),
 			hosts: new Map(),
 			openRuns: new Set(),
+			receipts: new Set(),
 			fenced: false,
 		};
 		this.attempts.set(work.id, attempt);
@@ -813,20 +908,36 @@ export class PoolStageHandoff {
 				runId,
 				stageId,
 				stageName,
-				(action) =>
-					this.queue.withCurrentAppend(
-						this.lease,
-						work,
-						() => this.assertSession(work, attempt, runId, stageId, sessionId),
-						action,
-					),
+				this.commitFor(work, attempt, runId, stageId, sessionId),
 				// A drain's transport is the worker's delivery request, which `deliver` answers: it must stay open for as
 				// long as the drain runs, however slowly a starved worker acknowledges. The stage does not wait for it.
-				{ holdUntilDrained: true, undeliverable: failedInSession },
+				// A sticky message the stage's session failed stays queued for its other stages, and is reported (#4505).
+				{
+					holdUntilDrained: true,
+					undeliverable: failedInSession,
+					stickyUndeliverable: (error) => this.reportDrainFailure(attempt, key, sessionId, error),
+				},
 			);
 			attempt.deliveries.set(key, delivery);
 		}
 		return delivery;
+	}
+
+	/** Commits a drain step's receipt only while the attempt is current and the stage still shows the session. */
+	private commitFor(
+		work: PoolWork,
+		attempt: Attempt,
+		runId: string,
+		stageId: string,
+		sessionId: string | undefined,
+	): PendingStageDeliveryCommit {
+		return (action) =>
+			this.queue.withCurrentAppend(
+				this.lease,
+				work,
+				() => this.assertSession(work, attempt, runId, stageId, sessionId),
+				action,
+			);
 	}
 }
 

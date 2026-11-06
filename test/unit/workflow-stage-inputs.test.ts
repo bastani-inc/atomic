@@ -545,37 +545,109 @@ test("a remote stage's inbox hands a message to the sink of the session it was m
 	const message = { id: "m1" } as Parameters<WorkerDeliver>[1];
 	assert.deepEqual(await inbox.deliver(stage, "s1", from, message), { refusal: "StaleAttempt" });
 	const delivered: string[] = [];
-	inbox.register(stage, "s1", async (_from, received) => {
-		delivered.push(`s1:${received.id}`);
-	});
+	// Each session's pending-stage delivery registers its sink as its own.
+	const [first, second, third] = [{}, {}, {}];
+	inbox.register(
+		stage,
+		"s1",
+		async (_from, received) => {
+			delivered.push(`s1:${received.id}`);
+		},
+		first,
+	);
 	assert.deepEqual(await inbox.deliver(stage, "s1", from, message), {});
 	assert.deepEqual(await inbox.deliver({ ...stage, stageId: "other" }, "s1", from, message), {
 		refusal: "StaleAttempt",
 	});
-	inbox.register(stage, "s1", async (_from, received) => {
-		delivered.push(`s1-again:${received.id}`);
-	});
+	inbox.register(
+		stage,
+		"s1",
+		async (_from, received) => {
+			delivered.push(`s1-again:${received.id}`);
+		},
+		first,
+	);
 	assert.deepEqual(await inbox.deliver(stage, "s1", from, message), {}, "the session's latest sink is used");
 	assert.deepEqual(
 		await inbox.deliver(stage, "s2", from, message),
 		{ refusal: "StaleAttempt" },
 		"a session not handed over yet waits",
 	);
-	inbox.register(stage, "s2", async () => {
-		throw new Error("Intercom session retired");
-	});
+	inbox.register(
+		stage,
+		"s2",
+		async () => {
+			throw new Error("Intercom session retired");
+		},
+		second,
+	);
 	assert.deepEqual(await inbox.deliver(stage, "s1", from, message), { refusal: "SessionReplaced" });
 	const retired = await inbox.deliver(stage, "s2", from, message);
 	assert.deepEqual(
 		[retired.refusal, retired.error?.name, retired.error?.message],
 		[undefined, "Error", "Intercom session retired"],
 	);
-	inbox.register(stage, "s3", () => {
-		throw "not an error";
-	});
+	inbox.register(
+		stage,
+		"s3",
+		() => {
+			throw "not an error";
+		},
+		third,
+	);
 	assert.equal((await inbox.deliver(stage, "s3", from, message)).error?.message, "not an error");
 	assert.deepEqual(await inbox.deliver(stage, "s2", from, message), { refusal: "SessionReplaced" });
 	assert.deepEqual(delivered, ["s1:m1", "s1-again:m1"]);
+});
+
+test("a remote stage's inbox drops a closed session's sink, and only the session that registered the sink drops it (#4505)", async () => {
+	const inbox = new RemoteStageInbox();
+	const stage = { runId: "run", stageId: "stage" };
+	const from = { id: "sender" } as Parameters<WorkerDeliver>[0];
+	const message = (id: string) => ({ id }) as Parameters<WorkerDeliver>[1];
+	const delivered: string[] = [];
+	const sink = (session: string) => async (_from: Parameters<WorkerDeliver>[0], received: { readonly id: string }) => {
+		delivered.push(`${session}:${received.id}`);
+	};
+	// Each session's pending-stage delivery registers its sink as its own.
+	const [opened, reopened, fallback, second, third] = [{}, {}, {}, {}, {}];
+	inbox.register(stage, "s1", sink("s1"), opened);
+	inbox.unregister(stage, opened);
+	const closed = await inbox.deliver(stage, "s1", from, message("m1"));
+	assert.deepEqual(
+		[closed.refusal, closed.error?.name, closed.error?.code, closed.error?.fields],
+		[undefined, "WorkflowInfrastructureError", "intercom_unavailable", { runId: "run", stageId: "stage" }],
+		"a closed session's message fails as its ended Intercom runtime would",
+	);
+	assert.equal(intercomMessageOutcome(closed), "defer", "so the stage keeps it for the session that reopens");
+	assert.deepEqual(delivered, [], "the closed session's sink is gone");
+	inbox.register(stage, "s1", sink("s1 reopened"), reopened);
+	assert.deepEqual(await inbox.deliver(stage, "s1", from, message("m2")), {}, "the same session reopened takes it");
+	// A model fallback's next session resumes the same session id; the session it retired closes after it took over.
+	inbox.register(stage, "s1", sink("s1 fallback"), fallback);
+	inbox.unregister(stage, reopened);
+	assert.deepEqual(
+		await inbox.deliver(stage, "s1", from, message("m3")),
+		{},
+		"the retired session's close leaves the sink of the live session with its id",
+	);
+	// An earlier session that closes after its replacement took over leaves the replacement's sink in place.
+	inbox.register(stage, "s2", sink("s2"), second);
+	inbox.unregister(stage, fallback);
+	assert.deepEqual(await inbox.deliver(stage, "s2", from, message("m4")), {});
+	assert.deepEqual(await inbox.deliver(stage, "s1", from, message("m5")), { refusal: "SessionReplaced" });
+	// A closed session that another session replaced is refused as replaced, so the root drains its replacement.
+	inbox.unregister(stage, second);
+	inbox.register(stage, "s3", sink("s3"), third);
+	assert.deepEqual(await inbox.deliver(stage, "s2", from, message("m6")), { refusal: "SessionReplaced" });
+	assert.deepEqual(await inbox.deliver(stage, "s3", from, message("m7")), {});
+	// Another stage's session leaves this stage's sink, and a session that never handed one over is still waited for.
+	inbox.unregister({ ...stage, stageId: "other" }, third);
+	assert.deepEqual(await inbox.deliver(stage, "s3", from, message("m8")), {});
+	assert.deepEqual(await inbox.deliver({ ...stage, stageId: "other" }, "s3", from, message("m9")), {
+		refusal: "StaleAttempt",
+	});
+	assert.deepEqual(delivered, ["s1 reopened:m2", "s1 fallback:m3", "s2:m4", "s3:m7", "s3:m8"]);
 });
 
 test("the root drains a remote stage once per state, one drain at a time, and again after a failure or a change (#4391)", async () => {
@@ -743,6 +815,69 @@ test("the root drains only the stages on another host whose sessions take Interc
 			runsOnOtherHost("root-host", undefined),
 		],
 		[true, false, false, false, false],
+	);
+});
+
+test("the root records the receipts a stage on another host published once it ended with them under its own session (#4505)", () => {
+	const receipts = (sessionId: string, ...messageIds: string[]) => ({ sessionId, messageIds });
+	const { drain, forget, record } = remoteStageDrainTargets(
+		3,
+		[
+			{
+				id: "run",
+				stages: [
+					remoteStage("live", { intercomReceipts: receipts("session-live", "m1") }),
+					remoteStage("done", { status: "completed", intercomReceipts: receipts("session-done", "m1", "m2") }),
+					remoteStage("failed", { status: "failed", intercomReceipts: receipts("session-failed", "m3") }),
+					remoteStage("skipped", { status: "skipped", intercomReceipts: receipts("session-skipped", "m4") }),
+					remoteStage("replaced", { status: "completed", intercomReceipts: receipts("session-earlier", "m5") }),
+					remoteStage("took-none", { status: "completed" }),
+					remoteStage("no-session", { status: "completed", sessionId: undefined }),
+				],
+			},
+			{
+				id: "other",
+				stages: [remoteStage("done", { status: "completed", intercomReceipts: receipts("session-done", "m6") })],
+			},
+		],
+		() => undefined,
+		undefined,
+	);
+	assert.deepEqual(record, [
+		{
+			runId: "run",
+			stageId: "done",
+			stageName: "done name",
+			recipient: { sessionId: "session-done", receivedMessageIds: ["m1", "m2"] },
+		},
+		{
+			runId: "run",
+			stageId: "failed",
+			stageName: "failed name",
+			recipient: { sessionId: "session-failed", receivedMessageIds: ["m3"] },
+		},
+		{
+			runId: "run",
+			stageId: "skipped",
+			stageName: "skipped name",
+			recipient: { sessionId: "session-skipped", receivedMessageIds: ["m4"] },
+		},
+		{
+			runId: "other",
+			stageId: "done",
+			stageName: "done name",
+			recipient: { sessionId: "session-done", receivedMessageIds: ["m6"] },
+		},
+	]);
+	assert.deepEqual(
+		drain.map(({ target }) => target.stageId),
+		["live"],
+		"a live stage's receipts are confirmed by its drain",
+	);
+	assert.deepEqual(
+		forget.map(({ runId, stageId }) => `${runId}/${stageId}`),
+		["run/done", "run/failed", "run/skipped", "run/replaced", "run/took-none", "run/no-session", "other/done"],
+		"every ended stage is still forgotten by the drains",
 	);
 });
 
