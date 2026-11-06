@@ -16,6 +16,7 @@ useTemporaryAgentDir();
 /** A live child loads its real resources; that load is the structural cost of these tests. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
 const RECONCILIATION = "atomic:protected-streaming-reconciliation";
+const REPLAY_NOTICE = "session-recovery-replay";
 const INTERRUPTED_TEXT = "A message that arrived just before its owner died.";
 
 const cleanups: Array<() => void> = [];
@@ -83,6 +84,8 @@ async function transcriptAfterLaunch(store: MemorySessionStore, sessionId: strin
 	const firstCall = entries.findIndex((entry) => entry.type === "message" && entry.message.role === "assistant");
 	return entries.slice(firstCall + 1).flatMap((entry) => {
 		if (entry.type === "custom_message" && entry.customType === RECONCILIATION) return ["read the replayed delivery"];
+		if (entry.type === "custom_message" && entry.customType === REPLAY_NOTICE)
+			return [`replayed on ${(entry.details as { readonly reason?: string }).reason}`];
 		if (entry.type !== "message") return [];
 		const { message } = entry;
 		if (message.role === "toolResult") return [`result of ${message.toolCallId}`];
@@ -117,6 +120,7 @@ test(
 			"released again on the call of its next turn",
 		);
 		assert.deepEqual(await transcriptAfterLaunch(store, sessionId), [
+			"replayed on resume",
 			"result of ci-1",
 			"read the replayed delivery",
 			"call ci-2",
@@ -125,34 +129,58 @@ test(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
+/** A session that ran once and was then left holding a delivery saved while it was busy, which nothing read. */
+async function finishedWithInterruptedDelivery(env: Awaited<ReturnType<typeof liveChildEnvironment>>, runId: string) {
+	const store = new MemorySessionStore();
+	const child = await SessionManager.create(store, env.root);
+	env.faux.setResponses([fauxAssistantMessage("Started.")]);
+	const finished = await runSingleInProcess(env.root, agent, "start", {
+		...env.options(runId, { sessionManager: child, resumeSession: true }),
+	});
+	assert.equal(finished.status, "ok");
+	await interruptDelivery(store, child.getSessionId());
+	return { store, sessionId: child.getSessionId() };
+}
+
 test(
 	"a child resumed on a new prompt reads the delivery its recovery replays first, as any reopened session does (#4488)",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
-		const store = new MemorySessionStore();
-		const child = await SessionManager.create(store, env.root);
-		env.faux.setResponses([fauxAssistantMessage("Started.")]);
-		const finished = await runSingleInProcess(env.root, agent, "start", {
-			...env.options("crash-prompt", { sessionManager: child, resumeSession: true }),
-		});
-		assert.equal(finished.status, "ok");
-		await interruptDelivery(store, child.getSessionId());
+		const { store, sessionId } = await finishedWithInterruptedDelivery(env, "crash-prompt");
 		env.faux.setResponses([fauxAssistantMessage("Read the message."), fauxAssistantMessage("Continued.")]);
 
 		const resumed = await runSingleInProcess(env.root, agent, "Continue", {
 			...env.options("crash-prompt", {
-				sessionManager: await SessionManager.open(store, child.getSessionId()),
+				sessionManager: await SessionManager.open(store, sessionId),
 				resumeSession: true,
 			}),
 		});
 
 		assert.equal(resumed.status, "ok");
-		assert.deepEqual(await transcriptAfterLaunch(store, child.getSessionId()), [
+		assert.deepEqual(await transcriptAfterLaunch(store, sessionId), [
+			"replayed on resume",
 			"read the replayed delivery",
 			"assistant reply",
 			"user prompt",
 			"assistant reply",
 		]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a child started on a session it does not resume, as a fork is, never replays that session's interrupted deliveries (#4488)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const { store, sessionId } = await finishedWithInterruptedDelivery(env, "crash-fork");
+		env.faux.setResponses([fauxAssistantMessage("Forked.")]);
+
+		const forked = await runSingleInProcess(env.root, agent, "Work from here", {
+			...env.options("crash-fork", { sessionManager: await SessionManager.open(store, sessionId) }),
+		});
+
+		assert.equal(forked.status, "ok");
+		assert.deepEqual(await transcriptAfterLaunch(store, sessionId), ["user prompt", "assistant reply"]);
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
