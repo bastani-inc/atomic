@@ -11,6 +11,10 @@ test("repeated output-cap continuations stay working across quiet waits and sett
 	const responseGate = new Promise<void>((resolve) => {
 		finishResponse = resolve;
 	});
+	let requestFinalResponse!: () => void;
+	const finalResponseRequested = new Promise<void>((resolve) => {
+		requestFinalResponse = resolve;
+	});
 	let completedReports = 1; // Initial idle, then one working report per low-level run.
 	const harness = await createHarnessWithExtensions({
 		model: { ...fauxModel, maxTokens: 20 },
@@ -18,7 +22,13 @@ test("repeated output-cap continuations stay working across quiet waits and sett
 		responses: [
 			{ text: "First partial", stopReason: "length", usage: { output: 20 } },
 			{ text: "Second partial", stopReason: "length", usage: { output: 20 } },
-			{ text: "Final answer", beforeEmit: () => responseGate },
+			{
+				text: "Final answer",
+				beforeEmit: () => {
+					requestFinalResponse();
+					return responseGate;
+				},
+			},
 		],
 		extensionFactories: [
 			createHerdrExtension({ env: fake.env, enabled: () => true }),
@@ -38,7 +48,10 @@ test("repeated output-cap continuations stay working across quiet waits and sett
 		turn = harness.session.prompt("Continue until complete").then(() => {
 			settled = true;
 		});
-		await vi.waitFor(() => assert.equal(harness.faux.callCount, 3));
+		// Each continuation first waits for a real fake-Herdr child: wait for the third model request
+		// itself, or for the prompt to settle without it, rather than for a polling budget.
+		await Promise.race([finalResponseRequested, turn]);
+		assert.equal(harness.faux.callCount, 3);
 		await fake.waitFor(4);
 		const during = (await fake.calls()).filter((call) => call.phase === "start");
 		assert.ok(
@@ -61,10 +74,8 @@ test("repeated output-cap continuations stay working across quiet waits and sett
 		finishResponse();
 		await turn;
 		assert.equal(harness.eventsOfType("agent_settled").length, 1);
-		await vi.waitFor(async () => {
-			const calls = (await fake.calls()).filter((call) => call.phase === "end");
-			assert.equal(arg(calls.at(-1)!.args, "--state"), "idle");
-		});
+		const reports = await fake.waitFor(5);
+		assert.equal(arg(reports.at(-1)!.args, "--state"), "idle");
 		await harness.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		const calls = (await fake.calls()).filter((call) => call.phase === "start");
 		for (const [index, call] of calls.entries()) {
