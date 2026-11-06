@@ -3,14 +3,14 @@ import { dirname, resolve } from "node:path";
 import {
 	assertSessionBlobStore,
 	type CreateAgentSessionOptions,
+	copySessionBlobs,
 	JsonlSessionStore,
 	type NewSessionOptions,
-	readToolOutputBlobs,
 	resolveSessionStore,
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
-	storeSessionBlobs,
+	sessionBlobHashes,
 } from "@bastani/atomic";
 import { ForkEntryNotFoundError } from "../durable/fork-errors.js";
 
@@ -51,8 +51,8 @@ export async function forkStageSession(
 			? source.entries
 			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
-	const blobs = await readToolOutputBlobs(store, sessionId, entries);
-	assertSessionBlobStore(destination, id, blobs);
+	const hashes = sessionBlobHashes(store, entries);
+	assertSessionBlobStore(destination, id, hashes);
 	await destination.create(
 		{
 			id,
@@ -65,7 +65,7 @@ export async function forkStageSession(
 		},
 		entries,
 	);
-	await storeSessionBlobs(destination, id, blobs);
+	await copySessionBlobs(store, sessionId, destination, id, hashes);
 	return SessionManager.open(destination, id, cwd);
 }
 

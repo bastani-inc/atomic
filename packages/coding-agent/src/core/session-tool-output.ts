@@ -71,32 +71,31 @@ export function sessionBlobOutput(
 	};
 }
 
-/** The bytes of every blob `entries` reference that `store` still holds for the session, each once. */
-export async function readToolOutputBlobs(
-	store: SessionStore,
-	sessionId: string,
-	entries: readonly SessionEntry[],
-): Promise<SessionBlobCopy[]> {
-	const blobs: SessionBlobCopy[] = [];
-	if (store.getBlob === undefined) return blobs;
-	for (const hash of toolOutputHashes(entries)) {
-		const data = await store.getBlob(sessionId, hash);
-		if (data !== undefined) blobs.push({ hash, data });
-	}
-	return blobs;
+/**
+ * The hashes of the stored tool outputs a copy of `entries` from `store` brings along: each one the entries reference,
+ * once, when `store` holds blobs, and none when it does not.
+ */
+export function sessionBlobHashes(store: SessionStore, entries: readonly SessionEntry[]): string[] {
+	return store.getBlob === undefined ? [] : toolOutputHashes(entries);
 }
 
 /**
  * Throws `blobs-unsupported` when there are blobs to store and `store` cannot hold them. Call it before writing
  * anything, so a copy that cannot keep its blobs fails without leaving a session behind.
  */
-export function assertSessionBlobStore(
-	store: SessionStore,
-	sessionId: string,
-	blobs: readonly SessionBlobCopy[],
-): void {
-	if (blobs.length > 0 && store.putBlob === undefined) {
+export function assertSessionBlobStore(store: SessionStore, sessionId: string, hashes: readonly string[]): void {
+	if (hashes.length > 0 && store.putBlob === undefined) {
 		throw new SessionBlobError("blobs-unsupported", { sessionId, adapter: store.descriptor.adapter });
+	}
+}
+
+/** Runs `write` for a session just created in `store`; when it fails, the session is deleted again. */
+async function writeOrDelete(store: SessionStore, sessionId: string, write: () => Promise<void>): Promise<void> {
+	try {
+		await write();
+	} catch (error) {
+		await store.delete(sessionId).catch((cleanupCause: unknown) => attachCleanupCause(error, cleanupCause));
+		throw error;
 	}
 }
 
@@ -104,18 +103,41 @@ export function assertSessionBlobStore(
  * Stores `blobs` for a session just created in `store`. When the store cannot hold them or one cannot be stored, the
  * session is deleted again and the failure thrown, with a failure to delete attached as its `cleanupCause`.
  */
-export async function storeSessionBlobs(
+export function storeSessionBlobs(
 	store: SessionStore,
 	sessionId: string,
 	blobs: readonly SessionBlobCopy[],
 ): Promise<void> {
-	try {
-		assertSessionBlobStore(store, sessionId, blobs);
+	return writeOrDelete(store, sessionId, async () => {
+		assertSessionBlobStore(
+			store,
+			sessionId,
+			blobs.map((blob) => blob.hash),
+		);
 		for (const blob of blobs) await store.putBlob!(sessionId, blob.data);
-	} catch (error) {
-		await store.delete(sessionId).catch((cleanupCause: unknown) => attachCleanupCause(error, cleanupCause));
-		throw error;
-	}
+	});
+}
+
+/**
+ * Copies the blobs `hashes` names from a session in `source` to a session just created in `target`, one at a time, so
+ * a copy never holds more than one blob in memory. A blob the source no longer holds is skipped. When the target
+ * cannot hold blobs or one cannot be copied, the target session is deleted again and the failure thrown, with a
+ * failure to delete attached as its `cleanupCause`.
+ */
+export function copySessionBlobs(
+	source: SessionStore,
+	sourceSessionId: string,
+	target: SessionStore,
+	targetSessionId: string,
+	hashes: readonly string[],
+): Promise<void> {
+	return writeOrDelete(target, targetSessionId, async () => {
+		assertSessionBlobStore(target, targetSessionId, hashes);
+		for (const hash of hashes) {
+			const data = await source.getBlob?.(sourceSessionId, hash);
+			if (data !== undefined) await target.putBlob!(targetSessionId, data);
+		}
+	});
 }
 
 /**
@@ -127,14 +149,23 @@ export async function inlineToolOutput(
 	store: SessionStore,
 	sessionId: string,
 ): Promise<SessionEntry[]> {
-	const carried = new Map((await readToolOutputBlobs(store, sessionId, entries)).map((blob) => [blob.hash, blob]));
-	return entries.map((entry) => {
+	const carried = new Set<string>();
+	const inlined: SessionEntry[] = [];
+	for (const entry of entries) {
 		const reference = referenceOf(entry);
-		const blob = reference === undefined ? undefined : carried.get(reference.hash);
-		if (blob === undefined) return entry;
-		carried.delete(blob.hash);
-		return { ...entry, data: { ...reference, base64: Buffer.from(blob.data).toString("base64") } } as SessionEntry;
-	});
+		if (reference === undefined || carried.has(reference.hash)) {
+			inlined.push(entry);
+			continue;
+		}
+		const data = await store.getBlob?.(sessionId, reference.hash);
+		if (data === undefined) {
+			inlined.push(entry);
+			continue;
+		}
+		carried.add(reference.hash);
+		inlined.push({ ...entry, data: { ...reference, base64: Buffer.from(data).toString("base64") } } as SessionEntry);
+	}
+	return inlined;
 }
 
 /**

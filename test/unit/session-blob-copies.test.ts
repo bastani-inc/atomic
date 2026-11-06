@@ -5,8 +5,9 @@ import { describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import {
+	copySessionBlobs,
 	inlineToolOutput,
-	readToolOutputBlobs,
+	sessionBlobHashes,
 	sessionBlobOutput,
 	storeSessionBlobs,
 	TOOL_OUTPUT_ENTRY_TYPE,
@@ -217,11 +218,58 @@ describe("tool-output entries and blob copies (#4379)", () => {
 		assert.deepEqual(toolOutputHashes(entries), ["a".repeat(64)]);
 	});
 
-	test("a store without getBlob holds no blob to copy, even for entries that reference one (#4379)", async () => {
+	test("a store without getBlob holds no blob to copy, even for entries that reference one (#4379)", () => {
 		const store = new MemorySessionStore();
 		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { getBlob: undefined });
+		const entries = [reference({ hash: "a".repeat(64) })];
 
-		assert.deepEqual(await readToolOutputBlobs(blobless, "session", [reference({ hash: "a".repeat(64) })]), []);
+		assert.deepEqual(sessionBlobHashes(blobless, entries), []);
+		assert.deepEqual(sessionBlobHashes(store, entries), ["a".repeat(64)]);
+	});
+
+	test("a copy moves one blob at a time and skips one the source no longer holds (#4379)", async () => {
+		const header = (id: string) => ({ id, version: 4 as const, createdAt: new Date(0).toISOString(), cwd: "/" });
+		const source = new MemorySessionStore();
+		const target = new MemorySessionStore();
+		await source.create(header("source"), []);
+		await target.create(header("copy"), []);
+		const first = await source.putBlob("source", new TextEncoder().encode("first"));
+		const second = await source.putBlob("source", new TextEncoder().encode("second"));
+		const calls: string[] = [];
+		const getBlob = source.getBlob.bind(source);
+		const putBlob = target.putBlob.bind(target);
+		source.getBlob = async (sessionId, hash) => {
+			calls.push(`get ${hash}`);
+			return getBlob(sessionId, hash);
+		};
+		target.putBlob = async (sessionId, data) => {
+			const blob = await putBlob(sessionId, data);
+			calls.push(`put ${blob.hash}`);
+			return blob;
+		};
+
+		await copySessionBlobs(source, "source", target, "copy", [first.hash, "0".repeat(64), second.hash]);
+
+		assert.deepEqual(calls, [
+			`get ${first.hash}`,
+			`put ${first.hash}`,
+			`get ${"0".repeat(64)}`,
+			`get ${second.hash}`,
+			`put ${second.hash}`,
+		]);
+		assert.equal(Buffer.from((await target.getBlob("copy", second.hash))!).toString(), "second");
+	});
+
+	test("a copy into a store that cannot hold blobs deletes the session just created (#4379)", async () => {
+		const store = new MemorySessionStore();
+		await store.create({ id: "copy", version: 4, createdAt: new Date(0).toISOString(), cwd: "/" }, []);
+		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { putBlob: undefined });
+
+		await assert.rejects(
+			copySessionBlobs(store, "source", blobless, "copy", ["a".repeat(64)]),
+			(error) => isSessionBlobError(error) && error.code === "blobs-unsupported" && error.sessionId === "copy",
+		);
+		assert.equal(await store.readHeader("copy"), undefined);
 	});
 
 	test("storing blobs into a store that cannot hold them deletes the session just created (#4379)", async () => {

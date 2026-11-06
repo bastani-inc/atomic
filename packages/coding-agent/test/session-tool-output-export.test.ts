@@ -150,3 +150,47 @@ test("an import into a session directory, which holds no blobs, is blobs-unsuppo
 	assert.ok(!existsSync(sessionDir) || readdirSync(sessionDir).length === 0, "no session file was written");
 	creates.mockRestore();
 });
+
+test("forking an exported file stores its tool outputs with the fork in the target store (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-fork-file-");
+	const { path } = await exported(directory);
+
+	const forked = await SessionManager.forkFrom(path, process.cwd());
+	const store = forked.getSessionStore();
+	closers.push(() => store.close());
+
+	assert.equal(Buffer.from((await store.getBlob!(forked.getSessionId(), HASH))!).toString("utf8"), OUTPUT);
+	assert.deepEqual(
+		forked
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE ? [entry.data] : [],
+			),
+		[{ toolCallId: "call-1", hash: HASH, bytes: Buffer.byteLength(OUTPUT) }],
+	);
+});
+
+test("forking an exported file is checked before anything is created: a session directory, or a tampered file (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-fork-refused-");
+	const { path } = await exported(directory);
+	const creates = vi.spyOn(JsonlSessionStore.prototype, "create");
+
+	await assert.rejects(SessionManager.forkFrom(path, process.cwd(), join(directory, "forks")), (error) => {
+		assert.ok(isSessionBlobError(error));
+		assert.equal(error.code, "blobs-unsupported");
+		return true;
+	});
+	writeFileSync(
+		path,
+		readFileSync(path, "utf8").replace(Buffer.from(OUTPUT).toString("base64"), Buffer.from("x").toString("base64")),
+	);
+	await assert.rejects(SessionManager.forkFrom(path, process.cwd(), join(directory, "forks")), (error) => {
+		assert.ok(isSessionBlobError(error));
+		assert.equal(error.code, "blob-corrupt");
+		assert.equal(error.hash, HASH);
+		return true;
+	});
+
+	assert.equal(creates.mock.calls.length, 0, "no session was created");
+	creates.mockRestore();
+});

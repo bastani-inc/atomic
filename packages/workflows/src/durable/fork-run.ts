@@ -8,12 +8,11 @@ import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import {
 	assertSessionBlobStore,
-	readToolOutputBlobs,
-	type SessionBlobCopy,
+	copySessionBlobs,
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
-	storeSessionBlobs,
+	sessionBlobHashes,
 } from "@bastani/atomic";
 import { StorageError } from "@bastani/atomic/storage";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
@@ -1275,36 +1274,24 @@ type SessionSnapshots = Map<
 	string,
 	{
 		readonly entries: readonly SessionEntry[];
-		readonly blobs: readonly SessionBlobCopy[];
+		/** The store that holds the source session, and the hashes of the blobs its copy brings along. */
+		readonly store: SessionStore;
+		readonly hashes: readonly string[];
 		readonly checkpoint: DurableStageCheckpoint;
 	}
 >;
 
-/** The tool-output blobs a source session holds; a store failure is a {@link ForkSessionUnavailableError}. */
-async function readSessionBlobs(
-	store: SessionStore,
-	sessionId: string,
-	entries: readonly SessionEntry[],
-	context: SessionContext,
-): Promise<SessionBlobCopy[]> {
-	try {
-		return await readToolOutputBlobs(store, sessionId, entries);
-	} catch (error) {
-		if (sessionStoreFailure(error) !== "unavailable") throw error;
-		throw new ForkSessionUnavailableError(
-			{ sessionId, ...context, storage: storageScope(store.descriptor) },
-			{ cause: error as Error },
-		);
-	}
-}
-
+/**
+ * Reads every source session to copy. The source stores stay open for the copy, which reads their blobs one at a time;
+ * the caller closes them with `closeSourceSessions`. On failure they are closed here.
+ */
 async function readSessions(
 	source: ForkSource,
 	sessions: readonly { readonly sessionId: string; readonly checkpoint: DurableStageCheckpoint }[],
 	request: ResolvedForkRequest,
 	cleanup: ForkCleanup,
 	claim: SourceClaim,
-): Promise<SessionSnapshots> {
+): Promise<{ readonly snapshots: SessionSnapshots; readonly sources: SourceSessions }> {
 	const sourceStore = await sourceSessionStoreFor(source.backend, source.handle, request, request.cwd);
 	const snapshots: SessionSnapshots = new Map();
 	try {
@@ -1315,13 +1302,13 @@ async function readSessions(
 				continue;
 			}
 			claim.throwIfLost();
-			const snapshot = await loadSession(sourceStore, sessionId, { runId: source.runId });
-			const blobs = await readSessionBlobs(snapshot.store, sessionId, snapshot.entries, { runId: source.runId });
-			snapshots.set(sessionId, { entries: snapshot.entries, blobs, checkpoint });
+			const { entries, store } = await loadSession(sourceStore, sessionId, { runId: source.runId });
+			snapshots.set(sessionId, { entries, store, hashes: sessionBlobHashes(store, entries), checkpoint });
 		}
-		return snapshots;
-	} finally {
+		return { snapshots, sources: sourceStore };
+	} catch (error) {
 		await closeSourceSessions(sourceStore, cleanup);
+		throw error;
 	}
 }
 
@@ -1342,9 +1329,20 @@ async function copySessions(
 ): Promise<readonly CopiedSessions[]> {
 	if (sessions.length === 0) return [];
 	await claim.assertHeld();
-	const snapshots = await readSessions(source, sessions, request, cleanup, claim);
-	request.signal?.throwIfAborted();
-	await claim.assertHeld();
+	const { snapshots, sources } = await readSessions(source, sessions, request, cleanup, claim);
+	let sourcesOpen = true;
+	const closeSources = async (): Promise<void> => {
+		if (!sourcesOpen) return;
+		sourcesOpen = false;
+		await closeSourceSessions(sources, cleanup);
+	};
+	try {
+		request.signal?.throwIfAborted();
+		await claim.assertHeld();
+	} catch (error) {
+		await closeSources();
+		throw error;
+	}
 	const copied: CopiedSessions[] = [];
 	let project: CopiedSessions | undefined;
 	let pool: CopiedSessions | undefined;
@@ -1383,14 +1381,14 @@ async function copySessions(
 	try {
 		// The fork's pool tables are found before anything is copied.
 		if ([...snapshots.values()].some(({ checkpoint }) => pooled(checkpoint))) await destinationFor(true);
-		for (const [sessionId, { entries, blobs, checkpoint }] of snapshots) {
+		for (const [sessionId, { entries, store, hashes, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
 			const stageRun = checkpoint.topology?.run?.runId;
 			const destination = await destinationFor(pooled(checkpoint));
 			const id = randomUUID();
 			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
-			assertSessionBlobStore(destination.store, id, blobs);
+			assertSessionBlobStore(destination.store, id, hashes);
 			destination.copies.push({ id, runId });
 			await destination.store.create(
 				{
@@ -1408,12 +1406,14 @@ async function copySessions(
 				},
 				entries,
 			);
-			await storeSessionBlobs(destination.store, id, blobs);
+			await copySessionBlobs(store, sessionId, destination.store, id, hashes);
 			const file = (await SessionManager.open(destination.store, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
+		await closeSources();
 		return copied;
 	} catch (error) {
+		await closeSources();
 		await removeCopies(copied, ids.forkRunId, cleanup);
 		await closeCopies(copied, ids.forkRunId, cleanup);
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;

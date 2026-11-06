@@ -314,7 +314,7 @@ Atomic records one of its own: when the oversized result of an agent released wh
 {"type":"custom","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:21:00.000Z","customType":"atomic.tool-output","data":{"toolCallId":"call_1","hash":"9c56…","bytes":1048576}}
 ```
 
-`hash` is the SHA-256 of the stored bytes and `bytes` their size. In exported files `data` also has `base64`, the bytes themselves, each blob once; import checks every one against its `hash`, stores it with the session and drops the field.
+`hash` is the SHA-256 of the stored bytes and `bytes` their size. In exported files `data` also has `base64`, the bytes themselves, each blob once; importing or forking the file checks every one against its `hash`, stores it with the new session and drops the field.
 
 ### CustomMessageEntry
 

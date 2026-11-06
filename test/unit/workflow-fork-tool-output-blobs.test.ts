@@ -9,10 +9,7 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import {
-	isForkCopyFailedError,
-	isForkSessionUnavailableError,
-} from "../../packages/workflows/src/durable/fork-errors.js";
+import { isForkCopyFailedError } from "../../packages/workflows/src/durable/fork-errors.js";
 import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { forkStageSession } from "../../packages/workflows/src/shared/stage-session-store.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -175,7 +172,7 @@ test("a forked run whose session store holds no blobs fails its copy and leaves 
 	assert.deepEqual(await sessionIds(inner), []);
 });
 
-test("a source store that fails to read a blob fails the fork as a retryable ForkSessionUnavailableError (#4379)", async () => {
+test("a source store that fails to read a blob fails the copy, which is retryable and leaves no copied session (#4379)", async () => {
 	const source = new MemorySessionStore();
 	const failure = new StorageUnavailableError(source.descriptor, new Error("disk read failed"));
 	const destination = new MemorySessionStore();
@@ -185,23 +182,10 @@ test("a source store that fails to read a blob fails the fork as a retryable For
 	};
 
 	await assert.rejects(fork(), (error) => {
-		assert.ok(isForkSessionUnavailableError(error));
+		assert.ok(isForkCopyFailedError(error));
 		assert.equal(error.retryable, true);
-		assert.equal(error.runId, testRunId("fork-tool-output-source"));
-		assert.equal(error.storage?.adapter, "memory");
 		assert.equal(error.cause, failure);
 		return true;
 	});
 	assert.deepEqual(await sessionIds(destination), []);
-});
-
-test("a blob read that fails for another reason fails the fork with that error unchanged (#4379)", async () => {
-	const source = new MemorySessionStore();
-	const failure = new Error("a bug in a custom store");
-	const { fork } = await forkedRun(new MemorySessionStore(), source);
-	source.getBlob = async () => {
-		throw failure;
-	};
-
-	await assert.rejects(fork(), (error) => error === failure);
 });

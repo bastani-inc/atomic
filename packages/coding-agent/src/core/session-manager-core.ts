@@ -63,7 +63,8 @@ import {
 import { listSessionStore } from "./session-store-list.js";
 import {
 	assertSessionBlobStore,
-	readToolOutputBlobs,
+	copySessionBlobs,
+	sessionBlobHashes,
 	storeSessionBlobs,
 	takeInlineToolOutput,
 } from "./session-tool-output.ts";
@@ -288,10 +289,10 @@ export class SessionManager {
 			if (store === this.store) return;
 			const header = this.recordHeader();
 			const entries = this.getEntries();
-			const blobs = await readToolOutputBlobs(this.store, this.sessionId, entries);
-			assertSessionBlobStore(store, this.sessionId, blobs);
+			const hashes = sessionBlobHashes(this.store, entries);
+			assertSessionBlobStore(store, this.sessionId, hashes);
 			const result = await store.create(header, entries);
-			await storeSessionBlobs(store, this.sessionId, blobs);
+			await copySessionBlobs(this.store, this.sessionId, store, this.sessionId, hashes);
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
 			this.store = store;
 			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
@@ -337,7 +338,11 @@ export class SessionManager {
 		try {
 			const loaded = await source.loadFile(inputPath);
 			const { entries, blobs } = takeInlineToolOutput(loaded.entries, loaded.header.id);
-			assertSessionBlobStore(this.store, loaded.header.id, blobs);
+			assertSessionBlobStore(
+				this.store,
+				loaded.header.id,
+				blobs.map((blob) => blob.hash),
+			);
 			const snapshot = {
 				...loaded,
 				entries: await adoptInlineSnapshotBlobs(entries, this.store.snapshotBlobs),
@@ -804,7 +809,7 @@ export class SessionManager {
 			const header = result.fileEntries[0] as SessionHeader;
 			const entries = getEntriesWithoutHeader(result.fileEntries);
 			const record = this.recordHeader(header);
-			const blobs = await readToolOutputBlobs(this.store, this.sessionId, entries);
+			const hashes = sessionBlobHashes(this.store, entries);
 			const store = await this.storeForNewSession();
 			const location =
 				store instanceof JsonlSessionStore
@@ -817,7 +822,7 @@ export class SessionManager {
 					? store.create(record, entries, location)
 					: store.create(record, entries))
 			).lastSeq;
-			await storeSessionBlobs(store, record.id, blobs);
+			await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
 			this.store = store;
 			this.fileEntries = result.fileEntries;
 			this.sessionId = header.id;
@@ -837,11 +842,11 @@ export class SessionManager {
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
 			const entries = this.getEntries();
-			const blobs = await readToolOutputBlobs(this.store, this.sessionId, entries);
-			assertSessionBlobStore(store, manager.sessionId, blobs);
+			const hashes = sessionBlobHashes(this.store, entries);
+			assertSessionBlobStore(store, manager.sessionId, hashes);
 			manager.fileEntries.push(...entries);
 			await manager.initialize();
-			await storeSessionBlobs(store, manager.sessionId, blobs);
+			await copySessionBlobs(this.store, this.sessionId, store, manager.sessionId, hashes);
 			manager._buildIndex();
 			return manager;
 		});
@@ -1030,6 +1035,7 @@ export class SessionManager {
 		} finally {
 			await sourceStore.close();
 		}
+		const { entries, blobs } = takeInlineToolOutput(source.entries, source.header.id);
 		const store =
 			sessionDir === undefined
 				? await resolveSessionStore(targetCwd)
@@ -1039,8 +1045,14 @@ export class SessionManager {
 				...options,
 				parentSession: source.header.id,
 			});
-			manager.fileEntries.push(...source.entries);
+			assertSessionBlobStore(
+				store,
+				manager.sessionId,
+				blobs.map((blob) => blob.hash),
+			);
+			manager.fileEntries.push(...entries);
 			await manager.initialize();
+			await storeSessionBlobs(store, manager.sessionId, blobs);
 			manager._buildIndex();
 			return manager;
 		});
