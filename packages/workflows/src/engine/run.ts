@@ -68,6 +68,7 @@ import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
+import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
 import { raceAbort } from "../shared/abort.js";
@@ -950,6 +951,16 @@ async function executeRun(
 		beforeCall: beforeLiveCall,
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
+		readStoredMessages: (options, sessionId) =>
+			readReplayedStageMessages(
+				mapStageOptions(options),
+				{
+					adapters: opts.adapters,
+					defaultSessionDir: opts.defaultSessionDir,
+					defaultCwd: workflowInvocationCwd,
+				},
+				sessionId,
+			),
 		stage: (name, options, replayKey) => {
 			const stage = runtime.stage(name, mapStageOptions(options));
 			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;

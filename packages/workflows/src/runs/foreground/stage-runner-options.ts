@@ -9,7 +9,8 @@ import {
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
-import type { AgentSessionConsumer } from "./stage-runner-types.js";
+import { agentSessionAdapterDefaultCwd } from "./stage-runner-session-options.js";
+import type { AgentSessionConsumer, StageAdapters } from "./stage-runner-types.js";
 
 function workflowSessionOptions(meta: StageExecutionMeta) {
 	return {
@@ -161,6 +162,37 @@ export async function readStoredStageMessages(
 	}
 	if (owned) await store.close();
 	return messages;
+}
+
+/**
+ * The stored messages of session `sessionId` of a stage a resumed run replays, from the store the stage would open with
+ * `options`: its own `sessionStore`, `sessionManager` or `sessionDir`, else the run's `adapters.sessionStore`, else
+ * `defaultSessionDir` or the default store. A store this read opens is closed; the caller's stores stay open (#4309).
+ */
+export function readReplayedStageMessages(
+	options: StageOptions,
+	run: {
+		readonly adapters?: Partial<Pick<StageAdapters, "sessionStore" | "agentSession">>;
+		readonly defaultSessionDir?: string;
+		readonly defaultCwd: string;
+	},
+	sessionId: string,
+): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	const ownStore =
+		options.sessionStore !== undefined || options.sessionDir !== undefined || options.sessionManager !== undefined;
+	const runStore = run.adapters?.sessionStore;
+	return readStoredStageMessages(
+		{
+			...(ownStore || runStore === undefined ? options : { ...options, sessionStore: runStore }),
+			cwd:
+				options.cwd ??
+				options.sessionManager?.getCwd() ??
+				agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
+				run.defaultCwd,
+		},
+		run.defaultSessionDir,
+		sessionId,
+	);
 }
 
 /** Close `store` after `primary` failed: a failure to close is attached to `primary` as `cleanupCause`, never thrown. */

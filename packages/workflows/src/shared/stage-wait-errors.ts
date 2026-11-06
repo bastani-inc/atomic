@@ -17,7 +17,11 @@ export type StageReleasedErrorCode = "stage-released";
 export type StageReleasedProperty = "agent" | "messages" | "model" | "thinkingLevel";
 
 /** The codes a {@link StageRehydrationError} carries. */
-export type StageRehydrationErrorCode = "session-unavailable" | "session-not-found" | "results-not-saved";
+export type StageRehydrationErrorCode =
+	| "session-unavailable"
+	| "session-not-found"
+	| "results-not-saved"
+	| "replayed-stage";
 
 /** The codes a {@link StageWakeError} carries. */
 export type StageWakeErrorCode = "unknown-wake-kind" | StageWakeRegistrationErrorCode;
@@ -55,6 +59,7 @@ const CODES: ReadonlySet<string> = new Set<StageWaitErrorCode>([
 	"session-unavailable",
 	"session-not-found",
 	"results-not-saved",
+	"replayed-stage",
 	"wait-record-unavailable",
 	"unknown-wake-kind",
 	"builtin-kind-handler",
@@ -67,6 +72,7 @@ const REHYDRATION_CODES: ReadonlySet<string> = new Set<StageRehydrationErrorCode
 	"session-unavailable",
 	"session-not-found",
 	"results-not-saved",
+	"replayed-stage",
 ]);
 
 const MAX_CAUSE_DEPTH = 8;
@@ -109,6 +115,11 @@ export interface StageWaitErrorFields extends WorkflowSerializableObject {
 	readonly waitKind?: StageWaitKind;
 	/** True when the stage could not reopen the session its tool wait gave up; `cause` says why (`stage-released`). */
 	readonly reopenFailed?: boolean;
+	/**
+	 * True for a stage a resumed run replayed from its durable checkpoint: it completed before the restart and has no
+	 * session to reopen (`stage-released`, `replayed-stage`).
+	 */
+	readonly replayed?: boolean;
 }
 
 /** The serialized form of a {@link StageWaitError}, for crossing a worker or IPC boundary. */
@@ -145,6 +156,8 @@ const HINTS: Readonly<
 	"not-reopenable":
 		"Give the stage a persistent session store (the default store, sessionDir, or a caller-owned sessionStore) so it can be reopened.",
 	"session-unavailable": "Check that the stage's session store is reachable, then resume the workflow.",
+	"replayed-stage":
+		"Read the stage's transcript with await stage.readMessages(), which reads it from the session store. To run the stage again, fork the run from it with /workflow fork <runId> --from <stage>.",
 	"wait-record-unavailable":
 		"The stage carries on. Until its next record is written, a resume after a restart starts the stage from its previous record, which may run a finished tool call again; check that the run's journal storage is reachable.",
 	"unknown-wake-kind":
@@ -185,7 +198,9 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 const KEEP_RESIDENT =
 	"Set releaseWhenWaiting: false only on a stage the workflow must read synchronously while it holds it.";
 
-function releasedHint({ property, waitKind, reopenFailed }: StageWaitErrorFields): string {
+function releasedHint({ property, waitKind, reopenFailed, replayed }: StageWaitErrorFields): string {
+	if (replayed === true)
+		return `The stage completed before the run was resumed and was replayed from its durable checkpoint, so it has no live session for stage.${property ?? "agent"} to read and stage.rehydrate() cannot open one. Call await stage.readMessages() to read its stored transcript from the session store.`;
 	if (reopenFailed === true)
 		return `Reopening the session failed; the error's cause says why. Call await stage.readMessages() to read the transcript from the session store, or reopen the session with await stage.rehydrate() or the stage's next prompt. ${KEEP_RESIDENT}`;
 	if (waitKind === "tool")
@@ -240,6 +255,8 @@ function subject(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 					: `the waiting stages of run ${fields.runId ?? "unknown"}`;
 			return `Cannot rehydrate ${owner}: ${sessions} not in the session store`;
 		}
+		case "replayed-stage":
+			return `Cannot rehydrate ${stage}: it was replayed from its durable checkpoint and has no live stage session to reopen`;
 		case "results-not-saved": {
 			const calls = fields.toolCallIds ?? [];
 			return `Cannot rehydrate ${stage}: session ${fields.sessionId ?? "unknown"} returned from its detached turn without saving the results of ${calls.length === 0 ? "its calls" : calls.join(", ")}`;
@@ -255,7 +272,7 @@ function subject(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 		case "invalid-wake-handler":
 			return `Invalid handler passed to registerStageWakeKind for the wake kind "${fields.kind ?? "unknown"}": ${fields.value}`;
 		case "stage-released":
-			return `Cannot read stage.${fields.property ?? "agent"} of ${stage}: ${fields.sessionId === undefined ? "its session" : `its session ${fields.sessionId}`} is released${releasedWhile(fields.waitKind)}${fields.reopenFailed === true ? " and could not be reopened" : ""}`;
+			return `Cannot read stage.${fields.property ?? "agent"} of ${stage}: ${fields.sessionId === undefined ? "its session" : `its session ${fields.sessionId}`} is released${fields.replayed === true ? " because the stage was replayed from its durable checkpoint" : releasedWhile(fields.waitKind)}${fields.reopenFailed === true ? " and could not be reopened" : ""}`;
 	}
 }
 
@@ -323,7 +340,9 @@ export class StageReleaseError extends StageWaitError {
  * the session; `fields.sessionIds` lists every missing session and `fields.storage` the storage the run was started
  * with. `results-not-saved` (not retryable, `phase: "resume-turn"`): the reopened session returned from the turn the
  * results continue without saving the results of `fields.toolCallIds`; the stage fails rather than completing on a turn
- * still waiting on a call, and the run stays resumable with the results its wait recorded.
+ * still waiting on a call, and the run stays resumable with the results its wait recorded. `replayed-stage` (not
+ * retryable): `stage.rehydrate()` on a stage a resumed run replayed from its durable checkpoint, which has no live stage
+ * session to reopen; `stage.readMessages()` still reads its transcript from the session store.
  */
 export class StageRehydrationError extends StageWaitError {
 	override readonly name = "StageRehydrationError";

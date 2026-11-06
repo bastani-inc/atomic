@@ -60,6 +60,7 @@ import {
 	type InternalStageContext,
 	type StageAdapters,
 } from "./stage-runner.js";
+import { readReplayedStageMessages } from "./stage-runner-options.js";
 import { stageError } from "./stage-runner-session.js";
 import type { StageWaitHooks } from "./stage-runner-types.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
@@ -202,6 +203,16 @@ export function createWorkflowStageFactory(input: {
 				registerWorkflowExitCleanup: input.exit.registerWorkflowExitCleanup,
 				workflowExitSkippedReason: input.exit.workflowExitSkippedReason,
 				throwIfWorkflowExitSelected: input.exit.throwIfWorkflowExitSelected,
+				readStoredMessages: (sessionId) =>
+					readReplayedStageMessages(
+						options ?? {},
+						{
+							adapters: input.adapters,
+							defaultSessionDir: input.opts.defaultSessionDir,
+							defaultCwd: input.workflowInvocationCwd,
+						},
+						sessionId,
+					),
 			}) as StageContextWithMeta;
 		}
 		// A resumed stage keeps the results its previous process recorded in every record it writes, until the turn that

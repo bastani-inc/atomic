@@ -1,8 +1,10 @@
 /** Durable `ctx.stage` / `ctx.task` replay and checkpoint helpers. */
 
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
+import { readStoredStageMessages } from "../runs/foreground/stage-runner-options.js";
 import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
 import type { StageWaitToolResult } from "../shared/stage-wait.js";
+import { StageRehydrationError, StageReleasedError, type StageReleasedProperty } from "../shared/stage-wait-errors.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs, stageTimingFields } from "../shared/timing.js";
 import type {
@@ -13,6 +15,7 @@ import type {
 	WorkflowSerializableValue,
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
+	WorkflowThinkingLevel,
 } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
@@ -271,6 +274,11 @@ export function createDurableStagePrimitive(input: {
 		replayKey: string,
 		checkpoint: DurableCompletedStageCheckpoint,
 	) => void | Promise<void>;
+	/**
+	 * Read the stored messages of a replayed stage's session, from the store the stage would reopen it from with
+	 * `options`. Defaults to the stage's own `sessionStore`, `sessionManager` or `sessionDir`, then the default store.
+	 */
+	readonly readStoredMessages?: (options: StageOptions, sessionId: string) => Promise<readonly object[]>;
 }): (name: string, options?: StageOptions, reservedReplayKey?: string) => StageContext {
 	// The session records the previous process left, read once: a stage writes its own records only after it starts.
 	let priorSessions: Map<string, DurableStageCheckpoint> | undefined;
@@ -285,7 +293,14 @@ export function createDurableStagePrimitive(input: {
 		if (cached !== undefined && released === undefined) {
 			const recorded = input.recordCachedStage?.(name, replayKey, cached);
 			return withStageWriteBarrier(
-				createCachedStageContext(name, cached.output, cached.result, recorded),
+				createCachedStageContext({
+					name,
+					runId: input.workflowId,
+					checkpoint: cached,
+					recorded,
+					readStoredMessages: (sessionId) =>
+						(input.readStoredMessages ?? readStoredStageMessagesWithOwnStore)(options ?? {}, sessionId),
+				}),
 				input.beforeCall,
 			);
 		}
@@ -633,13 +648,23 @@ function wrapSchemaStageForDurability(input: {
 	return wrapped;
 }
 
-function createCachedStageContext(
-	name: string,
-	output: WorkflowSerializableValue,
-	result?: string,
-	recorded?: void | Promise<void>,
-): StageContext {
-	const persistence = Promise.resolve(recorded);
+/**
+ * The context of a stage a resumed run replays from its durable checkpoint. The stage completed before the restart and
+ * runs no session: like a released stage, `messages` and `agent` throw `StageReleasedError`, `readMessages()` reads the
+ * transcript from the session store, and `model` and `thinkingLevel` return the values its checkpoint recorded.
+ * `release()` has nothing to give up; `rehydrate()` has no live session to reopen and throws `StageRehydrationError`
+ * (`replayed-stage`).
+ */
+function createCachedStageContext(input: {
+	readonly name: string;
+	readonly runId: string;
+	readonly checkpoint: DurableCompletedStageCheckpoint;
+	readonly recorded?: void | Promise<void>;
+	readonly readStoredMessages: (sessionId: string) => Promise<readonly object[]>;
+}): StageContext {
+	const { name, checkpoint } = input;
+	const { output, result } = checkpoint;
+	const persistence = Promise.resolve(input.recorded);
 	void persistence.catch(() => {});
 	const text = result ?? (typeof output === "string" ? output : JSON.stringify(output));
 	const unsupported = async (): Promise<never> => {
@@ -647,6 +672,16 @@ function createCachedStageContext(
 			`Stage "${name}" was replayed from a durable checkpoint; live session operations are unavailable.`,
 		);
 	};
+	const fields = {
+		runId: input.runId,
+		stageName: name,
+		...(checkpoint.sessionId === undefined ? {} : { sessionId: checkpoint.sessionId }),
+		replayed: true,
+	};
+	const released = (property: StageReleasedProperty): never => {
+		throw new StageReleasedError({ ...fields, property });
+	};
+	let requestedThinkingLevel: WorkflowThinkingLevel | undefined;
 	const cached = {
 		name,
 		async prompt() {
@@ -666,25 +701,48 @@ function createCachedStageContext(
 		sessionFile: undefined,
 		sessionId: `durable-replay:${name}`,
 		setModel: unsupported,
-		setThinkingLevel() {},
+		setThinkingLevel(level: WorkflowThinkingLevel) {
+			requestedThinkingLevel = level;
+		},
 		cycleModel: unsupported,
 		cycleThinkingLevel() {
 			return undefined;
 		},
-		agent: undefined,
-		model: undefined,
-		thinkingLevel: undefined,
-		messages: [],
-		async readMessages() {
-			return [];
+		get agent(): object {
+			return released("agent");
+		},
+		get model(): string {
+			return checkpoint.model ?? released("model");
+		},
+		get thinkingLevel(): WorkflowThinkingLevel {
+			return (
+				requestedThinkingLevel ??
+				(checkpoint.thinkingLevel as WorkflowThinkingLevel | undefined) ??
+				released("thinkingLevel")
+			);
+		},
+		get messages(): readonly object[] {
+			return released("messages");
+		},
+		async readMessages(): Promise<readonly object[]> {
+			return checkpoint.sessionId === undefined ? [] : input.readStoredMessages(checkpoint.sessionId);
 		},
 		isStreaming: false,
 		navigateTree: unsupported,
 		compact: unsupported,
 		abortCompaction() {},
 		abort: async () => {},
+		async release() {},
+		async rehydrate(): Promise<never> {
+			throw new StageRehydrationError(fields, { code: "replayed-stage" });
+		},
 	};
 	return cached as never as StageContext;
+}
+
+/** A replayed stage's stored messages, from the store its own options select; a store this read opens is closed. */
+function readStoredStageMessagesWithOwnStore(options: StageOptions, sessionId: string): Promise<readonly object[]> {
+	return readStoredStageMessages(options, undefined, sessionId);
 }
 
 function stageOutput(stage: StageSnapshot): WorkflowSerializableValue {

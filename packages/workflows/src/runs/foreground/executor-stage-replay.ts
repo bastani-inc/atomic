@@ -1,6 +1,11 @@
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
+import {
+	StageRehydrationError,
+	StageReleasedError,
+	type StageReleasedProperty,
+} from "../../shared/stage-wait-errors.js";
 import type { Store } from "../../shared/store.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
@@ -21,6 +26,8 @@ export function createReplayStageContext(input: {
 	readonly registerWorkflowExitCleanup: (stageId: string, cleanup: WorkflowExitCleanup) => () => void;
 	readonly workflowExitSkippedReason: (reason?: string) => string;
 	readonly throwIfWorkflowExitSelected: () => void;
+	/** Read the stored messages of the replayed stage's session from the store the stage would open (#4309). */
+	readonly readStoredMessages: (sessionId: string) => Promise<readonly object[]>;
 }): InternalStageContext {
 	const { runId, name, stageId, stageSnapshot, replaySource } = input;
 	workflowObservationRuntime(input.activeStore).replayStageIds.add(workflowActivityNodeKey(runId, stageId));
@@ -94,6 +101,17 @@ export function createReplayStageContext(input: {
 	const rejectReplayMutation = (action: string): never => {
 		throw new Error(`atomic-workflows: replayed stage "${name}" cannot ${action}`);
 	};
+	const releasedFields = {
+		runId,
+		stageId,
+		stageName: name,
+		...(replaySource.sessionId === undefined ? {} : { sessionId: replaySource.sessionId }),
+		replayed: true,
+	};
+	// A replayed stage has no live session: it reads like a released stage that cannot reopen (#4309).
+	const released = (property: StageReleasedProperty): never => {
+		throw new StageReleasedError({ ...releasedFields, property });
+	};
 
 	return {
 		name,
@@ -117,18 +135,19 @@ export function createReplayStageContext(input: {
 		cycleModel: async () => rejectReplayMutation("cycle model"),
 		cycleThinkingLevel: () => rejectReplayMutation("cycle thinking level"),
 		get agent() {
-			return undefined as never;
+			return released("agent");
 		},
 		get model() {
-			return replaySource.model as never;
+			return (replaySource.model ?? released("model")) as never;
 		},
 		get thinkingLevel() {
-			return replaySource.thinkingLevel as never;
+			return (replaySource.thinkingLevel ?? released("thinkingLevel")) as never;
 		},
 		get messages() {
-			return [] as never;
+			return released("messages");
 		},
-		readMessages: async () => [] as never,
+		readMessages: async () =>
+			(replaySource.sessionId === undefined ? [] : await input.readStoredMessages(replaySource.sessionId)) as never,
 		__residentMessages: () => [] as never,
 		get isStreaming() {
 			return false;
@@ -138,7 +157,9 @@ export function createReplayStageContext(input: {
 		abortCompaction: () => rejectReplayMutation("abort compaction"),
 		abort: async () => rejectReplayMutation("abort"),
 		release: async () => {},
-		rehydrate: async () => {},
+		rehydrate: async () => {
+			throw new StageRehydrationError(releasedFields, { code: "replayed-stage" });
+		},
 		__dispose: async () => {},
 		__getLastAssistantText: () => replayResult,
 		getLastAssistantText: () => replayResult,
