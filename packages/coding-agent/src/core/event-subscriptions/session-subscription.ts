@@ -1,8 +1,6 @@
 /** `session.subscribe(source, handler)`: session-level event subscriptions with short-lived child sessions. */
 
-import { Type } from "typebox";
 import type { AgentSessionInternalSurface as AgentSession } from "../agent-session-methods.ts";
-import { defineTool } from "../extensions/tool-types.ts";
 import type { CreateAgentSessionOptions } from "../sdk-types.ts";
 import {
 	type EventSubscriptionHandle,
@@ -11,7 +9,7 @@ import {
 	validateSubscriptionAdmission,
 } from "./admission.js";
 import { SubscriptionChildUnavailableError, SubscriptionClosedError, SubscriptionConfigError } from "./errors.js";
-import { formatEventReport, SUBSCRIPTION_REPORT_TOOL_NAME, seedEventPrompt } from "./prompts.js";
+import { createSubscriberReportTool, formatEventReport, seedEventPrompt } from "./prompts.js";
 import type { EventSource, Subscription, SubscriptionAdmission, SubscriptionEvent } from "./types.js";
 
 /** Custom message type of a report delivered into the subscribing session. */
@@ -85,27 +83,38 @@ function processedIds(session: AgentSession, subscription: string): ReadonlySet<
 	return ids;
 }
 
-const reportParameters = Type.Object({ text: Type.String({ description: "The report: a few sentences at most." }) });
-
 function attachCleanupCause(primary: unknown, cleanupCause: unknown): void {
 	if (typeof primary === "object" && primary !== null && Object.isExtensible(primary)) {
 		Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, enumerable: false });
 	}
 }
 
+/**
+ * Runs `work`, then `dispose`. When `work` failed, a disposal failure is attached to its error as `cleanupCause`
+ * instead of replacing it; after a successful `work`, a disposal failure propagates.
+ */
+export async function runThenDispose<T>(work: () => Promise<T>, dispose: () => Promise<void>): Promise<T> {
+	let result: T;
+	try {
+		result = await work();
+	} catch (error) {
+		await dispose().catch((cleanupCause: unknown) => attachCleanupCause(error, cleanupCause));
+		throw error;
+	}
+	await dispose();
+	return result;
+}
+
 async function runChildSession(options: CreateAgentSessionOptions, prompt: string): Promise<SessionEventTaskResult> {
 	const { createAgentSession } = await import("../sdk.ts");
 	const { session: child } = await createAgentSession(options);
-	let result: SessionEventTaskResult;
-	try {
-		await child.prompt(prompt);
-		result = { text: child.getLastAssistantText() ?? "", sessionId: child.sessionId };
-	} catch (error) {
-		await child.dispose().catch((cleanupCause: unknown) => attachCleanupCause(error, cleanupCause));
-		throw error;
-	}
-	await child.dispose();
-	return result;
+	return await runThenDispose(
+		async () => {
+			await child.prompt(prompt);
+			return { text: child.getLastAssistantText() ?? "", sessionId: child.sessionId };
+		},
+		() => child.dispose(),
+	);
 }
 
 /** Implements `AgentSession.subscribe(source, handler, options?)`. */
@@ -134,7 +143,7 @@ export function subscribeSession(
 	ordinals.set(name, ordinal);
 	const key = `${name}#${ordinal}`;
 	const id = `${session.sessionId}/${key}`;
-	const processed = new Set(processedIds(session, key));
+	const processed = processedIds(session, key);
 	const ready = session.sessionManager
 		.appendCustomEntry(EVENT_SUBSCRIPTION_ENTRY_TYPE, {
 			subscription: key,
@@ -180,22 +189,7 @@ export function subscribeSession(
 						resolve({
 							...childOptions,
 							sessionManager: SessionManager.inMemory(session._cwd),
-							customTools: [
-								defineTool({
-									name: SUBSCRIPTION_REPORT_TOOL_NAME,
-									label: "Report to subscriber",
-									description:
-										"Send a short report about this event to the session that subscribed to it. Call it at most once, and only when the event matters.",
-									parameters: reportParameters,
-									async execute(_toolCallId, params) {
-										await report(params.text);
-										return {
-											content: [{ type: "text", text: "Report delivered to the subscriber." }],
-											details: undefined,
-										};
-									},
-								}),
-							],
+							customTools: [createSubscriberReportTool(report, "session")],
 						}),
 						seedEventPrompt(prompt, name, event),
 					);
@@ -203,7 +197,6 @@ export function subscribeSession(
 				report,
 			};
 			await eventHandler(event, child);
-			processed.add(event.id);
 			await session.sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE, {
 				subscription: key,
 				eventId: event.id,

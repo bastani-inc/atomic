@@ -2,6 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { open, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -49,13 +50,15 @@ function resolveDispatcher(dispatcher: WakeDispatcher | undefined, field: string
 	return dispatcher;
 }
 
+/** The string `code` of a Node system error, or `undefined` for anything else, including thrown primitives. */
 function errnoCode(error: unknown): string | undefined {
-	if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-	return typeof error.code === "string" ? error.code : undefined;
+	const { code } = Object(error);
+	return typeof code === "string" ? code : undefined;
 }
 
+/** True for a plain JSON object: not `null`, an array or a primitive. */
 function isJsonObject(value: SubscriptionEventPayload | undefined): value is JsonObject {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+	return Object.prototype.toString.call(value) === "[object Object]";
 }
 
 function parseJson(text: string): SubscriptionEventPayload {
@@ -69,12 +72,13 @@ function stringField(object: JsonObject, key: string): string | undefined {
 
 function numberField(object: JsonObject, key: string): number | undefined {
 	const value = object[key];
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+	return Number.isFinite(value) ? (value as number) : undefined; // `isFinite` does not coerce: only numbers pass
 }
 
-function objectField(object: JsonObject, key: string): JsonObject | undefined {
-	const value = object[key];
-	return isJsonObject(value) ? value : undefined;
+/** The string at `object[key][inner]`, or `undefined` when `object[key]` is not an object or has no string there. */
+function nestedString(object: JsonObject, key: string, inner: string): string | undefined {
+	const child = object[key];
+	return isJsonObject(child) ? stringField(child, inner) : undefined;
 }
 
 function event(id: string, type: string | undefined, payload: SubscriptionEventPayload): SubscriptionEvent {
@@ -181,11 +185,12 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 					if (size === readFrom) return { lines: [], more: false };
 					const chunk = await readRange(absolutePath, readFrom, Math.min(size - readFrom, MAX_LOG_READ_BYTES));
 					if (chunk.length === 0) return { lines: [], more: false };
-					const buffer = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+					const buffer = Buffer.concat([pending, chunk]);
 					const lines: TailLine[] = [];
 					let lineStart = 0;
 					for (let newline = buffer.indexOf(0x0a); newline !== -1; newline = buffer.indexOf(0x0a, lineStart)) {
-						const lineEnd = newline > lineStart && buffer[newline - 1] === 0x0d ? newline - 1 : newline;
+						// For an empty line `buffer[newline - 1]` is the previous line's `\n` (or absent), never a `\r`.
+						const lineEnd = buffer[newline - 1] === 0x0d ? newline - 1 : newline;
 						lines.push({ offset: consumed + lineStart, line: buffer.toString("utf8", lineStart, lineEnd) });
 						lineStart = newline + 1;
 					}
@@ -242,9 +247,14 @@ export interface WebhookEventSource extends EventSource {
 	listening(): Promise<string>;
 }
 
-function headerText(value: string | readonly string[] | undefined): string | undefined {
-	const text = typeof value === "string" ? value : value?.[0];
-	return text === undefined || text.length === 0 ? undefined : text;
+function present(text: string | undefined): string | undefined {
+	return text === "" ? undefined : text;
+}
+
+/** A non-empty request header. Node joins duplicates into one string (only `set-cookie` is an array). */
+function headerText(req: IncomingMessage, name: string): string | undefined {
+	const value = req.headers[name];
+	return typeof value === "string" ? present(value) : undefined;
 }
 
 function respondJson(
@@ -260,17 +270,13 @@ function respondJson(
 
 /** Resolves the request body, or `undefined` once it exceeds `limit` bytes (the rest is dropped, not buffered). */
 function readBody(req: IncomingMessage, limit: number): Promise<Buffer | undefined> {
-	const declared = Number(req.headers["content-length"]);
-	if (Number.isFinite(declared) && declared > limit) return Promise.resolve(undefined);
+	if (Number(req.headers["content-length"]) > limit) return Promise.resolve(undefined);
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
 		let total = 0;
-		let exceeded = false;
 		req.on("data", (chunk: Buffer) => {
-			if (exceeded) return;
 			total += chunk.length;
 			if (total > limit) {
-				exceeded = true;
 				chunks.length = 0;
 				resolve(undefined);
 				return;
@@ -279,31 +285,21 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer | undefin
 		});
 		req.on("end", () => resolve(Buffer.concat(chunks)));
 		req.on("error", reject);
-		req.on("close", () => {
-			if (!req.complete && !exceeded) reject(new Error("request closed before the body ended"));
-		});
 	});
 }
 
-function deliveryId(req: IncomingMessage, payload: SubscriptionEventPayload): string {
+function deliveryId(req: IncomingMessage, fields: JsonObject): string {
 	const fromHeader =
-		headerText(req.headers["x-github-delivery"]) ??
-		headerText(req.headers["x-request-id"]) ??
-		headerText(req.headers["idempotency-key"]);
+		headerText(req, "x-github-delivery") ?? headerText(req, "x-request-id") ?? headerText(req, "idempotency-key");
 	if (fromHeader !== undefined) return fromHeader;
-	if (isJsonObject(payload)) {
-		const bodyId = payload.id;
-		if (typeof bodyId === "string" && bodyId.length > 0) return bodyId;
-		if (typeof bodyId === "number" && Number.isFinite(bodyId)) return String(bodyId);
-	}
-	return randomUUID();
+	const bodyText = present(stringField(fields, "id"));
+	if (bodyText !== undefined) return bodyText;
+	const bodyNumber = numberField(fields, "id");
+	return bodyNumber === undefined ? randomUUID() : String(bodyNumber);
 }
 
-function deliveryType(req: IncomingMessage, payload: SubscriptionEventPayload): string | undefined {
-	const fromHeader = headerText(req.headers["x-github-event"]);
-	if (fromHeader !== undefined) return fromHeader;
-	if (!isJsonObject(payload)) return undefined;
-	return stringField(payload, "type") ?? stringField(payload, "action");
+function deliveryType(req: IncomingMessage, fields: JsonObject): string | undefined {
+	return headerText(req, "x-github-event") ?? stringField(fields, "type") ?? stringField(fields, "action");
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -315,16 +311,16 @@ interface WebhookListener {
 	readonly ready: Promise<void>;
 }
 
-/** Webhook servers by `hostname:port`. Sources on one fixed port share a server; port 0 never shares. */
+/** Webhook servers by `hostname:port`. Sources on one fixed port share a server; each start on port 0 has its own. */
 const sharedListeners = new Map<string, WebhookListener>();
 
 function requestPath(req: IncomingMessage): string {
-	const target = req.url ?? "/";
+	const target = req.url as string; // a server request always has a url
 	const query = target.indexOf("?");
 	return query === -1 ? target : target.slice(0, query);
 }
 
-function openListener(key: string | undefined, hostname: string, port: number): WebhookListener {
+function openListener(key: string, hostname: string, port: number): WebhookListener {
 	const routes = new Map<string, RouteHandler>();
 	const server = createServer((req, res) => {
 		const route = routes.get(requestPath(req));
@@ -332,25 +328,10 @@ function openListener(key: string | undefined, hostname: string, port: number): 
 			respondJson(res, 404, { error: "not-found" });
 			return;
 		}
-		route(req, res).catch(() => {
-			if (!res.destroyed && !res.headersSent) respondJson(res, 500, { error: "internal-error" });
-			else res.destroy();
-		});
+		route(req, res).catch(() => respondJson(res, 500, { error: "internal-error" }));
 	});
-	const ready = new Promise<void>((resolve, reject) => {
-		server.once("error", reject);
-		server.once("listening", () => {
-			server.off("error", reject);
-			resolve();
-		});
-	});
-	const listener: WebhookListener = { server, routes, ready };
-	if (key !== undefined) {
-		sharedListeners.set(key, listener);
-		ready.catch(() => {
-			if (sharedListeners.get(key) === listener) sharedListeners.delete(key);
-		});
-	}
+	const listener: WebhookListener = { server, routes, ready: once(server, "listening").then(() => undefined) };
+	sharedListeners.set(key, listener);
 	server.listen(port, hostname);
 	return listener;
 }
@@ -383,7 +364,6 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 		throw new SubscriptionConfigError("webhook.maxBodyBytes", "not-positive-integer");
 	}
 	const id = `webhook:${path}`;
-	const key = port === 0 ? undefined : `${hostname}:${port}`;
 
 	interface Waiter {
 		readonly resolve: (url: string) => void;
@@ -409,28 +389,27 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 			}
 			const body = await readBody(req, maxBodyBytes);
 			if (body === undefined) {
-				res.once("finish", () => req.destroy());
 				respondJson(res, 413, { error: "payload-too-large" }, { connection: "close" });
 				return;
 			}
 			const text = body.toString("utf8");
 			let payload: SubscriptionEventPayload = text;
-			if (headerText(req.headers["content-type"])?.toLowerCase().includes("json")) {
+			if (headerText(req, "content-type")?.toLowerCase().includes("json")) {
 				try {
 					payload = parseJson(text);
-				} catch (error) {
-					if (!(error instanceof SyntaxError)) throw error;
+				} catch {
 					respondJson(res, 400, { error: "invalid-json" });
 					return;
 				}
 			}
-			const eventId = deliveryId(req, payload);
+			const fields = isJsonObject(payload) ? payload : {};
+			const eventId = deliveryId(req, fields);
 			if (signal.aborted) {
 				respondJson(res, 503, { accepted: false });
 				return;
 			}
 			try {
-				emit(event(eventId, deliveryType(req, payload), payload));
+				emit(event(eventId, deliveryType(req, fields), payload));
 			} catch (error) {
 				if (!(error instanceof SubscriptionClosedError)) throw error;
 				respondJson(res, 503, { accepted: false });
@@ -455,7 +434,8 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 				settle({ failure: signal.reason });
 				return;
 			}
-			const existing = key === undefined ? undefined : sharedListeners.get(key);
+			const key = port === 0 ? `ephemeral:${randomUUID()}` : `${hostname}:${port}`;
+			const existing = sharedListeners.get(key);
 			if (existing?.routes.has(path)) {
 				const failure = new SubscriptionConfigError("webhook.path", "duplicate-id");
 				settle({ failure });
@@ -465,15 +445,13 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 			listener.routes.set(path, routeFor(signal, emit));
 
 			const runtime: { failure?: { readonly error: unknown } } = {};
-			let stop: () => void = () => undefined;
-			const ended = new Promise<void>((resolve) => {
-				stop = resolve;
-			});
+			const ended = Promise.withResolvers<void>();
+			const stop = (): void => ended.resolve();
 			const onServerError = (error: unknown): void => {
 				runtime.failure = { error };
 				stop();
 			};
-			signal.addEventListener("abort", stop, { once: true });
+			signal.addEventListener("abort", stop);
 			listener.server.on("error", onServerError);
 
 			const release = (): Promise<void> => {
@@ -481,7 +459,7 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 				listener.server.off("error", onServerError);
 				listener.routes.delete(path);
 				if (listener.routes.size > 0) return Promise.resolve();
-				if (key !== undefined && sharedListeners.get(key) === listener) sharedListeners.delete(key);
+				sharedListeners.delete(key);
 				return new Promise<void>((resolve) => {
 					listener.server.close(() => resolve());
 					listener.server.closeAllConnections();
@@ -502,7 +480,7 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 			}
 			if (signal.aborted) settle({ failure: signal.reason });
 			else settle({ url: listenerUrl(listener.server, path) });
-			await ended;
+			await ended.promise;
 			await release();
 			if (runtime.failure !== undefined && !signal.aborted) {
 				throw new EventSourceError(id, "listen", {
@@ -530,9 +508,15 @@ export interface GitHubPullRequestSourceOptions {
 	readonly dispatcher?: WakeDispatcher;
 }
 
+function commandFailureDetail(exitCode: number | undefined, spawnCode: string | undefined): string {
+	if (exitCode !== undefined) return `gh exited with code ${exitCode}`;
+	return spawnCode === undefined ? "gh could not be run" : `gh could not be run (${spawnCode})`;
+}
+
+/** `gh` ran and failed, or could not be started. The message is the credential-free detail shown on the poll error. */
 class GitHubCommandError extends Error {
 	override readonly name = "GitHubCommandError" as const;
-	/** Exit status of `gh`, or `undefined` when it could not be started. */
+	/** Exit status of `gh`, or `undefined` when it could not be started or was killed. */
 	readonly exitCode: number | undefined;
 	/** Spawn error code such as `ENOENT` when `gh` could not be started. */
 	readonly spawnCode: string | undefined;
@@ -540,18 +524,23 @@ class GitHubCommandError extends Error {
 	readonly stderr: string;
 
 	constructor(exitCode: number | undefined, spawnCode: string | undefined, stderr: string, cause: unknown) {
-		super(exitCode === undefined ? "gh could not be run" : `gh exited with code ${exitCode}`, { cause });
+		super(commandFailureDetail(exitCode, spawnCode), { cause });
 		this.exitCode = exitCode;
 		this.spawnCode = spawnCode;
 		this.stderr = stderr.slice(0, GH_MAX_STDERR_CHARS);
 	}
 }
 
+type GitHubResponseReason = "not-json" | "not-object" | "not-array" | "no-head-sha";
+
+/** `gh` succeeded but its output is not the JSON shape the source needs. */
 class GitHubResponseError extends Error {
 	override readonly name = "GitHubResponseError" as const;
+	readonly reason: GitHubResponseReason;
 
-	constructor(what: string, cause?: unknown) {
-		super(`Unexpected gh response: ${what}`, cause === undefined ? undefined : { cause });
+	constructor(reason: GitHubResponseReason, cause?: unknown) {
+		super(reason, cause === undefined ? undefined : { cause });
+		this.reason = reason;
 	}
 }
 
@@ -560,7 +549,7 @@ const runGh: GitHubCommandRunner = (args, signal) =>
 		execFile(
 			"gh",
 			[...args],
-			{ signal, maxBuffer: GH_MAX_OUTPUT_BYTES, encoding: "utf8", windowsHide: true },
+			{ signal, maxBuffer: GH_MAX_OUTPUT_BYTES, windowsHide: true },
 			(error, stdout, stderr) => {
 				if (error === null) {
 					resolve(stdout);
@@ -574,30 +563,33 @@ const runGh: GitHubCommandRunner = (args, signal) =>
 	});
 
 function pollFailureDetail(error: unknown): string {
-	if (error instanceof GitHubCommandError) {
-		if (error.exitCode !== undefined) return `gh exited with code ${error.exitCode}`;
-		return error.spawnCode === undefined ? "gh could not be run" : `gh could not be run (${error.spawnCode})`;
-	}
+	if (error instanceof GitHubCommandError) return error.message;
 	if (error instanceof GitHubResponseError) return "unexpected gh response";
 	const code = errnoCode(error);
 	return code === undefined ? "gh failed" : `gh failed (${code})`;
 }
 
-async function ghJson(gh: GitHubCommandRunner, args: readonly string[], signal: AbortSignal): Promise<JsonObject> {
+async function ghJson(
+	gh: GitHubCommandRunner,
+	args: readonly string[],
+	signal: AbortSignal,
+): Promise<SubscriptionEventPayload> {
 	const stdout = await gh(args, signal);
-	let parsed: SubscriptionEventPayload;
 	try {
-		parsed = parseJson(stdout);
+		return parseJson(stdout);
 	} catch (error) {
-		throw new GitHubResponseError("not JSON", error);
+		throw new GitHubResponseError("not-json", error);
 	}
-	if (!isJsonObject(parsed)) throw new GitHubResponseError("not an object");
-	return parsed;
 }
 
-function githubArrayField(object: JsonObject, key: string): readonly JsonObject[] {
-	const value = object[key];
-	if (!Array.isArray(value)) throw new GitHubResponseError(`${key} is not an array`);
+function asObject(value: SubscriptionEventPayload): JsonObject {
+	if (!isJsonObject(value)) throw new GitHubResponseError("not-object");
+	return value;
+}
+
+/** The object elements of a JSON array; anything else in the array is skipped. */
+function asObjects(value: SubscriptionEventPayload | undefined): readonly JsonObject[] {
+	if (!Array.isArray(value)) throw new GitHubResponseError("not-array");
 	return (value as readonly SubscriptionEventPayload[]).filter(isJsonObject);
 }
 
@@ -660,12 +652,14 @@ function pollingSource(
 export function githubChecks(options: GitHubPullRequestSourceOptions): EventSource {
 	const { repo, pr, intervalMs, gh, dispatcher } = validateGitHubOptions("githubChecks", options);
 	return pollingSource(`github-checks:${repo}#${pr}`, dispatcher, intervalMs, async (signal) => {
-		const pull = await ghJson(gh, ["api", `repos/${repo}/pulls/${pr}`], signal);
-		const headSha = stringField(objectField(pull, "head") ?? {}, "sha");
-		if (headSha === undefined) throw new GitHubResponseError("pull request has no head sha");
-		const checks = await ghJson(gh, ["api", `repos/${repo}/commits/${headSha}/check-runs?per_page=100`], signal);
+		const pull = asObject(await ghJson(gh, ["api", `repos/${repo}/pulls/${pr}`], signal));
+		const headSha = nestedString(pull, "head", "sha");
+		if (headSha === undefined) throw new GitHubResponseError("no-head-sha");
+		const checks = asObject(
+			await ghJson(gh, ["api", `repos/${repo}/commits/${headSha}/check-runs?per_page=100`], signal),
+		);
 		const events: SubscriptionEvent[] = [];
-		for (const run of githubArrayField(checks, "check_runs")) {
+		for (const run of asObjects(checks.check_runs)) {
 			const runId = numberField(run, "id");
 			const status = stringField(run, "status");
 			if (runId === undefined || status === undefined) continue;
@@ -690,21 +684,14 @@ export function githubChecks(options: GitHubPullRequestSourceOptions): EventSour
 export function githubReviews(options: GitHubPullRequestSourceOptions): EventSource {
 	const { repo, pr, intervalMs, gh, dispatcher } = validateGitHubOptions("githubReviews", options);
 	return pollingSource(`github-reviews:${repo}#${pr}`, dispatcher, intervalMs, async (signal) => {
-		const stdout = await gh(["api", `repos/${repo}/pulls/${pr}/reviews?per_page=100`], signal);
-		let parsed: SubscriptionEventPayload;
-		try {
-			parsed = parseJson(stdout);
-		} catch (error) {
-			throw new GitHubResponseError("not JSON", error);
-		}
-		if (!Array.isArray(parsed)) throw new GitHubResponseError("reviews is not an array");
+		const reviews = await ghJson(gh, ["api", `repos/${repo}/pulls/${pr}/reviews?per_page=100`], signal);
 		const events: SubscriptionEvent[] = [];
-		for (const review of (parsed as readonly SubscriptionEventPayload[]).filter(isJsonObject)) {
+		for (const review of asObjects(reviews)) {
 			const reviewId = numberField(review, "id");
 			if (reviewId === undefined) continue;
 			events.push(
 				event(`review:${reviewId}`, "pull_request_review", {
-					reviewer: stringField(objectField(review, "user") ?? {}, "login") ?? null,
+					reviewer: nestedString(review, "user", "login") ?? null,
 					state: stringField(review, "state") ?? "",
 					body: stringField(review, "body") ?? "",
 					submittedAt: stringField(review, "submitted_at") ?? null,

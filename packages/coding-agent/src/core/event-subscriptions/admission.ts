@@ -60,7 +60,7 @@ export function publishEvent(subscriptionId: string, event: SubscriptionEvent): 
 }
 
 function isPositiveInteger(value: unknown): boolean {
-	return typeof value === "number" && Number.isInteger(value) && value > 0;
+	return Number.isInteger(value) && (value as number) > 0;
 }
 
 /** Validates an event source at the API boundary, before anything is recorded. */
@@ -118,7 +118,6 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	const handlerStop = new AbortController();
 	const seen = new Set<string>();
 	const queue: SubscriptionEvent[] = [];
-	let head = 0;
 	const admittedAt: number[] = [];
 	let rateWake: ScheduledWake | undefined;
 	let cancelled = false;
@@ -128,35 +127,22 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	let active = 0;
 	let reports = 0;
 	let intakeOpen = true;
-	let started = input.ready === undefined;
+	let started = false;
 	let stopped: { readonly error: unknown } | undefined;
-	let settled = false;
 	const done = Promise.withResolvers<SubscriptionStats>();
 
-	const stats = (): SubscriptionStats => ({
-		received,
-		duplicates,
-		handled,
-		active,
-		queued: queue.length - head,
-		reports,
-	});
+	const stats = (): SubscriptionStats => ({ received, duplicates, handled, active, queued: queue.length, reports });
 
 	const closeIntake = (): void => {
-		if (!intakeOpen) return;
 		intakeOpen = false;
 		if (openSubscriptions.get(id) === emit) openSubscriptions.delete(id);
 		sourceStop.abort(new SubscriptionClosedError(id, "emit"));
 	};
 
 	const finish = (): void => {
-		if (settled) return;
-		if (stopped === undefined && (!started || intakeOpen || active > 0 || queue.length > head)) return;
-		if (stopped !== undefined && active > 0 && !cancelled) return;
-		settled = true;
+		if (stopped === undefined && (!started || intakeOpen || active > 0 || queue.length > 0)) return;
+		if (active > 0 && !cancelled) return;
 		rateWake?.cancel();
-		rateWake = undefined;
-		closeIntake();
 		if (stopped === undefined) done.resolve(stats());
 		else done.reject(stopped.error);
 	};
@@ -165,7 +151,6 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		if (stopped !== undefined) return;
 		stopped = { error };
 		queue.length = 0;
-		head = 0;
 		closeIntake();
 		finish();
 	};
@@ -177,13 +162,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 				() => {
 					handled += 1;
 				},
-				(error: unknown) => {
-					stop(
-						handlerStop.signal.aborted && error === handlerStop.signal.reason
-							? error
-							: new SubscriptionHandlerError(id, event.id, error),
-					);
-				},
+				(error: unknown) => stop(new SubscriptionHandlerError(id, event.id, error)),
 			)
 			.finally(() => {
 				active -= 1;
@@ -194,7 +173,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	const rateAllowsNow = (): boolean => {
 		if (rate === undefined) return true;
 		const now = dispatcher.elapsed();
-		while (admittedAt.length > 0 && admittedAt[0]! <= now - rate.intervalMs) admittedAt.shift();
+		while ((admittedAt[0] ?? Number.POSITIVE_INFINITY) <= now - rate.intervalMs) admittedAt.shift();
 		if (admittedAt.length < rate.events) {
 			admittedAt.push(now);
 			return true;
@@ -207,15 +186,9 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	};
 
 	function pump(): void {
-		while (started && stopped === undefined && queue.length > head && active < maxConcurrent && rateAllowsNow()) {
-			const event = queue[head]!;
-			head += 1;
+		while (started && stopped === undefined && queue.length > 0 && active < maxConcurrent && rateAllowsNow()) {
 			active += 1;
-			runHandler(event);
-		}
-		if (head > 0 && head === queue.length) {
-			queue.length = 0;
-			head = 0;
+			runHandler(queue.shift()!);
 		}
 		finish();
 	}
@@ -234,35 +207,28 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	}
 
 	const cancel = (reason: unknown): void => {
-		if (settled) return;
 		cancelled = true;
 		handlerStop.abort(reason);
 		stop(reason);
-		finish();
 	};
 	openSubscriptions.set(id, emit);
 	const startSource = (): void => {
 		started = true;
-		if (!intakeOpen) {
-			pump();
-			return;
-		}
-		const sourceEnded = (): void => {
-			closeIntake();
-			pump();
-		};
-		const sourceFailed = (error: unknown): void => {
-			if (sourceStop.signal.aborted && error === sourceStop.signal.reason) {
-				sourceEnded();
-				return;
+		if (intakeOpen) {
+			const sourceFailed = (error: unknown): void => {
+				if (sourceStop.signal.aborted && error === sourceStop.signal.reason) closeIntake();
+				else
+					stop(
+						isEventSourceError(error) ? error : new EventSourceError(input.source.id, "start", { cause: error }),
+					);
+				pump();
+			};
+			try {
+				const running = input.source.start(sourceStop.signal, emit);
+				if (isThenable(running)) running.then(closeIntake, sourceFailed).then(pump);
+			} catch (error) {
+				sourceFailed(error);
 			}
-			stop(isEventSourceError(error) ? error : new EventSourceError(input.source.id, "start", { cause: error }));
-		};
-		try {
-			const running = input.source.start(sourceStop.signal, emit);
-			if (isThenable(running)) running.then(sourceEnded, sourceFailed);
-		} catch (error) {
-			sourceFailed(error);
 		}
 		pump();
 	};
@@ -283,10 +249,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		cancel,
 		close: (options) => {
 			closeIntake();
-			if (options?.discardQueued === true) {
-				queue.length = 0;
-				head = 0;
-			}
+			if (options?.discardQueued === true) queue.length = 0;
 			pump();
 			return done.promise;
 		},

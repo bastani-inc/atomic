@@ -231,3 +231,70 @@ test("serialized errors survive a process boundary and rehydrate as the same cla
 	const primitiveCause = serializeSubscriptionError(new SubscriptionHandlerError("s", "e", "text failure"));
 	assert.deepEqual(primitiveCause.cause, { name: "string", message: "text failure" });
 });
+
+test("the wire form keeps optional parts only when present, and bounds the cause chain at eight levels", () => {
+	const bare = serializeSubscriptionError(new SubscriptionError("invalid-event", "bare"));
+	assert.deepEqual(Object.keys(bare).sort(), ["code", "fields", "message", "name", "retryable"]);
+	const hinted = serializeSubscriptionError(new SubscriptionClosedError("s", "report"));
+	assert.equal(hinted.hint, new SubscriptionClosedError("s", "report").hint);
+	let deep: Error = new Error("level 0");
+	for (let level = 1; level <= 12; level++) deep = new Error(`level ${level}`, { cause: deep });
+	let serialized = serializeSubscriptionError(new SubscriptionHandlerError("s", "e", deep)).cause;
+	let depth = 0;
+	while (serialized !== undefined) {
+		depth += 1;
+		serialized = serialized.cause;
+	}
+	assert.equal(depth, 8);
+	const withCode = deserializeSubscriptionError(
+		serializeSubscriptionError(new SubscriptionHandlerError("s", "e", Object.assign(new Error("x"), { code: "E1" }))),
+	);
+	assert.deepEqual(Object.keys(withCode.cause as object), ["code"]);
+	const withoutCode = deserializeSubscriptionError(
+		serializeSubscriptionError(new SubscriptionHandlerError("s", "e", new Error("y"))),
+	);
+	assert.equal("code" in (withoutCode.cause as object), false);
+});
+
+test("rehydration tolerates malformed fields and keeps causes on every class", () => {
+	const cause = { name: "Error", message: "underlying" };
+	const closed = deserializeSubscriptionError({
+		name: "SubscriptionClosedError",
+		code: "subscription-closed",
+		message: "m",
+		retryable: false,
+		fields: { subscriptionId: 7, operation: "publish" },
+		cause,
+	});
+	assert.equal((closed as SubscriptionClosedError).subscriptionId, "");
+	assert.equal((closed.cause as Error).message, "underlying");
+	const config = deserializeSubscriptionError({
+		name: "SubscriptionConfigError",
+		code: "invalid-option",
+		message: "m",
+		retryable: false,
+		fields: { field: "options.name", reason: "not-string" },
+		cause,
+	});
+	assert.equal((config.cause as Error).message, "underlying");
+	const source = deserializeSubscriptionError({
+		name: "EventSourceError",
+		code: "source-failed",
+		message: "m",
+		retryable: false,
+		fields: { sourceId: "s", phase: "read", detail: null },
+	});
+	assert.equal((source as EventSourceError).detail, undefined);
+	assert.equal(source.cause, undefined);
+	const unknown = deserializeSubscriptionError({
+		name: "SubscriptionFutureError",
+		code: "invalid-event",
+		message: "m",
+		retryable: false,
+		fields: {},
+	});
+	assert.equal(isSubscriptionError(unknown), true);
+	assert.equal(unknown.hint, undefined);
+	assert.equal(new SubscriptionClosedError("s", "emit", { cause: "why" }).cause, "why");
+	assert.equal("cause" in new SubscriptionClosedError("s", "emit"), false);
+});

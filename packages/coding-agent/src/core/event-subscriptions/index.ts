@@ -38,6 +38,7 @@ export {
 	serializeSubscriptionError,
 } from "./errors.js";
 export {
+	createSubscriberReportTool,
 	formatEventReport,
 	SUBSCRIPTION_REPORT_TOOL_NAME,
 	seedEventPrompt,

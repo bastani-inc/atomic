@@ -16,6 +16,7 @@ import {
 	completedWorkflowSnapshot,
 	listOpenableCompletedWorkflows,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -551,4 +552,131 @@ test("without a subscriber stage, reports become run notices (#4311)", async () 
 		notices.map((notice) => notice.message),
 		['Report from event child "alerts/p2" (event p2):\n\np2 needs attention'],
 	);
+});
+
+test("event children hang under the subscriber even when another stage settled after it (#4311)", async () => {
+	const { result } = await runWorkflow(async (ctx) => {
+		const watcher = ctx.stage("watcher");
+		await watcher.prompt("watch");
+		await ctx.stage("between").prompt("unrelated");
+		await ctx.subscribe(
+			listSource("graph", [{ id: "g1" }]),
+			async (_event, child) => {
+				await child.task({ prompt: "look" });
+			},
+			{ subscriber: watcher },
+		).done;
+	});
+	assert.equal(result.status, "completed", result.error);
+	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
+	const child = result.stages.find((stage) => stage.name === "graph/g1")!;
+	assert.deepEqual(child.parentIds, [watcher.id]);
+});
+
+test("a subscriber declared while the run is paused still parents its event children (#4311)", async () => {
+	const store = createStore();
+	const backend = await createMemoryTestBackend();
+	const runId = "77777777-7777-4777-8777-000000004311";
+	const definition = workflow({
+		name: "paused-subscriber",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await pauseRun(runId, { store });
+			const watcher = ctx.stage("watcher");
+			await resumeRun(runId, { store });
+			await watcher.prompt("watch");
+			await ctx.stage("between").prompt("unrelated");
+			await ctx.subscribe(
+				listSource("paused", [{ id: "p1" }]),
+				async (_event, child) => {
+					await child.task({ prompt: "look" });
+				},
+				{ subscriber: watcher },
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId,
+			store,
+			durableBackend: backend,
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
+	assert.deepEqual(result.stages.find((stage) => stage.name === "paused/p1")!.parentIds, [watcher.id]);
+});
+
+test("a failing run stops its open subscriptions and drops their queued events (#4311)", async () => {
+	const handled: string[] = [];
+	const { result } = await runWorkflow(async (ctx) => {
+		await ctx.stage("anchor").prompt("start");
+		const subscription = ctx.subscribe(
+			openSource("stopping"),
+			async (event) => {
+				handled.push(event.id);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			},
+			{ maxConcurrent: 1 },
+		);
+		void subscription.done.catch(() => undefined);
+		for (const id of ["s1", "s2", "s3"]) publishEvent(subscription.id, { id });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		throw new Error("body failed");
+	});
+	assert.equal(result.status, "failed");
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.deepEqual(handled, ["s1"]);
+});
+
+test("cancelling the run cancels its subscriptions and aborts running handlers (#4311)", async () => {
+	const controller = new AbortController();
+	let handlerSignal: AbortSignal | undefined;
+	let doneReason: unknown;
+	const definition = workflow({
+		name: "cancelled-subscription",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			const subscription = ctx.subscribe(openSource("cancelled"), (_event, child) => {
+				void child;
+				return new Promise<void>(() => {});
+			});
+			void subscription.done.catch((error: unknown) => {
+				doneReason = error;
+			});
+			ctx.subscribe(openSource("cancelled-signal"), async (_event) => {
+				await new Promise<void>(() => {});
+			});
+			publishEvent(subscription.id, { id: "c1" });
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			controller.abort(new Error("operator cancelled"));
+			await new Promise<void>(() => {});
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId: "88888888-8888-4888-8888-000000004311",
+			store: createStore(),
+			durableBackend: await createMemoryTestBackend(),
+			signal: controller.signal,
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "killed");
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal((doneReason as Error | undefined)?.message, "operator cancelled");
+	void handlerSignal;
 });

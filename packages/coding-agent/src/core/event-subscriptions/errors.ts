@@ -54,7 +54,7 @@ export class SubscriptionError extends Error {
 	constructor(
 		code: SubscriptionErrorCode,
 		message: string,
-		options?: { readonly hint?: string; readonly retryable?: boolean; readonly cause?: unknown },
+		options?: { readonly hint?: string | undefined; readonly retryable?: boolean; readonly cause?: unknown },
 	) {
 		super(message, options?.cause === undefined ? undefined : { cause: options.cause });
 		this.code = code;
@@ -246,7 +246,7 @@ export class SubscriptionChildUnavailableError extends SubscriptionError {
 	}
 }
 
-const CODE_BY_NAME: Readonly<Record<Exclude<SubscriptionErrorName, "SubscriptionError">, SubscriptionErrorCode>> = {
+const CODE_BY_NAME: Readonly<Record<string, SubscriptionErrorCode>> = {
 	SubscriptionClosedError: "subscription-closed",
 	SubscriptionConfigError: "invalid-option",
 	SubscriptionEventError: "invalid-event",
@@ -263,23 +263,16 @@ interface StructuralError {
 	readonly cause?: unknown;
 }
 
-function structural(value: unknown): StructuralError | undefined {
-	return typeof value === "object" && value !== null ? (value as StructuralError) : undefined;
-}
-
-function matchesStructurally(value: unknown, name: SubscriptionErrorName): boolean {
-	const candidate = structural(value);
-	if (candidate === undefined || candidate.name !== name) return false;
-	return name === "SubscriptionError"
-		? typeof candidate.code === "string" && SUBSCRIPTION_ERROR_CODES.has(candidate.code)
-		: candidate.code === CODE_BY_NAME[name];
+/** Reads `name`, `code` and `cause` from any value; primitives have none. */
+function structural(value: unknown): StructuralError {
+	return Object(value) as StructuralError;
 }
 
 function findInCauseChain<T>(error: unknown, matches: (value: unknown) => value is T): T | undefined {
 	let current = error;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
 		if (matches(current)) return current;
-		current = structural(current)?.cause;
+		current = structural(current).cause;
 	}
 	return undefined;
 }
@@ -288,16 +281,16 @@ function guard<T extends SubscriptionError>(
 	ctor: abstract new (...args: never[]) => T,
 	name: SubscriptionErrorName,
 ): (error: unknown) => error is T {
-	const matches = (value: unknown): value is T => value instanceof ctor || matchesStructurally(value, name);
+	const matches = (value: unknown): value is T =>
+		value instanceof ctor || (structural(value).name === name && structural(value).code === CODE_BY_NAME[name]);
 	return (error: unknown): error is T => findInCauseChain(error, matches) !== undefined;
 }
 
 function isFamilyMember(value: unknown): value is SubscriptionError {
 	if (value instanceof SubscriptionError) return true;
-	const candidate = structural(value);
-	if (typeof candidate?.name !== "string" || typeof candidate.code !== "string") return false;
-	const knownName = candidate.name === "SubscriptionError" || Object.hasOwn(CODE_BY_NAME, candidate.name);
-	return knownName && SUBSCRIPTION_ERROR_CODES.has(candidate.code);
+	const { name, code } = structural(value);
+	const knownName = name === "SubscriptionError" || Object.hasOwn(CODE_BY_NAME, String(name));
+	return knownName && SUBSCRIPTION_ERROR_CODES.has(String(code));
 }
 
 /** True when the error, or anything in its cause chain, belongs to the subscription error family. */
@@ -328,10 +321,10 @@ export function isRetryableSubscriptionError(error: unknown): boolean {
 function serializeCause(cause: unknown, depth: number): SerializedSubscriptionErrorCause | undefined {
 	if (depth >= MAX_CAUSE_DEPTH || cause === undefined || cause === null) return undefined;
 	const candidate = structural(cause);
-	const name = typeof candidate?.name === "string" ? candidate.name : typeof cause;
+	const name = typeof candidate.name === "string" ? candidate.name : typeof cause;
 	const message = cause instanceof Error ? cause.message : String(cause);
-	const code = typeof candidate?.code === "string" ? candidate.code : undefined;
-	const nested = serializeCause(candidate?.cause, depth + 1);
+	const code = typeof candidate.code === "string" ? candidate.code : undefined;
+	const nested = serializeCause(candidate.cause, depth + 1);
 	return {
 		name,
 		message,
@@ -415,7 +408,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 			default: {
 				const base = new SubscriptionError(serialized.code, serialized.message, {
 					retryable: serialized.retryable,
-					...(serialized.hint === undefined ? {} : { hint: serialized.hint }),
+					hint: serialized.hint,
 					cause,
 				});
 				Object.defineProperty(base, "name", { value: serialized.name });

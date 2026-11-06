@@ -20,10 +20,12 @@ import { EventSourceError } from "../../packages/coding-agent/src/core/event-sub
 function manualTime() {
 	let now = 0;
 	const timers: Array<{ at: number; callback: () => void; cancelled: boolean }> = [];
+	const delays: number[] = [];
 	const dispatcher = createWakeDispatcher({
 		now: () => now,
 		elapsed: () => now,
 		setTimer: (callback, ms) => {
+			delays.push(ms);
 			const timer = { at: now + ms, callback, cancelled: false };
 			timers.push(timer);
 			return {
@@ -35,6 +37,7 @@ function manualTime() {
 	});
 	return {
 		dispatcher,
+		delays,
 		advance(ms: number) {
 			now += ms;
 			for (const timer of timers.splice(0).sort((a, b) => a.at - b.at)) {
@@ -137,6 +140,7 @@ test("maxRate admits at most `events` starts per window; the rest wait in order 
 	await settle();
 	assert.deepEqual(started, ["a", "b"]);
 	assert.equal(subscription.stats().queued, 3);
+	assert.deepEqual(time.delays, [1000]);
 	time.advance(999);
 	await settle();
 	assert.deepEqual(started, ["a", "b"]);
@@ -450,4 +454,112 @@ test("the wake dispatcher runs wakes in deadline order on one timer and leaves n
 	await waking;
 	await assert.rejects(time.dispatcher.sleep(5, AbortSignal.abort("already")), (error) => error === "already");
 	assert.equal(time.dispatcher.pending, 0);
+});
+
+test("validation rejects null sources, non-string ids, and array events", async () => {
+	for (const source of [null, { id: 5, start: () => {} }, { id: "x", start: "no" }]) {
+		assert.throws(
+			() => validateEventSource(source as never, "source"),
+			(error) => isSubscriptionConfigError(error) && (error as { reason: string }).reason === "not-event-source",
+		);
+	}
+	const id = uniqueId("arrays");
+	const subscription = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	assert.throws(
+		() => publishEvent(id, [] as never),
+		(error) => isSubscriptionEventError(error) && (error as { reason: string }).reason === "not-object",
+	);
+	assert.throws(
+		() => publishEvent(id, { id: 5 } as never),
+		(error) => isSubscriptionEventError(error) && (error as { reason: string }).reason === "missing-id",
+	);
+	assert.equal(subscription.stats().received, 0);
+	await subscription.close();
+});
+
+test("an open source keeps the subscription unsettled until close, and closing aborts the source with a closed error", async () => {
+	const source = openSource();
+	const id = uniqueId("unsettled");
+	const subscription = openEventSubscription({ id, source, handle: async () => {} });
+	let settled = false;
+	void subscription.done.then(() => {
+		settled = true;
+	});
+	for (let turn = 0; turn < 5; turn++) await settle();
+	assert.equal(settled, false);
+	await subscription.close();
+	const reason = source.signal().reason as { operation?: string; subscriptionId?: string };
+	assert.equal(isSubscriptionClosedError(reason), true);
+	assert.deepEqual([reason.operation, reason.subscriptionId], ["emit", id]);
+});
+
+test("the first failure wins, intake closes while running handlers finish, and a reused id survives the old handle", async () => {
+	const id = uniqueId("first-wins");
+	const releases: Array<() => void> = [];
+	const subscription = openEventSubscription({
+		id,
+		source: openSource(),
+		admission: { maxConcurrent: 2 },
+		handle: async (event) => {
+			await new Promise<void>((resolve) => releases.push(resolve));
+			throw new Error(`failed ${event.id}`);
+		},
+	});
+	await settle();
+	publishEvent(id, { id: "one" });
+	publishEvent(id, { id: "two" });
+	await settle();
+	releases.shift()?.();
+	await settle();
+	assert.throws(() => publishEvent(id, { id: "three" }), isSubscriptionClosedError);
+	releases.shift()?.();
+	const failure = await subscription.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal((failure as { eventId: string }).eventId, "one");
+	const reopened = openEventSubscription({ id, source: openSource(), handle: async () => {} });
+	subscription.stop(new Error("late"));
+	subscription.cancel(new Error("later"));
+	publishEvent(id, { id: "after" });
+	assert.equal(reopened.stats().received, 1);
+	await reopened.close();
+});
+
+test("a source that rejects without being stopped fails even with an undefined reason", async () => {
+	const subscription = openEventSubscription({
+		id: uniqueId("undefined-reason"),
+		source: { id: "odd", start: () => Promise.reject(undefined) },
+		handle: async () => {},
+	});
+	const failure = await subscription.done.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	assert.equal(isEventSourceError(failure), true);
+});
+
+test("close can discard events still waiting for admission", async () => {
+	const handled: string[] = [];
+	let release: (() => void) | undefined;
+	const id = uniqueId("discard");
+	const subscription = openEventSubscription({
+		id,
+		source: openSource(),
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			handled.push(event.id);
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		},
+	});
+	await settle();
+	for (const event of ["a", "b", "c"]) publishEvent(id, { id: event });
+	await settle();
+	const closing = subscription.close({ discardQueued: true });
+	release?.();
+	const stats = await closing;
+	assert.deepEqual(handled, ["a"]);
+	assert.deepEqual([stats.handled, stats.queued], [1, 0]);
 });

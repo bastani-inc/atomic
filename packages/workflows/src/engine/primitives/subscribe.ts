@@ -1,13 +1,12 @@
 /** `ctx.subscribe` and `ctx.events`: event streams handled in tracked child stages or inline in the run body. */
 
 import {
+	createSubscriberReportTool,
 	DEFAULT_SUBSCRIPTION_MAX_CONCURRENT,
-	defineTool,
 	type EventSource,
 	type EventSubscriptionHandle,
 	formatEventReport,
 	openEventSubscription,
-	SUBSCRIPTION_REPORT_TOOL_NAME,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
 	type SubscriptionEvent,
@@ -16,7 +15,6 @@ import {
 	validateEventSource,
 	validateSubscriptionAdmission,
 } from "@bastani/atomic";
-import { Type } from "typebox";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import {
 	recordSubscription,
@@ -81,22 +79,6 @@ function validateSubscriber(subscriber: WorkflowEventSubscriber | undefined): vo
 	) {
 		throw new SubscriptionConfigError("options.subscriber", "not-stage");
 	}
-}
-
-const reportParameters = Type.Object({ text: Type.String({ description: "The report: a few sentences at most." }) });
-
-function reportTool(report: (text: string) => Promise<void>) {
-	return defineTool({
-		name: SUBSCRIPTION_REPORT_TOOL_NAME,
-		label: "Report to subscriber",
-		description:
-			"Send a short report about this event to the stage that subscribed to it. Call it at most once, and only when the event matters.",
-		parameters: reportParameters,
-		async execute(_toolCallId, params) {
-			await report(params.text);
-			return { content: [{ type: "text", text: "Report delivered to the subscriber." }], details: undefined };
-		},
-	});
 }
 
 export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): WorkflowEventPrimitiveSet {
@@ -179,7 +161,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 							{
 								...rest,
 								prompt: seedEventPrompt(rest.prompt ?? instructions ?? "", name, event),
-								customTools: [...(rest.customTools ?? []), reportTool(report)],
+								customTools: [...(rest.customTools ?? []), createSubscriberReportTool(report, "stage")],
 							},
 							{ failed: false, activeStages: new Map(), parentIds, detached: true },
 						);

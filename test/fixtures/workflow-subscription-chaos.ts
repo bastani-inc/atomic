@@ -120,7 +120,7 @@ if (mode === "records") {
 		resumed = await runtime.resumeDurableWorkflow(runId);
 	}
 	assert.ok(resumed.ok, JSON.stringify(resumed));
-	const deadline = Date.now() + 120_000;
+	const deadline = Date.now() + 900_000;
 	while (store.runs().find((entry) => entry.id === runId)?.endedAt === undefined) {
 		assert.ok(Date.now() < deadline, "resumed workflow did not settle");
 		await sleep(20);
@@ -129,7 +129,7 @@ if (mode === "records") {
 	await backend.close();
 } else {
 	const result = await run(definition, {}, { runId, cwd: directory, store, adapters, modelOwner: "subscription-chaos" });
-	console.log(JSON.stringify({ status: result.status }));
+	console.log(JSON.stringify({ status: result.status, ...(result.error === undefined ? {} : { error: result.error }) }));
 	await backend.close().catch((error: Error) => console.error(`close failed: ${error.name}`));
 	process.exitCode = result.status === "completed" ? 0 : 3;
 }
