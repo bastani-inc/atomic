@@ -19,6 +19,9 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.js";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 interface CapturedFastRouteRequest {
 	model: Model<Api>;
@@ -191,7 +194,7 @@ describe("createAgentSession fast model routing", () => {
 	});
 
 	it.each(["fast", "ultrafast"] as const)(
-		"routes OpenAI account aliases through native ChatGPT handling at %s tier",
+		"routes OpenAI account aliases through native ChatGPT handling at %s tier (#4423)",
 		async (tier) => {
 			const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 			await authStorage.modify("openai-1", async () => ({
@@ -209,7 +212,7 @@ describe("createAgentSession fast model routing", () => {
 			const model = modelRuntime.getModel("openai-1", `gpt-6-astra-${tier}`);
 			assert.ok(model);
 			const sessionManager = SessionManager.inMemory(cwd);
-			const { session } = await createAgentSession({
+			const { session, extensionsResult } = await createAgentSession({
 				cwd,
 				agentDir,
 				model,
@@ -217,7 +220,14 @@ describe("createAgentSession fast model routing", () => {
 				modelRuntime,
 				sessionManager,
 				settingsManager: SettingsManager.inMemory({ cacheWarming: "off" }),
+				builtins: NO_BUILTINS,
 			});
+			assert.deepEqual(
+				extensionsResult.extensions
+					.map((extension) => extension.path)
+					.filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
+				[],
+			);
 			let body:
 				| {
 						model?: string;
@@ -320,6 +330,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 
 		try {
@@ -375,6 +386,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory({}),
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 		let body: Record<string, unknown> | undefined;
 		let headers: Record<string, string> | undefined;
@@ -474,6 +486,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory({}),
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 		await first.session.prompt("first turn");
 		first.session.dispose();
@@ -490,6 +503,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory({}),
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 		try {
 			assert.equal(resumed.session.model?.id, fastModelId);
@@ -605,6 +619,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 
 		try {
@@ -676,6 +691,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 
 		try {
@@ -746,6 +762,7 @@ describe("createAgentSession fast model routing", () => {
 				modelRuntime,
 				settingsManager: SettingsManager.inMemory({}),
 				sessionManager: SessionManager.inMemory(cwd),
+				builtins: NO_BUILTINS,
 			});
 
 			try {
@@ -838,6 +855,7 @@ describe("createAgentSession fast model routing", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory({}),
 			sessionManager: SessionManager.inMemory(cwd),
+			builtins: NO_BUILTINS,
 		});
 
 		try {
