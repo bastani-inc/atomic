@@ -955,7 +955,11 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
 	return `${kind}:${replayKey}`;
 }
 
-/** `forcedAt`: a forced record is always new, so it supersedes an equal earlier one, such as a stage's ended wait. */
+/**
+ * `forcedAt` makes a forced record differ from an equal one written at another time, such as a stage's ended wait. The
+ * wait and the results a waiting stage was woken with are part of the record's identity, so a change to either in the
+ * same millisecond is a new record; the same record written again in that millisecond is one record (#4309).
+ */
 function stageSessionCheckpointId(
 	replayKey: string,
 	stage: StageSnapshot,
@@ -966,7 +970,8 @@ function stageSessionCheckpointId(
 		sessionId: stage.sessionId ?? "",
 		startedAt: stage.startedAt ?? 0,
 		durationMs,
-		...(stage.wait === undefined ? {} : { waitSince: stage.wait.since }),
+		...(stage.wait === undefined ? {} : { wait: stage.wait }),
+		...(stage.waitResults === undefined ? {} : { waitResults: stage.waitResults }),
 		...(forcedAt === undefined ? {} : { forcedAt }),
 	})}`;
 }
