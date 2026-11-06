@@ -196,6 +196,12 @@ interface Waiter {
 	capTimer?: ReturnType<typeof setTimeout>;
 	/** The hold check whose outbox read is in flight; a wait that ends meanwhile reuses it (#3983). */
 	holdCheck?: Promise<void>;
+	/**
+	 * The last hold check found the recipient still holding the message with no saving report within the receipt
+	 * wait. One such wait is forgiven, since a recipient stalled under load reports late; a second in a row ends the
+	 * wait as uncertain (#4443).
+	 */
+	missedSavingReport?: boolean;
 }
 
 interface TrackedHold {
@@ -1420,12 +1426,15 @@ export class MultiNodeRouter {
 	/**
 	 * #3983: the sender's receipt wait ended. A recipient on another broker that reported, within the last receipt
 	 * wait, that it is still saving the message keeps its sender waiting another wait (told `send_held`), within the
-	 * save cap; otherwise the sender hears that the outcome is uncertain, as before. The decision reads the outbox
-	 * row, which can wait behind other writes on the shared connection: a read slower than `HOLD_CHECK_GRACE_MS`
-	 * first tells the sender to keep waiting while it finishes (within the cap), and a read that has not answered
-	 * within one receipt wait counts as no evidence, so the sender hears the outcome is uncertain. A row no broker
-	 * claimed whose recipient has quit is queued for it instead; the reads deciding that run under the same grace and
-	 * deadline. Only one decision per waiter is ever in flight, and the cap ends the wait however the store behaves.
+	 * save cap. #4443: a recipient that still holds the message but missed that report (it was stalled, or its first
+	 * report has not landed yet) gets one more wait to report late; only a second wait in a row without a report
+	 * tells the sender that the outcome is uncertain, as does any wait without a recipient holding the message. The
+	 * decision reads the outbox row, which can wait behind other writes on the shared connection: a read slower than
+	 * `HOLD_CHECK_GRACE_MS` first tells the sender to keep waiting while it finishes (within the cap), and a read that
+	 * has not answered within one receipt wait counts as no evidence, so the sender hears the outcome is uncertain. A
+	 * row no broker claimed whose recipient has quit is queued for it instead; the reads deciding that run under the
+	 * same grace and deadline. Only one decision per waiter is ever in flight, and the cap ends the wait however the
+	 * store behaves.
 	 */
 	private async expireWaiter(waiter: Waiter): Promise<void> {
 		const provisional = setTimeout(() => {
@@ -1463,12 +1472,16 @@ export class MultiNodeRouter {
 			return;
 		}
 		const remaining = this.capRemaining(waiter);
-		const savingAge = read.status === "found" && read.row.state === "claimed" ? read.row.savingAgeMs : undefined;
-		if (savingAge !== undefined && savingAge < RECIPIENT_RECEIPT_TIMEOUT_MS && remaining > 0) {
-			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
-			this.armWaiter(waiter, timeoutMs);
-			this.holdSender(waiter, timeoutMs);
-			return;
+		const held = read.status === "found" && read.row.state === "claimed" ? read.row : undefined;
+		if (held !== undefined && remaining > 0) {
+			const reported = held.savingAgeMs !== undefined && held.savingAgeMs < RECIPIENT_RECEIPT_TIMEOUT_MS;
+			if (reported || waiter.missedSavingReport !== true) {
+				waiter.missedSavingReport = !reported;
+				const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
+				this.armWaiter(waiter, timeoutMs);
+				this.holdSender(waiter, timeoutMs);
+				return;
+			}
 		}
 		if (queuedAt !== undefined && this.settleQueued(waiter, queuedAt)) return;
 		this.expireUncertain(waiter);
