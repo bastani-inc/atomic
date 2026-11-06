@@ -1795,6 +1795,49 @@ test("a receipt record that settlement got to first finds the message delivered,
 	}
 });
 
+test("a receipt record whose message was settled otherwise meanwhile still fails as changed during delivery (#4505)", async () => {
+	const f = await fixture();
+	const gated = gatedHandoff(f);
+	try {
+		await gated.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-0");
+		await f.queueDirect("stage", "direct-1");
+		const backend = durableBackendForRun(f.backend, f.store, descriptor.childRunId)!;
+		// An earlier message of the stage is delivered; the one the record is for is not.
+		assert.equal(
+			await f.store.markPendingStageMessageDelivered(
+				descriptor.childRunId,
+				"stage",
+				"direct-0",
+				new Date().toISOString(),
+				backend,
+			),
+			true,
+		);
+		const recording = gated.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: ["direct-1"],
+		});
+		await gated.appending;
+		assert.equal(
+			await f.store.markPendingStageMessageUndeliverable(
+				descriptor.childRunId,
+				"stage",
+				"direct-1",
+				"the stage ended without it",
+				backend,
+			),
+			true,
+		);
+		gated.release();
+		await assert.rejects(recording, /pending-stage message direct-1 changed during delivery/);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "undeliverable");
+	} finally {
+		gated.release();
+		await f.close();
+	}
+});
+
 test("a child whose publication ending a stage never reached the root records that stage's receipts as it completes (#4505)", async () => {
 	const f = await fixture();
 	try {
