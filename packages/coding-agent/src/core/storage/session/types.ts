@@ -99,5 +99,12 @@ export interface SessionStore {
 		readonly cwd: string;
 		readonly includeInternal?: boolean;
 	}): Promise<SessionSummary | undefined>;
+	/**
+	 * Nothing live holds the session any more: it was released, and its history is read again only when the session is
+	 * reopened. The store may move that history out of process memory until then. A hint that never changes what the
+	 * store returns: it does nothing for a session the store does not hold or on a closed store. Absent when the store
+	 * keeps nothing in memory to move.
+	 */
+	releaseSession?(sessionId: string): Promise<void>;
 	close(): Promise<void>;
 }

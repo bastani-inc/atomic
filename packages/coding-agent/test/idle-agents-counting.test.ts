@@ -7,6 +7,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } fr
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
+import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { DetachedToolCall, DetachedToolResult } from "../src/core/agent-session-detached-tools.js";
 import { armedIdleSessionCount } from "../src/core/agent-session-release.ts";
@@ -37,13 +38,16 @@ const AGENTS_PER_WAVE = 12;
 const TURNS = 3;
 const WAIT_TOOL = "wait_for_ci";
 
+useTemporaryAgentDir();
+
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
 	vi.unstubAllEnvs();
 });
 
-function countingStore(inner: SessionStore = new MemorySessionStore()) {
+/** Delegates to a memory store and counts its operations; `spill` forwards `release`, so released agents leave memory. */
+function countingStore(inner = new MemorySessionStore(), spill = true) {
 	const counts = new Map<string, number>();
 	const counted =
 		<T extends unknown[], R>(name: string, operation: (...args: T) => R) =>
@@ -64,8 +68,9 @@ function countingStore(inner: SessionStore = new MemorySessionStore()) {
 		list: counted("list", inner.list.bind(inner)),
 		findMostRecent: counted("findMostRecent", inner.findMostRecent.bind(inner)),
 		close: counted("close", inner.close.bind(inner)),
+		...(spill ? { releaseSession: counted("releaseSession", inner.releaseSession.bind(inner)) } : {}),
 	};
-	return { store, get: (name: string) => counts.get(name) ?? 0, reset: () => counts.clear() };
+	return { store, inner, get: (name: string) => counts.get(name) ?? 0, reset: () => counts.clear() };
 }
 
 /** Timers, sockets and child processes this process holds now. */
@@ -109,7 +114,12 @@ interface LongCall {
 
 const NEVER_ENDING: LongCall = { start: () => new Promise(() => {}), taken: () => {} };
 
-async function host(longCall: LongCall = NEVER_ENDING) {
+interface HostOptions {
+	/** Whether a release moves the agent's history out of memory (#4502); off, the store keeps it in memory. */
+	readonly spill?: boolean;
+}
+
+async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}) {
 	const tempDir = join(tmpdir(), `atomic-idle-count-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 	vi.stubEnv("PI_CACHE_RETENTION", "none");
@@ -185,7 +195,7 @@ async function host(longCall: LongCall = NEVER_ENDING) {
 		return fauxAssistantMessage(last?.toolName === WAIT_TOOL ? "ci passed" : "turn done");
 	};
 	const script = (requests: number) => faux.appendResponses(Array.from({ length: requests }, () => respond));
-	const store = countingStore();
+	const store = countingStore(new MemorySessionStore(), options.spill ?? true);
 	const services = await createAgentSessionServices({
 		cwd: tempDir,
 		agentDir: tempDir,
@@ -221,18 +231,20 @@ async function host(longCall: LongCall = NEVER_ENDING) {
 	cleanups.push(async () => {
 		for (const session of live) await session.dispose();
 		await runtime.dispose();
+		await store.inner.close();
 		faux.unregister();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
-	/** Run one agent through its turns until it waits on the long tool; returns its live session. */
-	const runAgent = async (index: number): Promise<AgentSession> => {
+	/** Run one agent through its turns, each prompt `promptBytes` longer, until it waits on the long tool. */
+	const runAgent = async (index: number, promptBytes = 0): Promise<AgentSession> => {
 		const { session } = await factory({
 			cwd: tempDir,
 			agentDir: tempDir,
 			sessionManager: await SessionManager.create(store.store, tempDir),
 		});
 		session.setToolDetachment({ afterMs: 0 });
-		for (let turn = 1; turn <= TURNS; turn++) await session.prompt(`agent ${index} turn ${turn}`);
+		const padding = "y".repeat(promptBytes);
+		for (let turn = 1; turn <= TURNS; turn++) await session.prompt(`agent ${index} turn ${turn}${padding}`);
 		const calls = session.takeDetachedToolCalls();
 		assert.deepEqual(
 			calls.map((call) => call.toolName),
@@ -438,6 +450,89 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 			await settledHandles();
 			const finishedPromises = queryObjects(Promise, { format: "count" }) as number;
 			assert.equal(Math.round((finishedPromises - before.Promise) / agents), 0);
+		},
+		HEAP_WALK_TEST_TIMEOUT_MS,
+	);
+});
+
+/** The most history bytes a released agent may keep in process memory: its session header, whatever its history. */
+const RELEASED_AGENT_RESIDENT_HISTORY_BYTES = 512;
+/** The most ArrayBuffer bytes a released agent may add to the process: its header's buffer, with room for allocator rounding. */
+const RELEASED_AGENT_BUFFER_BYTES = 1024;
+/** What each prompt of the longer agents adds to their history. */
+const LONGER_PROMPT_BYTES = 12_000;
+
+describe("a released agent's history leaves process memory (#4502)", () => {
+	/**
+	 * One host whose agents are released in groups of two waves; `group(promptBytes)` runs a group with prompts that
+	 * much longer and returns what each of its agents added, after a full collection, since the group before.
+	 */
+	async function releasedGroups(spill: boolean) {
+		const h = await host(NEVER_ENDING, { spill });
+		let next = 0;
+		let last = "";
+		const sample = async () => {
+			await settledHandles();
+			const buffers = queryObjects(ArrayBuffer, { format: "count" }) as number;
+			return { buffers, bytes: process.memoryUsage().arrayBuffers, held: h.store.inner.historyBytes() };
+		};
+		const waves = async (count: number, promptBytes: number) => {
+			for (let wave = 0; wave < count; wave++) {
+				h.script(AGENTS_PER_WAVE * TURNS * 2);
+				const sessions = await Promise.all(
+					Array.from({ length: AGENTS_PER_WAVE }, () => h.runAgent(next++, promptBytes)),
+				);
+				for (const session of sessions) last = (await session.release()).sessionId;
+			}
+		};
+		await waves(1, 0);
+		let before = await sample();
+		return async (promptBytes: number) => {
+			await waves(2, promptBytes);
+			const after = await sample();
+			const agents = AGENTS_PER_WAVE * 2;
+			const added = {
+				historyBytes: Buffer.byteLength(JSON.stringify((await h.store.inner.load(last)).entries)) - 2,
+				headerBytes: Buffer.byteLength(JSON.stringify(await h.store.inner.readHeader(last))),
+				buffers: Math.round((after.buffers - before.buffers) / agents),
+				bytes: (after.bytes - before.bytes) / agents,
+				inMemory: (after.held.inMemory - before.held.inMemory) / agents,
+				onDisk: (after.held.onDisk - before.held.onDisk) / agents,
+			};
+			before = after;
+			return added;
+		};
+	}
+
+	test(
+		"per released agent: only its header stays in memory, one buffer, however long its history",
+		async () => {
+			const group = await releasedGroups(true);
+			const short = await group(0);
+			const long = await group(LONGER_PROMPT_BYTES);
+			assert.ok(
+				long.historyBytes - short.historyBytes >= TURNS * LONGER_PROMPT_BYTES,
+				`${long.historyBytes} vs ${short.historyBytes} bytes`,
+			);
+			for (const run of [short, long]) {
+				assert.equal(run.inMemory, run.headerBytes);
+				assert.ok(run.inMemory <= RELEASED_AGENT_RESIDENT_HISTORY_BYTES, `${run.inMemory} history bytes in memory`);
+				assert.ok(run.onDisk >= run.historyBytes * 0.95, `${run.onDisk} of ${run.historyBytes} bytes on disk`);
+				assert.ok(run.buffers <= 1, `${run.buffers} buffers per agent`);
+				assert.ok(run.bytes <= RELEASED_AGENT_BUFFER_BYTES, `${run.bytes} buffer bytes per agent`);
+			}
+		},
+		HEAP_WALK_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"positive control: without a release to disk, each agent's buffers hold its whole history",
+		async () => {
+			const group = await releasedGroups(false);
+			const kept = await group(LONGER_PROMPT_BYTES);
+			assert.equal(kept.onDisk, 0);
+			assert.ok(kept.inMemory >= kept.historyBytes, `${kept.inMemory} of ${kept.historyBytes} bytes in memory`);
+			assert.ok(kept.bytes >= kept.historyBytes * 0.9, `${kept.bytes} buffer bytes for ${kept.historyBytes}`);
 		},
 		HEAP_WALK_TEST_TIMEOUT_MS,
 	);

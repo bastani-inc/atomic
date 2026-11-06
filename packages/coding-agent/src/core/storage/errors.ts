@@ -447,9 +447,107 @@ export class SessionBlobError extends StorageError {
 	}
 }
 
+export const SESSION_SPILL_ERROR_CODES = [
+	"spill-dir-refused",
+	"spill-write-failed",
+	"spill-read-failed",
+	"spill-missing",
+	"spill-cleanup-failed",
+] as const;
+/**
+ * How the in-memory session store failed to keep a released session's history in its file on disk.
+ * `"spill-dir-refused"`: the directory for those files could not be created or trusted; released sessions keep their
+ * history in memory. Recorded, not thrown.
+ * `"spill-write-failed"`: a released session's history could not be written to its file; it stays in memory and
+ * nothing is lost. Recorded, not thrown.
+ * `"spill-read-failed"`: a released session's history could not be read back from its file; `retryable` when the
+ * filesystem's failure passes (out of file descriptors, interrupted, busy).
+ * `"spill-missing"`: a released session's file is gone or holds less than was written to it; its history is lost.
+ * `"spill-cleanup-failed"`: the file of a deleted or replaced session, or a closed store's directory, could not be
+ * removed; it stays on disk until Atomic's temp sweep removes it. Recorded, not thrown.
+ */
+export type SessionSpillErrorCode = (typeof SESSION_SPILL_ERROR_CODES)[number];
+
+export interface SessionSpillErrorFields {
+	/** The directory the store keeps released sessions' history in. */
+	readonly directory: string;
+	/** The session, for every code but `"spill-dir-refused"` and a whole directory's `"spill-cleanup-failed"`. */
+	readonly sessionId?: string;
+	/** The bytes of history the write held, or that the file should hold. */
+	readonly bytes?: number;
+	/** For `"spill-missing"`: the bytes the file held, when it still exists. */
+	readonly foundBytes?: number;
+	/** The filesystem's error code, such as `ENOSPC` or `ENOENT`, when the failure has one. */
+	readonly errno?: string;
+}
+
+/** Filesystem failures that pass: a read that met one may work when tried again. */
+const TRANSIENT_SPILL_ERRNOS: ReadonlySet<string> = new Set(["EMFILE", "ENFILE", "EAGAIN", "EBUSY", "EINTR"]);
+
+const SESSION_SPILL_HINTS: Readonly<Record<SessionSpillErrorCode, string>> = {
+	"spill-dir-refused":
+		"Released sessions keep their history in memory; point TMPDIR at a directory this account owns and can write, or keep sessions in a SQLite session store",
+	"spill-write-failed":
+		"The session keeps its history in memory and nothing was lost; free space in the system temp directory (TMPDIR) or make it writable, or keep sessions in a SQLite session store",
+	"spill-read-failed":
+		"Check that the system temp directory (TMPDIR) is readable and that the process has file descriptors to spare, then reopen the session",
+	"spill-missing":
+		"Something removed or truncated the store's file in the system temp directory, so the session cannot be reopened; keep temp cleaners away from Atomic's temp directory while the process runs, or keep sessions in a SQLite session store",
+	"spill-cleanup-failed":
+		"The files stay in the system temp directory until Atomic's temp sweep removes them; the store is not affected",
+};
+
+function sessionSpillSubject(code: SessionSpillErrorCode, fields: SessionSpillErrorFields): string {
+	const session = `session ${fields.sessionId} in ${fields.directory}`;
+	switch (code) {
+		case "spill-dir-refused":
+			return `Could not use a directory for released sessions' history: ${fields.directory}`;
+		case "spill-write-failed":
+			return `Could not move a released session's history out of memory: ${session}`;
+		case "spill-read-failed":
+			return `Could not read a released session's history: ${session}`;
+		case "spill-missing":
+			return `A released session's history is missing: ${session}, ${fields.foundBytes ?? 0} of ${fields.bytes} bytes found`;
+		case "spill-cleanup-failed":
+			return `Could not remove released sessions' history from disk: ${fields.sessionId === undefined ? fields.directory : session}`;
+	}
+}
+
+/**
+ * The in-memory session store moves a released session's history to a file of its own in the system temp directory
+ * and reads it back when the session is loaded; this error says what went wrong with those files. `"spill-read-failed"`
+ * and `"spill-missing"` are thrown by `load` and `list`; the other codes are recorded once each on the store, read with
+ * `spillDegradation()`, and emitted once as a process warning, while the store keeps the history in memory.
+ */
+export class SessionSpillError extends StorageError {
+	override readonly name = "SessionSpillError" as const;
+	readonly code: SessionSpillErrorCode;
+	readonly hint: string;
+	readonly retryable: boolean;
+	readonly directory: string;
+	declare readonly sessionId?: string;
+	declare readonly bytes?: number;
+	declare readonly foundBytes?: number;
+	declare readonly errno?: string;
+	constructor(code: SessionSpillErrorCode, fields: SessionSpillErrorFields, options?: ErrorOptions) {
+		const hint = SESSION_SPILL_HINTS[code];
+		super(`${sessionSpillSubject(code, fields)} (${code}). ${hint}`, options);
+		this.code = code;
+		this.hint = hint;
+		this.retryable =
+			code === "spill-read-failed" && fields.errno !== undefined && TRANSIENT_SPILL_ERRNOS.has(fields.errno);
+		this.directory = fields.directory;
+		if (fields.sessionId !== undefined) this.sessionId = fields.sessionId;
+		if (fields.bytes !== undefined) this.bytes = fields.bytes;
+		if (fields.foundBytes !== undefined) this.foundBytes = fields.foundBytes;
+		if (fields.errno !== undefined) this.errno = fields.errno;
+	}
+}
+
 /** Every code a storage error that carries one can have. */
 export type StorageErrorCode =
 	| SessionBlobErrorCode
+	| SessionSpillErrorCode
 	| StorageConfigErrorCode
 	| StorageWriteLockTimeoutCode
 	| StorageUnsupportedOperationCode
@@ -510,6 +608,11 @@ export function isSessionBlobError(value: unknown): value is SessionBlobError {
 	return value instanceof SessionBlobError || hasCode(value, "SessionBlobError", SESSION_BLOB_ERROR_CODES);
 }
 
+/** A `SessionSpillError`, from this module or another copy of it, or a rehydrated one. */
+export function isSessionSpillError(value: unknown): value is SessionSpillError {
+	return value instanceof SessionSpillError || hasCode(value, "SessionSpillError", SESSION_SPILL_ERROR_CODES);
+}
+
 /**
  * Any storage error: an instance of `StorageError` or one of its subclasses, including a rehydrated one, or a copy of
  * a storage error with a stable `code` from another module instance, recognized by its name and code.
@@ -524,6 +627,7 @@ export function isStorageError(value: unknown): value is StorageError {
 		isStorageWriterQueueUnusableError(value) ||
 		isStorageTransientError(value) ||
 		isSessionBlobError(value) ||
+		isSessionSpillError(value) ||
 		isJournalStoreError(value)
 	);
 }
@@ -922,6 +1026,7 @@ export function isRetryableStorageError(error: unknown): boolean {
 		if (isStorageWriteLockTimeoutError(current) && current.retryable === true) return true;
 		if (isStorageTransientError(current) && current.retryable === true) return true;
 		if (isJournalStoreError(current) && current.retryable) return true;
+		if (isSessionSpillError(current) && current.retryable === true) return true;
 		current = causeOf(current);
 	}
 	return false;
@@ -1092,6 +1197,21 @@ function knownStorageError(
 					bytes: field<number>(serialized, "bytes", "number"),
 					actualHash: field<string>(serialized, "actualHash", "string"),
 					adapter: field<string>(serialized, "adapter", "string"),
+				},
+				cause === undefined ? undefined : { cause },
+			);
+		}
+		case "SessionSpillError": {
+			const code = SESSION_SPILL_ERROR_CODES.find((known) => known === serialized.code);
+			if (code === undefined) return undefined;
+			return new SessionSpillError(
+				code,
+				{
+					directory: field<string>(serialized, "directory", "string") ?? "",
+					sessionId: field<string>(serialized, "sessionId", "string"),
+					bytes: field<number>(serialized, "bytes", "number"),
+					foundBytes: field<number>(serialized, "foundBytes", "number"),
+					errno: field<string>(serialized, "errno", "string"),
 				},
 				cause === undefined ? undefined : { cause },
 			);
