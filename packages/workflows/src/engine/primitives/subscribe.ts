@@ -70,9 +70,15 @@ export interface WorkflowEventPrimitiveSet extends WorkflowEventPrimitives {
 	readonly opened: number;
 	/** Stops every open source and waits for admitted events, at the end of the run body. */
 	closeAndDrain(): Promise<void>;
-	/** Cancels every open subscription when the run is cancelled: handlers abort and `done` rejects with `reason`. */
+	/**
+	 * Cancels every open subscription when the run is cancelled: handlers abort and `done` rejects with `reason`. Later
+	 * `subscribe` and `events` calls throw `reason`.
+	 */
 	cancel(reason: unknown): void;
-	/** Stops every open source and drops queued events without waiting, when the run fails. */
+	/**
+	 * Stops every open source and drops queued events without waiting, when the run fails. Later `subscribe` and
+	 * `events` calls throw `reason`.
+	 */
 	stopIntake(reason: unknown): void;
 }
 
@@ -108,6 +114,11 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		readonly cancel: (reason: unknown) => void;
 	}
 	const open = new Set<OpenSubscription>();
+	/**
+	 * Aborted with the run's reason once it is cancelled or fails. The run body's code can still be running then, and a
+	 * subscription it opened would start its source with nothing left to stop it, so `subscribe` and `events` throw.
+	 */
+	const runStopped = new AbortController();
 
 	const nextOrdinal = (name: string): number => {
 		const ordinal = (ordinals.get(name) ?? 0) + 1;
@@ -128,6 +139,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		handler: WorkflowEventHandler,
 		options: WorkflowSubscribeOptions = {},
 	): WorkflowSubscription => {
+		runStopped.signal.throwIfAborted();
 		validateEventSource(source, "source");
 		if (typeof handler !== "function") throw new SubscriptionConfigError("handler", "not-function");
 		validateName(options.name, "options.name");
@@ -227,6 +239,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 	};
 
 	const events = (source: EventSource, options: WorkflowEventsOptions = {}): WorkflowEventStream => {
+		runStopped.signal.throwIfAborted();
 		validateEventSource(source, "source");
 		validateName(options.name, "options.name");
 		validateSubscriptionAdmission({ maxRate: options.maxRate }, "options");
@@ -353,9 +366,11 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		subscribe,
 		events,
 		stopIntake: (reason) => {
+			runStopped.abort(reason);
 			for (const entry of open) entry.stop(reason);
 		},
 		cancel: (reason) => {
+			runStopped.abort(reason);
 			for (const entry of open) entry.cancel(reason);
 		},
 		closeAndDrain: async () => {

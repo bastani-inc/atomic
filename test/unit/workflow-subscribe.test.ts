@@ -40,6 +40,7 @@ import type {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	closeMemoryTestBackends,
 	createMemoryTestBackend,
@@ -51,6 +52,8 @@ const poolProbe = vi.hoisted(() => ({ open: undefined as (() => Promise<SessionS
 vi.mock("../../packages/workflows/src/workers/pool-session-store.js", () => ({
 	poolSessionStore: async () => poolProbe.open?.(),
 }));
+
+useTemporaryAgentDir();
 
 afterEach(closeMemoryTestBackends);
 
@@ -1265,6 +1268,150 @@ test("cancelling a run cancels its inline streams at once and releases a held ev
 	await assert.rejects(stream!.next(), /operator cancelled/);
 	await turnsUntil(() => stream!.stats().active === 0);
 	assert.deepEqual(processedEventIds(backend, runId), []);
+});
+
+for (const { stopped, status, runId } of [
+	{ stopped: "is cancelled", status: "killed", runId: "b1b1b1b1-b1b1-4b1b-8b1b-000000004311" },
+	{ stopped: "fails", status: "failed", runId: "b2b2b2b2-b2b2-4b2b-8b2b-000000004311" },
+] as const) {
+	test(`a body still running after its resumed run ${stopped} cannot open a subscription or an inline stream (#4311)`, async () => {
+		const controller = new AbortController();
+		const reason = new Error(`the run ${stopped}`);
+		const backend = await createMemoryTestBackend();
+		const bodyGoesOn = Promise.withResolvers<void>();
+		const lateCalls = Promise.withResolvers<readonly string[]>();
+		const started: string[] = [];
+		const lateSource = (id: string): EventSource => ({
+			id,
+			start: () => {
+				started.push(id);
+			},
+		});
+		let resumed = false;
+		const definition = workflow({
+			name: "late-subscription",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.stage("anchor").prompt("start");
+				if (!resumed) {
+					// The first run records both subscriptions, so the resumed run finds their records and writes none.
+					await ctx.subscribe(listSource("late", []), async () => {}).done;
+					await ctx.events(listSource("late-inline", [])).next();
+					return {};
+				}
+				// Ending the run does not stop the body's code: this branch goes on after the run has ended.
+				void bodyGoesOn.promise.then(() => {
+					const opens = [
+						() => ctx.subscribe(lateSource("late"), async () => {}),
+						() => ctx.events(lateSource("late-inline")),
+					];
+					lateCalls.resolve(
+						opens.map((open) => {
+							try {
+								open();
+								return "opened";
+							} catch (error) {
+								return error === reason ? "threw the run's reason" : `threw ${String(error)}`;
+							}
+						}),
+					);
+				});
+				if (status === "killed") {
+					controller.abort(reason);
+					await new Promise<void>(() => {});
+				}
+				throw reason;
+			},
+		}) as WorkflowDefinition;
+		const runOnce = () =>
+			run(
+				definition,
+				{},
+				{
+					runId,
+					store: createStore(),
+					durableBackend: backend,
+					signal: controller.signal,
+					adapters: { agentSession: { create: async () => subscriberSession() } },
+				},
+			);
+		const first = await runOnce();
+		assert.equal(first.status, "completed", first.error);
+		resumed = true;
+		const result = await runOnce();
+		assert.equal(result.status, status);
+		bodyGoesOn.resolve();
+		assert.deepEqual(await lateCalls.promise, ["threw the run's reason", "threw the run's reason"]);
+		for (let turn = 0; turn < EVENT_LOOP_TURNS; turn++) await nextTurn();
+		assert.deepEqual(started, []);
+	});
+}
+
+test("a subscription still writing its journal record when the run is cancelled never starts its source (#4311)", async () => {
+	const controller = new AbortController();
+	const reason = new Error("operator cancelled");
+	const backend = await createMemoryTestBackend();
+	const runId = "b3b3b3b3-b3b3-4b3b-8b3b-000000004311";
+	const recordWriting = Promise.withResolvers<void>();
+	const recordWritten = Promise.withResolvers<void>();
+	const commitCheckpoint = backend.commitCheckpoint.bind(backend);
+	backend.commitCheckpoint = async (checkpoint, options) => {
+		if (checkpoint.checkpointId.startsWith("workflow-subscription:")) {
+			recordWriting.resolve();
+			await recordWritten.promise;
+		}
+		await commitCheckpoint(checkpoint, options);
+	};
+	const started: string[] = [];
+	const startingSource = (id: string): EventSource => ({
+		id,
+		start: () => {
+			started.push(id);
+		},
+	});
+	const outcomes = Promise.withResolvers<readonly string[]>();
+	const definition = workflow({
+		name: "cancelled-while-starting",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			const subscription = ctx.subscribe(startingSource("starting"), async () => {});
+			const stream = ctx.events(startingSource("starting-inline"));
+			void Promise.allSettled([subscription.done, stream.next()]).then((settled) =>
+				outcomes.resolve(
+					settled.map((outcome) =>
+						outcome.status === "rejected" && outcome.reason === reason
+							? "rejected with the run's reason"
+							: outcome.status,
+					),
+				),
+			);
+			await recordWriting.promise;
+			controller.abort(reason);
+			await new Promise<void>(() => {});
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId,
+			store: createStore(),
+			durableBackend: backend,
+			signal: controller.signal,
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "killed");
+	recordWritten.resolve();
+	assert.deepEqual(await outcomes.promise, ["rejected with the run's reason", "rejected with the run's reason"]);
+	for (let turn = 0; turn < EVENT_LOOP_TURNS; turn++) await nextTurn();
+	assert.deepEqual(started, []);
 });
 
 test("closing an inline stream while its next event is being admitted neither hangs nor yields it later (#4311)", async () => {
