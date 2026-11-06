@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import { runThenRemoveFixtureTree } from "../helpers/fixture-removal.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -371,8 +372,8 @@ test("Windows installer initializes cleanup state before preflight and API resol
 		"$transactionCommitted = $false",
 		"$transactionMissingDirectories = New-Object System.Collections.ArrayList",
 		"$rollbackRetryLimit = 3",
-		"$tempCleanupRetryLimit = 5",
-		"$tempCleanupRetryDelayMilliseconds = 125",
+		"$tempCleanupRetryLimit = 9",
+		"$tempCleanupRetryDelayMilliseconds = 250",
 		"$primaryError = $null",
 		"$tempCleanupError = $null",
 	]) {
@@ -797,6 +798,21 @@ test("Windows installer removes its temporary download directory with bounded ve
 	}
 });
 
+test("Windows installer waits out a transient lock on its just-executed payload before failing temp cleanup (#4483)", () => {
+	const source = installerSource();
+	const retryLimit = Number(/^\$tempCleanupRetryLimit = (\d+)\r?$/mu.exec(source)?.[1]);
+	const retryDelayMilliseconds = Number(/^\$tempCleanupRetryDelayMilliseconds = (\d+)\r?$/mu.exec(source)?.[1]);
+	const pausesBeforeGivingUp = Array.from(
+		{ length: retryLimit - 1 },
+		(_, index) => retryDelayMilliseconds * (index + 1),
+	);
+	const totalBackoffMilliseconds = pausesBeforeGivingUp.reduce((total, pause) => total + pause, 0);
+	assert.ok(
+		totalBackoffMilliseconds >= 9_000,
+		`temp cleanup gives up after ${totalBackoffMilliseconds} ms of backoff; 1.25 s did not outlast a just-executed payload's lock`,
+	);
+});
+
 interface PowerShellEngine {
 	executable: string;
 	major: number;
@@ -846,12 +862,16 @@ const powershellEngines = findPowerShellEngines();
 const powershellExecutable = powershellEngines.find(
 	(engine) => process.platform === "win32" && engine.major === 5,
 )?.executable;
-const powershellTest = powershellExecutable === undefined ? test.skip : test;
 const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
+const runOrSkipPowerShellFixture = powershellExecutable === undefined ? test.skip : test;
+function powershellTest(name: string, fn: () => void, timeout = POWERSHELL_FIXTURE_TIMEOUT_MS): void {
+	runOrSkipPowerShellFixture(name, fn, timeout);
+}
 const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
 const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
 const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
 const TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS = 180_000;
+const BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS = 180_000;
 
 if (powershellEngines.length === 0) {
 	test.skip("available PowerShell engines isolate literal IEX failure state", () => {});
@@ -1703,6 +1723,21 @@ function Get-TempResidueReport {
         Count = $entries.Count
         Paths = (($entries | ForEach-Object { $_.FullName }) -join '; ')
     }
+}
+
+function Assert-FixtureProcessesExited {
+    param([string]$Root, [int]$WaitMilliseconds)
+    $prefix = $Root.TrimEnd('\') + '\'
+    $outlived = New-Object System.Collections.ArrayList
+    foreach ($process in [Diagnostics.Process]::GetProcesses()) {
+        try { $imagePath = $process.MainModule.FileName }
+        catch { $imagePath = $null }
+        if ($null -ne $imagePath -and $imagePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $exited = $process.WaitForExit($WaitMilliseconds)
+            [void]$outlived.Add("$($process.Id) $imagePath (exited after waiting: $exited)")
+        }
+    }
+    Assert-Fixture ($outlived.Count -eq 0) "processes started from the fixture workspace outlived the scenario: $($outlived -join '; ')"
 }
 
 function Test-ByteSequence {
@@ -3256,6 +3291,7 @@ try {
         throw "Unknown fixture scenario: $Scenario"
     }
 
+    Assert-FixtureProcessesExited $workspace 10000
     $finalResidue = Get-TempResidueReport $fixtureTemp
     Assert-Fixture ($finalResidue.Count -eq 0) "temporary installer directory was not cleaned: $($finalResidue.Paths)"
     Write-Output "SCENARIO_OK:$Scenario"
@@ -3751,6 +3787,26 @@ test("Windows PowerShell 5.1 fixtures verify install-state removal before reinst
 	);
 });
 
+test("Windows PowerShell 5.1 fixtures await and fail on any process from the workspace before they report success (#4483)", () => {
+	const checkStart = fixtureHarness.indexOf("function Assert-FixtureProcessesExited");
+	assert.ok(checkStart >= 0, "the fixture lacks a check for processes started from its workspace");
+	const check = fixtureHarness.slice(checkStart, fixtureHarness.indexOf("\nfunction ", checkStart + 1));
+	assert.match(check, /\[Diagnostics\.Process\]::GetProcesses\(\)/u);
+	assert.match(check, /\$process\.MainModule\.FileName/u);
+	assert.match(check, /\$prefix = \$Root\.TrimEnd\('\\'\) \+ '\\'/u, "a sibling workspace sharing the prefix matched");
+	assert.match(check, /\$imagePath\.StartsWith\(\$prefix, \[StringComparison\]::OrdinalIgnoreCase\)/u);
+	assert.match(check, /\$process\.WaitForExit\(\$WaitMilliseconds\)/u, "a running process must be awaited");
+	assert.match(check, /Assert-Fixture \(\$outlived\.Count -eq 0\)/u, "an awaited straggler must still fail");
+
+	const call = fixtureHarness.indexOf("Assert-FixtureProcessesExited $workspace 10000");
+	const unknownScenario = fixtureHarness.indexOf('throw "Unknown fixture scenario: $Scenario"');
+	const finalResidue = fixtureHarness.indexOf("$finalResidue = Get-TempResidueReport $fixtureTemp");
+	assert.ok(
+		unknownScenario >= 0 && call > unknownScenario && finalResidue > call,
+		"every scenario must await its processes before the final residue check and SCENARIO_OK",
+	);
+});
+
 test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event after actual moves", () => {
 	assert.match(ctrlCHelperSource, /CREATE_NEW_CONSOLE/u);
 	assert.match(ctrlCHelperSource, /AttachConsole\(process\.dwProcessId\)/u);
@@ -3937,7 +3993,7 @@ function runPowerShellFixture(
 		writeFileSync(join(workspace, "ctrl-c-helper.cs"), ctrlCHelperSource, "utf8");
 	}
 	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
-	try {
+	return runThenRemoveFixtureTree(workspace, () => {
 		const fixtureTimeout =
 			scenario === "ctrl-c"
 				? CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS
@@ -3947,7 +4003,9 @@ function runPowerShellFixture(
 						? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
 						: scenario === "temp-cleanup"
 							? TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
-							: POWERSHELL_FIXTURE_TIMEOUT_MS;
+							: scenario === "backup-cleanup"
+								? BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
+								: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
 				powershellExecutable,
@@ -3974,9 +4032,7 @@ function runPowerShellFixture(
 		);
 		assert.match(stdout, new RegExp(`SCENARIO_OK:${scenario}`, "u"));
 		return stdout;
-	} finally {
-		rmSync(workspace, { recursive: true, force: true });
-	}
+	});
 }
 
 powershellTest("PowerShell 5.1 fixture installs exact refs for both architectures and is idempotent", () => {
@@ -4065,9 +4121,13 @@ powershellTest(
 	},
 );
 
-powershellTest("PowerShell 5.1 fixture retries a briefly locked version backup and leaves no residue", () => {
-	runPowerShellFixture("backup-cleanup");
-});
+powershellTest(
+	"PowerShell 5.1 fixture retries a briefly locked version backup and leaves no residue",
+	() => {
+		runPowerShellFixture("backup-cleanup");
+	},
+	BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);
 
 powershellTest(
 	"PowerShell 5.1 fixture removes every temporary download directory against real open handles",
