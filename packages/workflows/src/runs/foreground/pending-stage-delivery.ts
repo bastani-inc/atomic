@@ -9,6 +9,7 @@ type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
 type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
 export type PendingStageDeliveryCommit = <T>(action: () => Promise<T>) => Promise<T>;
 
+import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
 import { pendingStageMessageAdmissionOrder } from "../../shared/pending-stage-delivery.js";
@@ -546,17 +547,18 @@ async function deliverPendingStageMessages(
 				}
 				continue;
 			}
-			if (
-				!(await commit(() =>
-					activeStore.markPendingStageMessageDelivered(
-						runId,
-						entry.stageKey,
-						entry.id,
-						new Date().toISOString(),
-						backend,
-					),
-				))
-			) {
+			const marked = await commit(() =>
+				activeStore.markPendingStageMessageDelivered(
+					runId,
+					entry.stageKey,
+					entry.id,
+					new Date().toISOString(),
+					backend,
+				),
+			);
+			// Nothing marked is success when the entry is delivered already, as the root's settlement marks one the
+			// stage's session received (#4505): only a vanished or otherwise settled entry is a real change.
+			if (!marked && !(await deliveredAlready(activeStore, backend, runId, entry))) {
 				throw new Error(`atomic-workflows: pending-stage message ${entry.id} changed during delivery`);
 			}
 		} finally {
@@ -564,6 +566,20 @@ async function deliverPendingStageMessages(
 		}
 	}
 	if (stickyFailure !== undefined) options.stickyUndeliverable?.(stickyFailure);
+}
+
+/** Whether the exact entry `entry` of run `runId` is delivered, in the run's queue or archived by its durable owner. */
+async function deliveredAlready(
+	activeStore: Store,
+	backend: DurableWorkflowBackend,
+	runId: string,
+	entry: PendingStageMessage,
+): Promise<boolean> {
+	const current = activeStore
+		.run(runId)
+		?.pendingStageMessages?.find((candidate) => candidate.stageKey === entry.stageKey && candidate.id === entry.id);
+	const settled = current ?? (await backend.readSettledPendingStageMessage?.(runId, entry.id));
+	return settled?.status === "delivered";
 }
 
 /**

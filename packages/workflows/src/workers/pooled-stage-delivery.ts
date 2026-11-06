@@ -201,14 +201,17 @@ export async function createWorkerStageDelivery(
 	},
 ): Promise<WorkerStageDelivery> {
 	const { stage, inbox, store, request, ...delivery } = options;
-	if (inbox !== undefined)
-		return createPooledStageDelivery({
+	if (inbox !== undefined) {
+		// The session's sink is registered as this delivery's, so only this session's close drops it (#4505).
+		const remote: WorkerStageDelivery = createPooledStageDelivery({
 			...delivery,
 			forward: async (recipient, deliver) => {
 				recordStageReceipts(store, stage, recipient);
-				inbox.register(stage, recipient.sessionId, deliver);
+				inbox.register(stage, recipient.sessionId, deliver, remote);
 			},
 		});
+		return remote;
+	}
 	const routeCapability = await request({ kind: "route", runId: stage.runId });
 	if (typeof routeCapability !== "string") throw new Error("Worker root route is unavailable");
 	return createPooledStageDelivery({ ...delivery, routeCapability });
@@ -236,25 +239,26 @@ function recordStageReceipts(
 }
 
 /**
- * The session a worker created for a stage on a host that does not run its root, made to drop its sink from `inbox`
- * once it closes, whether or not it closed cleanly (#4505): the inbox lives as long as the attempt, and a sink holds the
- * session's delivery and, through it, the session itself. The session is changed in place, since its owners know it by
- * identity. Without an inbox the session is returned as it is.
+ * The session a worker created for a stage on a host that does not run its root, made to drop the sink its
+ * pending-stage `delivery` handed to `inbox` once it closes, whether or not it closed cleanly (#4505): the inbox lives as
+ * long as the attempt, and a sink holds the session's delivery and, through it, the session itself. A session that
+ * replaced this one keeps its own sink, also under the same session id. The session is changed in place, since its
+ * owners know it by identity. Without an inbox the session is returned as it is.
  */
 export function unregisterWhenClosed(
 	created: StageSessionRuntime | StageSessionCreateResult,
 	inbox: RemoteStageInbox | undefined,
 	stage: Pick<PooledStageIdentity, "runId" | "stageId">,
+	delivery: WorkerStageDelivery,
 ): StageSessionRuntime | StageSessionCreateResult {
 	if (inbox === undefined) return created;
 	const session = "session" in created ? created.session : created;
 	const dispose = session.dispose.bind(session);
 	session.dispose = async () => {
-		const { sessionId } = session;
 		try {
 			await dispose();
 		} finally {
-			inbox.unregister(stage, sessionId);
+			inbox.unregister(stage, delivery);
 		}
 	};
 	return created;
@@ -314,7 +318,7 @@ export function workerStageAdapter(ports: WorkerStageAdapterPorts): AgentSession
 				{ ...options, orchestrationContext: { ...options.orchestrationContext, pendingStageDelivery } },
 				meta,
 			);
-			return unregisterWhenClosed(created, inbox, identity);
+			return unregisterWhenClosed(created, inbox, identity, pendingStageDelivery);
 		},
 	};
 }

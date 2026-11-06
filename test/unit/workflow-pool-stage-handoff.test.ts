@@ -1760,6 +1760,41 @@ test("a stage on another host that took its messages at startup and ended before
 	}
 });
 
+test("a receipt record that settlement got to first finds the message delivered, and reports no failed drain (#4505)", async () => {
+	const f = await fixture();
+	const gated = gatedHandoff(f);
+	try {
+		await gated.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		// One publication ends the stage, which took the message at startup, and its child.
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1"] };
+		const ended = stage("stage", {
+			sessionId: "session-a",
+			status: "completed",
+			endedAt: 1,
+			intercomReceipts: receipts,
+		});
+		await gated.handoff.publish(f.first, [childRun([ended], { status: "completed", endedAt: 2 })]);
+		// The handoff starts recording the receipts and waits at its append; the root's settlement runs meanwhile.
+		const recording = gated.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: receipts.messageIds,
+		});
+		await gated.appending;
+		const notified: string[] = [];
+		await settleQueued(f, notified);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "delivered");
+		gated.release();
+		await recording;
+		assert.deepEqual(notified, [], "the message was delivered once, and its sender hears nothing");
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "delivered");
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined, "no drain failed");
+	} finally {
+		gated.release();
+		await f.close();
+	}
+});
+
 test("a child whose publication ending a stage never reached the root records that stage's receipts as it completes (#4505)", async () => {
 	const f = await fixture();
 	try {

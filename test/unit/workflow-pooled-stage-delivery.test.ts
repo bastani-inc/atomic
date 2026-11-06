@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type {
 	AgentSessionAdapter,
 	StageSessionCreateOptions,
@@ -27,6 +29,7 @@ import { intercomMessageOutcome } from "../../packages/workflows/src/workers/sta
 import { countRunListScans, holdFinishedRuns } from "../helpers/finished-runs.js";
 import { testRunId } from "../helpers/run-id.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+import { makeMockSession } from "./stage-runner-helpers.js";
 
 useTemporaryAgentDir();
 
@@ -457,28 +460,35 @@ test("a closed stage session's sink is gone from its attempt's inbox; a replacem
 	const store = createStore();
 	store.recordRunStart({ ...childRun(), stages: [stageSnapshot("agent", "agent")] });
 	const inbox = new RemoteStageInbox();
-	const delivery = await createWorkerStageDelivery({
-		stage,
-		inbox,
-		store,
-		request: async () => "capability",
-		queued: async () => [],
-		forward: async () => {},
-		fail: () => {},
-	});
+	// Each session of the stage gets its own pending-stage delivery, as a worker's adapter creates it.
+	const remoteDelivery = () =>
+		createWorkerStageDelivery({
+			stage,
+			inbox,
+			store,
+			request: async () => "capability",
+			queued: async () => [],
+			forward: async () => {},
+			fail: () => {},
+		});
 	const received: string[] = [];
 	const sink = (session: string) => (_sender: Sender, message: Delivered) => {
 		received.push(`${session}:${message.id}`);
 	};
 	const sender = { id: "sender-id", name: "sender" } as Sender;
 	const message = (id: string) => entry(id, 1).message as Delivered;
+	const delivery = await remoteDelivery();
 	await delivery.deliverPending(sink("session-a"), { sessionId: "session-a", receivedMessageIds: [] });
 	const closed: string[] = [];
 	const session = workerSession("session-a", async () => {
 		closed.push("session-a");
 	});
 	const created = { session };
-	assert.equal(unregisterWhenClosed(created, inbox, stage), created, "the adapter's result is returned as it is");
+	assert.equal(
+		unregisterWhenClosed(created, inbox, stage, delivery),
+		created,
+		"the adapter's result is returned as it is",
+	);
 	assert.equal(created.session, session, "and its session is the same session");
 	assert.deepEqual(await inbox.deliver(stage, "session-a", sender, message("before-close")), {});
 	await session.dispose();
@@ -495,11 +505,12 @@ test("a closed stage session's sink is gone from its attempt's inbox; a replacem
 	);
 	assert.deepEqual(received, ["session-a:before-close"], "the closed session's sink is no longer called");
 	// A session that fails to close still drops its sink, and its failure is its caller's.
-	await delivery.deliverPending(sink("session-b"), { sessionId: "session-b", receivedMessageIds: [] });
+	const failingDelivery = await remoteDelivery();
+	await failingDelivery.deliverPending(sink("session-b"), { sessionId: "session-b", receivedMessageIds: [] });
 	const failing = workerSession("session-b", async () => {
 		throw new Error("shutdown failed");
 	});
-	unregisterWhenClosed(failing, inbox, stage);
+	unregisterWhenClosed(failing, inbox, stage, failingDelivery);
 	await assert.rejects(async () => failing.dispose(), /shutdown failed/);
 	assert.equal(
 		(await inbox.deliver(stage, "session-b", sender, message("after-failure"))).error?.code,
@@ -507,16 +518,28 @@ test("a closed stage session's sink is gone from its attempt's inbox; a replacem
 	);
 	// An earlier session that closes after the stage's next session took over leaves that session's sink.
 	const earlier = workerSession("session-c");
-	await delivery.deliverPending(sink("session-c"), { sessionId: "session-c", receivedMessageIds: [] });
-	unregisterWhenClosed(earlier, inbox, stage);
-	await delivery.deliverPending(sink("session-d"), { sessionId: "session-d", receivedMessageIds: [] });
+	const earlierDelivery = await remoteDelivery();
+	await earlierDelivery.deliverPending(sink("session-c"), { sessionId: "session-c", receivedMessageIds: [] });
+	unregisterWhenClosed(earlier, inbox, stage, earlierDelivery);
+	await (await remoteDelivery()).deliverPending(sink("session-d"), { sessionId: "session-d", receivedMessageIds: [] });
 	await earlier.dispose();
 	assert.deepEqual(await inbox.deliver(stage, "session-d", sender, message("to-replacement")), {});
-	assert.deepEqual(received, ["session-a:before-close", "session-d:to-replacement"]);
+	// So does one whose next session resumed its session id, as a model fallback's does.
+	const retired = workerSession("session-e");
+	const retiredDelivery = await remoteDelivery();
+	await retiredDelivery.deliverPending(sink("session-e"), { sessionId: "session-e", receivedMessageIds: [] });
+	unregisterWhenClosed(retired, inbox, stage, retiredDelivery);
+	await (await remoteDelivery()).deliverPending(sink("session-e resumed"), {
+		sessionId: "session-e",
+		receivedMessageIds: [],
+	});
+	await retired.dispose();
+	assert.deepEqual(await inbox.deliver(stage, "session-e", sender, message("to-resumed")), {});
+	assert.deepEqual(received, ["session-a:before-close", "session-d:to-replacement", "session-e resumed:to-resumed"]);
 	// Without an inbox, the root's host, the session is left as it is.
-	const local = workerSession("session-e");
+	const local = workerSession("session-f");
 	const dispose = local.dispose;
-	assert.equal(unregisterWhenClosed(local, undefined, stage), local);
+	assert.equal(unregisterWhenClosed(local, undefined, stage, delivery), local);
 	assert.equal(local.dispose, dispose);
 });
 
@@ -642,6 +665,76 @@ test("a worker's stage session on another host takes its queued messages, publis
 		assert.equal(afterClose.error?.code, "intercom_unavailable", `${shape}: the closed session's sink is gone`);
 		assert.deepEqual(received, ["first", "late"]);
 	}
+});
+
+test("a stage whose model fallback replaces its reopened session keeps taking the root's messages after the retired session closes (#4505)", async () => {
+	// The stage reopens its saved session, whose model fails again; the fallback walk restarts the chain, and every
+	// session it creates resumes the saved session id. Each one starts as Intercom's extension starts one.
+	const sessionStore = new MemorySessionStore();
+	await sessionStore.create(
+		{ id: "saved-session", version: 4, createdAt: new Date().toISOString(), cwd: process.cwd() },
+		[],
+	);
+	const created: string[] = [];
+	const received: string[] = [];
+	const closed: string[] = [];
+	const base: AgentSessionAdapter = {
+		async create(options) {
+			const index = created.length;
+			const sessionId = options.sessionManager?.getSessionId() ?? "session-unmanaged";
+			created.push(`${index}:${String(options.model)}:${sessionId}`);
+			await options.orchestrationContext?.pendingStageDelivery?.deliverPending(
+				(_sender, message) => {
+					received.push(`${index}:${message.id}`);
+				},
+				{ sessionId, receivedMessageIds: [] },
+			);
+			const { session } = makeMockSession({
+				sessionId,
+				// The reopened session restores its saved model, the chain's fallback; the restarted chain tries both.
+				model: { provider: "anthropic", id: index === 1 ? "model-a" : "model-b" } as StageSessionRuntime["model"],
+				async prompt() {
+					if (index < 2) throw new Error("rate limit exceeded");
+					return "answered";
+				},
+				dispose() {
+					closed.push(`${index}`);
+				},
+			});
+			return session;
+		},
+	};
+	const { ports } = workerPorts(base);
+	const context = createStageContext({
+		runId: CHILD,
+		stageId: "agent-1",
+		stageName: "agent",
+		stageOptions: { model: "anthropic/model-a", fallbackModels: ["anthropic/model-b"], sessionStore },
+		adapters: { agentSession: workerStageAdapter(ports) },
+		pendingStageDelivery: stageDelivery([]),
+	});
+	await context.__ensureSessionFromId("saved-session");
+	await context.prompt("follow up");
+	assert.deepEqual(created, [
+		"0:undefined:saved-session",
+		"1:anthropic/model-a:saved-session",
+		"2:anthropic/model-b:saved-session",
+	]);
+	for (let turn = 0; turn < 12 && closed.length < 2; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(closed, ["0", "1"], "the fallback walk closed the sessions it retired");
+	const sender = { id: "sender-id", name: "sender" } as Sender;
+	assert.deepEqual(
+		await ports.inbox!.deliver(
+			{ runId: CHILD, stageId: "agent-1" },
+			"saved-session",
+			sender,
+			entry("live", 2).message as Delivered,
+		),
+		{},
+		"the live session still takes the root's message",
+	);
+	assert.deepEqual(received.at(-1), "2:live");
+	await context.__dispose();
 });
 
 test("a worker's stage session on the root's host forwards to the root, and a stage without Intercom is the base's own (#4505)", async () => {

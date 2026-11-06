@@ -19,11 +19,17 @@ export type RemoteStageInboxResult = { readonly refusal?: IntercomRefusal; reado
  * handed its sink over yet waits for it.
  */
 export class RemoteStageInbox {
-	private readonly sessions = new Map<string, { readonly sessionId: string; readonly deliver?: WorkerDeliver }>();
+	private readonly sessions = new Map<
+		string,
+		{ readonly sessionId: string; readonly deliver?: WorkerDeliver; readonly owner?: object }
+	>();
 	private readonly replaced = new Map<string, Set<string>>();
 
-	/** Records the sink of the stage's session `sessionId`; a later session of the stage replaces it. */
-	register(stage: StageRef, sessionId: string, deliver: WorkerDeliver): void {
+	/**
+	 * Records the sink of the stage's session `sessionId`, handed over by `owner`, the session's own pending-stage
+	 * delivery; a later session of the stage replaces it, also one that resumes the same session id.
+	 */
+	register(stage: StageRef, sessionId: string, deliver: WorkerDeliver, owner: object): void {
 		const key = stageKey(stage);
 		const previous = this.sessions.get(key);
 		if (previous !== undefined && previous.sessionId !== sessionId) {
@@ -31,17 +37,18 @@ export class RemoteStageInbox {
 			replaced.add(previous.sessionId);
 			this.replaced.set(key, replaced);
 		}
-		this.sessions.set(key, { sessionId, deliver });
+		this.sessions.set(key, { sessionId, deliver, owner });
 	}
 
 	/**
-	 * Drops the sink of the stage's session `sessionId` once that session closed, so the inbox no longer holds the
-	 * session (#4505). Only the session that owns the stage's sink drops it: an earlier session's call leaves the sink of
-	 * the session that replaced it.
+	 * Drops the stage's sink once the session whose delivery is `owner` closed, so the inbox no longer holds the session
+	 * (#4505). Only the registration `owner` made is dropped: a session that replaced it keeps its sink, also one that
+	 * resumed the same session id, as a model fallback's next session does.
 	 */
-	unregister(stage: StageRef, sessionId: string): void {
+	unregister(stage: StageRef, owner: object): void {
 		const key = stageKey(stage);
-		if (this.sessions.get(key)?.sessionId === sessionId) this.sessions.set(key, { sessionId });
+		const current = this.sessions.get(key);
+		if (current?.owner === owner) this.sessions.set(key, { sessionId: current.sessionId });
 	}
 
 	/**
