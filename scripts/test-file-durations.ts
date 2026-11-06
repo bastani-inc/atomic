@@ -8,7 +8,7 @@
  * Pass the reports of recent CI runs, one per shard per run: the `test-diagnostics-*` artifacts of the
  * integration-tests, unit-tests and agent-suite jobs each hold one JSON report per suite. Without `--os`, each report's
  * OS comes from its artifact path (`linux-x64` or `windows-x64`). A file that appears in several reports of one OS gets
- * its mean duration. Files the reports cover replace their old entries; entries for files that no longer exist are
+ * its mean duration, counting only the reports where it passed. Files the reports cover replace their old entries; entries for files that no longer exist are
  * dropped. An OS whose reports hold no test file, or a report whose OS is unknown, leaves the record untouched and
  * fails the command.
  */
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { type FileDurations, UNKNOWN_FILE_MS } from "../test/helpers/duration-sequencer.js";
 
 export interface VitestJsonReport {
-	testResults: { name: string; startTime: number; endTime: number }[];
+	testResults: { name: string; startTime: number; endTime: number; status?: string }[];
 }
 
 /** A report path relative to the repository: the part from its first `test/` or `packages/<name>/test/` on. */
@@ -26,15 +26,16 @@ function repositoryPath(name: string): string | undefined {
 }
 
 /**
- * Mean duration in milliseconds of every test file in `reports`, keyed by repository-relative path. Throws when the
- * reports hold no test file: an empty record would weigh every file the same.
+ * Mean duration in milliseconds of every test file in `reports`, keyed by repository-relative path. A file that failed
+ * in a report is left out of it: its time is when it died or hit a timeout (a 9 s file reported 131 s), not what it
+ * costs when it passes. Throws when the reports hold no test file: an empty record would weigh every file the same.
  */
 export function testFileDurations(reports: readonly VitestJsonReport[]): Record<string, number> {
 	const samples = new Map<string, number[]>();
 	for (const report of reports) {
 		for (const file of report.testResults) {
 			const path = repositoryPath(file.name);
-			if (path === undefined) continue;
+			if (path === undefined || file.status === "failed") continue;
 			samples.set(path, [...(samples.get(path) ?? []), file.endTime - file.startTime]);
 		}
 	}

@@ -1,4 +1,4 @@
-// Protocol-level stand-in for a worker of a shared pool (#4310), forked by test/unit/workflow-shared-pool-coordinator.test.ts
+// Protocol-level stand-in for a worker of a shared pool (#4310), forked by the test/unit/workflow-shared-pool-coordinator*.test.ts files
 // through the pool's internal `workerEntry`. It speaks the real worker IPC protocol: it claims work, records where its
 // stage runs, publishes its run, and completes the work once SHARED_POOL_STUB_RELEASE exists (at once without it). It
 // answers every stage prompt it is given. Each claim is one line in SHARED_POOL_STUB_LOG: `<host> <work id> <cwd>`, and
