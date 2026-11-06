@@ -39,6 +39,7 @@ import {
 	resolveRunOptions,
 	SUITES,
 	selectRemoteRef,
+	suiteProfiles,
 } from "./harness/config.mjs";
 import {
 	attachCleanupFailure,
@@ -55,6 +56,7 @@ import { runLifecycle } from "./harness/lifecycle.mjs";
 import { Manifest } from "./harness/manifest.mjs";
 import { evaluateEffectiveRules } from "./harness/network.mjs";
 import { createRandom, PRNG_NAME } from "./harness/prng.mjs";
+import { runReleased } from "./harness/released-suite.mjs";
 import {
 	createNamespaces,
 	Host,
@@ -65,6 +67,7 @@ import {
 	sha256File,
 	stageArtifact,
 	stageBase,
+	stageHarness,
 	stageSecret,
 } from "./harness/remote.mjs";
 import { overallStatus, suiteStatus, writeReport } from "./harness/report.mjs";
@@ -416,6 +419,11 @@ async function securityGate(
 }
 
 /** @typedef {import("./harness/state.mjs").RunState} RunState */
+/**
+ * @typedef {{ faults: import("./harness/suites.mjs").FaultRecord[], invariants: import("./harness/invariants.mjs").InvariantResult[],
+ *   metrics: NonNullable<import("./harness/report.mjs").SuiteResult["metrics"]>,
+ *   profileSpecs: Record<string, import("./harness/chaos.mjs").ProfileSpec> }} SuiteOutcome
+ */
 
 /**
  * @param {string} outDir
@@ -829,7 +837,10 @@ async function main() {
 							: loadRunSecrets(context, secretsDir);
 					const all = hostsOf(run.vms);
 					hosts = all;
-					if (run.deployed) return;
+					if (run.deployed) {
+						await settleAll(all.nodes.map((host) => stageHarness(host, join(HERE, "node"))));
+						return;
+					}
 					const runSecrets = secrets;
 					log("staging runtime, artifact and credentials over the private control path");
 					await timed("deploy", () =>
@@ -959,57 +970,63 @@ async function main() {
 			const random = createRandom(options.seed);
 			for (const suite of selectedSuites(options.suite)) {
 				const issue = /** @type {Record<string, string>} */ (SUITES)[suite];
-				if (suite === "smoke") {
-					/** @type {import("./harness/suites.mjs").FaultRecord[]} */
-					const faults = [];
-					const smoke = await timed("suite-smoke", () =>
-						runSmoke({
-							runId: plan.runId,
-							attempt: Date.now().toString(36),
-							nodes,
-							primary,
-							replica,
-							azure: /** @type {AzureRun} */ (azure),
-							random,
-							profiles: options.chaos,
-							gatewayPort: topology.database.gatewayPort,
-							namespace: topology.database.namespaces[0],
-							signal,
-							log,
-							started,
-							faults,
-						}),
-					).catch((error) => {
-						report.suites.push({
-							name: suite,
-							issue,
-							status: isCancellation(error, signal) ? "cancelled" : "failed",
-							reason: serializeDistributedError(error),
-							faults,
-						});
-						report.coverage = profileCoverage(faults, options.chaos);
-						throw error;
-					});
+				const skip = featureSkip(suite, /** @type {import("./harness/suites.mjs").Capabilities} */ (capabilities));
+				if (skip !== undefined || (suite !== "smoke" && suite !== "idle-density")) {
 					report.suites.push({
 						name: suite,
 						issue,
-						status: suiteStatus(smoke.invariants, smoke.faults),
-						invariants: smoke.invariants,
-						failures: invariantFailures(smoke.invariants, suite).map((error) => serializeDistributedError(error)),
-						faults: smoke.faults,
-						metrics: smoke.metrics,
-						profiles: smoke.profileSpecs,
+						status: "skipped",
+						...(skip === undefined ? {} : { reason: serializeDistributedError(skip) }),
 					});
-					report.coverage = profileCoverage(smoke.faults, options.chaos);
 					continue;
 				}
-				const skip = featureSkip(suite, /** @type {import("./harness/suites.mjs").Capabilities} */ (capabilities));
+				const profiles = suiteProfiles(suite, options.chaos);
+				/** @type {import("./harness/suites.mjs").FaultRecord[]} */
+				const faults = [];
+				const coverage = (/** @type {readonly import("./harness/suites.mjs").FaultRecord[]} */ records) =>
+					profileCoverage(records, profiles).map((entry) => ({ suite, ...entry }));
+				const context = {
+					runId: plan.runId,
+					attempt: Date.now().toString(36),
+					nodes,
+					primary,
+					random,
+					profiles,
+					gatewayPort: topology.database.gatewayPort,
+					namespace: topology.database.namespaces[0],
+					signal,
+					log,
+					started,
+					faults,
+				};
+				const result = await timed(
+					`suite-${suite}`,
+					/** @returns {Promise<SuiteOutcome>} */ () =>
+						suite === "smoke"
+							? runSmoke({ ...context, replica, azure: /** @type {AzureRun} */ (azure) })
+							: runReleased(context),
+				).catch((error) => {
+					report.suites.push({
+						name: suite,
+						issue,
+						status: isCancellation(error, signal) ? "cancelled" : "failed",
+						reason: serializeDistributedError(error),
+						faults,
+					});
+					report.coverage.push(...coverage(faults));
+					throw error;
+				});
 				report.suites.push({
 					name: suite,
 					issue,
-					status: "skipped",
-					...(skip === undefined ? {} : { reason: serializeDistributedError(skip) }),
+					status: suiteStatus(result.invariants, result.faults),
+					invariants: result.invariants,
+					failures: invariantFailures(result.invariants, suite).map((error) => serializeDistributedError(error)),
+					faults: result.faults,
+					metrics: result.metrics,
+					profiles: result.profileSpecs,
 				});
+				report.coverage.push(...coverage(result.faults));
 			}
 		},
 		teardown: async () => {

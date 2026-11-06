@@ -12,7 +12,8 @@ import { redact } from "./commands.mjs";
  * @typedef {import("./invariants.mjs").InvariantResult} Invariant
  * @typedef {import("./suites.mjs").FaultRecord} FaultRecord
  * @typedef {{ name: string, issue: string, status: "passed" | "failed" | "skipped" | "cancelled", reason?: SerializedError,
- *   invariants?: Invariant[], failures?: SerializedError[], faults?: FaultRecord[], metrics?: import("./suites.mjs").SmokeMetrics,
+ *   invariants?: Invariant[], failures?: SerializedError[], faults?: FaultRecord[],
+ *   metrics?: import("./suites.mjs").SmokeMetrics | import("./released-suite.mjs").ReleasedMetrics,
  *   profiles?: Record<string, import("./chaos.mjs").ProfileSpec> }} SuiteResult
  * @typedef {"passed" | "failed" | "cancelled"} RunStatus
  * @typedef {{ ref: string, suite: string, chaos: string, nodes: number, regions: string[], seed: number, prng: string,
@@ -27,7 +28,7 @@ import { redact } from "./commands.mjs";
  *   databaseVolumes?: { primary?: DatabaseVolume, replica?: DatabaseVolume }, hosts?: Record<string, HostFacts>,
  *   capabilities?: { workflows: number, atomic: number, artifact: ArtifactStamp } }} ReportEnvironment
  * @typedef {{ passed: boolean, checks: import("./security.mjs").SecurityCheck[] }} SecurityReport
- * @typedef {ReturnType<typeof import("./chaos.mjs").profileCoverage>[number]} CoverageEntry
+ * @typedef {ReturnType<typeof import("./chaos.mjs").profileCoverage>[number] & { suite?: string }} CoverageEntry
  * @typedef {{ ok: boolean, steps: { operation: string, ok: boolean, error?: SerializedError }[],
  *   queries: import("./teardown.mjs").QueryRecord[], remaining: string[], nothingProvisioned?: true, builder?: "stopped" | SerializedError }} TeardownReport
  * @typedef {{ ok: null, kept: true, expiresAt: string, reuse: string, sweep: string }} KeptTeardownReport
@@ -124,14 +125,16 @@ export function renderMarkdown(report) {
 		"",
 		"## Chaos coverage",
 		"",
-		"| Profile | Status | Target | Effect observed | Recovered | Observed |",
-		"| --- | --- | --- | --- | --- | --- |",
+		"| Suite | Profile | Status | Target | Effect observed | Recovered | Observed |",
+		"| --- | --- | --- | --- | --- | --- | --- |",
 	);
-	const faults = report.suites.flatMap((suite) => suite.faults ?? []);
 	for (const item of report.coverage) {
-		const fault = faults.find((entry) => entry.profile === item.profile);
+		const fault = report.suites
+			.filter((suite) => item.suite === undefined || suite.name === item.suite)
+			.flatMap((suite) => suite.faults ?? [])
+			.find((entry) => entry.profile === item.profile);
 		lines.push(
-			`| ${item.profile} | ${item.status} | ${fault?.target ?? ""} | ${fault?.effectObserved ?? ""} | ${fault?.recovered ?? ""} | ${cell(fault?.error?.message ?? fault?.observed ?? "")} |`,
+			`| ${item.suite ?? ""} | ${item.profile} | ${item.status} | ${fault?.target ?? ""} | ${fault?.effectObserved ?? ""} | ${fault?.recovered ?? ""} | ${cell(fault?.error?.message ?? fault?.observed ?? "")} |`,
 		);
 	}
 	lines.push("", "## Invariants", "", "| Invariant | Passed | Expected | Actual |", "| --- | --- | --- | --- |");
@@ -149,7 +152,7 @@ export function renderMarkdown(report) {
 		"```",
 	);
 	lines.push("", "## Fault timeline", "", "| ms | Profile | Event |", "| --- | --- | --- |");
-	for (const fault of faults)
+	for (const fault of report.suites.flatMap((suite) => suite.faults ?? []))
 		for (const event of fault.timeline) lines.push(`| ${event.at} | ${fault.profile} | ${cell(event.event)} |`);
 	lines.push(
 		"",

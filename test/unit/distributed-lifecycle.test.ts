@@ -377,10 +377,9 @@ test("feature suites skip with a typed reason when the ref lacks their interface
 			featureSkip("idle-density", capabilities({ members: { "atomic.AgentSessionRuntime": ["fork"] } })),
 		),
 	);
-	assert.ok(
-		isDistributedScenarioPendingError(
-			featureSkip("idle-density", capabilities({ members: { "atomic.AgentSessionRuntime": ["rehydrate"] } })),
-		),
+	assert.equal(
+		featureSkip("idle-density", capabilities({ members: { "atomic.AgentSessionRuntime": ["rehydrate"] } })),
+		undefined,
 	);
 	assert.ok(
 		isDistributedFeatureUnavailableError(
@@ -396,7 +395,8 @@ test("feature suites skip with a typed reason when the ref lacks their interface
 		),
 	);
 	assert.equal(featureSkip("smoke", capabilities()), undefined);
-	for (const [suite, probe] of Object.entries(FEATURE_PROBES)) assert.equal(probe.implemented, false, suite);
+	for (const [suite, probe] of Object.entries(FEATURE_PROBES))
+		assert.equal(probe.implemented, suite === "idle-density", suite);
 });
 
 test("a malformed capabilities document is a broken deployment, not a missing feature (#4331)", () => {
@@ -1149,8 +1149,9 @@ test("the Markdown report renders every section exactly (#4331)", () => {
 			},
 		],
 		coverage: [
-			{ profile: "partition", status: "incomplete" },
-			{ profile: "sigkill", status: "incomplete" },
+			{ suite: "smoke", profile: "partition", status: "incomplete" },
+			{ suite: "smoke", profile: "sigkill", status: "incomplete" },
+			{ suite: "compaction", profile: "sigkill", status: "missing" },
 			{ profile: "oom", status: "missing" },
 		],
 		teardown: {
@@ -1200,11 +1201,12 @@ test("the Markdown report renders every section exactly (#4331)", () => {
 		"",
 		"## Chaos coverage",
 		"",
-		"| Profile | Status | Target | Effect observed | Recovered | Observed |",
-		"| --- | --- | --- | --- | --- | --- |",
-		'| partition | incomplete | n1 | true | false | {"drops":3} |',
-		"| sigkill | incomplete | n2 | false | false | could not |",
-		"| oom | missing |  |  |  |  |",
+		"| Suite | Profile | Status | Target | Effect observed | Recovered | Observed |",
+		"| --- | --- | --- | --- | --- | --- | --- |",
+		'| smoke | partition | incomplete | n1 | true | false | {"drops":3} |',
+		"| smoke | sigkill | incomplete | n2 | false | false | could not |",
+		"| compaction | sigkill | missing |  |  |  |  |",
+		"|  | oom | missing |  |  |  |  |",
 		"",
 		"## Invariants",
 		"",
@@ -1279,8 +1281,8 @@ test("the Markdown report renders every section exactly (#4331)", () => {
 			"",
 			"## Chaos coverage",
 			"",
-			"| Profile | Status | Target | Effect observed | Recovered | Observed |",
-			"| --- | --- | --- | --- | --- | --- |",
+			"| Suite | Profile | Status | Target | Effect observed | Recovered | Observed |",
+			"| --- | --- | --- | --- | --- | --- | --- |",
 			"",
 			"## Invariants",
 			"",
