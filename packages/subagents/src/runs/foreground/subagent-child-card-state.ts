@@ -88,16 +88,17 @@ const transcripts = new WeakMap<object, Map<string, TranscriptCache>>();
 const loadedOwners = new Set<string>();
 let source: Pick<ExtensionContext, "sessionManager"> | undefined;
 
-function dropWatcher(key: string, ref: WeakRef<object>): void {
-	const cards = watchers.get(key);
-	if (!cards) return;
-	cards.delete(ref);
-	if (cards.size === 0) watchers.delete(key);
+interface WatchedCard {
+	readonly key: string;
+	readonly cards: Set<WeakRef<object>>;
+	readonly ref: WeakRef<object>;
 }
 
-const collectedCards = new FinalizationRegistry<{ readonly key: string; readonly ref: WeakRef<object> }>(
-	({ key, ref }) => dropWatcher(key, ref),
-);
+/** A card that is gone stops being watched, and its key goes with its last card. */
+const collectedCards = new FinalizationRegistry<WatchedCard>(({ key, cards, ref }) => {
+	cards.delete(ref);
+	if (cards.size === 0) watchers.delete(key);
+});
 
 function notify(key: string): void {
 	const cards = watchers.get(key);
@@ -106,7 +107,6 @@ function notify(key: string): void {
 		const card = ref.deref();
 		const invalidate = card ? invalidators.get(card) : undefined;
 		if (invalidate) invalidate();
-		else cards.delete(ref);
 	}
 }
 
@@ -234,16 +234,16 @@ export function findAppendedSubagentChildRecord(record: SubagentChildRecord): Su
 }
 
 /**
- * Point the index at the entry `record` was saved as, once its append resolved, unless a newer record of the child
- * was observed since. A record whose entry is not found stays in memory until a later record of its child is found.
+ * Point the index at the entry `record` was saved as, once its owner's append of it resolved, unless a newer record of
+ * the child was observed since. A record whose entry is not found stays in memory until a later record of its child is
+ * found. Only an owner's own records are appended, so the entry is never a copy.
  */
 export function settleSubagentChildRecord(record: SubagentChildRecord): void {
 	if (!isUnsavedSubagentChildRecord(record)) return;
 	const saved = findAppendedSubagentChildRecord(record);
-	const existing = entries.get(record.childId);
-	if (saved === undefined || existing === undefined) return;
+	if (saved === undefined) return;
 	unsavedRecords.delete(record.childId);
-	entries.set(record.childId, projectionOf(record, existing.copied === true, saved));
+	entries.set(record.childId, projectionOf(record, false, saved));
 }
 
 /** Whether `record` is the latest record of its child and is not saved as one entry yet. */
@@ -401,7 +401,7 @@ export function watchSubagentChildCard(
 	if (![...cards].some((ref) => ref.deref() === card)) {
 		const ref = new WeakRef(card);
 		cards.add(ref);
-		collectedCards.register(card, { key, ref });
+		collectedCards.register(card, { key, cards, ref });
 	}
 	if (ownerSessionId === undefined || loadedOwners.has(ownerSessionId) || !source) return;
 	loadedOwners.add(ownerSessionId);
@@ -454,7 +454,10 @@ export function subagentChildTranscript(card: object, record: SubagentChildIndex
 	if (cached?.key === key) return cached.lines;
 	const from = source;
 	if (!from) return cached?.lines;
-	const entry: TranscriptCache = { key, ...(cached?.lines ? { lines: cached.lines } : {}) };
+	const entry: TranscriptCache = {
+		key,
+		...(cached?.lines ? { lines: cached.lines } : {}),
+	};
 	cache.set(record.childId, entry);
 	void (async () => {
 		const reopened = await reopenChildSession(from, record);

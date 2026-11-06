@@ -6,33 +6,41 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import {
 	isReleasedChildError,
-	type ReleasedChildError,
+	ReleasedChildError,
 } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
 	bindSubagentChildCards,
 	findAppendedSubagentChildRecord,
 	isUnsavedSubagentChildRecord,
+	observedSubagentRunIds,
 	observeSubagentChildRecord,
 	registerSubagentChildRecordReader,
 	settleSubagentChildRecord,
+	subagentChildCardRecord,
 	subagentChildCardStateSizes,
+	subagentChildIdsOf,
 	subagentChildIndexEntry,
 	subagentChildRecordOf,
+	unsavedSubagentChildRecordsOf,
 	watchSubagentChildCard,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
+	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	endWorkflowRunStageSubagentChildren,
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	recordSubagentChildReply,
 	recordSubagentChildStatus,
+	reportSubagentChildWakeFailure,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	type SubagentChildRecord,
 	type SubagentChildRecordInput,
 	saveUnsavedSubagentChildRecords,
 	subagentChildRecordFailures,
 	subagentChildRecordsAppended,
+	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
+	watchWorkflowStageSubagentChildren,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { collectGarbage, MAX_COLLECTION_ROUNDS } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -138,6 +146,13 @@ function unreadable(fields: ReleasedChildError["fields"]) {
 		return true;
 	};
 }
+
+test("a child recorded without a task id indexes no task id; first in this file, while no task id is indexed (#4395)", () => {
+	assert.equal(subagentChildCardStateSizes().taskIds, 0);
+	observeSubagentChildRecord(record("ix-first-owner", { childId: "ix-first:0" }));
+
+	assert.equal(subagentChildCardStateSizes().taskIds, 0);
+});
 
 describe("a released child's index entry (#4395)", () => {
 	test("an entry whose session holds no such entry throws child-record-unreadable naming where it looked", () => {
@@ -326,6 +341,97 @@ describe("a released child's index entry (#4395)", () => {
 		assert.equal(newer.launch, undefined);
 		assert.equal(subagentChildRecordOf(ownerSessionId, "ix-lost:0"), newer);
 	});
+	test("a record with no owner is indexed as written in the session it was read from, as nobody's copy", async () => {
+		const at = session();
+		const { owner: _owner, ...ownerless } = record(at, { childId: "ix-nobody:0" });
+		const entryId = await at.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, ownerless);
+		bindSubagentChildCards({ sessionManager: at });
+
+		assert.deepEqual(subagentChildIndexEntry("ix-nobody:0"), {
+			childId: "ix-nobody:0",
+			runId: "ix-nobody",
+			index: 0,
+			agent: "worker",
+			state: "running",
+			cwd: "/repo",
+			entryId,
+			recordedIn: at.getSessionId(),
+		});
+	});
+
+	test("a newer copy of a child replaces the copy indexed before it", async () => {
+		const fork = session();
+		const original = "ix-copy-original";
+		await fork.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, record(original, { childId: "ix-copy-twice:0" }));
+		bindSubagentChildCards({ sessionManager: fork });
+		const newer = record(original, { childId: "ix-copy-twice:0", state: "terminal", terminalStatus: "ok" });
+		const entryId = await fork.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, newer);
+		bindSubagentChildCards({ sessionManager: fork });
+
+		assert.equal(subagentChildIndexEntry("ix-copy-twice:0")?.entryId, entryId);
+		assert.equal(subagentChildRecordOf(original, "ix-copy-twice:0"), newer);
+	});
+
+	test("a complete saved record replaces the child's record held in memory", async () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		registerSubagentChildRecordReader(owner, true);
+		const inMemory = observeSubagentChildRecord(record(owner, { childId: "ix-replaced:0" }));
+		const saved = record(owner, { childId: "ix-replaced:0", state: "terminal", terminalStatus: "ok" });
+		const entryId = await owner.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, saved);
+		observeSubagentChildRecord(saved, false, { entryId, sessionId: ownerSessionId });
+
+		assert.equal(isUnsavedSubagentChildRecord(inMemory), false);
+		assert.equal(subagentChildRecordOf(ownerSessionId, "ix-replaced:0"), saved);
+	});
+
+	test("a card finds a child by every task id it ran as, and a released child's current task by walking the index", () => {
+		const owner = session();
+		const before = subagentChildCardStateSizes().taskIds;
+		observeSubagentChildRecord(record(owner, { childId: "ix-tasks-none:0" }));
+		assert.equal(subagentChildCardStateSizes().taskIds, before, "a record without a task indexes none");
+
+		observeSubagentChildRecord(record(owner, { childId: "ix-tasks:0", taskId: "ix-task-1" }));
+		observeSubagentChildRecord(
+			record(owner, { childId: "ix-tasks:0", taskId: "ix-task-1", state: "terminal", terminalStatus: "released" }),
+		);
+		observeSubagentChildRecord(record(owner, { childId: "ix-tasks:0", taskId: "ix-task-2" }));
+		observeSubagentChildRecord(record(owner, { childId: "ix-tasks:0", taskId: "ix-task-3" }));
+		assert.equal(subagentChildCardRecord(undefined, "ix-task-2")?.childId, "ix-tasks:0", "an earlier task");
+		assert.equal(subagentChildCardRecord(undefined, "ix-task-1"), undefined, "a released task is not kept");
+
+		observeSubagentChildRecord(
+			record(owner, { childId: "ix-tasks:0", taskId: "ix-task-4", state: "terminal", terminalStatus: "released" }),
+		);
+		assert.equal(subagentChildCardRecord(undefined, "ix-task-4")?.childId, "ix-tasks:0", "found by walking");
+		assert.equal(subagentChildCardRecord(undefined, "ix-task-unknown"), undefined);
+		assert.equal(subagentChildCardRecord("ix-tasks:0", "ix-task-unknown")?.childId, "ix-tasks:0");
+	});
+
+	test("a copy shadowed by the owner's own record indexes none of its task ids", async () => {
+		const owner = session();
+		const fork = session();
+		observeSubagentChildRecord(record(owner, { childId: "ix-shadow:0", taskId: "ix-own-task" }));
+		await fork.appendCustomEntry(
+			SUBAGENT_CHILD_RECORD_TYPE,
+			record(owner, { childId: "ix-shadow:0", taskId: "ix-copied-task" }),
+		);
+		bindSubagentChildCards({ sessionManager: fork });
+
+		assert.equal(subagentChildCardRecord(undefined, "ix-copied-task"), undefined);
+	});
+
+	test("an owner's child ids and run ids are exactly those of the children it launched", () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		observeSubagentChildRecord(record(owner, { childId: "ix-ids-a:0" }));
+		observeSubagentChildRecord(record(owner, { childId: "ix-ids-a:1", runId: "ix-ids-a", index: 1 }));
+		observeSubagentChildRecord(record(owner, { childId: "ix-ids-b:0" }));
+		observeSubagentChildRecord(record("ix-ids-other-owner", { childId: "ix-ids-c:0" }));
+
+		assert.deepEqual(subagentChildIdsOf(ownerSessionId).sort(), ["ix-ids-a:0", "ix-ids-a:1", "ix-ids-b:0"]);
+		assert.deepEqual([...observedSubagentRunIds(ownerSessionId)].sort(), ["ix-ids-a", "ix-ids-b"]);
+	});
 });
 
 describe("saving a child's latest record as one entry (#4395)", () => {
@@ -450,6 +556,148 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		});
 
 		assert.throws(() => observeSubagentChildRecord(record(owner, { childId: "ix-failing:0" })), RangeError);
+		registerSubagentChildRecordReader(
+			{
+				getSessionId: () => ownerSessionId,
+				getEntry: () => {
+					throw new ReleasedChildError("hold-failed", { childName: "worker" });
+				},
+				getLeafEntry: () => undefined,
+			},
+			true,
+		);
+		assert.throws(
+			() => observeSubagentChildRecord(record(owner, { childId: "ix-failing:0" })),
+			(error: Error) => isReleasedChildError(error) && error.code === "hold-failed",
+		);
+	});
+
+	test("binding a session replaces a reader registered for it before", async () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		const saved = record(owner, { childId: "ix-rebound:0" });
+		await owner.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, saved);
+		registerSubagentChildRecordReader(
+			{ getSessionId: () => ownerSessionId, getEntry: () => undefined, getLeafEntry: () => undefined },
+			true,
+		);
+		bindSubagentChildCards({ sessionManager: owner });
+
+		assert.equal(subagentChildRecordOf(ownerSessionId, "ix-rebound:0"), saved);
+	});
+
+	test("a just-appended record that is not in its session is not found once the walk reaches the first entry", async () => {
+		const owner = session();
+		registerSubagentChildRecordReader(owner);
+		await owner.appendCustomEntry("other", {});
+		const absent = observeSubagentChildRecord(record(owner, { childId: "ix-absent:0" }));
+
+		assert.equal(findAppendedSubagentChildRecord(absent), undefined);
+		const { owner: _owner, ...ownerless } = record(owner, { childId: "ix-ownerless-find:0" });
+		assert.equal(findAppendedSubagentChildRecord(ownerless as SubagentChildRecord), undefined);
+		const unregistered = record("ix-no-reader-session", { childId: "ix-no-reader:0" });
+		assert.equal(findAppendedSubagentChildRecord(unregistered), undefined);
+	});
+
+	test("the unsaved records of an owner are exactly its children's, whatever other records are unsaved", () => {
+		const owner = session();
+		const { owner: _owner, ...ownerless } = record(owner, { childId: "ix-unsaved-none:0" });
+		observeSubagentChildRecord(ownerless as SubagentChildRecord);
+		const mine = observeSubagentChildRecord(record(owner, { childId: "ix-unsaved-mine:0" }));
+		observeSubagentChildRecord(record("ix-unsaved-other-owner", { childId: "ix-unsaved-other:0" }));
+
+		assert.deepEqual(unsavedSubagentChildRecordsOf(owner.getSessionId()), [mine]);
+	});
+
+	test("clearing delivered results drops them and the reply waits they answered, and adds no waits", async () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		registerSubagentChildRecordReader(owner, true);
+		const delivered = {
+			toolCallId: "ask-2",
+			toolName: "intercom",
+			result: { content: [{ type: "text" as const, text: "done" }], details: undefined },
+			isError: false,
+		};
+		observeSubagentChildRecord(
+			record(owner, {
+				childId: "ix-clear:0",
+				waitingOn: [
+					{ toolCallId: "ask-2", toolName: "intercom", replyWait: { questionId: "q-2", deadline: 1, from: "p" } },
+					{ toolCallId: "ci-2", toolName: "wait_for_ci" },
+				],
+				heldToolResults: [delivered],
+			}),
+		);
+		observeSubagentChildRecord(record(owner, { childId: "ix-clear-plain:0", heldToolResults: [delivered] }));
+
+		await clearSubagentChildHeldToolResults(writingHost(owner), ownerSessionId, "ix-clear:0", ["ask-2"]);
+		await clearSubagentChildHeldToolResults(writingHost(owner), ownerSessionId, "ix-clear-plain:0", ["ask-2"]);
+
+		const cleared = subagentChildRecordOf(ownerSessionId, "ix-clear:0");
+		assert.deepEqual(
+			[cleared?.heldToolResults, cleared?.waitingOn],
+			[[], [{ toolCallId: "ci-2", toolName: "wait_for_ci" }]],
+		);
+		const plain = subagentChildRecordOf(ownerSessionId, "ix-clear-plain:0");
+		assert.deepEqual(plain?.heldToolResults, []);
+		assert.equal(Object.hasOwn(plain ?? {}, "waitingOn"), false);
+	});
+
+	test("reporting a wake failure that is not there saves nothing", async () => {
+		const owner = session();
+		registerSubagentChildRecordReader(owner, true);
+		observeSubagentChildRecord(record(owner, { childId: "ix-no-failure:0", taskId: "task-nf" }));
+		const entries = owner.getEntries().length;
+
+		assert.equal(
+			await reportSubagentChildWakeFailure(writingHost(owner), owner.getSessionId(), "ix-no-failure:0"),
+			undefined,
+		);
+		assert.equal(owner.getEntries().length, entries);
+	});
+
+	test("a workflow stage closing for good ends each settled child from its newest record, saved or not", async () => {
+		const stage = session();
+		const stageSessionId = stage.getSessionId();
+		const owner = {
+			kind: "workflow-stage" as const,
+			sessionId: stageSessionId,
+			workflowRunId: "wf-ix",
+			workflowStageId: "stage-ix",
+			workflowStageName: "build",
+		};
+		const settled = (childId: string, extra: Partial<SubagentChildRecord> = {}): SubagentChildRecord => ({
+			...record(stageSessionId, { childId, state: "terminal", terminalStatus: "ok", ...extra }),
+			owner,
+		});
+		await stage.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, settled("ix-stage-saved:0"));
+		await stage.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, settled("ix-stage-newer:0"));
+		observeSubagentChildRecord(
+			settled("ix-stage-newer:0", { heldMessages: { taskId: "task-newer", messages: ["kept"] } }),
+		);
+		const close = new AbortController();
+		const extensionState = new Map<string, object>();
+		const ctx = {
+			sessionManager: stage,
+			orchestrationContext: {
+				kind: "workflow-stage",
+				workflowRunId: owner.workflowRunId,
+				workflowStageId: owner.workflowStageId,
+				workflowStageName: owner.workflowStageName,
+				messageAdmission: { boundary: { closeSignal: close.signal }, extensionState, isOpen: () => true },
+			},
+		} as unknown as Pick<ExtensionContext, "sessionManager" | "orchestrationContext">;
+		watchWorkflowStageSubagentChildren(writingHost(stage), ctx);
+
+		extensionState.set(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE, {});
+		close.abort();
+		await subagentChildRecordsAppended(stageSessionId);
+
+		const ended = readSubagentChildRecords(stage.getEntries(), stageSessionId);
+		assert.equal(ended.get("ix-stage-saved:0")?.terminalStatus, "stage-closed");
+		assert.equal(ended.get("ix-stage-newer:0")?.terminalStatus, "stage-closed");
+		assert.deepEqual(ended.get("ix-stage-newer:0")?.heldMessages?.messages, ["kept"]);
 	});
 	test("a record already being saved is not saved again", async () => {
 		const owner = session();
@@ -580,8 +828,8 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 			.at(-1);
 		const entry = subagentChildIndexEntry("ix-stage:0");
 		assert.deepEqual(
-			[entry?.entryId, entry?.terminalStatus, entry?.recordedIn],
-			[closed?.id, "stage-closed", undefined],
+			[entry?.entryId, entry?.terminalStatus, entry?.recordedIn, entry?.copied],
+			[closed?.id, "stage-closed", undefined, undefined],
 		);
 		assert.equal(isUnsavedSubagentChildRecord((closed as SessionEntry & { data: SubagentChildRecord }).data), false);
 		await store.close();
@@ -589,6 +837,22 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 });
 
 describe("what the index keeps besides entries (#4395)", () => {
+	test("a key stays watched while one of its cards is, and goes with the last", async () => {
+		const before = subagentChildCardStateSizes().watchers;
+		const kept = {};
+		let collected: object | undefined = {};
+		watchSubagentChildCard(kept, () => {}, "ix-two-cards:0", undefined);
+		watchSubagentChildCard(collected, () => {}, "ix-two-cards:0", undefined);
+		const probe = new WeakRef(collected);
+		collected = undefined;
+		for (let round = 0; round < MAX_COLLECTION_ROUNDS && probe.deref() !== undefined; round++)
+			await collectGarbage(1);
+		await collectGarbage(2);
+
+		assert.equal(subagentChildCardStateSizes().watchers, before + 1);
+		assert.ok(kept);
+	});
+
 	test("a card's watcher goes with the card", async () => {
 		const before = subagentChildCardStateSizes().watchers;
 		let card: object | undefined = {};

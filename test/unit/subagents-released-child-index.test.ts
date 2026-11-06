@@ -21,7 +21,11 @@ import {
 	subagentChildRecordsAppended,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { subagentRegistrySizes } from "../../packages/subagents/src/runs/foreground/subagent-registry-sizes.js";
-import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import {
+	forgetRunMembership,
+	runAgentTask,
+	subagentTaskRegistrySizes,
+} from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { liveAsyncResources, trackAsyncResources } from "../../scripts/perf/idle-agents/async-resources.js";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
@@ -118,7 +122,10 @@ interface Owner {
 function owner(): Owner {
 	const cwd = makeTempDirectory("released-index-");
 	const sessionManager = SessionManager.inMemory(cwd);
-	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: OWNER_SESSION_ID }, authorizeLaunch() {} });
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: `${OWNER_SESSION_ID}-${sessionManager.getSessionId()}` },
+		authorizeLaunch() {},
+	});
 	const dispatcher = new AgentWakeDispatcher();
 	cleanups.push(() => removeTempDirectory(cwd));
 	cleanups.push(dispatcher.handle(subagentWakeNamespace(sessionManager.getSessionId()), async () => {}));
@@ -138,7 +145,7 @@ function owner(): Owner {
  * Launch one child as a parallel launch does (queued for a slot first, so its record keeps its launch and task), let it
  * run until it is released waiting on CI, then give it history: messages and tool results held for its next wake.
  */
-async function releaseChild(at: Owner, index: number): Promise<string> {
+async function releaseChild(at: Owner, index: number, finishes = false): Promise<string> {
 	const id = padded(index);
 	const runId = `released-${id}`;
 	const childId = `${runId}:0`;
@@ -151,6 +158,7 @@ async function releaseChild(at: Owner, index: number): Promise<string> {
 		options: RunSyncOptions,
 	): Promise<SingleResult> => {
 		options.taskExecution?.bindChildSession?.({ sessionId: `child-session-${id}`, sessionFile: undefined });
+		if (finishes) return { agent: "waiter", task, status: "ok", usage: NO_USAGE, messages: [] };
 		return {
 			agent: "waiter",
 			task,
@@ -186,6 +194,7 @@ async function releaseChild(at: Owner, index: number): Promise<string> {
 		if (!observed.ok || observed.value.kind === "settled") break;
 	}
 	await subagentChildRecordsAppended(at.sessionManager.getSessionId());
+	if (finishes) return childId;
 	const holds = large ? 6 : 1;
 	for (let hold = 0; hold < holds; hold++)
 		assert.equal(
@@ -257,3 +266,15 @@ test(
 	},
 	THOUSANDS_OF_CHILDREN_TIMEOUT_MS,
 );
+
+test("a child that finishes keeps its parallel run's scheduler for a resume, and a released one does not (#4395)", async () => {
+	const at = owner();
+	const before = subagentTaskRegistrySizes().schedules;
+
+	await releaseChild(at, 90_001, true);
+	assert.equal(subagentTaskRegistrySizes().schedules, before + 1);
+	await releaseChild(at, 90_002);
+	assert.equal(subagentTaskRegistrySizes().schedules, before + 1);
+
+	forgetRunMembership(`released-${padded(90_001)}`, 0);
+});

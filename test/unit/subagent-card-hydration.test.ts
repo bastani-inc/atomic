@@ -45,6 +45,9 @@ import type {
 import type { SubagentResultRenderState } from "../../packages/subagents/src/tui/render.js";
 import { sleep } from "../helpers/runtime.js";
 
+/** How often an expanded card of a running child reads its transcript again (the card state's refresh interval). */
+const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
+
 const HYDRATION_WAIT_MS = 5_000;
 
 const definition: ToolDefinition<typeof SubagentParams, Details, SubagentResultRenderState> = {
@@ -376,6 +379,12 @@ test("an expanded card of a running child shows messages it saves after the card
 	bindSubagentChildCards({ sessionManager: manager });
 	const cards = buildCards(manager, true);
 	await eventually(() => paint(cards)[0]!, /Audit the lexer/);
+	await sleep(RUNNING_TRANSCRIPT_REFRESH_MS + 100);
+	assert.match(
+		paint(cards)[0]!,
+		/│ › Audit the lexer/,
+		"a card keeps what it read while it reads the transcript again",
+	);
 	await childSession.appendMessage({
 		role: "assistant",
 		content: [{ type: "text", text: "Lexer audit found two bugs" }],
