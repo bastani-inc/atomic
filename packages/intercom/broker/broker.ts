@@ -219,6 +219,7 @@ interface LiveWorkflowStageRouteActivation {
 type ConnectedSession = BrokerConnectedSession;
 
 interface PendingReleasedReplyAck {
+  readonly handoffId: string;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly socket: net.Socket;
   readonly attemptId?: string;
@@ -2349,7 +2350,8 @@ class IntercomBroker {
 			if (typeof clientMessage.messageId !== "string" || typeof clientMessage.accepted !== "boolean") {
 				throw new Error("Invalid released_child_reply_ack message");
 			}
-			if (this.releasedReplyAcks.get(clientMessage.messageId)?.ownerSessionId === currentId) {
+			const pending = this.releasedReplyAcks.get(clientMessage.messageId);
+			if (pending?.ownerSessionId === currentId && pending.handoffId === clientMessage.handoffId) {
 				this.settleReleasedReply(clientMessage.messageId, clientMessage.accepted ? "accepted" : "refused");
 			}
 			break;
@@ -2456,7 +2458,9 @@ class IntercomBroker {
     const owner = this.sessions.get(route.ownerSessionId);
     const timer = setTimeout(() => this.settleReleasedReply(message.id, "uncertain"), RECIPIENT_RECEIPT_TIMEOUT_MS);
     timer.unref?.();
+    const handoffId = randomUUID();
     const pending: PendingReleasedReplyAck = {
+      handoffId,
       timer,
       socket,
       ...(attemptId === undefined ? {} : { attemptId }),
@@ -2471,6 +2475,7 @@ class IntercomBroker {
       writeMessageIfOpen(owner.socket, {
         type: "released_child_reply",
         childName: route.childName,
+        handoffId,
         replyTo: route.questionId,
         from: from.info,
         message,

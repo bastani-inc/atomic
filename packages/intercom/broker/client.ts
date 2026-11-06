@@ -159,6 +159,7 @@ export interface IntercomClientOptions {
 
 export interface ReleasedChildReply {
 	readonly childName: string;
+	readonly handoffId: string;
 	readonly replyTo: string;
 	readonly from: SessionInfo;
 	readonly message: Message;
@@ -1042,9 +1043,10 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "released_child_reply": {
-        const { childName, replyTo, from, message } = brokerMessage;
+        const { childName, handoffId, replyTo, from, message } = brokerMessage;
         if (
           typeof childName !== "string" ||
+          typeof handoffId !== "string" ||
           typeof replyTo !== "string" ||
           !isSessionInfo(from) ||
           !isMessage(message) ||
@@ -1052,7 +1054,7 @@ export class IntercomClient extends EventEmitter {
         ) {
           throw new Error("Invalid released_child_reply message");
         }
-        const notice: ReleasedChildReply = { childName, replyTo, from, message };
+        const notice: ReleasedChildReply = { childName, handoffId, replyTo, from, message };
         this.emit("released_child_reply", notice);
         break;
       }
@@ -1496,9 +1498,14 @@ export class IntercomClient extends EventEmitter {
     return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
   }
 
-  acknowledgeReleasedChildReply(messageId: string, accepted: boolean): boolean {
+  acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean): boolean {
     if (!this.socket || this.socket.destroyed) return false;
-    writeMessage(this.socket, { type: "released_child_reply_ack", messageId, accepted });
+    writeMessage(this.socket, {
+      type: "released_child_reply_ack",
+      messageId: reply.message.id,
+      handoffId: reply.handoffId,
+      accepted,
+    });
     return true;
   }
 

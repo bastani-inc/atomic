@@ -45,7 +45,7 @@ const from = {
 } satisfies SessionInfo;
 const message: Message = { id: "reply-1", replyTo: "q-1", timestamp: 1, content: { text: "answer" } };
 let active: IntercomClient | undefined;
-let confirmations: Array<[string, boolean]>;
+let confirmations: Array<[string, string, boolean]>;
 beforeEach(() => {
 	active = undefined;
 	confirmations = [];
@@ -57,8 +57,8 @@ beforeEach(() => {
 	vi.spyOn(IntercomClient.prototype, "isConnected").mockReturnValue(true);
 	vi.spyOn(IntercomClient.prototype, "sessionId", "get").mockReturnValue("owner");
 	vi.spyOn(IntercomClient.prototype, "listSessions").mockResolvedValue([]);
-	vi.spyOn(IntercomClient.prototype, "acknowledgeReleasedChildReply").mockImplementation((id, accepted) => {
-		confirmations.push([id, accepted]);
+	vi.spyOn(IntercomClient.prototype, "acknowledgeReleasedChildReply").mockImplementation((reply, accepted) => {
+		confirmations.push([reply.message.id, reply.handoffId, accepted]);
 		return true;
 	});
 });
@@ -100,10 +100,16 @@ for (const accepted of [true, false]) {
 			received = value as ReleasedChildReplyRequest;
 			received.completion = saved.promise;
 		});
-		h.client.emit("released_child_reply", { childName: "child", replyTo: "q-1", from, message });
+		h.client.emit("released_child_reply", {
+			childName: "child",
+			handoffId: "handoff-1",
+			replyTo: "q-1",
+			from,
+			message,
+		});
 		assert.equal(received?.childName, "child");
 		assert.deepEqual(confirmations, []);
 		saved.resolve(accepted);
-		await vi.waitFor(() => assert.deepEqual(confirmations, [["reply-1", accepted]]));
+		await vi.waitFor(() => assert.deepEqual(confirmations, [["reply-1", "handoff-1", accepted]]));
 	});
 }

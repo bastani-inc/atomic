@@ -80,9 +80,15 @@ function recordReplies(owner: Client): ReleasedChildReply[] {
 			pendingAnswers.delete(notice.replyTo);
 			pending.resolve(notice.message);
 		}
-		owner.acknowledgeReleasedChildReply(notice.message.id, pending !== undefined);
+		owner.acknowledgeReleasedChildReply(notice, pending !== undefined);
 	});
 	return replies;
+}
+
+function handoffAt(replies: readonly ReleasedChildReply[], index: number): ReleasedChildReply {
+	const reply = replies[index];
+	assert.ok(reply, `no reply was handed to the owner at ${index}`);
+	return reply;
 }
 
 function outcome(promise: Promise<Message>): Promise<string> {
@@ -117,9 +123,10 @@ async function releaseAsker(
 	replierOf: (owner: Client) => Promise<{ readonly sessionId: string; readonly received: Message[] }>,
 	order: "disconnect-first" | "reserve-first",
 	keepWait = true,
+	sharedOwner?: Client,
 ): Promise<ReleasedAsk> {
 	const childName = `subagent-asker-${label}`;
-	const owner = await connect(`owner-${label}`, { ownerToken: randomUUID() });
+	const owner = sharedOwner ?? (await connect(`owner-${label}`, { ownerToken: randomUUID() }));
 	const { capability, supervisorSessionId } = await owner.authorizeSupervisorChild(childName);
 	const child = await connect(childName, { supervisor: { capability, supervisorSessionId } });
 	const childSessionId = sessionIdOf(child);
@@ -388,14 +395,14 @@ test(
 		assert.equal(refused.reasonCode, "message_id_conflict");
 		assert.equal(second.handed.length, 0, "the refused reply never reaches its owner");
 
-		first.released.owner.acknowledgeReleasedChildReply(sharedId, true);
+		first.released.owner.acknowledgeReleasedChildReply(handoffAt(first.handed, 0), true);
 		const settled = await firstAnswer;
 		assert.equal(settled.delivered, true, settled.reason);
 
 		const retried = answerOf(second, "for the second, again", randomUUID());
 		await vi.waitFor(() => assert.equal(second.handed.length, 1), WAIT);
 		assert.equal(second.handed[0]?.message.content.text, "for the second, again", "the second route was kept");
-		second.released.owner.acknowledgeReleasedChildReply(second.handed[0]?.message.id ?? "", true);
+		second.released.owner.acknowledgeReleasedChildReply(handoffAt(second.handed, 0), true);
 		assert.equal((await retried).delivered, true);
 		for (const side of [first, second]) side.released.call.abort();
 	},
@@ -423,10 +430,80 @@ test(
 		assert.equal(handed.length, 1);
 		assert.equal(result.delivered, false);
 		assert.match(result.reason ?? "", /uncertain/);
-		assert.equal(released.owner.acknowledgeReleasedChildReply(handed[0]?.message.id ?? "", true), true);
+		assert.equal(released.owner.acknowledgeReleasedChildReply(handoffAt(handed, 0), true), true);
 		assert.equal((await released.owner.brokerStatus())?.heldSends, 0, "a late confirmation leaves nothing behind");
 		released.call.abort();
 		assert.equal(await outcome(released.wait), "rejected:Cancelled");
+	},
+	STALLED_OWNER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a late confirmation of a timed-out reply never confirms another reply that reuses its message id (#4326)",
+	async () => {
+		const owner = await connect("owner-reused-id", { ownerToken: randomUUID() });
+		const released = async (label: string) => {
+			let replierClient: Client | undefined;
+			const asked = await releaseAsker(
+				label,
+				peerAsk(`replier-${label}`),
+				async () => {
+					const made = await peerReplier(`replier-${label}`)();
+					replierClient = made.client;
+					return made;
+				},
+				"reserve-first",
+				true,
+				owner,
+			);
+			assert.ok(replierClient);
+			return { released: asked, replier: replierClient };
+		};
+		const first = await released("reused-a");
+		const second = await released("reused-b");
+		const handed: ReleasedChildReply[] = [];
+		owner.on("released_child_reply", (notice: ReleasedChildReply) => handed.push(notice));
+		const reusedId = randomUUID();
+		const answerOf = (side: typeof first, text: string) =>
+			side.replier.send(side.released.childSessionId, {
+				text,
+				messageId: reusedId,
+				replyTo: side.released.questionId,
+				requirePendingReply: true,
+				expectedRecipientId: side.released.childSessionId,
+			});
+
+		const timedOut = await answerOf(first, "for the first");
+		assert.equal(timedOut.delivered, false);
+		assert.match(timedOut.reason ?? "", /uncertain/);
+
+		let secondSettled = false;
+		const secondAnswer = answerOf(second, "for the second");
+		void secondAnswer.then(
+			() => {
+				secondSettled = true;
+			},
+			() => {
+				secondSettled = true;
+			},
+		);
+		await vi.waitFor(() => assert.equal(handed.length, 2), WAIT);
+		assert.equal(handoffAt(handed, 1).message.content.text, "for the second");
+		assert.notEqual(handoffAt(handed, 0).handoffId, handoffAt(handed, 1).handoffId);
+
+		assert.equal(owner.acknowledgeReleasedChildReply(handoffAt(handed, 0), true), true);
+		assert.equal(
+			owner.acknowledgeReleasedChildReply({ ...handoffAt(handed, 1), handoffId: randomUUID() }, true),
+			true,
+		);
+		await owner.brokerStatus();
+		await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+		assert.equal(secondSettled, false, "the first reply's late confirmation did not confirm the second reply");
+
+		assert.equal(owner.acknowledgeReleasedChildReply(handoffAt(handed, 1), true), true);
+		const settled = await secondAnswer;
+		assert.equal(settled.delivered, true, settled.reason);
+		for (const side of [first, second]) side.released.call.abort();
 	},
 	STALLED_OWNER_TEST_TIMEOUT_MS,
 );
@@ -453,14 +530,14 @@ test(
 		await vi.waitFor(() => assert.equal(handed.length, 1), WAIT);
 		await replierClient.disconnect();
 		await waitUntilGone(released.owner, "replier-sender-gone");
-		released.owner.acknowledgeReleasedChildReply(handed[0]?.message.id ?? "", true);
+		released.owner.acknowledgeReleasedChildReply(handoffAt(handed, 0), true);
 
 		const back = await connect("replier-sender-gone", { returnAddress, preferredSessionId: replierSessionId });
 		assert.equal(sessionIdOf(back), replierSessionId);
 		const retry = replyTo(back, released, "second try");
 		await vi.waitFor(() => assert.equal(handed.length, 2), WAIT);
 		assert.equal(handed[1]?.message.content.text, "second try");
-		released.owner.acknowledgeReleasedChildReply(handed[1]?.message.id ?? "", true);
+		released.owner.acknowledgeReleasedChildReply(handoffAt(handed, 1), true);
 		assert.equal((await retry).delivered, true);
 		released.call.abort();
 	},
