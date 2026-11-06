@@ -1,18 +1,16 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.ts";
 import type { RpcCommand } from "../src/modes/rpc/rpc-types.ts";
+import { type RpcBashResponse, waitForRpcBashOutput } from "./helpers/rpc-bash-output-wait.ts";
 import { delayedOutputCommand, gatedOutputCommand } from "./helpers/rpc-shell-commands.js";
 import { createHarness } from "./suite/harness.ts";
-
-const RPC_OUTPUT_WAIT_TIMEOUT_MS = 10_000,
-	RPC_OUTPUT_POLL_INTERVAL_MS = 5;
 
 /**
  * Real-shell headroom between the prefix these cancellation tests wait for and
@@ -116,25 +114,21 @@ function updatesFor(output: object[], id: string): string {
 		.join("");
 }
 
-async function waitForOutput(output: object[], id: string, expectedPrefix: string): Promise<void> {
-	const deadline = Date.now() + RPC_OUTPUT_WAIT_TIMEOUT_MS;
-	while (true) {
-		const observed = updatesFor(output, id);
-		if (observed.startsWith(expectedPrefix)) return;
-		if (Date.now() >= deadline) {
-			throw new Error(
-				`Timed out after ${RPC_OUTPUT_WAIT_TIMEOUT_MS}ms waiting for RPC bash ${JSON.stringify(id)} output prefix ${JSON.stringify(expectedPrefix)}; observed accumulated output: ${JSON.stringify(observed)}`,
-			);
-		}
-		await new Promise((resolve) => setTimeout(resolve, RPC_OUTPUT_POLL_INTERVAL_MS));
-	}
+function waitForOutput(
+	output: object[],
+	id: string,
+	expectedPrefix: string,
+	execution: Promise<RpcBashResponse>,
+	isReady?: () => boolean,
+): Promise<void> {
+	return waitForRpcBashOutput({ id, expectedPrefix, observed: () => updatesFor(output, id), execution, isReady });
 }
 
 describe("RPC bash ownership across session replacement", () => {
 	it("recognizes an expected prefix delivered in one coalesced RPC delta", async () => {
 		const output = [{ type: "bash_execution_update", id: "coalesced", channel: "stdout", delta: "beforeafter" }];
 
-		await waitForOutput(output, "coalesced", "before");
+		await waitForOutput(output, "coalesced", "before", new Promise(() => {}));
 		expect(updatesFor(output, "coalesced")).toBe("beforeafter");
 	});
 
@@ -146,7 +140,7 @@ describe("RPC bash ownership across session replacement", () => {
 			type: "bash",
 			command: cancellableShellCommand("old-start", "old-end"),
 		});
-		await waitForOutput(context.output, "old-target", "old-start");
+		await waitForOutput(context.output, "old-target", "old-start", execution);
 		await context.handle({ id: "replace", type: "new_session" });
 		await expect(
 			context.handle({ id: "cancel-old", type: "abort_bash", requestId: "old-target" }),
@@ -183,14 +177,14 @@ describe("RPC bash ownership across session replacement", () => {
 			type: "bash",
 			command: cancellableShellCommand("old-start", "old-end"),
 		});
-		await waitForOutput(context.output, "old-all", "old-start");
+		await waitForOutput(context.output, "old-all", "old-start", oldExecution);
 		await context.handle({ id: "replace", type: "new_session" });
 		const newExecution = context.handle({
 			id: "new-all",
 			type: "bash",
 			command: cancellableShellCommand("new-start", "new-end"),
 		});
-		await waitForOutput(context.output, "new-all", "new-start");
+		await waitForOutput(context.output, "new-all", "new-start", newExecution);
 		await context.handle({ id: "cancel-all", type: "abort_bash" });
 		const [oldResult, newResult] = await Promise.all([oldExecution, newExecution]);
 		expect(oldResult).toMatchObject({ success: true, data: { cancelled: true } });
@@ -227,6 +221,7 @@ describe("RPC bash ownership across session replacement", () => {
 				rebindSession: async () => {},
 				output: (event) => output.push(event),
 			});
+			onTestFinished(() => handle.disposeActiveBash());
 			vi.spyOn(first.session.sessionManager, "getLeafId").mockReturnValue("leaf-for-clone");
 			vi.spyOn(first.session, "reload").mockResolvedValue();
 			const transitions: Array<{ name: string; command: RpcCommand; replaces: boolean }> = [
@@ -252,7 +247,7 @@ describe("RPC bash ownership across session replacement", () => {
 				const marker = `${transition.name}.release`;
 				const execution = handle({ id, type: "bash", command: gate.command(marker) });
 				try {
-					await waitForOutput(output, id, "before");
+					await waitForOutput(output, id, "before", execution, () => gate.isWaiting(marker));
 					await expect(handle(transition.command)).resolves.toMatchObject({ success: true });
 					expect(current === second.session).toBe(transition.replaces);
 				} finally {
@@ -289,10 +284,11 @@ describe("RPC bash ownership across session replacement", () => {
 				},
 				output: (event) => output.push(event),
 			});
+			onTestFinished(() => handle.disposeActiveBash());
 			const marker = "cancelled-swap.release";
 			const execution = handle({ id: "cancelled-swap-bash", type: "bash", command: gate.command(marker) });
 			try {
-				await waitForOutput(output, "cancelled-swap-bash", "before");
+				await waitForOutput(output, "cancelled-swap-bash", "before", execution, () => gate.isWaiting(marker));
 				await expect(handle({ id: "cancelled-swap", type: "new_session" })).resolves.toMatchObject({
 					success: true,
 					data: { cancelled: true },
@@ -350,6 +346,7 @@ describe("RPC bash ownership across session replacement", () => {
 				},
 				output: (event) => output.push(event),
 			});
+			onTestFinished(() => handle.disposeActiveBash());
 			const marker = "shared-manager.release";
 			const execution = handle({
 				id: "shared-manager",
@@ -357,7 +354,7 @@ describe("RPC bash ownership across session replacement", () => {
 				command: gate.command(marker, "source", "result"),
 			});
 			try {
-				await waitForOutput(output, "shared-manager", "source");
+				await waitForOutput(output, "shared-manager", "source", execution, () => gate.isWaiting(marker));
 				expect(gate.isWaiting(marker)).toBe(true);
 				await expect(handle({ id: "clone", type: "clone" })).resolves.toMatchObject({ success: true });
 				expect(source.sessionManager.getSessionId()).toBe(startingSessionId);
@@ -397,7 +394,7 @@ describe("RPC bash ownership across session replacement", () => {
 			output: (event) => output.push(event),
 		});
 		const execution = handle({ id: "shutdown-bash", type: "bash", command: cancellableShellCommand("start", "end") });
-		await waitForOutput(output, "shutdown-bash", "start");
+		await waitForOutput(output, "shutdown-bash", "start", execution);
 		await handle.disposeActiveBash();
 		await expect(execution).resolves.toMatchObject({ success: true, data: { cancelled: true } });
 		expect(updatesFor(output, "shutdown-bash")).toBe("start");
