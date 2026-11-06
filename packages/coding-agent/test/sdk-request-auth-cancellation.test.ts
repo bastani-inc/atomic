@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,7 +44,7 @@ async function expectSettledWithinIoHeadroom(work: Promise<unknown>): Promise<vo
 			work.then(() => "settled" as const),
 			sleep(IO_SETTLE_HEADROOM_MS, "stalled" as const, { signal: headroom.signal }),
 		]);
-		expect(outcome).toBe("settled");
+		assert.equal(outcome, "settled");
 	} finally {
 		headroom.abort();
 	}
@@ -221,7 +222,10 @@ describe("createAgentSession request-auth cancellation", () => {
 		});
 		if (bindUi) await session.bindExtensions(bindUi);
 		cleanup.push(() => session.dispose());
-		expect(extensionsResult.extensions.map((extension) => extension.path)).toEqual([]);
+		assert.deepEqual(
+			extensionsResult.extensions.map((extension) => extension.path),
+			[],
+		);
 		return { session, runtime, credentials, manager, calls: () => calls, refreshes: () => refreshes };
 	}
 

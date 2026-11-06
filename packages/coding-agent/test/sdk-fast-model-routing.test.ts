@@ -19,7 +19,7 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.ts";
+import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.js";
 
 const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
