@@ -6,7 +6,7 @@ import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/int
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { PoolCheckpointIndex } from "../../packages/workflows/src/durable/journal/pool-checkpoint-index.js";
 import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/pool-remote-journal.js";
-import { openSqlPoolQueue, STALE_WORK_LEASE } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
 	type JournalEntry,
@@ -15,6 +15,7 @@ import {
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -231,10 +232,73 @@ test("a delivery that waits is never lost to a fence that lands meanwhile, and a
 				kind: "checkpoint",
 				checkpoint: { ...tool, checkpointId: `${work.scope}:tool:2`, argsHash: `${work.scope}:args2` },
 			}),
-			new RegExp(STALE_WORK_LEASE),
+			staleWorkLease({ workId: f.attempt.id, generation: f.attempt.generation, reason: "not-leased" }),
 		);
 		assert.equal((await f.events()).length, before);
 		assert.equal(await f.storage.read((tx) => tx.get("SELECT 1 AS held FROM wf_runs_pool_outbox")), undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a remote checkpoint commit refuses a lapsed attempt, typed, before anything is staged (#4327)", async () => {
+	const f = await fixture();
+	try {
+		const before = (await f.events()).length;
+		await f.storage.transaction((tx) => tx.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id));
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "tool", toolMutation),
+			staleWorkLease({ root: "root", workId: f.attempt.id, generation: f.attempt.generation, reason: "expired" }),
+		);
+		assert.equal(await f.storage.read((tx) => tx.get("SELECT 1 AS held FROM wf_runs_pool_outbox")), undefined);
+		assert.equal((await f.events()).length, before);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a remote checkpoint commit refuses an attempt of a root that is not running, typed, before anything is staged (#4327)", async () => {
+	const f = await fixture();
+	try {
+		const before = (await f.events()).length;
+		await f.storage.transaction((tx) => tx.run("UPDATE wf_runs SET status = 'paused' WHERE run_id = 'root'"));
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "tool", toolMutation),
+			staleWorkLease({
+				root: "root",
+				workId: f.attempt.id,
+				generation: f.attempt.generation,
+				reason: "root-not-running",
+			}),
+		);
+		assert.equal(await f.storage.read((tx) => tx.get("SELECT 1 AS held FROM wf_runs_pool_outbox")), undefined);
+		assert.equal((await f.events()).length, before);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a remote checkpoint commit refuses an attempt claimed under an earlier root lease, before anything is staged (#4327)", async () => {
+	const f = await fixture();
+	try {
+		const taken = await f.durable.takeover("root", "next-holder", "holder");
+		if (taken.status !== "acquired") assert.fail("No takeover");
+		const remote = new PoolRemoteJournal(f.durable, f.storage);
+		await remote.mirror(taken.lease);
+		const pool = await openSqlPoolQueue(f.coordination, remote);
+		await pool.initialize(taken.lease, 60_000);
+		const before = (await f.events()).length;
+		await assert.rejects(
+			pool.commit(taken.lease, f.attempt, "tool", toolMutation),
+			staleWorkLease({
+				root: "root",
+				workId: f.attempt.id,
+				generation: f.attempt.generation,
+				reason: "epoch-mismatch",
+			}),
+		);
+		assert.equal(await f.storage.read((tx) => tx.get("SELECT 1 AS held FROM wf_runs_pool_outbox")), undefined);
+		assert.equal((await f.events()).length, before);
 	} finally {
 		await f.close();
 	}

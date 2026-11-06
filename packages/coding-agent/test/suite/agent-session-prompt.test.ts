@@ -106,7 +106,10 @@ it.each(["user", "custom"] as const)("queues messages during %s run setup (#1073
 					);
 		await entered.promise;
 		assert.equal(harness.session.isStreaming, messageType === "custom");
-		await assert.rejects(harness.session.prompt("concurrent prompt"), /Agent is already processing/);
+		await assert.rejects(harness.session.prompt("concurrent prompt"), {
+			name: "AgentSessionBusyError",
+			code: "agent_session_busy",
+		});
 		assert.equal(harness.session.isStreaming, messageType === "custom");
 		await harness.session.sendCustomMessage(
 			{ customType: "second", content: "second", display: true },
@@ -766,9 +769,11 @@ describe("AgentSession prompt characterization", () => {
 		const promptPromise = harness.session.prompt("start");
 		await sawToolStart;
 
-		await expect(harness.session.prompt("second")).rejects.toThrow(
-			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-		);
+		await assert.rejects(harness.session.prompt("second"), {
+			name: "AgentSessionBusyError",
+			code: "agent_session_busy",
+			hint: "Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+		});
 
 		releaseToolExecution?.();
 		await promptPromise;

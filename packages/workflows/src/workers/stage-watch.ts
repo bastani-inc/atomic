@@ -1,11 +1,13 @@
 import {
 	type AgentSessionEvent,
 	getSessionCommandCatalog,
+	isAgentSessionBusyError,
 	type SessionCommandCatalog,
 	type SessionEntry,
 } from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
+import { rehydrateError, serializeError } from "../shared/error-codec.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
@@ -85,8 +87,10 @@ export async function admitStageUserMessage(
 		const admitted = await Promise.race([call, queued.promise]);
 		void call.then(
 			() => tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: true }),
-			(error: Error) =>
-				tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: false, error: error.message }),
+			(error: unknown) => {
+				const { name, code } = serializeError(error);
+				tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: false, error: name, code });
+			},
 		);
 		return admitted;
 	};
@@ -105,7 +109,7 @@ export async function admitStageUserMessage(
 		} catch (error) {
 			// The session was busy after all (a replayed turn the stage handle did not report):
 			// queue the text in its mode rather than prompt over the running turn.
-			if (error instanceof Error && BUSY_SESSION.test(error.message)) return queue();
+			if (isAgentSessionBusyError(error)) return queue();
 			throw error;
 		}
 	})();
@@ -160,9 +164,6 @@ export interface WorkerStagePrompts {
 function turnUnderway(handle: StageControlHandle): boolean {
 	return handle.isStreaming || handle.agentSession?.isStreaming === true || handle.isTurnLoopBusy === true;
 }
-
-/** What a session says when asked to start a turn while one is running. */
-const BUSY_SESSION = /already processing/i;
 
 /** A watched stage's events leave the worker at most this often, as one batch. */
 export const STAGE_EVENT_BATCH_INTERVAL_MS = 50;
@@ -404,7 +405,7 @@ export class WorkerStageWatches {
 		if (TERMINAL.has(stage.status)) return { refusal: "StageNotLive" };
 		const { answer } = command;
 		if (answer.kind === "failed") {
-			const error = new Error(answer.error);
+			const error = rehydrateError(answer.error);
 			if (prompts.fail(command.runId, command.stageId, answer.promptId, error)) return {};
 			// A brokered question (`ask_user_question`) fails in its tool, as an in-process broker rejection does.
 			if (prompts.broker.peekStagePrompt(command.runId, command.stageId)?.id !== answer.promptId)
@@ -450,7 +451,7 @@ export class WorkerStageWatches {
 			await watch.handle.pause();
 			return {};
 		} catch (error) {
-			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: serializeError(error) };
 		}
 	}
 
@@ -468,7 +469,9 @@ export class WorkerStageWatches {
 		const session = watch.handle.agentSession;
 		if (session === undefined)
 			return {
-				error: `Stage "${watch.handle.stageName}" is still starting on its local worker; try again shortly.`,
+				error: serializeError(
+					new Error(`Stage "${watch.handle.stageName}" is still starting on its local worker; try again shortly.`),
+				),
 			};
 		try {
 			switch (request.kind) {
@@ -492,12 +495,15 @@ export class WorkerStageWatches {
 					return {};
 				case "task": {
 					const source = stageTaskSource(watch.handle);
-					if (source === undefined) return { error: `Stage "${watch.handle.stageName}" has no background tasks.` };
+					if (source === undefined)
+						return {
+							error: serializeError(new Error(`Stage "${watch.handle.stageName}" has no background tasks.`)),
+						};
 					return { task: await runStageTaskAction(source, request.taskId, request.action) };
 				}
 			}
 		} catch (error) {
-			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: serializeError(error) };
 		}
 	}
 
@@ -521,8 +527,8 @@ export class WorkerStageWatches {
 				? resumeWith()
 				: this.receiptsFor(watch.handle).track(message.deliveryOp, watch.handle.isStreaming, resumeWith)
 		).catch(
-			(error: Error): StageCommandResult =>
-				isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
+			(error: unknown): StageCommandResult =>
+				isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: serializeError(error) },
 		);
 		if (message !== undefined) this.ledger.set(message.deliveryOp, resumed);
 		return resumed;
@@ -595,15 +601,16 @@ export class WorkerStageWatches {
 						),
 			)
 			.catch(
-				(error: Error): StageCommandResult =>
-					isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
+				(error: unknown): StageCommandResult =>
+					isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: serializeError(error) },
 			);
 		void admitted.then((outcome) =>
 			tracePooledWatch("worker.deliver.settled", {
 				op: command.deliveryOp,
 				action: outcome.action,
 				refusal: outcome.refusal,
-				error: outcome.error,
+				error: outcome.error?.name,
+				code: outcome.error?.code,
 			}),
 		);
 		this.ledger.set(command.deliveryOp, admitted);

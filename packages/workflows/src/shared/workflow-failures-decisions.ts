@@ -18,11 +18,7 @@ import {
 	type WorkflowFailureDecision,
 	type WorkflowFailureEvidence,
 } from "./workflow-failures-signals.js";
-import {
-	WORKFLOW_INFRASTRUCTURE_FAULTS,
-	type WorkflowInfrastructureFault,
-	workflowInfrastructureFault,
-} from "./workflow-infrastructure-error.js";
+import { WORKFLOW_INFRASTRUCTURE_FAULTS, type WorkflowInfrastructureFault } from "./workflow-infrastructure-error.js";
 
 const INVALID_API_KEY_CODES = new Set([
 	"401",
@@ -516,8 +512,6 @@ export function fallbackDecisionFromMessage(
 	message: string,
 	name: string | undefined,
 ): WorkflowFailureDecision | undefined {
-	const fault = workflowInfrastructureFault(message);
-	if (fault !== undefined) return infrastructureFaultDecision(fault);
 	const tokens = tokenize(message);
 	const decision = decisionFromMessageTokens(tokens, name);
 	const providerAuthDecision = classifyFallbackProviderAuthMessage(message, tokens);

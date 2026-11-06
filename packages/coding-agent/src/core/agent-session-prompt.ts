@@ -3,6 +3,7 @@ import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
+import { AgentSessionBusyError } from "./agent-session-busy-error.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import {
 	earlierHeldInputs,
@@ -449,9 +450,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			(!busy && queuesBehindOpenRun(this, delivery));
 		if (busy || settling) {
 			if (!delivery?.streamingBehavior) {
-				throw new Error(
-					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-				);
+				throw new AgentSessionBusyError();
 			}
 			const queued =
 				delivery.streamingBehavior === "followUp"

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { pendingStageMessagesForDurableRun } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { isStaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	availableRunDurableBackend,
 	bindRunDurableBackend,
@@ -13,25 +15,51 @@ import {
 } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
-import { PENDING_STAGE_READY_STALL_MS } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import {
+	PENDING_STAGE_READY_STALL_MS,
+	WorkflowPendingStageDeliveryFailedError,
+} from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { workflowPendingStageRouteCapability } from "../../packages/workflows/src/shared/pending-stage-route-capability.js";
+import { registerWorkflowPendingStageRouteReadiness } from "../../packages/workflows/src/shared/pending-stage-route-readiness.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { asWorkflowInfrastructureError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import {
+	causedByStaleWorkLease,
+	PublicationRejectedError,
+	StaleWorkLeaseError,
+} from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import {
+	infrastructureFaultOf,
+	WorkerLostError,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { isRunChanges, type RunChanges, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
 import {
 	PoolStageHandoff,
 	type PoolStageQueue,
 	PUBLICATION_TURN_WRITES,
 } from "../../packages/workflows/src/workers/stage-handoff.js";
+import { workerRefusal } from "../../packages/workflows/src/workers/worker-refusal.js";
 import { countFieldReads, holdFinishedRuns } from "../helpers/finished-runs.js";
+import { poolAppendRefused, publicationRejected, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const ROOT = testRunId("pool-stage-handoff-root");
 const GROUP = `workflow:${ROOT}`;
+
+/** A validator for the root's refusal of a publication that reaches outside the attempt's work subtree. */
+function outsideSubtree(work: Pick<PoolWork, "id" | "generation">, runId: string): (error: unknown) => true {
+	return publicationRejected({
+		root: ROOT,
+		workId: work.id,
+		generation: work.generation,
+		reason: "outside-subtree",
+		runId,
+	});
+}
 const fixtureBoundary = poolWorkFixture();
 const descriptor = fixtureBoundary.work;
 const boundary: DurableStageCheckpoint = JSON.parse(
@@ -318,17 +346,31 @@ test("publication rejects root, sibling and unlinked runs without changing the s
 		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
 		const before = JSON.stringify(f.store.runs());
 		const nested = snapshot("grandchild", { parentRunId: descriptor.childRunId, parentStageId: "nested" });
-		const attacks: readonly (readonly RunSnapshot[])[] = [
-			[snapshot(ROOT, { stages: [stage("injected")] })],
+		const attacks: readonly (readonly [readonly RunSnapshot[], string])[] = [
+			[[snapshot(ROOT, { stages: [stage("injected")] })], ROOT],
 			[
-				childRun([stage("stage")]),
-				snapshot(SIBLING.work.childRunId, { parentRunId: ROOT, parentStageId: "sibling" }),
+				[
+					childRun([stage("stage")]),
+					snapshot(SIBLING.work.childRunId, { parentRunId: ROOT, parentStageId: "sibling" }),
+				],
+				SIBLING.work.childRunId,
 			],
-			[childRun([stage("stage")]), nested],
-			[childRun([stage("stage")], { parentStageId: "other-boundary" })],
-			[childRun([stage("stage")], { rootRunId: "other-root" })],
+			[[childRun([stage("stage")]), nested], "grandchild"],
+			[[childRun([stage("stage")], { parentStageId: "other-boundary" })], descriptor.childRunId],
+			[[childRun([stage("stage")], { parentRunId: "another-parent" })], descriptor.childRunId],
+			[[childRun([stage("stage")], { rootRunId: "other-root" })], descriptor.childRunId],
 		];
-		for (const runs of attacks) await assert.rejects(f.handoff.publish(f.first, runs), /outside the work subtree/);
+		for (const [runs, runId] of attacks)
+			await assert.rejects(
+				f.handoff.publish(f.first, runs),
+				publicationRejected({
+					root: ROOT,
+					workId: f.first.id,
+					generation: f.first.generation,
+					reason: "outside-subtree",
+					runId,
+				}),
+			);
 		assert.equal(JSON.stringify(f.store.runs()), before);
 		const linked = childRun([
 			stage("nested", { workflowChildRun: { alias: "n", workflow: "n", runId: "grandchild" } }),
@@ -350,13 +392,22 @@ test("a replaced worker cannot publish and the successor's capability replaces t
 		const stale = await f.handoff.route(f.first, descriptor.childRunId);
 		assert.equal(stale, workflowPendingStageRouteCapability(f.store, descriptor.childRunId));
 		const next = await f.replacement();
-		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "ghost" })])]), /stale/i);
-		await assert.rejects(f.handoff.route(f.first, descriptor.childRunId), /stale/i);
+		const superseded = staleWorkLease({
+			root: ROOT,
+			workId: f.first.id,
+			generation: f.first.generation,
+			reason: "generation-mismatch",
+		});
+		const rejected = (error: unknown) =>
+			publicationRejected({ workId: f.first.id, generation: f.first.generation, reason: "stale-lease" })(error) &&
+			superseded((error as Error).cause);
+		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "ghost" })])]), rejected);
+		await assert.rejects(f.handoff.route(f.first, descriptor.childRunId), superseded);
 		await f.handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
 		const current = await f.handoff.route(next, descriptor.childRunId);
 		assert.notEqual(current, stale);
 		assert.equal(f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages[0]?.sessionId, "session-b");
-		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("stage")])]), /stale/i);
+		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("stage")])]), rejected);
 	} finally {
 		await f.close();
 	}
@@ -434,7 +485,15 @@ test("a stale worker's acknowledgement cannot consume a message its successor st
 			{ sessionId: "session-a", receivedMessageIds: [] },
 			() => gate,
 		);
-		const staleOutcome = assert.rejects(stale, /stale/i);
+		const staleOutcome = assert.rejects(
+			stale,
+			staleWorkLease({
+				root: ROOT,
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "generation-mismatch",
+			}),
+		);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		const next = await f.replacement();
 		await f.handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
@@ -503,7 +562,15 @@ for (const kind of ["direct", "sticky"] as const) {
 					if (replacement !== "lease-only")
 						await f.handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
 					release.resolve();
-					assert.ok(await outcome, "the stale delivery must reject before committing its receipt");
+					const refusal = await outcome;
+					assert.ok(refusal, "the stale delivery must reject before committing its receipt");
+					if (replacement === "lease-only")
+						assert.ok(causedByStaleWorkLease(refusal), "the receipt guard refuses the replaced attempt");
+					assert.equal(
+						f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue,
+						undefined,
+						"a drain its replacement ended is no failed stage drain",
+					);
 					const messageRunId = kind === "direct" ? descriptor.childRunId : ROOT;
 					await f.backend.hydrateWorkflow(ROOT);
 					const queued = pendingStageMessagesForDurableRun(f.backend, messageRunId, ROOT);
@@ -694,7 +761,16 @@ test("replacing a session rejects its pending readiness request (#3869)", async 
 		await f.handoff.route(f.first, descriptor.childRunId);
 		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-b" })])]);
 		await f.handoff.route(f.first, descriptor.childRunId);
-		assert.match(failure?.message ?? "unsettled readiness", /replaced/);
+		assert.ok(failure instanceof WorkflowPendingStageDeliveryFailedError, String(failure));
+		assert.equal(failure.code, "pending_stage_delivery_failed");
+		publicationRejected({
+			workId: f.first.id,
+			generation: f.first.generation,
+			reason: "session-replaced",
+			runId: descriptor.childRunId,
+			stageId: "stage",
+			sessionId: "session-a",
+		})(failure.reason);
 		await ready;
 	} finally {
 		await f.close();
@@ -765,7 +841,17 @@ test("a late acknowledgement from a session replaced by a newer publication is r
 			{ sessionId: "session-a", receivedMessageIds: [] },
 			() => gate,
 		);
-		const replacedOutcome = assert.rejects(replaced, /session-a was replaced/);
+		const replacedOutcome = assert.rejects(
+			replaced,
+			publicationRejected({
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "session-replaced",
+				runId: descriptor.childRunId,
+				stageId: "stage",
+				sessionId: "session-a",
+			}),
+		);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-fallback" })])]);
 		acknowledge();
@@ -813,7 +899,12 @@ test("delivery is refused before transport unless the recipient is the stage's p
 					{ sessionId, receivedMessageIds: [] },
 					transport,
 				),
-				/published session/,
+				publicationRejected({
+					reason: "session-mismatch",
+					runId: descriptor.childRunId,
+					stageId,
+					sessionId,
+				}),
 			);
 		assert.equal(sent.length, 0);
 		assert.equal(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 1);
@@ -830,17 +921,25 @@ test("a fenced attempt is refused on every call even while its lease is still li
 		f.handoff.fence(f.first);
 		const sent: string[] = [];
 		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const fenced = staleWorkLease({
+			root: ROOT,
+			workId: f.first.id,
+			generation: f.first.generation,
+			reason: "fenced",
+		});
 		await assert.rejects(
 			f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]),
-			/stale/i,
+			(error: unknown) =>
+				publicationRejected({ reason: "stale-lease", workId: f.first.id, generation: f.first.generation })(error) &&
+				fenced((error as Error).cause),
 		);
-		await assert.rejects(f.handoff.route(f.first, descriptor.childRunId), /stale/i);
-		await assert.rejects(f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a"), /stale/i);
+		await assert.rejects(f.handoff.route(f.first, descriptor.childRunId), fenced);
+		await assert.rejects(f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a"), fenced);
 		await assert.rejects(
 			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async (_from, delivered) => {
 				sent.push(delivered.id);
 			}),
-			/stale/i,
+			fenced,
 		);
 		assert.equal(sent.length, 0);
 		assert.equal(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 1);
@@ -868,7 +967,10 @@ test("readiness checks come from the current attempt only (#3869)", async () => 
 		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
 		await f.queueDirect("stage", "direct-1");
 		const next = await f.replacement();
-		await assert.rejects(f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a"), /stale/i);
+		await assert.rejects(
+			f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a"),
+			staleWorkLease({ workId: f.first.id, generation: f.first.generation, reason: "generation-mismatch" }),
+		);
 		await f.handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
 		const waiting = f.handoff.ready(next, descriptor.childRunId, "stage", "stage", "session-b");
 		let settled = false;
@@ -932,7 +1034,7 @@ test("a sticky root broadcast reaches the replacement worker's stage session (#3
 				{ sessionId: "session-a", receivedMessageIds: [] },
 				transport,
 			),
-			/stale/i,
+			staleWorkLease({ workId: f.first.id, generation: f.first.generation, reason: "generation-mismatch" }),
 		);
 	} finally {
 		await f.close();
@@ -1081,11 +1183,345 @@ test("a stage whose child completes before the root's background drain records i
 						f.backend,
 					),
 			),
-			/stale/i,
+			poolAppendRefused(
+				{ root: ROOT, workId: f.first.id, generation: f.first.generation + 1, reason: "attempt-refused" },
+				staleWorkLease({ workId: f.first.id, generation: f.first.generation + 1, reason: "generation-mismatch" }),
+			),
 		);
 		assert.equal(await f.backend.hasPendingStageDeliveryReceipt(ROOT, "broadcast-1", otherReceipt), false);
 	} finally {
 		proceed.resolve();
+		await f.close();
+	}
+});
+
+test("the receipt guard refuses another root and a lost coordinator authority as typed refusals (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueBroadcast("broadcast-1");
+		const receipt = {
+			runId: descriptor.childRunId,
+			stageId: "stage",
+			sessionId: "session-a",
+			admission: "context" as const,
+		};
+		const record = () =>
+			f.store.recordPendingStageMessageDeliveries(
+				ROOT,
+				"broadcast-1",
+				[receipt],
+				new Date().toISOString(),
+				f.backend,
+			);
+		const attempt = { workId: f.first.id, generation: f.first.generation };
+		await assert.rejects(
+			f.queue.withCurrentAppend({ ...f.lease, runId: "another-root" }, f.first, () => {}, record),
+			(error: unknown) =>
+				poolAppendRefused({ root: "another-root", ...attempt, reason: "foreign-root" })(error) &&
+				!Object.hasOwn(error as object, "cause"),
+		);
+		await f.database.run("UPDATE wf_leases SET renewed_at = 0");
+		await assert.rejects(
+			f.queue.withCurrentAppend(f.lease, f.first, () => {}, record),
+			poolAppendRefused({ root: ROOT, ...attempt, reason: "coordinator-authority" }, (cause: unknown) => {
+				assert.ok(isStaleLeaseError(cause), String(cause));
+				assert.equal(cause.runId, ROOT);
+				return true;
+			}),
+		);
+		assert.equal(await f.backend.hasPendingStageDeliveryReceipt(ROOT, "broadcast-1", receipt), false);
+	} finally {
+		await f.close();
+	}
+});
+
+test("routes, readiness and deliveries are refused for runs the attempt never published (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		const outside = publicationRejected({
+			root: ROOT,
+			workId: f.first.id,
+			generation: f.first.generation,
+			reason: "outside-subtree",
+			runId: "unpublished-run",
+		});
+		await assert.rejects(f.handoff.route(f.first, "unpublished-run"), outside);
+		await assert.rejects(f.handoff.ready(f.first, "unpublished-run", "stage", "stage", "session-a"), outside);
+		await assert.rejects(
+			f.handoff.deliver(
+				f.first,
+				"unpublished-run",
+				"stage",
+				"stage",
+				{ sessionId: "session-a", receivedMessageIds: [] },
+				async () => {},
+			),
+			outside,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a fenced attempt's route is refused before it waits on readiness, and one fenced while it waits is refused after (#4327)", async () => {
+	const f = await fixture();
+	const requested: string[] = [];
+	let release = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const unregister = registerWorkflowPendingStageRouteReadiness(f.store, (runId) => {
+		requested.push(runId);
+		return gate;
+	});
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		const fenced = staleWorkLease({
+			root: ROOT,
+			workId: f.first.id,
+			generation: f.first.generation,
+			reason: "fenced",
+		});
+		const waiting = f.handoff.route(f.first, descriptor.childRunId);
+		const outcome = assert.rejects(waiting, fenced);
+		while (requested.length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+		f.handoff.fence(f.first);
+		release();
+		await outcome;
+		await assert.rejects(f.handoff.route(f.first, descriptor.childRunId), fenced);
+		assert.deepEqual(requested, [descriptor.childRunId], "the fenced attempt never asked for readiness again");
+	} finally {
+		unregister();
+		await f.close();
+	}
+});
+
+test("publication refuses the root's own run nested under a child stage (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		const before = JSON.stringify(f.store.runs());
+		const linked = childRun([stage("nested", { workflowChildRun: { alias: "n", workflow: "n", runId: ROOT } })]);
+		const root = snapshot(ROOT, { parentRunId: descriptor.childRunId, parentStageId: "nested", rootRunId: ROOT });
+		await assert.rejects(
+			f.handoff.publish(f.first, [linked, root]),
+			publicationRejected({
+				root: ROOT,
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "outside-subtree",
+				runId: ROOT,
+			}),
+		);
+		assert.equal(JSON.stringify(f.store.runs()), before);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a drain that fails after its stage's session was replaced is no delivery issue (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const lost = new WorkerLostError({ phase: "delivery", pid: 7 });
+		const replacedThenLost = async () => {
+			await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-b" })])]);
+			throw lost;
+		};
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, replacedThenLost),
+			(error: unknown) => error === lost,
+		);
+		assert.equal(f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("fencing an attempt ends the drain it runs as fenced, and a stale refusal there is no delivery issue (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const gate = Promise.withResolvers<void>();
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const drain = f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, () => gate.promise);
+		const outcome = assert.rejects(
+			drain,
+			staleWorkLease({ root: ROOT, workId: f.first.id, generation: f.first.generation, reason: "fenced" }),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		f.handoff.fence(f.first);
+		gate.resolve();
+		await outcome;
+		const issue = () => f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue;
+		assert.equal(issue(), undefined, "a fenced drain is no failure");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a published run may leave its root unnamed, and a batch reports each publication's typed refusal (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage")], { rootRunId: undefined })]);
+		assert.equal(f.store.run(descriptor.childRunId)?.rootRunId, ROOT, "the root's own id is recorded");
+		const outcomes = await f.handoff.publishBatch([
+			{ work: f.first, runs: [childRun([stage("stage", { sessionId: "session-a" })])] },
+			{ work: f.first, runs: [snapshot(ROOT, { stages: [stage("injected")] })] },
+		]);
+		assert.equal(outcomes[0], undefined);
+		publicationRejected({ reason: "outside-subtree", runId: ROOT, workId: f.first.id })(outcomes[1]);
+		await f.replacement();
+		const [stale] = await f.handoff.publishBatch([{ work: f.first, runs: [childRun([stage("stage")])] }]);
+		publicationRejected({ reason: "stale-lease", workId: f.first.id, generation: f.first.generation })(stale);
+		staleWorkLease({ reason: "generation-mismatch" })((stale as Error).cause);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a child run the root has not linked to its boundary is refused as unlinked (#4327)", async () => {
+	const f = await fixture();
+	try {
+		const unlinked = { ...f.first, childRunId: "unlinked-child" };
+		await assert.rejects(
+			f.handoff.publish(unlinked, [
+				snapshot("unlinked-child", { parentRunId: ROOT, parentStageId: descriptor.boundaryId, rootRunId: ROOT }),
+			]),
+			publicationRejected({
+				root: ROOT,
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "boundary-unlinked",
+				runId: "unlinked-child",
+				stageId: descriptor.boundaryId,
+			}),
+		);
+		assert.equal(f.store.run("unlinked-child"), undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage waiting for its startup delivery learns why the root ended its attempt (#4327)", async () => {
+	for (const ending of ["fenced", "superseded", "session-replaced"] as const) {
+		const f = await fixture();
+		try {
+			await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+			await f.queueDirect("stage", "direct-1");
+			const waiting = f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a");
+			const outcome = waiting.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			if (ending === "fenced") f.handoff.fence(f.first);
+			else if (ending === "superseded") {
+				const next = await f.replacement();
+				await f.handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
+			} else await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-b" })])]);
+			const failure = (await outcome) as { readonly code?: unknown; readonly reason?: unknown } | undefined;
+			assert.equal(failure?.code, "pending_stage_delivery_failed", ending);
+			const reason = failure?.reason;
+			if (ending === "session-replaced")
+				publicationRejected({
+					root: ROOT,
+					workId: f.first.id,
+					generation: f.first.generation,
+					reason: "session-replaced",
+					runId: descriptor.childRunId,
+					stageId: "stage",
+					sessionId: "session-a",
+				})(reason);
+			else
+				staleWorkLease({ root: ROOT, workId: f.first.id, generation: f.first.generation, reason: ending })(reason);
+		} finally {
+			await f.close();
+		}
+	}
+});
+
+test("a successor the root already accepted supersedes the drain its predecessor still runs (#4327)", async () => {
+	const f = await fixture();
+	// The pool's lease checks pass for both attempts: only the root's own record of the current attempt decides.
+	const handoff = new PoolStageHandoff(
+		f.backend,
+		f.store,
+		{
+			assertCurrent: async () => {},
+			result: (root, id) => f.queue.result(root, id),
+			withCurrentAppend: (lease, work, assertSession, action) =>
+				f.queue.withCurrentAppend(lease, work, assertSession, action),
+		},
+		f.lease,
+	);
+	try {
+		await handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const gate = Promise.withResolvers<void>();
+		const drain = handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			() => gate.promise,
+		);
+		const superseded = staleWorkLease({
+			root: ROOT,
+			workId: f.first.id,
+			generation: f.first.generation,
+			reason: "superseded",
+		});
+		const outcome = assert.rejects(drain, superseded);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const next = { ...f.first, generation: f.first.generation + 1 };
+		await handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
+		gate.resolve();
+		await outcome;
+		await assert.rejects(
+			handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]),
+			(error: unknown) =>
+				publicationRejected({ reason: "stale-lease", generation: f.first.generation })(error) &&
+				superseded((error as Error).cause),
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a drain whose transport reports a stale work lease records no delivery issue; any other failure does (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const issue = () => f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue;
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async () => {
+				throw new StaleWorkLeaseError({
+					root: ROOT,
+					workId: f.first.id,
+					generation: f.first.generation,
+					reason: "expired",
+				});
+			}),
+			staleWorkLease({ reason: "expired" }),
+		);
+		assert.equal(issue(), undefined);
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, async () => {
+				throw new WorkerLostError({ phase: "delivery", pid: 9 });
+			}),
+			(error: unknown) => error instanceof WorkerLostError,
+		);
+		assert.match(issue() ?? "", /^1 stage drain on local workers failed; .*\(worker_lost\)/);
+	} finally {
 		await f.close();
 	}
 });
@@ -1097,7 +1533,7 @@ test("failed stage drains are summarized once on the root run, never as a warnin
 		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
 		await f.queueBroadcast("broadcast-1");
 		const failing = async () => {
-			throw new Error("Worker exited before delivery acknowledgement");
+			throw new WorkerLostError({ phase: "delivery", pid: 4 });
 		};
 		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
 		await assert.rejects(f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing));
@@ -1105,14 +1541,14 @@ test("failed stage drains are summarized once on the root run, never as a warnin
 		const issue = () => f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue;
 		assert.match(
 			issue() ?? "",
-			/^2 stage drains on local workers failed; .*Worker exited before delivery acknowledgement/,
+			/^2 stage drains on local workers failed; .*worker process 4 exited before it acknowledged a delivery \(worker_lost\)/,
 		);
 		// A drain that ends because its attempt was replaced is no failure.
 		await f.replacement();
 		f.handoff.fence(f.first);
 		await assert.rejects(
 			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing),
-			/stale/i,
+			staleWorkLease({ workId: f.first.id, generation: f.first.generation, reason: "generation-mismatch" }),
 		);
 		assert.match(issue() ?? "", /^2 stage drains/);
 		assert.equal(warn.mock.calls.length, 0);
@@ -1422,9 +1858,19 @@ test("a receipt refused for a replaced attempt reaches the worker as a stale wor
 		release.resolve();
 		const error = await outcome;
 		assert.ok(error);
-		// The worker IPC relays only the message, so the message itself must name the refusal.
-		assert.equal(error.message, "Stale work lease");
-		assert.equal(asWorkflowInfrastructureError(new Error(error.message))?.code, "stale_work_lease");
+		// The refusal crosses the root -> coordinator -> worker hops typed, and the worker fences on its type.
+		const atCoordinator = rehydrateError(JSON.parse(JSON.stringify(serializeError(error))));
+		const atWorker = rehydrateError(JSON.parse(JSON.stringify(serializeError(atCoordinator))));
+		const attempt = { workId: f.first.id, generation: f.first.generation };
+		for (const refusal of [error, atCoordinator, atWorker]) {
+			poolAppendRefused(
+				{ root: ROOT, ...attempt, reason: "attempt-refused" },
+				staleWorkLease({ root: ROOT, ...attempt, reason: "generation-mismatch" }),
+			)(refusal);
+			assert.equal(refusal instanceof StorageUnavailableError, false);
+			assert.equal(infrastructureFaultOf(refusal), "stale_work_lease");
+			assert.equal(workerRefusal(refusal, attempt).kind, "fenced");
+		}
 	} finally {
 		release.resolve();
 		await delivery?.catch(() => {});
@@ -1454,7 +1900,7 @@ test("a pooled stage's drain keeps its worker transport past the startup stall b
 				"stage",
 				{ sessionId: "session-a", receivedMessageIds: [] },
 				async (_from, delivered) => {
-					if (!requestOpen) throw new Error("Worker exited before delivery acknowledgement");
+					if (!requestOpen) throw new WorkerLostError({ phase: "delivery" });
 					// A worker starved of CPU acknowledges the first message only after the stall bound.
 					if (delivered.id === "direct-1") await firstAcknowledged.promise;
 					received.push(delivered.id);
@@ -1925,7 +2371,14 @@ test("a run published as changes is updated in place: unchanged stages keep thei
 				{ sessionId: "session-a", receivedMessageIds: [] },
 				async () => {},
 			),
-			/not the published session/,
+			publicationRejected({
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "session-mismatch",
+				runId: descriptor.childRunId,
+				stageId: "live",
+				sessionId: "session-a",
+			}),
 		);
 		await f.handoff.deliver(
 			f.first,
@@ -2040,7 +2493,7 @@ test("changes to a run the attempt does not hold, or that move it, are refused w
 			let first: Error | undefined;
 			await assert.rejects(f.handoff.publish(f.first, [change]), (error: Error) => {
 				first = error;
-				return /outside the work subtree/.test(error.message);
+				return outsideSubtree(f.first, change.id)(error);
 			});
 			await assert.rejects(
 				f.handoff.publish(f.first, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]),
@@ -2051,15 +2504,18 @@ test("changes to a run the attempt does not hold, or that move it, are refused w
 		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
 		await assert.rejects(
 			f.handoff.publish(f.first, [childRun([stage("stage")]), childRun([stage("stage")])]),
-			/outside/,
+			outsideSubtree(f.first, descriptor.childRunId),
 		);
 		const unchanged: RunChanges = { kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] };
 		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
-		await assert.rejects(f.handoff.publish(f.first, [unchanged, unchanged]), /outside/);
+		await assert.rejects(
+			f.handoff.publish(f.first, [unchanged, unchanged]),
+			outsideSubtree(f.first, descriptor.childRunId),
+		);
 		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
 		await assert.rejects(
 			f.handoff.publish({ ...f.first, id: "another-work" }, [childRun([stage("stage")])]),
-			/outside the work subtree/,
+			outsideSubtree({ ...f.first, id: "another-work" }, descriptor.childRunId),
 			"a run another work published is not this work's",
 		);
 		const sibling = poolWorkFixture("sibling", "child-sibling", "workflow:sibling:1");
@@ -2451,11 +2907,11 @@ test("after one refused publication an attempt's later changes are refused with 
 			{ work: f.first, runs: [moved] },
 			{ work: f.first, runs: [changed] },
 		]);
-		assert.match(first?.message ?? "", /outside the work subtree/);
+		outsideSubtree(f.first, descriptor.childRunId)(first);
 		assert.equal(second, first, "a later change is refused with the first refusal itself");
 		await assert.rejects(
 			f.handoff.publish(f.first, [childRun([stage("a")], { rootRunId: "other-root" })]),
-			/outside the work subtree/,
+			outsideSubtree(f.first, descriptor.childRunId),
 		);
 		await assert.rejects(f.handoff.publish(f.first, [changed]), (error) => error === first);
 		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, undefined);
@@ -2471,8 +2927,13 @@ test("after one refused publication an attempt's later changes are refused with 
 			"s",
 			"changes after an accepted full publication apply to it",
 		);
-		const stale = new Error("Stale work lease");
 		const next = await f.replacement();
+		const stale = new PublicationRejectedError({
+			root: ROOT,
+			workId: next.id,
+			generation: next.generation,
+			reason: "stale-lease",
+		});
 		f.handoff.refuse(next, stale);
 		f.handoff.refuse(f.first, new Error("an older attempt's refusal"));
 		await assert.rejects(f.handoff.publish(next, [changed]), (error) => error === stale);
@@ -2505,7 +2966,7 @@ test("changes apply only to a run the current attempt published in full (#4317)"
 		await f.handoff.publish(f.first, [changed]);
 		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
 		const next = await f.replacement();
-		await assert.rejects(f.handoff.publish(next, [changed]), /outside the work subtree/);
+		await assert.rejects(f.handoff.publish(next, [changed]), outsideSubtree(next, descriptor.childRunId));
 		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
 	} finally {
 		await f.close();
@@ -2558,7 +3019,7 @@ test("changes to a run removed while they were validated are refused (#4317)", a
 			f.handoff.publish(f.first, [
 				{ kind: "changes", id: descriptor.childRunId, stages: [stage("a")], toolNodes: [] },
 			]),
-			/outside the work subtree/,
+			outsideSubtree(f.first, descriptor.childRunId),
 		);
 		assert.equal(f.store.run(descriptor.childRunId), undefined);
 	} finally {
@@ -2636,7 +3097,16 @@ test("a work's boundary is found again when the root's stages before it change (
 		await f.handoff.publish(f.first, [childRun([stage("a", { sessionId: "s" })])]);
 		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
 		f.store.recordRunStart({ ...root, stages: [] });
-		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("a")])]), /is not linked to/);
+		await assert.rejects(
+			f.handoff.publish(f.first, [childRun([stage("a")])]),
+			publicationRejected({
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "boundary-unlinked",
+				runId: descriptor.childRunId,
+				stageId: descriptor.boundaryId,
+			}),
+		);
 	} finally {
 		await f.close();
 	}
@@ -2681,7 +3151,7 @@ test("changes are validated with the stages they carry: a host stage that lost i
 				},
 				unchanged,
 			]),
-			/outside the work subtree: nested/,
+			outsideSubtree(f.first, "nested"),
 		);
 		await f.handoff.publish(f.first, [childRun([stage("host", link)]), nested]);
 		await assert.rejects(
@@ -2693,7 +3163,7 @@ test("changes are validated with the stages they carry: a host stage that lost i
 					toolNodes: [],
 				},
 			]),
-			/outside the work subtree: nested/,
+			outsideSubtree(f.first, "nested"),
 			"a host stage is checked whether or not the run it hosts is in the publication",
 		);
 		await f.handoff.publish(f.first, [childRun([stage("host", link)]), nested]);
@@ -2709,7 +3179,7 @@ test("changes are validated with the stages they carry: a host stage that lost i
 		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
 		await assert.rejects(
 			f.handoff.publish(f.first, [{ ...unchanged, id: descriptor.childRunId }, nested]),
-			/outside the work subtree: nested/,
+			outsideSubtree(f.first, "nested"),
 			"a publication of changes carries no run in full",
 		);
 		await f.handoff.publish(f.first, [childRun([stage("host", link)])]);
@@ -2730,7 +3200,7 @@ test("changes are validated with the stages they carry: a host stage that lost i
 test("a publication naming a run twice is refused, in full or as changes (#4317)", async () => {
 	const f = await fixture();
 	try {
-		const twice = new RegExp(`outside the work subtree: ${descriptor.childRunId}$`);
+		const twice = outsideSubtree(f.first, descriptor.childRunId);
 		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("a")]), childRun([stage("b")])]), twice);
 		await f.handoff.publish(f.first, [childRun([stage("a")])]);
 		const unchanged = { kind: "changes" as const, id: descriptor.childRunId, stages: [], toolNodes: [] };
@@ -2748,7 +3218,7 @@ test("changes for a run the store holds but this handoff never published are ref
 			f.handoff.publish(f.first, [
 				{ kind: "changes", id: descriptor.childRunId, stages: [stage("a")], toolNodes: [] },
 			]),
-			/outside the work subtree/,
+			outsideSubtree(f.first, descriptor.childRunId),
 		);
 	} finally {
 		await f.close();
@@ -2759,7 +3229,16 @@ test("a publication is refused when the root run is gone (#4317)", async () => {
 	const f = await fixture();
 	try {
 		f.store.removeRun(ROOT);
-		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("a")])]), /is not linked to/);
+		await assert.rejects(
+			f.handoff.publish(f.first, [childRun([stage("a")])]),
+			publicationRejected({
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "boundary-unlinked",
+				runId: descriptor.childRunId,
+				stageId: descriptor.boundaryId,
+			}),
+		);
 	} finally {
 		await f.close();
 	}
@@ -2815,7 +3294,14 @@ test("a stage's session follows its changes: a removed session is refused and an
 				{ sessionId: "session-a", receivedMessageIds: [] },
 				async () => {},
 			),
-			/not the published session/,
+			publicationRejected({
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "session-mismatch",
+				runId: descriptor.childRunId,
+				stageId: "stage",
+				sessionId: "session-a",
+			}),
 		);
 	} finally {
 		await f.close();
@@ -3205,7 +3691,7 @@ test("a full publication is the attempt's runs from then on, and open runs the s
 		await f.handoff.publish(f.first, [childRun([stage("host", link), stage("live")])]);
 		await assert.rejects(
 			f.handoff.publish(f.first, [{ kind: "changes", id: "nested", stages: [], toolNodes: [] }]),
-			/outside the work subtree: nested/,
+			outsideSubtree(f.first, "nested"),
 		);
 		await f.handoff.publish(f.first, [childRun([stage("host", link), stage("live")])]);
 		const later = { ...f.first, renewedAt: f.first.renewedAt + 2_000, expiresAt: f.first.expiresAt + 2_000 };
@@ -3223,14 +3709,14 @@ test("an empty publication holds no runs: it ends a refusal, and nothing it left
 		await f.handoff.publish(f.first, [childRun([stage("live")])]);
 		await assert.rejects(
 			f.handoff.publish(f.first, [{ kind: "changes", id: "stranger", stages: [], toolNodes: [] }]),
-			/outside the work subtree: stranger$/,
+			outsideSubtree(f.first, "stranger"),
 		);
 		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
 		await f.handoff.publish(renewed, []);
 		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.workerExecution?.renewedAt, f.first.renewedAt);
 		await assert.rejects(
 			f.handoff.publish(renewed, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]),
-			new RegExp(`outside the work subtree: ${descriptor.childRunId}$`),
+			outsideSubtree(f.first, descriptor.childRunId),
 		);
 	} finally {
 		await f.close();

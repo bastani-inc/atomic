@@ -797,7 +797,7 @@ await session.prompt("After you're done, also check X", { streamingBehavior: "fo
 **Behavior:**
 - **Extension commands** (e.g., `/mycommand`): Execute immediately, even during streaming. They manage their own LLM interaction via `pi.sendMessage()`.
 - **File-based prompt templates** (from `.md` files): Expanded to their content before sending or queueing.
-- **During streaming without `streamingBehavior`**: Throws an error. Use `steer()` or `followUp()` directly, or specify the option.
+- **During streaming without `streamingBehavior`**: Throws `AgentSessionBusyError` (`code: "agent_session_busy"`, guard `isAgentSessionBusyError`, both exported by `@bastani/atomic`); nothing is sent. Use `steer()` or `followUp()` directly, or specify the option.
 - **`preflightResult(true)`**: Means the prompt was accepted, queued, or handled immediately.
 - **`preflightResult(false)`**: Means preflight rejected before acceptance.
 
@@ -811,7 +811,7 @@ await session.steer("New instruction");
 await session.followUp("After you're done, also do this");
 ```
 
-If the session is idle and already has messages when either is called, it starts a turn to deliver the message instead of leaving it queued. On a session with no messages yet, or after a run was stopped with `abort()`, the message stays queued until the next `prompt()`. A `prompt()` call made while that turn runs must pass `streamingBehavior`, or it fails with "Agent is already processing". Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
+If the session is idle and already has messages when either is called, it starts a turn to deliver the message instead of leaving it queued. On a session with no messages yet, or after a run was stopped with `abort()`, the message stays queued until the next `prompt()`. A `prompt()` call made while that turn runs must pass `streamingBehavior`, or it fails with `AgentSessionBusyError`. Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
 
 `clearQueue()` removes the queued steering and follow-up messages and returns them. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` holds the same messages, in the same order, as they were submitted: give the user those to send again, so the hooks and expansions run once more and not twice. `typed` is left out when every message was queued as submitted.
 

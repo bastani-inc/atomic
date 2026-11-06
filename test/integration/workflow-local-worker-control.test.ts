@@ -13,9 +13,14 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import type { PoolControl, PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { serializeError } from "../../packages/workflows/src/shared/error-codec.js";
+import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
 import type { WorkerReply, WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
+
+/** The coordinator's refusal of an attempt it fenced: the worker ends the attempt by the refusal's type. */
+const FENCED = new StaleWorkLeaseError({ root: "root", workId: "work", generation: 1, reason: "fenced" });
 
 /** Structural cost: a real worker process loading the packaged worker and running one child. */
 const REAL_WORKER_TEST_TIMEOUT_MS = 60_000;
@@ -154,7 +159,7 @@ test(
 				if (request.kind !== "heartbeat" || requests.filter((sent) => sent.kind === "heartbeat").length !== 2)
 					return undefined;
 				await sleep(CLOSING_ANSWER_DELAY_MS);
-				return { error: "journal unavailable" };
+				return { error: serializeError(new Error("journal unavailable")) };
 			},
 		});
 		try {
@@ -189,7 +194,9 @@ test(
 			heartbeatMs: 600_000,
 			released: true,
 			answer: (request) =>
-				request.kind === "controlled" && refuseAcknowledgement ? { error: "acknowledgement refused" } : undefined,
+				request.kind === "controlled" && refuseAcknowledgement
+					? { error: serializeError(new Error("acknowledgement refused")) }
+					: undefined,
 		});
 		try {
 			await f.until(() => f.count("complete") > 0, "the child completes");
@@ -220,7 +227,7 @@ test(
 			heartbeatMs: 200,
 			answer: (request, requests) =>
 				request.kind === "heartbeat" && requests.filter((sent) => sent.kind === "heartbeat").length === 1
-					? { error: "journal unavailable" }
+					? { error: serializeError(new Error("journal unavailable")) }
 					: undefined,
 		});
 		try {
@@ -238,7 +245,7 @@ test(
 		const f = await realWorker({
 			child: "pool-ticking-child",
 			heartbeatMs: 200,
-			answer: (request) => (request.kind === "heartbeat" ? { error: "Stale work lease", fenced: true } : undefined),
+			answer: (request) => (request.kind === "heartbeat" ? { error: serializeError(FENCED) } : undefined),
 		});
 		try {
 			await f.until(() => f.count("fenced") > 0, "the worker reports the attempt fenced");
@@ -298,7 +305,9 @@ test(
 			child: "pool-ticking-child",
 			heartbeatMs: 600_000,
 			answer: (request) =>
-				request.kind === "controlled" && request.revision === 1 ? { error: "acknowledgement refused" } : undefined,
+				request.kind === "controlled" && request.revision === 1
+					? { error: serializeError(new Error("acknowledgement refused")) }
+					: undefined,
 		});
 		try {
 			await f.until(() => f.count("commit") >= 2, "the child runs its tools");
@@ -321,7 +330,7 @@ test(
 			answer: (request, requests) => {
 				if (request.kind !== "control" || !requests.some((sent) => sent.kind === "claim")) return undefined;
 				attemptStarts++;
-				return attemptStarts === 1 ? { error: "Stale work lease", fenced: true } : undefined;
+				return attemptStarts === 1 ? { error: serializeError(FENCED) } : undefined;
 			},
 		});
 		try {

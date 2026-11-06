@@ -8,7 +8,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
-import { isRetryableWorkflowError, WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
+import { isRetryableWorkflowError, WorkerRetryLimitError } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -58,9 +58,13 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(caught.length, 2, "both concurrent children fail");
 			for (const error of caught) {
 				assert.ok(isRetryableWorkflowError(error), String(error));
-				assert.ok(error instanceof WorkflowInfrastructureError);
+				assert.ok(error instanceof WorkerRetryLimitError, String(error));
 				assert.equal(error.code, "worker_retry_limit");
-				assert.match(error.message, /Local worker retry limit/);
+				assert.equal(error.reason, "worker-lost");
+				assert.equal(error.exportName, "crashingChild");
+				assert.equal(error.attempts, 3);
+				assert.equal(error.limit, 3);
+				assert.equal(typeof error.logPath, "string");
 			}
 		} finally {
 			await pool.close().catch(() => {});
@@ -144,15 +148,15 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
 			assert.deepEqual(outcome.result, { branch: "main" });
 
-			assert.ok(crashFailure instanceof WorkflowInfrastructureError, String(crashFailure));
+			assert.ok(crashFailure instanceof WorkerRetryLimitError, String(crashFailure));
 			assert.ok(isRetryableWorkflowError(crashFailure));
 			assert.equal(crashFailure.code, "worker_retry_limit");
-			assert.match(crashFailure.message, /Local worker retry limit/);
+			assert.equal(crashFailure.reason, "worker-lost");
 			await pool.close();
 			const work = await (await openSqlPoolQueue(journal)).inspect(root);
 			const failed = work.find((item) => item.definition.endsWith("#crashingChild"));
 			assert.ok(failed, JSON.stringify(work));
-			assert.ok(crashFailure.message.includes(failed.childRunId), crashFailure.message);
+			assert.equal(crashFailure.childRunId, failed.childRunId);
 			assert.deepEqual(
 				Object.fromEntries(work.map((item) => [item.definition.split("#")[1], item.state])),
 				{ crashingChild: "failed", child: "completed" },

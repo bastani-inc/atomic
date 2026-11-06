@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -132,7 +133,11 @@ test.skipIf(process.platform === "win32")(
 		let faults = 0;
 		const outcome = await runWithTroubledCommits(async () => {
 			// Once: the replay's own commits reach the journal.
-			if (faults++ === 0) throw new Error("Storage unavailable: the journal refused a write");
+			if (faults++ === 0)
+				throw new StorageUnavailableError(
+					{ adapter: "node-sqlite", location: "journal.sqlite" },
+					new Error("the journal refused a write"),
+				);
 		});
 		assert.equal(outcome.root, "completed", JSON.stringify(outcome));
 		assert.equal(outcome.child, "completed", JSON.stringify(outcome));

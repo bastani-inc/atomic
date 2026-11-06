@@ -77,6 +77,8 @@ const question: PooledStageQuestion = {
 	params: { questions: [] },
 };
 
+const formHostFailure = new Error("the form host failed");
+
 function holdingFailure(): HeldPromptAnswers {
 	const held = new HeldPromptAnswers();
 	held.hold("run", "stage", {
@@ -84,7 +86,7 @@ function holdingFailure(): HeldPromptAnswers {
 		generation: 1,
 		promptId: question.promptId,
 		identity: questionIdentity(question),
-		error: "the form host failed",
+		error: formHostFailure,
 	});
 	return held;
 }
@@ -92,7 +94,9 @@ function holdingFailure(): HeldPromptAnswers {
 test("#4022: a form host failure refused before the replacement asked goes once to the same question, and is discarded otherwise", () => {
 	const reasked = holdingFailure();
 	reasked.settle("run", stage(2, { inputRequest: { id: question.promptId } as StageSnapshot["inputRequest"] }), 2);
-	assert.deepEqual(reasked.takeQuestion("run", "stage", question, 2), { error: "the form host failed" });
+	const taken = reasked.takeQuestion("run", "stage", question, 2);
+	assert.ok(taken !== undefined && "error" in taken);
+	assert.equal(taken.error, formHostFailure, "the held failure is the form host's own error, not its text");
 	assert.equal(reasked.takeQuestion("run", "stage", question, 2), undefined, "handed out once");
 
 	const changed = holdingFailure();

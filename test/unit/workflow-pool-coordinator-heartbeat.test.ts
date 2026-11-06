@@ -1,112 +1,30 @@
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import { isDebugEnabled } from "../../packages/coding-agent/src/core/debug.js";
 import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import {
-	openSqlPoolQueue,
-	type PoolControl,
-	type PoolWork,
-	type PoolWorkDescriptor,
-} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
-import type { PoolCoordinationStats } from "../../packages/workflows/src/shared/store-types.js";
-import {
-	type CoordinatorCommandBody,
-	type CoordinatorEvent,
-	type CoordinatorInbound,
-	type CoordinatorNotice,
-	type CoordinatorPort,
-	POOL_COORDINATION_STATS_INTERVAL_MS,
-} from "../../packages/workflows/src/workers/coordinator-protocol.js";
+import type { PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
+import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { POOL_COORDINATION_STATS_INTERVAL_MS } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { POOL_DURABLE_JOURNAL_ENV } from "../../packages/workflows/src/workers/pool-journal.js";
-import type {
-	DistributiveOmit,
-	WorkerInbound,
-	WorkerReply,
-	WorkerRequest,
-	WorkerStart,
-} from "../../packages/workflows/src/workers/protocol.js";
+import { workerRefusal } from "../../packages/workflows/src/workers/worker-refusal.js";
+import type { FakeWorker } from "../helpers/fake-pool-worker.js";
+import {
+	type CoordinatorFixtureOptions,
+	HEARTBEAT_MS,
+	LEASE_MS,
+	coordinatorFixture as startCoordinator,
+} from "../helpers/pool-coordinator.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
-
-/** A worker process as the coordinator sees it: IPC both ways, driven by the test instead of a worker's loop. */
-class FakeWorker extends EventEmitter {
-	readonly pid: number;
-	readonly start: WorkerStart;
-	readonly options: ForkOptions;
-	connected = true;
-	exitCode: number | null = null;
-	signalCode: NodeJS.Signals | null = null;
-	readonly stderr = undefined;
-	/** Messages the coordinator pushed without a request: pool control, stage commands, shared limits. */
-	readonly pushed: Exclude<WorkerInbound, WorkerReply>[] = [];
-	/** Set to make every push to this worker fail, as for a channel that closed. */
-	refusePushes = false;
-	killedWith?: NodeJS.Signals;
-	private sequence = 0;
-	private readonly replies = new Map<number, (reply: WorkerReply) => void>();
-
-	constructor(pid: number, args: readonly string[], options: ForkOptions) {
-		super();
-		this.pid = pid;
-		this.start = JSON.parse(args[0]!) as WorkerStart;
-		this.options = options;
-	}
-
-	send(message: WorkerInbound, callback?: (error: Error | null) => void): boolean {
-		if ("kind" in message) {
-			if (this.refusePushes) {
-				callback?.(new Error("channel closed"));
-				return false;
-			}
-			this.pushed.push(message);
-		} else {
-			this.replies.get(message.id)?.(message);
-			this.replies.delete(message.id);
-		}
-		callback?.(null);
-		return true;
-	}
-
-	request(body: DistributiveOmit<WorkerRequest, "id">): Promise<WorkerReply> {
-		const id = ++this.sequence;
-		return new Promise((resolve) => {
-			this.replies.set(id, resolve);
-			this.emit("message", { ...body, id });
-		});
-	}
-
-	kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
-		if (this.exitCode !== null || this.signalCode !== null) return false;
-		this.killedWith = signal;
-		this.signalCode = signal;
-		this.connected = false;
-		setImmediate(() => {
-			this.emit("disconnect");
-			this.emit("exit", null, signal);
-			this.emit("close", null, signal);
-		});
-		return true;
-	}
-
-	disconnect(): void {
-		this.connected = false;
-		this.emit("disconnect");
-	}
-}
 
 const forked = vi.hoisted((): FakeWorker[] => []);
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
+	const { FakeWorker } = await import("../helpers/fake-pool-worker.js");
 	return {
 		...actual,
 		fork(_modulePath: string, args: readonly string[], options: ForkOptions) {
@@ -137,117 +55,9 @@ afterEach(() => {
 	forked.length = 0;
 });
 
-const LEASE_MS = 60_000;
-const HEARTBEAT_MS = 15_000;
-const SOURCE = { path: "fixture", exportName: "child", digest: "sha256:child" };
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
 
-interface FixtureOptions {
-	readonly workers?: number;
-	/** Workers that report ready at start; the rest stay starting until the test readies them. */
-	readonly ready?: number;
-	readonly leaseMs?: number;
-	/** Control the root asked for before its pool was prepared. */
-	readonly control?: PoolControl["state"];
-	/** Whether to start workers and enqueue one child; a prepared-only coordinator runs no recovery. */
-	readonly start?: boolean;
-	/** The execution recorded for the enqueued child. */
-	readonly execution?: PoolWorkDescriptor["execution"];
-}
-
-/** A coordinator in this process over a real journal, its workers {@link FakeWorker}s. */
-async function coordinatorFixture(options: FixtureOptions = {}) {
-	const workers = options.workers ?? 2;
-	const directory = makeTempDirectory("pool-coordinator-heartbeat-");
-	const path = join(directory, "journal.sqlite");
-	const database = await openNodeSqliteDatabase(path);
-	const journal = await SqlRunJournal.open(database);
-	await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
-	const acquired = await journal.acquire("root", "root-holder");
-	assert.equal(acquired.status, "acquired");
-	const lease = (acquired as { lease: Lease }).lease;
-	const events: CoordinatorEvent[] = [];
-	const listeners: ((message: CoordinatorInbound) => void)[] = [];
-	const port: CoordinatorPort<CoordinatorEvent, CoordinatorInbound> = {
-		send: (message) => events.push(JSON.parse(JSON.stringify(message)) as CoordinatorEvent),
-		onMessage: (listener) => listeners.push(listener),
-		onClose: () => {},
-		close: async () => {},
-	};
-	const coordinator = new PoolCoordinator(port);
-	let commandSequence = 0;
-	const command = async (body: CoordinatorCommandBody): Promise<unknown> => {
-		const id = ++commandSequence;
-		for (const listener of listeners) listener({ ...body, id } as CoordinatorInbound);
-		for (;;) {
-			const reply = events.find((event) => event.kind === "reply" && event.id === id);
-			if (reply?.kind === "reply") {
-				if (reply.error !== undefined) throw new Error(reply.error);
-				return reply.value;
-			}
-			await delay(5);
-		}
-	};
-	const notice = (body: CoordinatorNotice) => {
-		for (const listener of listeners) listener(body);
-	};
-	await command({
-		kind: "prepare",
-		root: "root",
-		lease,
-		options: {
-			journalPath: path,
-			workers,
-			leaseMs: options.leaseMs ?? LEASE_MS,
-			heartbeatMs: HEARTBEAT_MS,
-			startupTimeoutMs: 30_000,
-			workerEntry: "fake-worker",
-		},
-		...(options.control === undefined ? {} : { control: options.control }),
-	});
-	if (options.start !== false) {
-		const starting = command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
-		while (forked.length < workers) await delay(5);
-		for (const worker of forked.slice(0, options.ready ?? workers)) await worker.request({ kind: "ready" });
-		await starting;
-		const { work, boundary } = poolWorkFixture();
-		const descriptor = {
-			...work,
-			...(options.execution === undefined ? {} : { execution: options.execution }),
-			definition: `${SOURCE.path}#${SOURCE.exportName}`,
-			digest: SOURCE.digest,
-		};
-		await command({ kind: "enqueue", descriptor, boundary });
-	}
-	const queue = await openSqlPoolQueue(journal);
-	return {
-		database,
-		journal,
-		lease,
-		events,
-		command,
-		notice,
-		queue,
-		usage: await openSqlPoolUsage(journal),
-		workers: [...forked],
-		reports: () => events.flatMap((event) => (event.kind === "coordination" ? [event.stats] : [])),
-		/** The coordinator's next report of its counts, sent within a second while they change. */
-		async nextStats(after: number): Promise<PoolCoordinationStats> {
-			for (;;) {
-				const report = events.slice(after).find((event) => event.kind === "coordination");
-				if (report?.kind === "coordination") return report.stats;
-				await delay(20);
-			}
-		},
-		async close() {
-			await command({ kind: "close" });
-			await coordinator.shutdown();
-			await journal.close();
-			await database.close();
-			removeTempDirectory(directory);
-		},
-	};
-}
+const coordinatorFixture = (options: CoordinatorFixtureOptions = {}) => startCoordinator(forked, options);
 
 test("one heartbeat request renews the attempt, records its usage and answers pool control in one journal write (#4313)", async () => {
 	const f = await coordinatorFixture();
@@ -275,7 +85,11 @@ test("one heartbeat request renews the attempt, records its usage and answers po
 		const again = await holder.request({ kind: "heartbeat", reports });
 		assert.deepEqual(again.value, { state: "running", revision: 1 });
 		const orphan = await idle.request({ kind: "heartbeat", reports: [] });
-		assert.equal(orphan.error, "Worker has no active attempt", "a heartbeat needs an attempt to renew");
+		assert.equal(
+			rehydrateError(orphan.error).message,
+			"Worker has no active attempt",
+			"a heartbeat needs an attempt to renew",
+		);
 
 		let stats = await f.nextStats(statsFrom);
 		while (stats.requests.heartbeat?.count !== 3) stats = await f.nextStats(f.events.length);
@@ -358,8 +172,10 @@ test("a heartbeat of an attempt that lost its work is refused as fenced, with no
 		assert.equal(await f.queue.releaseExited(f.lease, claimed), true);
 		const reports = [{ key: "stage:child:agent", usage: { ...zero, input: 50 } }];
 		const reply = await holder.request({ kind: "heartbeat", reports });
-		assert.equal(reply.error, "Stale work lease");
-		assert.equal(reply.fenced, true, "the worker ends the attempt without failing");
+		const refusal = rehydrateError(reply.error);
+		assert.ok(isStaleWorkLeaseError(refusal), String(refusal));
+		assert.equal(refusal.reason, "not-leased");
+		assert.equal(workerRefusal(refusal, undefined).kind, "fenced", "the worker ends the attempt without failing");
 		assert.deepEqual(await f.usage.total("root"), zero, "a refused heartbeat records no usage");
 		const work = (await f.queue.inspect("root"))[0]!;
 		assert.equal(work.state, "ready", "and does not renew work it no longer holds");

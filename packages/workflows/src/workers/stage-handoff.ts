@@ -14,6 +14,14 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus, isTerminalStageStatus } from "../shared/store-internal.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
+import {
+	causedByStaleWorkLease,
+	isStaleWorkLeaseError,
+	PublicationRejectedError,
+	type PublicationRejectedFields,
+	StaleWorkLeaseError,
+	type StaleWorkLeaseReason,
+} from "../shared/worker-pool-errors.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
 import { isRunChanges, type PublishedRun, type RunChanges, type RunHeader } from "./run-changes.js";
 
@@ -61,6 +69,7 @@ interface Member {
 }
 
 interface Attempt {
+	readonly workId: string;
 	readonly generation: number;
 	readonly runs: Set<string>;
 	readonly deliveries: Map<string, PendingDelivery>;
@@ -74,8 +83,6 @@ interface Attempt {
 }
 
 type Execution = NonNullable<StageSnapshot["workerExecution"]>;
-
-const STALE = "Stale work lease";
 
 export class PoolStageHandoff {
 	private readonly attempts = new Map<string, Attempt>();
@@ -108,8 +115,9 @@ export class PoolStageHandoff {
 					this.store.batch(commit);
 					this.rebase(work, runs);
 				} catch (error) {
-					this.refuse(work, error as Error);
-					throw error;
+					const rejection = this.publicationRejection(work, error);
+					this.refuse(work, rejection);
+					throw rejection;
 				}
 			});
 		const settled = publication.catch(() => undefined);
@@ -132,7 +140,9 @@ export class PoolStageHandoff {
 	): Promise<(Error | undefined)[]> {
 		const prepared: ((() => number) | Error)[] = [];
 		for (const { work, runs } of publications)
-			prepared.push(await this.prepare(work, runs).catch((error: Error) => error));
+			prepared.push(
+				await this.prepare(work, runs).catch((error: unknown) => this.publicationRejection(work, error)),
+			);
 		const outcomes: (Error | undefined)[] = [];
 		while (outcomes.length < prepared.length) {
 			if (outcomes.length > 0) await nextTurn();
@@ -147,7 +157,7 @@ export class PoolStageHandoff {
 						this.rebase(work, runs);
 						outcomes.push(undefined);
 					} catch (error) {
-						const refused = error instanceof Error ? error : new Error(String(error));
+						const refused = this.publicationRejection(work, error);
 						this.refuse(work, refused);
 						outcomes.push(refused);
 					}
@@ -179,18 +189,46 @@ export class PoolStageHandoff {
 		return known?.generation === work.generation && runs.some(isRunChanges) ? known.error : undefined;
 	}
 
+	/** A publication's failure as the coordinator receives it: a stale attempt's is a stale-lease rejection. */
+	private publicationRejection(work: PoolWork, error: unknown): Error {
+		if (isStaleWorkLeaseError(error))
+			return new PublicationRejectedError(
+				{ root: this.lease.runId, workId: work.id, generation: work.generation, reason: "stale-lease" },
+				{ cause: error },
+			);
+		return error instanceof Error ? error : new Error(String(error));
+	}
+
+	private rejected(
+		work: Pick<PoolWork, "id" | "generation">,
+		reason: PublicationRejectedFields["reason"],
+		target: Pick<PublicationRejectedFields, "runId" | "stageId" | "sessionId"> = {},
+	): PublicationRejectedError {
+		return new PublicationRejectedError({
+			root: this.lease.runId,
+			workId: work.id,
+			generation: work.generation,
+			reason,
+			...target,
+		});
+	}
+
+	private stale(work: Pick<PoolWork, "id" | "generation">, reason: StaleWorkLeaseReason): StaleWorkLeaseError {
+		return new StaleWorkLeaseError({ root: this.lease.runId, workId: work.id, generation: work.generation, reason });
+	}
+
 	async route(work: PoolWork, runId: string): Promise<string> {
-		this.requireOwned(await this.begin(work), runId);
+		this.requireOwned(work, await this.begin(work), runId);
 		const readiness = workflowPendingStageRouteReady(this.store, runId);
 		await readiness?.completion;
 		readiness?.assertCurrent();
-		this.requireOwned(await this.begin(work), runId);
+		this.requireOwned(work, await this.begin(work), runId);
 		return workflowPendingStageRouteCapability(this.store, runId);
 	}
 
 	async ready(work: PoolWork, runId: string, stageId: string, stageName: string, sessionId?: string): Promise<void> {
 		const attempt = await this.begin(work);
-		this.requireOwned(attempt, runId);
+		this.requireOwned(work, attempt, runId);
 		await this.delivery(attempt, work, runId, stageId, stageName).ready(sessionId);
 	}
 
@@ -203,15 +241,11 @@ export class PoolStageHandoff {
 		transport: PoolStageTransport,
 	): Promise<void> {
 		const attempt = await this.begin(work);
-		this.requireOwned(attempt, runId);
+		this.requireOwned(work, attempt, runId);
 		const stage = JSON.stringify([runId, stageId]);
-		if (attempt.sessions.get(stage) !== recipient.sessionId)
-			throw new Error(`Session ${recipient.sessionId} is not the published session of stage ${stageId}`);
-		const assertSession = () => {
-			if (this.attempts.get(work.id) !== attempt || attempt.fenced) throw new Error(STALE);
-			if (attempt.sessions.get(stage) !== recipient.sessionId)
-				throw new Error(`Stage session ${recipient.sessionId} was replaced before it acknowledged delivery`);
-		};
+		const target = { runId, stageId, sessionId: recipient.sessionId };
+		if (attempt.sessions.get(stage) !== recipient.sessionId) throw this.rejected(work, "session-mismatch", target);
+		const assertSession = () => this.assertSession(work, attempt, runId, stageId, recipient.sessionId);
 		const previous = this.drains.get(stage) ?? Promise.resolve();
 		const drain = previous
 			.catch(() => undefined)
@@ -228,9 +262,10 @@ export class PoolStageHandoff {
 		try {
 			await drain;
 		} catch (error) {
-			// An attempt that was fenced, or a session that was replaced, ends its drain by design.
+			// An attempt that was fenced or replaced, whether the handoff or the pool's receipt guard refused it, or a
+			// session that was replaced, ends its drain by design. A refused coordinator authority is still reported.
 			const current = this.attempts.get(work.id) === attempt && !attempt.fenced;
-			if (current && attempt.sessions.get(stage) === recipient.sessionId && (error as Error).message !== STALE)
+			if (current && attempt.sessions.get(stage) === recipient.sessionId && !causedByStaleWorkLease(error))
 				this.recordDeliveryIssue(error as Error);
 			throw error;
 		} finally {
@@ -326,7 +361,7 @@ export class PoolStageHandoff {
 		const current = this.attempts.get(work.id);
 		if (current !== undefined && current.generation > work.generation) return;
 		const attempt = current?.generation === work.generation ? current : this.start(work, current);
-		this.store.batch(() => this.release(attempt));
+		this.store.batch(() => this.release(work, attempt, "fenced"));
 		attempt.fenced = true;
 	}
 
@@ -347,7 +382,7 @@ export class PoolStageHandoff {
 						existing !== undefined &&
 						(existing.parentRunId !== run.parentRunId || existing.parentStageId !== run.parentStageId))
 				)
-					throw outside(run.id);
+					throw this.outside(work, run.id);
 			}
 		};
 		const before = this.known(subtree);
@@ -547,7 +582,13 @@ export class PoolStageHandoff {
 	private trackSession(attempt: Attempt, runId: string, stage: StageSnapshot): void {
 		const key = JSON.stringify([runId, stage.id]);
 		if (attempt.sessions.get(key) !== stage.sessionId) {
-			attempt.deliveries.get(key)?.fail(new Error(`Stage session ${attempt.sessions.get(key)} was replaced`));
+			attempt.deliveries.get(key)?.fail(
+				this.rejected({ id: attempt.workId, generation: attempt.generation }, "session-replaced", {
+					runId,
+					stageId: stage.id,
+					sessionId: attempt.sessions.get(key),
+				}),
+			);
 			attempt.deliveries.delete(key);
 		}
 		if (stage.sessionId === undefined) attempt.sessions.delete(key);
@@ -558,13 +599,13 @@ export class PoolStageHandoff {
 		const root = this.lease.runId;
 		const ids = new Set<string>();
 		for (const run of runs) {
-			if (run.id === root || ids.has(run.id)) throw outside(run.id);
+			if (run.id === root || ids.has(run.id)) throw this.outside(work, run.id);
 			ids.add(run.id);
 		}
 		if (runs.length === 0) return [];
 		const boundary = this.boundary(work.boundaryId);
 		if (authoritativeWorkflowChildRunId(boundary) !== work.childRunId)
-			throw new Error(`Pool work boundary ${work.boundaryId} is not linked to ${work.childRunId} in the root run`);
+			throw this.rejected(work, "boundary-unlinked", { runId: work.childRunId, stageId: work.boundaryId });
 		return runs.some(isRunChanges) ? this.changed(work, runs) : this.tree(work, runs as readonly RunSnapshot[]);
 	}
 
@@ -579,21 +620,22 @@ export class PoolStageHandoff {
 		}
 		const ordered = runs.filter((run) => run.id === work.childRunId);
 		for (const top of ordered)
-			if (top.parentRunId !== root || top.parentStageId !== work.boundaryId) throw outside(top.id);
+			if (top.parentRunId !== root || top.parentStageId !== work.boundaryId) throw this.outside(work, top.id);
 		for (let index = 0; index < ordered.length; index++) {
 			const run = ordered[index]!;
-			if (run.rootRunId !== undefined && run.rootRunId !== root) throw outside(run.id);
+			if (run.rootRunId !== undefined && run.rootRunId !== root) throw this.outside(work, run.id);
 			let stages: ReadonlyMap<string | undefined, StageSnapshot> | undefined;
 			for (const child of children.get(run.id) ?? []) {
 				stages ??= byId(run.stages);
-				if (authoritativeWorkflowChildRunId(stages.get(child.parentStageId)) !== child.id) throw outside(child.id);
+				if (authoritativeWorkflowChildRunId(stages.get(child.parentStageId)) !== child.id)
+					throw this.outside(work, child.id);
 				ordered.push(child);
 			}
 		}
 		const reached = new Set(ordered);
 		const stray = runs.find((run) => !reached.has(run));
-		if (stray !== undefined) throw outside(stray.id);
-		return ordered.map((run) => this.member(run));
+		if (stray !== undefined) throw this.outside(work, stray.id);
+		return ordered.map((run) => this.member(work, run));
 	}
 
 	/**
@@ -604,12 +646,13 @@ export class PoolStageHandoff {
 		const root = this.lease.runId;
 		const hosts = this.attempts.get(work.id)?.hosts;
 		return runs.map((run) => {
-			if (!isRunChanges(run)) throw outside(run.id);
-			const member = this.member(run);
-			if (member.rootRunId !== undefined && member.rootRunId !== root) throw outside(run.id);
+			if (!isRunChanges(run)) throw this.outside(work, run.id);
+			const member = this.member(work, run);
+			if (member.rootRunId !== undefined && member.rootRunId !== root) throw this.outside(work, run.id);
 			for (const stage of run.stages) {
 				const hosted = hosts?.get(hostKey(run.id, stage.id));
-				if (hosted !== undefined && authoritativeWorkflowChildRunId(stage) !== hosted) throw outside(hosted);
+				if (hosted !== undefined && authoritativeWorkflowChildRunId(stage) !== hosted)
+					throw this.outside(work, hosted);
 			}
 			return member;
 		});
@@ -619,7 +662,7 @@ export class PoolStageHandoff {
 	 * A published run as validation sees it. A run published as changes keeps the parent links of the store's copy,
 	 * which a change to its own fields may not move.
 	 */
-	private member(published: PublishedRun): Member {
+	private member(work: Pick<PoolWork, "id" | "generation">, published: PublishedRun): Member {
 		if (!isRunChanges(published))
 			return {
 				published,
@@ -635,7 +678,7 @@ export class PoolStageHandoff {
 			(header !== undefined &&
 				(header.parentRunId !== stored.parentRunId || header.parentStageId !== stored.parentStageId))
 		)
-			throw outside(published.id);
+			throw this.outside(work, published.id);
 		return {
 			published,
 			id: published.id,
@@ -662,17 +705,38 @@ export class PoolStageHandoff {
 
 	private enter(work: PoolWork): Attempt {
 		const current = this.attempts.get(work.id);
-		if (current !== undefined && work.generation < current.generation) throw new Error(STALE);
+		if (current !== undefined && work.generation < current.generation) throw this.stale(work, "superseded");
 		if (current?.generation === work.generation) {
-			if (current.fenced) throw new Error(STALE);
+			if (current.fenced) throw this.stale(work, "fenced");
 			return current;
 		}
 		return this.start(work, current);
 	}
 
+	/** Refuses a delivery step of an attempt the root fenced or replaced since the step began. */
+	private assertAttempt(work: Pick<PoolWork, "id" | "generation">, attempt: Attempt): void {
+		if (this.attempts.get(work.id) !== attempt) throw this.stale(work, "superseded");
+		if (attempt.fenced) throw this.stale(work, "fenced");
+	}
+
+	/** Refuses a delivery step whose attempt was fenced or replaced, or whose stage replaced the session it targets. */
+	private assertSession(
+		work: Pick<PoolWork, "id" | "generation">,
+		attempt: Attempt,
+		runId: string,
+		stageId: string,
+		sessionId: string | undefined,
+	): void {
+		this.assertAttempt(work, attempt);
+		if (attempt.sessions.get(JSON.stringify([runId, stageId])) !== sessionId)
+			throw this.rejected(work, "session-replaced", { runId, stageId, sessionId });
+	}
+
 	private start(work: Pick<PoolWork, "id" | "generation">, previous: Attempt | undefined): Attempt {
-		if (previous !== undefined) this.release(previous);
+		if (previous !== undefined)
+			this.release({ id: work.id, generation: previous.generation }, previous, "superseded");
 		const attempt: Attempt = {
+			workId: work.id,
 			generation: work.generation,
 			runs: previous?.runs ?? new Set(),
 			deliveries: new Map(),
@@ -686,8 +750,12 @@ export class PoolStageHandoff {
 		return attempt;
 	}
 
-	private release(attempt: Attempt): void {
-		for (const delivery of attempt.deliveries.values()) delivery.fail(new Error(STALE));
+	private release(
+		work: Pick<PoolWork, "id" | "generation">,
+		attempt: Attempt,
+		reason: Extract<StaleWorkLeaseReason, "fenced" | "superseded">,
+	): void {
+		for (const delivery of attempt.deliveries.values()) delivery.fail(this.stale(work, reason));
 		attempt.deliveries.clear();
 		attempt.sessions.clear();
 		for (const id of attempt.runs) rotateWorkflowPendingStageRouteCapability(this.store, id);
@@ -705,8 +773,12 @@ export class PoolStageHandoff {
 		}
 	}
 
-	private requireOwned(attempt: Attempt, runId: string): void {
-		if (!attempt.runs.has(runId)) throw outside(runId);
+	private requireOwned(work: Pick<PoolWork, "id" | "generation">, attempt: Attempt, runId: string): void {
+		if (!attempt.runs.has(runId)) throw this.outside(work, runId);
+	}
+
+	private outside(work: Pick<PoolWork, "id" | "generation">, runId: string): PublicationRejectedError {
+		return this.rejected(work, "outside-subtree", { runId });
 	}
 
 	private delivery(
@@ -729,11 +801,7 @@ export class PoolStageHandoff {
 					this.queue.withCurrentAppend(
 						this.lease,
 						work,
-						() => {
-							if (this.attempts.get(work.id) !== attempt || attempt.fenced) throw new Error(STALE);
-							if (attempt.sessions.get(key) !== sessionId)
-								throw new Error(`Stage session ${sessionId} was replaced before it acknowledged delivery`);
-						},
+						() => this.assertSession(work, attempt, runId, stageId, sessionId),
 						action,
 					),
 				// A drain's transport is the worker's delivery request, which `deliver` answers: it must stay open for as
@@ -744,10 +812,6 @@ export class PoolStageHandoff {
 		}
 		return delivery;
 	}
-}
-
-function outside(runId: string): Error {
-	return new Error(`Pool stage publication is outside the work subtree: ${runId}`);
 }
 
 function isLive(stage: StageSnapshot): boolean {

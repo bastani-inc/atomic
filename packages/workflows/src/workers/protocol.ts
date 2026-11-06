@@ -3,6 +3,7 @@ import type { PoolControl, PoolMutation, PoolWork } from "../durable/journal/sql
 import type { PoolUsageReport } from "../durable/journal/sql-pool-usage.js";
 import type { RunResult } from "../runs/foreground/executor-types.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
+import type { SerializedError } from "../shared/error-codec.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
@@ -74,10 +75,10 @@ export type WorkerRequest = { readonly id: number } & (
 	 */
 	| { readonly kind: "heartbeat"; readonly reports: readonly PoolUsageReport[] }
 	/**
-	 * The worker ended its attempt because a reply reported it fenced, or because its run failed on a fault of the pool
-	 * (`fault` names it); neither is a worker fault, and the child replays within its attempt limit.
+	 * The worker ended its attempt because a reply refused it as stale, or because its run failed on a fault of the pool
+	 * (`fault` is that fault); neither is a worker fault, and the child replays within its attempt limit.
 	 */
-	| { readonly kind: "fenced"; readonly fault?: string }
+	| { readonly kind: "fenced"; readonly fault?: SerializedError }
 	/**
 	 * The worker holds no attempt and is about to exit because its resident set size, `rssBytes`, passed its
 	 * `maxRssBytes`, after running `attempts` attempts: a planned exit, not a crash, so the pool starts a replacement
@@ -101,7 +102,7 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly recipient?: WorkerRecipient;
 			readonly sessionId?: string;
 	  }
-	| { readonly kind: "delivery-ack"; readonly deliveryId: string; readonly error?: string }
+	| { readonly kind: "delivery-ack"; readonly deliveryId: string; readonly error?: SerializedError }
 	| { readonly kind: "commit"; readonly operation: string; readonly mutation: PoolMutation }
 	| { readonly kind: "complete"; readonly result: RunResult }
 	// One-way stage watch traffic (#3996); the coordinator does not reply to these.
@@ -116,8 +117,8 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly bash?: PooledBashResult;
 			/** The answer to an action on one of the stage's background tasks. */
 			readonly task?: PooledTaskReply;
-			/** The stage refused the text for another reason; the message says why. */
-			readonly error?: string;
+			/** The stage refused the command for another reason; the error says why. */
+			readonly error?: SerializedError;
 	  }
 	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
 	| { readonly kind: "stage-watch-ended"; readonly watch: WatchId; readonly reason: WatchEndReason }
@@ -127,11 +128,11 @@ export type WorkerRequest = { readonly id: number } & (
 export interface WorkerReply {
 	readonly id: number;
 	readonly value?: WorkflowSerializableValue | PoolWork | PoolControl;
-	readonly error?: string;
-	/** The refusal fences the worker's attempt: the work has another owner, or none, and the attempt must end. */
-	readonly fenced?: true;
-	/** The root no longer holds its lease (it released it, or another incarnation took it): the worker has nothing to serve. */
-	readonly rootLeaseLost?: true;
+	/**
+	 * The refusal, typed: a stale work lease in its cause chain fences the worker's attempt, and a stale root lease
+	 * (`StaleLeaseError`) means the root no longer holds its lease, so the worker has nothing to serve.
+	 */
+	readonly error?: SerializedError;
 	readonly delivery?: {
 		readonly id: string;
 		readonly from: Parameters<WorkerDeliver>[0];

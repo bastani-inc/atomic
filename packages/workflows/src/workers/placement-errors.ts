@@ -34,6 +34,33 @@ export type WorkerPlacementErrorCode =
 	| "workspace-restore-unavailable"
 	| "stale-stage-lease";
 
+export const WORKER_PLACEMENT_CONFIG_SOURCES: readonly WorkerPlacementConfigSource[] = ["sdk", "settings", "env"];
+export const WORKER_PLACEMENT_CONFIG_CODES: readonly WorkerPlacementConfigErrorCode[] = [
+	"invalid-option",
+	"requires-local-workers",
+	"unsupported-option",
+	"changed-on-resume",
+];
+export const SHARED_POOL_SETUP_CODES: readonly SharedPoolSetupErrorCode[] = [
+	"shared-journal-required",
+	"storage-adapter-unavailable",
+	"journal-secret-unavailable",
+	"git-unavailable",
+	"process-containment-unavailable",
+	"pool-on-another-host",
+];
+export const SHARED_POOL_OPERATIONS: readonly SharedPoolOperation[] = [
+	"shared-placement",
+	"worker-host",
+	"resume",
+	"local-pool",
+];
+export const WORKSPACE_RESTORE_UNAVAILABLE_REASONS: readonly WorkspaceRestoreUnavailableReason[] = [
+	"no-restore-port",
+	"no-capable-host",
+];
+export const STALE_STAGE_LEASE_REASONS: readonly StaleStageLeaseReason[] = ["attempt-replaced", "stage-lease-replaced"];
+
 type JsonField = string | number | boolean | null | readonly JsonField[] | { readonly [key: string]: JsonField };
 
 /** A placement error as it crosses a worker, coordinator or root process boundary. */
@@ -407,6 +434,14 @@ function inChain<T>(error: unknown, match: (value: unknown) => value is T): T | 
 		current = typeof current === "object" ? (current as { readonly cause?: unknown }).cause : undefined;
 	}
 	return undefined;
+}
+
+/**
+ * Whether `value` itself, not an error in its cause chain, is a {@link WorkerPlacementError}: an instance, or a copy of
+ * one from another module instance or process, recognized by its name, string `code` and boolean `retryable`.
+ */
+export function isWorkerPlacementErrorValue(value: unknown): value is WorkerPlacementError {
+	return value instanceof WorkerPlacementError || structural(value);
 }
 
 /** Whether `error`, or an error in its cause chain, is a {@link WorkerPlacementError}. */

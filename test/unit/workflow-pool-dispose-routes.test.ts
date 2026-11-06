@@ -8,6 +8,7 @@ import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { externalRunRouteOwner } from "../../packages/workflows/src/shared/external-run-routes.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { isWorkerCleanupUnconfirmedError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
@@ -62,7 +63,12 @@ test("a failed worker cleanup still releases the root's Intercom routes and repo
 		assert.equal(result.status, "completed", JSON.stringify(result));
 		assert.equal(releaseRoutes.mock.calls.length, 0, "routes stay registered while the pool is open");
 		vi.spyOn(SqlResourceAdmission.prototype, "releaseStoppedSessions").mockResolvedValue(1);
-		await assert.rejects(pool.close(), /cleanup unconfirmed/);
+		await assert.rejects(pool.close(), (error: unknown) => {
+			assert.ok(isWorkerCleanupUnconfirmedError(error), String(error));
+			assert.equal(error.code, "worker_cleanup_unconfirmed");
+			assert.deepEqual(error.processGroups, []);
+			return true;
+		});
 		assert.equal(releaseRoutes.mock.calls.length, 1);
 	} finally {
 		vi.restoreAllMocks();

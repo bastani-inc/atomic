@@ -11,8 +11,15 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { causeChain } from "../../packages/workflows/src/shared/error-cause-chain.js";
+import { rehydrateError, type SerializedError } from "../../packages/workflows/src/shared/error-codec.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import {
+	isQuarantinedCapacityError,
+	isRetryableWorkflowError,
+	isWorkerCleanupUnconfirmedError,
+	isWorkerRetryLimitError,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -248,8 +255,19 @@ function reapBarrier() {
 	return { started, release, pause };
 }
 
+/** The health notice of a cleanup the pool could not confirm: a warning on the root run, not an error. */
 function unconfirmedCleanup(group: number): RegExp {
-	return new RegExp(`Local worker process cleanup unconfirmed; process groups ${group} still running`);
+	return new RegExp(`Local worker process cleanup unconfirmed: process groups ${group} still running after SIGKILL`);
+}
+
+/** An `assert.rejects` validator for the typed cleanup failure close reports for `group`. */
+function cleanupRefusal(group: number): (error: unknown) => true {
+	return (error) => {
+		assert.ok(isWorkerCleanupUnconfirmedError(error), String(error));
+		assert.equal(error.code, "worker_cleanup_unconfirmed");
+		assert.ok(error.processGroups.includes(group), `${error.processGroups} includes ${group}`);
+		return true;
+	};
 }
 
 test.skipIf(process.platform === "win32")(
@@ -315,10 +333,21 @@ test.skipIf(process.platform === "win32")(
 					assert.equal(pool.health.length, 1, pool.health.join("\n"));
 					assert.match(pool.health[0]!, unconfirmedCleanup(group));
 					assert.match(pool.health[0]!, /the worker was retired and replaced/);
+					// The worker's log, which the pool keeps, records the same health event with its time.
+					const health = pool.health[0]!;
+					const logMarker = " (worker log: ";
+					const logPath = health.slice(health.lastIndexOf(logMarker) + logMarker.length, -1);
+					const recorded = health.slice(0, health.lastIndexOf(logMarker));
+					await vi.waitFor(() => {
+						const lines = readTextSync(logPath, "utf8").split("\n");
+						const line = lines.find((entry) => entry.endsWith(`] ${recorded}`)) ?? "";
+						assert.ok(line.startsWith("[atomic "), lines.join("\n"));
+						assert.ok(Number.isFinite(Date.parse(line.slice("[atomic ".length, -`] ${recorded}`.length))), line);
+					});
 					assert.equal(warnings.length, 1, "the root run shows the health event as a warning");
 					assert.match(warnings[0]!, unconfirmedCleanup(group));
 					// The reap finished before close started: close still reports the surviving group.
-					await assert.rejects(pool.close(), unconfirmedCleanup(group));
+					await assert.rejects(pool.close(), cleanupRefusal(group));
 				},
 			});
 		} finally {
@@ -362,7 +391,12 @@ test.skipIf(process.platform === "win32")(
 						"every surviving group's permit stays quarantined",
 					);
 					assert.equal(pool.health.length, 4, pool.health.join("\n"));
-					await assert.rejects(pool.close(), /Local worker process cleanup unconfirmed/);
+					await assert.rejects(pool.close(), (error: unknown) => {
+						assert.ok(isWorkerCleanupUnconfirmedError(error), String(error));
+						assert.equal(error.code, "worker_cleanup_unconfirmed");
+						assert.ok(error.processGroups.length > 0);
+						return true;
+					});
 				},
 			});
 		} finally {
@@ -379,7 +413,7 @@ interface ReplayPermit {
 	readonly generation: number;
 	readonly waitedMs: number;
 	readonly outcome: "granted" | "refused";
-	readonly error?: string;
+	readonly fault?: SerializedError;
 	readonly retryable?: boolean;
 }
 
@@ -408,10 +442,13 @@ function processPermitWaiting(path: string): boolean {
 	}
 }
 
-function quarantineRefusal(group: number): RegExp {
-	return new RegExp(
-		`Local worker process cleanup unconfirmed; process permit refused after \\d+ ms: admission\\.limits\\.process \\(1\\) is held by quarantined permits of process groups ${group} `,
-	);
+/** Asserts `error` is the typed refusal of a process permit only quarantined permits of `group` held. */
+function assertQuarantineRefusal(error: unknown, group: number): void {
+	assert.ok(isQuarantinedCapacityError(error), String(error));
+	assert.equal(error.code, "worker_cleanup_unconfirmed");
+	assert.deepEqual(error.limits, ["admission.limits.process (1)"]);
+	assert.deepEqual(error.processGroups, [group]);
+	assert.ok(error.waitedMs >= QUARANTINED_CAPACITY_WAIT_MS, String(error.waitedMs));
 }
 
 /**
@@ -451,11 +488,14 @@ test.skipIf(process.platform === "win32")(
 					const failure = children[0]!.error;
 					assert.ok(failure, "the child fails once every replay was refused");
 					assert.ok(isRetryableWorkflowError(failure), String(failure));
-					assert.match(
-						failure.message,
-						/Local worker retry limit: child \S+ \(child\) failed on a fault of the pool on every attempt/,
-					);
-					assert.match(failure.message, quarantineRefusal(group));
+					const limit = causeChain(failure).find(isWorkerRetryLimitError);
+					assert.ok(limit, String(failure));
+					assert.equal(limit.code, "worker_retry_limit");
+					assert.equal(limit.reason, "pool-fault");
+					assert.equal(limit.exportName, "child");
+					assert.equal(limit.attempts, limit.limit);
+					// The retry limit is what failed; the quarantine refusal that ended the last attempt is its cause.
+					assertQuarantineRefusal(limit.cause, group);
 					const permits = replayPermits(directory);
 					assert.deepEqual(
 						permits.map(({ generation, outcome }) => [generation, outcome]),
@@ -466,7 +506,7 @@ test.skipIf(process.platform === "win32")(
 						"each refusal ends its replay's attempt",
 					);
 					for (const permit of permits) {
-						assert.match(permit.error!, quarantineRefusal(group));
+						assertQuarantineRefusal(rehydrateError(permit.fault), group);
 						assert.equal(permit.retryable, true);
 						assert.ok(permit.waitedMs >= QUARANTINED_CAPACITY_WAIT_MS, `waited ${permit.waitedMs} ms`);
 						assert.ok(
@@ -550,7 +590,7 @@ test.skipIf(process.platform === "win32")(
 					// reply to a later command proves its close began before the reap resumes.
 					await pool.control("running");
 					barrier.release();
-					await assert.rejects(closing, unconfirmedCleanup(group));
+					await assert.rejects(closing, cleanupRefusal(group));
 				},
 				async afterRun({ directory, children }) {
 					assert.ok(children[0]?.error, "the closed pool did not run the child");
@@ -681,8 +721,9 @@ async function quarantineThenResume(
 				{ runId: root, cwd: directory, store: createStore(), durableBackend: first.backend },
 			);
 			await until(() => fileExistsSync(join(directory, "orphan-group")));
+			const orphanGroup = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
 			// A quit keeps the attempt leased for the resume; the close it ends with reports the surviving group.
-			await assert.rejects(first.pool.control("quit"), /process groups \d+ still running/);
+			await assert.rejects(first.pool.control("quit"), cleanupRefusal(orphanGroup));
 			const result = await execution;
 			assert.notEqual(result.status, "completed");
 		} finally {
@@ -834,7 +875,7 @@ test.skipIf(process.platform === "win32")(
 					permitStates(path).map(([, state]) => state),
 					["granted"],
 				);
-				await assert.rejects(resumed.pool.close(), unconfirmedCleanup(group));
+				await assert.rejects(resumed.pool.close(), cleanupRefusal(group));
 			} finally {
 				probe.mockRestore();
 				signal.mockRestore();

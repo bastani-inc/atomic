@@ -325,3 +325,33 @@ test.each([
 		}
 	},
 );
+
+test("a run reports each error it classifies as a failure once, with its classification (#4327)", async () => {
+	const thrown = new Error(ORDINARY);
+	const child = workflow({
+		name: "reported-failure",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("fail", {}, async () => {
+				throw thrown;
+			});
+			return {};
+		},
+	});
+	const classified: [unknown, string | undefined][] = [];
+	const result = await run(
+		child,
+		{},
+		{
+			runId: "reported",
+			store: createStore(),
+			onFailureClassified: (error, failure) => classified.push([error, failure.code]),
+		},
+	);
+	assert.equal(result.status, "failed");
+	assert.equal(classified.length, 1, JSON.stringify(classified.map(([, code]) => code)));
+	assert.equal(classified[0]![0], thrown);
+	assert.equal(classified[0]![1], result.failure?.code);
+});

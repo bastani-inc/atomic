@@ -7,7 +7,11 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
-import { WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
+import {
+	WorkerLostError,
+	WorkerRetryLimitError,
+	WorkflowInfrastructureError,
+} from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowOutputValues } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
@@ -117,7 +121,17 @@ test.skipIf(process.platform === "win32")(
 			process.kill(pool.coordinatorPid!, "SIGKILL");
 			const outcome = await execution;
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
-			assert.ok(first instanceof WorkflowInfrastructureError, String(first));
+			assert.ok(first instanceof WorkerLostError, String(first));
+			assert.equal(first.code, "worker_lost");
+			assert.equal(first.phase, "coordinator");
+			assert.equal(first.signal, "SIGKILL");
+			assert.equal(first.pid, pool.coordinatorPid);
+			assert.equal(
+				first.logPath,
+				join(directory, "worker-logs", "pool-fault-no-host-fallback-root", "coordinator.log"),
+			);
+			assert.equal(first.logFailure, undefined);
+			assert.ok(fileExistsSync(first.logPath!), "a lost coordinator's log is kept");
 			assert.equal(laterOutputs, undefined, "the later child ran in the host process");
 			assert.ok(afterFault instanceof WorkflowInfrastructureError, String(afterFault));
 			assert.equal(afterFault.code, first.code);
@@ -186,8 +200,10 @@ test.skipIf(process.platform === "win32")(
 			);
 			// The crashing child fails alone first; every worker not holding the other child is then a replacement.
 			await untilOrRunEnds(async () => crashFailure !== undefined, execution, CONDITION_TIMEOUT_MS);
-			assert.ok(crashFailure instanceof WorkflowInfrastructureError, String(crashFailure));
+			assert.ok(crashFailure instanceof WorkerRetryLimitError, String(crashFailure));
 			assert.equal(crashFailure.code, "worker_retry_limit");
+			assert.equal(crashFailure.reason, "worker-lost");
+			assert.equal(crashFailure.attempts, crashFailure.limit);
 			await crashIdleWorkers(pool, join(held, "started-0"), () => settled !== undefined);
 			const outcome = await execution;
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));

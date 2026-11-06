@@ -228,6 +228,7 @@ export {
 	type SessionRecoveryReport,
 	type SessionStats,
 } from "./core/agent-session.js";
+export { AgentSessionBusyError, isAgentSessionBusyError } from "./core/agent-session-busy-error.ts";
 export type {
 	DetachedToolCall,
 	DetachedToolResult,

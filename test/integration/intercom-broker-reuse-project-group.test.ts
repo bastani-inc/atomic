@@ -12,6 +12,7 @@ import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-
 import { queryIntercomBroker, restartIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import { IntercomRuntimeInactiveError } from "../../packages/intercom/runtime-inactive-error.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 
@@ -587,7 +588,7 @@ test("an attempt whose session was replaced while it checked the broker register
 	assert.equal(faulty.registrations + faulty.verifiedRegistrations, 0);
 	const staleResult = await stale;
 	assert.equal(staleResult.isError, true);
-	assert.equal(staleResult.content[0]?.text, "Intercom not connected: Intercom runtime no longer active");
+	assert.equal(staleResult.content[0]?.text, `Intercom not connected: ${new IntercomRuntimeInactiveError().message}`);
 });
 
 test(
@@ -975,7 +976,7 @@ test(
 		const ended = await alpha.status(alphaContext);
 
 		assert.equal(ended.isError, true, ended.content[0]?.text);
-		assert.equal(ended.content[0]?.text, "Intercom not connected: Intercom runtime no longer active");
+		assert.equal(ended.content[0]?.text, `Intercom not connected: ${new IntercomRuntimeInactiveError().message}`);
 		assert.equal(await sessionsOnBroker(), 0);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,

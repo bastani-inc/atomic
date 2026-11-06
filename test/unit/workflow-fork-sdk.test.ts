@@ -16,11 +16,11 @@ import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { hostWorkerBindings } from "../../packages/workflows/src/workers/host-options.js";
 import {
 	isLocalWorkerOptionsError,
 	LocalWorkerOptionsError,
-} from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
+} from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { hostWorkerBindings } from "../../packages/workflows/src/workers/host-options.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";

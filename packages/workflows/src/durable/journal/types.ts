@@ -116,18 +116,85 @@ export class JournalCounterRangeError extends JournalError {
 	}
 }
 
+const STALE_LEASE_HINT =
+	"Another holder owns the run's journal lease now, or it was released; stop writing under this lease and resume the run to take it again.";
+
+/**
+ * A write or renewal under a run's journal lease that no longer holds it: another holder or epoch took it, or it was
+ * released. Nothing was written; stop writing under that lease.
+ */
 export class StaleLeaseError extends JournalError {
+	override readonly name = "StaleLeaseError" as const;
+	readonly code = "stale_lease" as const;
+	readonly retryable = false as const;
+	readonly hint = STALE_LEASE_HINT;
 	readonly runId: string;
 	readonly heldEpoch: number;
 	readonly currentEpoch: number;
 
-	constructor(runId: string, heldEpoch: number, currentEpoch: number) {
-		super(`Stale lease for run ${runId}`);
-		this.name = "StaleLeaseError";
+	constructor(runId: string, heldEpoch: number, currentEpoch: number, options?: ErrorOptions) {
+		super(
+			`Stale lease for run ${runId}: held epoch ${heldEpoch}, current epoch ${currentEpoch} (stale_lease). ${STALE_LEASE_HINT}`,
+			options,
+		);
 		this.runId = runId;
 		this.heldEpoch = heldEpoch;
 		this.currentEpoch = currentEpoch;
 	}
+}
+
+export function isStaleLeaseError(value: unknown): value is StaleLeaseError {
+	if (value instanceof StaleLeaseError) return true;
+	if (typeof value !== "object" || value === null) return false;
+	const { name, code } = value as { readonly name?: unknown; readonly code?: unknown };
+	return name === "StaleLeaseError" && code === "stale_lease";
+}
+
+/** Why a pool delivery receipt was refused before it reached the root's journal. */
+export type PoolAppendRefusedReason = "foreign-root" | "coordinator-authority" | "attempt-refused";
+
+export interface PoolAppendRefusedFields {
+	readonly root: string;
+	readonly workId: string;
+	readonly generation: number;
+	readonly reason: PoolAppendRefusedReason;
+}
+
+const POOL_APPEND_REFUSED_HINT =
+	"The receipt was not written; the stage's undelivered messages stay queued for its current attempt.";
+
+/**
+ * A pool delivery receipt refused because its attempt no longer owns the work or the stage session (`cause` says
+ * which), or the pool lost its coordinator authority. It is a journal error, so the root's journal backend passes it
+ * on instead of reporting the refusal as unavailable storage. Nothing was written.
+ */
+export class PoolAppendRefusedError extends JournalError {
+	override readonly name = "PoolAppendRefusedError" as const;
+	readonly code = "pool_append_refused" as const;
+	readonly retryable = false as const;
+	readonly hint = POOL_APPEND_REFUSED_HINT;
+	readonly root: string;
+	readonly workId: string;
+	readonly generation: number;
+	readonly reason: PoolAppendRefusedReason;
+
+	constructor(fields: PoolAppendRefusedFields, options?: ErrorOptions) {
+		super(
+			`Pool delivery receipt refused (${fields.reason}): work ${fields.workId} generation ${fields.generation} of root ${fields.root} (pool_append_refused). ${POOL_APPEND_REFUSED_HINT}`,
+			options,
+		);
+		this.root = fields.root;
+		this.workId = fields.workId;
+		this.generation = fields.generation;
+		this.reason = fields.reason;
+	}
+}
+
+export function isPoolAppendRefusedError(value: unknown): value is PoolAppendRefusedError {
+	if (value instanceof PoolAppendRefusedError) return true;
+	if (typeof value !== "object" || value === null) return false;
+	const { name, code } = value as { readonly name?: unknown; readonly code?: unknown };
+	return name === "PoolAppendRefusedError" && code === "pool_append_refused";
 }
 
 export class JournalCasConflictError extends JournalError {

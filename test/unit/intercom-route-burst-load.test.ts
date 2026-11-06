@@ -28,6 +28,10 @@ import {
 } from "../../packages/intercom/recoverable-disconnect.js";
 import { ROUTE_CLIENT_CONNECT_CONCURRENCY } from "../../packages/intercom/route-connect-gate.js";
 import { scheduledRetryFailure } from "../../packages/intercom/route-retry-waiters.js";
+import {
+	IntercomRuntimeInactiveError,
+	isIntercomRuntimeInactiveError,
+} from "../../packages/intercom/runtime-inactive-error.js";
 import { isRetryableSameModelFailure } from "../../packages/workflows/src/runs/shared/model-fallback-failures.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
 import { sleep } from "../helpers/runtime.js";
@@ -193,13 +197,15 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 	const emittedEvents: Array<{ eventName: string; payload: object }> = [];
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<ToolResult> }>();
 	let activeTools: string[] = [];
+	/** The session id the host's context reports; the extension treats a context whose session changed as ended. */
+	let contextSessionId = sessionId;
 	const context = {
 		hasUI: false,
 		cwd: repoRoot,
 		isIdle: () => true,
 		model: { id: "test-model" },
 		orchestrationContext: { intercomGroup: "default" },
-		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
+		sessionManager: { getSessionId: () => contextSessionId, getBranch: () => [] },
 		ui: { confirm: async () => true, notify() {} },
 	};
 	const pi = {
@@ -246,6 +252,10 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 		emittedEvents,
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
+		/** Ends the context's session without shutting the extension down: its in-flight connects are left running. */
+		endContextSession() {
+			contextSessionId = `${sessionId}-ended`;
+		},
 		/** Publish one run's route the way the workflows bridge does, and hand back what it awaits. */
 		publishRoute(runId: string, round: number, capability?: string, group?: string): Promise<void> {
 			const payload = routePayload(runId, round, capability, group);
@@ -1125,13 +1135,42 @@ test("a route connect abandoned because the session shut down is still reported 
 		await shutdown;
 
 		assert.ok(outcome.status === "rejected");
-		assert.equal(outcome.reason.message, "Intercom runtime no longer active");
+		assert.ok(isIntercomRuntimeInactiveError(outcome.reason), String(outcome.reason));
+		assert.equal(outcome.reason.code, "intercom_unavailable");
 		assert.equal(isRecoverableIntercomDisconnect(outcome.reason), false);
 		assert.deepEqual(relayDiagnostics(diagnostics), [
 			"Intercom event relay failed (atomic:workflow-pending-stage-route):",
 		]);
 	} finally {
 		if (!shutDown) await host.shutdown();
+	}
+});
+
+test("a main-client connect that finishes after its session ended is reported as an inactive runtime (#4327)", async () => {
+	const runId = runIdFor("43270001", 0);
+	await connectObserver([runGroup(runId)]);
+	const host = createHost();
+	proxy.hold(
+		(first) =>
+			(first.type === "register" || first.type === "register_verified") && first.returnAddress === host.sessionId,
+	);
+	await host.start();
+	try {
+		const abandoned = host.publishRoute(runId, 1);
+		await waitFor("the main client's handshake", () => (proxy.heldConnections() >= 1 ? true : undefined));
+		// The session ends while the handshake is in flight, and nothing disconnects the client that is connecting.
+		host.endContextSession();
+		proxy.release();
+
+		const outcome = await settleWithinBound(abandoned);
+
+		assert.ok(outcome.status === "rejected");
+		assert.ok(isIntercomRuntimeInactiveError(outcome.reason), String(outcome.reason));
+		assert.equal(outcome.reason.code, "intercom_unavailable");
+		assert.equal(isRecoverableIntercomDisconnect(outcome.reason), false);
+		assert.equal(mainRegisters(host), 1, "the connect that finished was the only one, and it was not retried");
+	} finally {
+		await host.shutdown();
 	}
 });
 
@@ -1144,10 +1183,7 @@ test("a failed scheduled retry reaches a waiting stage as a retryable failure un
 	assert.equal(isRecoverableIntercomDisconnect(lostSocket), true);
 	assert.equal(isRetryableSameModelFailure(lostSocket), true, "a loss during the retry is retried by the stage");
 
-	for (const real of [
-		new Error("Pending-stage route is not authorized"),
-		new Error("Intercom runtime no longer active"),
-	]) {
+	for (const real of [new Error("Pending-stage route is not authorized"), new IntercomRuntimeInactiveError()]) {
 		assert.equal(scheduledRetryFailure(real), real, "a failure that is not transient is reported as it happened");
 	}
 });

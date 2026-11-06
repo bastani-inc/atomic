@@ -25,7 +25,6 @@ import {
 	type PoolSessionClaim,
 	type PoolWork,
 	type SqlPoolQueue,
-	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
@@ -35,6 +34,7 @@ import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import {
 	claimExternalRunRoute,
 	type ExternalRunRouteOwner,
@@ -52,11 +52,13 @@ import type {
 	WorkflowUIAdapter,
 } from "../shared/types.js";
 import {
-	asWorkflowInfrastructureError,
-	WorkflowInfrastructureError,
-	workflowInfrastructureFault,
-} from "../shared/workflow-infrastructure-error.js";
+	PoolNotInitializedError,
+	PublicationRejectedError,
+	StaleWorkLeaseError,
+} from "../shared/worker-pool-errors.js";
+import { WorkerLostError, workflowInfrastructureErrorFor } from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
+import { assertAttemptCurrent } from "./attempt-view.js";
 import {
 	type CoordinatorCommandBody,
 	type CoordinatorEvent,
@@ -88,8 +90,8 @@ import {
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
-import { rehydrateWorkerPlacementError, WorkerPlacementConfigError } from "./placement-errors.js";
-import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
+import { WorkerPlacementConfigError } from "./placement-errors.js";
+import { PoolCoordinator, projectRootRun, traceAnchor, workerLogDirectory } from "./pool-coordinator.js";
 import {
 	isLocalPoolJournal,
 	openCoordinationJournal,
@@ -103,6 +105,7 @@ import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./p
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
+import { appendProcessLog, removeProcessLog } from "./process-log.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
@@ -148,7 +151,6 @@ const RECONNECT_ATTEMPT_PUBLICATIONS = 40;
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
-const COORDINATOR_STDERR_TAIL_CHARACTERS = 8192;
 const COORDINATOR_EXIT_GRACE_MS = 5_000;
 
 type MainPort = CoordinatorPort<CoordinatorInbound, CoordinatorEvent>;
@@ -156,6 +158,8 @@ type MainPort = CoordinatorPort<CoordinatorInbound, CoordinatorEvent>;
 interface Coordinator {
 	readonly port: MainPort;
 	readonly pid?: number;
+	/** Removes the coordinator process's stderr log; an in-process coordinator has none. */
+	readonly removeLog?: () => Promise<void>;
 }
 
 /** The shipped worker module; it also runs the pool coordinator. */
@@ -165,16 +169,19 @@ export function defaultWorkerEntry(): string {
 		: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url));
 }
 
-/** The coordinator child process, forked like a worker with a coordinator start descriptor. */
-function launchCoordinatorProcess(): Coordinator {
+/**
+ * The coordinator child process, forked like a worker with a coordinator start descriptor. Its stderr goes to `logPath`,
+ * which its loss error names.
+ */
+function launchCoordinatorProcess(logPath: string): Coordinator {
 	const child: ChildProcess = fork(defaultWorkerEntry(), [JSON.stringify({ role: POOL_COORDINATOR_ROLE })], {
 		stdio: ["ignore", "ignore", "pipe", "ipc"],
 		execArgv: [],
 		env: createChildProcessEnvironment(),
 	});
-	let stderr = "";
-	child.stderr?.on("data", (chunk: Buffer) => {
-		stderr = (stderr + chunk.toString()).slice(-COORDINATOR_STDERR_TAIL_CHARACTERS);
+	let logFailure: string | undefined;
+	const log = appendProcessLog(child.stderr, logPath, (failure) => {
+		logFailure = failure;
 	});
 	const listeners: ((reason: Error) => void)[] = [];
 	let lostReason: Error | undefined;
@@ -187,13 +194,23 @@ function launchCoordinatorProcess(): Coordinator {
 	child.on("error", lose);
 	child.once("exit", (code, signal) =>
 		lose(
-			new Error(
-				`Local worker pool coordinator exited (${signal ?? `code ${code}`})${stderr ? `: ${stderr.trim()}` : ""}`,
-			),
+			new WorkerLostError({
+				phase: "coordinator",
+				pid: child.pid,
+				exitCode: code ?? undefined,
+				signal: signal ?? undefined,
+				logPath,
+				logFailure,
+			}),
 		),
 	);
 	return {
 		pid: child.pid,
+		async removeLog() {
+			await log.close();
+			// A log that could not be written left nothing to remove.
+			if (logFailure === undefined) await removeProcessLog(logPath);
+		},
 		port: {
 			send(message) {
 				if (lostReason !== undefined || !child.connected) return;
@@ -533,7 +550,7 @@ export class LocalWorkerPool {
 		this.connecting ??= (async () => {
 			const root = this.root;
 			const lease = this.lease;
-			if (root === undefined || lease === undefined) throw new Error("Local worker pool requires root preparation");
+			if (root === undefined || lease === undefined) throw new PoolNotInitializedError({ root });
 			const workerEntry =
 				this.options.workerEntry ??
 				(isBunBinary || this.options.coordinator === "in-process" ? defaultWorkerEntry() : undefined);
@@ -618,8 +635,7 @@ export class LocalWorkerPool {
 	private async start(root: string, promptNodes: boolean): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
 		await this.connectPool();
-		if (!this.queue || !this.lease || this.lease.runId !== root)
-			throw new Error("Local worker pool requires root preparation");
+		if (!this.queue || !this.lease || this.lease.runId !== root) throw new PoolNotInitializedError({ root });
 		this.sources = await Promise.all(
 			this.options.definitions.map(async (binding) => {
 				const source = {
@@ -762,7 +778,7 @@ export class LocalWorkerPool {
 						const result = await this.answerPooledStagePrompt(run.id, stage.id, {
 							kind: "failed",
 							promptId: prompt.id,
-							error: error.message,
+							error: serializeError(error),
 						});
 						// The attempt that asked died before the failure reached it: hold the failure for the
 						// replacement, which asks the same prompt again, so its UI is not asked again.
@@ -772,7 +788,7 @@ export class LocalWorkerPool {
 								generation,
 								promptId: prompt.id,
 								identity: promptIdentity(prompt),
-								error: error.message,
+								error,
 							});
 							this.applyHeldAnswer(run.id, stage.id, generation);
 						}
@@ -785,13 +801,13 @@ export class LocalWorkerPool {
 					this.routedPromptAnswers.set(key, (outcome) => {
 						if ("response" in outcome) return heldLater.resolve(outcome.response);
 						failedElsewhere = true;
-						heldLater.reject(new Error(outcome.error));
+						heldLater.reject(outcome.error);
 					});
 					const answered =
 						held !== undefined
 							? "response" in held
 								? Promise.resolve(held.response)
-								: Promise.reject(new Error(held.error))
+								: Promise.reject(held.error)
 							: prompt.kind === "custom"
 								? Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE))
 								: Promise.race([
@@ -920,14 +936,7 @@ export class LocalWorkerPool {
 			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
 		}
 		if (failure !== undefined) {
-			const sent = await this.sendQuestionOutcome(
-				runId,
-				stageId,
-				question,
-				generation,
-				{ error: failure.message },
-				route,
-			);
+			const sent = await this.sendQuestionOutcome(runId, stageId, question, generation, { error: failure }, route);
 			return sent ? "failed" : false;
 		}
 		if (answered === undefined) return true;
@@ -952,7 +961,7 @@ export class LocalWorkerPool {
 			runId,
 			stageId,
 			"error" in outcome
-				? { kind: "failed", promptId: question.promptId, error: outcome.error }
+				? { kind: "failed", promptId: question.promptId, error: serializeError(outcome.error) }
 				: { kind: "input", promptId: question.promptId, answer: outcome.answer },
 		);
 		if (result.ok || result.refusal === "StageNotLive") return true;
@@ -1202,17 +1211,7 @@ export class LocalWorkerPool {
 	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */
 	private queueView(): PoolStageQueue {
 		return {
-			assertCurrent: async (_lease, work) => {
-				const current = this.attempts.get(work.id);
-				if (
-					current === undefined ||
-					current.fenced ||
-					current.generation !== work.generation ||
-					current.worker !== work.worker ||
-					current.epoch !== work.epoch
-				)
-					throw new Error(STALE_WORK_LEASE);
-			},
+			assertCurrent: async (lease, work) => assertAttemptCurrent(lease.runId, this.attempts.get(work.id), work),
 			withCurrentAppend: (lease, work, assertSession, action) =>
 				this.queue!.withCurrentAppend(lease, work, assertSession, action),
 			result: async (root, id) => this.results.get(id) ?? this.queue!.result(root, id),
@@ -1266,7 +1265,7 @@ export class LocalWorkerPool {
 			// lost, or a fault it reported as the pool's) stops here; otherwise the root's own end closes it, and reports
 			// what its close could not confirm.
 			if (this.failure !== undefined || this.coordinatorLost !== undefined) await this.shutdown().catch(() => {});
-			throw asWorkflowInfrastructureError(error) ?? error;
+			throw workflowInfrastructureErrorFor(error) ?? error;
 		}
 	}
 	private async dispatch(
@@ -1448,8 +1447,12 @@ export class LocalWorkerPool {
 	}
 	private connect(): Coordinator {
 		if (this.coordinator !== undefined) return this.coordinator;
+		const root = this.root;
+		if (root === undefined) throw new PoolNotInitializedError({});
 		const coordinator =
-			this.options.coordinator === "in-process" ? launchCoordinatorInProcess() : launchCoordinatorProcess();
+			this.options.coordinator === "in-process"
+				? launchCoordinatorInProcess()
+				: launchCoordinatorProcess(join(workerLogDirectory(traceAnchor(this.options), root), "coordinator.log"));
 		this.coordinator = coordinator;
 		// #4023: limits recorded here reach the pool's workers, and theirs reach this process's walks and requests.
 		const outbox = new RateLimitObservationOutbox((observations) =>
@@ -1507,7 +1510,7 @@ export class LocalWorkerPool {
 			case "reply": {
 				const pending = this.commands.get(event.id);
 				this.commands.delete(event.id);
-				if (event.failure !== undefined || event.error !== undefined) pending?.reject(coordinatorReplyError(event));
+				if (event.error !== undefined) pending?.reject(coordinatorReplyError(event));
 				else pending?.resolve(event.value);
 				return;
 			}
@@ -1533,20 +1536,11 @@ export class LocalWorkerPool {
 				this.signalChange();
 				return;
 			case "work-failure":
-				this.workFailures.set(
-					event.workId,
-					// A placement error crosses the coordinator boundary typed; any other child failure is the pool's.
-					event.placement === undefined
-						? new WorkflowInfrastructureError(
-								workflowInfrastructureFault(event.error) ?? "worker_cleanup_unconfirmed",
-								event.error,
-							)
-						: rehydrateWorkerPlacementError(event.placement),
-				);
+				this.workFailures.set(event.workId, rehydrateError(event.error));
 				this.signalChange();
 				return;
 			case "failure":
-				this.failure ??= new Error(event.error);
+				this.failure ??= rehydrateError(event.error);
 				this.signalChange();
 				return;
 			case "health":
@@ -1580,21 +1574,26 @@ export class LocalWorkerPool {
 		usage: PoolUsage | undefined,
 	): Promise<void> {
 		if (usage !== undefined) this.usageTotal = usage;
-		const rejected: { workId: string; generation: number; error: string }[] = [];
+		const rejected: { workId: string; generation: number; error: SerializedError }[] = [];
 		const handoff = this.handoff;
 		if (handoff !== undefined) {
 			const publications = entries.flatMap((entry) => {
 				const work = this.track(entry.work);
 				if (work !== undefined) return [{ work, runs: entry.runs }];
-				rejected.push({ workId: entry.work.id, generation: entry.work.generation, error: STALE_WORK_LEASE });
-				handoff.refuse(entry.work, new Error(STALE_WORK_LEASE));
+				const attempt = { root: this.root!, workId: entry.work.id, generation: entry.work.generation };
+				const rejection = new PublicationRejectedError(
+					{ ...attempt, reason: "stale-lease" },
+					{ cause: new StaleWorkLeaseError({ ...attempt, reason: "missing" }) },
+				);
+				rejected.push({ workId: attempt.workId, generation: attempt.generation, error: serializeError(rejection) });
+				handoff.refuse(entry.work, rejection);
 				return [];
 			});
 			const outcomes = await handoff.publishBatch(publications, this.disposal.signal);
 			outcomes.forEach((error, index) => {
 				const { work } = publications[index]!;
 				if (error !== undefined)
-					rejected.push({ workId: work.id, generation: work.generation, error: error.message });
+					rejected.push({ workId: work.id, generation: work.generation, error: serializeError(error) });
 			});
 			const accepted = publications
 				.filter((_, index) => outcomes[index] === undefined)
@@ -1641,11 +1640,7 @@ export class LocalWorkerPool {
 			const value = await this.answer(id, request);
 			this.coordinator?.port.send({ kind: "request-reply", id, ...(value === undefined ? {} : { value }) });
 		} catch (error) {
-			this.coordinator?.port.send({
-				kind: "request-reply",
-				id,
-				error: error instanceof Error ? error.message : String(error),
-			});
+			this.coordinator?.port.send({ kind: "request-reply", id, error: serializeError(error) });
 		}
 	}
 	private async answer(id: number, request: CoordinatorRequestBody): Promise<unknown> {
@@ -1664,7 +1659,13 @@ export class LocalWorkerPool {
 		}
 		const handoff = this.handoff;
 		const work = this.track(request.work);
-		if (handoff === undefined || work === undefined) throw new Error(STALE_WORK_LEASE);
+		if (handoff === undefined || work === undefined)
+			throw new StaleWorkLeaseError({
+				root: this.root!,
+				workId: request.work.id,
+				generation: request.work.generation,
+				reason: "missing",
+			});
 		if (request.kind === "ready")
 			return handoff.ready(work, request.runId, request.stageId, request.stageName, request.sessionId);
 		return handoff.deliver(
@@ -1750,9 +1751,15 @@ export class LocalWorkerPool {
 					failure = error;
 				}
 			}
+			// The coordinator's log goes with a pool that closed cleanly; a lost or failed one keeps it for diagnosis.
+			const cleanClose = failure === undefined && this.coordinatorLost === undefined && poolFailure === undefined;
 			await this.inbound;
 			await coordinator.port.close();
 			this.pids.clear();
+			if (cleanClose)
+				await coordinator.removeLog?.().catch((error: unknown) => {
+					failure = error;
+				});
 		}
 		// The root's store outlives this pool; a claim left behind would keep the closed pool reachable.
 		for (const release of this.routeClaims.values()) release();

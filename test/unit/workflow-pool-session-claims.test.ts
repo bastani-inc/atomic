@@ -10,7 +10,6 @@ import {
 	ForkSessionClaimError,
 	type ForkSessionClaimReason,
 	isForkSessionClaimError,
-	rehydrateForkError,
 } from "../../packages/workflows/src/durable/fork-errors.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -275,10 +274,10 @@ test("a refused claim crosses coordinator IPC as the same ForkSessionClaimError 
 			[error.code, error.reason, error.sessionId, error.rootRunId, error.childRunId, error.scope, error.stageRunId],
 			["session-claim-refused", "missing", "missing", "root", work.childRunId, work.scope, work.childRunId],
 		);
-		assert.equal(error.message, received.error);
-		assert.deepEqual(rehydrateForkError(received.forkError!).fields, error.fields);
+		assert.equal(error.message, received.error?.message);
+		assert.deepEqual(error.fields, failure.fields);
 		assert.deepEqual(await h.pool.inspect("root"), [], "nothing was queued");
-		const plain = coordinatorReplyError({ error: "Pool boundary identity mismatch" });
+		const plain = coordinatorReplyError(failedCoordinatorReply(8, new Error("Pool boundary identity mismatch")));
 		assert.equal(plain.constructor, Error, "a failure outside the fork family still crosses as its message");
 		assert.equal(plain.message, "Pool boundary identity mismatch");
 	} finally {

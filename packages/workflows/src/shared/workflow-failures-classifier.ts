@@ -19,6 +19,7 @@ import {
 	decisionFromMessageTokens,
 	decisionFromStatus,
 	fallbackDecisionFromMessage,
+	infrastructureFaultDecision,
 	isClearLocalLoginMessage,
 	isRecoverableActiveBlocked,
 	providerUnavailableDecision,
@@ -46,6 +47,7 @@ import {
 	type WorkflowFailureClassificationSource,
 	type WorkflowFailureDecision,
 } from "./workflow-failures-signals.js";
+import { infrastructureFaultOf } from "./workflow-infrastructure-error.js";
 
 /**
  * Classifications fixed when an error was made: a wrapper whose message names workflows or stages is
@@ -182,6 +184,14 @@ function aggregateErrorItems(error: unknown): readonly unknown[] {
 	const nativeErrors = error instanceof AggregateError ? (error.errors as unknown) : undefined;
 	const errors = nativeErrors ?? field(error, "errors");
 	return Array.isArray(errors) ? errors : [];
+}
+
+/** An infrastructure fault by its type (a storage outage carries no code), else the decision the message implies. */
+function fallbackDecision(error: unknown, message: string): WorkflowFailureDecision | undefined {
+	const fault = infrastructureFaultOf(error);
+	return fault === undefined
+		? fallbackDecisionFromMessage(message, errorName(error))
+		: infrastructureFaultDecision(fault);
 }
 
 function fallbackAggregateClassification(innerError: unknown): WorkflowFailureClassification {
@@ -406,7 +416,7 @@ export function classifyWorkflowFailure(error: unknown): WorkflowFailure {
 		return failureForDecision(structured.decision, structuredMessage, error);
 	}
 
-	const fallback = fallbackDecisionFromMessage(message, errorName(displayError));
+	const fallback = fallbackDecision(displayError, message);
 	if (fallback !== undefined && !(hasProcessFailure && fallback.code === "cancelled")) {
 		return failureForDecision(fallback, message, error);
 	}

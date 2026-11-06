@@ -30,9 +30,7 @@ const enqueueFailure = vi.hoisted(() => ({ error: undefined as Error | undefined
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	const { EventEmitter } = await import("node:events");
-	const { failedCoordinatorReply: failed } = await import(
-		"../../packages/workflows/src/workers/coordinator-protocol.js"
-	);
+	const { PassThrough } = await import("node:stream");
 	return {
 		...actual,
 		fork(_modulePath: string, _args: readonly string[], _options: ForkOptions) {
@@ -42,7 +40,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 				connected: true,
 				exitCode: null as number | null,
 				signalCode: null as string | null,
-				stderr: new EventEmitter(),
+				stderr: new PassThrough(),
 				sent,
 				send(message: Record<string, unknown>, callback?: (error: Error | null) => void) {
 					sent.push(message);
@@ -55,7 +53,11 @@ vi.mock("node:child_process", async (importOriginal) => {
 						reply({ kind: "reply", id, value: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } });
 					else if (message.kind === "start" || message.kind === "close") reply({ kind: "reply", id });
 					else if (message.kind === "enqueue")
-						reply(failed(id, enqueueFailure.error ?? new Error("the stand-in coordinator queues nothing")));
+						// Loaded once the mock is in place: the codec behind it imports this module.
+						void import("../../packages/workflows/src/workers/coordinator-protocol.js").then(
+							({ failedCoordinatorReply: failed }) =>
+								reply(failed(id, enqueueFailure.error ?? new Error("the stand-in coordinator queues nothing"))),
+						);
 					return true;
 				},
 				disconnect() {

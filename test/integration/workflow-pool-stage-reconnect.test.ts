@@ -477,6 +477,7 @@ test.skipIf(process.platform === "win32")(
 			failed.catch(() => {});
 			const outcome = await step("run failure", live.execution, new Promise<never>(() => {}), observe);
 			assert.equal(outcome.status, "failed", JSON.stringify(outcome));
+			assert.equal(outcome.failure?.code, "worker_retry_limit", JSON.stringify(outcome));
 			await step(
 				"the view ends",
 				(async () => {
@@ -498,14 +499,13 @@ test.skipIf(process.platform === "win32")(
 			lease.release();
 			// A failed stage on a local worker reopens for post-mortem chat, as a failed in-process stage does.
 			const failedStage = agentStages(live.store)[0]!;
-			assert.equal(
-				live.store.runs().find((run) => run.id === failedStage.runId)?.status,
-				"failed",
-				"the child shows its outcome instead of running forever",
-			);
-			// Its stage ends too: the graph counts no active stage and the chat header names no worker.
+			const failedChild = live.store.runs().find((run) => run.id === failedStage.runId);
+			assert.ok(failedChild !== undefined);
+			assert.equal(failedChild.status, "failed", "the child shows its outcome instead of running forever");
+			// Its stage ends too, with the child's failure: the graph counts no active stage and the chat header names no worker.
 			assert.equal(failedStage.stage.status, "failed", JSON.stringify(failedStage.stage));
-			assert.match(failedStage.stage.error ?? "", /Local worker retry limit/);
+			assert.ok(failedChild.error, JSON.stringify(failedChild));
+			assert.equal(failedStage.stage.error, failedChild.error);
 			const childGraph = renderGraphHeader(live.store.runs().find((run) => run.id === failedStage.runId)!, {
 				width: 120,
 				theme: deriveGraphTheme({}),

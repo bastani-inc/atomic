@@ -362,6 +362,8 @@ export type {
 	StageWaitSnapshot,
 	StageWaitToolCall,
 } from "./shared/authoring-contract-stage.js";
+export type { SerializedWorkflowInfrastructureError } from "./shared/error-codec.js";
+export { rehydrateWorkflowInfrastructureError, serializeWorkflowInfrastructureError } from "./shared/error-codec.js";
 export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,
@@ -381,6 +383,39 @@ export {
 	StageDecisionTimeoutError,
 	StageDecisionUnavailableError,
 } from "./shared/possible-stage-prediction-errors.js";
+export type {
+	LocalWorkerOptionsErrorCode,
+	LocalWorkerOptionsErrorReason,
+	LocalWorkerOptionsSource,
+	LocalWorkerPoolErrorCode,
+	LocalWorkerPoolErrorOptions,
+	LocalWorkerTimingOption,
+	PoolNotInitializedFields,
+	PoolProtocolFields,
+	PublicationRejectedFields,
+	PublicationRejectedReason,
+	StaleWorkLeaseFields,
+	StaleWorkLeaseReason,
+	WorkAttemptFencedFields,
+} from "./shared/worker-pool-errors.js";
+export {
+	causedByStaleWorkLease,
+	findLocalWorkerPoolError,
+	isLocalWorkerOptionsError,
+	isLocalWorkerPoolError,
+	isPoolNotInitializedError,
+	isPoolProtocolError,
+	isPublicationRejectedError,
+	isStaleWorkLeaseError,
+	isWorkAttemptFencedError,
+	LocalWorkerOptionsError,
+	LocalWorkerPoolError,
+	PoolNotInitializedError,
+	PoolProtocolError,
+	PublicationRejectedError,
+	StaleWorkLeaseError,
+	WorkAttemptFencedError,
+} from "./shared/worker-pool-errors.js";
 export type {
 	SerializedWorkflowGitRequiredError,
 	WorkflowGitRequiredFields,
@@ -443,16 +478,37 @@ export type { SerializedTypedError } from "./shared/typed-failure-detail.js";
  */
 export declare function deliverStageWake(runId: string, stageId: string, wake: StageWake): StageWakeDelivery;
 export type {
+	AdmissionHolderStoppedFields,
 	ProcessCleanupResource,
-	SerializedWorkflowInfrastructureError,
+	QuarantinedCapacityFields,
+	WorkerCleanupUnconfirmedFields,
+	WorkerLostFields,
+	WorkerRetryLimitFields,
+	WorkerRetryLimitReason,
+	WorkerStartupFields,
+	WorkerStartupTimeoutFields,
+	WorkflowInfrastructureErrorOptions,
 	WorkflowInfrastructureFault,
 } from "./shared/workflow-infrastructure-error.js";
 export {
+	AdmissionHolderStoppedError,
+	isAdmissionHolderStoppedError,
 	isProcessCleanupUnconfirmedError,
+	isQuarantinedCapacityError,
 	isRetryableWorkflowError,
+	isWorkerCleanupUnconfirmedError,
+	isWorkerLostError,
+	isWorkerRetryLimitError,
+	isWorkerStartupError,
+	isWorkerStartupTimeoutError,
+	isWorkflowInfrastructureError,
 	ProcessCleanupUnconfirmedError,
-	rehydrateWorkflowInfrastructureError,
-	serializeWorkflowInfrastructureError,
+	QuarantinedCapacityError,
+	WorkerCleanupUnconfirmedError,
+	WorkerLostError,
+	WorkerRetryLimitError,
+	WorkerStartupError,
+	WorkerStartupTimeoutError,
 	WorkflowInfrastructureError,
 } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
@@ -486,20 +542,6 @@ export {
 	WorkflowAdmissionConfigError,
 	WorkflowAdmissionError,
 } from "./workers/admission-errors.js";
-export type {
-	LocalWorkerOptionsErrorCode,
-	LocalWorkerOptionsErrorReason,
-	LocalWorkerOptionsSource,
-	LocalWorkerPoolErrorCode,
-	LocalWorkerTimingOption,
-} from "./workers/local-worker-pool-errors.js";
-export {
-	findLocalWorkerPoolError,
-	isLocalWorkerOptionsError,
-	isLocalWorkerPoolError,
-	LocalWorkerOptionsError,
-	LocalWorkerPoolError,
-} from "./workers/local-worker-pool-errors.js";
 export type {
 	SerializedWorkerPlacementError,
 	SharedPoolOperation,

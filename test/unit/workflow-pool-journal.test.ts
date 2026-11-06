@@ -11,6 +11,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type Lease, RUN_EVENT_TYPES, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
+import { poolAppendRefused, poolNotInitialized, staleLease, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -54,7 +55,14 @@ test("pool control revisions survive recovery and close admission without deleti
 		await recovered.setControl(f.lease, "running");
 		const claimed = (await recovered.claim(f.lease, "worker", [work], 60_000))!;
 		await recovered.assertCurrent(f.lease, claimed);
-		await assert.rejects(recovered.assertCurrent(f.lease, { ...claimed, generation: 0 }), /Stale work/);
+		await assert.rejects(
+			recovered.assertCurrent(f.lease, { ...claimed, id: "unknown-work" }),
+			staleWorkLease({ root: "root", workId: "unknown-work", generation: claimed.generation, reason: "missing" }),
+		);
+		await assert.rejects(
+			recovered.assertCurrent(f.lease, { ...claimed, generation: 0 }),
+			staleWorkLease({ root: "root", workId: claimed.id, generation: 0, reason: "generation-mismatch" }),
+		);
 		const quit = await recovered.setControl(f.lease, "quit");
 		assert.equal(quit.revision, 3);
 		assert.equal((await recovered.inspect("root"))[0]?.id, queued.id);
@@ -72,9 +80,15 @@ test("a paused root accepts attempt completion only under a persisted pause (#38
 		const held = (await pool.claim(f.lease, "worker", [work], 60_000))!;
 		const result = { runId: work.childRunId, status: "completed" };
 		await f.journal.append(f.lease, { type: RUN_EVENT_TYPES.statusChanged, payload: { status: "paused" } });
-		await assert.rejects(pool.complete(f.lease, held, result), /Stale work lease/);
+		const notRunning = staleWorkLease({
+			root: "root",
+			workId: held.id,
+			generation: held.generation,
+			reason: "root-not-running",
+		});
+		await assert.rejects(pool.complete(f.lease, held, result), notRunning);
 		await pool.setControl(f.lease, "running");
-		await assert.rejects(pool.complete(f.lease, held, result), /Stale work lease/);
+		await assert.rejects(pool.complete(f.lease, held, result), notRunning);
 		await pool.setControl(f.lease, "paused");
 		await pool.complete(f.lease, held, result);
 		assert.equal((await pool.inspect("root"))[0]?.state, "completed");
@@ -262,14 +276,22 @@ test("independent connections claim once and fence lease renewals and expiry (#3
 		assert.equal((await pool.inspect("root"))[0]?.expiresAt, later.expiresAt);
 		assert.equal(await pool.expire(f.lease, held), false);
 		await f.database.run("UPDATE wf_runs_work SET expires_at = 0");
-		await assert.rejects(pool.renew(f.lease, held, 60_000), /stale work lease/i);
+		const lapsed = staleWorkLease({ workId: held.id, generation: held.generation, reason: "expired" });
+		await assert.rejects(pool.renew(f.lease, held, 60_000), lapsed);
+		await assert.rejects(pool.assertCurrent(f.lease, held), lapsed);
+		await assert.rejects(pool.complete(f.lease, held, { runId: work.childRunId, status: "completed" }), lapsed);
 		assert.equal(await pool.expire(f.lease, held), true);
 		const replacement = await peer.claim(f.lease, "two", [work], 60_000);
 		assert.equal(replacement?.generation, 2);
 		assert.ok(replacement);
 		assert.equal((await pool.renew(f.lease, replacement, 60_000)).generation, 2);
-		await assert.rejects(pool.renew(f.lease, held, 60_000), /stale work lease/i);
-		await assert.rejects(pool.expire(f.lease, held), /stale work lease/i);
+		const superseded = staleWorkLease({
+			workId: held.id,
+			generation: held.generation,
+			reason: "generation-mismatch",
+		});
+		await assert.rejects(pool.renew(f.lease, held, 60_000), superseded);
+		await assert.rejects(pool.expire(f.lease, held), superseded);
 	} finally {
 		await other.close();
 		await otherDatabase.close();
@@ -295,7 +317,7 @@ test.each(["renew", "expire"] as const)("same-worker generation fences stale %s 
 		assert.equal(replacement.generation, held.generation + 1);
 		await assert.rejects(
 			operation === "renew" ? pool.renew(f.lease, held, 60_000) : pool.expire(f.lease, held),
-			/Stale work lease/,
+			staleWorkLease({ workId: held.id, generation: held.generation, reason: "generation-mismatch" }),
 		);
 		assert.deepEqual(await pool.inspect("root"), [replacement]);
 		assert.equal((await pool.renew(f.lease, replacement, 60_000)).generation, replacement.generation);
@@ -330,7 +352,10 @@ test.each(["initialize", "enqueue", "claim", "renew", "expire"] as const)(
 				renew: () => pool.renew(f.lease, held, 60_000),
 				expire: () => pool.expire(f.lease, held),
 			};
-			await assert.rejects(staleMutations[operation](), /Stale lease/);
+			await assert.rejects(
+				staleMutations[operation](),
+				staleLease({ runId: "root", heldEpoch: f.lease.epoch, currentEpoch: reacquired.lease.epoch }),
+			);
 			assert.deepEqual(await pool.inspect("root"), [held]);
 			assert.equal(await pool.expire(reacquired.lease, held), true);
 			assert.equal(await pool.claim(reacquired.lease, "worker", [work], 60_000), undefined);
@@ -363,8 +388,9 @@ test("a heartbeat is refused for an attempt of an earlier root epoch and for a n
 		await f.journal.release(f.lease);
 		const reacquired = await f.journal.acquire(f.lease.runId, f.lease.holderId);
 		if (reacquired.status !== "acquired") assert.fail("reacquisition failed");
-		await assert.rejects(pool.heartbeat(reacquired.lease, held, 60_000, record), /Stale work lease/);
-		await assert.rejects(pool.extend(reacquired.lease, held, 60_000), /Stale work lease/);
+		const earlierEpoch = staleWorkLease({ workId: held.id, generation: held.generation, reason: "epoch-mismatch" });
+		await assert.rejects(pool.heartbeat(reacquired.lease, held, 60_000, record), earlierEpoch);
+		await assert.rejects(pool.extend(reacquired.lease, held, 60_000), earlierEpoch);
 		assert.equal(recorded, 0, "a refused heartbeat records nothing");
 		assert.deepEqual(await pool.inspect("root"), [held], "and renews nothing");
 	} finally {
@@ -384,15 +410,42 @@ test("coordinator expiry and takeover fence every queue mutation; paused roots g
 		await f.journal.append(f.lease, { type: RUN_EVENT_TYPES.statusChanged, payload: { status: "running" } });
 		const held = (await pool.claim(f.lease, "worker", [work], 60_000))!;
 		await f.database.run("UPDATE wf_leases SET renewed_at = 0");
-		await assert.rejects(pool.claim(f.lease, "worker", [work], 60_000), /Stale lease/);
-		await assert.rejects(pool.renew(f.lease, held, 60_000), /Stale lease/);
+		const lapsed = staleLease({ runId: "root", heldEpoch: f.lease.epoch, currentEpoch: f.lease.epoch });
+		await assert.rejects(pool.claim(f.lease, "worker", [work], 60_000), lapsed);
+		await assert.rejects(pool.renew(f.lease, held, 60_000), lapsed);
 		const takeover = await f.journal.takeoverExpired("root", "new-coordinator", 60_000);
 		assert.equal(takeover.status, "acquired");
 		if (takeover.status !== "acquired") assert.fail("takeover failed");
 		await pool.initialize(takeover.lease, 60_000);
-		await assert.rejects(pool.enqueue(f.lease, work, boundary), /Stale lease/);
-		await assert.rejects(pool.expire(f.lease, held), /Stale lease/);
-		await assert.rejects(pool.renew(takeover.lease, held, 60_000), /Stale work lease/);
+		const takenOver = staleLease({ runId: "root", heldEpoch: f.lease.epoch, currentEpoch: takeover.lease.epoch });
+		await assert.rejects(pool.enqueue(f.lease, work, boundary), takenOver);
+		await assert.rejects(pool.expire(f.lease, held), takenOver);
+		const otherIncarnation = staleWorkLease({
+			workId: held.id,
+			generation: held.generation,
+			reason: "epoch-mismatch",
+		});
+		await assert.rejects(pool.renew(takeover.lease, held, 60_000), otherIncarnation);
+		// A delivery receipt, which the pool's append guard checks, under the attempt of an earlier incarnation.
+		const receipt = { type: RUN_EVENT_TYPES.messageDelivered, payload: { id: "message" } } as const;
+		await assert.rejects(
+			pool.withCurrentAppend(
+				takeover.lease,
+				held,
+				() => {},
+				() => f.journal.append(takeover.lease, receipt),
+			),
+			poolAppendRefused(
+				{ root: "root", workId: held.id, generation: held.generation, reason: "attempt-refused" },
+				otherIncarnation,
+			),
+		);
+		await assert.rejects(pool.extend(takeover.lease, held, 60_000), otherIncarnation);
+		await assert.rejects(pool.assertCurrent(takeover.lease, held), otherIncarnation);
+		await assert.rejects(
+			pool.complete(takeover.lease, held, { runId: work.childRunId, status: "completed" }),
+			otherIncarnation,
+		);
 		assert.equal(await pool.expire(takeover.lease, held), true);
 		// The resumed root re-enqueues its child before any worker may claim it (#3979).
 		await pool.enqueue(takeover.lease, work, boundary);
@@ -428,7 +481,8 @@ test("queue rejects missing initialization and mismatched child boundaries (#386
 	const f = await fixture();
 	try {
 		const pool = await openSqlPoolQueue(f.journal);
-		await assert.rejects(pool.enqueue(f.lease, work, boundary), /not initialized/);
+		await assert.rejects(pool.enqueue(f.lease, work, boundary), poolNotInitialized("root"));
+		await assert.rejects(pool.control(f.lease), poolNotInitialized("root"));
 		await pool.initialize(f.lease, 60_000);
 		await assert.rejects(pool.enqueue(f.lease, { ...work, childRunId: "unrelated" }, boundary), /boundary/);
 		await assert.rejects(pool.enqueue(f.lease, work, { ...boundary, checkpointId: "wrong" }), /boundary/);
@@ -461,7 +515,10 @@ test("a new coordinator epoch releases every attempt leased by the previous inca
 		const [released] = await pool.inspect("root");
 		assert.equal(released?.state, "ready");
 		assert.equal(released?.worker, null);
-		await assert.rejects(pool.renew(takeover.lease, held, 60_000), /Stale work lease/);
+		await assert.rejects(
+			pool.renew(takeover.lease, held, 60_000),
+			staleWorkLease({ workId: held.id, generation: held.generation, reason: "not-leased" }),
+		);
 		assert.equal(await pool.claim(takeover.lease, "resumed-worker", [work], 60_000), undefined);
 		// The resumed root re-enqueues its child before any worker may claim it (#3979).
 		await pool.enqueue(takeover.lease, work, boundary);
@@ -638,9 +695,25 @@ test("extending a live worker's lease survives a coordinator stall past expiry b
 		assert.equal(await pool.expire(f.lease, held), false);
 		await f.database.run("UPDATE wf_runs_work SET expires_at = 1");
 		assert.equal(await pool.expire(f.lease, held), true);
-		await assert.rejects(pool.extend(f.lease, held, 60_000), /Stale work lease/);
+		const released = staleWorkLease({ workId: held.id, generation: held.generation, reason: "not-leased" });
+		await assert.rejects(pool.extend(f.lease, held, 60_000), released);
+		await assert.rejects(
+			pool.withCurrentAppend(
+				f.lease,
+				held,
+				() => {},
+				() => f.journal.append(f.lease, { type: RUN_EVENT_TYPES.messageDelivered, payload: { id: "message" } }),
+			),
+			poolAppendRefused(
+				{ root: "root", workId: held.id, generation: held.generation, reason: "attempt-refused" },
+				released,
+			),
+		);
 		const replacement = (await pool.claim(f.lease, "replacement", [work], 60_000))!;
-		await assert.rejects(pool.extend(f.lease, held, 60_000), /Stale work lease/);
+		await assert.rejects(
+			pool.extend(f.lease, held, 60_000),
+			staleWorkLease({ workId: held.id, generation: held.generation, reason: "generation-mismatch" }),
+		);
 		assert.equal((await pool.extend(f.lease, replacement, 60_000)).worker, "replacement");
 	} finally {
 		await f.close();

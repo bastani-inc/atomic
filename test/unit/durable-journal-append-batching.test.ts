@@ -19,6 +19,7 @@ import type {
 	PendingStageMessage,
 	PendingStageMessageDelivery,
 } from "../../packages/workflows/src/shared/store-types.js";
+import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { JournalTestDatabase } from "../helpers/journal-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -210,7 +211,7 @@ test("a pool append guard failure rejects only its own receipt in a batch", asyn
 	const storage = sqlPoolStorage(journal)!;
 	const before = (await journalEntries(journal)).length;
 	const started = transactions();
-	const stale = new Error("Stale work lease");
+	const stale = new StaleWorkLeaseError({ root: "run", workId: "work", generation: 1, reason: "fenced" });
 	const results = await Promise.allSettled([
 		...receiptBurst(backend, sticky.id, 2),
 		storage.withAppendGuard(
@@ -256,7 +257,7 @@ test("a stale worker's guarded receipt opening a batch does not reject the ungua
 	const storage = sqlPoolStorage(journal)!;
 	const before = (await journalEntries(journal)).length;
 	const started = transactions();
-	const stale = new Error("Stale work lease");
+	const stale = new StaleWorkLeaseError({ root: "run", workId: "work", generation: 1, reason: "fenced" });
 	const results = await Promise.allSettled([
 		storage.withAppendGuard(
 			async () => {

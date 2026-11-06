@@ -3,15 +3,12 @@ import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import {
-	openSqlPoolQueue,
-	type PoolWork,
-	STALE_WORK_LEASE,
-} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { rehydrateError, type SerializedError } from "../../packages/workflows/src/shared/error-codec.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type {
@@ -23,6 +20,7 @@ import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool
 import type { PublishedStages } from "../../packages/workflows/src/workers/open-stages.js";
 import type { PublishedRun } from "../../packages/workflows/src/workers/run-changes.js";
 import { PoolStageHandoff, type PoolStageQueue } from "../../packages/workflows/src/workers/stage-handoff.js";
+import { publicationRejected, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -59,6 +57,7 @@ function childRun(stages: StageSnapshot[]): RunSnapshot {
 
 /** The parts of a pool this file drives directly, as its coordinator and the root's store would. */
 interface PoolInternals {
+	root?: string;
 	coordinator?: { readonly port: { send(message: CoordinatorNotice): void } };
 	handoff?: PoolStageHandoff;
 	readonly works: Map<string, PoolWork>;
@@ -110,6 +109,8 @@ async function activityPool() {
 	const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 1, definitions: [] });
 	const internals = pool as never as PoolInternals;
 	const notices: CoordinatorNotice[] = [];
+	// A pool hears its coordinator's activity only once it prepared its root.
+	internals.root = ROOT;
 	internals.coordinator = { port: { send: (message) => notices.push(message) } };
 	internals.handoff = new PoolStageHandoff(backend, store, internals.queueView(), acquired.lease);
 	const routed = vi.spyOn(internals, "routePrompts");
@@ -159,11 +160,22 @@ async function activityPool() {
 test("an attempt refused before the root knew its work keeps that refusal for its later changes (#4317)", async () => {
 	const pool = await activityPool();
 	try {
-		const stale = [{ workId: pool.work.id, generation: pool.work.generation, error: STALE_WORK_LEASE }];
-		assert.deepEqual(await pool.publish([childRun([stage("a")])]), stale);
+		const attempt = { root: ROOT, workId: pool.work.id, generation: pool.work.generation };
+		const refusedAsUntracked = (
+			rejected: readonly { workId: string; generation: number; error: SerializedError }[],
+		) => {
+			assert.equal(rejected.length, 1);
+			assert.deepEqual([rejected[0]!.workId, rejected[0]!.generation], [attempt.workId, attempt.generation]);
+			const error = rehydrateError(rejected[0]!.error);
+			publicationRejected({ ...attempt, reason: "stale-lease" })(error);
+			staleWorkLease({ ...attempt, reason: "missing" })(error.cause);
+			return rejected[0]!.error;
+		};
+		const first = refusedAsUntracked(await pool.publish([childRun([stage("a")])]));
 		pool.known();
 		const changed = { kind: "changes" as const, id: descriptor.childRunId, stages: [stage("a")], toolNodes: [] };
-		assert.deepEqual(await pool.publish([changed]), stale, "not refused as outside the work's runs");
+		const later = refusedAsUntracked(await pool.publish([changed]));
+		assert.deepEqual(later, first, "not refused as outside the work's runs, but with the first refusal");
 		assert.deepEqual(pool.routed(), [], "a refused publication reaches no prompt routing");
 		assert.deepEqual(await pool.publish([childRun([stage("a")])]), []);
 		assert.deepEqual(await pool.publish([changed]), []);

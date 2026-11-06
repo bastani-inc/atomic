@@ -9,9 +9,9 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { PoolCoordinationStats } from "../../packages/workflows/src/shared/store-types.js";
+import { isLocalWorkerOptionsError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import type { PoolCoordinatorOptions } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { isLocalWorkerOptionsError } from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 interface FakeCoordinator {
@@ -25,6 +25,7 @@ const coordinators = vi.hoisted((): FakeCoordinator[] => []);
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	const { EventEmitter } = await import("node:events");
+	const { PassThrough } = await import("node:stream");
 	return {
 		...actual,
 		fork(_modulePath: string, _args: readonly string[], _options: ForkOptions) {
@@ -34,7 +35,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 				connected: true,
 				exitCode: null as number | null,
 				signalCode: null as string | null,
-				stderr: new EventEmitter(),
+				stderr: new PassThrough(),
 				sent,
 				send(message: Record<string, unknown>, callback?: (error: Error | null) => void) {
 					sent.push(message);

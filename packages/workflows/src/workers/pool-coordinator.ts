@@ -1,6 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,7 +16,6 @@ import {
 	type PoolControl,
 	type PoolWork,
 	type SqlPoolQueue,
-	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
 import {
@@ -25,10 +24,11 @@ import {
 	STAGE_INPUT_PROMPT_ANSWER,
 	type StageInputLease,
 } from "../durable/journal/sql-shared-pool.js";
-import { type Lease, type RunJournal, StaleLeaseError } from "../durable/journal/types.js";
+import { isStaleLeaseError, type Lease, type RunJournal } from "../durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
+import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import {
 	rotateWorkflowPendingStageRouteCapability,
@@ -38,8 +38,18 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
-import { failedOnInfrastructureFault } from "../shared/workflow-infrastructure-error.js";
+import { isStaleWorkLeaseError, PoolNotInitializedError } from "../shared/worker-pool-errors.js";
+import {
+	failedOnPoolFault,
+	WorkerCleanupUnconfirmedError,
+	WorkerLostError,
+	WorkerRetryLimitError,
+	type WorkerRetryLimitReason,
+	WorkerStartupError,
+	WorkerStartupTimeoutError,
+} from "../shared/workflow-infrastructure-error.js";
 import { workerProcessExited } from "./admission-host.js";
+import { assertRouteOwned } from "./attempt-view.js";
 import type {
 	CoordinatorCommand,
 	CoordinatorCommandBody,
@@ -63,13 +73,13 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import { choosePlacement, sharedSettlement } from "./placement-choice.js";
 import {
 	isStaleStageLeaseError,
-	serializeWorkerPlacementError,
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "./placement-errors.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, type PoolDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
+import { appendProcessLog, logFailureOf } from "./process-log.js";
 import type {
 	DistributiveOmit,
 	WorkerPoolControl,
@@ -111,7 +121,8 @@ import type {
 	WatchRefusal,
 	WatchResult,
 } from "./stage-watch-types.js";
-import { startupTimeoutMessage } from "./startup-timeout.js";
+import { ignoreStaleLease, ignoreStaleWorkLease } from "./stale-refusals.js";
+import { startupWaitedMs } from "./startup-timeout.js";
 import type { WorkerHostGit } from "./worker-host-types.js";
 import { AttemptLeaseExtensions, WORKER_REQUEST_LANES, WorkerRequestLanes } from "./worker-request-lanes.js";
 import { defaultWorkerHeartbeatMs } from "./worker-timing.js";
@@ -133,7 +144,6 @@ const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const LATE_ROOT_POLL_MS = RECOVERY_INTERVAL_MS;
 /** How often a pool on a journal in another database reads the root's lease there, well inside {@link COORDINATOR_LEASE_MS}. */
 const MIRROR_INTERVAL_MS = 10_000;
-const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
 /**
  * How long a worker sent SIGKILL has to be confirmed gone, counted in time this process was not stalled, before the pool
@@ -158,6 +168,8 @@ const SHARED_IDLE_CLAIM_MS = 500;
 const STAGE_INPUT_LEASE_MS = 30_000;
 /** A registered worker host counts as live this long after its last report. */
 export const WORKER_HOST_TTL_MS = 15_000;
+/** Workers that may crash without work, in a row, before the pool fails. */
+const MAX_WORKER_REPLACEMENTS = 3;
 /**
  * Longest a starting stage waits for the broker to hold its run's route before it starts anyway.
  * It covers the route owner's reconnect backoff and its connect and acknowledgement timeouts; past
@@ -174,21 +186,11 @@ const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 
-/**
- * A refusal under the root's own lease: it is gone (released at teardown, or taken by another incarnation), which is not
- * a worker fault (#3979), or its renewal is late, which the pool waits out (see `PoolCoordinator.whileRootLate`).
- */
-function isRootLeaseLost(error: Error): boolean {
-	return error instanceof StaleLeaseError || error.message.startsWith("Stale lease for run ");
-}
-
 type RouteOwner = ReturnType<typeof import("../../../intercom/workflow-route-owner.js").createWorkflowRouteOwner>;
 type Bridge = ReturnType<typeof registerPendingStageIntercomBridge>;
 
-function unconfirmedCleanup(groups: readonly number[]): Error {
-	return new Error(
-		`Local worker process cleanup unconfirmed; ${groups.length > 0 ? `process groups ${groups.join(", ")} still running after SIGKILL; ` : ""}permits quarantined`,
-	);
+function unconfirmedCleanup(groups: readonly number[]): WorkerCleanupUnconfirmedError {
+	return new WorkerCleanupUnconfirmedError({ processGroups: groups });
 }
 
 export function workerLogDirectory(journalPath: string, root: string): string {
@@ -196,8 +198,11 @@ export function workerLogDirectory(journalPath: string, root: string): string {
 }
 
 /** The path beside which this host keeps a pool's diagnostics: its pool database, or its shared pool state directory. */
-function traceAnchor(options: PoolCoordinatorOptions): string {
-	return options.shared === undefined ? options.journalPath : join(options.shared.stateDirectory, "shared-pool");
+export function traceAnchor(options: {
+	readonly journalPath?: string;
+	readonly shared?: { readonly stateDirectory: string };
+}): string {
+	return options.shared === undefined ? options.journalPath! : join(options.shared.stateDirectory, "shared-pool");
 }
 
 function token(work: PoolWork): PoolWorkToken {
@@ -209,10 +214,6 @@ function token(work: PoolWork): PoolWorkToken {
 		renewedAt: work.renewedAt,
 		expiresAt: work.expiresAt,
 	};
-}
-
-function outside(runId: string): Error {
-	return new Error(`Pool stage publication is outside the work subtree: ${runId}`);
 }
 
 function isLiveStage(stage: StageSnapshot): boolean {
@@ -390,10 +391,7 @@ class PooledRoutes {
 	}
 
 	private requireOwned(work: PoolWork, runId: string): void {
-		const attempt = this.attempts.get(work.id);
-		if (attempt === undefined || attempt.generation !== work.generation || attempt.fenced)
-			throw new Error(STALE_WORK_LEASE);
-		if (!attempt.runs.has(runId)) throw outside(runId);
+		assertRouteOwned(this.root, this.attempts.get(work.id), work, runId);
 	}
 
 	private release(attempt: Attempt): void {
@@ -484,7 +482,7 @@ interface StageCommandResult {
 	readonly question?: PooledStageQuestion;
 	readonly bash?: PooledBashResult;
 	readonly task?: PooledTaskReply;
-	readonly error?: string;
+	readonly error?: SerializedError;
 }
 
 /** How many ended watches the coordinator remembers, to refuse late deliveries truthfully. */
@@ -515,6 +513,8 @@ export class PoolCoordinator {
 	private readonly logs = new Map<ChildProcess, string>();
 	/** Logs of workers whose cleanup could not be confirmed: close keeps them. */
 	private readonly keptLogs = new Set<string>();
+	/** Why each worker log the pool could not write failed, by its path; the pool reports the first one. */
+	private readonly logFailures = new Map<string, string>();
 	/** Workers that SIGKILL did not end within the bound, already reported. */
 	private readonly unconfirmedExits = new WeakSet<ChildProcess>();
 	/** Set once the pool reported its own failure to the root: close then keeps every worker's log. */
@@ -531,7 +531,8 @@ export class PoolCoordinator {
 	private readonly pendingActivity = new Map<string, PoolActivityEntry>();
 	private readonly sentRuns = new RunChangesEncoder();
 	private readonly batches = new Map<number, { readonly entries: readonly PoolActivityEntry[]; settle(): void }>();
-	private readonly publicationFailures = new Map<string, { readonly generation: number; readonly error: string }>();
+	/** The root's refusal of each work's latest refused publication, bound to the attempt that published it. */
+	private readonly publicationFailures = new Map<string, { readonly generation: number; readonly error: Error }>();
 	private readonly requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private readonly deliveryRequests = new Map<number, { readonly slot: WorkerSlot; readonly workerRequest: number }>();
 	private readonly inflight = new Set<Promise<unknown>>();
@@ -683,7 +684,7 @@ export class PoolCoordinator {
 				if (waited) await resume?.();
 				return await action();
 			} catch (error) {
-				if (!(error instanceof Error) || !isRootLeaseLost(error) || !(await this.rootRenewal(queue))) throw error;
+				if (!isStaleLeaseError(error) || !(await this.rootRenewal(queue))) throw error;
 				waited = true;
 			}
 		}
@@ -725,7 +726,7 @@ export class PoolCoordinator {
 		if (message.kind === "request-reply") {
 			const pending = this.requests.get(message.id);
 			this.requests.delete(message.id);
-			if (message.error !== undefined) pending?.reject(new Error(message.error));
+			if (message.error !== undefined) pending?.reject(rehydrateError(message.error));
 			else pending?.resolve(message.value);
 			return;
 		}
@@ -737,7 +738,7 @@ export class PoolCoordinator {
 				.within(kind, () => this.execute(command))
 				.then(
 					(value) => this.port.send({ kind: "reply", id: command.id, value }),
-					(error: Error) => this.port.send(failedCoordinatorReply(command.id, error)),
+					(error: unknown) => this.port.send(failedCoordinatorReply(command.id, error)),
 				);
 			this.inflight.add(handled);
 			void handled.finally(() => this.inflight.delete(handled));
@@ -757,7 +758,10 @@ export class PoolCoordinator {
 			this.batches.delete(notice.batch);
 			const rejected = new Map(notice.rejected.map((entry) => [entry.workId, entry]));
 			for (const entry of rejected.values())
-				this.publicationFailures.set(entry.workId, { generation: entry.generation, error: entry.error });
+				this.publicationFailures.set(entry.workId, {
+					generation: entry.generation,
+					error: rehydrateError(entry.error),
+				});
 			this.routes?.accept(
 				(batch?.entries ?? []).filter((entry) => rejected.get(entry.work.id)?.generation !== entry.work.generation),
 			);
@@ -921,9 +925,7 @@ export class PoolCoordinator {
 			// A stale token means the attempt already changed hands: nothing is left to release.
 			await this.whileRootLate(this.queue!, () =>
 				this.queue!.releaseRetained(this.lease!, work, record?.enqueued === true),
-			).catch((error: Error) => {
-				if (error.message !== STALE_WORK_LEASE) throw error;
-			});
+			).catch(ignoreStaleWorkLease);
 		});
 	}
 
@@ -999,7 +1001,7 @@ export class PoolCoordinator {
 		if (this.closed) throw new Error("Local worker pool is closed");
 		const root = this.root;
 		if (!this.queue || !this.lease || !this.options || root === undefined || this.lease.runId !== root)
-			throw new Error("Local worker pool requires root preparation");
+			throw new PoolNotInitializedError({ root });
 		this.sources = sources;
 		this.publishing = publish;
 		if (publish) {
@@ -1017,7 +1019,6 @@ export class PoolCoordinator {
 				...(this.options.shared === undefined ? {} : { crossHost: true }),
 			});
 		this.logDirectory = workerLogDirectory(traceAnchor(this.options), root);
-		await mkdir(this.logDirectory, { recursive: true }).catch(() => undefined);
 		await this.publishSharedConfig(sources);
 		this.startRecovery();
 		const workers = Array.from({ length: this.options.workers }, () => this.spawn());
@@ -1039,7 +1040,7 @@ export class PoolCoordinator {
 			return;
 		const lease = this.lease;
 		void this.whileRootLate(this.queue, () => shared.publishBudget(lease, blocked)).catch((error: Error) => {
-			if (!isRootLeaseLost(error)) this.fail(error);
+			if (!isStaleLeaseError(error)) this.fail(error);
 		});
 	}
 
@@ -1054,7 +1055,8 @@ export class PoolCoordinator {
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
-				if (this.queue && isRootLeaseLost(error) && (await this.rootRenewal(this.queue).catch(() => false))) return;
+				if (this.queue && isStaleLeaseError(error) && (await this.rootRenewal(this.queue).catch(() => false)))
+					return;
 				this.fail(error);
 			});
 		}, RECOVERY_INTERVAL_MS).unref();
@@ -1188,7 +1190,7 @@ export class PoolCoordinator {
 			if (this.sharedPass !== undefined || this.closed) return;
 			this.sharedPass = this.sharedPassOnce()
 				.catch(async (error: Error) => {
-					if (isRootLeaseLost(error)) {
+					if (isStaleLeaseError(error)) {
 						// A late root is waited out; a lost one ends a satellite, and the root's own pool learns it elsewhere.
 						if (this.queue && (await this.rootRenewal(this.queue).catch(() => false))) return;
 						if (this.satellite !== undefined) {
@@ -1274,7 +1276,7 @@ export class PoolCoordinator {
 			void this.processStageInput(shared, lease, attempt, { runId, stageId })
 				.catch((error: Error) => {
 					// The attempt was replaced while it held the input: the replacement takes it, and nothing here was written.
-					if (isStaleStageLeaseError(error) || isRootLeaseLost(error)) return;
+					if (isStaleStageLeaseError(error) || isStaleLeaseError(error)) return;
 					this.fail(error);
 				})
 				.finally(() => this.takingInputs.delete(key));
@@ -1309,8 +1311,7 @@ export class PoolCoordinator {
 	}
 
 	private async enqueue(command: Extract<CoordinatorCommandBody, { kind: "enqueue" }>) {
-		if (!this.queue || !this.lease || this.root === undefined)
-			throw new Error("Local worker pool requires root preparation");
+		if (!this.queue || !this.lease || this.root === undefined) throw new PoolNotInitializedError({ root: this.root });
 		if (command.rootRun !== undefined) this.routes?.updateRoot(command.rootRun);
 		const queue = this.queue;
 		const lease = this.lease;
@@ -1326,9 +1327,8 @@ export class PoolCoordinator {
 			// the child's, and replaying it would fail the child for good.
 			if (enqueued.state === "completed" && enqueued.epoch < lease.epoch)
 				enqueued =
-					(await this.whileRootLate(queue, () =>
-						queue.reopenCompleted(lease, enqueued.id, failedOnInfrastructureFault),
-					)) ?? enqueued;
+					(await this.whileRootLate(queue, () => queue.reopenCompleted(lease, enqueued.id, failedOnPoolFault))) ??
+					enqueued;
 			const retained = this.retained.get(enqueued.id);
 			if (retained) retained.enqueued = true;
 			return enqueued;
@@ -1348,7 +1348,8 @@ export class PoolCoordinator {
 		// The root answers a delivery request when its drain ends, so a transport after that is a root defect, not a worker
 		// that exited: say so, rather than blame a worker that is still running the stage.
 		if (target === undefined) throw new Error("Pooled stage delivery request already answered");
-		if (!this.incarnations.has(target.slot.worker)) throw new Error("Worker exited before delivery acknowledgement");
+		if (!this.incarnations.has(target.slot.worker))
+			throw new WorkerLostError({ phase: "delivery", pid: target.slot.child.pid });
 		const { slot, workerRequest } = target;
 		await new Promise<void>((resolve, reject) => {
 			const id = randomUUID();
@@ -1380,25 +1381,40 @@ export class PoolCoordinator {
 			this.detach(error);
 			return;
 		}
-		this.port.send({ kind: "failure", error: error.message });
+		this.port.send({ kind: "failure", error: serializeError(error) });
 	}
 
 	/** Fails one child without failing the pool. */
-	private failWork(work: PoolWork, error: Error): void {
-		this.port.send({
-			kind: "work-failure",
-			workId: work.id,
-			error: error.message,
-			...(error instanceof WorkspaceRestoreUnavailableError
-				? { placement: serializeWorkerPlacementError(error) }
-				: {}),
-		});
+	private failWork(work: PoolWork, error: WorkerRetryLimitError | WorkspaceRestoreUnavailableError): void {
+		this.port.send({ kind: "work-failure", workId: work.id, error: serializeError(error) });
+	}
+
+	/** The error that fails one child once it used up its attempts in this root incarnation. */
+	private retryLimit(
+		work: PoolWork,
+		reason: Exclude<WorkerRetryLimitReason, "worker-crashes">,
+		cause: Error | undefined,
+		logPath?: string,
+		cleanupCause?: Error,
+	): WorkerRetryLimitError {
+		return new WorkerRetryLimitError(
+			{
+				reason,
+				attempts: this.attempts(work),
+				limit: MAX_CHILD_ATTEMPTS,
+				childRunId: work.childRunId,
+				exportName: work.definition.slice(work.definition.lastIndexOf("#") + 1),
+				logPath,
+				logFailure: logPath === undefined ? undefined : this.logFailures.get(logPath),
+			},
+			{ ...(cause === undefined ? {} : { cause }), ...(cleanupCause === undefined ? {} : { cleanupCause }) },
+		);
 	}
 
 	/** Records the latest activity of one attempt; the root receives it with the next summary. */
 	private publish(work: PoolWork, runs: readonly RunSnapshot[]): void {
 		const failure = this.publicationFailures.get(work.id);
-		if (failure?.generation === work.generation) throw new Error(failure.error);
+		if (failure?.generation === work.generation) throw failure.error;
 		// A worker host relays its attempts' activity to the root through the shared journal.
 		if (this.satellite !== undefined) {
 			this.relayPending.set(work.id, { work: token(work), runs });
@@ -1560,7 +1576,7 @@ export class PoolCoordinator {
 		});
 		// The worker exited with the command in flight: it may have admitted the text.
 		if (result === undefined) return { ok: false, refusal: "Unconfirmed" };
-		if (result.error !== undefined) throw new Error(result.error);
+		if (result.error !== undefined) throw rehydrateError(result.error);
 		if (result.action !== undefined) return { ok: true, action: result.action };
 		const refusal = result.refusal;
 		return {
@@ -1633,7 +1649,7 @@ export class PoolCoordinator {
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
 		const result = await this.stageCommand(slot, { attempt, op: "answer", runId, stageId, answer });
 		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
-		if (result.error !== undefined) throw new Error(result.error);
+		if (result.error !== undefined) throw rehydrateError(result.error);
 		const refusal = result.refusal;
 		if (refusal === undefined) return { ok: true };
 		return {
@@ -1662,7 +1678,7 @@ export class PoolCoordinator {
 			return { ok: false, refusal: "PoolPausedOrQuitting" };
 		const result = await this.stageCommand(slot, { attempt, watch: id, ...command });
 		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
-		if (result.error !== undefined) throw new Error(result.error);
+		if (result.error !== undefined) throw rehydrateError(result.error);
 		const refusal = result.refusal;
 		if (refusal === "StageNotLive" || refusal === "PoolPausedOrQuitting" || refusal === "StaleAttempt")
 			return { ok: false, refusal };
@@ -1686,7 +1702,7 @@ export class PoolCoordinator {
 			return { ok: false, refusal: "PoolPausedOrQuitting" };
 		const result = await this.stageCommand(slot, { attempt, op: "session", watch: id, command });
 		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
-		if (result.error !== undefined) throw new Error(result.error);
+		if (result.error !== undefined) throw rehydrateError(result.error);
 		const refusal = result.refusal;
 		if (refusal === "StageNotLive" || refusal === "PoolPausedOrQuitting") return { ok: false, refusal };
 		if (refusal !== undefined) return { ok: false, refusal: "StaleAttempt" };
@@ -1721,7 +1737,8 @@ export class PoolCoordinator {
 					answered: result !== undefined,
 					refusal: result?.refusal,
 					action: result?.action,
-					error: result?.error,
+					error: result?.error?.name,
+					code: result?.error?.code,
 				});
 				resolve(result);
 			});
@@ -1861,26 +1878,11 @@ export class PoolCoordinator {
 		);
 		const logPath = join(this.logDirectory!, `${id}.log`);
 		this.logs.set(child, logPath);
-		let logFailure: string | undefined;
-		const log = createWriteStream(logPath, { flags: "a" });
-		log.on("error", (error) => {
-			logFailure = error.message;
-		});
-		let stderr = "";
-		child.stderr?.on("data", (chunk: Buffer) => {
-			stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_CHARACTERS);
-		});
-		child.stderr?.on("error", (error) => {
-			logFailure ??= error.message;
-			log.end();
-		});
-		child.stderr?.pipe(log);
-		const diagnosed = (summary: string) =>
-			new Error(
-				`${summary} (worker stderr log: ${logFailure === undefined ? logPath : `unavailable, ${logFailure}`})${stderr ? `: ${stderr}` : ""}`,
-			);
+		// A worker whose log cannot be written still runs: its errors name the log and why it could not be written.
+		appendProcessLog(child.stderr, logPath, (failure) => this.logUnwritable(logPath, failure));
 		const startupTimeoutMs = options.startupTimeoutMs;
-		let timedOut = false;
+		const spawnedAt = performance.now();
+		let timedOutAt: number | undefined;
 		let terminated = false;
 		const terminate = () => {
 			if (terminated) return;
@@ -1892,7 +1894,7 @@ export class PoolCoordinator {
 		};
 		return new Promise((resolve, reject) => {
 			const startup = setTimeout(() => {
-				timedOut = true;
+				timedOutAt = performance.now();
 				terminate();
 			}, startupTimeoutMs);
 			child.on("error", (error) => {
@@ -1909,9 +1911,14 @@ export class PoolCoordinator {
 				slot.exited.abort();
 				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
 					reject(
-						diagnosed(
-							timedOut ? startupTimeoutMessage(startupTimeoutMs) : "Local worker exited before readiness",
-						),
+						timedOutAt === undefined
+							? new WorkerStartupError({ logPath, logFailure: this.logFailures.get(logPath) })
+							: new WorkerStartupTimeoutError({
+									logPath,
+									logFailure: this.logFailures.get(logPath),
+									timeoutMs: startupTimeoutMs,
+									elapsedMs: startupWaitedMs(startupTimeoutMs, spawnedAt, timedOutAt),
+								}),
 					),
 				);
 				this.children.delete(child);
@@ -1928,15 +1935,20 @@ export class PoolCoordinator {
 				for (const settle of slot.stageCommands.values()) settle(undefined);
 				slot.stageCommands.clear();
 				if (slot.work) this.fence(slot.work);
-				for (const delivery of slot.deliveries.values())
-					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
+				const lost = new WorkerLostError({
+					phase: "delivery",
+					pid: child.pid,
+					exitCode: child.exitCode ?? undefined,
+					signal: child.signalCode ?? undefined,
+				});
+				for (const delivery of slot.deliveries.values()) delivery.reject(lost);
 				slot.deliveries.clear();
 				// The exited worker's work stays leased until its process groups are reaped, so no other worker can
 				// claim it while they are being reaped.
 				const held = slot.work;
 				if (held) this.held.add(held.id);
 				// Set when the reap leaves process groups running: the worker's health event, never its child's failure.
-				let unconfirmed: Error | undefined;
+				let unconfirmed: WorkerCleanupUnconfirmedError | undefined;
 				const cleanup = disconnected
 					.then(() => lanes.settled())
 					.then(async () => {
@@ -1997,20 +2009,24 @@ export class PoolCoordinator {
 						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
-							this.failWork(
-								work,
-								diagnosed(
-									`${childRetryLimit(work, "lost its worker")}${unconfirmed === undefined ? "" : `; ${unconfirmed.message}`}`,
-								),
-							);
+							// The worker's exit is the fault; process groups it left running are a cleanup that failed after it.
+							this.failWork(work, this.retryLimit(work, "worker-lost", undefined, logPath, unconfirmed));
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
 						// attempts, so those replacements are bounded by the children and never count toward this limit. A
 						// worker that ended itself between children for its memory did not crash: it is replaced without
 						// counting. A draining worker host replaces none.
 						if (this.draining) return;
 						if (work === undefined && slot.recycled === true) await this.spawn();
-						else if (work === undefined && ++this.replacements > 3)
-							this.fail(diagnosed("Local worker retry limit"));
+						else if (work === undefined && ++this.replacements > MAX_WORKER_REPLACEMENTS)
+							this.fail(
+								new WorkerRetryLimitError({
+									reason: "worker-crashes",
+									attempts: this.replacements,
+									limit: MAX_WORKER_REPLACEMENTS,
+									logPath,
+									logFailure: this.logFailures.get(logPath),
+								}),
+							);
 						else await this.spawn();
 					})
 					.catch((error: Error) => {
@@ -2046,7 +2062,7 @@ export class PoolCoordinator {
 				if (message.kind === "delivery-ack") {
 					const pending = slot.deliveries.get(message.deliveryId);
 					slot.deliveries.delete(message.deliveryId);
-					if (message.error) pending?.reject(new Error(message.error));
+					if (message.error !== undefined) pending?.reject(rehydrateError(message.error));
 					else pending?.resolve();
 					return;
 				}
@@ -2079,8 +2095,7 @@ export class PoolCoordinator {
 						try {
 							return await action();
 						} catch (error) {
-							if (!(error instanceof Error) || error.message !== STALE_WORK_LEASE || slot.work === undefined)
-								throw error;
+							if (!isStaleWorkLeaseError(error) || slot.work === undefined) throw error;
 							await renewAttempt();
 							return action();
 						}
@@ -2101,18 +2116,13 @@ export class PoolCoordinator {
 							// A worker host releases the attempt whatever its count: the root's own pool fails a child.
 							if (this.satellite !== undefined || this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
 								await leased(() => queue.releaseExited(lease, fenced));
-							else if (await leased(() => queue.failExited(lease, fenced)))
+							else if (await leased(() => queue.failExited(lease, fenced))) {
+								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
 								this.failWork(
 									fenced,
-									new Error(
-										childRetryLimit(
-											fenced,
-											message.fault === undefined
-												? "was refused by the root as stale on every attempt"
-												: `failed on a fault of the pool on every attempt (last: ${message.fault})`,
-										),
-									),
+									this.retryLimit(fenced, fault === undefined ? "refused-stale" : "pool-fault", fault),
 								);
+							}
 						}
 						return;
 					}
@@ -2287,18 +2297,10 @@ export class PoolCoordinator {
 				}
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
-					(error: Error) => {
-						const rootLeaseLost = isRootLeaseLost(error);
-						if (rootLeaseLost) this.rootLeaseLost = true;
-						child.send(
-							{
-								id: message.id,
-								error: error.message,
-								...(error.message === STALE_WORK_LEASE ? { fenced: true } : {}),
-								...(rootLeaseLost ? { rootLeaseLost: true } : {}),
-							},
-							replied,
-						);
+					(error: unknown) => {
+						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
+						if (isStaleLeaseError(error)) this.rootLeaseLost = true;
+						child.send({ id: message.id, error: serializeError(error) }, replied);
 					},
 				);
 			});
@@ -2486,7 +2488,7 @@ export class PoolCoordinator {
 
 	private assertPublished(work: PoolWork): void {
 		const failure = this.publicationFailures.get(work.id);
-		if (failure?.generation === work.generation) throw new Error(failure.error);
+		if (failure?.generation === work.generation) throw failure.error;
 	}
 
 	private recoverExpired(): Promise<void> {
@@ -2519,16 +2521,12 @@ export class PoolCoordinator {
 				// A worker host recovers only its own workers' attempts; the root's own pool recovers every other host's.
 				if (this.satellite !== undefined && (work.worker === null || !this.incarnations.has(work.worker))) continue;
 				if (this.held.has(work.id)) {
-					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
-						if (error.message !== STALE_WORK_LEASE) throw error;
-					});
+					await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
 					continue;
 				}
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
 				if (child && work.worker !== null && this.isLive(work.worker, child)) {
-					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
-						if (error.message !== STALE_WORK_LEASE) throw error;
-					});
+					await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
 					continue;
 				}
 				// A worker that outlives SIGKILL is retired without waiting for its exit: its child replays on a replacement
@@ -2542,10 +2540,7 @@ export class PoolCoordinator {
 				// An attempt that changed hands since it was read (its worker's exit released it, its worker completed it,
 				// another worker claimed it) has nothing left to expire. Its fault is never the pool's: thrown from here it
 				// failed the whole pool, and so every unfinished child of the pool at once.
-				else
-					await queue.expire(lease, work).catch((error: Error) => {
-						if (error.message !== STALE_WORK_LEASE) throw error;
-					});
+				else await queue.expire(lease, work).catch(ignoreStaleWorkLease);
 			}
 			if (this.satellite === undefined && this.sharedPool !== undefined)
 				await this.settleShared(queue, lease, this.sharedPool, rows);
@@ -2589,7 +2584,7 @@ export class PoolCoordinator {
 			if (settlement === "report-result") await this.sendResult(work.id);
 			else if (settlement === "attempts-exhausted") {
 				if (await queue.failUnclaimed(lease, work))
-					this.failWork(work, new Error(childRetryLimit(work, "lost its worker on another host")));
+					this.failWork(work, this.retryLimit(work, "worker-lost", undefined));
 			} else if (settlement === "claim-window-passed") {
 				capable ??= await shared.capableHostLive(this.root!, WORKER_HOST_TTL_MS);
 				if (capable || !(await queue.failUnclaimed(lease, work))) continue;
@@ -2683,11 +2678,27 @@ export class PoolCoordinator {
 	 * the line is appended to the worker's log, which the pool then keeps, and the root shows it as a warning on the run.
 	 */
 	private reportHealth(log: string | undefined, message: string): void {
-		if (log !== undefined) {
+		if (log !== undefined && !this.logFailures.has(log)) {
 			this.keptLogs.add(log);
-			void appendFile(log, `[atomic ${new Date().toISOString()}] ${message}\n`).catch(() => {});
+			void appendFile(log, `[atomic ${new Date().toISOString()}] ${message}\n`).catch((error: Error) =>
+				this.logUnwritable(log, logFailureOf(error)),
+			);
 		}
 		this.port.send({ kind: "health", message: log === undefined ? message : `${message} (worker log: ${log})` });
+	}
+
+	/**
+	 * A worker log the pool could not write: that worker's errors say why, and the pool reports the first such log
+	 * once, as a health event, rather than once per worker.
+	 */
+	private logUnwritable(log: string, failure: string): void {
+		const first = this.logFailures.size === 0;
+		this.logFailures.set(log, failure);
+		if (first)
+			this.port.send({
+				kind: "health",
+				message: `Local worker log ${log} could not be written (${failure}); workers keep running, and their errors name each log that failed`,
+			});
 	}
 
 	private async close(): Promise<void> {
@@ -2734,9 +2745,7 @@ export class PoolCoordinator {
 				for (const work of held) await this.releaseHeld(work);
 			} else if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
 				// A root that no longer holds its lease has handed its work to its next incarnation.
-				await this.queue.releaseClosed(this.lease).catch((error: Error) => {
-					if (!(error instanceof StaleLeaseError)) throw error;
-				});
+				await this.queue.releaseClosed(this.lease).catch(ignoreStaleLease);
 		} catch (error) {
 			failure = error;
 		}
@@ -2772,7 +2781,7 @@ export class PoolCoordinator {
 		try {
 			await this.queue!.releaseExited(this.lease!, work);
 		} catch (error) {
-			if (!(error instanceof StaleLeaseError)) throw error;
+			if (!isStaleLeaseError(error)) throw error;
 		}
 	}
 }
@@ -2789,12 +2798,6 @@ function withHostGit(env: NodeJS.ProcessEnv, git: WorkerHostGit | undefined): No
 		...git.env,
 		...(isAbsolute(git.path) ? { [pathKey]: [dirname(git.path), env[pathKey]].filter(Boolean).join(delimiter) } : {}),
 	};
-}
-
-/** The retry limit message of one child, naming it by its child run and definition export. */
-function childRetryLimit(work: PoolWork, reason: string): string {
-	const exportName = work.definition.slice(work.definition.lastIndexOf("#") + 1);
-	return `Local worker retry limit: child ${work.childRunId} (${exportName}) ${reason} ${MAX_CHILD_ATTEMPTS} times`;
 }
 
 /** Channel to the root host over this process's IPC. */

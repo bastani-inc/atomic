@@ -14,7 +14,7 @@ import {
 	isLocalWorkerPoolError,
 	LocalWorkerOptionsError,
 	LocalWorkerPoolError,
-} from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
+} from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { withWorkerSettings } from "../../packages/workflows/src/workers/public-pool.js";
 import {
 	DEFAULT_WORK_LEASE_MS,

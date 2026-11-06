@@ -160,7 +160,7 @@ try {
 				entries: [],
 				expectSeq: 1,
 			};
-			const rejectStale = async (authority, error = /Stale work lease$/) => {
+			const rejectStale = async (authority, error = { name: "StaleWorkLeaseError", code: "stale_work_lease" }) => {
 				await assert.rejects(
 					pool.commit(authority, attempt, "late-checkpoint", { kind: "checkpoint", checkpoint: lateCheckpoint }),
 					error,
@@ -168,7 +168,7 @@ try {
 				await assert.rejects(pool.commit(authority, attempt, "late-session", lateSession), error);
 				assert.deepEqual(await snapshot(), before);
 			};
-			if (crashed === "coordinator") await rejectStale(lease, /Stale lease/);
+			if (crashed === "coordinator") await rejectStale(lease, { name: "StaleLeaseError", code: "stale_lease" });
 			await rejectStale(coordinator);
 			assert.equal(await pool.expire(coordinator, attempt), true);
 			// A replacement coordinator's root re-enqueues its child before any worker may claim it (#3979).

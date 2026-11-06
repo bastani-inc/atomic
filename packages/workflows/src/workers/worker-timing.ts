@@ -2,7 +2,7 @@ import {
 	LocalWorkerOptionsError,
 	type LocalWorkerOptionsSource,
 	type LocalWorkerTimingOption,
-} from "./local-worker-pool-errors.js";
+} from "../shared/worker-pool-errors.js";
 
 /** Longest delay a timer accepts. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;

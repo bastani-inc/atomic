@@ -10,19 +10,23 @@ import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/int
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import {
+	isAdmissionHolderStoppedError,
+	isRetryableWorkflowError,
+	QuarantinedCapacityError,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { admitWorkflowSessions } from "../../packages/workflows/src/workers/admission-binding.js";
 import { isWorkflowAdmissionConfigError } from "../../packages/workflows/src/workers/admission-errors.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import {
 	QUARANTINED_CAPACITY_WAIT_MS,
-	QuarantinedCapacityError,
 	REAP_KILL_GRACE_MS,
 	REAP_TERM_GRACE_MS,
 	RELEASED_PERMIT_RETENTION,
 	SqlResourceAdmission,
 	STAGE_START_SPACING_MS,
 } from "../../packages/workflows/src/workers/resource-admission.js";
+import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -249,11 +253,14 @@ test("expired work retains live resources and fenced waiters cannot relaunch (#3
 		const lapsed = admission.acquire("session");
 		const outcome = lapsed.then(
 			() => "granted",
-			(error: Error) => error.message,
+			(error: unknown) => error,
 		);
 		await waitForReason(admission, "waiting for its attempt lease");
 		await pool.expire(acquired.lease, work);
-		assert.match(await outcome, /Stale/, "only work recovery took from the attempt refuses its launch");
+		// Only work recovery took from the attempt: that refuses its launch.
+		staleWorkLease({ root: "root", workId: work.id, generation: work.generation, reason: "superseded" })(
+			await outcome,
+		);
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
 		await admission.releaseStoppedSessions("worker");
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
@@ -530,12 +537,18 @@ test("history pruning keeps a fenced waiter's permit while its owner may be aliv
 	}
 });
 
-for (const [label, release] of [
+for (const [label, release, permitReason] of [
 	[
 		"released for a host reboot",
 		"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'host reboot confirmed' WHERE state = 'waiting'",
+		"host reboot confirmed",
 	],
-	["gone from history", "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'"],
+	["gone from history", "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'", "permit no longer recorded"],
+	[
+		"released without a recorded reason",
+		"UPDATE wf_runs_resource_permits SET state = 'released', reason = NULL WHERE state = 'waiting'",
+		undefined,
+	],
 ] as const) {
 	test(`a waiter whose permit was ${label} is refused as a retryable fault of the pool (#4179)`, async () => {
 		const f = await fixture();
@@ -550,8 +563,10 @@ for (const [label, release] of [
 			await waitForReason(admission, "root:root session");
 			await f.databases[1]!.run(release);
 			const error = await rejection(waiter);
+			assert.ok(isAdmissionHolderStoppedError(error), String(error));
+			assert.equal(error.code, "stale_work_lease");
+			assert.equal(error.permitReason, permitReason);
 			assert.ok(isRetryableWorkflowError(error));
-			assert.match(String(error), /Stale resource admission attempt: the admission holder was stopped/u);
 			await releaseHolder();
 		} finally {
 			await f.close();
@@ -612,8 +627,10 @@ test("stopping a holder whose waiter was just fenced for a lapsed owner lease ke
 		await pool.releaseStoppedSessions("worker");
 		await releaseHolder();
 		const error = await rejection(waiter);
+		assert.ok(isAdmissionHolderStoppedError(error), String(error));
+		assert.equal(error.code, "stale_work_lease");
+		assert.equal(error.permitReason, "worker exit confirmed");
 		assert.ok(isRetryableWorkflowError(error));
-		assert.match(String(error), /holder was stopped \(worker exit confirmed\)/u);
 	} finally {
 		await f.close();
 	}
@@ -640,7 +657,11 @@ test("FIFO grants follow tickets and stopped waiters never reacquire (#3869)", a
 		await release();
 		const releaseNext = await next;
 		assert.equal((await other.inspect()).filter((row) => row.state === "waiting").length, 1);
-		const rejected = assert.rejects(last, /holder was stopped/);
+		const rejected = assert.rejects(last, (error) => {
+			assert.ok(isAdmissionHolderStoppedError(error), String(error));
+			assert.equal(error.code, "stale_work_lease");
+			return true;
+		});
 		await other.releaseStoppedSessions("other");
 		await rejected;
 		await releaseNext();
@@ -885,6 +906,8 @@ test.skipIf(process.platform === "win32")(
 			const held = await busy.acquire("process");
 			// Only the clock the bound reads is faked; the admissions poll the journal in real time.
 			vi.useFakeTimers({ toFake: ["performance"] });
+			// The clock is far from its origin before the wait begins: the bound counts from the wait's own start.
+			await vi.advanceTimersByTimeAsync(5 * QUARANTINED_CAPACITY_WAIT_MS);
 			const replay = await SqlResourceAdmission.open(f.journals[1]!, { root: "root", holder: "replay", limits });
 			const waiter = await SqlResourceAdmission.open(f.journals[0]!, { root: "other", holder: "waiter", limits });
 			const refusal = replay.acquire("process").then(
@@ -909,12 +932,14 @@ test.skipIf(process.platform === "win32")(
 			await vi.advanceTimersByTimeAsync(1_000);
 			const error = await refusal;
 			assert.ok(error instanceof QuarantinedCapacityError, String(error));
+			assert.equal(error.code, "worker_cleanup_unconfirmed");
 			assert.ok(isRetryableWorkflowError(error));
-			assert.match(
-				error.message,
-				new RegExp(
-					`^Local worker process cleanup unconfirmed; process permit refused after \\d+ ms: admission\\.limits\\.process \\(1\\) is held by quarantined permits of process groups ${live.group} that survived SIGKILL$`,
-				),
+			assert.deepEqual(error.limits, ["admission.limits.process (1)"]);
+			assert.deepEqual(error.processGroups, [live.group]);
+			assert.ok(error.waitedMs >= QUARANTINED_CAPACITY_WAIT_MS, String(error.waitedMs));
+			assert.ok(
+				error.waitedMs < 2 * QUARANTINED_CAPACITY_WAIT_MS,
+				`waited ${error.waitedMs} ms, not since a far start`,
 			);
 			await vi.advanceTimersByTimeAsync(10 * QUARANTINED_CAPACITY_WAIT_MS);
 			await sleep(300);

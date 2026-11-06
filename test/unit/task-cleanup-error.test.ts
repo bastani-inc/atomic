@@ -35,10 +35,12 @@ import {
 	serializeWorkflowInfrastructureError,
 	WorkflowInfrastructureError,
 } from "../../packages/workflows/src/sdk-surface.js";
+import { serializeError } from "../../packages/workflows/src/shared/error-codec.js";
+import { isPoolProtocolError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { runFailureClassification } from "../../packages/workflows/src/shared/workflow-failures-classifier.js";
 import {
-	failedOnInfrastructureFault,
+	failedOnPoolFault,
 	WORKFLOW_INFRASTRUCTURE_FAULTS,
 } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 
@@ -122,7 +124,7 @@ test("a stage whose task cleanup is unconfirmed fails with a retryable process_c
 	const cause = cleanupError();
 	const error = new ProcessCleanupUnconfirmedError(cause);
 	assert.ok(error instanceof WorkflowInfrastructureError);
-	assert.equal(error.name, "WorkflowInfrastructureError");
+	assert.equal(error.name, "ProcessCleanupUnconfirmedError");
 	assert.equal(error.code, "process_cleanup_unconfirmed");
 	assert.equal(error.retryable, true);
 	assert.equal(error.cause, cause);
@@ -135,7 +137,7 @@ test("a stage whose task cleanup is unconfirmed fails with a retryable process_c
 	assert.equal(
 		error.message,
 		"Workflow stage task cleanup was not confirmed: process-group:4242, process-group:4343 " +
-			`(process_cleanup_unconfirmed). ${cause.hint}.`,
+			`(process_cleanup_unconfirmed). ${cause.hint}`,
 	);
 	assert.match(
 		new ProcessCleanupUnconfirmedError(new TaskCleanupError("stage-close", [])).message,
@@ -169,11 +171,8 @@ test("process_cleanup_unconfirmed classifies as a recoverable, resumable infrast
 	const recorded = JSON.parse(
 		JSON.stringify({ status: "failed", stages: [{ status: "failed", failureCode: failure.code, error: "x" }] }),
 	);
-	assert.equal(failedOnInfrastructureFault(recorded), true);
-	assert.equal(
-		failedOnInfrastructureFault({ ...recorded, stages: [{ ...recorded.stages[0], failureCode: "unknown" }] }),
-		false,
-	);
+	assert.equal(failedOnPoolFault(recorded), true);
+	assert.equal(failedOnPoolFault({ ...recorded, stages: [{ ...recorded.stages[0], failureCode: "unknown" }] }), false);
 	assert.deepEqual(runFailureClassification({ kind: "unknown", code: "process_cleanup_unconfirmed" }), {
 		kind: "unknown",
 		code: "process_cleanup_unconfirmed",
@@ -412,26 +411,25 @@ test("a TaskCleanupError copy that crossed a process boundary rehydrates into th
 		assert.equal(rehydrateTaskCleanupError({ ...copy, phase })?.phase, phase);
 });
 
+/** An `assert.throws` validator for the refusal of a serialized error whose `field` is not what its class sends. */
+function protocolRefusal(field: string, expected: string): (error: unknown) => true {
+	return (error) => {
+		assert.ok(isPoolProtocolError(error), String(error));
+		assert.deepEqual({ field: error.field, expected: error.expected }, { field, expected });
+		return true;
+	};
+}
+
 test("process_cleanup_unconfirmed survives a serialize, JSON and rehydrate round trip with its fields and cause (#4338)", () => {
 	const error = new ProcessCleanupUnconfirmedError(cleanupError());
 	const serialized: SerializedWorkflowInfrastructureError = JSON.parse(
 		JSON.stringify(serializeWorkflowInfrastructureError(error)),
 	);
-	assert.deepEqual(serialized, {
-		name: "WorkflowInfrastructureError",
-		code: "process_cleanup_unconfirmed",
-		message: error.message,
-		hint: error.hint,
-		fields: { phase: "stage-close", resources: error.resources },
-		cause: {
-			name: "TaskCleanupError",
-			code: "task_cleanup_unconfirmed",
-			retryable: true,
-			hint: error.hint,
-			phase: "stage-close",
-			failures: error.cause.failures,
-		},
-	});
+	assert.equal(serialized.name, "ProcessCleanupUnconfirmedError");
+	assert.equal(serialized.code, "process_cleanup_unconfirmed");
+	assert.deepEqual(serialized.fields, { phase: "stage-close", resources: error.resources });
+	assert.equal(serialized.cause?.name, "TaskCleanupError");
+	assert.deepEqual(serialized.cause?.fields, { phase: "stage-close", failures: error.cause.failures });
 	const rehydrated = rehydrateWorkflowInfrastructureError(serialized);
 	assert.ok(rehydrated instanceof ProcessCleanupUnconfirmedError);
 	assert.ok(isProcessCleanupUnconfirmedError(rehydrated));
@@ -447,16 +445,15 @@ test("process_cleanup_unconfirmed survives a serialize, JSON and rehydrate round
 	for (const other of [
 		{ ...serialized, retryable: true },
 		{ ...serialized, retryable: true, code: "worker_lost", resources: [] },
-		new WorkflowInfrastructureError("worker_lost", "Worker exited before delivery acknowledgement"),
+		new WorkflowInfrastructureError("worker_lost"),
 		undefined,
 	])
 		assert.equal(isProcessCleanupUnconfirmedError(other), false);
 });
 
-test("other infrastructure faults, and a process cleanup fault without a valid cause or fields, rehydrate into the base class (#4338)", () => {
-	const lost = new WorkflowInfrastructureError("worker_lost", "Worker exited before delivery acknowledgement");
+test("other infrastructure faults rehydrate as their class, and a process cleanup fault whose cause or fields are malformed is refused (#4338, #4327)", () => {
+	const lost = new WorkflowInfrastructureError("worker_lost");
 	const serialized = serializeWorkflowInfrastructureError(lost);
-	assert.deepEqual(serialized, { name: "WorkflowInfrastructureError", code: "worker_lost", message: lost.message });
 	const rehydrated = rehydrateWorkflowInfrastructureError(JSON.parse(JSON.stringify(serialized)));
 	assert.equal(rehydrated.constructor, WorkflowInfrastructureError);
 	assert.deepEqual(
@@ -468,33 +465,50 @@ test("other infrastructure faults, and a process cleanup fault without a valid c
 		name: "WorkflowInfrastructureError",
 		code: "pool_gone",
 		message: "m",
+		family: "workflow-infrastructure",
+		fields: {},
 	});
 	assert.equal(unknown.code, "pool_gone");
+	assert.equal(unknown.message, "m");
 	const process = serializeWorkflowInfrastructureError(new ProcessCleanupUnconfirmedError(cleanupError()));
-	const brokenCause = { ...process.cause!, phase: "lost" as never };
+	const brokenCause = { ...process.cause!, fields: { ...process.cause!.fields, phase: "lost" } };
+	assert.throws(
+		() => rehydrateWorkflowInfrastructureError({ ...process, cause: brokenCause }),
+		protocolRefusal("error.cause.fields.failures", "the phase, failures and timing of a task cleanup error"),
+	);
+	const { cause: _sent, ...uncaused } = process;
+	const [resource] = process.fields.resources as readonly { readonly [key: string]: string }[];
 	for (const fields of [
-		undefined,
-		{ ...process.fields!, phase: "lost" as never },
-		{ ...process.fields!, resources: "none" as never },
-		{ ...process.fields!, resources: [{ ...process.fields!.resources[0]!, message: undefined as never }] },
-		{ ...process.fields!, resources: [{ ...process.fields!.resources[0]!, taskId: 7 as never }] },
-		{ ...process.fields!, resources: [null as never] },
-		{ ...process.fields!, resources: [process.fields!.resources[0]!, null as never] },
-	]) {
-		const broken = rehydrateWorkflowInfrastructureError({ ...process, cause: brokenCause, fields });
-		assert.equal(broken.constructor, WorkflowInfrastructureError, JSON.stringify(fields));
-		assert.equal(isProcessCleanupUnconfirmedError(broken), false);
-		assert.deepEqual(
-			{ code: broken.code, message: broken.message },
-			{ code: process.code, message: process.message },
+		{ ...process.fields, phase: "lost" },
+		{ ...process.fields, resources: "none" },
+		{ ...process.fields, resources: 7 },
+		{ ...process.fields, resources: { first: resource! } },
+		{ ...process.fields, resources: [{ ...resource, message: 7 }] },
+		{ ...process.fields, resources: [{ ...resource, taskId: 7 }] },
+		{ ...process.fields, resources: [null] },
+		{ ...process.fields, resources: [resource!, null] },
+	])
+		assert.throws(
+			() => rehydrateWorkflowInfrastructureError({ ...uncaused, fields }),
+			protocolRefusal("error.fields.resources", "a task cleanup phase and resources, each with its task"),
+			JSON.stringify(fields),
 		);
-		assert.equal(broken.cause, undefined);
-	}
-	const recode = rehydrateWorkflowInfrastructureError({ ...process, code: "worker_lost" });
-	assert.equal(recode.constructor, WorkflowInfrastructureError);
-	assert.ok(recode.cause instanceof TaskCleanupError, "a well-formed cause is kept on the base class");
-	const recodedFields = rehydrateWorkflowInfrastructureError({ ...process, code: "worker_lost", cause: undefined });
-	assert.equal(recodedFields.cause, undefined, "only a process cleanup fault is rebuilt from its fields");
+	for (const fields of [
+		{},
+		{ ...process.fields, phase: "lost" },
+		{ ...process.fields, resources: "none" },
+		{ ...process.fields, resources: [resource!, null] },
+	])
+		assert.throws(
+			() => rehydrateWorkflowInfrastructureError({ ...process, fields }),
+			protocolRefusal("error.fields.resources", "a task cleanup phase and resources, each with its task"),
+			`a usable cause does not excuse ${JSON.stringify(fields)}`,
+		);
+	assert.throws(
+		() => rehydrateWorkflowInfrastructureError(serializeError(new TaskCleanupError("stage-close", []))),
+		protocolRefusal("error.family", "workflow-infrastructure"),
+		"only an infrastructure error rehydrates here",
+	);
 });
 
 test("a process cleanup error copy that lost its cause rehydrates from its fields, in order and with its message (#4338)", () => {
@@ -625,8 +639,8 @@ test("a process cleanup fault caused by an admission timeout keeps the subtype a
 		JSON.stringify(serializeWorkflowInfrastructureError(error)),
 	);
 	assert.equal(serialized.cause?.name, "TaskCleanupAdmissionTimeoutError");
-	assert.equal(serialized.cause?.timeoutMs, 5000);
-	assert.equal(serialized.cause?.elapsedMs, 5012);
+	assert.equal(serialized.cause?.fields.timeoutMs, 5000);
+	assert.equal(serialized.cause?.fields.elapsedMs, 5012);
 	const rehydrated = rehydrateWorkflowInfrastructureError(serialized);
 	assert.ok(rehydrated instanceof ProcessCleanupUnconfirmedError);
 	assert.ok(rehydrated.cause instanceof TaskCleanupAdmissionTimeoutError);

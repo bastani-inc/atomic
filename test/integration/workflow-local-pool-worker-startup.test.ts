@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -8,7 +9,11 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
+import {
+	isWorkerStartupError,
+	isWorkerStartupTimeoutError,
+} from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import {
@@ -39,7 +44,7 @@ interface StartupPoolOptions {
 async function runStartupPool(
 	directory: string,
 	options: StartupPoolOptions,
-): Promise<{ result: RunResult; pid?: number }> {
+): Promise<{ result: RunResult; pid?: number; failure?: unknown; store: Store }> {
 	const path = join(directory, "journal.sqlite");
 	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
 	const child = await loadWorkerDefinition({
@@ -54,13 +59,19 @@ async function runStartupPool(
 		startupTimeoutMs: options.startupTimeoutMs,
 	});
 	let pid: number | undefined;
+	let failure: unknown;
 	const parent = workflow({
 		name: ROOT,
 		description: "",
 		inputs: {},
 		outputs: {},
 		async run(ctx) {
-			pid = Number((await ctx.workflow(child)).outputs.pid);
+			try {
+				pid = Number((await ctx.workflow(child)).outputs.pid);
+			} catch (error) {
+				failure = error;
+				throw error;
+			}
 			return {};
 		},
 	});
@@ -68,14 +79,11 @@ async function runStartupPool(
 		process.env.ATOMIC_TEST_POOL_STARTUP_DIR = directory;
 		process.env.ATOMIC_TEST_POOL_STARTUP_MODE = options.mode;
 	}
+	const store = createStore();
 	try {
 		await options.beforeRun?.(path);
-		const result = await run(
-			parent,
-			{},
-			{ runId: ROOT, cwd: directory, store: createStore(), durableBackend: backend },
-		);
-		return { result, pid };
+		const result = await run(parent, {}, { runId: ROOT, cwd: directory, store, durableBackend: backend });
+		return { result, pid, failure, store };
 	} finally {
 		delete process.env.ATOMIC_TEST_POOL_STARTUP_DIR;
 		delete process.env.ATOMIC_TEST_POOL_STARTUP_MODE;
@@ -84,11 +92,12 @@ async function runStartupPool(
 	}
 }
 
-function namedWorkerLog(directory: string, error: string | undefined): string {
-	const path = /worker stderr log: (\S+\.log)/.exec(error ?? "")?.[1];
-	assert.ok(path, error);
-	assert.ok(path.startsWith(join(directory, "worker-logs", ROOT)), path);
-	return path;
+/** The worker log a typed startup failure names, which lives beside the pool's journal. */
+function namedWorkerLog(directory: string, failure: unknown): string {
+	assert.ok(isWorkerStartupError(failure), String(failure));
+	assert.equal(failure.code, "worker_startup_failed");
+	assert.ok(failure.logPath.startsWith(join(directory, "worker-logs", ROOT)), failure.logPath);
+	return failure.logPath;
 }
 
 test.skipIf(process.platform === "win32")(
@@ -96,14 +105,49 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const directory = makeTempDirectory("pool-startup-exit-");
 		try {
-			const { result } = await runStartupPool(directory, { workers: 1, mode: "exit" });
+			const { result, failure } = await runStartupPool(directory, { workers: 1, mode: "exit" });
 			assert.equal(result.status, "failed", JSON.stringify(result));
-			assert.match(result.error ?? "", /Local worker exited before readiness/);
-			assert.ok(result.error?.includes(STARTUP_STDERR), result.error);
-			const log = namedWorkerLog(directory, result.error);
+			assert.equal(result.failure?.code, "worker_startup_failed");
+			assert.equal(isWorkerStartupTimeoutError(failure), false, "the worker exited; it did not time out");
+			// The worker's stderr stays in its log; the error names the log instead of carrying the output.
+			assert.equal(result.error?.includes(STARTUP_STDERR), false, result.error);
+			const log = namedWorkerLog(directory, failure);
 			assert.ok((await readText(log)).includes(STARTUP_STDERR));
 		} finally {
 			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_STARTUP_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker log that cannot be written is named on the startup failure and reported once (#4327)",
+	async () => {
+		const unwritableLogs = (directory: string) => {
+			mkdirSync(join(directory, "worker-logs"));
+			writeFileSync(join(directory, "worker-logs", ROOT), "a file where the root's log directory belongs");
+		};
+		const warnings = (store: Store) =>
+			store.notices().filter((notice) => notice.message.includes("could not be written")).length;
+		const single = makeTempDirectory("pool-startup-unwritable-log-");
+		const pair = makeTempDirectory("pool-startup-unwritable-logs-");
+		try {
+			unwritableLogs(single);
+			const failed = await runStartupPool(single, { workers: 1, mode: "exit" });
+			assert.equal(failed.result.status, "failed", JSON.stringify(failed.result));
+			const failure = failed.failure;
+			assert.ok(isWorkerStartupError(failure), String(failure));
+			assert.ok(failure.logFailure === "ENOTDIR" || failure.logFailure === "EEXIST", String(failure.logFailure));
+			assert.ok(failure.logPath.startsWith(join(single, "worker-logs", ROOT)), failure.logPath);
+			assert.equal(warnings(failed.store), 1);
+			// Two workers, the first of which exits: the pool runs on the other, and their unwritable logs are one warning.
+			unwritableLogs(pair);
+			const ran = await runStartupPool(pair, { workers: 2, mode: "exit" });
+			assert.equal(ran.result.status, "completed", JSON.stringify(ran.result));
+			assert.equal(warnings(ran.store), 1);
+		} finally {
+			removeTempDirectory(single);
+			removeTempDirectory(pair);
 		}
 	},
 	LOCAL_WORKER_STARTUP_TEST_TIMEOUT_MS,
@@ -115,10 +159,11 @@ test.skipIf(process.platform === "win32")(
 		const directory = makeTempDirectory("pool-startup-descendant-");
 		try {
 			const started = performance.now();
-			const { result } = await runStartupPool(directory, { workers: 1, mode: "exit-with-descendant" });
+			const { result, failure } = await runStartupPool(directory, { workers: 1, mode: "exit-with-descendant" });
 			assert.ok(performance.now() - started < DESCENDANT_STDERR_HOLD_MS, "startup settled while stderr stayed open");
 			assert.equal(result.status, "failed", JSON.stringify(result));
-			assert.match(result.error ?? "", /Local worker exited before readiness/);
+			namedWorkerLog(directory, failure);
+			assert.equal(isWorkerStartupTimeoutError(failure), false);
 		} finally {
 			const descendant = Number(readTextSync(join(directory, "descendant"), "utf8"));
 			if (descendant > 0) process.kill(descendant, "SIGKILL");
@@ -133,17 +178,17 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const directory = makeTempDirectory("pool-startup-timeout-");
 		try {
-			const { result } = await runStartupPool(directory, {
+			const { result, failure } = await runStartupPool(directory, {
 				workers: 1,
 				mode: "hang-all",
 				startupTimeoutMs: CONFIGURED_STARTUP_TIMEOUT_MS,
 			});
 			assert.equal(result.status, "failed", JSON.stringify(result));
-			assert.match(
-				result.error ?? "",
-				new RegExp(`Local worker startup timed out after ${CONFIGURED_STARTUP_TIMEOUT_MS} ms`),
-			);
-			assert.ok(await fileExists(namedWorkerLog(directory, result.error)));
+			assert.ok(isWorkerStartupTimeoutError(failure), String(failure));
+			assert.equal(failure.timeoutMs, CONFIGURED_STARTUP_TIMEOUT_MS);
+			assert.equal(failure.phase, "startup");
+			assert.ok(failure.elapsedMs >= CONFIGURED_STARTUP_TIMEOUT_MS, String(failure.elapsedMs));
+			assert.ok(await fileExists(namedWorkerLog(directory, failure)));
 		} finally {
 			removeTempDirectory(directory);
 		}

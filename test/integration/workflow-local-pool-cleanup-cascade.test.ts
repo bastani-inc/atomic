@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -68,7 +69,12 @@ test.skipIf(process.platform === "win32")(
 		const enqueue = SqlPoolQueue.prototype.enqueue;
 		vi.spyOn(SqlPoolQueue.prototype, "enqueue").mockImplementation(function (this: SqlPoolQueue, ...args) {
 			if ((args[1].inputs as { readonly index?: number }).index === FAULTED)
-				return Promise.reject(new Error("Storage unavailable: injected transient fault"));
+				return Promise.reject(
+					new StorageUnavailableError(
+						{ adapter: "node-sqlite", location: path },
+						new Error("injected transient fault"),
+					),
+				);
 			return enqueue.apply(this, args);
 		});
 		// The first SIGKILL the pool sends is followed by a stall of the event loop that would handle the worker's exit.
@@ -120,6 +126,9 @@ test.skipIf(process.platform === "win32")(
 			const faulted = outcomes[FAULTED]?.error;
 			assert.ok(faulted instanceof WorkflowInfrastructureError, String(faulted));
 			assert.equal(faulted.code, "storage_unavailable", "the faulted child keeps its own fault");
+			// The storage outage crossed the coordinator's IPC as itself and is the typed fault's cause.
+			assert.ok(faulted.cause instanceof StorageUnavailableError, String(faulted.cause));
+			assert.equal(faulted.cause.location, path);
 			// The root's own end closes the pool: the stall after its first SIGKILL confirms every worker's exit anyway.
 			await pool.close();
 			assert.ok(stalled, "the pool sent SIGKILL under the stall");

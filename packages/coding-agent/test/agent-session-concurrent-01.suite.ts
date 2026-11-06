@@ -178,9 +178,10 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(session.isStreaming).toBe(true);
 
 		// Second prompt should reject
-		await expect(session.prompt("Second message")).rejects.toThrow(
-			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-		);
+		await assert.rejects(session.prompt("Second message"), {
+			name: "AgentSessionBusyError",
+			code: "agent_session_busy",
+		});
 
 		// Cleanup
 		await session.abort();

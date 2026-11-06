@@ -18,6 +18,7 @@ import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/s
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { staleLease, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -324,10 +325,13 @@ test.each(["checkpoint", "session"] as const)(
 					? { ...mutation, checkpoint: { ...mutation.checkpoint, output: "changed" } }
 					: { ...mutation, entries: [] };
 			await assert.rejects(f.pool.commit(f.lease, f.attempt, "lost-ack", mismatched), /identity conflict/);
-			await assert.rejects(f.pool.commit(f.lease, f.attempt, "new-operation", mutation), /Stale work lease/);
+			await assert.rejects(
+				f.pool.commit(f.lease, f.attempt, "new-operation", mutation),
+				staleWorkLease({ workId: f.attempt.id, generation: f.attempt.generation, reason: "expired" }),
+			);
 			await assert.rejects(
 				f.pool.commit(f.lease, { ...f.attempt, worker: "impostor" }, "lost-ack", mutation),
-				/Stale work lease/,
+				staleWorkLease({ workId: f.attempt.id, generation: f.attempt.generation, reason: "worker-mismatch" }),
 			);
 			await f.backend.hydrateWorkflow("root");
 			if (mutation.kind === "checkpoint")
@@ -368,7 +372,10 @@ test("worker clock skew preserves checkpoints and receipts without extending lea
 			/Pool checkpoint timestamp is in the future/,
 		);
 		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id);
-		await assert.rejects(f.pool.commit(f.lease, f.attempt, "late", mutation), /Stale work lease/);
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "late", mutation),
+			staleWorkLease({ root: "root", workId: f.attempt.id, generation: f.attempt.generation, reason: "expired" }),
+		);
 		await assert.rejects(
 			f.pool.commit(f.lease, f.attempt, "save", {
 				...mutation,
@@ -469,8 +476,16 @@ test.each(["generation", "epoch", "coordinator-expired", "expired", "paused"] as
 			} else if (fence === "coordinator-expired") {
 				await f.database.run("UPDATE wf_leases SET renewed_at = 0");
 			} else await f.backend.commitWorkflowStatus("root", "paused");
+			const attempt = { workId: f.attempt.id, generation: f.attempt.generation };
+			const fenced = {
+				generation: staleWorkLease({ ...attempt, reason: "generation-mismatch" }),
+				epoch: staleWorkLease({ ...attempt, reason: "epoch-mismatch" }),
+				"coordinator-expired": staleLease({ runId: "root", heldEpoch: f.lease.epoch, currentEpoch: f.lease.epoch }),
+				expired: staleWorkLease({ ...attempt, reason: "expired" }),
+				paused: staleWorkLease({ ...attempt, root: "root", reason: "root-not-running" }),
+			}[fence];
 			if (fence !== "expired" && fence !== "paused")
-				await assert.rejects(f.pool.commit(coordinator, f.attempt, "create", createSession), /[Ss]tale/);
+				await assert.rejects(f.pool.commit(coordinator, f.attempt, "create", createSession), fenced);
 			const replacement = { ...stage, checkpointId: `${work.scope}:session:1` };
 			const mutation = {
 				kind: "session-replace" as const,
@@ -479,15 +494,15 @@ test.each(["generation", "epoch", "coordinator-expired", "expired", "paused"] as
 				entries: [],
 				expectSeq: 1,
 			};
-			await assert.rejects(f.pool.commit(coordinator, f.attempt, "late-session", mutation), /[Ss]tale|not running/);
+			await assert.rejects(f.pool.commit(coordinator, f.attempt, "late-session", mutation), fenced);
 			await assert.rejects(
 				f.pool.commit(coordinator, f.attempt, "late-result", { kind: "checkpoint", checkpoint }),
-				/[Ss]tale|not running/,
+				fenced,
 			);
 			if (fence === "epoch")
 				await assert.rejects(
 					f.pool.commit(f.lease, f.attempt, "old-coordinator", { kind: "checkpoint", checkpoint }),
-					/Stale lease/,
+					staleLease({ runId: "root", heldEpoch: f.lease.epoch, currentEpoch: coordinator.epoch }),
 				);
 			assert.deepEqual((await sessions.load("session")).entries, messages);
 			await f.backend.hydrateWorkflow("root");
@@ -599,7 +614,7 @@ test("database reopen recovers attempts, receipts, sessions and results without 
 			assert.equal(next.epoch, takeover.lease.epoch);
 			await assert.rejects(
 				peer.commit(takeover.lease, f.attempt, "late", { kind: "checkpoint", checkpoint }),
-				/Stale work/,
+				staleWorkLease({ workId: f.attempt.id, generation: f.attempt.generation, reason: "epoch-mismatch" }),
 			);
 			assert.deepEqual(await peer.commit(takeover.lease, next, "save", { kind: "checkpoint", checkpoint }), saved);
 			const append = {
@@ -791,7 +806,7 @@ test("completed child result survives a lost acknowledgement and fences later wr
 		assert.equal(await f.pool.claim(f.lease, "another", [work], 60_000), undefined);
 		await assert.rejects(
 			f.pool.commit(f.lease, f.attempt, "late", { kind: "checkpoint", checkpoint }),
-			/Stale work lease/,
+			staleWorkLease({ workId: f.attempt.id, generation: f.attempt.generation, reason: "not-leased" }),
 		);
 		await assert.rejects(f.pool.complete(f.lease, f.attempt, { ...result, status: "failed" }), /identity conflict/);
 	} finally {

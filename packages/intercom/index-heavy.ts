@@ -36,6 +36,7 @@ import {
 } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
+import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
@@ -351,7 +352,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<boolean> {
     const agentDir = dirname(getIntercomDirPath());
     const routing = await queryBrokerRouting(agentDir);
-    if (!getLiveContext(ctx, generation)) throw new Error("Intercom runtime no longer active");
+    if (!getLiveContext(ctx, generation)) throw new IntercomRuntimeInactiveError();
     const actual = routing.acrossMachines;
     brokerRouting = actual;
     const explicit = explicitHomeGroup(config, ctx);
@@ -1156,7 +1157,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function supersededPendingStageRouteError(context: ExtensionContext, generation: number): Error {
     return getLiveContext(context, generation)
       ? new IntercomClientDisconnectedError()
-      : new Error("Intercom runtime no longer active");
+      : new IntercomRuntimeInactiveError();
   }
   async function ensurePendingStageRouteClient(
     runId: string,
@@ -1430,7 +1431,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             }
             if (!getLiveContext(contextAtStart, generationAtStart)) {
               await nextClient.disconnect();
-              throw new Error("Intercom runtime no longer active");
+              throw new IntercomRuntimeInactiveError();
             }
             client = nextClient;
             if (nextClient.sessionId) {

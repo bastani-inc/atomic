@@ -33,6 +33,8 @@ const CHECKPOINT_EVENT = "CheckpointRecorded";
 
 let sequence = 0;
 const pending = new Map();
+/** The worker IPC's error codec, loaded with the admission sources before this worker claims work. */
+let codec;
 process.on("message", (reply) => {
 	if (reply.delivery) {
 		process.send({ id: 0, kind: "delivery-ack", deliveryId: reply.delivery.id });
@@ -40,7 +42,7 @@ process.on("message", (reply) => {
 	}
 	const receiver = pending.get(reply.id);
 	pending.delete(reply.id);
-	if (reply.error) receiver?.reject(new Error(reply.error));
+	if (reply.error) receiver?.reject(codec === undefined ? reply.error : codec.rehydrateError(reply.error));
 	else receiver?.resolve(reply.value);
 });
 process.on("disconnect", () => process.exit(1));
@@ -82,6 +84,7 @@ async function loadAdmission() {
 	const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 	const { resolveRunJournal } = await load("../../packages/workflows/src/durable/journal/resolution.ts");
 	const { SqlResourceAdmission } = await load("../../packages/workflows/src/workers/resource-admission.ts");
+	codec = await load("../../packages/workflows/src/shared/error-codec.ts");
 	return { resolveRunJournal, SqlResourceAdmission };
 }
 
@@ -134,9 +137,10 @@ async function admitReplay(work, { resolveRunJournal, SqlResourceAdmission }) {
 		try {
 			release = await admission.acquire("process");
 		} catch (error) {
-			record({ outcome: "refused", error: error.message, retryable: error.retryable === true });
+			const fault = codec.serializeError(error);
+			record({ outcome: "refused", fault, retryable: error.retryable === true });
 			clearInterval(renewal);
-			await request({ kind: "fenced", fault: error.message });
+			await request({ kind: "fenced", fault });
 			return false;
 		}
 		record({ outcome: "granted" });

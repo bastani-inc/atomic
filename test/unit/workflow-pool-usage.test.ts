@@ -6,6 +6,8 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import type { StaleWorkLeaseReason } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { staleLease, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -86,6 +88,17 @@ test("replacement attempts add spend and a reopened ledger keeps the root total 
 	}
 });
 
+test("a completed attempt still bills the usage it reports late, whatever its lease (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.pool.complete(f.lease, f.attempt, { runId: work.childRunId, status: "completed" });
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id);
+		assert.deepEqual(await f.ledger.report(f.lease, f.attempt, [{ key: "late", usage: usage(5) }]), usage(5));
+	} finally {
+		await f.close();
+	}
+});
+
 test("fenced, foreign and malformed worker usage reports are rejected (#3869)", async () => {
 	const f = await fixture();
 	try {
@@ -97,16 +110,61 @@ test("fenced, foreign and malformed worker usage reports are rejected (#3869)", 
 		assert.ok(replacement);
 		await assert.rejects(
 			f.ledger.report(f.lease, f.attempt, [{ key: "late", usage: usage(500) }]),
-			/stale work lease/i,
+			staleWorkLease({
+				root: "root",
+				workId: f.attempt.id,
+				generation: f.attempt.generation,
+				reason: "generation-mismatch",
+			}),
 		);
 		await assert.rejects(
 			f.ledger.report({ ...f.lease, epoch: f.lease.epoch + 1 }, replacement, report),
-			/stale|lease/i,
+			staleLease({ runId: "root", heldEpoch: f.lease.epoch + 1, currentEpoch: f.lease.epoch }),
 		);
+		const refused = (reason: StaleWorkLeaseReason, workId = replacement.id) =>
+			staleWorkLease({ root: "root", workId, generation: replacement.generation, reason });
+		await assert.rejects(
+			f.ledger.report(f.lease, { ...replacement, id: "unknown-work" }, report),
+			refused("missing", "unknown-work"),
+		);
+		await assert.rejects(
+			f.ledger.report(f.lease, { ...replacement, epoch: replacement.epoch + 1 }, report),
+			refused("epoch-mismatch"),
+		);
+		await assert.rejects(
+			f.ledger.report(f.lease, { ...replacement, worker: "impostor" }, report),
+			refused("worker-mismatch"),
+		);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", replacement.id);
+		await assert.rejects(f.ledger.report(f.lease, replacement, report), refused("expired"));
+		await f.database.run("UPDATE wf_runs_work SET expires_at = ? WHERE id = ?", Date.now() + 60_000, replacement.id);
 		for (const bad of [usage(-1), usage(Number.NaN), usage(Number.POSITIVE_INFINITY), { ...zero, cost: -0.01 }])
 			await assert.rejects(f.ledger.report(f.lease, replacement, [{ key: "bad", usage: bad }]), /usage/i);
 		await assert.rejects(f.ledger.report(f.lease, replacement, [{ key: "", usage: usage(1) }]), /key/i);
 		assert.deepEqual(await f.ledger.total("root"), usage(100));
+		assert.equal(await f.pool.releaseExited(f.lease, replacement), true);
+		await assert.rejects(f.ledger.report(f.lease, replacement, report), refused("not-leased"));
+	} finally {
+		await f.close();
+	}
+});
+
+test("an attempt claimed under an earlier root lease is refused its usage under the next one (#4327)", async () => {
+	const f = await fixture();
+	try {
+		await f.journal.release(f.lease);
+		const next = await f.journal.acquire("root", "next-coordinator");
+		if (next.status !== "acquired") assert.fail("No replacement coordinator");
+		await assert.rejects(
+			f.ledger.report(next.lease, f.attempt, [{ key: "late", usage: usage(5) }]),
+			staleWorkLease({
+				root: "root",
+				workId: f.attempt.id,
+				generation: f.attempt.generation,
+				reason: "epoch-mismatch",
+			}),
+		);
+		assert.deepEqual(await f.ledger.total("root"), zero);
 	} finally {
 		await f.close();
 	}

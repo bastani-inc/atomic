@@ -19,6 +19,7 @@ import {
 	type Lease,
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { isStaleStageLeaseError, StaleStageLeaseError } from "../../packages/workflows/src/workers/placement-errors.js";
 import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
@@ -345,7 +346,7 @@ test("stages record their workspace; hosts register; activity of current attempt
 					binding: null,
 				},
 			),
-			/Stale work lease/,
+			(error: unknown) => isStaleWorkLeaseError(error) && error.reason === "generation-mismatch",
 			"a replaced attempt records nothing",
 		);
 
@@ -693,11 +694,30 @@ test("an attempt stands only while it holds its unexpired work in the root's cur
 			attempt.id,
 		);
 		assert.equal(await standing(f.lease, attempt), undefined, "a completed attempt does not stand");
-		await assert.rejects(
-			storage.transaction((tx) => f.queue.assertAttemptIn(tx, f.lease, attempt)),
-			/Stale work lease/,
+		const refusedReason = async (token: typeof attempt): Promise<string | undefined> => {
+			const refused = await storage
+				.transaction((tx) => f.queue.assertAttemptIn(tx, f.lease, token))
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
+			return isStaleWorkLeaseError(refused) ? refused.reason : undefined;
+		};
+		assert.equal(await refusedReason(attempt), "not-leased");
+		assert.equal(await refusedReason({ ...attempt, id: "missing" }), "missing");
+		await f.database.run(
+			`UPDATE ${PREFIX}wf_runs_work SET state = 'leased', expires_at = 1 WHERE id = ?`,
+			attempt.id,
 		);
-		await f.database.run(`UPDATE ${PREFIX}wf_runs_work SET state = 'leased' WHERE id = ?`, attempt.id);
+		assert.equal(await refusedReason(attempt), "expired");
+		assert.equal(await refusedReason({ ...attempt, generation: attempt.generation + 1 }), "generation-mismatch");
+		assert.equal(await refusedReason({ ...attempt, worker: "someone-else" }), "worker-mismatch");
+		assert.equal(await refusedReason({ ...attempt, epoch: attempt.epoch + 1 }), "epoch-mismatch");
+		await f.database.run(
+			`UPDATE ${PREFIX}wf_runs_work SET expires_at = expires_at + 4000000000000 WHERE id = ?`,
+			attempt.id,
+		);
+		assert.equal(typeof (await storage.transaction((tx) => f.queue.assertAttemptIn(tx, f.lease, attempt))), "number");
 		await f.database.run(`UPDATE ${PREFIX}wf_leases SET epoch = epoch + 1`);
 		const nextLease = { ...f.lease, epoch: f.lease.epoch + 1 };
 		assert.equal(

@@ -1,4 +1,5 @@
 import type { SqliteExecutor } from "@bastani/atomic/storage";
+import { StaleWorkLeaseError, type StaleWorkLeaseReason } from "../../shared/worker-pool-errors.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
@@ -139,15 +140,14 @@ export class SqlPoolUsage {
 				token.id,
 				lease.runId,
 			);
-			if (
-				(work?.state !== "leased" && work?.state !== "completed") ||
-				work.epoch !== token.epoch ||
-				work.epoch !== lease.epoch ||
-				work.generation !== token.generation ||
-				work.worker !== token.worker ||
-				(work.state === "leased" && Number(work.expires_at) < Number(authority.now))
-			)
-				throw new Error("Stale work lease");
+			const stale = (reason: StaleWorkLeaseReason) =>
+				new StaleWorkLeaseError({ root: lease.runId, workId: token.id, generation: token.generation, reason });
+			if (work === undefined) throw stale("missing");
+			if (work.state !== "leased" && work.state !== "completed") throw stale("not-leased");
+			if (work.epoch !== token.epoch || work.epoch !== lease.epoch) throw stale("epoch-mismatch");
+			if (work.generation !== token.generation) throw stale("generation-mismatch");
+			if (work.worker !== token.worker) throw stale("worker-mismatch");
+			if (work.state === "leased" && Number(work.expires_at) < Number(authority.now)) throw stale("expired");
 			for (const { key, usage } of snapshot)
 				await upsertPoolUsage(tx, this.journal.runs, token.id, token.generation, key, usage);
 			return this.totalIn(tx, lease.runId);

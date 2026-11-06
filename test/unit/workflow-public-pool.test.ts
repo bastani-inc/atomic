@@ -8,8 +8,8 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { isLocalWorkerOptionsError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import * as host from "../../packages/workflows/src/workers/admission-host.js";
-import { isLocalWorkerOptionsError } from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
 import { isWorkerPlacementConfigError } from "../../packages/workflows/src/workers/placement-errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 

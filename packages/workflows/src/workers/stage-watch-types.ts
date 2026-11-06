@@ -15,6 +15,7 @@ import type {
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
+import type { SerializedError } from "../shared/error-codec.js";
 import type { StageInputAnswer } from "../shared/stage-prompt.js";
 import type { StageInputKind } from "../shared/store-types.js";
 import type { StageSendUserMessageOptions, WorkflowSerializableValue } from "../shared/types.js";
@@ -197,7 +198,7 @@ export type PooledPromptAnswer =
 	| { readonly kind: "prompt"; readonly promptId: string; readonly response: WorkflowSerializableValue }
 	| { readonly kind: "input"; readonly promptId: string; readonly answer: StageInputAnswer }
 	/** The root could not answer the prompt or question: it fails in the worker with `error`, as an in-process `ui` or broker rejection does. */
-	| { readonly kind: "failed"; readonly promptId: string; readonly error: string };
+	| { readonly kind: "failed"; readonly promptId: string; readonly error: SerializedError };
 
 /**
  * A stage's brokered question (`ask_user_question`) as its worker holds it (#3996): the exact
