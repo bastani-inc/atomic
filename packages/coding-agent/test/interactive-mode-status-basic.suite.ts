@@ -70,6 +70,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			customHeader: undefined,
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
+			pendingMessagesContainer: { children: [] },
 			ui: { requestRender: vi.fn() },
 			showStatus: vi.fn(),
 		};

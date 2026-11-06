@@ -99,6 +99,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 			customHeader: undefined,
 			builtInHeader: undefined,
 			chatContainer: { children: [] as unknown[] },
+			pendingMessagesContainer: { children: [] as unknown[] },
 			ui: {
 				requestRender: () => {
 					renders += 1;

@@ -210,6 +210,8 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 
 		case "agent_settled":
+			this.flushPendingBashComponents();
+			this.ui.requestRender();
 			await this.checkShutdownRequested();
 			break;
 
