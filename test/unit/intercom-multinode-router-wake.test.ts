@@ -104,6 +104,8 @@ interface Node {
 	readonly state: IntercomBrokerStateStore;
 	readonly published: WakeUpHint[];
 	readonly spied: Spied;
+	/** The held sends this broker routed again as their sender. */
+	readonly dispatched: string[];
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -160,6 +162,10 @@ async function startNode(
 		readonly undeliveredListInvalid?: boolean;
 		/** Presence lease acquisitions wait until this settles, as when the database is slow to answer. */
 		readonly presenceAcquireGate?: Promise<void>;
+		/** Outbox claims are handed back only once this settles, as when the database is slow to answer. */
+		readonly releaseClaimGate?: Promise<void>;
+		/** Held sends are written only once this settles, as when the database is slow to answer. */
+		readonly holdGate?: Promise<void>;
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
@@ -175,6 +181,10 @@ async function startNode(
 		},
 		heldSends: {
 			...inner.heldSends,
+			hold: async (send) => {
+				await options.holdGate;
+				return inner.heldSends.hold(send);
+			},
 			list: async (key) => {
 				spied.heldListCalls++;
 				await options.heldListGate;
@@ -184,6 +194,10 @@ async function startNode(
 		},
 		outbox: {
 			...inner.outbox,
+			releaseClaim: async (claim) => {
+				await options.releaseClaimGate;
+				return inner.outbox.releaseClaim(claim);
+			},
 			listUndelivered: async (identity) =>
 				options.undeliveredListInvalid === true
 					? { status: "invalid", reason: "empty-target-identity" }
@@ -216,6 +230,7 @@ async function startNode(
 		close: () => innerBus.close(),
 	};
 	const sessions = new Map<string, BrokerConnectedSession>();
+	const dispatched: string[] = [];
 	const router = await MultiNodeRouter.start({
 		state,
 		bus,
@@ -232,13 +247,15 @@ async function startNode(
 			supervisorCache: new SupervisorChannelCache(),
 			pendingQuestions: new PendingQuestionIndex(),
 			deliveredMessages: { lookupForTarget: () => "miss", lookupQuestionTarget: () => undefined },
-			dispatch: () => {},
+			dispatch: (_socket, clientMessage) => {
+				dispatched.push((clientMessage as unknown as HeldSendRequest).message.id);
+			},
 			revokeReleasedReservation: () => {},
 		},
 	});
 	cleanups.push(() => router.close());
 	await flush();
-	return { router, sessions, state, published, spied };
+	return { router, sessions, state, published, spied, dispatched };
 }
 
 function reserve(
@@ -1060,6 +1077,83 @@ describe("released child sends queued across faults (#4401)", () => {
 
 		const back = await wakeAndRegister(ownerNode, owner, child);
 		assert.deepEqual(messageIdsOf(back), ids);
+	});
+
+	test("a send held for a released child waits while its wake restores it, and is handed on as soon as the child registers with that wake's capability, not at its broker's next outcome poll (#4488)", async () => {
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		const send = remoteSend(sender, CHILD, true);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+
+		// The owner restores the child under a capability of its own, which takes the released reservation over.
+		const capability = `${randomUUID()}.capability`;
+		ownerNode.router.restoringReserved(capability, owner.info.id, CHILD, CREW, aliasesOf(child), false);
+		await flush();
+		assert.deepEqual(senderNode.dispatched, [], "held while the child is being restored");
+
+		const back = reconnected(child);
+		ownerNode.sessions.set(back.info.id, back);
+		await ownerNode.router.sessionRegistered(back, {
+			capability,
+			childName: CHILD,
+			groups: new Set([CREW]),
+			authorizedBy: owner.info.id,
+		});
+		await flush();
+		assert.deepEqual(senderNode.dispatched, [send.id]);
+	});
+
+	test("a send held while its owner makes a released child wakeable again wakes it once, also when the owner's broker looked for held sends before the send was written (#4488)", async () => {
+		const shared = await cluster();
+		const holdWritten = Promise.withResolvers<void>();
+		const ownerNode = await startNode(shared);
+		const senderNode = await startNode(shared, { holdGate: holdWritten.promise });
+		const owner = session("owner");
+		const sender = session("sender");
+		await register(ownerNode, owner);
+		await register(senderNode, sender);
+		const child = await releasedChild(ownerNode);
+		// The owner parks the child while it releases it: a send that finds it so is held without asking for a wake.
+		reserveReleased(ownerNode, owner, child, { wake: false });
+		await flush();
+		const send = remoteSend(sender, CHILD, true);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		// Released, it is made wakeable while the held send is still being written.
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		holdWritten.resolve();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "send_held");
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	test("a message a released child never confirmed wakes it again and reaches it once, also when its owner made it wakeable before the broker handled its departure (#4488)", async () => {
+		const shared = await cluster();
+		const departureHandled = Promise.withResolvers<void>();
+		const ownerNode = await startNode(shared, { releaseClaimGate: departureHandled.promise });
+		const owner = session("owner");
+		await register(ownerNode, owner);
+		const child = session(CHILD);
+		const ids = await enqueueFor(ownerNode, child);
+		await register(ownerNode, child);
+		assert.deepEqual(messageIdsOf(child), ids, "written to the child, which is released before it confirms it");
+		leave(ownerNode, child);
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		departureHandled.resolve();
+		await flush();
+		assert.deepEqual(await rowStates(ownerNode, ids), ["queued"]);
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+
+		const back = await wakeAndRegister(ownerNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+		await receiveAll(ownerNode, back, ids);
+		assert.deepEqual(await rowStates(ownerNode, ids), ["delivered"]);
+		assert.equal(wakeFramesOf(owner).length, 1);
 	});
 
 	test("a released child that a broker still hosts is not woken for the sends being delivered to it (#4401)", async () => {
