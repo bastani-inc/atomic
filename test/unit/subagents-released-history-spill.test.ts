@@ -5,6 +5,7 @@ import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-
 import type { CreateAgentSessionOptions } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -42,72 +43,82 @@ function entryBytes(entries: readonly object[]): number {
 	return entries.length === 0 ? 0 : Buffer.byteLength(JSON.stringify(entries)) - 2;
 }
 
-test(
-	"a released in-memory subagent keeps only its header in memory, and its call's result wakes it from its whole history (#4502)",
-	async () => {
-		const env = await liveChildEnvironment(cleanups);
-		const store = new MemorySessionStore();
-		const owner = await SessionManager.create(store, env.root);
-		const ownerSessionId = owner.getSessionId();
-		const host = new AgentTaskHost({ scope: { kind: "session", sessionId: ownerSessionId }, authorizeLaunch() {} });
-		const childSessionOptions = env.options("unused").getChildSessionOptions as (
-			options: CreateAgentSessionOptions,
-		) => CreateAgentSessionOptions;
-		const ctx = {
-			getChildSessionOptions: childSessionOptions,
-			cwd: env.root,
-			mode: "tui",
-			hasUI: false,
-			ui: {},
-			sessionManager: owner,
-			getAgentTaskHost: () => host,
-			modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
-			model: undefined,
-			thinkingLevel: undefined,
-		} as unknown as ExtensionContext;
-		const handlers = new Map<string, Array<(payload: object) => void>>();
-		const events: IntercomEventBus = {
-			on(channel, handler) {
-				handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
-				return () =>
-					handlers.set(
-						channel,
-						(handlers.get(channel) ?? []).filter((candidate) => candidate !== handler),
-					);
-			},
-			emit(channel, payload) {
-				for (const handler of handlers.get(channel) ?? []) handler(payload as object);
-			},
-		};
-		const appendEntry = async <T>(type: string, data?: T): Promise<void> => {
-			await owner.appendCustomEntry(type, data);
-		};
-		const deps: SubagentChildRestoreDeps = {
-			pi: { events, appendEntry, getSessionName: () => "owner" } as never,
-			config: {},
-			discoverAgents: () => ({ agents: [agent] }),
-			runtime: {
-				runSync: (cwd, agents, agentName, task, options) =>
-					runSync(cwd, agents, agentName, task, { ...options, testSession: false }),
-			},
-		};
-		const dispatcher = new AgentWakeDispatcher();
-		const stopWakes = bindReleasedChildWakes(deps, ctx, events, dispatcher);
-		cleanups.push(async () => {
-			stopWakes();
-			await host.close("session-close");
-			await store.close();
-		});
-		const latest = (): SubagentChildRecord | undefined => readSubagentChildRecords(owner.getEntries()).get("spill:0");
-		const until = async (accept: (record: SubagentChildRecord) => boolean) => {
-			for (let turn = 0; turn < 4000; turn++) {
-				const record = latest();
-				if (record !== undefined && accept(record)) return record;
-				await new Promise((resolve) => setTimeout(resolve, 5));
-			}
-			throw new Error(`the child never reached the expected record: ${JSON.stringify(latest())}`);
-		};
+/** The most bytes the owner's own history may differ by from its JSON: the commas between its few buffers. */
+const BUFFER_SEPARATOR_SLACK = 32;
 
+/**
+ * An owner session over `store` with the real task host, record sink and wake binding, as the idle-agents benchmark
+ * builds it; `launch()` starts one background child in the same store that waits on a detachable call and is released.
+ */
+async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
+	const env = await liveChildEnvironment(cleanups);
+	const owner = await SessionManager.create(store, env.root);
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: owner.getSessionId() },
+		authorizeLaunch() {},
+	});
+	const ctx = {
+		getChildSessionOptions: env.options("unused").getChildSessionOptions as (
+			options: CreateAgentSessionOptions,
+		) => CreateAgentSessionOptions,
+		cwd: env.root,
+		mode: "tui",
+		hasUI: false,
+		ui: {},
+		sessionManager: owner,
+		getAgentTaskHost: () => host,
+		modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
+		model: undefined,
+		thinkingLevel: undefined,
+	} as unknown as ExtensionContext;
+	const handlers = new Map<string, Array<(payload: object) => void>>();
+	const events: IntercomEventBus = {
+		on(channel, handler) {
+			handlers.set(channel, [...(handlers.get(channel) ?? []), handler]);
+			return () =>
+				handlers.set(
+					channel,
+					(handlers.get(channel) ?? []).filter((candidate) => candidate !== handler),
+				);
+		},
+		emit(channel, payload) {
+			for (const handler of handlers.get(channel) ?? []) handler(payload as object);
+		},
+	};
+	const appendEntry = async <T>(type: string, data?: T): Promise<void> => {
+		await owner.appendCustomEntry(type, data);
+	};
+	const deps: SubagentChildRestoreDeps = {
+		pi: { events, appendEntry, getSessionName: () => "owner" } as never,
+		config: {},
+		discoverAgents: () => ({ agents: [agent] }),
+		runtime: {
+			runSync: (cwd, agents, agentName, task, options) =>
+				runSync(cwd, agents, agentName, task, { ...options, testSession: false }),
+		},
+	};
+	const dispatcher = new AgentWakeDispatcher();
+	const stopWakes = bindReleasedChildWakes(deps, ctx, events, dispatcher);
+	let closed = false;
+	const close = async () => {
+		if (closed) return;
+		closed = true;
+		stopWakes();
+		await host.close("session-close");
+		await closeStore();
+	};
+	cleanups.push(close);
+	const latest = (): SubagentChildRecord | undefined => readSubagentChildRecords(owner.getEntries()).get("spill:0");
+	const until = async (accept: (record: SubagentChildRecord) => boolean) => {
+		for (let turn = 0; turn < 4000; turn++) {
+			const record = latest();
+			if (record !== undefined && accept(record)) return record;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		throw new Error(`the child never reached the expected record: ${JSON.stringify(latest())}`);
+	};
+	/** Launch the child and wait until it is released; returns its session id. */
+	const launch = async (): Promise<string> => {
 		env.faux.setResponses([
 			{
 				role: "assistant",
@@ -140,33 +151,96 @@ test(
 		});
 		assert.equal(response.kind, "admitted");
 		const released = await until((record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
-		const childSessionId = released.childSessionId as string;
 		await dispatcher.whenIdle();
-
-		const history = (await store.load(childSessionId)).entries;
-		assert.ok(entryBytes(history) > CHILD_TEXT_BYTES, `${entryBytes(history)} bytes of child history`);
-		const ownerSnapshot = await store.load(ownerSessionId);
-		const ownerBytes = Buffer.byteLength(JSON.stringify(ownerSnapshot.header)) + entryBytes(ownerSnapshot.entries);
-		const childHeaderBytes = Buffer.byteLength(JSON.stringify(await store.readHeader(childSessionId)));
-		assert.deepEqual(store.historyBytes(), {
-			inMemory: ownerBytes + childHeaderBytes,
-			onDisk: entryBytes(history),
-		});
-
+		return released.childSessionId as string;
+	};
+	/** Answer the child's call, which wakes it, and wait until its woken run has ended. */
+	const wake = async () => {
 		env.answers[0]?.({ content: [{ type: "text", text: "CI passed" }], details: undefined });
 		await until((record) => record.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS && record.state === "terminal");
 		await dispatcher.whenIdle();
+	};
+	/** The cleanup each of the owner's tasks ended with: `"reaped"` once its session closed cleanly. */
+	const taskCleanups = () => {
+		const watched = host.watchOwnerTasks();
+		assert.ok(watched.ok);
+		const kinds = watched.value.snapshot.tasks.map((task) => task.cleanup.kind);
+		watched.value.dispose();
+		return kinds;
+	};
+	return { owner, launch, wake, latest, close, taskCleanups };
+}
+
+test(
+	"a released in-memory subagent keeps only its header in memory, and its call's result wakes it from its whole history (#4502)",
+	async () => {
+		const store = new MemorySessionStore();
+		const h = await ownerOf(store, () => store.close());
+		const childSessionId = await h.launch();
+
+		const history = (await store.load(childSessionId)).entries;
+		assert.ok(entryBytes(history) > CHILD_TEXT_BYTES, `${entryBytes(history)} bytes of child history`);
+		const ownerSnapshot = await store.load(h.owner.getSessionId());
+		const ownerBytes = Buffer.byteLength(JSON.stringify(ownerSnapshot.header)) + entryBytes(ownerSnapshot.entries);
+		const childHeaderBytes = Buffer.byteLength(JSON.stringify(await store.readHeader(childSessionId)));
+		const held = store.historyBytes();
+		assert.equal(held.onDisk, entryBytes(history));
+		assert.ok(
+			held.inMemory <= ownerBytes + childHeaderBytes &&
+				held.inMemory >= ownerBytes + childHeaderBytes - BUFFER_SEPARATOR_SLACK,
+			`${held.inMemory} bytes in memory: the owner's ${ownerBytes} and the child's header ${childHeaderBytes}`,
+		);
+
+		await h.wake();
 
 		const woken = (await store.load(childSessionId)).entries;
 		assert.deepEqual(woken.slice(0, history.length), history, "the wake continued from the whole history");
 		const continuation = woken.slice(history.length);
 		assert.equal(continuation[0]?.parentId, history.at(-1)?.id);
-		const messages = continuation.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
 		assert.deepEqual(
-			messages.map((message) => message.role),
+			continuation.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
 			["toolResult", "assistant"],
 		);
-		assert.equal(latest()?.terminalStatus, "ok");
+		assert.equal(h.latest()?.terminalStatus, "ok");
+		assert.deepEqual(h.taskCleanups(), ["reaped", "reaped"]);
+		assert.equal(
+			store.historyBytes().onDisk,
+			entryBytes(history),
+			"a run that ends without a release keeps what it wrote in memory",
+		);
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a subagent over a store that keeps no history in memory is released and woken as before, and its task closes cleanly (#4502)",
+	async () => {
+		const inner = new MemorySessionStore();
+		const store: SessionStore = {
+			get descriptor() {
+				return inner.descriptor;
+			},
+			create: (header, entries) => inner.create(header, entries),
+			append: (sessionId, entries, options) => inner.append(sessionId, entries, options),
+			replace: (sessionId, header, entries, options) => inner.replace(sessionId, header, entries, options),
+			load: (sessionId) => inner.load(sessionId),
+			readHeader: (sessionId) => inner.readHeader(sessionId),
+			delete: (sessionId) => inner.delete(sessionId),
+			list: (query) => inner.list(query),
+			findMostRecent: (query) => inner.findMostRecent(query),
+			close: () => inner.close(),
+		};
+		const h = await ownerOf(store, () => inner.close());
+		const childSessionId = await h.launch();
+		const history = (await store.load(childSessionId)).entries;
+		assert.equal(inner.historyBytes().onDisk, 0);
+
+		await h.wake();
+
+		assert.deepEqual((await store.load(childSessionId)).entries.slice(0, history.length), history);
+		assert.equal(h.latest()?.terminalStatus, "ok");
+		assert.deepEqual(h.taskCleanups(), ["reaped", "reaped"], "releasing the child closed its session cleanly");
+		await h.close();
 	},
 	CHILD_TIMEOUT_MS,
 );

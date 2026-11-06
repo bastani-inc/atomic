@@ -482,7 +482,13 @@ export interface SessionSpillErrorFields {
 }
 
 /** Filesystem failures that pass: a read that met one may work when tried again. */
-const TRANSIENT_SPILL_ERRNOS: ReadonlySet<string> = new Set(["EMFILE", "ENFILE", "EAGAIN", "EBUSY", "EINTR"]);
+const TRANSIENT_SPILL_ERRNOS: ReadonlySet<string | undefined> = new Set([
+	"EMFILE",
+	"ENFILE",
+	"EAGAIN",
+	"EBUSY",
+	"EINTR",
+]);
 
 const SESSION_SPILL_HINTS: Readonly<Record<SessionSpillErrorCode, string>> = {
 	"spill-dir-refused":
@@ -534,8 +540,7 @@ export class SessionSpillError extends StorageError {
 		super(`${sessionSpillSubject(code, fields)} (${code}). ${hint}`, options);
 		this.code = code;
 		this.hint = hint;
-		this.retryable =
-			code === "spill-read-failed" && fields.errno !== undefined && TRANSIENT_SPILL_ERRNOS.has(fields.errno);
+		this.retryable = code === "spill-read-failed" && TRANSIENT_SPILL_ERRNOS.has(fields.errno);
 		this.directory = fields.directory;
 		if (fields.sessionId !== undefined) this.sessionId = fields.sessionId;
 		if (fields.bytes !== undefined) this.bytes = fields.bytes;

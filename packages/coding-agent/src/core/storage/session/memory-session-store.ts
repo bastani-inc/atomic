@@ -78,7 +78,7 @@ function removeSpillDirectoriesAtExit(): void {
 	process.once("exit", () => {
 		for (const directory of liveSpillDirectories) {
 			try {
-				rmSync(directory, { recursive: true, force: true });
+				rmSync(directory, { recursive: true });
 			} catch {
 				// Nothing can report it while the process exits; Atomic's temp sweep removes what is left.
 			}
@@ -92,24 +92,24 @@ function removeSpillDirectoriesAtExit(): void {
  * handle closes, or at exit.
  */
 class SpillDirectory {
-	private path: string | undefined;
-	private lease: ProtectedPathLease | undefined;
+	private current: { readonly path: string; readonly lease: ProtectedPathLease } | undefined;
 	private files = 0;
 	private handles = 1;
-	private readonly writes = new Set<Promise<void>>();
 	private readonly degradations = new Map<SessionSpillErrorCode, SessionSpillError>();
-
-	get open(): boolean {
-		return this.handles > 0;
-	}
 
 	attach(): void {
 		this.handles += 1;
 	}
 
+	/** One handle closed; whether it was the last. */
+	detach(): boolean {
+		this.handles -= 1;
+		return this.handles === 0;
+	}
+
 	/** The directory, created on first use; undefined, and recorded, when it cannot be created or trusted. */
 	directory(): string | undefined {
-		if (this.path !== undefined) return this.path;
+		if (this.current !== undefined) return this.current.path;
 		const path = join(getTempRootDir(), `memory-sessions-${process.pid}-${randomBytes(6).toString("hex")}`);
 		try {
 			ensureTempDir(path);
@@ -117,8 +117,7 @@ class SpillDirectory {
 			this.degraded("spill-dir-refused", { directory: path, errno: getErrnoCode(cause) }, cause);
 			return undefined;
 		}
-		this.path = path;
-		this.lease = acquireProtectedPaths([path]);
+		this.current = { path, lease: acquireProtectedPaths([path]) };
 		liveSpillDirectories.add(path);
 		removeSpillDirectoriesAtExit();
 		return path;
@@ -129,25 +128,15 @@ class SpillDirectory {
 		return this.files;
 	}
 
-	track(write: Promise<void>): void {
-		const done = settled(write);
-		this.writes.add(done);
-		void done.then(() => this.writes.delete(done));
-	}
-
-	/** One handle closed; the last one removes the directory once its writes have finished. */
-	async detach(): Promise<void> {
-		this.handles -= 1;
-		if (this.handles > 0) return;
-		await Promise.all(this.writes);
-		const path = this.path;
-		if (this.handles > 0 || path === undefined) return;
-		this.path = undefined;
-		this.lease?.release();
-		this.lease = undefined;
-		liveSpillDirectories.delete(path);
-		await rm(path, { recursive: true, force: true }).catch((cause: Error) =>
-			this.degraded("spill-cleanup-failed", { directory: path, errno: getErrnoCode(cause) }, cause),
+	/** Removes the directory and every file in it, once the last handle has closed. */
+	async remove(): Promise<void> {
+		const current = this.current;
+		if (current === undefined) return;
+		this.current = undefined;
+		current.lease.release();
+		liveSpillDirectories.delete(current.path);
+		await rm(current.path, { recursive: true, force: true }).catch((cause: Error) =>
+			this.degraded("spill-cleanup-failed", { directory: current.path, errno: getErrnoCode(cause) }, cause),
 		);
 	}
 
@@ -276,7 +265,6 @@ export class MemorySessionStore implements SessionStore {
 				if (record.spilling === spilling) record.spilling = undefined;
 			});
 		record.spilling = spilling;
-		this.spill.track(spilling);
 		await spilling;
 	}
 
@@ -350,7 +338,9 @@ export class MemorySessionStore implements SessionStore {
 	async close(): Promise<void> {
 		this.assertOpen();
 		this.closed = true;
-		await this.spill.detach();
+		if (!this.spill.detach()) return;
+		await Promise.all(Array.from(this.records.values(), (record) => settled(record.spilling)));
+		await this.spill.remove();
 	}
 
 	async reopen(): Promise<MemorySessionStore> {
@@ -409,7 +399,7 @@ export class MemorySessionStore implements SessionStore {
 
 	/** Writes the entries the session holds in memory after those its file already has. */
 	private async spillEntries(sessionId: string, record: StoredSession): Promise<void> {
-		if (!this.spill.open || this.records.get(sessionId) !== record || record.entries.length === 0) return;
+		if (this.records.get(sessionId) !== record || record.entries.length === 0) return;
 		const directory = record.directory ?? this.spill.directory();
 		if (directory === undefined) return;
 		if (record.directory === undefined) {
@@ -429,8 +419,7 @@ export class MemorySessionStore implements SessionStore {
 			await writeAt(join(directory, String(record.file)), data, record.spilledBytes);
 			record.spilledBytes += data.byteLength;
 		} catch (cause) {
-			// Appends made while it was writing follow what it took.
-			record.entries = record.entries.length === 0 ? chunks : [...chunks, ...record.entries];
+			record.entries = [...chunks, ...record.entries];
 			this.spill.degraded("spill-write-failed", { directory, sessionId, bytes, errno: getErrnoCode(cause) }, cause);
 		}
 	}
@@ -524,7 +513,7 @@ async function readSpillFile(directory: string, file: number, sessionId: string,
 	}
 	if (data.byteLength < bytes)
 		throw new SessionSpillError("spill-missing", { directory, sessionId, bytes, foundBytes: data.byteLength });
-	return data.byteLength === bytes ? data : data.subarray(0, bytes);
+	return data.subarray(0, bytes);
 }
 
 /** The chunks as one buffer, with a comma between each two. */

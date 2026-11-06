@@ -15,7 +15,7 @@ import {
 	serializeStorageError,
 } from "../src/core/storage/errors.js";
 import { registerSessionStoreConformance } from "../src/core/storage/session/conformance.js";
-import { SessionNotFoundError, StoreClosedError } from "../src/core/storage/session/errors.js";
+import { SessionInvalidTextError, SessionNotFoundError, StoreClosedError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { getProtectedSessionTempDirs, getTempRootDir } from "../src/core/tools/session-temp-dir.js";
@@ -29,6 +29,11 @@ const open = vi.mocked(fsPromises.open);
 const readFile = vi.mocked(fsPromises.readFile);
 const rm = vi.mocked(fsPromises.rm);
 const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+
+/** Lets `turns` turns of the event loop pass, enough for file operations already started to finish. */
+async function eventLoopTurns(turns: number): Promise<void> {
+	for (let turn = 0; turn < turns; turn++) await new Promise((resolve) => setImmediate(resolve));
+}
 
 /** Holds the next file `open` until the returned function runs, then fails it with `failure` or opens it. */
 function holdNextOpen(failure?: Error): () => void {
@@ -308,17 +313,189 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		assert.deepEqual(reopened.spillDegradation(), []);
 	});
 
-	test("a directory left by a store never closed is removed at exit", async () => {
-		const store = newStore();
+	test("a directory left by a store never closed is removed at exit, by one listener for the whole process", async () => {
+		vi.resetModules();
+		const fresh = await import("../src/core/storage/session/memory-session-store.js");
+		const listening = () =>
+			process.listeners("exit").filter((listener) => listener.toString().includes("liveSpillDirectories"));
+		const before = listening();
+		const first = new fresh.MemorySessionStore();
+		const second = new fresh.MemorySessionStore();
+		for (const store of [first, second]) {
+			await store.create(header("s"), entries("e", 5));
+			await store.releaseSession("s");
+		}
+		const added = listening().filter((listener) => !before.includes(listener));
+		assert.equal(added.length, 1);
+		const directories = spillDirectories().map(({ path }) => path);
+		assert.equal(directories.length, 2);
+		(added[0] as () => void)();
+		assert.deepEqual(
+			directories.filter((path) => existsSync(path)),
+			[],
+		);
+		process.removeListener("exit", added[0] as () => void);
+	});
+
+	test("closing a store waits for a write in flight, then removes the directory; a store that never wrote removes nothing", async () => {
+		const store = new MemorySessionStore();
+		await created(store, "s", entries("e", 5));
+		const resume = holdNextOpen();
+		const releasing = store.releaseSession("s");
+		await vi.waitFor(() => assert.equal(open.mock.calls.length, 1));
+		const [{ path }] = spillDirectories();
+		const closing = store.close();
+		await eventLoopTurns(20);
+		assert.ok(existsSync(path), "the directory stays while a write is in flight");
+		resume();
+		await Promise.all([releasing, closing]);
+		assert.deepEqual(spillDirectories(), []);
+		assert.deepEqual(store.spillDegradation(), []);
+
+		const unused = new MemorySessionStore();
+		await created(unused, "u", entries("u", 2));
+		await unused.close();
+		assert.deepEqual(unused.spillDegradation(), []);
+		assert.equal(rm.mock.calls.length, 1, "only the directory that was written is removed");
+	});
+
+	test("a directory something else already removed is not a cleanup failure", async () => {
+		const store = new MemorySessionStore();
 		await created(store, "s", entries("e", 5));
 		await store.releaseSession("s");
 		const [{ path }] = spillDirectories();
-		const cleanups = process
-			.listeners("exit")
-			.filter((listener) => listener.toString().includes("liveSpillDirectories"));
-		assert.equal(cleanups.length, 1, "one exit listener for every store in the process");
-		(cleanups[0] as () => void)();
-		assert.equal(existsSync(path), false);
+		rmSync(path, { recursive: true });
+		await store.close();
+		assert.deepEqual(store.spillDegradation(), []);
+	});
+
+	test("a release waiting behind a write in flight writes nothing for a session deleted meanwhile, and the delete leaves no file", async () => {
+		const store = newStore();
+		await created(store, "s", entries("a", 5));
+		const resume = holdNextOpen();
+		const first = store.releaseSession("s");
+		await vi.waitFor(() => assert.equal(open.mock.calls.length, 1));
+		await store.append("s", entries("b", 2), { expectSeq: 5 });
+		const second = store.releaseSession("s");
+		const deleting = store.delete("s");
+		await eventLoopTurns(20);
+		resume();
+		await Promise.all([first, second, deleting]);
+		assert.equal(open.mock.calls.length, 1);
+		assert.deepEqual(spillFileSizes(), []);
+		assert.deepEqual(store.spillDegradation(), []);
+	});
+
+	test("a load waits for every release queued behind the write in flight, so what they took is never missed", async () => {
+		const store = newStore();
+		const first = entries("a", 5);
+		await created(store, "s", first);
+		const resumeFirst = holdNextOpen();
+		const releasingFirst = store.releaseSession("s");
+		await vi.waitFor(() => assert.equal(open.mock.calls.length, 1));
+		const later = entries("b", 2);
+		await store.append("s", later, { expectSeq: 5 });
+		const resumeSecond = holdNextOpen();
+		const releasingSecond = store.releaseSession("s");
+		resumeFirst();
+		await releasingFirst;
+		await vi.waitFor(() => assert.equal(open.mock.calls.length, 2));
+		const loading = store.load("s");
+		resumeSecond();
+		await releasingSecond;
+		assert.deepEqual((await loading).entries, [...first, ...later]);
+	});
+
+	test("a session deleted while a listing reads its file is left out of the listing", async () => {
+		const store = newStore();
+		await created(store, "gone", entries("g", 3));
+		await created(store, "kept", entries("k", 3));
+		await store.releaseSession("gone");
+		let reading!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			reading = resolve;
+		});
+		readFile.mockImplementationOnce(async (...args: Parameters<typeof actual.readFile>) => {
+			await gate;
+			return actual.readFile(...args);
+		});
+		const listing = (async () => {
+			const ids: string[] = [];
+			for await (const summary of store.list({})) ids.push(summary.id);
+			return ids;
+		})();
+		await vi.waitFor(() => assert.equal(readFile.mock.calls.length, 1));
+		await store.delete("gone");
+		reading();
+		assert.deepEqual(await listing, ["kept"]);
+	});
+
+	test("a load whose file disappears because the store closed fails as a closed store", async () => {
+		const store = new MemorySessionStore();
+		await created(store, "s", entries("e", 3));
+		await store.releaseSession("s");
+		let reading!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			reading = resolve;
+		});
+		readFile.mockImplementationOnce(async (...args: Parameters<typeof actual.readFile>) => {
+			await gate;
+			return actual.readFile(...args);
+		});
+		const loading = store.load("s");
+		await vi.waitFor(() => assert.equal(readFile.mock.calls.length, 1));
+		await store.close();
+		reading();
+		await assert.rejects(loading, (error: Error) => error instanceof StoreClosedError);
+	});
+
+	test("releasing a session held in one buffer writes that buffer without copying it", async () => {
+		const store = newStore();
+		await store.create(header("s"), entries("e", 20));
+		const set = vi.spyOn(Uint8Array.prototype, "set");
+		await store.releaseSession("s");
+		assert.equal(set.mock.calls.length, 0);
+		set.mockRestore();
+		assert.deepEqual((await store.load("s")).entries, entries("e", 20));
+	});
+
+	test("a write the filesystem takes in parts still writes the whole history, and the file is closed once", async () => {
+		const store = newStore();
+		const first = entries("a", 10);
+		await created(store, "s", first);
+		await store.releaseSession("s");
+		const later = entries("b", 10);
+		await store.append("s", later, { expectSeq: 10 });
+		const writes: number[] = [];
+		const lengths: number[] = [];
+		let closes = 0;
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: (data: Uint8Array, offset: number, length: number, position: number) => {
+					writes.push(position);
+					lengths.push(length);
+					return handle.write(data, offset, Math.min(length, 700), position);
+				},
+				close: () => {
+					closes += 1;
+					return handle.close();
+				},
+			} as unknown as fsPromises.FileHandle;
+		});
+		await store.releaseSession("s");
+		const bytes = 1 + entryBytes(later);
+		const parts = Math.ceil(bytes / 700);
+		assert.deepEqual(
+			writes,
+			Array.from({ length: parts }, (_, index) => entryBytes(first) + index * 700),
+		);
+		assert.deepEqual(
+			lengths,
+			Array.from({ length: parts }, (_, index) => bytes - index * 700),
+		);
+		assert.equal(closes, 1);
+		assert.deepEqual((await store.load("s")).entries, [...first, ...later]);
 	});
 });
 
@@ -408,7 +585,8 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		await created(store, "s", entries("e", 3));
 		await store.releaseSession("s");
 		const cause = (code: string) => Object.assign(new Error(code), { code });
-		readFile.mockRejectedValueOnce(cause("EMFILE")).mockRejectedValueOnce(cause("EIO"));
+		const tooMany = cause("EMFILE");
+		readFile.mockRejectedValueOnce(tooMany).mockRejectedValueOnce(cause("EIO"));
 
 		const transient = await store.load("s").then(
 			() => assert.fail("the load succeeded"),
@@ -418,6 +596,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		assert.equal(transient.code, "spill-read-failed");
 		assert.equal(transient.errno, "EMFILE");
 		assert.equal(transient.retryable, true);
+		assert.equal(transient.cause, tooMany);
 		assert.equal(isRetryableStorageError(new Error("wake failed", { cause: transient })), true);
 
 		const lasting = await store.load("s").then(
@@ -452,6 +631,128 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		rmSync(path, { recursive: true, force: true });
 	});
 
+	test("a write the filesystem rejects keeps the history in memory, and a close that fails after it stays attached to it", async () => {
+		const store = newStore();
+		const history = entries("e", 10);
+		await created(store, "s", history);
+		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		const ioError = Object.assign(new Error("I/O error"), { code: "EIO" });
+		const closeError = Object.assign(new Error("bad descriptor"), { code: "EBADF" });
+		let closes = 0;
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: async () => {
+					throw ioError;
+				},
+				close: async () => {
+					closes += 1;
+					await handle.close();
+					throw closeError;
+				},
+			} as unknown as fsPromises.FileHandle;
+		});
+		await store.releaseSession("s");
+		assert.equal(closes, 1);
+		const [degradation] = store.spillDegradation();
+		assert.equal(degradation?.code, "spill-write-failed");
+		assert.equal(degradation?.errno, "EIO");
+		assert.equal(degradation?.cause, ioError);
+		assert.equal((ioError as { cleanupCause?: Error }).cleanupCause, closeError);
+		assert.deepEqual(store.historyBytes(), { inMemory: headerBytes("s") + entryBytes(history), onDisk: 0 });
+		assert.deepEqual((await store.load("s")).entries, history);
+	});
+
+	test("a write that fails with something other than an Error keeps that failure as the cause", async () => {
+		const store = newStore();
+		await created(store, "s", entries("e", 2));
+		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: () => Promise.reject("EIO"),
+				close: async () => {
+					await handle.close();
+					throw new Error("close failed too");
+				},
+			} as unknown as fsPromises.FileHandle;
+		});
+		await store.releaseSession("s");
+		const [degradation] = store.spillDegradation();
+		assert.equal(degradation?.code, "spill-write-failed");
+		assert.equal(degradation?.cause, "EIO");
+	});
+
+	test("a close that fails after a whole write keeps the history in memory, with the close failure as the cause", async () => {
+		const store = newStore();
+		const history = entries("e", 4);
+		await created(store, "s", history);
+		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		const closeError = Object.assign(new Error("no space at close"), { code: "ENOSPC" });
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: (data: Uint8Array, offset: number, length: number, position: number) =>
+					handle.write(data, offset, length, position),
+				close: async () => {
+					await handle.close();
+					throw closeError;
+				},
+			} as unknown as fsPromises.FileHandle;
+		});
+		await store.releaseSession("s");
+		const [degradation] = store.spillDegradation();
+		assert.equal(degradation?.code, "spill-write-failed");
+		assert.equal(degradation?.cause, closeError);
+		assert.equal(degradation?.errno, "ENOSPC");
+		assert.equal(store.historyBytes().onDisk, 0);
+		await store.releaseSession("s");
+		assert.deepEqual(store.historyBytes(), { inMemory: headerBytes("s"), onDisk: entryBytes(history) });
+		assert.deepEqual((await store.load("s")).entries, history);
+	});
+
+	test("a session whose first write failed leaves no file, so deleting it is not a cleanup failure", async () => {
+		const store = newStore();
+		await created(store, "s", entries("e", 3));
+		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		open.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "EACCES" }));
+		await store.releaseSession("s");
+		await store.delete("s");
+		assert.deepEqual(
+			store.spillDegradation().map((error) => error.code),
+			["spill-write-failed"],
+		);
+	});
+
+	test("a directory that cannot be removed when the store closes is recorded as spill-cleanup-failed for the directory", async () => {
+		const store = new MemorySessionStore();
+		await created(store, "s", entries("e", 3));
+		await store.releaseSession("s");
+		const [{ path }] = spillDirectories();
+		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+		rm.mockRejectedValueOnce(busy);
+		await store.close();
+		const [degradation, ...others] = store.spillDegradation();
+		assert.deepEqual(others, []);
+		assert.equal(degradation?.code, "spill-cleanup-failed");
+		assert.equal(degradation?.directory, path);
+		assert.equal(degradation?.sessionId, undefined);
+		assert.equal(degradation?.errno, "EBUSY");
+		assert.equal(degradation?.cause, busy);
+		rmSync(path, { recursive: true, force: true });
+	});
+
+	test("a session id with a NUL character is refused at the boundary", async () => {
+		const store = newStore();
+		await assert.rejects(store.releaseSession("bad\0id"), (error: Error) => {
+			assert.ok(error instanceof SessionInvalidTextError);
+			assert.equal(error.field, "sessionId");
+			assert.equal(error.reason, "nul-character");
+			return true;
+		});
+	});
+
 	test("a spill directory that cannot be trusted keeps history in memory and is recorded as spill-dir-refused", async () => {
 		const store = newStore();
 		await created(store, "s", entries("e", 3));
@@ -465,7 +766,8 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		} finally {
 			process.env.TMPDIR = previous;
 		}
-		const [degradation] = store.spillDegradation();
+		const [degradation, ...others] = store.spillDegradation();
+		assert.deepEqual(others, []);
 		assert.equal(degradation?.code, "spill-dir-refused");
 		assert.equal(degradation?.sessionId, undefined);
 		assert.ok(degradation?.directory.startsWith(file));
@@ -529,6 +831,51 @@ describe("SessionSpillError (#4502)", () => {
 		);
 	});
 
+	it("carries a hint after its code for every code, and only the facts it was given", () => {
+		for (const code of SESSION_SPILL_ERROR_CODES) {
+			const error = new SessionSpillError(code, fields);
+			assert.ok(error.hint.length > 40, `${code} has a hint`);
+			assert.ok(error.message.endsWith(`(${code}). ${error.hint}`), code);
+		}
+		assert.deepEqual(Object.keys(new SessionSpillError("spill-dir-refused", { directory: "/d" })).sort(), [
+			"code",
+			"directory",
+			"hint",
+			"name",
+			"retryable",
+		]);
+		assert.deepEqual(
+			Object.keys(
+				new SessionSpillError("spill-missing", {
+					directory: "/d",
+					sessionId: "s",
+					bytes: 1,
+					foundBytes: 0,
+					errno: "ENOENT",
+				}),
+			).sort(),
+			["bytes", "code", "directory", "errno", "foundBytes", "hint", "name", "retryable", "sessionId"],
+		);
+	});
+
+	it("is retryable only for a read that met a filesystem failure that passes", () => {
+		const retryable = (
+			errno: string | undefined,
+			code: (typeof SESSION_SPILL_ERROR_CODES)[number] = "spill-read-failed",
+		) =>
+			new SessionSpillError(code, { directory: "/d", sessionId: "s", ...(errno === undefined ? {} : { errno }) })
+				.retryable;
+		assert.deepEqual(
+			["EMFILE", "ENFILE", "EAGAIN", "EBUSY", "EINTR"].map((errno) => retryable(errno)),
+			[true, true, true, true, true],
+		);
+		assert.deepEqual(
+			["EIO", "EACCES", "ENOENT", undefined].map((errno) => retryable(errno)),
+			[false, false, false, false],
+		);
+		assert.equal(retryable("EMFILE", "spill-write-failed"), false);
+	});
+
 	it("crosses a process boundary as the same class with its code, fields, hint, retryability and cause", () => {
 		const original = new SessionSpillError(
 			"spill-missing",
@@ -556,9 +903,18 @@ describe("SessionSpillError (#4502)", () => {
 		const transient = new SessionSpillError("spill-read-failed", fields);
 		const rebuiltTransient = rehydrateStorageError(serializeStorageError(transient));
 		assert.equal(isRetryableStorageError(rebuiltTransient), true);
+		assert.equal("cause" in rebuiltTransient, false);
 		const unknownCode = rehydrateStorageError({ ...serializeStorageError(transient), code: "spill-later" });
 		assert.ok(!(unknownCode instanceof SessionSpillError));
 		assert.equal(unknownCode.name, "SessionSpillError");
+		const bare = rehydrateStorageError({
+			name: "SessionSpillError",
+			code: "spill-missing",
+			message: "m",
+			fields: {},
+		});
+		assert.ok(bare instanceof SessionSpillError);
+		assert.equal(bare.directory, "");
 	});
 });
 
