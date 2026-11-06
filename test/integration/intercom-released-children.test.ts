@@ -117,7 +117,7 @@ afterAll(() => brokerFixture.cleanup());
 test(
 	"reserved by name in frames, a released child is woken once per hold and gets each send once, in order, when it registers (#4326)",
 	async () => {
-		const owner = await connect("batch-owner");
+		const owner = await connect("batch-owner", { ownerToken: randomUUID() });
 		const notices = recordWakes(owner);
 		const childName = "subagent-batch-1";
 		const siblings = Array.from({ length: FRAME_OVERFLOW_CHILDREN }, (_, index) => ({
@@ -142,7 +142,8 @@ test(
 		await owner.acknowledgeReleasedChildWake(childName);
 
 		const received: string[] = [];
-		await connect(childName, { messages: received });
+		const { capability, supervisorSessionId } = await owner.authorizeSupervisorChild(childName);
+		await connect(childName, { supervisor: { capability, supervisorSessionId }, messages: received });
 		const delivered = await results;
 		assert.deepEqual(
 			delivered.map((result) => result.delivered),
@@ -158,6 +159,54 @@ test(
 		assert.equal(received.length, 3);
 		assert.equal(await heldSends(owner), 0);
 		assert.equal((await owner.brokerStatus())?.reservations, FRAME_OVERFLOW_CHILDREN);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a session that registers under a released child's name and group takes neither its held sends nor its reservation (#4326)",
+	async () => {
+		const owner = await connect("squat-owner", { ownerToken: randomUUID() });
+		const childName = "subagent-squat-1";
+		await owner.reserveReleasedChildren([{ childName, wake: true }]);
+		const sender = await connect("squat-sender");
+		const results = Promise.all([sender.send(childName, { text: "one" }), sender.send(childName, { text: "two" })]);
+		await waitForHeld(owner, 2);
+
+		const bareReceived: string[] = [];
+		const bare = await connect(childName, { messages: bareReceived });
+		const rival = await connect("squat-rival", { ownerToken: randomUUID() });
+		const rivalAuthorization = await rival.authorizeSupervisorChild(childName);
+		const rivalReceived: string[] = [];
+		const impostor = await connect(childName, {
+			supervisor: {
+				capability: rivalAuthorization.capability,
+				supervisorSessionId: rivalAuthorization.supervisorSessionId,
+			},
+			messages: rivalReceived,
+		});
+		await sleep(SETTLE_MS);
+		assert.equal(await heldSends(owner), 2, "the owner's hold survives both registrations");
+		assert.deepEqual([bareReceived, rivalReceived], [[], []]);
+		await bare.disconnect();
+		await impostor.disconnect();
+
+		const received: string[] = [];
+		const { capability, supervisorSessionId } = await owner.authorizeSupervisorChild(childName);
+		await connect(childName, { supervisor: { capability, supervisorSessionId }, messages: received });
+		const delivered = await results;
+		assert.deepEqual(
+			delivered.map((result) => result.delivered),
+			[true, true],
+			JSON.stringify(delivered),
+		);
+		await vi.waitFor(() => assert.equal(received.length, 2), { timeout: 10_000, interval: 20 });
+		assert.deepEqual(
+			received,
+			delivered.map((result) => result.id),
+			"the child its owner authorized receives each held send once, in order",
+		);
+		assert.deepEqual([bareReceived, rivalReceived], [[], []]);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

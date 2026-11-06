@@ -107,7 +107,7 @@ import { replyToList } from "./list-reply.js";
 import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
-import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
+import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
 import {
   BROKER_RETIRING_CODE,
@@ -219,6 +219,7 @@ interface LiveWorkflowStageRouteActivation {
 type ConnectedSession = BrokerConnectedSession;
 
 interface PendingReleasedReplyAck {
+  readonly timer: ReturnType<typeof setTimeout>;
   readonly socket: net.Socket;
   readonly attemptId?: string;
   readonly ownerSessionId: string;
@@ -1834,7 +1835,9 @@ class IntercomBroker {
           }
           for (const send of this.restoringRecipients.consume(
             consumedCapability,
-            registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
+            registered
+              ? { childName: registered, groups: sessionGroups(info), ...(supervisorId ? { authorizedBy: supervisorId } : {}) }
+              : undefined,
           ))
             this.dispatchSend(send.socket, send.clientMessage, send.senderId);
         };
@@ -1852,6 +1855,7 @@ class IntercomBroker {
                       ...(consumedCapability === undefined ? {} : { capability: consumedCapability }),
                       ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
                       groups: sessionGroups(info),
+                      ...(supervisorId ? { authorizedBy: supervisorId } : {}),
                     },
               );
         if (presence === undefined) completeRegistration();
@@ -2438,8 +2442,22 @@ class IntercomBroker {
   }) => {
     const route = this.releasedAskerReplies.take(message.replyTo, from.info.id, target, expectedRecipientId);
     if (route === undefined) return false;
+    if (this.releasedReplyAcks.has(message.id)) {
+      this.releasedAskerReplies.restore(route, route.ownerSessionId);
+      writeMessageIfOpen(socket, {
+        type: "delivery_failed",
+        messageId: message.id,
+        ...(attemptId === undefined ? {} : { attemptId }),
+        reason: `Intercom message ID '${message.id}' is already waiting for a released subagent's owner to confirm another reply`,
+        reasonCode: "message_id_conflict",
+      });
+      return true;
+    }
     const owner = this.sessions.get(route.ownerSessionId);
+    const timer = setTimeout(() => this.settleReleasedReply(message.id, "uncertain"), RECIPIENT_RECEIPT_TIMEOUT_MS);
+    timer.unref?.();
     const pending: PendingReleasedReplyAck = {
+      timer,
       socket,
       ...(attemptId === undefined ? {} : { attemptId }),
       ownerSessionId: route.ownerSessionId,
@@ -2464,6 +2482,7 @@ class IntercomBroker {
   private settleReleasedReply(messageId: string, outcome: "accepted" | "refused" | "uncertain"): void {
     const pending = this.releasedReplyAcks.get(messageId);
     if (pending === undefined) return;
+    clearTimeout(pending.timer);
     this.releasedReplyAcks.delete(messageId);
     const attempt = pending.attemptId === undefined ? {} : { attemptId: pending.attemptId };
     if (outcome === "accepted") {
@@ -2471,10 +2490,11 @@ class IntercomBroker {
       writeMessageIfOpen(pending.socket, { type: "delivered", messageId, ...attempt });
       return;
     }
+    const ownerStillHolds = this.restoringRecipients.releasedOwner(pending.childName) === pending.ownerSessionId;
     if (outcome === "uncertain") {
-      // The owner may have saved the reply before disconnecting; its record will deduplicate a later retry.
-      this.releasedAskerReplies.restore(pending.route, undefined);
-    } else if (this.restoringRecipients.releasedOwner(pending.childName) === pending.ownerSessionId) {
+      // The owner may have saved the reply, late or before disconnecting; its record will deduplicate a later retry.
+      this.releasedAskerReplies.restore(pending.route, ownerStillHolds ? pending.ownerSessionId : undefined);
+    } else if (ownerStillHolds) {
       this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
     }
     writeMessageIfOpen(pending.socket, {
@@ -2793,7 +2813,9 @@ class IntercomBroker {
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
-      if (pending.ownerSessionId === sessionId) this.settleReleasedReply(messageId, "uncertain");
+      if (pending.ownerSessionId === sessionId || pending.socket === departed.socket) {
+        this.settleReleasedReply(messageId, "uncertain");
+      }
     }
     const childName = departed.registrationName;
     const releasedOwner = childName === undefined ? undefined : this.restoringRecipients.releasedOwner(childName);
@@ -2897,6 +2919,7 @@ class IntercomBroker {
     this.liveWorkflowStageRouteActivations.clear();
     this.restoringRecipients.clear();
     this.releasedAskerReplies.clear();
+    for (const pending of this.releasedReplyAcks.values()) clearTimeout(pending.timer);
     this.releasedReplyAcks.clear();
     this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);

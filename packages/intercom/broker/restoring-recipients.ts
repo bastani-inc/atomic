@@ -327,12 +327,17 @@ export class RestoringRecipients {
 	 * or id the child really registered with, never merely because the owner listed it as an alias.
 	 *
 	 * `registered` names the child that registered. A dormant reservation of that child and group that no
-	 * restoring supervisor took over (it restored the child without reserving first) ends with it too, as does a
-	 * released child's reservation.
+	 * restoring supervisor took over (it restored the child without reserving first) ends with it too. A released
+	 * child's reservation ends only when `authorizedBy`, the supervisor whose capability the registering session
+	 * proved, is the session that owns it; sharing the child's name and group proves nothing.
 	 */
 	consume(
 		capability: string | undefined,
-		registered?: { readonly childName: string; readonly groups: ReadonlySet<string> },
+		registered?: {
+			readonly childName: string;
+			readonly groups: ReadonlySet<string>;
+			readonly authorizedBy?: string;
+		},
 	): HeldSend[] {
 		const held: HeldSend[] = [];
 		const reservation = capability === undefined ? undefined : this.reservations.get(capability);
@@ -343,8 +348,10 @@ export class RestoringRecipients {
 		if (registered === undefined) return held;
 		const name = normalizeTarget(registered.childName);
 		for (const orphan of [...(this.byChild.get(name) ?? [])]) {
-			if (!((orphan.dormant && capability !== undefined) || isReleasedReservationKey(orphan.key)) || orphan.gone !== undefined)
-				continue;
+			const takenByRegistration = isReleasedReservationKey(orphan.key)
+				? orphan.ownerSessionId === registered.authorizedBy
+				: orphan.dormant && capability !== undefined;
+			if (!takenByRegistration || orphan.gone !== undefined) continue;
 			if (!hasGroup(registered.groups, orphan.group)) continue;
 			this.forget(orphan);
 			held.push(...this.take(orphan));

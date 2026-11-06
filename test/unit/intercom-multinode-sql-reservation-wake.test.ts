@@ -312,20 +312,36 @@ describe("SQL reservation consumption of released and dormant rows (#4326)", () 
 		return { store, releasedKey };
 	}
 
-	test("a registration by name consumes the released and dormant rows of its child, never a live one (#4326)", async () => {
+	test("a registration by name consumes the released row of its owner's child and the dormant row, never a live one (#4326)", async () => {
 		const { store, releasedKey } = await seeded();
-		const consumed = await store.consume("unrelated", { childTarget: "child", groups: crew });
+		const consumed = await store.consume("unrelated", {
+			childTarget: "child",
+			groups: crew,
+			authorizedBy: "owner-released",
+		});
 		assert.deepEqual(consumed, { status: "consumed", reservationKeys: [releasedKey, "dormant"] });
 		const live = await store.read("live");
 		assert.equal(live.status, "active");
 	});
 
-	test("a registration that has no capability consumes only the released row (#4326)", async () => {
+	test("a registration that has no capability consumes no released row (#4326)", async () => {
 		const { store, releasedKey } = await seeded();
 		const consumed = await store.consume("unrelated", { childTarget: "child", groups: crew, releasedOnly: true });
-		assert.deepEqual(consumed, { status: "consumed", reservationKeys: [releasedKey] });
+		assert.deepEqual(consumed, { status: "consumed", reservationKeys: [] });
+		assert.equal((await store.read(releasedKey)).status, "active");
 		assert.equal((await store.read("dormant")).status, "active");
 		assert.equal((await store.read("live")).status, "active");
+	});
+
+	test("a registration whose capability another session issued leaves the released row of the child it names (#4326)", async () => {
+		const { store, releasedKey } = await seeded();
+		const consumed = await store.consume("unrelated", {
+			childTarget: "child",
+			groups: crew,
+			authorizedBy: "owner-impostor",
+		});
+		assert.deepEqual(consumed, { status: "consumed", reservationKeys: ["dormant"] });
+		assert.equal((await store.read(releasedKey)).status, "active");
 	});
 
 	test("a registration outside the groups of a released row leaves it (#4326)", async () => {

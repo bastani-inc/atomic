@@ -809,10 +809,16 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				: (async () => {
 						try {
 							handle.assertCurrent();
+						} catch {
+							// This Intercom generation ended, and its reservations with it.
+							return;
+						}
+						try {
 							await dispatchEventHandlers(handle.heavy, eventName, forwarded);
 							await forwarded.completion;
-						} catch {
-							// The connection is gone, and its reservations with it.
+						} catch (error) {
+							// A lost connection took its reservations with it; a broker's refusal is the caller's to see.
+							if (!isRecoverableIntercomDisconnect(error)) throw error;
 						}
 					})();
 		});

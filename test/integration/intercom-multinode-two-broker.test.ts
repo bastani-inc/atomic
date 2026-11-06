@@ -449,7 +449,7 @@ test("on resume, a saved message from a live sender on the other node replays ex
 test("a remote sender's send and ask wake a released child on the owner's broker once, and arrive once each, in order (#4326)", async ({
 	annotate,
 }) => {
-	const owner = await harness.connect("b", unique("released-owner"));
+	const owner = await harness.connect("b", unique("released-owner"), { supervisorOwnerToken: randomUUID() });
 	const sender = await harness.connect("a", unique("released-sender"));
 	if (!harness.multiNodeRouting) {
 		await annotate("multi-node routing not advertised: a released child is reserved on one broker only");
@@ -480,7 +480,10 @@ test("a remote sender's send and ask wake a released child on the owner's broker
 	await vi.waitFor(() => assert.equal(wakes.length, 1), { timeout: DELIVERY_WAIT_MS, interval: 25 });
 	assert.deepEqual(wakes, [{ childName }], "one wake notice for the hold that started empty");
 
-	const child = await harness.connect("b", childName);
+	const authorization = await owner.client.authorizeSupervisorChild(childName);
+	const child = await harness.connect("b", childName, {
+		supervisor: { capability: authorization.capability, supervisorSessionId: authorization.supervisorSessionId },
+	});
 	const results = await sends;
 	assert.deepEqual(
 		results.map((result) => result.delivered),

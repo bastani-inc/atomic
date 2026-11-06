@@ -26,6 +26,10 @@ afterAll(() => {
 });
 
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
+import {
+	ReleasedChildReservationError,
+	UnknownReleasedChildError,
+} from "../../packages/intercom/broker/released-child-errors.js";
 import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import intercom from "../../packages/intercom/index.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
@@ -34,6 +38,7 @@ import {
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 	SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT,
 } from "../../packages/intercom/intercom-utils.js";
+import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import {
 	INTERCOM_CONNECTED_EVENT,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
@@ -70,6 +75,7 @@ let reserveCalls: Array<Parameters<IntercomClient["reserveReleasedChildren"]>> =
 let dropCalls: Array<Parameters<IntercomClient["dropReleasedChildren"]>> = [];
 let acknowledgeCalls: Array<Parameters<IntercomClient["acknowledgeReleasedChildWake"]>> = [];
 let dropOutcome: () => Promise<void> = () => Promise.resolve();
+let acknowledgeOutcome: () => Promise<void> = () => Promise.resolve();
 let connectCount = 0;
 
 beforeEach(() => {
@@ -79,6 +85,7 @@ beforeEach(() => {
 	dropCalls = [];
 	acknowledgeCalls = [];
 	dropOutcome = () => Promise.resolve();
+	acknowledgeOutcome = () => Promise.resolve();
 	connectCount = 0;
 	vi.mocked(spawnBrokerIfNeeded).mockResolvedValue(undefined);
 	vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(async () => {
@@ -95,8 +102,9 @@ beforeEach(() => {
 		dropCalls.push(args);
 		return dropOutcome();
 	});
-	vi.spyOn(IntercomClient.prototype, "acknowledgeReleasedChildWake").mockImplementation(async (...args) => {
+	vi.spyOn(IntercomClient.prototype, "acknowledgeReleasedChildWake").mockImplementation((...args) => {
 		acknowledgeCalls.push(args);
+		return acknowledgeOutcome();
 	});
 });
 
@@ -397,15 +405,42 @@ describe("lightweight extension: released child bus events", () => {
 		assert.deepEqual(acknowledgeCalls, []);
 	});
 
-	test("drop and acknowledge settle quietly when the loaded heavy handler fails (#4326)", async () => {
+	test("drop and acknowledge settle quietly when the broker connection went away under them (#4326)", async () => {
 		const harness = await startLightweight();
 		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, {
 			children: [{ childName: "subagent-a", wake: true }],
 		}).completion;
-		dropOutcome = () => Promise.reject(new Error("connection is gone"));
+		dropOutcome = () => Promise.reject(new IntercomClientDisconnectedError());
+		acknowledgeOutcome = () => Promise.reject(new IntercomClientDisconnectedError());
 		const drop = request(harness, SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, { childNames: ["subagent-a"] });
+		const acknowledge = request(harness, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName: "subagent-a" });
 		assert.equal(await drop.completion, undefined);
+		assert.equal(await acknowledge.completion, undefined);
 		assert.equal(dropCalls.length, 1);
+		assert.equal(acknowledgeCalls.length, 1);
+	});
+
+	test("a broker refusal of a drop or an acknowledgement reaches the caller as its typed error (#4326)", async () => {
+		const harness = await startLightweight();
+		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, {
+			children: [{ childName: "subagent-a", wake: true }],
+		}).completion;
+		dropOutcome = () =>
+			Promise.reject(new ReleasedChildReservationError({ code: "not_owner", childName: "subagent-a" }));
+		acknowledgeOutcome = () =>
+			Promise.reject(new UnknownReleasedChildError({ code: "unknown_released_child", childName: "subagent-a" }));
+		const drop = request(harness, SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, { childNames: ["subagent-a"] });
+		const acknowledge = request(harness, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName: "subagent-a" });
+		await assert.rejects(drop.completion as Promise<unknown>, (error: Error) => {
+			assert.ok(error instanceof ReleasedChildReservationError);
+			assert.equal(error.code, "not_owner");
+			return true;
+		});
+		await assert.rejects(acknowledge.completion as Promise<unknown>, (error: Error) => {
+			assert.ok(error instanceof UnknownReleasedChildError);
+			assert.equal(error.code, "unknown_released_child");
+			return true;
+		});
 	});
 
 	test("drop and acknowledge ignore invalid payloads and ones that already have a completion (#4326)", async () => {

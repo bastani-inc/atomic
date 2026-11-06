@@ -560,8 +560,9 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 					record.gone === undefined &&
 					((record === own && !isReleasedReservationKey(record.reservationKey)) ||
 						(registered !== undefined &&
-							(isReleasedReservationKey(record.reservationKey) ||
-								(record.dormant && registered.releasedOnly !== true)) &&
+							(isReleasedReservationKey(record.reservationKey)
+								? record.ownerSessionId === registered.authorizedBy
+								: record.dormant && registered.releasedOnly !== true) &&
 							record.childTarget === registered.childTarget &&
 							registered.groups.includes(record.group))),
 			);

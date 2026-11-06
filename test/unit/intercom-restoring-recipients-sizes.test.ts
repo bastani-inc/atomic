@@ -85,7 +85,11 @@ describe("restoring-recipient bookkeeping returns to baseline (#4326)", () => {
 			timers: 2,
 		});
 		assert.equal(vi.getTimerCount(), 2);
-		const taken = recipients.consume(undefined, { childName: CHILD, groups: new Set(["default"]) });
+		const taken = recipients.consume(undefined, {
+			childName: CHILD,
+			groups: new Set(["default"]),
+			authorizedBy: "owner",
+		});
 		assert.deepEqual(
 			taken.map((held) => held.messageId),
 			["m1", "m2"],
@@ -174,7 +178,7 @@ describe("restoring-recipient bookkeeping returns to baseline (#4326)", () => {
 		reserveReleased(recipients, "owner", [ID_B]);
 		assert.equal(recipients.sizes().byTarget, 2);
 		assert.equal(recipients.sizes().byTargetMembers, 2);
-		recipients.consume(undefined, { childName: CHILD, groups: new Set(["default"]) });
+		recipients.consume(undefined, { childName: CHILD, groups: new Set(["default"]), authorizedBy: "owner" });
 		assertBaseline(recipients);
 	});
 
@@ -194,7 +198,11 @@ describe("restoring-recipient bookkeeping returns to baseline (#4326)", () => {
 			reserveReleased(recipients, `owner-${cycle % 3}`, [ID_A]);
 			hold(recipients, `consumed-${cycle}`);
 			recipients.extendHolds(CHILD, `owner-${cycle % 3}`);
-			recipients.consume(undefined, { childName: CHILD, groups: new Set(["default"]) });
+			recipients.consume(undefined, {
+				childName: CHILD,
+				groups: new Set(["default"]),
+				authorizedBy: `owner-${cycle % 3}`,
+			});
 			reserveReleased(recipients, "parker", [ID_B]);
 			hold(recipients, `expired-${cycle}`, "s2", ID_B);
 			vi.advanceTimersByTime(RESTORING_RECIPIENT_HOLD_MS);

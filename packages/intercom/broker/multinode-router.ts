@@ -230,6 +230,13 @@ interface PresenceEntry {
 	terminal?: boolean;
 }
 
+interface ConsumedReservation {
+	readonly capability?: string;
+	readonly childName?: string;
+	readonly groups: ReadonlySet<string>;
+	readonly authorizedBy?: string;
+}
+
 interface MirroredReservation {
 	lease: RestoringReservationLease;
 	readonly capability?: string;
@@ -337,7 +344,7 @@ export class MultiNodeRouter {
 	 */
 	sessionRegistered(
 		session: BrokerConnectedSession,
-		consumed?: { readonly capability?: string; readonly childName?: string; readonly groups: ReadonlySet<string> },
+		consumed?: ConsumedReservation,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
@@ -640,11 +647,7 @@ export class MultiNodeRouter {
 		});
 	}
 
-	private async consumeReservation(consumed: {
-		readonly capability?: string;
-		readonly childName?: string;
-		readonly groups: ReadonlySet<string>;
-	}): Promise<void> {
+	private async consumeReservation(consumed: ConsumedReservation): Promise<void> {
 		const reservationKey =
 			consumed.capability !== undefined
 				? reservationKeyFor(consumed.capability)
@@ -659,6 +662,7 @@ export class MultiNodeRouter {
 				: {
 						childTarget: normalizeTarget(consumed.childName),
 						groups: [...consumed.groups],
+						...(consumed.authorizedBy === undefined ? {} : { authorizedBy: consumed.authorizedBy }),
 						...(consumed.capability === undefined ? { releasedOnly: true as const } : {}),
 					},
 		);

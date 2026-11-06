@@ -361,12 +361,35 @@ describe("ending holds", () => {
 		assert.equal(recipients.active()[0]?.capability, RELEASED_KEY);
 	});
 
-	test("consume ends a released child's reservation when the child registers (#4326)", () => {
+	test("consume ends a released child's reservation when the child registers under its owner's authority (#4326)", () => {
 		const recipients = newRecipients();
 		recipients.reserve(RELEASED_KEY, "o1", CHILD, "lane", []);
 		hold(recipients, "m1", "s1", CHILD, ["lane"]);
-		assert.deepEqual(ids(recipients.consume(undefined, { childName: CHILD, groups: new Set(["lane"]) })), ["m1"]);
+		assert.deepEqual(
+			ids(recipients.consume(undefined, { childName: CHILD, groups: new Set(["lane"]), authorizedBy: "o1" })),
+			["m1"],
+		);
 		assert.equal(recipients.size, 0);
+	});
+
+	test("a session that only shares a released child's name and group takes neither its reservation nor its held sends (#4326)", () => {
+		const recipients = newRecipients();
+		recipients.reserve(RELEASED_KEY, "o1", CHILD, "lane", [], { dormant: true, wake: true });
+		hold(recipients, "m1", "s1", CHILD, ["lane"]);
+		const squatter = { childName: CHILD, groups: new Set(["lane"]) };
+		assert.deepEqual(recipients.consume(undefined, squatter), [], "a registration without a supervisor capability");
+		assert.deepEqual(
+			recipients.consume("squatter-capability", { ...squatter, authorizedBy: "squatter-owner" }),
+			[],
+			"a registration whose capability another session issued",
+		);
+		assert.equal(recipients.size, 1);
+		assert.equal(recipients.releasedOwner(CHILD), "o1");
+		assert.deepEqual(
+			ids(recipients.consume(undefined, { ...squatter, authorizedBy: "o1" })),
+			["m1"],
+			"the owner's held send is still there for the child its owner authorized",
+		);
 	});
 
 	test("a gone reservation named by capability is not consumed (#4326)", () => {

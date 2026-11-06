@@ -124,6 +124,8 @@ A background subagent waiting on an `ask`, or on `contact_supervisor` with `need
   - the session that launched the subagent has disconnected;
   - that session ended or dropped the subagent's hold;
   - the subagent's call is no longer waiting, for example because it was stopped.
+- **Who receives held sends:** only the subagent that its owner relaunched, which registers with the supervisor capability the owner issued for it. A session that merely registers under the same name and group, with no capability or with one another session issued, receives none of the held sends and does not end the owner's hold.
+- **Reply confirmation:** the owner confirms a reply once it has saved it. If it has not within about 8 seconds, the replier gets the [uncertain-outcome failure](/intercom/operations#how-it-works) and can reply again; a replier that disconnects while its reply waits can reply again after it reconnects. A message ID already waiting for confirmation of another reply is refused with `message_id_conflict`.
 - **How long a question stays open:** the usual 10-minute reply wait, counted from when the question was asked.
 - **Where it works:** both the replier and the subagent's launching session must be connected to the same broker on the same machine. With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, the subagent stays live while it waits for the reply.
 - **After a restart:** when the launching session reopens, the same question remains open until its original deadline; a reply wakes the child. If the broker itself restarts, its question route is lost, and the child receives the timeout instead.

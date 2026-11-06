@@ -167,7 +167,9 @@ test("a released reservation is keyed by its normalized child name and reserving
 		"held",
 	);
 	assert.deepEqual(
-		recipients.consume(undefined, { childName: CHILD, groups: new Set(["lane"]) }).map((held) => held.messageId),
+		recipients
+			.consume(undefined, { childName: CHILD, groups: new Set(["lane"]), authorizedBy: "owner" })
+			.map((held) => held.messageId),
 		["held-1", "held-2"],
 	);
 	assert.equal(recipients.size, 0);
@@ -297,7 +299,7 @@ test("a restoring supervisor's reservation of a released child takes it over wit
 	);
 });
 
-test("a child registering without a supervisor capability ends its released reservation but not a dormant supervisor one (#4326)", () => {
+test("a child registering under its owner's capability ends its released reservation, and a bare registration of its name and group ends nothing (#4326)", () => {
 	const { recipients } = recipientsRecordingExpiry();
 	reserveReleased(recipients, "owner", CHILD, true);
 	recipients.reserve("dormant-capability", "launcher", "dormant-child", "default", [], { dormant: true });
@@ -305,14 +307,30 @@ test("a child registering without a supervisor capability ends its released rese
 	recipients.admit("dormant-child", sender("peer"), send("held-2", "peer", "dormant-child"), true);
 	const groups = new Set(["default"]);
 	assert.deepEqual(recipients.consume(undefined, { childName: "dormant-child", groups }), []);
+	assert.deepEqual(
+		recipients.consume(undefined, { childName: CHILD, groups }),
+		[],
+		"a bare registration proves nothing",
+	);
 	assert.equal(recipients.size, 2);
 	assert.deepEqual(
-		recipients.consume(undefined, { childName: CHILD.toUpperCase(), groups: new Set(["elsewhere"]) }),
+		recipients.consume(undefined, {
+			childName: CHILD.toUpperCase(),
+			groups: new Set(["elsewhere"]),
+			authorizedBy: "owner",
+		}),
 		[],
 		"a registration outside the reservation's group does not end it",
 	);
 	assert.deepEqual(
-		recipients.consume(undefined, { childName: CHILD, groups }).map((held) => held.messageId),
+		recipients.consume("capability", { childName: CHILD, groups, authorizedBy: "another-owner" }),
+		[],
+		"a capability another session issued does not end it",
+	);
+	assert.deepEqual(
+		recipients
+			.consume("capability", { childName: CHILD, groups, authorizedBy: "owner" })
+			.map((held) => held.messageId),
 		["held-1"],
 	);
 	assert.equal(recipients.size, 1);

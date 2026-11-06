@@ -349,6 +349,8 @@ export interface RestoringReservationRegistration {
 	readonly groups: readonly string[];
 	/** The child registered without a supervisor capability: only released children's reservations end with it. */
 	readonly releasedOnly?: true;
+	/** The supervisor whose capability the registering child proved; a released child's reservation ends only with its owner's. */
+	readonly authorizedBy?: string;
 }
 
 export interface RestoringReservationReleaseOutcome {
@@ -436,8 +438,8 @@ export interface RestoringReservationStore {
 	takeWakeRequests(ownerBrokerId: string): Promise<RestoringReservationTakeWakeResult>;
 	/**
 	 * The child registered with this key through any broker: end its reservation unless it is a gone marker, and
-	 * with `registered`, every other dormant or released, non-gone reservation of that child in one of its groups.
-	 * Age is ignored.
+	 * with `registered`, every other dormant, non-gone reservation of that child in one of its groups, and its
+	 * released one when `registered.authorizedBy` owns it. Age is ignored.
 	 */
 	consume(
 		reservationKey: string,

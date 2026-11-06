@@ -9,6 +9,7 @@ import type {
 	RestoringReservationLease,
 	RestoringReservationLookupResult,
 	RestoringReservationReadResult,
+	RestoringReservationRegistration,
 	RestoringReservationReleaseResult,
 	RestoringReservationRenewResult,
 	RestoringReservationRequestWakeResult,
@@ -62,6 +63,11 @@ function endOf(endJson: string): RestoringReservationEnd {
 	if (end.outcome === "consumed") return { outcome: "consumed" };
 	if (end.outcome === "superseded") return { outcome: "superseded", by: end.by };
 	return end.refusal === undefined ? { outcome: "released" } : { outcome: "released", refusal: end.refusal };
+}
+
+function endsWithRegistration(row: ReservationRow, registered: RestoringReservationRegistration): boolean {
+	if (isReleasedReservationKey(row.reservation_key)) return row.owner_session_id === registered.authorizedBy;
+	return row.dormant === 1 && registered.releasedOnly !== true;
 }
 
 function replacementTargets(childTarget: string, aliases: readonly string[]): string[] {
@@ -349,7 +355,7 @@ export async function openSqlRestoringReservationStore({
 					const own = row.reservation_key === reservationKey && !isReleasedReservationKey(row.reservation_key);
 					const dormantChild =
 						registered !== undefined &&
-						(isReleasedReservationKey(row.reservation_key) || (row.dormant === 1 && registered.releasedOnly !== true)) &&
+						endsWithRegistration(row, registered) &&
 						row.child_target === registered.childTarget &&
 						registered.groups.includes(row.reservation_group);
 					if (!own && !dormantChild) continue;

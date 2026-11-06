@@ -531,11 +531,11 @@ describe("router reservation consumption (#4326)", () => {
 		node: Node,
 		reservationKey: string,
 		dormant: boolean,
-		options: { readonly group?: string } = {},
+		options: { readonly group?: string; readonly owner?: string } = {},
 	): Promise<void> {
 		const reserved = await node.state.reservations.reserve({
 			reservationKey,
-			ownerSessionId: `owner-${dormant ? "dormant" : "live"}-${reservationKey.slice(-6)}`,
+			ownerSessionId: options.owner ?? `owner-${dormant ? "dormant" : "live"}-${reservationKey.slice(-6)}`,
 			ownerBrokerId: "other-broker",
 			childName: "child",
 			childTarget: "child",
@@ -552,21 +552,36 @@ describe("router reservation consumption (#4326)", () => {
 		return read.status === "ended" ? read.end.outcome : read.status;
 	};
 
-	test("a child registering by name consumes its released reservation in its groups and leaves dormant capability ones (#4326)", async () => {
+	test("a child registering under its owner's capability consumes its released reservation in its groups and leaves dormant capability ones (#4326)", async () => {
 		const node = await startNode(await cluster());
 		const releasedKey = releasedReservationKey("child");
 		const dormantKey = reservationKeyFor(`${randomUUID()}.capability`);
 		const otherGroupKey = releasedReservationKey("other");
-		await reserveRaw(node, releasedKey, false);
+		await reserveRaw(node, releasedKey, false, { owner: "the-owner" });
 		await reserveRaw(node, dormantKey, true);
-		await reserveRaw(node, otherGroupKey, false, { group: normalizeGroup("elsewhere") });
+		await reserveRaw(node, otherGroupKey, false, { group: normalizeGroup("elsewhere"), owner: "the-other-owner" });
 		await node.router.sessionRegistered(session("child"), {
 			childName: "Child",
 			groups: new Set([CREW]),
+			authorizedBy: "the-owner",
 		});
 		assert.equal(await statusOf(node, releasedKey), "consumed");
 		assert.equal(await statusOf(node, dormantKey), "active");
 		assert.equal(await statusOf(node, otherGroupKey), "active");
+	});
+
+	test("a session that shares a released child's name and group, with no capability or another session's, leaves its reservation (#4326)", async () => {
+		const node = await startNode(await cluster());
+		const releasedKey = releasedReservationKey("child");
+		await reserveRaw(node, releasedKey, false, { owner: "the-owner" });
+		await node.router.sessionRegistered(session("squatter"), { childName: "child", groups: new Set([CREW]) });
+		assert.equal(await statusOf(node, releasedKey), "active");
+		await node.router.sessionRegistered(session("impostor"), {
+			childName: "child",
+			groups: new Set([CREW]),
+			authorizedBy: "another-owner",
+		});
+		assert.equal(await statusOf(node, releasedKey), "active");
 	});
 
 	test("a released reservation outside the registering groups stays (#4326)", async () => {

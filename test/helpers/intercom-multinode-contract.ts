@@ -1062,7 +1062,7 @@ export function registerRestoringReservationStoreConformance(
 	);
 
 	check(
-		"ends a released child's reservation when the child registers in its group, by name alone (#4326)",
+		"ends a released child's reservation only when its owner authorized the child that registers in its group (#4326)",
 		async (connect) => {
 			const [a, b] = [await connect(), await connect()];
 			const releasedKey = "released:worker";
@@ -1075,11 +1075,25 @@ export function registerRestoringReservationStoreConformance(
 				aliases: [],
 				wake: true,
 			});
-			assert.deepEqual(await a.consume(releasedKey, { childTarget: "worker", groups: ["elsewhere"] }), {
-				status: "consumed",
-				reservationKeys: [],
-			});
-			assert.deepEqual(await a.consume(releasedKey, { childTarget: "worker", groups: ["team"] }), {
+			const owner = "supervisor-session";
+			const registered = { childTarget: "worker", groups: ["team"] };
+			const untouched = { status: "consumed", reservationKeys: [] };
+			assert.deepEqual(
+				await a.consume(releasedKey, { ...registered, groups: ["elsewhere"], authorizedBy: owner }),
+				untouched,
+			);
+			assert.deepEqual(
+				await a.consume(releasedKey, registered),
+				untouched,
+				"sharing the name and group is not enough",
+			);
+			assert.deepEqual(
+				await a.consume(releasedKey, { ...registered, authorizedBy: "another-session" }),
+				untouched,
+				"another session's capability is not enough",
+			);
+			assert.equal((await a.read(releasedKey)).status, "active");
+			assert.deepEqual(await a.consume(releasedKey, { ...registered, authorizedBy: owner }), {
 				status: "consumed",
 				reservationKeys: [releasedKey],
 			});
