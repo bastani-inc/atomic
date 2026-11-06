@@ -24,10 +24,14 @@ export interface SubscriberReportDelivery {
  * in a resumed run, so its reports go to the stage's retained session, reopened as a post-mortem stage chat is. The run
  * owns each session it reopens: `release` lets them go once their turns end, and `cancel` lets them go at once, which
  * aborts a running turn. A handle someone claimed meanwhile, such as an open stage chat, stays theirs.
+ *
+ * A report to a workflow stage returns as soon as the stage admits it, so the event child never waits for the turn the
+ * report starts in the subscriber. A turn that fails after admission is the subscriber's failure and is recorded
+ * through `turnFailed`; `release` waits for those turns.
  */
 export interface SubscriberReports {
 	deliver(delivery: SubscriberReportDelivery): Promise<void>;
-	/** At the end of the run: waits for each reopened session's turn, then lets the session go. */
+	/** At the end of the run: waits for the turns that reports started, then lets each reopened session go. */
 	release(): Promise<void>;
 	/** When the run is cancelled: lets every reopened session go now. */
 	cancel(): Promise<void>;
@@ -51,17 +55,77 @@ function turnEnded(handle: StageControlHandle): Promise<void> {
 	});
 }
 
+/** Sends a report and calls `admitted` once the subscriber has taken it in; resolves when the subscriber's turn ends. */
+type AdmittedSend = (admitted: () => void) => Promise<unknown>;
+
+interface ObservableStage {
+	readonly isStreaming: boolean;
+	subscribe(listener: (event: { readonly type: string }) => void): () => void;
+}
+
+function isObservableStage(
+	subscriber: WorkflowEventSubscriber,
+): subscriber is WorkflowEventSubscriber & ObservableStage {
+	return typeof (subscriber as Partial<ObservableStage>).subscribe === "function";
+}
+
+/**
+ * A stage in a turn takes a steering report into that turn, and the send settles once the report is queued. An idle
+ * stage starts a turn for the report, which counts as taken in when that turn starts.
+ */
+function sendToLiveStage(subscriber: WorkflowEventSubscriber & ObservableStage, message: string): AdmittedSend {
+	return (admitted) => {
+		if (subscriber.isStreaming) return subscriber.sendUserMessage(message, { deliverAs: "steer" });
+		const stopWatching = subscriber.subscribe((event) => {
+			if (event.type !== "agent_start") return;
+			stopWatching();
+			admitted();
+		});
+		const turn = subscriber.sendUserMessage(message, { deliverAs: "steer" });
+		void turn.then(stopWatching, stopWatching);
+		return turn;
+	};
+}
+
+export interface SubscriberReportFailures {
+	/** A reopened subscriber session could not be let go. */
+	readonly cleanupFailed: (stage: string, error: unknown) => void;
+	/** The subscriber's turn failed after it admitted a report. */
+	readonly turnFailed: (stage: string, error: unknown) => void;
+}
+
 export function createSubscriberReports(
 	runId: string,
 	deps: PostMortemStageChatDeps,
-	recordCleanupFailure: (stage: string, error: unknown) => void,
+	failures: SubscriberReportFailures,
 ): SubscriberReports {
 	const reopened = new Map<
 		string,
 		{ readonly stage: string; readonly acquired: Promise<AcquirePostMortemStageHandleResult> }
 	>();
+	const turns = new Set<Promise<void>>();
+	const cancelled = Promise.withResolvers<void>();
+
+	const untilAdmitted = async (stage: string, send: AdmittedSend): Promise<void> => {
+		let admitted = false;
+		const admission = Promise.withResolvers<void>();
+		const turn = send(() => {
+			admitted = true;
+			admission.resolve();
+		});
+		const settled = turn.then(
+			() => undefined,
+			(error: unknown) => {
+				if (admitted) failures.turnFailed(stage, error);
+			},
+		);
+		turns.add(settled);
+		void settled.then(() => turns.delete(settled));
+		await Promise.race([admission.promise, turn]);
+	};
 
 	const letGo = async (waitForTurns: boolean): Promise<void> => {
+		if (waitForTurns) await Promise.race([Promise.all([...turns]), cancelled.promise]);
 		const owned = [...reopened.values()];
 		reopened.clear();
 		for (const { stage, acquired } of owned) {
@@ -71,16 +135,20 @@ export function createSubscriberReports(
 				if (waitForTurns) await turnEnded(result.lease.handle);
 				await result.lease.release();
 			} catch (error) {
-				recordCleanupFailure(stage, error);
+				failures.cleanupFailed(stage, error);
 			}
 		}
 	};
 
 	return {
 		async deliver(delivery) {
-			const { stage } = delivery;
+			const { stage, subscriber, message } = delivery;
 			if (stage?.replayed !== true) {
-				await delivery.subscriber.sendUserMessage(delivery.message, { deliverAs: "steer" });
+				if (stage === undefined || !isObservableStage(subscriber)) {
+					await subscriber.sendUserMessage(message, { deliverAs: "steer" });
+					return;
+				}
+				await untilAdmitted(stage.name, sendToLiveStage(subscriber, message));
 				return;
 			}
 			let owned = reopened.get(stage.id);
@@ -104,9 +172,15 @@ export function createSubscriberReports(
 					"no-message-admission",
 				);
 			}
-			await handle.sendUserMessage(delivery.message, { deliverAs: "steer" });
+			const send = handle.sendUserMessage;
+			await untilAdmitted(stage.name, (beforeDelivery) =>
+				send.call(handle, message, { deliverAs: "steer" }, beforeDelivery),
+			);
 		},
 		release: () => letGo(true),
-		cancel: () => letGo(false),
+		cancel: () => {
+			cancelled.resolve();
+			return letGo(false);
+		},
 	};
 }

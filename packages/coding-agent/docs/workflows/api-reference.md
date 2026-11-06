@@ -539,7 +539,7 @@ interface SubscriptionStats {
 Subscribes a long-lived stage to an event stream without putting every event into that stage's context. `ctx.subscribe` returns at once and handles each event with `handler(event, child)`:
 
 - `child.task(options)` runs the event's own short-lived, tracked child stage. It takes the same options as `ctx.task`. The prompt is your handling instructions followed by the event's id, type and payload. The child stage also gets a `report_to_subscriber` tool, so its model decides whether the event matters. An explicit `tools` allowlist keeps that tool; with `noTools: "all"`, or with the tool in `excludedTools`, the child cannot report, so call `child.report()` from the handler instead.
-- `child.report(text)` sends a short report to the subscriber. The `report_to_subscriber` tool calls it too.
+- `child.report(text)` sends a short report to the subscriber. The `report_to_subscriber` tool calls it too. When the subscriber is a workflow stage, `report` resolves once the stage has taken the report in, without waiting for the turn the report starts there, so the next event's child is not held up. If that turn fails, the run records a warning notice; the run waits for such turns before it ends.
 
 The subscriber's context grows only by reports. Each report arrives as one steering message in the `subscriber` stage: `Report from event child "<name>" (event <id>):` followed by your text. After a resume, a subscriber stage replayed from the journal takes its reports in its retained session, which reopens as a stage chat does after a run. If that session cannot be reopened, the report fails with `SubscriptionSubscriberUnavailableError`. A subscription without a `subscriber` records its reports as run notices instead.
 
@@ -564,7 +564,7 @@ await subscription.done;
 
 **Graph.** Every `child.task` call is a new graph node whose parent is the subscriber stage (or, without a subscriber, the frontier when you subscribed). Event children never become parents of later stages, so the graph stays acyclic and the main line of the workflow does not depend on event timing.
 
-**Deduplication and durability.** The run journal records each subscription and each processed event id. An event whose id was already processed, in this run or before a resume, is dropped and counted in `duplicates`; this includes repeats from the source and from `publishEvent`. An event is marked processed when its handler finishes, so an event that was in progress when the run stopped runs again after resume.
+**Deduplication and durability.** The run journal records each subscription and each processed event id. An event whose id was already processed, in this run or before a resume, is dropped and counted in `duplicates`; this includes repeats from the source and from `publishEvent`. An event is marked processed when its handler finishes, so an event that was in progress when the run stopped runs again after resume. Its event child then starts a fresh session from the seeded prompt, with the event and your instructions, instead of continuing the interrupted conversation. A report the interrupted child already sent can therefore arrive a second time.
 
 **Admission.** At most `maxConcurrent` handlers run at once. With `maxRate`, at most `events` handlers start within any `intervalMs` window. Events over either cap wait in arrival order; none are dropped.
 

@@ -1017,6 +1017,7 @@ async function executeRun(
 		once: true,
 	});
 	const stageIdByContext = new WeakMap<object, () => string | undefined>();
+	let subscriberTurnFailures = 0;
 	const subscriberReports = createSubscriberReports(
 		runId,
 		{
@@ -1029,14 +1030,24 @@ async function executeRun(
 				return poolSessionStore(durableBackend, opts.parentRun?.rootRunId ?? runId);
 			},
 		},
-		(stage, error) =>
-			activeStore.recordNotice({
-				id: `workflow-subscriber-release:${runId}:${stage}`,
-				runId,
-				level: "warning",
-				message: `The reopened session of subscriber stage "${stage}" could not be released: ${error instanceof Error ? error.message : String(error)}`,
-				createdAt: Date.now(),
-			}),
+		{
+			cleanupFailed: (stage, error) =>
+				activeStore.recordNotice({
+					id: `workflow-subscriber-release:${runId}:${stage}`,
+					runId,
+					level: "warning",
+					message: `The reopened session of subscriber stage "${stage}" could not be released: ${error instanceof Error ? error.message : String(error)}`,
+					createdAt: Date.now(),
+				}),
+			turnFailed: (stage, error) =>
+				activeStore.recordNotice({
+					id: `workflow-subscriber-turn:${runId}:${stage}:${++subscriberTurnFailures}`,
+					runId,
+					level: "warning",
+					message: `Subscriber stage "${stage}" failed in the turn a report started: ${error instanceof Error ? error.message : String(error)}`,
+					createdAt: Date.now(),
+				}),
+		},
 	);
 	const eventPrimitives = createWorkflowEventPrimitives({
 		runId,

@@ -26,6 +26,7 @@ import {
 import { subscriptionEventProcessed } from "../../packages/workflows/src/durable/subscription-records.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import {
 	createStageControlRegistry,
 	type StageControlHandle,
@@ -1993,5 +1994,143 @@ test("an event child limited to an explicit tool list keeps report_to_subscriber
 		undefined,
 		[SUBSCRIPTION_REPORT_TOOL_NAME],
 		["read", SUBSCRIPTION_REPORT_TOOL_NAME],
+	]);
+});
+
+test("an event child interrupted after its session was recorded restarts from its seed on resume (#4311)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = "d1d1d1d1-d1d1-4d1d-8d1d-000000004311";
+	const childPrompts: string[] = [];
+	let crashChild = true;
+	const definition = workflow({
+		name: "seeded-resume",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await ctx.subscribe(
+				listSource("deploys", [{ id: "d-7", type: "deploy", payload: { service: "api", ok: false } }]),
+				async (_event, child) => {
+					await child.task({ prompt: "Report failed deploys." });
+				},
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const options = (sessionId: string): RunOpts => ({
+		runId,
+		durableBackend: backend,
+		adapters: {
+			agentSession: {
+				create: async (_sessionOptions, meta) => {
+					if (meta?.stageName !== "deploys#1/d-7") return mockSession();
+					return {
+						...mockSession(),
+						sessionId,
+						async prompt(text: string) {
+							childPrompts.push(text);
+							if (crashChild) {
+								crashChild = false;
+								throw new Error("the host went away mid-turn");
+							}
+						},
+					};
+				},
+			},
+		},
+	});
+	const first = await run(definition, {}, { ...options("child-session-1"), store: createStore() });
+	assert.equal(first.status, "failed");
+	const firstChild = first.stages.find((stage) => stage.name === "deploys#1/d-7");
+	const resumed = await run(definition, {}, { ...options("child-session-2"), store: createStore() });
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.equal(childPrompts.length, 2);
+	for (const prompt of childPrompts) {
+		assert.match(prompt, /^Report failed deploys\./);
+		assert.match(prompt, /^Event id: d-7$/m);
+		assert.match(prompt, /"service": "api"/);
+	}
+	const resumedChild = resumed.stages.find((stage) => stage.name === "deploys#1/d-7");
+	assert.ok(firstChild !== undefined && resumedChild !== undefined);
+	assert.equal(resumedChild.id, firstChild.id);
+});
+
+test("a report returns once the subscriber admits it, without waiting for the subscriber's turn to end (#4311)", async () => {
+	const order: string[] = [];
+	const turnGate = Promise.withResolvers<void>();
+	const listeners = new Set<Listener>();
+	const watcherMessages: string[] = [];
+	let turnActive = false;
+	const emit = (type: string): void => {
+		for (const listener of [...listeners]) listener({ type });
+	};
+	const watcherSession: StageSessionRuntime = {
+		...mockSession(),
+		async prompt(text: string) {
+			emit("agent_start");
+			watcherMessages.push(text);
+			emit("agent_end");
+		},
+		async sendUserMessage(content, options) {
+			watcherMessages.push(typeof content === "string" ? content : "");
+			if (turnActive && options?.deliverAs === "steer") return;
+			turnActive = true;
+			emit("agent_start");
+			order.push("subscriber-turn-start");
+			await turnGate.promise;
+			order.push("subscriber-turn-end");
+			turnActive = false;
+			emit("agent_end");
+		},
+		subscribe(listener) {
+			listeners.add(listener as Listener);
+			return () => listeners.delete(listener as Listener);
+		},
+	};
+	const definition = workflow({
+		name: "unblocked-reports",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			await watcher.prompt("watch");
+			await ctx.subscribe(
+				listSource("alerts", [{ id: "a" }, { id: "b" }]),
+				async (event, child) => {
+					order.push(`handler-${event.id}-start`);
+					await child.report(`${event.id} matters`);
+					order.push(`handler-${event.id}-reported`);
+					if (event.id === "b") turnGate.resolve();
+				},
+				{ subscriber: watcher, maxConcurrent: 1 },
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId: "abababab-abab-4bab-8bab-000000004311",
+			store: createStore(),
+			durableBackend: await createMemoryTestBackend(),
+			adapters: { agentSession: { create: async () => watcherSession } },
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(order, [
+		"handler-a-start",
+		"subscriber-turn-start",
+		"handler-a-reported",
+		"handler-b-start",
+		"handler-b-reported",
+		"subscriber-turn-end",
+	]);
+	assert.deepEqual(watcherMessages, [
+		"watch",
+		'Report from event child "alerts#1/a" (event a):\n\na matters',
+		'Report from event child "alerts#1/b" (event b):\n\nb matters',
 	]);
 });

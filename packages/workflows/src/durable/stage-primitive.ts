@@ -505,7 +505,10 @@ export function createDurableTaskPrimitive(input: {
 			await input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
 			return replayed.result;
 		}
-		const session = input.backend.getStageSession(input.workflowId, replayKey);
+		const session =
+			options.durableRestartFromPrompt === true
+				? undefined
+				: input.backend.getStageSession(input.workflowId, replayKey);
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
 		const durableIntercomGroup =
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);

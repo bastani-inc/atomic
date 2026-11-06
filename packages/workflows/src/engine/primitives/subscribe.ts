@@ -187,6 +187,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 								prompt: seedEventPrompt(rest.prompt ?? instructions ?? "", name, event),
 								customTools: [...(rest.customTools ?? []), createSubscriberReportTool(report, "stage")],
 								...(rest.tools === undefined ? {} : { tools: toolsWithReport(rest.tools) }),
+								durableRestartFromPrompt: true,
 							},
 							{
 								failed: false,
