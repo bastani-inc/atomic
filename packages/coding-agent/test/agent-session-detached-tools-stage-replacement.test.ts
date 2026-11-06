@@ -6,10 +6,10 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, test, vi } from "vitest";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
-import { detachedResult, harnessPool, persistedManager, waitForCiTurn, waitTool } from "./helpers/detached-tools.ts";
-import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
+import { SessionManager } from "../src/core/session-manager.js";
+import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { detachedResult, harnessPool, persistedManager, waitForCiTurn, waitTool } from "./helpers/detached-tools.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
 const stageHarnesses: Harness[] = [];

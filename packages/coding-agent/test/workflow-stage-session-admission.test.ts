@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import type { OrchestrationContext } from "../src/core/extensions/context-types.ts";
-import { parkWorkflowStageForRelease, WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
-import { createHarness } from "./suite/harness.ts";
+import type { OrchestrationContext } from "../src/core/extensions/context-types.js";
+import { parkWorkflowStageForRelease, WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { createHarness } from "./suite/harness.js";
 
 interface StageMessageAdmission {
 	readonly boundary: WorkflowStageAdmissionBoundary;

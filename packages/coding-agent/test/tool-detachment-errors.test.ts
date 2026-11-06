@@ -8,7 +8,7 @@ import {
 	type SerializedToolDetachmentErrorCause,
 	ToolDetachmentError,
 	type ToolDetachmentErrorCode,
-} from "../src/index.ts";
+} from "../src/index.js";
 
 const SESSION_ID = "01a1a9c4-8c43-75ae-9d13-9dc3c95b15d9";
 

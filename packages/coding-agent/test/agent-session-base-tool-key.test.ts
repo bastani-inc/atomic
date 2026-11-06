@@ -1,7 +1,8 @@
+import assert from "node:assert/strict";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { afterEach, expect, test } from "vitest";
-import { createHarness, type Harness } from "./test-harness.ts";
+import { afterEach, test } from "vitest";
+import { createHarness, type Harness } from "./test-harness.js";
 
 const harnesses: Harness[] = [];
 afterEach(() => {
@@ -29,6 +30,6 @@ test("a base tool override supplied under a key other than its tool's name still
 
 	await harness.session.prompt("run it");
 
-	expect(calls).toEqual(["call-1"]);
-	expect(harness.session.getLastAssistantText()).toBe("done");
+	assert.deepEqual(calls, ["call-1"]);
+	assert.equal(harness.session.getLastAssistantText(), "done");
 });

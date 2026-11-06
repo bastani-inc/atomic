@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { StorageUnavailableError } from "../src/core/storage/session/errors.ts";
+import { SessionManager } from "../src/core/session-manager.js";
+import { StorageUnavailableError } from "../src/core/storage/session/errors.js";
 import {
 	detachedResult,
 	harnessPool,
@@ -11,7 +11,7 @@ import {
 	transcriptRoles,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
+} from "./helpers/detached-tools.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

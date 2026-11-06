@@ -13,8 +13,8 @@ import {
 	untilStarted,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 const harnesses: Harness[] = [];
 const pool = harnessPool();

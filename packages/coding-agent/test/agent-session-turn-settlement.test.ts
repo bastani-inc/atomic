@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
-import type { ToolDefinition } from "../src/core/extensions/index.ts";
-import { fastTool, harnessPool, waitForCiTurn, waitTool } from "./helpers/detached-tools.ts";
-import type { Harness } from "./suite/harness.ts";
+import type { ToolDefinition } from "../src/core/extensions/index.js";
+import { fastTool, harnessPool, waitForCiTurn, waitTool } from "./helpers/detached-tools.js";
+import type { Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

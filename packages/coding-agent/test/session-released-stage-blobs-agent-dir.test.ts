@@ -8,12 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.ts";
+import { ENV_AGENT_DIR } from "../src/config.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.js";
 
 function leaveBlob(agentDir: string, sessionId: string): string {
 	const directory = getReleasedStageBlobDir(agentDir, sessionId);

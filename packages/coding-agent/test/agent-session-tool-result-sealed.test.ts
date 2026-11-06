@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
-import { harnessPool, settlesWithin, untilStarted, waitForCiTurn, waitTool } from "./helpers/detached-tools.ts";
-import { getMessageText } from "./suite/harness.ts";
+import { harnessPool, settlesWithin, untilStarted, waitForCiTurn, waitTool } from "./helpers/detached-tools.js";
+import { getMessageText } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

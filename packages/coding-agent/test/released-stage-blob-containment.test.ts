@@ -9,16 +9,16 @@ import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
-import { SessionIdError } from "../src/core/session-manager-errors.ts";
-import { TOOL_RESULT_BLOBS_SUBDIR } from "../src/core/tools/tool-limits.ts";
-import { getReleasedStageBlobDir, removeReleasedStageBlobs } from "../src/core/tools/tool-output-blobs.ts";
+import { SessionIdError } from "../src/core/session-manager-errors.js";
+import { TOOL_RESULT_BLOBS_SUBDIR } from "../src/core/tools/tool-limits.js";
+import { getReleasedStageBlobDir, removeReleasedStageBlobs } from "../src/core/tools/tool-output-blobs.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	return { ...actual, rm: vi.fn(actual.rm) };
 });
-vi.mock("../src/core/session-manager-validation.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/core/session-manager-validation.ts")>();
+vi.mock("../src/core/session-manager-validation.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/session-manager-validation.js")>();
 	return { ...actual, assertValidSessionId: () => {} };
 });
 

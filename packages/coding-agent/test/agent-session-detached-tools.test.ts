@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
-import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import type { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import { isToolDetachmentError, MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "../src/index.ts";
+import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import type { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { isToolDetachmentError, MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "../src/index.js";
 import {
 	fastTool,
 	harnessPool,
@@ -12,8 +12,8 @@ import {
 	toolResultIds,
 	transcriptRoles,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import { getMessageText } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import { getMessageText } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

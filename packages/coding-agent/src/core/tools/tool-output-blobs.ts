@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { SessionIdError } from "../session-manager-errors.js";
-import { assertValidSessionId } from "../session-manager-validation.ts";
+import { assertValidSessionId } from "../session-manager-validation.js";
 import { TOOL_RESULT_BLOBS_SUBDIR } from "./tool-limits.js";
 
 /**

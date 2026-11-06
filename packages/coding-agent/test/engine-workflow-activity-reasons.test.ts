@@ -7,8 +7,8 @@ import type {
 	WorkflowActivityFrame,
 	WorkflowActivityReason,
 	WorkflowRootActivity,
-} from "../src/core/extensions/workflow-events.ts";
-import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.ts";
+} from "../src/core/extensions/workflow-events.js";
+import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.js";
 
 const REASONS: Record<WorkflowActivityReason, true> = {
 	executing: true,
@@ -25,7 +25,7 @@ const REASONS: Record<WorkflowActivityReason, true> = {
 test("a workflow root reports any reason the protocol declares, so a waiting stage reaches the host (#4309)", async () => {
 	// Loaded here: the protocol's tables are built when the module loads, so they belong to this test.
 	const { parseInteractiveEngineMessage, serializeInteractiveEngineMessage } = await import(
-		"../src/modes/interactive-engine/protocol.ts"
+		"../src/modes/interactive-engine/protocol.js"
 	);
 	for (const reason of Object.keys(REASONS) as WorkflowActivityReason[]) {
 		const root: Omit<WorkflowRootActivity, "graph"> = {

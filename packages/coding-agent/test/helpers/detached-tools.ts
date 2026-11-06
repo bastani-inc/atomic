@@ -5,11 +5,11 @@
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import type { DetachedToolResult } from "../../src/core/agent-session-detached-tools.ts";
-import type { ExtensionFactory, ToolDefinition } from "../../src/core/extensions/index.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
-import { MemorySessionStore } from "../../src/core/storage/session/memory-session-store.ts";
-import { createHarness, type Harness } from "../suite/harness.ts";
+import type { DetachedToolResult } from "../../src/core/agent-session-detached-tools.js";
+import type { ExtensionFactory, ToolDefinition } from "../../src/core/extensions/index.js";
+import { SessionManager } from "../../src/core/session-manager.js";
+import { MemorySessionStore } from "../../src/core/storage/session/memory-session-store.js";
+import { createHarness, type Harness } from "../suite/harness.js";
 
 export interface WaitTool {
 	readonly definition: ToolDefinition;

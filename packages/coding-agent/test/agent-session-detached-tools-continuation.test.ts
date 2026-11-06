@@ -6,15 +6,15 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
-import type { ExtensionFactory } from "../src/core/extensions/index.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import {
 	detachedResult,
 	harnessPool,
 	reopenedAfterDetaching,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import type { Harness } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import type { Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

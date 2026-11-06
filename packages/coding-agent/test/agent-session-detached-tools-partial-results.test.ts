@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { isToolDetachmentError } from "../src/index.ts";
+import { SessionManager } from "../src/core/session-manager.js";
+import { isToolDetachmentError } from "../src/index.js";
 import {
 	detachedResult,
 	harnessPool,
@@ -14,8 +14,8 @@ import {
 	toolResultIds,
 	untilStarted,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import { getMessageText, type Harness } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import { getMessageText, type Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

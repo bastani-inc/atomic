@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, type ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, test } from "vitest";
-import type { ExtensionFactory } from "../src/core/extensions/index.ts";
-import { DEFAULT_MAX_RESULT_SIZE_CHARS, PERSISTED_OUTPUT_TAG } from "../src/core/tools/tool-limits.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS, PERSISTED_OUTPUT_TAG } from "../src/core/tools/tool-limits.js";
 import {
 	harnessPool,
 	reopenedAfterDetaching,
@@ -16,8 +16,8 @@ import {
 	untilStarted,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import { getMessageText, type Harness } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import { getMessageText, type Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

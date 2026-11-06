@@ -9,14 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.ts";
-import type { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.js";
+import type { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.js";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 type SelectorBuilder = (done: () => void) => { component: SessionSelectorComponent; focus: SessionSelectorComponent };
 
@@ -69,7 +69,7 @@ describe("the interactive session selector's delete action (#4309)", () => {
 			},
 		};
 
-		await import("../src/modes/interactive/interactive-session-routing.ts");
+		await import("../src/modes/interactive/interactive-session-routing.js");
 		InteractiveModeBase.prototype.showSessionSelector.call(mode as unknown as InteractiveModeBase);
 		assert.ok(selector !== undefined);
 		await vi.waitFor(() => assert.match(selector!.render(120).join("\n"), /delete me/), { timeout: 5_000 });

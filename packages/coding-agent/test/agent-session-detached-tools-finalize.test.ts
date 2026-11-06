@@ -12,21 +12,21 @@ import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bas
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
-import type { ExtensionFactory, ToolDefinition } from "../src/core/extensions/index.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
-import { runSessionTempCleanup } from "../src/core/tools/session-temp-cleanup.ts";
-import { getTempRootDir } from "../src/core/tools/session-temp-dir.ts";
+import type { ExtensionFactory, ToolDefinition } from "../src/core/extensions/index.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.js";
+import { runSessionTempCleanup } from "../src/core/tools/session-temp-cleanup.js";
+import { getTempRootDir } from "../src/core/tools/session-temp-dir.js";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_TAG,
 	TOOL_RESULT_BLOBS_SUBDIR,
-} from "../src/core/tools/tool-limits.ts";
-import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.ts";
-import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
+} from "../src/core/tools/tool-limits.js";
+import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 const harnesses: Harness[] = [];
 const directories: string[] = [];

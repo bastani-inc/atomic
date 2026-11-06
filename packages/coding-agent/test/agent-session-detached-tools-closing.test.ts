@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
-import { isToolDetachmentError } from "../src/index.ts";
+import { isToolDetachmentError } from "../src/index.js";
 import {
 	detachedResult,
 	harnessPool,
@@ -13,7 +13,7 @@ import {
 	settlesWithin,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
+} from "./helpers/detached-tools.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());

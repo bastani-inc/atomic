@@ -6,8 +6,8 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, test } from "vitest";
-import type { BashExecutionMessage } from "../src/core/messages.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import type { BashExecutionMessage } from "../src/core/messages.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 const harnesses: Harness[] = [];
 afterEach(async () => {

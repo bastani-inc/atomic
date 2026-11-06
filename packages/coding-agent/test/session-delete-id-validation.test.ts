@@ -8,10 +8,10 @@ import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
-import { SessionIdError, SessionManager } from "../src/core/session-manager.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import { getReleasedStageBlobDir, removeReleasedStageBlobs } from "../src/core/tools/tool-output-blobs.ts";
-import { deleteSessionFromPicker } from "../src/main-session.ts";
+import { SessionIdError, SessionManager } from "../src/core/session-manager.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { getReleasedStageBlobDir, removeReleasedStageBlobs } from "../src/core/tools/tool-output-blobs.js";
+import { deleteSessionFromPicker } from "../src/main-session.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();

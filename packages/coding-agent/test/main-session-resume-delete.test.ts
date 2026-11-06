@@ -8,16 +8,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { parseArgs } from "../src/cli/args.ts";
-import { ENV_AGENT_DIR } from "../src/config.ts";
-import type { SessionInfo } from "../src/core/session-manager.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { SessionNotFoundError } from "../src/core/storage/session/errors.ts";
-import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.ts";
+import { parseArgs } from "../src/cli/args.js";
+import { ENV_AGENT_DIR } from "../src/config.js";
+import type { SessionInfo } from "../src/core/session-manager.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SessionNotFoundError } from "../src/core/storage/session/errors.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.js";
 
 type DeleteAction = ((sessionId: string) => Promise<void>) | undefined;
 type SessionsLoader = () => Promise<SessionInfo[]>;
@@ -26,7 +26,7 @@ const picker = vi.hoisted(() => ({
 	choose: undefined as undefined | ((current: unknown, deleteSession: unknown) => Promise<unknown>),
 }));
 
-vi.mock("../src/cli/session-picker.ts", () => ({
+vi.mock("../src/cli/session-picker.js", () => ({
 	selectSession: (current: unknown, _all: unknown, _settings: unknown, deleteSession: unknown) => {
 		if (picker.choose === undefined) throw new Error("no picker behaviour was set");
 		return picker.choose(current, deleteSession);
@@ -65,7 +65,7 @@ describe("the --resume picker's delete action (#4309)", () => {
 			deleteAction = deleteSession as DeleteAction;
 			return (await (current as SessionsLoader)()).find((session) => session.id === keep.getSessionId());
 		};
-		const { createSessionManager } = await import("../src/main-session.ts");
+		const { createSessionManager } = await import("../src/main-session.js");
 		const resumed = await createSessionManager(
 			parseArgs(["--resume"]),
 			cwd,

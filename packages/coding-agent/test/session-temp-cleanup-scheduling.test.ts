@@ -4,7 +4,7 @@ import { afterEach, test, vi } from "vitest";
 import {
 	resetSessionTempCleanupScheduleForTesting,
 	scheduleSessionTempCleanup,
-} from "../src/core/tools/session-temp-cleanup.ts";
+} from "../src/core/tools/session-temp-cleanup.js";
 
 afterEach(() => {
 	vi.restoreAllMocks();

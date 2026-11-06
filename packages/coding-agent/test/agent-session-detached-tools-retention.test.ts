@@ -9,16 +9,16 @@ import vm from "node:vm";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
-import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.ts";
-import type { ToolDefinition, WorkflowStageOrchestrationContext } from "../src/core/extensions/index.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import type { AgentTaskHost } from "../src/core/tasks/agent-adapter.ts";
-import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.ts";
-import type { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
-import { isToolDetachmentError, parkWorkflowStageForRelease } from "../src/index.ts";
-import { waitTool } from "./helpers/detached-tools.ts";
-import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
+import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.js";
+import type { ToolDefinition, WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import type { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
+import type { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { isToolDetachmentError, parkWorkflowStageForRelease } from "../src/index.js";
+import { waitTool } from "./helpers/detached-tools.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 function resolveCollect(): () => void {
 	const existing = (globalThis as { gc?: () => void }).gc;

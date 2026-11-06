@@ -7,9 +7,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, test } from "vitest";
-import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
-import { getTempRootDir } from "../src/core/tools/session-temp-dir.ts";
-import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
+import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.js";
+import { getTempRootDir } from "../src/core/tools/session-temp-dir.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.js";
 
 const directories: string[] = [];
 afterEach(() => {

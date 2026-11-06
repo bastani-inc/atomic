@@ -10,18 +10,18 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/com
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { getTempRootDir } from "../src/core/tools/session-temp-dir.ts";
+import { SessionManager } from "../src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { getTempRootDir } from "../src/core/tools/session-temp-dir.js";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_TAG,
 	TOOL_RESULT_BLOBS_SUBDIR,
 	TOOL_RESULTS_SUBDIR,
-} from "../src/core/tools/tool-limits.ts";
-import { isToolDetachmentError } from "../src/index.ts";
+} from "../src/core/tools/tool-limits.js";
+import { isToolDetachmentError } from "../src/index.js";
 import {
 	detachedResult,
 	harnessPool,
@@ -32,8 +32,8 @@ import {
 	untilStarted,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
 const directories: string[] = [];

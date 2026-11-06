@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
-import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.ts";
-import type { ToolDefinition } from "../src/core/extensions/index.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { isToolDetachmentError } from "../src/core/tool-detachment-errors.ts";
+import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.js";
+import type { ToolDefinition } from "../src/core/extensions/index.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { isToolDetachmentError } from "../src/core/tool-detachment-errors.js";
 import {
 	detachedResult,
 	fastTool,
@@ -19,8 +19,8 @@ import {
 	untilStarted,
 	waitForCiTurn,
 	waitTool,
-} from "./helpers/detached-tools.ts";
-import { createHarness, getMessageText } from "./suite/harness.ts";
+} from "./helpers/detached-tools.js";
+import { createHarness, getMessageText } from "./suite/harness.js";
 
 const pool = harnessPool();
 afterEach(() => pool.cleanup());
