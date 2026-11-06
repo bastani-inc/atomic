@@ -2,7 +2,7 @@
 
 import { Type } from "typebox";
 import { defineTool } from "../extensions/tool-types.ts";
-import { isToolModifier } from "../settings-merge.ts";
+import { isToolModifier } from "../settings-merge.js";
 import type { SubscriptionEvent } from "./types.js";
 
 export const SUBSCRIPTION_REPORT_TOOL_NAME = "report_to_subscriber";
