@@ -307,6 +307,67 @@ export class StorageWriterQueueUnusableError extends StorageUnavailableError {
 	}
 }
 
+export const STORAGE_TRANSIENT_ERROR_CODES = [
+	"stream-expired",
+	"transaction-timeout",
+	"connection-refused",
+	"connection-lost",
+] as const;
+/**
+ * Why a call to a database server failed for a while: `"stream-expired"`, the server ended a stream that stayed idle
+ * too long, as a stream does whose process was stopped in the middle of a transaction; `"transaction-timeout"`, the
+ * server rolled back a transaction that kept the write lock while another writer waited; `"connection-refused"`, no
+ * connection to the server could be made; `"connection-lost"`, the connection broke while a request was on its way or
+ * being answered.
+ */
+export type StorageTransientErrorCode = (typeof STORAGE_TRANSIENT_ERROR_CODES)[number];
+/**
+ * Whether the failed call may have changed the database: `"not-applied"`, it cannot have; `"unknown"`, the connection
+ * broke after the server may have applied a write that commits on its own (a commit, a batch, or a statement outside
+ * a transaction).
+ */
+export type StorageTransientOutcome = "not-applied" | "unknown";
+
+export interface StorageTransientErrorDetails {
+	readonly code: StorageTransientErrorCode;
+	readonly outcome: StorageTransientOutcome;
+	/** Which run of the call failed, counting from 1. */
+	readonly attempts: number;
+}
+
+const TRANSIENT_HINTS: Readonly<Record<StorageTransientOutcome, string>> = {
+	"not-applied":
+		"Check that the database server is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
+	unknown:
+		"Check that the database server is reachable; the write may have been applied, so read it back before retrying a write that is not idempotent",
+};
+
+/**
+ * A call to a database server failed for a reason that passes: the server ended an idle stream or a transaction that
+ * kept the write lock, or the connection could not be made or broke. `outcome` says whether the call may have written
+ * anything. It is a `StorageUnavailableError`, and its message keeps that error's `Storage unavailable:` prefix.
+ */
+export class StorageTransientError extends StorageUnavailableError {
+	override readonly name = "StorageTransientError" as const;
+	readonly code: StorageTransientErrorCode;
+	readonly outcome: StorageTransientOutcome;
+	readonly attempts: number;
+	readonly retryable = true as const;
+	readonly hint: string;
+	constructor(descriptor: StorageDescriptor, details: StorageTransientErrorDetails, cause?: StorageFailureCause) {
+		const hint = TRANSIENT_HINTS[details.outcome];
+		super(
+			descriptor,
+			cause,
+			`the database server call failed on attempt ${details.attempts} (${details.code}). ${hint}`,
+		);
+		this.code = details.code;
+		this.outcome = details.outcome;
+		this.attempts = details.attempts;
+		this.hint = hint;
+	}
+}
+
 /** Every code a storage error that carries one can have. */
 export type StorageErrorCode =
 	| StorageConfigErrorCode
@@ -314,6 +375,7 @@ export type StorageErrorCode =
 	| StorageUnsupportedOperationCode
 	| StorageWriterQueueDegradedCode
 	| StorageWriterQueueUnusableCode
+	| StorageTransientErrorCode
 	| JournalCatalogErrorCode
 	| JournalShardUnavailableErrorCode
 	| JournalAdoptErrorCode;
@@ -357,6 +419,13 @@ export function isStorageWriterQueueUnusableError(value: unknown): value is Stor
 	);
 }
 
+/** A `StorageTransientError`, from this module or another copy of it, or a rehydrated one. */
+export function isStorageTransientError(value: unknown): value is StorageTransientError {
+	return (
+		value instanceof StorageTransientError || hasCode(value, "StorageTransientError", STORAGE_TRANSIENT_ERROR_CODES)
+	);
+}
+
 /**
  * Any storage error: an instance of `StorageError` or one of its subclasses, including a rehydrated one, or a copy of
  * a storage error with a stable `code` from another module instance, recognized by its name and code.
@@ -369,6 +438,7 @@ export function isStorageError(value: unknown): value is StorageError {
 		isStorageUnsupportedOperationError(value) ||
 		isStorageWriterQueueDegradedError(value) ||
 		isStorageWriterQueueUnusableError(value) ||
+		isStorageTransientError(value) ||
 		isJournalStoreError(value)
 	);
 }
@@ -765,6 +835,7 @@ export function isRetryableStorageError(error: unknown): boolean {
 	let current = error;
 	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH; depth++) {
 		if (isStorageWriteLockTimeoutError(current) && current.retryable === true) return true;
+		if (isStorageTransientError(current) && current.retryable === true) return true;
 		if (isJournalStoreError(current) && current.retryable) return true;
 		current = causeOf(current);
 	}
@@ -911,6 +982,19 @@ function knownStorageError(
 		}
 		case "StorageWriterQueueUnusableError":
 			return new StorageWriterQueueUnusableError(descriptorOf(serialized), cause);
+		case "StorageTransientError": {
+			const code = STORAGE_TRANSIENT_ERROR_CODES.find((known) => known === serialized.code);
+			if (code === undefined) return undefined;
+			return new StorageTransientError(
+				descriptorOf(serialized),
+				{
+					code,
+					outcome: field<string>(serialized, "outcome", "string") === "not-applied" ? "not-applied" : "unknown",
+					attempts: field<number>(serialized, "attempts", "number") ?? 1,
+				},
+				cause,
+			);
+		}
 		case "StorageUnavailableError":
 			return new StorageUnavailableError(descriptorOf(serialized), cause);
 		case "StoreClosedError":

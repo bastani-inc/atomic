@@ -12,6 +12,9 @@ import {
 	StorageInvalidTextError,
 	StorageRollbackError,
 	StorageTransactionClosedError,
+	StorageTransientError,
+	type StorageTransientErrorCode,
+	type StorageTransientOutcome,
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
@@ -43,6 +46,16 @@ export interface SqliteDriverTransaction extends SqliteDriverExecutor {
 	close?(): Awaitable<void>;
 }
 
+/** A driver failure that passes, as `SqliteDriver.transientFailure` recognizes it. */
+export interface SqliteDriverTransientFailure {
+	readonly code: StorageTransientErrorCode;
+	/**
+	 * `"not-applied"` when the failed request cannot have changed the database, `"unknown"` when the connection broke
+	 * after the server may have applied it.
+	 */
+	readonly outcome: StorageTransientOutcome;
+}
+
 /** The driver calls `createSqliteDatabase` turns into a `SqliteDatabase`. */
 export interface SqliteDriver extends SqliteDriverExecutor {
 	/** Diagnostic identity. Its `location` passes through `redact` before the facade exposes it. */
@@ -58,7 +71,19 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	close(): Awaitable<void>;
 	/** Removes credentials from diagnostic text: the descriptor location and driver failure messages and stacks. */
 	redact?(text: string): string;
+	/**
+	 * Optional. Recognizes a failure a driver call threw as one that passes, from the failure's own fields, before the
+	 * facade redacts it. The call then fails with `StorageTransientError`.
+	 */
+	transientFailure?(failure: StorageFailureCause): SqliteDriverTransientFailure | undefined;
 }
+
+/** One run of a call: which run it is. */
+interface Attempt {
+	readonly number: number;
+}
+
+const FIRST_ATTEMPT: Attempt = { number: 1 };
 
 /**
  * A redactor that replaces every non-empty secret, and its URI-encoded and URI-decoded forms, with `[redacted]`.
@@ -142,10 +167,14 @@ class DriverDatabase implements SqliteDatabase {
 		this.driver = driver;
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
-		this.executor = this.createExecutor(driver, (operation) => {
-			if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
-			return this.queue.push(operation);
-		});
+		this.executor = this.createExecutor(
+			driver,
+			(operation) => {
+				if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
+				return this.queue.push(() => operation(FIRST_ATTEMPT));
+			},
+			true,
+		);
 		const batch = driver.batch?.bind(driver);
 		if (batch) this.batch = (statements) => this.runBatch(batch, statements);
 	}
@@ -163,34 +192,53 @@ class DriverDatabase implements SqliteDatabase {
 				);
 				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
 			}
-			const results = await this.call(() => batch(bound));
+			const results = await this.call(() => batch(bound), FIRST_ATTEMPT, true);
 			return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
 		});
 	}
 
-	/** Maps a driver failure to `StorageUnavailableError` with a credential-free cause. */
-	private async call<T>(operation: () => Awaitable<T>): Promise<T> {
+	/**
+	 * Maps a driver failure to `StorageUnavailableError` with a credential-free cause: a `StorageTransientError` when
+	 * the driver recognizes it and the call belongs to an `attempt`. `applies` says whether the call commits on its
+	 * own; a failed call inside an open transaction applied nothing, whatever the driver says of the request.
+	 */
+	private async call<T>(operation: () => Awaitable<T>, attempt?: Attempt, applies = false): Promise<T> {
 		try {
 			return await operation();
 		} catch (cause) {
-			throw new StorageUnavailableError(this.descriptor, redactCause(cause as StorageFailureCause, this.redact));
+			const safe = redactCause(cause as StorageFailureCause, this.redact);
+			if (attempt !== undefined) {
+				const transient = this.driver.transientFailure?.(cause as StorageFailureCause);
+				if (transient !== undefined)
+					throw new StorageTransientError(
+						this.descriptor,
+						{
+							code: transient.code,
+							outcome: applies ? transient.outcome : "not-applied",
+							attempts: attempt.number,
+						},
+						safe,
+					);
+			}
+			throw new StorageUnavailableError(this.descriptor, safe);
 		}
 	}
 
 	private createExecutor(
 		connection: SqliteDriverExecutor,
-		admit: <T>(operation: () => Promise<T>) => Promise<T>,
+		admit: <T>(operation: (attempt: Attempt) => Promise<T>) => Promise<T>,
+		applies: boolean,
 	): SqliteExecutor {
 		const statement = (sql: string, params: readonly SqliteValue[]) => {
 			const bound = snapshotParams(params);
-			return admit(async () => {
+			return admit(async (attempt) => {
 				const invalidIndex = bound.findIndex((value) => typeof value === "string" && value.includes("\0"));
 				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
-				return this.call(() => connection.execute(sql, bound));
+				return this.call(() => connection.execute(sql, bound), attempt, applies);
 			});
 		};
 		return {
-			exec: (sql) => admit(() => this.call(() => connection.executeMultiple(sql))),
+			exec: (sql) => admit((attempt) => this.call(() => connection.executeMultiple(sql), attempt, applies)),
 			run: async (sql, ...params) => ({ changes: (await statement(sql, params)).changes }),
 			get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
 				const result = await statement(sql, params);
@@ -222,37 +270,45 @@ class DriverDatabase implements SqliteDatabase {
 
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
 		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
-		return this.queue.push(async () => {
-			const connection = await this.call(() => this.driver.beginTransaction());
-			const handleQueue = new CallQueue();
-			let active = true;
-			let result: T;
-			const handle = this.createExecutor(connection, (operation) =>
-				active ? handleQueue.push(operation) : Promise.reject(new StorageTransactionClosedError()),
-			);
-			const close = () => this.call(() => connection.close?.());
+		return this.queue.push(() => this.runTransaction(callback, FIRST_ATTEMPT));
+	}
+
+	private async runTransaction<T>(
+		callback: (transaction: SqliteExecutor) => Promise<T>,
+		attempt: Attempt,
+	): Promise<T> {
+		const connection = await this.call(() => this.driver.beginTransaction(), attempt);
+		const handleQueue = new CallQueue();
+		let active = true;
+		let result: T;
+		const handle = this.createExecutor(
+			connection,
+			(operation) =>
+				active ? handleQueue.push(() => operation(attempt)) : Promise.reject(new StorageTransactionClosedError()),
+			false,
+		);
+		const close = () => this.call(() => connection.close?.());
+		try {
 			try {
-				try {
-					result = await callback(handle);
-				} finally {
-					active = false;
-					await handleQueue.drained();
-				}
-				await this.call(() => connection.commit());
-			} catch (cause) {
-				let failure = cause as StorageFailureCause;
-				try {
-					await this.call(() => connection.rollback());
-				} catch (rollbackCause) {
-					failure = new StorageRollbackError(failure, rollbackCause as StorageFailureCause);
-				}
-				// Cleanup must not replace a callback, commit, or rollback failure.
-				await close().catch(() => {});
-				throw failure;
+				result = await callback(handle);
+			} finally {
+				active = false;
+				await handleQueue.drained();
 			}
-			await close();
-			return result;
-		});
+			await this.call(() => connection.commit(), attempt, true);
+		} catch (cause) {
+			let failure = cause as StorageFailureCause;
+			try {
+				await this.call(() => connection.rollback());
+			} catch (rollbackCause) {
+				failure = new StorageRollbackError(failure, rollbackCause as StorageFailureCause);
+			}
+			// Cleanup must not replace a callback, commit, or rollback failure.
+			await close().catch(() => {});
+			throw failure;
+		}
+		await close();
+		return result;
 	}
 
 	close(): Promise<void> {
@@ -266,7 +322,8 @@ class DriverDatabase implements SqliteDatabase {
  * outside active transactions, snapshots binary parameters at call time, rejects NUL text, returns safe-range integers
  * as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, maps driver
  * failures to `StorageUnavailableError` with credentials redacted, and reports failed rollbacks with
- * `StorageRollbackError`. Closing rejects new calls, drains accepted work, then closes the driver once.
+ * `StorageRollbackError`. A failure the driver recognizes as transient is a `StorageTransientError`. Closing rejects
+ * new calls, drains accepted work, then closes the driver once.
  */
 export function createSqliteDatabase(driver: SqliteDriver): SqliteDatabase {
 	return new DriverDatabase(driver, driver.redact?.bind(driver) ?? ((text) => text));

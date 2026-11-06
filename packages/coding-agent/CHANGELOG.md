@@ -68,6 +68,8 @@
 - Event sources for `session.subscribe` and the workflow `ctx.subscribe`/`ctx.events`: `githubChecks`, `githubReviews`, `logTail`, `webhook` and `interval`, plus the `EventSource` interface for your own, and `publishEvent(subscriptionId, event)` to bridge a host's own webhooks. Failures are typed: `SubscriptionError` and its subclasses carry a stable `code`, fields and a `hint` ([#4311](https://github.com/bastani-inc/atomic/issues/4311))
 - `redactUrlCredentials(text)` is exported from `@bastani/atomic`: it removes the user info, which can hold a token, from every URL in a text ([#4378](https://github.com/bastani-inc/atomic/issues/4378))
 - `restoreWorktree` and `restoreWorktreeSnapshot` take `git: { path, env }`, the Git executable one restore runs instead of the one worktree snapshot operations resolve ([#4416](https://github.com/bastani-inc/atomic/issues/4416))
+- `StorageTransientError` (a `StorageUnavailableError`, `retryable: true`) with codes `stream-expired`, `transaction-timeout`, `connection-refused` and `connection-lost`, an `outcome` of `"not-applied"` or `"unknown"`, `attempts` and a `hint`, plus `isStorageTransientError()` and `STORAGE_TRANSIENT_ERROR_CODES`, exported from `@bastani/atomic/storage` and carried across processes by `serializeStorageError`/`rehydrateStorageError` ([#4383](https://github.com/bastani-inc/atomic/issues/4383))
+- `createSqliteDatabase` drivers can recognize their transient failures with an optional `transientFailure(failure)`; the call then fails with `StorageTransientError`. The libSQL adapter recognizes an expired stream, a transaction the server timed out, a refused connection and a broken connection by their codes ([#4383](https://github.com/bastani-inc/atomic/issues/4383))
 
 ### Changed
 

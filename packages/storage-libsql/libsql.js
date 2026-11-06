@@ -156,6 +156,48 @@ async function collectAndFinalize() {
 	}
 }
 
+/** How far `transientFailure` follows `cause`: a driver error wraps the network error that fetch wraps. */
+const MAX_CAUSE_DEPTH = 8;
+/**
+ * Codes sqld answers for a stream or transaction it ended and rolled back: nothing of it was written.
+ * @type {ReadonlyMap<unknown, import("@bastani/atomic/storage").StorageTransientErrorCode>}
+ */
+const ENDED_BY_SERVER = new Map([
+	["STREAM_EXPIRED", "stream-expired"],
+	["TRANSACTION_TIMEOUT", "transaction-timeout"],
+]);
+/**
+ * Network codes of a request that never reached the server, from Node's fetch and from Bun's.
+ * @type {ReadonlySet<unknown>}
+ */
+const NOT_SENT = new Set(["ECONNREFUSED", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]);
+/**
+ * Network codes of a connection that broke after a request may have reached the server.
+ * @type {ReadonlySet<unknown>}
+ */
+const CONNECTION_LOST = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "UND_ERR_SOCKET"]);
+
+/**
+ * The failure, as one that passes, when the server ended the stream or transaction of a process that stalled, or the
+ * connection to the server could not be made or broke; read from each error's `code` along the cause chain, never
+ * from its message.
+ * @param {import("@bastani/atomic/storage").StorageFailureCause} failure
+ * @returns {import("@bastani/atomic/storage").SqliteDriverTransientFailure | undefined}
+ */
+function transientFailure(failure) {
+	/** @type {unknown} */
+	let current = failure;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const { code, cause } = /** @type {{ readonly code?: unknown, readonly cause?: unknown }} */ (current);
+		const ended = ENDED_BY_SERVER.get(code);
+		if (ended !== undefined) return { code: ended, outcome: "not-applied" };
+		if (NOT_SENT.has(code)) return { code: "connection-refused", outcome: "not-applied" };
+		if (CONNECTION_LOST.has(code)) return { code: "connection-lost", outcome: "unknown" };
+		current = cause;
+	}
+	return undefined;
+}
+
 /**
  * @param {LibsqlDatabaseOptions} options
  * @returns {Promise<import("@bastani/atomic/storage").SqliteDatabase>}
@@ -212,6 +254,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "libsql", location: url },
 		redact: redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]),
+		transientFailure,
 		...statements(connection, watch),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way.
 		batch: (batched) =>
