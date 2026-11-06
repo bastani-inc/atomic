@@ -1119,3 +1119,30 @@ test("a rate window longer than the host timer allows is refused as out of range
 		},
 	);
 });
+
+test("a handler that swallows the cancellation and returns does not record its event as processed (#4311)", async () => {
+	const recorded: string[] = [];
+	const source = openSource();
+	const handlerReturned = Promise.withResolvers<void>();
+	const subscription = openEventSubscription({
+		id: uniqueId("swallowed-cancel"),
+		source,
+		handle: async (_event, signal) => {
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+			handlerReturned.resolve();
+		},
+		recordProcessed: async (event) => {
+			recorded.push(event.id);
+		},
+	});
+	await settle();
+	source.emit({ id: "interrupted" });
+	await settle();
+	const reason = new DOMException("owner closed", "AbortError");
+	subscription.cancel(reason);
+	await assert.rejects(subscription.done, (error) => error === reason);
+	await handlerReturned.promise;
+	await settle();
+	assert.deepEqual(recorded, []);
+	assert.equal(subscription.stats().handled, 0);
+});

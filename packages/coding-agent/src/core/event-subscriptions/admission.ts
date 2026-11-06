@@ -198,6 +198,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 			stop(new SubscriptionHandlerError(id, event.id, error));
 			return;
 		}
+		if (handlerStop.signal.aborted) return;
 		if (consumed !== false && input.recordProcessed !== undefined) {
 			try {
 				await input.recordProcessed(event);
