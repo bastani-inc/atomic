@@ -120,6 +120,20 @@ interface SerializedTaskEvictedError extends SerializableErrorForm {
 }
 
 /**
+ * A git-required error whose git cause the codec cut off at its depth bound, which its class cannot be built without:
+ * its name, code, message, hint, retryable and fields, which `isWorkflowGitRequiredError` recognizes.
+ */
+function gitRequiredIdentity(form: SerializedWorkflowGitRequiredError): Error {
+	return Object.assign(new Error(form.message), {
+		name: form.name,
+		code: form.code,
+		hint: form.hint,
+		retryable: form.retryable,
+		fields: form.fields,
+	});
+}
+
+/**
  * The families with their own JSON form, by the name an envelope gives their family. Team profile errors are storage
  * errors and cross with the storage family.
  */
@@ -143,7 +157,7 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		is: isWorkflowGitRequiredError,
 		serialize: (error) => error.toJSON(),
 		rehydrate: (form, cause) =>
-			isGitProvisionError(cause) ? new WorkflowGitRequiredError(form.fields, cause) : undefined,
+			isGitProvisionError(cause) ? new WorkflowGitRequiredError(form.fields, cause) : gitRequiredIdentity(form),
 	}),
 	workspace: family<WorkspaceError, SerializedWorkspaceError>({
 		is: isWorkspaceError,

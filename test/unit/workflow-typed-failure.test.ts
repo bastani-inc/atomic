@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { isToolDetachmentError, isWorkspaceBindingError, ToolDetachmentError } from "@bastani/atomic";
 import { test } from "vitest";
 import { applyFailureToStage } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
-import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
+import { causeChain, MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import {
 	readSerializedError,
 	rehydrateError,
@@ -21,6 +21,10 @@ import type { StageSnapshot } from "../../packages/workflows/src/shared/store-ty
 import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import { PoolProtocolError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures-classifier.js";
+import {
+	isWorkflowGitRequiredError,
+	type WorkflowGitRequiredError,
+} from "../../packages/workflows/src/shared/workflow-git-required-error.js";
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { assertSameFamilyError, FAMILY_CASES, SERIALIZABLE_FAMILY_CASES } from "./serializable-error-family-cases.js";
@@ -256,10 +260,33 @@ test("a family envelope without a code, or one its family refuses, is refused na
 		[unknownCode.field, unknownCode.expected],
 		["error", "a github-copilot error its family can rebuild"],
 	);
+});
 
-	const gitRequired = serializeError(FAMILY_CASES.find((kase) => kase.family === "git-required")!.make());
-	const withoutGit = refusal({ ...gitRequired, cause: undefined });
-	assert.deepEqual([withoutGit.field, withoutGit.expected], ["error", "a git-required error its family can rebuild"]);
+test("a git-required error whose git cause was cut off at the depth bound keeps its identity, and the chain above it its classes (#4378)", () => {
+	const gitRequired = FAMILY_CASES.find((kase) => kase.family === "git-required")!.make() as WorkflowGitRequiredError;
+	let chain: Error = gitRequired;
+	for (let level = 0; level < MAX_CAUSE_DEPTH - 2; level++) chain = new Error(`level ${level}`, { cause: chain });
+	const outer = new ToolDetachmentError("session-busy", { sessionId: "session-1" }, { cause: chain });
+
+	const rebuilt = read(JSON.parse(JSON.stringify(serializeError(outer))));
+
+	assert.ok(rebuilt instanceof ToolDetachmentError, "the typed error above it is kept");
+	const links = causeChain(rebuilt);
+	assert.equal(links.length, MAX_CAUSE_DEPTH);
+	const copy = links.at(-1) as Error & Record<string, unknown>;
+	assert.equal(isWorkflowGitRequiredError(copy), true);
+	assert.equal(copy.cause, undefined, "its git cause was beyond the bound");
+	assert.deepEqual(
+		[copy.name, copy.code, copy.message, copy.hint, copy.retryable, copy.fields],
+		[
+			gitRequired.name,
+			gitRequired.code,
+			gitRequired.message,
+			gitRequired.hint,
+			gitRequired.retryable,
+			gitRequired.fields,
+		],
+	);
 });
 
 test("a family whose rehydration throws on what it received refuses it, keeping what it threw as the cause (#4378)", () => {

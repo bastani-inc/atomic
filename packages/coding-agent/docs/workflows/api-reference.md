@@ -2241,7 +2241,7 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `stage-wait` | [`StageWaitError`](#stage-wait-errors) and its subclasses | `isStageWaitError` |
 | `tool-detachment` | `ToolDetachmentError` | `isToolDetachmentError` |
 | `git-provision` | `GitProvisionError`, `GitUnavailableError`, `GitProvisionTimeoutError`, `GitProvisionConfigError` | `isGitProvisionError` |
-| `git-required` | `WorkflowGitRequiredError`, with its git provisioning error as `cause` | `isWorkflowGitRequiredError` |
+| `git-required` | `WorkflowGitRequiredError`, with its git provisioning error as `cause`. When that cause falls beyond the chain's depth bound, an `Error` with its name, code, message, hint, `retryable` and fields | `isWorkflowGitRequiredError` |
 | `workspace` | `WorkspaceError` and its subclasses | `isWorkspaceError` |
 | `session-start` | `SessionStartError`, `SessionStartTimeoutError`, `SessionStartConfigError` | `isSessionStartError` |
 | `decision` | `DecisionError` and its subclasses | `isDecisionError` |
