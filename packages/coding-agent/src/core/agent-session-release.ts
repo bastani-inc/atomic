@@ -1,9 +1,11 @@
 import { AgentRehydrateError, AgentReleaseConfigError, type AgentSessionActivity } from "./agent-rehydrate-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { isSubagentChildSession } from "./agent-session-tasks.js";
 import { type AgentWakeDispatcher, agentWakeDispatcher } from "./agent-wake-dispatcher.ts";
 import { isPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
 import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
+import { parkWorkflowStageForRelease } from "./workflow-stage-admission.ts";
 
 /** What is left of a released session: plain data that names its stored conversation, and nothing live. */
 export interface ReleasedAgentSession {
@@ -101,6 +103,8 @@ export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 		...(sessionFile === undefined ? {} : { sessionFile }),
 	};
 	this._emit({ type: "session_released", released });
+	if (this._orchestrationContext !== undefined && !isSubagentChildSession(this))
+		parkWorkflowStageForRelease(this._orchestrationContext);
 	const closing = this.dispose().then(
 		() => released,
 		(error: Error) => {
