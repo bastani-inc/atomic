@@ -489,19 +489,28 @@ export function createDurableTaskPrimitive(input: {
 		readonly controller: AbortController;
 		readonly settled: Promise<void>;
 	}) => () => void;
-}): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
+}): (
+	name: string,
+	options: WorkflowTaskOptions,
+	stageFailFastScope?: ParallelFailFastScope,
+) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		const replayKey = input.nextReplayKey(`task:${name}`);
-		const replayed = replayableTaskResult(name, input.backend, input.workflowId, replayKey);
+		const restartFromPrompt = options.durableRestartFromPrompt === true;
+		const replayed = restartFromPrompt
+			? undefined
+			: replayableTaskResult(name, input.backend, input.workflowId, replayKey);
 		if (replayed !== undefined) {
 			await input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
 			return replayed.result;
 		}
-		const session = input.backend.getStageSession(input.workflowId, replayKey);
+		const supersedesRecordedResult =
+			restartFromPrompt && input.backend.getStageOutput(input.workflowId, replayKey) !== undefined;
+		const session = restartFromPrompt ? undefined : input.backend.getStageSession(input.workflowId, replayKey);
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
 		const durableIntercomGroup =
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
@@ -538,14 +547,19 @@ export function createDurableTaskPrimitive(input: {
 		try {
 			await input.beforeCheckpoint?.();
 			if (signal?.aborted) throw abortReasonError(signal);
+			const completedAt = supersedesRecordedResult
+				? Math.max(Date.now(), latestStageRecordAt(input.backend, input.workflowId, replayKey) + 1)
+				: Date.now();
 			const checkpoint: DurableStageCheckpoint = {
 				kind: "stage",
 				workflowId: input.workflowId,
-				checkpointId: stableCheckpointId("task", replayKey),
+				checkpointId: supersedesRecordedResult
+					? supersedingTaskCheckpointId(replayKey, completedAt)
+					: stableCheckpointId("task", replayKey),
 				name,
 				replayKey,
 				output: result,
-				completedAt: Date.now(),
+				completedAt,
 				...taskCheckpointMetadata(result),
 				...(completedTopology !== undefined ? { topology: completedTopology } : {}),
 			};
@@ -962,6 +976,29 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
 }
 
 /**
+ * The record of a task restarted from its prompt after a result of it was recorded, such as an event child whose event
+ * is handled again after a resume. A journal keeps the first record written under an id, so the restarted task's record
+ * gets its own id. It keeps the replay key, so the run's stage outputs and its completed snapshot take the later record
+ * for that stage in place of the earlier one.
+ */
+function supersedingTaskCheckpointId(replayKey: string, completedAt: number): string {
+	return `${stableCheckpointId("task", replayKey)}:${durableHash({ completedAt })}`;
+}
+
+/**
+ * The latest `completedAt` of a stage's records. A run orders a stage's records, and picks its session, by `completedAt`,
+ * so a record that supersedes them must come after this even when the process that wrote them had a clock ahead of ours.
+ */
+function latestStageRecordAt(backend: DurableWorkflowBackend, workflowId: string, replayKey: string): number {
+	let latest = 0;
+	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+		if (checkpoint.kind === "stage" && checkpoint.replayKey === replayKey)
+			latest = Math.max(latest, checkpoint.completedAt);
+	}
+	return latest;
+}
+
+/**
  * `forcedAt` makes a forced record differ from an equal one written at another time, such as a stage's ended wait. The
  * wait and the results a waiting stage was woken with are part of the record's identity, so a change to either in the
  * same millisecond is a new record; the same record written again in that millisecond is one record (#4309).
@@ -1065,6 +1102,7 @@ export function recordCachedStageWithTracker(
 	const sourceStageId = checkpoint.topology?.run?.runId === runId ? checkpoint.topology.stageId : undefined;
 	const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
 	let parentIds = tracker.onSpawn(stageId, name);
+	if (stageFailFastScope?.detached === true) tracker.detach(stageId);
 	const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
 	const run = store.run(runId);
 	const restored = sourceParents?.map(

@@ -22,8 +22,9 @@ import type { RunOpts, RunResult } from "./executor-types.js";
 export const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE =
 	"Workflow run completed without creating any workflow stages or durable tool nodes. Create tracked execution with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), ctx.workflow(), or ctx.tool().";
 
-export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot): void {
-	if (runSnapshot.stages.length > 0 || runSnapshot.toolNodes.length > 0) return;
+/** A run must create tracked work: a stage, a durable tool node, or an event subscription (`openedSubscriptions`). */
+export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot, openedSubscriptions: number): void {
+	if (runSnapshot.stages.length > 0 || runSnapshot.toolNodes.length > 0 || openedSubscriptions > 0) return;
 	throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
 }
 

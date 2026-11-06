@@ -26,6 +26,7 @@ import type {
 import { convertToLlm } from "../../src/core/messages.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../../src/core/models-store.ts";
+import type { CreateAgentSessionOptions } from "../../src/core/sdk-types.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
@@ -87,6 +88,11 @@ export interface HarnessOptions {
 	finishTurn?: Agent["finishTurn"];
 	/** The agent directory a session kept in a store spills oversized tool results into. */
 	storageAgentDir?: string;
+	/**
+	 * Lets the session start in-process child sessions on the same faux provider. An object overrides the options
+	 * each child session is created with.
+	 */
+	childSessions?: boolean | Partial<CreateAgentSessionOptions>;
 }
 
 export interface Harness {
@@ -215,6 +221,22 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		subagentPolicy: options.subagentPolicy,
 		orchestrationContext: options.orchestrationContext,
 		storageAgentDir: options.storageAgentDir,
+		...(options.childSessions !== undefined && options.childSessions !== false
+			? {
+					childSessionOptions: (child: CreateAgentSessionOptions): CreateAgentSessionOptions => ({
+						cwd: tempDir,
+						agentDir: tempDir,
+						modelRuntime,
+						model,
+						settingsManager: SettingsManager.inMemory(options.settings),
+						resourceLoader: createTestResourceLoader(),
+						builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+						noTools: "builtin",
+						...child,
+						...(options.childSessions === true ? {} : options.childSessions),
+					}),
+				}
+			: {}),
 	});
 
 	const events: AgentSessionEvent[] = [];

@@ -563,6 +563,8 @@ interface AgentSession {
 
   // Subscribe to events (returns unsubscribe function)
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
+  // Subscribe to an event stream; see "Event subscriptions" below
+  subscribe(source: EventSource, handler: SessionEventHandler, options?: SessionSubscribeOptions): Subscription;
 
   // Session info
   sessionFile: string | undefined;
@@ -615,6 +617,28 @@ A `ShutdownFailed` error contains component failures in `errors`; cleanup still 
 Captured extension APIs also refuse new execution, mutations and registrations as soon as close or reload begins. Already-admitted `pi.exec()` calls remain part of the awaited drain; provide `signal` or `timeout` when invoking subprocesses that might not finish on their own. `abort()` alone does not retire the API. A rejected transactional reload restores the surviving generation's action admission.
 
 Custom messages queued with `persistWhenStreaming: true` survive a successful reload and receive their model turn through the replacement extensions. An explicitly paused queue remains paused; call `resumeQueuedMessages()` before sending the next prompt. A rejected transactional reload retains the notices for the next prompt on the surviving generation.
+
+#### Event subscriptions
+
+`session.subscribe(source, handler, options?)` is the session-level form of the workflow [`ctx.subscribe`](/workflows/api-reference#workflowcontext): each event of `source` is handled by `handler(event, child)` without entering the session's context.
+
+```typescript
+import { githubReviews } from "@bastani/atomic";
+
+const subscription = session.subscribe(
+  githubReviews({ repo: "acme/api", pr: 42 }),
+  async (event, child) => {
+    await child.task({ prompt: "Report a review only if it requests changes, with the files it names." });
+  },
+  { maxConcurrent: 2 },
+);
+// later: await subscription.close();
+```
+
+- `child.task({ prompt, model?, thinkingLevel?, tools?, noTools?, excludedTools? })` runs a short-lived in-process child session seeded with your prompt and the event, then disposes it. When the session closes, a running child is aborted and disposed, and `child.task` rejects with the session's `AbortError`. If aborting or disposing the child fails, that failure is on the error's `cleanupCause`; when several children of the subscription fail to clean up, `cleanupCause` is an `AggregateError` of their failures. The child inherits this session's model, tool limits and custom tools, and gets a `report_to_subscriber` tool, which an explicit `tools` allowlist keeps; with `noTools: "all"` the child cannot report, so call `child.report()` instead. The child is named `<name>#<n>/<event id>` (the id is URI-encoded), which is also what the report text and `EventReportDetails.child` show. It resolves `{ text, sessionId }`. A session built without `createAgentSession()` has no child sessions; `child.task` then fails with `SubscriptionChildUnavailableError`.
+- `child.report(text)` delivers one `event_report` custom message into this session and starts a turn when it is idle (steering when it is streaming). A report sent while the session is in a turn is saved in the transcript before `report()` returns, so it survives a crash before the session reads it. Its `details` are `{ subscriptionId, eventId, child }`.
+
+`options` takes `name`, `maxConcurrent` (default 4) and `maxRate`, with the semantics of `ctx.subscribe`. The session transcript records the subscription and each processed event id as custom entries, which never enter model context, so a session reopened on the same transcript drops events it already handled. Each child session that finishes adds one `event_subscription_child` entry with the child's name, event id, session id, number of reports and the first 500 characters of its answer, so you can see what each event did. Subscribing again in the same session starts a new subscription that handles every event again. If writing the subscription record or a processed-event record fails, `done` rejects with a `SubscriptionRecordError` (the handler itself succeeded, and the event is handled again after a reopen). Disposing the session cancels its subscriptions; their `done` rejects with an `AbortError`, and an event whose handler was still running is not recorded as processed. The returned `Subscription` has `id`, `done`, `stats()` and `close()`; pass `id` to `publishEvent()` to bridge your own webhooks. Event sources, `publishEvent` and the `SubscriptionError` family are documented in the [workflow API reference](/workflows/api-reference#event-sources).
 
 #### Finishing admitted work
 

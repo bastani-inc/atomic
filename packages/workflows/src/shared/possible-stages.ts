@@ -49,7 +49,16 @@ const BUILTIN_BARREL_SPECIFIERS: ReadonlySet<string> = new Set(["@bastani/atomic
 /** Prefix of `.../builtin/<name>` subpath specifiers. */
 const BUILTIN_SUBPATH_PREFIXES = ["@bastani/atomic/workflows/builtin/"];
 
-const TRACKED_NODE_METHODS: ReadonlySet<string> = new Set(["stage", "task", "chain", "parallel", "workflow", "tool"]);
+const TRACKED_NODE_METHODS: ReadonlySet<string> = new Set([
+	"stage",
+	"task",
+	"chain",
+	"parallel",
+	"workflow",
+	"tool",
+	"subscribe",
+	"events",
+]);
 
 export interface PossibleStagesScanOptions {
 	/**
@@ -1420,7 +1429,7 @@ class PossibleStagesScanner {
 		ancestorStack: readonly string[],
 	): void {
 		this.hasTrackedNodes = true;
-		if (call.method === "tool") return;
+		if (call.method === "tool" || call.method === "subscribe" || call.method === "events") return;
 		if (call.method === "workflow") {
 			this.handleWorkflowCall(call, unit, path, boundaryPrefix, depth, ancestorStack);
 			return;
@@ -1866,7 +1875,7 @@ function joinBoundary(prefix: string, segment: string): string {
 }
 
 interface CtxCall {
-	readonly method: "stage" | "task" | "chain" | "parallel" | "workflow" | "tool";
+	readonly method: "stage" | "task" | "chain" | "parallel" | "workflow" | "tool" | "subscribe" | "events";
 	/** Index of the `(` token opening the argument list. */
 	readonly argsOpen: number;
 }

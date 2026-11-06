@@ -272,6 +272,12 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 			if (name.startsWith("live-reply-")) return { code: 0, stdout: "", stderr: "" } as unknown as T;
 			return fn({ signal: new AbortController().signal });
 		},
+		subscribe: (source) => {
+			throw new Error(`ctx.subscribe should not be used by builtin workflow mocks (${source.id})`);
+		},
+		events: (source) => {
+			throw new Error(`ctx.events should not be used by builtin workflow mocks (${source.id})`);
+		},
 	};
 
 	return ctx;

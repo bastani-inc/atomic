@@ -221,6 +221,8 @@ export interface ParallelFailFastScope {
 	firstFailure?: unknown;
 	readonly activeStages: Map<string, ParallelFailFastStage>;
 	readonly parentIds?: readonly string[];
+	/** Spawned stages never join the graph frontier, so later stages do not depend on them. */
+	readonly detached?: boolean;
 }
 
 export interface WorkflowExitCleanup {

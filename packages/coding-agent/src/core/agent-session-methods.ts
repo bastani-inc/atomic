@@ -222,6 +222,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_findLastAssistantMessage(): AssistantMessage | undefined;
 	_replaceMessageInPlace(target: AgentMessage, replacement: AgentMessage): void;
 	_emitExtensionEvent(event: AgentEvent): Promise<void>;
+	subscribe(
+		source: import("./event-subscriptions/types.js").EventSource,
+		handler: import("./event-subscriptions/session-subscription.js").SessionEventHandler,
+		options?: import("./event-subscriptions/session-subscription.js").SessionSubscribeOptions,
+	): import("./event-subscriptions/types.js").Subscription;
 	subscribe(listener: AgentSessionEventListener): () => void;
 	_disconnectFromAgent(): void;
 	dispose(): Promise<void>;

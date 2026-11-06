@@ -215,6 +215,11 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	sessionStore?: import("@bastani/atomic").SessionStore;
 	/** Internal durable resume hook: reopen this ID in the selected store instead of forking. */
 	resumeFromSessionId?: string;
+	/**
+	 * Internal durable resume hook: after a resume, start a fresh session from the original prompt instead of reopening
+	 * the recorded one or replaying a recorded result; the new result supersedes a recorded one.
+	 */
+	durableRestartFromPrompt?: boolean;
 	/** Internal durable resume hook: transcript of a stage checkpointed before #3700, imported when the ID is missing. */
 	resumeFromLegacySessionFile?: string;
 	/** Persisted automatic selection; revalidated without another decision on resume. */
@@ -493,6 +498,10 @@ export interface WorkflowRunContext<
 	 * Only `ctx.*` blocks produce durable checkpoints.
 	 */
 	tool: WorkflowToolPrimitive;
+	/** Handle each event of a stream in its own short-lived tracked child stage. */
+	subscribe: WorkflowEventPrimitives["subscribe"];
+	/** Inline mode: iterate a stream's events in the run body itself. */
+	events: WorkflowEventPrimitives["events"];
 	/**
 	 * Model catalog port for the invoking session, when the host provides one.
 	 * `models.currentModel` is the user-selected session model; leading a stage's
@@ -571,4 +580,33 @@ export interface WorkflowDefinition<
 > extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TRunInputs, WorkflowDefinitionBrand>, "run">,
 		WorkflowDefinitionBrand {
 	readonly run: WorkflowRunFn<TInputs, TOutputs>;
+}
+
+export type WorkflowEventStream = AuthoringContract.WorkflowEventStream;
+export type WorkflowEventSubscriber = AuthoringContract.WorkflowEventSubscriber;
+export type WorkflowEventsOptions = AuthoringContract.WorkflowEventsOptions;
+export type WorkflowSubscribeOptions = AuthoringContract.WorkflowSubscribeOptions;
+export type WorkflowSubscription = AuthoringContract.WorkflowSubscription;
+
+/** One event's short-lived child, handed to the `ctx.subscribe` handler. */
+export interface WorkflowEventChild extends Omit<AuthoringContract.WorkflowEventChild, "task"> {
+	/**
+	 * Runs this event's tracked child stage with `ctx.task` options. The prompt is seeded with the event, and the
+	 * stage gets a `report_to_subscriber` tool that calls `report`.
+	 */
+	task(options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
+}
+
+export type WorkflowEventHandler = (
+	event: import("@bastani/atomic").SubscriptionEvent,
+	child: WorkflowEventChild,
+) => void | Promise<void>;
+
+export interface WorkflowEventPrimitives {
+	subscribe(
+		source: import("@bastani/atomic").EventSource,
+		handler: WorkflowEventHandler,
+		options?: WorkflowSubscribeOptions,
+	): WorkflowSubscription;
+	events(source: import("@bastani/atomic").EventSource, options?: WorkflowEventsOptions): WorkflowEventStream;
 }

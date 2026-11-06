@@ -216,6 +216,8 @@ The `run` function receives `ctx: WorkflowRunContext`. Prefer its high-level pri
 | Pure deterministic computation, parsing, or side-effect-free transformation | Plain TypeScript in `run` or helpers |
 | Workflow-owned filesystem writes, network mutations, external API actions, or other side effects | `ctx.tool(name, args, fn)` so a completed operation is durably cached and resume does not rerun it |
 | Fine-grained session control | `ctx.stage(name, options?)` |
+| React to an event stream (CI, reviews, logs, webhooks) without growing a stage's context | `ctx.subscribe(source, handler, options?)` |
+| Read a stream inline, when every event belongs in the run's own history | `for await (const event of ctx.events(source))` |
 
 ### `ctx.inputs`
 
@@ -486,6 +488,175 @@ Callbacks that spawn child processes or perform network I/O need an explicit `ti
 With `timeoutMs`, each retry receives a fresh signal and deadline. Run cancellation and operator abort remain cancellation rather than timeout, and a callback that completes before its deadline is unchanged. Omitting `timeoutMs` keeps the existing unbounded callback path.
 
 See [`ctx.tool` — durable cached tool execution](/workflows/operations#ctx-tool-—-durable-cached-tool-execution) for durable failure replay, process-output safety, explicit repair handoffs, and cancellation behavior.
+
+### `ctx.subscribe(source, handler, options?)`
+
+```typescript
+ctx.subscribe(
+  source: EventSource,
+  handler: (event: SubscriptionEvent, child: WorkflowEventChild) => void | Promise<void>,
+  options?: WorkflowSubscribeOptions,
+): WorkflowSubscription;
+
+interface SubscriptionEvent {
+  readonly id: string;              // events with an id already processed are dropped
+  readonly type?: string;
+  readonly payload?: JSONValue;
+}
+
+interface WorkflowEventChild {
+  readonly name: string;            // "<subscription name>#<n>/<event id, URI-encoded>", e.g. "ci#1/check-run%3A42"
+  readonly subscriptionId: string;
+  readonly event: SubscriptionEvent;
+  task(options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
+  report(text: string): Promise<void>;
+}
+
+interface WorkflowSubscribeOptions {
+  readonly subscriber?: StageContext;   // stage that receives reports
+  readonly name?: string;               // defaults to source.id
+  readonly maxConcurrent?: number;      // event handlers running at once; default 4
+  readonly maxRate?: { readonly events: number; readonly intervalMs: number };
+}
+
+interface WorkflowSubscription {
+  readonly id: string;                  // pass to publishEvent()
+  readonly done: Promise<SubscriptionStats>;
+  stats(): SubscriptionStats;
+  close(): Promise<SubscriptionStats>;
+}
+
+interface SubscriptionStats {
+  readonly received: number;    // events delivered, duplicates included
+  readonly duplicates: number;
+  readonly handled: number;
+  readonly active: number;
+  readonly queued: number;
+  readonly reports: number;
+}
+```
+
+Subscribes a long-lived stage to an event stream without putting every event into that stage's context. `ctx.subscribe` returns at once and handles each event with `handler(event, child)`:
+
+- `child.task(options)` runs the event's own short-lived, tracked child stage. It takes the same options as `ctx.task`. The prompt is your handling instructions followed by the event's id, type and payload. The child stage also gets a `report_to_subscriber` tool, so its model decides whether the event matters. An explicit `tools` allowlist keeps that tool; with `noTools: "all"`, or with the tool in `excludedTools`, the child cannot report, so call `child.report()` from the handler instead.
+- `child.report(text)` sends a short report to the subscriber. The `report_to_subscriber` tool calls it too. When the subscriber is a workflow stage, `report` resolves once the stage has taken the report in, without waiting for the turn the report starts there, so the next event's child is not held up. If that turn fails, the run records a warning notice; the run waits for such turns before it ends. A report sent while the stage is in a turn waits in memory until that turn takes it, and the event is recorded as processed only once the stage's session has saved the report, so a crash in between handles the event again after the resume instead of losing the report. That wait does not hold the event's place under `maxConcurrent`: later events start meanwhile.
+
+The subscriber's context grows only by reports. Each report arrives as one steering message in the `subscriber` stage: `Report from event child "<name>" (event <id>):` followed by your text. After a resume, a subscriber stage replayed from the journal takes its reports in its retained session, which reopens as a stage chat does after a run. If that session cannot be reopened, the report fails with `SubscriptionSubscriberUnavailableError`. A subscription without a `subscriber` records its reports as run notices instead.
+
+```typescript
+const watcher = ctx.stage("ci-watcher");
+await watcher.prompt("Watch CI for pull request 42. Fix what event reports ask you to fix.");
+
+const subscription = ctx.subscribe(
+  githubChecks({ repo: "acme/api", pr: 42 }),
+  async (event, child) => {
+    const check = event.payload as { readonly status?: string };
+    if (check.status !== "completed") return;
+    await child.task({
+      prompt: "Report a failed check only if it is new and not a known flaky test.",
+      model: "anthropic/claude-haiku-4.5",
+    });
+  },
+  { subscriber: watcher, maxConcurrent: 4, maxRate: { events: 30, intervalMs: 60_000 } },
+);
+await subscription.done;
+```
+
+**Graph.** Every `child.task` call is a new graph node whose parent is the subscriber stage (or, without a subscriber, the frontier when you subscribed). Event children never become parents of later stages, so the graph stays acyclic and the main line of the workflow does not depend on event timing.
+
+**Deduplication and durability.** The run journal records each subscription and each processed event id. An event whose id was already processed, in this run or before a resume, is dropped and counted in `duplicates`; this includes repeats from the source and from `publishEvent`. An event is marked processed when its handler finishes, so an event that was in progress when the run stopped runs again after resume if its source delivers it again: `githubChecks` and `githubReviews` deliver again what GitHub still shows, while `logTail`, `webhook` and `interval` deliver only what happens after they start. When such an event runs again, its event child starts a fresh session from the seeded prompt, with the event and your instructions, instead of continuing the interrupted conversation. This holds for a child that had already finished too: its recorded result is not replayed, because a report it sent may not have been saved before the run stopped, and the new result replaces the recorded one. A report the earlier child already sent can therefore arrive a second time, so make what a report sets off in the subscriber idempotent.
+
+**Admission.** At most `maxConcurrent` handlers run at once. With `maxRate`, at most `events` handlers start within any `intervalMs` window, which can be up to 2,147,483,647 ms (about 24.8 days); a longer window throws `SubscriptionConfigError` with reason `out-of-range`. Events over either cap wait in memory, in arrival order, and none are dropped while the subscription is open. Events still waiting when the subscription is stopped or cancelled, or when the process stops, are not handled, and a webhook does not deliver them again.
+
+**Lifetime.** `done` resolves once the source has ended (or `close()` ran) and every admitted event has been handled. `close()` stops the source and lets queued events finish. When the run body returns, Atomic closes every open subscription and waits for its admitted events before the run completes. Cancelling or quitting the run cancels its subscriptions: their `done` rejects with the cancellation reason. An event whose handler was still running is not recorded as processed, even if the handler catches the abort and returns, so it runs again after a resume. Once the run is cancelled, quit or failed, `ctx.subscribe` and `ctx.events` throw its reason before they record or start anything, so code of the run body that is still running cannot start a source that nothing would stop. A subscription counts as the run's tracked work, so a run whose only work is a subscription (or a `ctx.events` stream) completes even when no event starts a child.
+
+**Failures.** The first handler failure stops the subscription and rejects `done` with a `SubscriptionHandlerError` whose `cause` is the handler's error. If the journal cannot record the subscription or a handled event, the subscription stops with a `SubscriptionRecordError` instead: the handler's work is done, and the event is handled again after a resume. To continue after a failure, resume the run: the resumed subscription finds its record and skips events already recorded as processed. Subscribing again in the same run starts a new subscription that handles every event again. A failure you do not catch from `done` fails the run, like any unhandled workflow rejection, and the run keeps the classification of the underlying cause (for example, an unavailable journal fails the run as `storage_unavailable`).
+
+### `ctx.events(source, options?)`
+
+```typescript
+ctx.events(
+  source: EventSource,
+  options?: { readonly name?: string; readonly maxRate?: { readonly events: number; readonly intervalMs: number } },
+): WorkflowEventStream;
+
+interface WorkflowEventStream extends AsyncIterableIterator<SubscriptionEvent> {
+  readonly id: string;
+  stats(): SubscriptionStats;
+  close(): Promise<SubscriptionStats>;
+}
+```
+
+Inline mode, for streams where every event belongs in the subscriber's own history, such as the output of a command a stage started. Each event is yielded once, in arrival order, with no child; overlapping `next()` calls are answered one after another with successive events. Deduplication, `maxRate` and the journal records work as for `ctx.subscribe`. An event is marked processed when the loop, having received it, asks for the next event or leaves the loop. An event the source delivered that the loop has not received yet stays unprocessed. Give durable work inside the loop an event-specific name, for example ``ctx.task(`triage/${event.id}`, …)``: after a resume, events already handled are skipped, so a name shared by every iteration would replay another event's result.
+
+```typescript
+const builder = ctx.stage("builder");
+await builder.prompt("Start the release build and watch its log.");
+for await (const event of ctx.events(logTail("/tmp/release-build.log"))) {
+  const { line } = event.payload as { readonly line: string };
+  await builder.sendUserMessage(`build log: ${line}`);
+  if (line.includes("BUILD FINISHED")) break;
+}
+```
+
+Leaving the loop with `break`, `return` or a thrown error closes the stream and stops its source.
+
+### Event sources
+
+```typescript
+interface EventSource {
+  readonly id: string;
+  start(signal: AbortSignal, emit: (event: SubscriptionEvent) => void): void | Promise<void>;
+}
+```
+
+A source calls `emit` for each event. It ends when the promise `start` returns settles; a source that returns nothing runs until `signal` aborts, which is how a subscription stops it. A rejected `start` fails the subscription with an `EventSourceError`. Do not call `emit` after `signal` aborts.
+
+Built-in sources, exported from `@bastani/atomic` and `@bastani/atomic/workflows`:
+
+| Source | Events |
+|--------|--------|
+| `githubChecks({ repo, pr, intervalMs? })` | One `check_run` event per check-run state of the pull request's head commit, polled with the `gh` CLI every `intervalMs` (default 30 s). Every page of check runs is read. The id changes with each status and conclusion. A `gh` that is not installed or not logged in is reported when the source is created, before anything is recorded: the factory throws `SubscriptionSetupError`. It checks the login with one local `gh auth token` call whose output is discarded, so the token never reaches Atomic, and throws `SubscriptionTimeoutError` if that call does not answer in time. A token that GitHub later revokes shows only at the first poll. Passing your own `gh` runner skips these checks. |
+| `githubReviews({ repo, pr, intervalMs? })` | One `pull_request_review` event per submitted review, polled with `gh`. Every page of reviews is read. A review still pending, such as the `gh` login's own draft, is left out until it is submitted, when it arrives under the same id. It needs `gh` and a login like `githubChecks`, and checks them the same way. |
+| `logTail(path, { pollMs? })` | One `line` event per line appended after the subscription starts. The id carries the follow's start time, a file generation and the line's byte offset. The generation advances when the file is truncated, recreated or replaced by another file (for example renamed over it), so the first lines of a rotated file are delivered, not mistaken for lines already handled. A follow that starts later begins at the end of the file and gets new ids. |
+| `webhook({ path, port?, hostname?, maxBodyBytes? })` | One event per `POST` to `path`, a plain path such as `/hooks/ci` (a query string or fragment throws `SubscriptionConfigError`). The id comes from `X-GitHub-Delivery`, `X-Request-Id`, `Idempotency-Key` or the body's `id`. `listening()` resolves the URL to give the sender. Sources on the same host and port share one server and route by `path`, so any number of webhook subscriptions on the default port hold one socket; two sources cannot use the same `path`. `requestFailures()` returns the count and the latest typed error of deliveries that failed inside the source, which were answered with `500`. A sender that disconnects is not a failure. A `202` means the delivery is queued in memory: one still waiting when the subscription stops, or when the process stops, is not delivered again. For at-least-once delivery, keep deliveries in your own durable queue and pass them to `publishEvent`. |
+| `interval(ms)` | A `tick` event every `ms` milliseconds. |
+
+Polling sources need no timer of their own: every source and rate limit waits on one shared wake dispatcher, and webhook sources share one server per host and port, so an idle subscriber holds no timer, abort listener or socket of its own: a subscription cancels its sleeping and listening sources itself instead of through listeners on their signal.
+
+### `publishEvent(subscriptionId, event)`
+
+```typescript
+publishEvent(subscriptionId: string, event: SubscriptionEvent): void;
+```
+
+Delivers an event to an open subscription in this process, so an SDK host can bridge its own webhook server or queue into `ctx.subscribe`, `ctx.events` or `session.subscribe`. Pass the subscription's `id`. Events published before the subscription's journal record is written wait in its queue.
+
+```typescript
+app.post("/hooks/ci", (request, response) => {
+  publishEvent(subscriptionId, { id: request.get("X-GitHub-Delivery")!, type: "check_suite", payload: request.body });
+  response.sendStatus(202);
+});
+```
+
+### Subscription errors
+
+Every subscription failure extends `SubscriptionError` (`code`, `hint`, `retryable`, `fields()`). Branch on the class, a guard or `code`, never on the message. Guards also match errors that crossed a process boundary and search the `cause` chain. `serializeSubscriptionError` and `deserializeSubscriptionError` carry them across IPC as the same class.
+
+| Class (guard) | `code` | When | Fields | What to do |
+|---------------|--------|------|--------|------------|
+| `SubscriptionClosedError` (`isSubscriptionClosedError`) | `subscription-closed` | `publishEvent`, a source's `emit`, or `report` reached a subscription that is closed or not open in this process, or `session.subscribe` ran on a closed session. | `subscriptionId`, `operation` (`publish`, `emit`, `report`, `subscribe`) | Publish to an open subscription's `id`; stop emitting after `signal` aborts; subscribe while the session is open. |
+| `SubscriptionConfigError` (`isSubscriptionConfigError`) | `invalid-option` | An option is invalid. Thrown by `ctx.subscribe`, `ctx.events`, `session.subscribe` or a source factory before anything starts or is recorded. | `source` (`sdk`), `field`, `reason` (`duplicate-id`, `duplicate-path`, `not-absolute-path`, `not-event-source`, `not-function`, `not-owner-repo`, `not-plain-path`, `not-positive-integer`, `not-stage`, `not-string`, `out-of-range`), `expected` (what a valid value looks like) | Fix the named field to match `expected`. |
+| `SubscriptionEventError` (`isSubscriptionEventError`) | `invalid-event` | A source or `publishEvent` passed something other than an object with a string `id`. | `subscriptionId`, `reason` (`not-object`, `missing-id`) | Emit `{ id, type?, payload? }`. |
+| `EventSourceError` (`isEventSourceError`) | `source-failed` | A source failed: `start` rejected, a poll failed, a file read failed, the webhook could not listen, or a webhook delivery failed inside the source (`request`, recorded by `requestFailures()`). | `sourceId`, `phase` (`start`, `listen`, `poll`, `read`, `request`), `detail` | Follow the `hint`, which names the fix for that source. `retryable` is `true` for failed `gh` polls and webhook deliveries, `false` when a `gh` setup problem is the `cause`. |
+| `SubscriptionHandlerError` (`isSubscriptionHandlerError`) | `handler-failed` | Your handler threw for an event; the subscription stopped. | `subscriptionId`, `eventId`; `cause` is your error | Fix the handler, then resume the run or reopen the session; events already recorded as processed are skipped. Subscribing again in the same run or session handles every event again. |
+| `SubscriptionChildUnavailableError` (`isSubscriptionChildUnavailableError`) | `child-unavailable` | `child.task` in `session.subscribe` ran on a session that cannot start child sessions. | `subscriptionId`, `sessionId` | Create the session with `createAgentSession()`, or call `child.report` directly. |
+| `SubscriptionSetupError` (`isSubscriptionSetupError`) | `setup-missing` | `githubChecks` or `githubReviews` needs the GitHub CLI: `gh` is not on the `PATH`, cannot run, or holds no login (thrown by the factory, before anything is recorded), or a later poll found it missing or logged out (`gh` exit code 4), in which case it is the `cause` of an `EventSourceError`. Never retryable. | `missing` (`gh-cli`, `gh-auth`) | Install `gh` (https://cli.github.com) and run `gh auth login`, then subscribe again. |
+| `SubscriptionTimeoutError` (`isSubscriptionTimeoutError`) | `timeout` | The login check a GitHub source makes when it is created (`gh auth token`) did not answer within its limit. Retryable. | `phase` (`gh-auth-check`), `timeoutMs`, `elapsedMs` | Check that `gh auth status` answers promptly on this machine, then subscribe again. |
+| `SubscriptionRecordError` (`isSubscriptionRecordError`) | `record-failed` | Writing the subscription record, or the record that an event was processed, to the run journal (or session transcript) failed. The subscription stops. Your handler itself succeeded, and a processed event whose record failed is handled again after a resume. `retryable` is `true` when the `cause` is an unavailable storage (`StorageUnavailableError`) and `false` otherwise, for example when another process owns the journal. | `subscriptionId`, `record` (`subscription`, `processed-event`), `eventId` (`null` for the subscription record); `cause` is the storage error | Make the journal or transcript storage available (see the cause), then resume the run or subscribe again. |
+| `SubscriptionSubscriberUnavailableError` (`isSubscriptionSubscriberUnavailableError`) | `subscriber-unavailable` | A report could not reach its subscriber stage because that stage was replayed from a checkpoint after a resume and its retained session could not be reopened. | `subscriptionId`, `subscriber` (stage name), `reason` (`no-adapter`, `not-terminal`, `no-session`, `invalid-session`, `closed`, `no-message-admission`) | Follow the `hint` for the `reason`. For most reasons, subscribe from a stage that runs in this run, or start the run again instead of resuming it. |
+
+`isRetryableSubscriptionError(error)` reads `retryable` from the first subscription error in the chain. Cancellation is never wrapped: a cancelled subscription rejects `done` with the cancellation reason itself.
 
 ### `ctx.exit(options?)`
 
@@ -2316,6 +2487,7 @@ class GraphFrontierTracker {
   onSpawn(stageId: string, stageName: string): string[];
   currentParents(): string[];
   replaceParents(stageId: string, parentIds: readonly string[]): void;
+  detach(stageId: string): void;
   onSettle(stageId: string): void;
   getNodes(): StageNode[];
   getParents(stageId: string): string[];
@@ -2329,7 +2501,7 @@ interface StageNode extends WorkflowSerializableObject {
 }
 ```
 
-Tracks inferred DAG parents from JavaScript execution order. It is a low-level engine utility for integrations that need the same frontier semantics as the workflow executor.
+Tracks inferred DAG parents from JavaScript execution order. It is a low-level engine utility for integrations that need the same frontier semantics as the workflow executor. `detach(stageId)` keeps a spawned node out of the frontier: it keeps its parents, but later nodes never depend on it. Event children of `ctx.subscribe` are detached.
 
 ### Execution policies
 
