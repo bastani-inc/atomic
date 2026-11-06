@@ -308,6 +308,14 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload.
 
+Atomic records one of its own: when the oversized result of an agent released while it waited (a workflow stage or a background subagent) is stored with the session in its session store, a `custom` entry with `customType: "atomic.tool-output"` names it, written before the tool result whose text points to `tool-output://<sha256>`:
+
+```json
+{"type":"custom","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:21:00.000Z","customType":"atomic.tool-output","data":{"toolCallId":"call_1","hash":"9c56…","bytes":1048576}}
+```
+
+`hash` is the SHA-256 of the stored bytes and `bytes` their size. In exported files `data` also has `base64`, the bytes themselves, each blob once; importing or forking the file checks every one against its `hash`, stores it with the new session and drops the field.
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.

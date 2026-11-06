@@ -105,6 +105,8 @@ test("session and journal stores isolate records in one caller-owned database ac
 	assert.deepEqual(
 		(await db.all("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")).map((row) => row.name),
 		[
+			"session_blob_chunks",
+			"session_blobs",
 			"session_entries",
 			"session_meta",
 			"session_search_texts",

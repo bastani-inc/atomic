@@ -7,6 +7,15 @@ import type { DurableStageCheckpoint } from "../durable/types.js";
 import { durableRunTopology } from "../engine/run-durable-topology.js";
 import type { Store } from "../shared/store.js";
 
+/**
+ * The session store a pooled worker's stage sessions use: writes of entries go through `commit`, which the pool
+ * validates against the worker's attempt, and reads and blobs go to `reader`, the pool's own session tables.
+ *
+ * A blob's bytes are written straight to `reader`, not through `commit`: a large tool output would otherwise travel
+ * as JSON over the worker's IPC and be hashed and applied inside the coordinator's transaction. Bytes may come from
+ * any attempt because nothing reads a blob that no entry references. The `atomic.tool-output` entry that does is
+ * appended through `commit`, so a fenced attempt's blob stays an unreferenced row inside its own session.
+ */
 export function workerSessionStore(input: {
 	readonly reader: SessionStore;
 	readonly backend: DurableWorkflowBackend;
@@ -56,6 +65,12 @@ export function workerSessionStore(input: {
 				entries,
 				expectSeq: options.expectSeq,
 			}),
+		...(input.reader.putBlob !== undefined && input.reader.getBlob !== undefined
+			? {
+					putBlob: (id: string, data: Uint8Array) => input.reader.putBlob!(id, data),
+					getBlob: (id: string, hash: string) => input.reader.getBlob!(id, hash),
+				}
+			: {}),
 		load: (id) => input.reader.load(id),
 		readHeader: (id) => input.reader.readHeader(id),
 		list: (query) => input.reader.list(query),

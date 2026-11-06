@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { sessionBlobOutput } from "../../packages/coding-agent/src/core/session-tool-output.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -127,6 +128,25 @@ test("forkRun copies a stage session that a local worker kept in the journal (#4
 	const [checkpoint] = backend.listCheckpoints(fork.runId);
 	assert.equal(checkpoint?.kind === "stage" ? checkpoint.sessionId : undefined, copy);
 	assert.deepEqual(await sessionIds(host), [], "the supplied store stays open and is not written");
+});
+
+test("forkRun copies the tool-output blobs of a stage session that a local worker kept in the journal (#4379)", async () => {
+	const { backend, runId, sessions, directory } = await pooledSource("fork-pool-blobs");
+	const pool = await poolSessionStore(backend, runId);
+	assert.ok(pool !== undefined);
+	const worker = await SessionManager.open(pool, sessions[0]!.header.id);
+	const kept = await sessionBlobOutput(worker, "call-1")!("a released stage's output on a worker");
+	await pool.close();
+	const destination = new MemorySessionStore();
+
+	await forkDurableRun(backend, forkRequest(runId, directory, new MemorySessionStore(), destination));
+
+	const [copy] = await sessionIds(destination);
+	assert.ok(copy !== undefined);
+	assert.equal(
+		Buffer.from((await destination.getBlob(copy, kept.sha256))!).toString(),
+		"a released stage's output on a worker",
+	);
 });
 
 test("a stage session the supplied store holds is read without opening the journal's pool tables (#4321)", async () => {

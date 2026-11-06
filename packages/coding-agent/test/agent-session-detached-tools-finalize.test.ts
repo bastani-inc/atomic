@@ -1,31 +1,30 @@
 /**
  * A detached call's result enters history exactly as an inline call's does (#4309): extension `tool_result`
  * handlers, image normalization and the oversized-output spill, which is content-addressed. A released stage's spill
- * lands in a per-session directory of the agent blobs that deleting the session removes.
+ * is kept as a blob of its session in the session's store, which deleting the session deletes (#4379).
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { join, relative } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { ExtensionFactory, ToolDefinition } from "../src/core/extensions/index.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { TOOL_OUTPUT_ENTRY_TYPE, toolOutputUrl } from "../src/core/session-tool-output.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.js";
-import { runSessionTempCleanup } from "../src/core/tools/session-temp-cleanup.js";
 import { getTempRootDir } from "../src/core/tools/session-temp-dir.js";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_TAG,
-	TOOL_RESULT_BLOBS_SUBDIR,
+	TOOL_RESULTS_SUBDIR,
 } from "../src/core/tools/tool-limits.js";
-import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.js";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 const harnesses: Harness[] = [];
@@ -88,6 +87,24 @@ function savedResult(manager: SessionManager): ToolResultMessage {
 interface Run {
 	readonly agentDir: string;
 	readonly extensionFactories?: ExtensionFactory[];
+	/** Keep the session in a store that holds no blobs, as a custom store may be. */
+	readonly blobless?: boolean;
+}
+
+/** `store` without its blobs. */
+function withoutBlobs(store: SessionStore): SessionStore {
+	return {
+		descriptor: store.descriptor,
+		create: (header, entries) => store.create(header, entries),
+		append: (sessionId, entries, options) => store.append(sessionId, entries, options),
+		replace: (sessionId, header, entries, options) => store.replace(sessionId, header, entries, options),
+		load: (sessionId) => store.load(sessionId),
+		readHeader: (sessionId) => store.readHeader(sessionId),
+		delete: (sessionId) => store.delete(sessionId),
+		list: (query) => store.list(query),
+		findMostRecent: (query) => store.findMostRecent(query),
+		close: () => store.close(),
+	};
 }
 
 /** The result a session in a store saves for one call that runs inline and reports `output`. */
@@ -116,12 +133,13 @@ async function savedDetached(output: AgentToolResult, run: Run): Promise<ToolRes
 interface DetachedSession {
 	readonly saved: ToolResultMessage;
 	readonly sessionId: string;
-	readonly store: SqlSessionStore;
+	readonly store: SessionStore;
 }
 
 async function detachedSession(output: AgentToolResult, run: Run): Promise<DetachedSession> {
 	const tool = reportingTool();
-	const store = await persistentStore(run.agentDir);
+	const persistent = await persistentStore(run.agentDir);
+	const store = run.blobless === true ? withoutBlobs(persistent) : persistent;
 	const manager = await SessionManager.create(store, process.cwd());
 	const first = await createHarness({
 		customTools: [tool.definition],
@@ -162,13 +180,29 @@ function sha256(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+/** The whole output a saved result points at: a file, or a blob of the session for a `tool-output://` URL. */
+async function savedOutput(text: string, store: SessionStore, sessionId: string): Promise<string> {
+	const location = savedFilePath(text);
+	if (!location.startsWith("tool-output://")) return readFileSync(location, "utf8");
+	const data = await store.getBlob?.(sessionId, location.slice("tool-output://".length));
+	assert.ok(data !== undefined, `${location} is not a blob of session ${sessionId}`);
+	return Buffer.from(data).toString("utf8");
+}
+
+/** The tool-output entries a session recorded, in order. */
+async function toolOutputEntries(store: SessionStore, sessionId: string): Promise<unknown[]> {
+	return (await store.load(sessionId)).entries.flatMap((entry) =>
+		entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE ? [entry.data] : [],
+	);
+}
+
 describe("a detached call's result is finalized as an inline call's is (#4309)", () => {
 	test("an oversized result is spilled, so what is saved stays under the cap, inline or detached (#4309)", async () => {
 		const agentDir = temporaryDirectory("atomic-detached-spill-");
 		const output = `BEGIN-REPORT\n${"r".repeat(200_000)}\nEND-REPORT`;
 
 		const inline = await savedInline(textResult(output), { agentDir });
-		const detached = await savedDetached(textResult(output), { agentDir });
+		const { saved: detached, store, sessionId } = await detachedSession(textResult(output), { agentDir });
 
 		for (const saved of [inline, detached]) {
 			const text = getMessageText(saved);
@@ -176,7 +210,7 @@ describe("a detached call's result is finalized as an inline call's is (#4309)",
 			assert.ok(text.length <= DEFAULT_MAX_RESULT_SIZE_CHARS, `saved ${text.length} characters`);
 			assert.ok(text.includes("BEGIN-REPORT"));
 			assert.ok(!text.includes("END-REPORT"));
-			assert.equal(readFileSync(savedFilePath(text), "utf8"), output);
+			assert.equal(await savedOutput(text, store, sessionId), output);
 		}
 		const withoutPath = (saved: ToolResultMessage) =>
 			getMessageText(saved).replace(savedFilePath(getMessageText(saved)), "<path>");
@@ -240,7 +274,8 @@ describe("a detached call's result is finalized as an inline call's is (#4309)",
 
 describe("persisted oversized output (#4309)", () => {
 	test("is named by the SHA-256 of its content: identical outputs share one file the transcript references (#4309)", async () => {
-		const blobDir = getReleasedStageBlobDir(temporaryDirectory("atomic-blob-dedupe-"), "blob-session");
+		const sessionDir = temporaryDirectory("atomic-blob-dedupe-");
+		const directory = join(sessionDir, TOOL_RESULTS_SUBDIR);
 		const output = "d".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 5);
 		const spill = (toolCallId: string, text: string) =>
 			redirectOversizedToolResult({
@@ -249,87 +284,68 @@ describe("persisted oversized output (#4309)", () => {
 				result: { content: [{ type: "text", text }], details: undefined },
 				isError: false,
 				sessionId: "blob-session",
-				blobDir,
+				sessionDir,
 			});
 
 		const first = getMessageText(await spill("call-1", output));
 		const second = getMessageText(await spill("call-2", output));
 		const other = getMessageText(await spill("call-3", `${output}e`));
 
-		assert.equal(savedFilePath(first), join(blobDir, `${sha256(output)}.txt`));
+		assert.equal(savedFilePath(first), join(directory, `${sha256(output)}.txt`));
 		assert.ok(first.includes(`sha256:${sha256(output)}`));
 		assert.equal(second, first);
-		assert.equal(savedFilePath(other), join(blobDir, `${sha256(`${output}e`)}.txt`));
-		assert.deepEqual(readdirSync(blobDir).sort(), [`${sha256(output)}.txt`, `${sha256(`${output}e`)}.txt`].sort());
+		assert.equal(savedFilePath(other), join(directory, `${sha256(`${output}e`)}.txt`));
+		assert.deepEqual(readdirSync(directory).sort(), [`${sha256(output)}.txt`, `${sha256(`${output}e`)}.txt`].sort());
 	});
 
-	test("of a released stage lands in its session's directory of the agent blobs, outside every tree the sweeper reaps (#4309)", async () => {
+	test("of a released stage is kept as a blob of its session in the store, with an entry referencing it and no file (#4379)", async () => {
 		const agentDir = temporaryDirectory("atomic-blob-durable-");
-		const sandbox = temporaryDirectory("atomic-blob-sweep-");
 		const output = `DURABLE\n${"s".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1)}`;
 
-		const { saved, sessionId } = await detachedSession(textResult(output), { agentDir });
-		await harnesses.pop()?.cleanup();
-		const path = savedFilePath(getMessageText(saved));
+		const { saved, sessionId, store } = await detachedSession(textResult(output), { agentDir });
 
-		assert.equal(dirname(path), join(agentDir, TOOL_RESULT_BLOBS_SUBDIR, sessionId));
-		assert.equal(dirname(path), getReleasedStageBlobDir(agentDir, sessionId));
-		assert.equal(path, join(getReleasedStageBlobDir(agentDir, sessionId), `${sha256(output)}.txt`));
-		assert.ok(relative(getTempRootDir(), path).startsWith(".."), `${path} is in the age-swept temp tree`);
-		runSessionTempCleanup({
-			now: Date.now() + 365 * 24 * 60 * 60 * 1000,
-			tempRoot: join(sandbox, "temp"),
-			sessionsRoots: [join(agentDir, "sessions")],
-			sessionDirs: [agentDir],
-			controlRoot: join(sandbox, "control"),
-		});
-		assert.equal(existsSync(path), true);
-		assert.equal(readFileSync(path, "utf8"), output);
+		assert.equal(savedFilePath(getMessageText(saved)), toolOutputUrl(sha256(output)));
+		assert.equal(await savedOutput(getMessageText(saved), store, sessionId), output);
+		assert.deepEqual(await toolOutputEntries(store, sessionId), [
+			{ toolCallId: "report-1", hash: sha256(output), bytes: Buffer.byteLength(output) },
+		]);
+		assert.equal(existsSync(join(agentDir, "blobs")), false, "nothing was written beside the store");
 	});
 
-	test("of a released stage is removed with its session, and only with its session (#4309)", async () => {
+	test("of a released stage is deleted with its session, and only with its session (#4309, #4379)", async () => {
 		const agentDir = temporaryDirectory("atomic-blob-delete-");
 		const output = `DELETED\n${"d".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1)}`;
 		const kept = await detachedSession(textResult(`${output}-kept`), { agentDir });
 		const deleted = await detachedSession(textResult(output), { agentDir });
-		const keptPath = savedFilePath(getMessageText(kept.saved));
-		const deletedPath = savedFilePath(getMessageText(deleted.saved));
 		await harnesses.pop()?.cleanup();
 		await harnesses.pop()?.cleanup();
-		assert.equal(existsSync(deletedPath), true);
+		assert.equal(await savedOutput(getMessageText(deleted.saved), deleted.store, deleted.sessionId), output);
 
 		const manager = await SessionManager.create(deleted.store, process.cwd());
-		manager.bindAgentDir(agentDir);
 		await manager.deleteSession(deleted.sessionId);
 
-		assert.equal(existsSync(getReleasedStageBlobDir(agentDir, deleted.sessionId)), false);
-		assert.equal(existsSync(keptPath), true);
+		assert.equal(await deleted.store.getBlob?.(deleted.sessionId, sha256(output)), undefined);
+		assert.equal(await savedOutput(getMessageText(kept.saved), kept.store, kept.sessionId), `${output}-kept`);
 	});
 
-	test("of a session that ran inline goes to the temp tree the sweeper reaps, not the agent blobs, even in a store (#4309)", async () => {
+	test("of a session that ran inline goes to the temp tree the sweeper reaps, never into the store, even in a store (#4309)", async () => {
 		const agentDir = temporaryDirectory("atomic-blob-inline-");
 
 		const saved = await savedInline(textResult("i".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1)), { agentDir });
 
 		const path = savedFilePath(getMessageText(saved));
-		assert.equal(existsSync(join(agentDir, TOOL_RESULT_BLOBS_SUBDIR)), false);
 		assert.ok(!relative(getTempRootDir(), path).startsWith(".."), `${path} is outside the temp tree`);
 	});
 
-	test("of a session that is not persisted stays in the temp tree the sweeper reaps, never in the agent directory (#4309)", async () => {
-		const agentDir = temporaryDirectory("atomic-blob-unpersisted-");
-		const tool = reportingTool();
-		const unpersisted = await harness({
-			customTools: [tool.definition],
-			sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
-			storageAgentDir: agentDir,
-		});
-		unpersisted.setResponses([reportTurn(), fauxAssistantMessage("done")]);
-		tool.report(textResult("t".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1)));
-		await unpersisted.session.prompt("fetch the report");
+	test("of a released stage whose store holds no blobs stays in the temp tree the sweeper reaps (#4379)", async () => {
+		const agentDir = temporaryDirectory("atomic-blob-blobless-");
+		const output = "t".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1);
 
-		const path = savedFilePath(getMessageText(savedResult(unpersisted.sessionManager)));
-		assert.equal(existsSync(join(agentDir, TOOL_RESULT_BLOBS_SUBDIR)), false);
+		const { saved, sessionId, store } = await detachedSession(textResult(output), { agentDir, blobless: true });
+
+		const path = savedFilePath(getMessageText(saved));
 		assert.ok(!relative(getTempRootDir(), path).startsWith(".."), `${path} is outside the temp tree`);
+		assert.equal(readFileSync(path, "utf8"), output);
+		assert.deepEqual(await toolOutputEntries(store, sessionId), []);
 	});
 });

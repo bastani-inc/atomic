@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
@@ -658,6 +659,10 @@ export function registerSessionStoreConformance(
 						store.replace(value, header(), [], { expectSeq: 0 }),
 						invalidText("sessionId", reason),
 					);
+					if (store.putBlob !== undefined && store.getBlob !== undefined) {
+						await assert.rejects(store.putBlob(value, new Uint8Array([1])), invalidText("sessionId", reason));
+						await assert.rejects(store.getBlob(value, "0".repeat(64)), invalidText("sessionId", reason));
+					}
 				}
 				store = await reload(store);
 				assert.deepEqual(await store.load("session"), { header: header(), entries: [], lastSeq: 0 });
@@ -690,6 +695,80 @@ export function registerSessionStoreConformance(
 				assert.equal(summary?.createdAt, createdAt);
 				assert.equal(summary?.modifiedAt, createdAt);
 				assert.deepEqual(summary?.workflow, storedHeader.workflow);
+			});
+
+			check(
+				"keeps each session's blobs by content hash until the session is deleted (#4379)",
+				async (store, reload) => {
+					if (store.putBlob === undefined || store.getBlob === undefined) return;
+					const bytes = Uint8Array.from({ length: 256 }, (_, index) => index);
+					const hash = createHash("sha256").update(bytes).digest("hex");
+					await assert.rejects(store.putBlob("session", bytes), notFound("session"));
+					await store.create(header(), [message("first", "first")]);
+					await store.create(header("other"), []);
+					const input = Uint8Array.from(bytes);
+					assert.deepEqual(await store.putBlob("session", input), { hash, bytes: 256 });
+					input.fill(0);
+					assert.deepEqual(await store.putBlob("session", bytes), { hash, bytes: 256 });
+					const empty = await store.putBlob("session", new Uint8Array());
+					assert.deepEqual(empty, { hash: createHash("sha256").digest("hex"), bytes: 0 });
+					store = await reload(store);
+					const read = await store.getBlob!("session", hash);
+					assert.deepEqual(read, bytes);
+					read!.fill(1);
+					assert.deepEqual(await store.getBlob!("session", hash), bytes);
+					assert.deepEqual(await store.getBlob!("session", empty.hash), new Uint8Array());
+					assert.equal(await store.getBlob!("session", "0".repeat(64)), undefined);
+					assert.equal(await store.getBlob!("other", hash), undefined, "another session does not hold it");
+					assert.equal(await store.getBlob!("missing", hash), undefined);
+					await store.replace("session", header(), [message("replaced", "replaced")], { expectSeq: 1 });
+					await store.append("session", [message("next", "next")], { expectSeq: 1 });
+					assert.deepEqual(await store.getBlob!("session", hash), bytes, "writing entries keeps the blobs");
+					assert.deepEqual(
+						(await store.load("session")).entries.map((entry) => entry.id),
+						["replaced", "next"],
+						"blobs are not entries",
+					);
+					await store.delete("session");
+					store = await reload(store);
+					assert.equal(await store.getBlob!("session", hash), undefined);
+					await store.create(header(), []);
+					assert.equal(await store.getBlob!("session", hash), undefined, "a session created again holds none");
+					await assert.rejects(store.putBlob!("missing", bytes), notFound("missing"));
+				},
+			);
+
+			check(
+				"returns blobs of every size around a megabyte intact, each stored once (#4379)",
+				async (store, reload) => {
+					if (store.putBlob === undefined || store.getBlob === undefined) return;
+					const MiB = 1024 * 1024;
+					await store.create(header(), []);
+					const stored = new Map<number, { readonly hash: string; readonly bytes: Uint8Array }>();
+					for (const size of [1, MiB - 1, MiB, MiB + 1, 2 * MiB, 2.5 * MiB]) {
+						const bytes = Uint8Array.from({ length: size }, (_, index) => (index * 31 + size) % 251);
+						const blob = await store.putBlob("session", bytes);
+						assert.deepEqual(blob, { hash: createHash("sha256").update(bytes).digest("hex"), bytes: size });
+						assert.deepEqual(await store.putBlob("session", bytes), blob, `storing ${size} bytes again`);
+						stored.set(size, { hash: blob.hash, bytes });
+					}
+					store = await reload(store);
+					for (const [size, { hash, bytes }] of stored) {
+						const read = await store.getBlob!("session", hash);
+						assert.equal(read?.byteLength, size);
+						assert.ok(Buffer.from(read!).equals(Buffer.from(bytes)), `${size} bytes read back as stored`);
+					}
+					await store.delete("session");
+					for (const { hash } of stored.values()) assert.equal(await store.getBlob!("session", hash), undefined);
+				},
+			);
+
+			check("rejects blob reads and writes after close (#4379)", async (store) => {
+				if (store.putBlob === undefined || store.getBlob === undefined) return;
+				await store.create(header(), []);
+				await store.close();
+				await assert.rejects(store.putBlob("session", new Uint8Array([1])), StoreClosedError);
+				await assert.rejects(store.getBlob("session", "0".repeat(64)), StoreClosedError);
 			});
 
 			check("round-trips NUL characters in JSON entry bodies", async (store, reload) => {

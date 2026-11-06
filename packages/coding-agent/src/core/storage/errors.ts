@@ -369,8 +369,87 @@ export class StorageTransientError extends StorageUnavailableError {
 	}
 }
 
+export const SESSION_BLOB_ERROR_CODES = [
+	"blobs-unsupported",
+	"blob-missing",
+	"blob-corrupt",
+	"blob-incomplete",
+] as const;
+/**
+ * `"blobs-unsupported"`: the session store cannot hold blobs, and the operation needs it to; nothing was written.
+ * `"blob-missing"`: the session holds no blob with the hash a reference names.
+ * `"blob-corrupt"`: content carried in an exported session does not have the hash it is recorded under; nothing was
+ * written.
+ * `"blob-incomplete"`: the store holds a blob's record but lost part of its content.
+ */
+export type SessionBlobErrorCode = (typeof SESSION_BLOB_ERROR_CODES)[number];
+
+export interface SessionBlobErrorFields {
+	readonly sessionId: string;
+	/** The blob's recorded SHA-256, as lowercase hex. For `"blob-missing"` reported by a copy: the first one missing. */
+	readonly hash?: string;
+	/** For `"blob-missing"` reported by a copy or an export: how many blobs the source did not hold. */
+	readonly missing?: number;
+	/** For `"blob-incomplete"`: the size the store recorded for the blob. */
+	readonly bytes?: number;
+	/** For `"blob-corrupt"`: the SHA-256 of the content that was found instead. */
+	readonly actualHash?: string;
+	/** For `"blobs-unsupported"`: the adapter of the store that cannot hold blobs. */
+	readonly adapter?: string;
+}
+
+const SESSION_BLOB_HINTS: Readonly<Record<SessionBlobErrorCode, string>> = {
+	"blobs-unsupported":
+		"Keep the session in a SQLite or libSQL session store (the default sessions database, --session-store <path>, or a sessions.storage selection), or give a custom store putBlob and getBlob",
+	"blob-missing": "The session no longer holds this output; run the tool again to see it",
+	"blob-corrupt": "The exported session was changed after it was written; export it again from its source",
+	"blob-incomplete": "The store lost part of this output; run the tool again to see it",
+};
+
+function sessionBlobSubject(code: SessionBlobErrorCode, fields: SessionBlobErrorFields): string {
+	switch (code) {
+		case "blobs-unsupported":
+			return `Session store cannot hold blobs: ${fields.adapter} store of session ${fields.sessionId}`;
+		case "blob-missing":
+			return `Session blob not found: ${fields.hash}${(fields.missing ?? 0) > 1 ? ` and ${fields.missing! - 1} more` : ""} in session ${fields.sessionId}`;
+		case "blob-corrupt":
+			return `Session blob does not match its hash: ${fields.hash} in session ${fields.sessionId}`;
+		case "blob-incomplete":
+			return `Session blob is incomplete: ${fields.hash} (${fields.bytes} bytes) in session ${fields.sessionId}`;
+	}
+}
+
+/**
+ * A session blob, the content a session stores apart from its entries (a large tool output), could not be stored,
+ * found, or trusted. Never retryable: each code needs a different store, a new tool run, or a new export.
+ */
+export class SessionBlobError extends StorageError {
+	override readonly name = "SessionBlobError" as const;
+	readonly code: SessionBlobErrorCode;
+	readonly hint: string;
+	readonly sessionId: string;
+	declare readonly hash?: string;
+	declare readonly missing?: number;
+	declare readonly bytes?: number;
+	declare readonly actualHash?: string;
+	declare readonly adapter?: string;
+	constructor(code: SessionBlobErrorCode, fields: SessionBlobErrorFields, options?: ErrorOptions) {
+		const hint = SESSION_BLOB_HINTS[code];
+		super(`${sessionBlobSubject(code, fields)} (${code}). ${hint}`, options);
+		this.code = code;
+		this.hint = hint;
+		this.sessionId = fields.sessionId;
+		if (fields.hash !== undefined) this.hash = fields.hash;
+		if (fields.missing !== undefined) this.missing = fields.missing;
+		if (fields.bytes !== undefined) this.bytes = fields.bytes;
+		if (fields.actualHash !== undefined) this.actualHash = fields.actualHash;
+		if (fields.adapter !== undefined) this.adapter = fields.adapter;
+	}
+}
+
 /** Every code a storage error that carries one can have. */
 export type StorageErrorCode =
+	| SessionBlobErrorCode
 	| StorageConfigErrorCode
 	| StorageWriteLockTimeoutCode
 	| StorageUnsupportedOperationCode
@@ -427,6 +506,10 @@ export function isStorageTransientError(value: unknown): value is StorageTransie
 	);
 }
 
+export function isSessionBlobError(value: unknown): value is SessionBlobError {
+	return value instanceof SessionBlobError || hasCode(value, "SessionBlobError", SESSION_BLOB_ERROR_CODES);
+}
+
 /**
  * Any storage error: an instance of `StorageError` or one of its subclasses, including a rehydrated one, or a copy of
  * a storage error with a stable `code` from another module instance, recognized by its name and code.
@@ -440,6 +523,7 @@ export function isStorageError(value: unknown): value is StorageError {
 		isStorageWriterQueueDegradedError(value) ||
 		isStorageWriterQueueUnusableError(value) ||
 		isStorageTransientError(value) ||
+		isSessionBlobError(value) ||
 		isJournalStoreError(value)
 	);
 }
@@ -994,6 +1078,22 @@ function knownStorageError(
 					attempts: field<number>(serialized, "attempts", "number") ?? 1,
 				},
 				cause,
+			);
+		}
+		case "SessionBlobError": {
+			const code = SESSION_BLOB_ERROR_CODES.find((known) => known === serialized.code);
+			if (code === undefined) return undefined;
+			return new SessionBlobError(
+				code,
+				{
+					sessionId: field<string>(serialized, "sessionId", "string") ?? "",
+					hash: field<string>(serialized, "hash", "string"),
+					missing: field<number>(serialized, "missing", "number"),
+					bytes: field<number>(serialized, "bytes", "number"),
+					actualHash: field<string>(serialized, "actualHash", "string"),
+					adapter: field<string>(serialized, "adapter", "string"),
+				},
+				cause === undefined ? undefined : { cause },
 			);
 		}
 		case "StorageUnavailableError":

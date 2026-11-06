@@ -248,7 +248,11 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-share-"));
 	const tmpFile = path.join(tempDir, "session.jsonl");
 	try {
-		await this.session.exportToJsonl(tmpFile, { includeShareContext: true, snapshotContent: false });
+		await this.session.exportToJsonl(tmpFile, {
+			includeShareContext: true,
+			snapshotContent: false,
+			toolOutputContent: false,
+		});
 	} catch (error: unknown) {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);

@@ -61,8 +61,17 @@ import {
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
 import { listSessionStore } from "./session-store-list.js";
+import {
+	assertSessionBlobStore,
+	copySessionBlobs,
+	sessionBlobHashes,
+	storeSessionBlobs,
+	TOOL_OUTPUT_ENTRY_TYPE,
+	type ToolOutputReference,
+	takeInlineToolOutput,
+} from "./session-tool-output.ts";
 import { adoptInlineSnapshotBlobs } from "./session-worktree-snapshots.ts";
-import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
+import { SessionBlobError, type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
 	SessionFormatVersionError,
 	SessionIdMismatchError,
@@ -72,8 +81,7 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
-import { removeReleasedStageBlobs } from "./tools/tool-output-blobs.ts";
+import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
@@ -88,7 +96,6 @@ export class SessionManager {
 	private sessionFile: string | undefined;
 	private sessionDir: string;
 	private cwd: string;
-	private agentDir: string | undefined;
 	private store: SessionStore;
 	private lastSeq = 0;
 	private mutation: Promise<void> = Promise.resolve();
@@ -266,11 +273,6 @@ export class SessionManager {
 		return this.store;
 	}
 
-	/** @internal The agent directory that holds this manager's sessions' released-stage tool results. */
-	bindAgentDir(agentDir: string): void {
-		this.agentDir = agentDir;
-	}
-
 	async deleteSession(sessionId: string): Promise<void> {
 		assertValidSessionId(sessionId);
 		if (sessionId === this.sessionId) {
@@ -281,7 +283,6 @@ export class SessionManager {
 		} catch (error) {
 			if (!(error instanceof SessionNotFoundError)) throw error;
 		}
-		await removeReleasedStageBlobs(this.agentDir ?? getAgentDir(), sessionId);
 	}
 
 	/** @internal Finalize provisional startup storage after project trust resolves. */
@@ -290,7 +291,10 @@ export class SessionManager {
 			if (store === this.store) return;
 			const header = this.recordHeader();
 			const entries = this.getEntries();
+			const hashes = sessionBlobHashes(this.store, entries);
+			assertSessionBlobStore(store, this.sessionId, hashes.length);
 			const result = await store.create(header, entries);
+			await copySessionBlobs(this.store, this.sessionId, store, this.sessionId, hashes);
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
 			this.store = store;
 			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
@@ -335,13 +339,16 @@ export class SessionManager {
 		});
 		try {
 			const loaded = await source.loadFile(inputPath);
+			const { entries, blobs } = takeInlineToolOutput(loaded.entries, loaded.header.id);
+			assertSessionBlobStore(this.store, loaded.header.id, blobs.length);
 			const snapshot = {
 				...loaded,
-				entries: await adoptInlineSnapshotBlobs(loaded.entries, this.store.snapshotBlobs),
+				entries: await adoptInlineSnapshotBlobs(entries, this.store.snapshotBlobs),
 			};
 			const manager = new SessionManager(this.store, cwdOverride ?? snapshot.header.cwd, this.sessionDir);
 			manager.restore(snapshot);
 			await manager.initialize();
+			await storeSessionBlobs(this.store, snapshot.header.id, blobs);
 			return manager;
 		} finally {
 			await source.close();
@@ -523,6 +530,27 @@ export class SessionManager {
 			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
 			await this._appendEntry(entry);
 			return entry.id;
+		});
+	}
+
+	/**
+	 * @internal Stores `data` as a blob of the current session and appends the entry that references it, as one
+	 * mutation, so a session change cannot come between the two. The blob goes first: a process that stops in between
+	 * leaves only a blob of this session. Rejects with `blobs-unsupported` when the store holds no blobs.
+	 */
+	appendToolOutputBlob(toolCallId: string, data: Uint8Array): Promise<SessionBlob> {
+		return this.runMutation(async () => {
+			const { putBlob } = this.store;
+			if (putBlob === undefined) {
+				throw new SessionBlobError("blobs-unsupported", {
+					sessionId: this.sessionId,
+					adapter: this.store.descriptor.adapter,
+				});
+			}
+			const blob = await putBlob.call(this.store, this.sessionId, data);
+			const reference: ToolOutputReference = { toolCallId, hash: blob.hash, bytes: blob.bytes };
+			await this._appendEntry(createCustomEntry(TOOL_OUTPUT_ENTRY_TYPE, reference, this.byId, this.leafId));
+			return blob;
 		});
 	}
 
@@ -800,6 +828,7 @@ export class SessionManager {
 			const header = result.fileEntries[0] as SessionHeader;
 			const entries = getEntriesWithoutHeader(result.fileEntries);
 			const record = this.recordHeader(header);
+			const hashes = sessionBlobHashes(this.store, entries);
 			const store = await this.storeForNewSession();
 			const location =
 				store instanceof JsonlSessionStore
@@ -812,6 +841,7 @@ export class SessionManager {
 					? store.create(record, entries, location)
 					: store.create(record, entries))
 			).lastSeq;
+			await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
 			this.store = store;
 			this.fileEntries = result.fileEntries;
 			this.sessionId = header.id;
@@ -829,9 +859,13 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
-			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
-			manager.fileEntries.push(...this.getEntries());
+			const source = { store: this.store, sessionId: this.sessionId, entries: this.getEntries() };
+			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
+			const hashes = sessionBlobHashes(source.store, source.entries);
+			assertSessionBlobStore(store, manager.sessionId, hashes.length);
+			manager.fileEntries.push(...source.entries);
 			await manager.initialize();
+			await copySessionBlobs(source.store, source.sessionId, store, manager.sessionId, hashes);
 			manager._buildIndex();
 			return manager;
 		});
@@ -1020,6 +1054,7 @@ export class SessionManager {
 		} finally {
 			await sourceStore.close();
 		}
+		const { entries, blobs } = takeInlineToolOutput(source.entries, source.header.id);
 		const store =
 			sessionDir === undefined
 				? await resolveSessionStore(targetCwd)
@@ -1029,8 +1064,10 @@ export class SessionManager {
 				...options,
 				parentSession: source.header.id,
 			});
-			manager.fileEntries.push(...source.entries);
+			assertSessionBlobStore(store, manager.sessionId, blobs.length);
+			manager.fileEntries.push(...entries);
 			await manager.initialize();
+			await storeSessionBlobs(store, manager.sessionId, blobs);
 			manager._buildIndex();
 			return manager;
 		});

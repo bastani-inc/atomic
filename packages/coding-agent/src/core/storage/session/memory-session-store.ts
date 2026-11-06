@@ -1,4 +1,5 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -9,6 +10,7 @@ import {
 } from "./errors.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	SessionBlob,
 	SessionCwdMatcher,
 	SessionListQuery,
 	SessionRecordHeader,
@@ -51,6 +53,8 @@ export function isPrivateMemorySessionStore(store: SessionStore): boolean {
  */
 export class MemorySessionStore implements SessionStore {
 	private records = new Map<string, StoredSession>();
+	/** Each session's blobs by hash, removed with the session. */
+	private blobs = new Map<string, Map<string, Uint8Array>>();
 	private closed = false;
 
 	private readonly cwdMatcher?: SessionCwdMatcher;
@@ -113,6 +117,22 @@ export class MemorySessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		this.records.delete(sessionId);
+		this.blobs.delete(sessionId);
+	}
+
+	async putBlob(sessionId: string, data: Uint8Array): Promise<SessionBlob> {
+		const copy = Uint8Array.from(data);
+		const hash = await sha256Hex(copy);
+		if (!this.stored(sessionId)) throw new SessionNotFoundError(sessionId);
+		this.blobs.set(sessionId, (this.blobs.get(sessionId) ?? new Map<string, Uint8Array>()).set(hash, copy));
+		return { hash, bytes: copy.byteLength };
+	}
+
+	async getBlob(sessionId: string, hash: string): Promise<Uint8Array | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const data = this.blobs.get(sessionId)?.get(hash);
+		return data === undefined ? undefined : Uint8Array.from(data);
 	}
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
@@ -153,6 +173,7 @@ export class MemorySessionStore implements SessionStore {
 	async reopen(): Promise<MemorySessionStore> {
 		const store = new MemorySessionStore(this.cwdMatcher);
 		store.records = this.records;
+		store.blobs = this.blobs;
 		return store;
 	}
 

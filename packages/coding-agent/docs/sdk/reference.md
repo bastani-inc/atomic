@@ -464,7 +464,7 @@ Without a detachment policy a detachable call runs inline like any other. A host
 - `session.hasPendingDetachedTurn()` tells whether a reopened transcript ends on such a turn, with or without some or all of its results. When it does, continue the turn with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again.
 - `session.redispatchDetachedToolCalls()` starts again the detachable calls that a reopened transcript ends on without a result, with their original ids and arguments. Calls that already have a result are not started again.
 
-A result handed to `resumeDetachedTurn()` enters the transcript exactly as an inline call's result would: extension `tool_result` handlers see it and can rewrite it, images are resized for the provider, and output over the persistence threshold is saved to a file (see [Persisted tool output](/tools#persisted-tool-output)).
+A result handed to `resumeDetachedTurn()` enters the transcript exactly as an inline call's result would: extension `tool_result` handlers see it and can rewrite it, images are resized for the provider, and output over the persistence threshold is stored with the session when its session store holds blobs (`SessionStore.putBlob`/`getBlob`, which the SQLite, libSQL and in-memory stores have), named `tool-output://<sha256>`, and otherwise saved to a file (see [Persisted tool output](/tools#persisted-tool-output)).
 
 A detached call runs outside its session's async context and tool wrappers, so it holds no reference to the session while it waits. While the call runs inline, its `onUpdate` and `ctx` reach the session as usual. Once it detaches:
 

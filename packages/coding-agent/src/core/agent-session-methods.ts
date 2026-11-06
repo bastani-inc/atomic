@@ -459,10 +459,13 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
 	exportToHtml(outputPath?: string, options?: { themeName?: string }): Promise<string>;
-	/** `snapshotContent: false` leaves worktree snapshot patch and bundle content out of the file. */
+	/**
+	 * `snapshotContent: false` leaves worktree snapshot patch and bundle content out of the file, and
+	 * `toolOutputContent: false` the tool outputs kept as session blobs.
+	 */
 	exportToJsonl(
 		outputPath?: string,
-		options?: { includeShareContext?: boolean; snapshotContent?: boolean },
+		options?: { includeShareContext?: boolean; snapshotContent?: boolean; toolOutputContent?: boolean },
 	): Promise<string>;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;

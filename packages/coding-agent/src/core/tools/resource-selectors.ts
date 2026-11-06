@@ -47,12 +47,12 @@ export interface InternalResourceContext {
  * Every scheme that `read`, `search`, `write`, `find` and `bash` treat as an internal URL. Each one has a resolver in
  * this package; a URL with any other scheme is ordinary text.
  */
-export const INTERNAL_URL_SCHEMES = ["skill", "local", "artifact", "conflict", "history"] as const;
+export const INTERNAL_URL_SCHEMES = ["skill", "local", "artifact", "conflict", "history", "tool-output"] as const;
 export type InternalUrlScheme = (typeof INTERNAL_URL_SCHEMES)[number];
 const INTERNAL_URL_PREFIX = new RegExp(`^(?:${INTERNAL_URL_SCHEMES.join("|")}):\\/\\/`);
 const URL_LIKE_PREFIX = /^[a-z][a-z0-9+.-]*:\/\//i;
 /** Schemes with a resolver but no writer: `write` refuses them with an explicit error. */
-const READ_ONLY_INTERNAL_SCHEMES: readonly InternalUrlScheme[] = ["skill", "artifact", "history"];
+const READ_ONLY_INTERNAL_SCHEMES: readonly InternalUrlScheme[] = ["skill", "artifact", "history", "tool-output"];
 
 export function isInternalUrl(value: string): boolean {
 	return INTERNAL_URL_PREFIX.test(value);

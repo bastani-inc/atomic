@@ -1,10 +1,10 @@
 /**
  * Deleting a session from the `--resume` picker also deletes what a released workflow stage left for it (#4309): the
- * oversized tool results kept in the agent directory. A session kept in a JSONL session directory has no such delete
- * action, because its directory is removed with the session.
+ * oversized tool results kept as blobs of the session in its store (#4379). A session kept in a JSONL session
+ * directory has no such delete action, because its directory is removed with the session.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -17,7 +17,6 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SessionNotFoundError } from "../src/core/storage/session/errors.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
-import { getReleasedStageBlobDir } from "../src/core/tools/tool-output-blobs.js";
 
 type DeleteAction = ((sessionId: string) => Promise<void>) | undefined;
 type SessionsLoader = () => Promise<SessionInfo[]>;
@@ -77,7 +76,7 @@ describe("the --resume picker's delete action (#4309)", () => {
 		return { deleteAction };
 	}
 
-	test("deletes the session and the oversized results its released stage kept in the agent directory (#4309)", async () => {
+	test("deletes the session and the oversized results its released stage kept as blobs (#4309, #4379)", async () => {
 		const database = await openNodeSqliteDatabase(join(root, "sessions.sqlite"));
 		const store = await SqlSessionStore.open(database);
 		closers.push(async () => {
@@ -88,20 +87,17 @@ describe("the --resume picker's delete action (#4309)", () => {
 		await kept.appendMessage({ role: "user", content: "keep me", timestamp: Date.now() });
 		const doomed = await SessionManager.create(store, cwd);
 		await doomed.appendMessage({ role: "user", content: "delete me", timestamp: Date.now() });
-		const doomedBlobs = getReleasedStageBlobDir(agentDir, doomed.getSessionId());
-		const keptBlobs = getReleasedStageBlobDir(agentDir, kept.getSessionId());
-		for (const directory of [doomedBlobs, keptBlobs]) {
-			mkdirSync(directory, { recursive: true });
-			writeFileSync(join(directory, "result.txt"), "spilled");
-		}
+		const output = new TextEncoder().encode("spilled");
+		const { hash } = await store.putBlob(doomed.getSessionId(), output);
+		await store.putBlob(kept.getSessionId(), output);
 
 		const { deleteAction } = await resumeWith(store, kept);
 		assert.equal(typeof deleteAction, "function");
 		await deleteAction?.(doomed.getSessionId());
 
 		await assert.rejects(store.load(doomed.getSessionId()), SessionNotFoundError);
-		assert.equal(existsSync(doomedBlobs), false);
-		assert.equal(existsSync(keptBlobs), true);
+		assert.equal(await store.getBlob(doomed.getSessionId(), hash), undefined);
+		assert.deepEqual(await store.getBlob(kept.getSessionId(), hash), output);
 	});
 
 	test("gives a session directory's sessions no delete action (#4309)", async () => {

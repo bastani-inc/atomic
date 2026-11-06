@@ -21,6 +21,7 @@ import {
 	isInternalUrl,
 } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { createToolOutputRouter } from "../src/core/tools/tool-output-protocol.js";
 
 function assertIncludes(text: string, part: string): void {
 	assert.ok(text.includes(part), `expected ${JSON.stringify(part)} in:\n${text}`);
@@ -70,7 +71,14 @@ describe("internal URL schemes (#4252)", () => {
 		createFindToolDefinition(cwd).execute("find", { paths: [path] }, undefined, undefined, { ...ctx, cwd } as never);
 
 	it("allows exactly the schemes this package resolves", () => {
-		assert.deepEqual([...INTERNAL_URL_SCHEMES].sort(), ["artifact", "conflict", "history", "local", "skill"]);
+		assert.deepEqual([...INTERNAL_URL_SCHEMES].sort(), [
+			"artifact",
+			"conflict",
+			"history",
+			"local",
+			"skill",
+			"tool-output",
+		]);
 		for (const scheme of INTERNAL_URL_SCHEMES) assert.ok(isInternalUrl(`${scheme}://x`));
 		for (const scheme of REMOVED_SCHEMES) assert.equal(isInternalUrl(`${scheme}://x`), false);
 	});
@@ -147,5 +155,20 @@ describe("internal URL schemes (#4252)", () => {
 		);
 		await assert.rejects(write("history://sessions", "x"), /read-only/);
 		await assert.rejects(find("history://sessions"), /find cannot list history:\/\/ URLs/);
+	});
+
+	it("resolves tool-output:// for read with a line range and search, and refuses to write or find it (#4379)", async () => {
+		const store = new MemorySessionStore();
+		await store.create({ id: "stage", version: 4, createdAt: new Date(0).toISOString(), cwd }, []);
+		const { hash } = await store.putBlob("stage", new TextEncoder().encode("first\nsecond needle\nthird\n"));
+		ctx = {
+			internalResourceRouter: createToolOutputRouter({ sessionId: () => "stage", sessionStore: () => store }),
+		};
+		const line = text(await read(`tool-output://${hash}:2-2:raw`));
+		assertIncludes(line, "second needle");
+		assert.ok(!line.includes("first"), line);
+		assertIncludes(text(await search("needle", `tool-output://${hash}`)), `tool-output://${hash}:2:`);
+		await assert.rejects(write(`tool-output://${hash}`, "x"), /tool-output:\/\/ resources are read-only/);
+		await assert.rejects(find(`tool-output://${hash}`), /find cannot list tool-output:\/\/ URLs/);
 	});
 });

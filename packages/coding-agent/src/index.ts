@@ -33,6 +33,16 @@ export type {
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { resolveSessionStore } from "./core/session-storage.js";
+export {
+	assertSessionBlobStore,
+	type BlobCopyOptions,
+	copySessionBlobs,
+	type MissingBlobReporter,
+	sessionBlobHashes,
+	TOOL_OUTPUT_ENTRY_TYPE,
+	type ToolOutputReference,
+	toolOutputUrl,
+} from "./core/session-tool-output.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 export * from "./core/storage/index.js";
 // Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
@@ -872,7 +882,6 @@ export {
 	ShellToolError,
 	type ShellToolErrorCode,
 } from "./core/tools/shell-errors.ts";
-export { getReleasedStageBlobDir } from "./core/tools/tool-output-blobs.ts";
 export {
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,

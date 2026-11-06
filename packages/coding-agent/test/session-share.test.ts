@@ -82,8 +82,8 @@ describe("InteractiveMode /share", () => {
 		await Promise.all([shareA, shareB]);
 		assert.deepEqual(errors, []);
 		assert.deepEqual(exportOptions, [
-			{ includeShareContext: true, snapshotContent: false },
-			{ includeShareContext: true, snapshotContent: false },
+			{ includeShareContext: true, snapshotContent: false, toolOutputContent: false },
+			{ includeShareContext: true, snapshotContent: false, toolOutputContent: false },
 		]);
 	});
 });

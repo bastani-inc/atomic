@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import {
+	assertSessionBlobStore,
 	type CreateAgentSessionOptions,
+	copySessionBlobs,
 	JsonlSessionStore,
 	type NewSessionOptions,
 	resolveSessionStore,
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
+	sessionBlobHashes,
 } from "@bastani/atomic";
 import { ForkEntryNotFoundError } from "../durable/fork-errors.js";
 
@@ -30,7 +33,9 @@ export async function stageSessionStore(
 
 /**
  * A new session copied from `sessionId`: every entry, or with `entryId` the branch from the session's root to
- * that exact entry. A missing entry throws `ForkEntryNotFoundError` before anything is written.
+ * that exact entry, with the tool-output blobs those entries reference. A missing entry throws
+ * `ForkEntryNotFoundError`, and a destination that cannot hold the blobs `blobs-unsupported`, before anything is
+ * written.
  */
 export async function forkStageSession(
 	store: SessionStore,
@@ -46,6 +51,8 @@ export async function forkStageSession(
 			? source.entries
 			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
+	const hashes = sessionBlobHashes(store, entries);
+	assertSessionBlobStore(destination, id, hashes.length);
 	await destination.create(
 		{
 			id,
@@ -58,6 +65,7 @@ export async function forkStageSession(
 		},
 		entries,
 	);
+	await copySessionBlobs(store, sessionId, destination, id, hashes);
 	return SessionManager.open(destination, id, cwd);
 }
 

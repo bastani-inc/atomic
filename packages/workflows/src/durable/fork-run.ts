@@ -6,7 +6,14 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { type SessionEntry, SessionManager, type SessionStore } from "@bastani/atomic";
+import {
+	assertSessionBlobStore,
+	copySessionBlobs,
+	type SessionEntry,
+	SessionManager,
+	type SessionStore,
+	sessionBlobHashes,
+} from "@bastani/atomic";
 import { StorageError } from "@bastani/atomic/storage";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
@@ -405,7 +412,7 @@ type SessionContext = { readonly runId: string; readonly stagePath?: string };
 
 async function loadSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	try {
-		return await sessions.store.load(sessionId);
+		return { ...(await sessions.store.load(sessionId)), store: sessions.store };
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		const details = { sessionId, ...context, storage: storageScope(sessions.store.descriptor) };
@@ -426,7 +433,8 @@ async function loadPoolSession(sessions: SourceSessions, sessionId: string, cont
 		sessions.pool ??= {
 			store: await poolSessionStore(sessions.backend, sessions.rootRunId, sessions.resources),
 		};
-		return await sessions.pool.store?.load(sessionId);
+		const store = sessions.pool.store;
+		return store === undefined ? undefined : { ...(await store.load(sessionId)), store };
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		if (failure === "not-found") return undefined;
@@ -590,8 +598,9 @@ function isStaleLease(error: unknown): error is Error {
  * What this guarantees: the fork materializes everything it reads from the source (journal events, then every
  * session entry) and calls `assertHeld` after that and before it writes. A takeover starts a new lease epoch and
  * the renewal checks the epoch, so a renewal that succeeds proves the source was not taken over, and so was not
- * written by a resume, at any time since the claim; the snapshot is one consistent state of the source. Nothing is
- * read from the source afterwards, so the write itself needs no fence: a takeover is possible only
+ * written by a resume, at any time since the claim; the snapshot is one consistent state of the source. The only
+ * thing read from the source afterwards is the session blobs those entries name, which are content-addressed and
+ * never change, so the write itself needs no fence: a takeover is possible only
  * {@link FOREIGN_LIVE_WORKFLOW_WINDOW_MS} after the last renewal, and it cannot change a snapshot already read.
  * A holder that was paused past its own lease and writes after waking is fenced out of the journal by its stale
  * epoch; its writes to a session store are not.
@@ -1264,16 +1273,27 @@ export async function forkDurableRun<
 
 type SessionSnapshots = Map<
 	string,
-	{ readonly entries: readonly SessionEntry[]; readonly checkpoint: DurableStageCheckpoint }
+	{
+		readonly entries: readonly SessionEntry[];
+		/** The store that holds the source session, and the hashes of the blobs its copy brings along. */
+		readonly store: SessionStore;
+		readonly hashes: readonly string[];
+		readonly checkpoint: DurableStageCheckpoint;
+	}
 >;
 
+/**
+ * Reads every source session to copy, then checks the claim is still held. The source stores stay open for the copy,
+ * which reads their blobs one at a time; the caller closes them with `closeSourceSessions`. On failure they are
+ * closed here.
+ */
 async function readSessions(
 	source: ForkSource,
 	sessions: readonly { readonly sessionId: string; readonly checkpoint: DurableStageCheckpoint }[],
 	request: ResolvedForkRequest,
 	cleanup: ForkCleanup,
 	claim: SourceClaim,
-): Promise<SessionSnapshots> {
+): Promise<{ readonly snapshots: SessionSnapshots; readonly sources: SourceSessions }> {
 	const sourceStore = await sourceSessionStoreFor(source.backend, source.handle, request, request.cwd);
 	const snapshots: SessionSnapshots = new Map();
 	try {
@@ -1284,12 +1304,15 @@ async function readSessions(
 				continue;
 			}
 			claim.throwIfLost();
-			const snapshot = await loadSession(sourceStore, sessionId, { runId: source.runId });
-			snapshots.set(sessionId, { entries: snapshot.entries, checkpoint });
+			const { entries, store } = await loadSession(sourceStore, sessionId, { runId: source.runId });
+			snapshots.set(sessionId, { entries, store, hashes: sessionBlobHashes(store, entries), checkpoint });
 		}
-		return snapshots;
-	} finally {
+		request.signal?.throwIfAborted();
+		await claim.assertHeld();
+		return { snapshots, sources: sourceStore };
+	} catch (error) {
 		await closeSourceSessions(sourceStore, cleanup);
+		throw error;
 	}
 }
 
@@ -1310,9 +1333,7 @@ async function copySessions(
 ): Promise<readonly CopiedSessions[]> {
 	if (sessions.length === 0) return [];
 	await claim.assertHeld();
-	const snapshots = await readSessions(source, sessions, request, cleanup, claim);
-	request.signal?.throwIfAborted();
-	await claim.assertHeld();
+	const { snapshots, sources } = await readSessions(source, sessions, request, cleanup, claim);
 	const copied: CopiedSessions[] = [];
 	let project: CopiedSessions | undefined;
 	let pool: CopiedSessions | undefined;
@@ -1351,13 +1372,14 @@ async function copySessions(
 	try {
 		// The fork's pool tables are found before anything is copied.
 		if ([...snapshots.values()].some(({ checkpoint }) => pooled(checkpoint))) await destinationFor(true);
-		for (const [sessionId, { entries, checkpoint }] of snapshots) {
+		for (const [sessionId, { entries, store, hashes, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
 			const stageRun = checkpoint.topology?.run?.runId;
 			const destination = await destinationFor(pooled(checkpoint));
 			const id = randomUUID();
 			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
+			assertSessionBlobStore(destination.store, id, hashes.length);
 			destination.copies.push({ id, runId });
 			await destination.store.create(
 				{
@@ -1375,11 +1397,14 @@ async function copySessions(
 				},
 				entries,
 			);
+			await copySessionBlobs(store, sessionId, destination.store, id, hashes);
 			const file = (await SessionManager.open(destination.store, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
+		await closeSourceSessions(sources, cleanup);
 		return copied;
 	} catch (error) {
+		await closeSourceSessions(sources, cleanup);
 		await removeCopies(copied, ids.forkRunId, cleanup);
 		await closeCopies(copied, ids.forkRunId, cleanup);
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;
