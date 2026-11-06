@@ -443,6 +443,15 @@ test("a shared pool on this host keeps its state beside the agent directory, wit
 			},
 			workspace: binding,
 		});
+		assert.deepEqual(sharedPoolPlacement(shared, { placement: "shared", workspace: binding }, "/root/worktree"), {
+			shared: {
+				stateDirectory: poolStateDirectory(shared.agentDir),
+				host: poolHostId(shared.agentDir),
+				claimWindowMs: DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+			},
+			workspace: binding,
+			workspaceWorktree: "/root/worktree",
+		});
 	} finally {
 		removeTempDirectory(join(shared.agentDir, ".."));
 	}
@@ -558,18 +567,29 @@ test.skipIf(process.platform === "win32")(
 			const value = workspace({ repo, branch: "pooled", worktree: join(directory, "worktree") });
 			const bound = await resolveWorkspace(value);
 			const identity = { remotes: bound.remotes, head: bound.head, tree: bound.tree, envHash: bound.envHash };
-			for (const [runId, given] of [
-				["from-value", value],
-				["from-bound", bound],
+			for (const [runId, given, worktree] of [
+				["from-value", value, bound.worktree],
+				["from-bound", bound, bound.worktree],
+				["from-binding", identity, undefined],
+				// Only a verified bound workspace has a worktree to capture, not a binding that names a path.
+				["from-binding-with-a-path", { ...identity, worktree: join(directory, "elsewhere") }, undefined],
 			] as const) {
+				const snapshots = { maxFileBytes: 1024 };
 				const options: RunOpts = {
 					runId,
 					cwd: directory,
 					localWorkers,
+					snapshots,
 					workers: { placement: "shared", workspace: given },
 				};
-				await (await activatePublicPool(backend, options))?.close();
+				const pool = await activatePublicPool(backend, options);
+				await pool?.close();
 				assert.deepEqual(options.effectiveResources?.workers, { placement: "shared", workspace: identity }, runId);
+				// The root captures its binding's worktree, by its snapshot settings, when it starts (#4492).
+				const { options: pooled } = pool as unknown as {
+					readonly options: { readonly workspaceWorktree?: string; readonly snapshots?: unknown };
+				};
+				assert.deepEqual([pooled.workspaceWorktree, pooled.snapshots], [worktree, snapshots], runId);
 			}
 		} finally {
 			await backend.close();

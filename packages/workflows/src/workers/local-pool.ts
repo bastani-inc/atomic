@@ -15,6 +15,8 @@ import {
 	type QuestionnaireResult,
 	reportDebug,
 	serializeWorkspaceError,
+	type WorktreeSnapshot,
+	type WorktreeSnapshotSettingsInput,
 } from "@bastani/atomic";
 import { JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
@@ -409,6 +411,8 @@ export class LocalWorkerPool {
 	private registrations?: Promise<PooledStageRegistrations>;
 	/** What the root captures of the worktrees its children are bound to as it dispatches them (#4492). */
 	private readonly dispatchSnapshots: DispatchSnapshots;
+	/** The snapshot of the root's binding, captured when the root starts, for its unbound children to carry (#4492). */
+	private rootSnapshot?: Promise<WorktreeSnapshot | undefined>;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -428,6 +432,13 @@ export class LocalWorkerPool {
 			readonly shared?: SharedPoolCoordination;
 			/** The repository state the root's pooled children run against, with shared placement (#4310). */
 			readonly workspace?: WorkspaceBinding;
+			/**
+			 * The worktree of `workspace` on this host, when the root resolved its binding from a `workspace({ … })` value or
+			 * a bound workspace: the root captures it when it starts, and its unbound children carry the snapshot (#4492).
+			 */
+			readonly workspaceWorktree?: string;
+			/** The root's worktree snapshot settings, which the capture of `workspaceWorktree` follows. */
+			readonly snapshots?: WorktreeSnapshotSettingsInput;
 			/**
 			 * Internal, tests only: how often the blobs of the snapshots waiting children carry are kept from collection.
 			 * Public options never set it.
@@ -548,6 +559,13 @@ export class LocalWorkerPool {
 		// The root's children run on this pool's workers, which keep their own checkpoints: the root keeps only its own
 		// in memory and reads a child's back when it needs them (#4318).
 		await this.backend.retainOwnCheckpoints(root);
+		// Its children carry a snapshot of the root's binding as the root starts, for hosts without the tree (#4492).
+		const worktree = this.options.workspaceWorktree;
+		this.rootSnapshot ??=
+			worktree === undefined
+				? Promise.resolve(undefined)
+				: this.dispatchSnapshots.capture(worktree, this.options.snapshots);
+		await this.rootSnapshot;
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(
@@ -1324,12 +1342,12 @@ export class LocalWorkerPool {
 		const boundary = isChildBoundary(recorded) ? recorded : this.backend.listCheckpoints(root).find(isChildBoundary);
 		if (boundary?.kind !== "stage") throw new Error("Missing durable child boundary");
 		const shared = this.options.shared !== undefined;
-		// A child of a shared pool bound to a workspace of its own carries a snapshot of that worktree, captured here as it
-		// is dispatched, so a host without the tree can restore it (#4492).
+		// A child of a shared pool carries a snapshot of the worktree it is bound to, captured here as it is dispatched, or
+		// of its root's binding, so a host without that tree can restore it (#4492).
 		const workspaceSnapshot =
 			shared && isBoundWorkspace(options.workspace)
 				? await this.dispatchSnapshots.capture(options.workspace.worktree, options.snapshots, options.signal)
-				: undefined;
+				: await this.rootSnapshot;
 		const execution = JSON.parse(
 			JSON.stringify({
 				cwd: options.cwd,
