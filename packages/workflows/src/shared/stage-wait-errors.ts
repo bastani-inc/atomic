@@ -81,6 +81,11 @@ const MAX_CAUSE_DEPTH = 8;
 /** JSON-safe facts a {@link StageWaitError} carries. Never contains prompt text, transcripts or credentials. */
 export interface StageWaitErrorFields extends WorkflowSerializableObject {
 	readonly runId?: string;
+	/**
+	 * The root run to resume, set when a child workflow's check of its waiting stages refused it as it started: a child
+	 * cannot be resumed on its own (`session-not-found`, #4440).
+	 */
+	readonly rootRunId?: string;
 	readonly stageId?: string;
 	readonly stageName?: string;
 	readonly sessionId?: string;
@@ -172,6 +177,11 @@ const HINTS: Readonly<
 const STORAGE_SELECTORS =
 	"--storage, ATOMIC_SESSIONS_STORAGE or ATOMIC_STORAGE, the sessions.storage setting, or the SDK sessionStore option";
 
+const JOURNAL_SELECTORS =
+	"--storage, ATOMIC_WORKFLOWS_JOURNAL or ATOMIC_STORAGE, the workflows.journal setting, or the SDK journal option";
+
+const STORAGE_STATUS = 'Run "atomic storage status" to see which storage this process selects.';
+
 function recordOf(phase: StageWaitPhase | undefined, stage: string): string {
 	switch (phase) {
 		case "wait-start":
@@ -193,6 +203,8 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 	if (code === "stage-released") return releasedHint(fields);
 	if (code !== "session-not-found") return HINTS[code];
 	const storage = fields.storage === undefined ? "" : ` (${fields.storage})`;
+	if (fields.rootRunId !== undefined)
+		return `Resume root run ${fields.rootRunId} with the storage it was started with${storage}. A child workflow reopens its stages from the root run's session storage (${STORAGE_SELECTORS}); a worker pool's child reopens them from the pool's session store, which the root run's journal selects (${JOURNAL_SELECTORS}), on the machine that ran a local pool. ${STORAGE_STATUS}`;
 	return `Resume the run with the session storage it was started with${storage} selected through ${STORAGE_SELECTORS}. Run "atomic storage status" to see which session storage this process selects. If this machine uses local-only storage and is not joined to shared storage, join it with \`${SHARED_STORAGE_JOIN_HINT}\`; joining keeps sessions in a local store, so also select the session storage that holds the waiting stage's session.`;
 }
 

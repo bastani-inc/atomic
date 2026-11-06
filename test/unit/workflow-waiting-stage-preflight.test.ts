@@ -91,8 +91,12 @@ describe("the resume preflight of waiting stages (#4309)", () => {
 		);
 		assert.equal(failure.code, "session-not-found");
 		assert.equal(failure.retryable, false);
-		assert.deepEqual(failure.fields.sessionIds, ["gone-2", "gone-1"]);
-		assert.equal(failure.fields.runId, RUN_ID);
+		// A root run's error carries no root run to resume, not even as an undefined field.
+		assert.deepEqual(failure.fields, {
+			runId: RUN_ID,
+			sessionIds: ["gone-2", "gone-1"],
+			storage: "SDK sessionStore option: memory",
+		});
 		// One header read per distinct session.
 		assert.deepEqual(
 			reads.mock.calls.map((call) => call[0]),
