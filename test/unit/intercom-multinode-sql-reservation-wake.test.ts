@@ -349,6 +349,31 @@ describe("SQL reservation consumption of released and dormant rows (#4326)", () 
 		const consumed = await store.consume("unrelated", { childTarget: "child", groups: ["elsewhere"] });
 		assert.deepEqual(consumed, { status: "consumed", reservationKeys: [] });
 	});
+
+	test("a registration ends by name only the rows inserted up to the mark it read as it began (#4488)", async () => {
+		const database = await openDatabase();
+		const store = await openSqlRestoringReservationStore({ database, prefix: "" });
+		const releasedKey = releasedReservationKey("child");
+		const before = await store.insertionMark();
+		// The child is released after its registration began: its owner's reservation is inserted after the mark.
+		await reserveRow(store, releasedKey, "owner-released", true);
+		const after = await store.insertionMark();
+		assert.equal(after, before + 1);
+		const registered = { childTarget: "child", groups: crew, authorizedBy: "owner-released" };
+		assert.deepEqual(
+			await store.consume("unrelated", { ...registered, insertedBy: before }),
+			{ status: "consumed", reservationKeys: [] },
+			"a reservation inserted after the registration began stays",
+		);
+		assert.equal((await store.read(releasedKey)).status, "active");
+		// An update keeps the reservation's insertion: the mark moves only with inserts.
+		await reserveRow(store, releasedKey, "owner-released", false);
+		assert.equal(await store.insertionMark(), after);
+		assert.deepEqual(await store.consume("unrelated", { ...registered, insertedBy: after }), {
+			status: "consumed",
+			reservationKeys: [releasedKey],
+		});
+	});
 });
 
 describe("reservation keys (#4326)", () => {

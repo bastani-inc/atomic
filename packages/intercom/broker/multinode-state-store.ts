@@ -360,6 +360,11 @@ export interface RestoringReservationRegistration {
 	readonly releasedOnly?: true;
 	/** The supervisor whose capability the registering child proved; a released child's reservation ends only with its owner's. */
 	readonly authorizedBy?: string;
+	/**
+	 * The `insertionMark` read when the child began registering. Only reservations inserted up to it end by the child's
+	 * name: a later one was made by a release of the child after its registration began (#4488).
+	 */
+	readonly insertedBy?: number;
 }
 
 export interface RestoringReservationReleaseOutcome {
@@ -454,6 +459,11 @@ export interface RestoringReservationStore {
 		reservationKey: string,
 		registered?: RestoringReservationRegistration,
 	): Promise<RestoringReservationConsumeResult>;
+	/**
+	 * The insertion order of the latest reservation inserted so far: one inserted after this was read has a greater
+	 * one (#4488).
+	 */
+	insertionMark(): Promise<number>;
 	read(reservationKey: string): Promise<RestoringReservationReadResult>;
 	/** Delete ended records ended, and reservations last renewed, more than `olderThanMs` ago; returns the count. */
 	prune(olderThanMs: number): Promise<number>;

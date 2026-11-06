@@ -566,6 +566,7 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 					record.gone === undefined &&
 					((record === own && !isReleasedReservationKey(record.reservationKey)) ||
 						(registered !== undefined &&
+							(registered.insertedBy === undefined || record.order <= registered.insertedBy) &&
 							(isReleasedReservationKey(record.reservationKey)
 								? record.ownerSessionId === registered.authorizedBy
 								: record.dormant && registered.releasedOnly !== true) &&
@@ -577,6 +578,9 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 				ended.push(record.reservationKey);
 			}
 			return { status: "consumed", reservationKeys: ended };
+		},
+		async insertionMark() {
+			return shared.nextOrder - 1;
 		},
 		async read(reservationKey) {
 			if (reservationKey.length === 0) return invalid("empty-reservation-key");

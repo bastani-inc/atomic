@@ -129,6 +129,46 @@ test(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
+test(
+	"a child restored by running the call it waits on again leaves the delivery its recovery replays for after that call, and is released again (#4488)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const { store, sessionId } = await crashedWhileWoken(env, "crash-redispatch");
+		// A model request before the call's result would answer with a new call.
+		env.faux.setResponses([waitCall("ci-2")]);
+
+		const restored = await runSingleInProcess(env.root, agent, "Resume", {
+			...env.options("crash-redispatch", {
+				sessionManager: await SessionManager.open(store, sessionId),
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+				redispatchDetachedCalls: true,
+				skipTaskPrompt: true,
+			}),
+		});
+
+		assert.equal(restored.error, undefined);
+		assert.deepEqual(
+			restored.released?.waitingOn.map((call) => call.toolCallId),
+			["ci-1"],
+			"released again on the call it runs again",
+		);
+		assert.equal(
+			env.faux.getPendingResponseCount(),
+			1,
+			"no model request starts on top of the call it still waits on",
+		);
+		const transcript = await transcriptAfterLaunch(store, sessionId);
+		assert.equal(transcript[0], "replayed on resume");
+		assert.deepEqual(
+			transcript.filter((entry) => entry.startsWith("call ") || entry === "assistant reply"),
+			[],
+			"nor any reply",
+		);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
 /** A session that ran once and was then left holding a delivery saved while it was busy, which nothing read. */
 async function finishedWithInterruptedDelivery(env: Awaited<ReturnType<typeof liveChildEnvironment>>, runId: string) {
 	const store = new MemorySessionStore();

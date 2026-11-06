@@ -31,6 +31,7 @@ type ReservationRow = SqliteRow & {
 	dormant: number;
 	wake: number;
 	fencing_token: number;
+	reservation_order: number;
 	gone_json: string | null;
 	end_json: string | null;
 	age_ms: number;
@@ -66,6 +67,7 @@ function endOf(endJson: string): RestoringReservationEnd {
 }
 
 function endsWithRegistration(row: ReservationRow, registered: RestoringReservationRegistration): boolean {
+	if (registered.insertedBy !== undefined && row.reservation_order > registered.insertedBy) return false;
 	if (isReleasedReservationKey(row.reservation_key)) return row.owner_session_id === registered.authorizedBy;
 	return row.dormant === 1 && registered.releasedOnly !== true;
 }
@@ -137,7 +139,8 @@ export async function openSqlRestoringReservationStore({
 		`CREATE INDEX IF NOT EXISTS ${table}_wake_requested ON ${table}(owner_broker_id) WHERE wake_requested = 1`,
 	);
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
-		targets_json, "group" AS reservation_group, dormant, wake, fencing_token, gone AS gone_json, end_json,
+		targets_json, "group" AS reservation_group, dormant, wake, fencing_token, "order" AS reservation_order,
+		gone AS gone_json, end_json,
 		MAX(0, ${STORE_NOW} - renewed_at) AS age_ms`;
 	const readRow = (executor: SqliteExecutor, reservationKey: string) =>
 		executor.get<ReservationRow>(`SELECT ${columns} FROM ${table} WHERE reservation_key = ?`, reservationKey);
@@ -364,6 +367,12 @@ export async function openSqlRestoringReservationStore({
 				}
 				return { status: "consumed", reservationKeys: ended };
 			});
+		},
+		async insertionMark(): Promise<number> {
+			const row = await database.get<SqliteRow & { value: number }>(
+				`SELECT value FROM ${counters} WHERE name = 'order'`,
+			);
+			return row?.value ?? 0;
 		},
 		async read(reservationKey): Promise<RestoringReservationReadResult> {
 			if (reservationKey.length === 0) return invalid("empty-reservation-key");

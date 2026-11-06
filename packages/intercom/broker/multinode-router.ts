@@ -261,6 +261,8 @@ interface ConsumedReservation {
 	readonly childName?: string;
 	readonly groups: ReadonlySet<string>;
 	readonly authorizedBy?: string;
+	/** The reservations' insertion mark when the registration began: later ones never end by the child's name (#4488). */
+	readonly insertedBy?: number;
 }
 
 interface MirroredReservation {
@@ -392,6 +394,9 @@ export class MultiNodeRouter {
 		const entry: PresenceEntry = {};
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
+		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
+		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
+		insertedBy?.catch(() => {});
 		return new Promise<void>((resolve) => {
 			const bound = setTimeout(resolve, PRESENCE_REGISTRATION_BOUND_MS);
 			bound.unref?.();
@@ -405,14 +410,20 @@ export class MultiNodeRouter {
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
 					}
 					if (consumed !== undefined) {
-						// #4488: a session that left while its presence was being taken over no longer stands for the child.
-						// Its owner may have reserved the child as released since, and consuming by the child's name would end
-						// that reservation and leave the released child unreachable; only the capability's own one ends.
+						// #4488: the child may have been released since the registration began, while its presence was being
+						// taken over. A reservation its owner made for that release must stay, or the released child is
+						// unreachable: by the child's name, only reservations older than the registration end, and none
+						// once the session left; the capability's own one always ends.
 						const ownOnly: ConsumedReservation = {
 							groups: consumed.groups,
 							...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
 						};
-						await this.consumeReservation(this.presence.get(session) === entry ? consumed : ownOnly);
+						const mark = await insertedBy;
+						await this.consumeReservation(
+							this.presence.get(session) !== entry
+								? ownOnly
+								: { ...consumed, ...(mark === undefined ? {} : { insertedBy: mark }) },
+						);
 						const { childName, authorizedBy } = consumed;
 						if (childName !== undefined && authorizedBy !== undefined) {
 							const registration = { childName, authorizedBy };
@@ -821,6 +832,7 @@ export class MultiNodeRouter {
 						groups: [...consumed.groups],
 						...(consumed.authorizedBy === undefined ? {} : { authorizedBy: consumed.authorizedBy }),
 						...(consumed.capability === undefined ? { releasedOnly: true as const } : {}),
+						...(consumed.insertedBy === undefined ? {} : { insertedBy: consumed.insertedBy }),
 					},
 		);
 		if (result.status !== "consumed") return;

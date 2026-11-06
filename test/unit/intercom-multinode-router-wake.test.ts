@@ -705,6 +705,37 @@ describe("router reservation consumption (#4326)", () => {
 		assert.equal(await statusOf(node, ownKey), "consumed");
 	});
 
+	test("a registration still taking its presence over leaves a released reservation its owner made after it began, before the broker sees the child leave (#4488)", async () => {
+		let answer!: () => void;
+		const node = await startNode(await cluster(), {
+			presenceAcquireGate: new Promise<void>((resolve) => {
+				answer = resolve;
+			}),
+		});
+		const capability = `${randomUUID()}.capability`;
+		const ownKey = reservationKeyFor(capability);
+		const releasedKey = releasedReservationKey("child");
+		await reserveRaw(node, ownKey, false);
+		const registered = node.router.sessionRegistered(session("child"), {
+			capability,
+			childName: "child",
+			groups: new Set([CREW]),
+			authorizedBy: "the-owner",
+		});
+		await flush();
+		// The child is released while the broker still takes its presence over; its leave has not reached the broker.
+		await reserveRaw(node, releasedKey, true, { owner: "the-owner" });
+		answer();
+		await registered;
+		await flush();
+		assert.equal(
+			await statusOf(node, releasedKey),
+			"active",
+			"the released child stays reserved, so a send wakes it",
+		);
+		assert.equal(await statusOf(node, ownKey), "consumed");
+	});
+
 	test("a registration naming neither a capability nor a child consumes nothing and reports no error (#4326)", async () => {
 		const node = await startNode(await cluster());
 		const key = releasedReservationKey("child");

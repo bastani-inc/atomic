@@ -3788,7 +3788,7 @@
 		"test/integration/subagent-completion-owner-restart.test.ts": 31966,
 		"test/integration/subagent-early-restore-hold.test.ts": 7451,
 		"test/integration/subagent-released-intercom.test.ts": 2081,
-		"test/integration/subagent-released-rerelease-faults.test.ts": 99102,
+		"test/integration/subagent-released-rerelease-faults.test.ts": 144333,
 		"test/integration/subagent-restore-broker-hold.test.ts": 2479,
 		"test/integration/subagent-send-during-restore.test.ts": 3880,
 		"test/integration/subagents-parallel-communication.test.ts": 22180,
