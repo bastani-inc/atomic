@@ -152,6 +152,7 @@
 - A response cut off by the length limit is continued even when the session store takes longer than 100 ms to record that the cut-off attempt is left out of the model's context. The continuation used to start before that write finished, fail with "Cannot continue from message role: assistant", and end the turn on the partial answer ([#4476](https://github.com/bastani-inc/atomic/issues/4476))
 - Session stores on a libSQL server no longer fail a write when the process stalled mid-transaction (stopped by a signal, starved of CPU) long enough for the server to expire its stream, or when the server timed out or refused it briefly: the write runs again and is saved once ([#4383](https://github.com/bastani-inc/atomic/issues/4383))
 - The Windows installer no longer reports a failed install when Windows briefly keeps the just-verified `atomic.exe` in its temporary download directory locked. It now retries removing that directory for up to 9 seconds instead of about 1 second before it gives up ([#4483](https://github.com/bastani-inc/atomic/issues/4483))
+- Atomic no longer aborts after repeated image reads, reported on macOS arm64 with Node 24.16. Each image resize runs in a worker thread, and the next resize used to start a new worker while the previous one was still shutting down. Image resizes now wait for their worker to stop, which adds about 15 ms per image (upstream [#10695](https://github.com/earendil-works/pi/issues/10695))
 
 ## [0.9.71] - 2026-11-03
 
