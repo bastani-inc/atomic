@@ -381,6 +381,10 @@ class DriverDatabase implements SqliteDatabase {
 				active = false;
 				await handleQueue.drained();
 			}
+			// Once the callback has returned, the commit's own failure decides whether the transaction runs again: a commit
+			// that may have applied, or that failed for a reason the driver does not recognize, never does, whatever the
+			// callback met before it. A committed transaction never runs again either.
+			attempt.transient = undefined;
 			await this.call(() => connection.commit(), attempt, true);
 		} catch (cause) {
 			let failure = cause as StorageFailureCause;
@@ -393,8 +397,6 @@ class DriverDatabase implements SqliteDatabase {
 			await close().catch(() => {});
 			throw failure;
 		}
-		// A committed transaction never runs again, whatever failed in it before the commit.
-		attempt.transient = undefined;
 		await close();
 		return result;
 	}

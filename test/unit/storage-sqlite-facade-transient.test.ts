@@ -369,16 +369,107 @@ test("a commit whose outcome is unknown is never run again (#4383)", async () =>
 	assert.equal(vi.getTimerCount(), 0);
 });
 
-test("a transaction whose callback swallowed a transient failure still runs again (#4383)", async () => {
+test("a commit whose outcome is unknown is never run again, even after the callback swallowed a transient failure (#4383)", async () => {
+	const { driver, calls, fail } = plannedDriver();
+	fail("tx", transient("stream-expired", "not-applied"));
+	fail("commit", transient("connection-lost", "unknown"));
+	const database = createSqliteDatabase(driver);
+	let runs = 0;
+	await assert.rejects(
+		database.transaction(
+			async (tx) => {
+				runs++;
+				await tx.run("SAVEPOINT append").catch(() => undefined);
+				await tx.run("INSERT INTO events VALUES (1)");
+			},
+			{ retryTransientFailures: true },
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof StorageTransientError);
+			assert.deepEqual([error.code, error.outcome, error.attempts], ["connection-lost", "unknown", 1]);
+			return true;
+		},
+	);
+	assert.equal(runs, 1);
+	assert.deepEqual(calls, [
+		"begin",
+		"tx SAVEPOINT append",
+		"tx INSERT INTO events VALUES (1)",
+		"commit",
+		"rollback",
+		"tx close",
+	]);
+	assert.equal(vi.getTimerCount(), 0);
+	assert.equal(warnings.length, 0);
+});
+
+test("a commit that fails for a reason the driver does not recognize is never run again, even after a swallowed transient failure (#4383)", async () => {
+	const { driver, calls, fail } = plannedDriver();
+	const failure = Object.assign(new Error("headers timeout"), { code: "UND_ERR_HEADERS_TIMEOUT" });
+	fail("tx", transient("stream-expired", "not-applied"));
+	fail("commit", failure);
+	const database = createSqliteDatabase(driver);
+	let runs = 0;
+	await assert.rejects(
+		database.transaction(
+			async (tx) => {
+				runs++;
+				await tx.run("SAVEPOINT append").catch(() => undefined);
+				await tx.run("INSERT INTO events VALUES (1)");
+			},
+			{ retryTransientFailures: true },
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error instanceof StorageTransientError, false);
+			assert.equal(error.cause, failure);
+			assert.equal(isRetryableStorageError(error), false);
+			return true;
+		},
+	);
+	assert.equal(runs, 1);
+	assert.equal(calls.filter((call) => call === "commit").length, 1);
+	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a commit that applied nothing still runs the transaction again after a swallowed transient failure (#4383)", async () => {
 	vi.spyOn(Math, "random").mockReturnValue(0.5);
 	const { driver, calls, fail } = plannedDriver();
 	fail("tx", transient("stream-expired", "not-applied"));
+	fail("commit", transient("transaction-timeout", "not-applied"));
 	const database = createSqliteDatabase(driver);
 	let runs = 0;
 	const committed = database.transaction(
 		async (tx) => {
 			runs++;
 			await tx.run("SAVEPOINT append").catch(() => undefined);
+			await tx.run("INSERT INTO events VALUES (1)");
+			return runs;
+		},
+		{ retryTransientFailures: true },
+	);
+	await settle();
+	await vi.advanceTimersByTimeAsync(250);
+	assert.equal(await committed, 2);
+	assert.equal(calls.filter((call) => call === "commit").length, 2);
+	assert.deepEqual(
+		warnings.map((warning) => (warning as StorageTransientError).code),
+		["transaction-timeout"],
+		"the commit's own failure decides, and is the one reported",
+	);
+});
+
+test("a transaction whose callback swallowed a transient failure still runs again (#4383)", async () => {
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
+	const { driver, calls, fail } = plannedDriver();
+	fail("tx", transient("stream-expired", "not-applied"), transient("connection-lost", "unknown"));
+	const database = createSqliteDatabase(driver);
+	let runs = 0;
+	const committed = database.transaction(
+		async (tx) => {
+			runs++;
+			await tx.run("SAVEPOINT append").catch(() => undefined);
+			await tx.run("ROLLBACK TO append").catch(() => undefined);
 			await tx.run("INSERT INTO events VALUES (1)");
 			if (runs === 1) throw new Error("the transaction is closed");
 			return runs;
@@ -389,6 +480,11 @@ test("a transaction whose callback swallowed a transient failure still runs agai
 	await vi.advanceTimersByTimeAsync(250);
 	assert.equal(await committed, 2);
 	assert.equal(calls.filter((call) => call === "commit").length, 1);
+	assert.deepEqual(
+		warnings.map((warning) => (warning as StorageTransientError).code),
+		["stream-expired"],
+		"the first transient failure of the run is the one recorded",
+	);
 });
 
 test("a committed transaction never runs again, even when a later cleanup fails (#4383)", async () => {
