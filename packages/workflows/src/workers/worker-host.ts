@@ -85,6 +85,8 @@ function validated(options: WorkflowWorkerHostOptions): void {
 /** Where a host's git comes from and, for a host that restores but has none, the setup problem that says so. */
 interface HostGit {
 	readonly source: WorkerHostGitSource;
+	/** The git the host runs, when it has one: given as `options.git`, or the one `@bastani/atomic` resolves. */
+	readonly command?: WorkerHostGit;
 	readonly problem?: SharedPoolSetupProblem;
 	readonly cause?: GitProvisionError;
 }
@@ -99,15 +101,30 @@ async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
 		const source = await probeGit(options.git);
 		return source === "unavailable"
 			? { source, problem: sharedPoolProblems.gitUnavailable(options.git.path) }
-			: { source };
+			: { source, command: options.git };
 	}
-	if (options.restore === undefined) return { source: getGitStatus().source };
+	if (options.restore === undefined) {
+		const status = getGitStatus();
+		return status.source === "unavailable"
+			? { source: status.source }
+			: { source: status.source, command: { path: status.path, env: {} } };
+	}
 	try {
-		return { source: (await resolveGit()).source };
+		const resolved = await resolveGit();
+		return { source: resolved.source, command: { path: resolved.path, env: gitVariables(resolved.env) } };
 	} catch (error) {
 		if (!isGitProvisionError(error)) throw error;
 		return { source: "unavailable", problem: sharedPoolProblems.gitNotProvided(error), cause: error };
 	}
+}
+
+/** The variables a resolved git sets beyond this process's environment, such as a portable git's own. */
+function gitVariables(env: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
+	return Object.fromEntries(
+		Object.entries(env).flatMap(([key, value]) =>
+			value === undefined || process.env[key] === value ? [] : [[key, value] as const],
+		),
+	);
 }
 
 /**
@@ -119,7 +136,11 @@ async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
 async function checkHostSetup(
 	options: WorkflowWorkerHostOptions,
 	agentDir: string,
-): Promise<{ readonly selection: Extract<StorageSelection, { kind: "adapter" }>; readonly git: WorkerHostGitSource }> {
+): Promise<{
+	readonly selection: Extract<StorageSelection, { kind: "adapter" }>;
+	readonly git: WorkerHostGitSource;
+	readonly gitCommand: WorkerHostGit | undefined;
+}> {
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const problems = await sharedSelectionProblems(selection, agentDir);
 	const git = await hostGit(options);
@@ -132,7 +153,11 @@ async function checkHostSetup(
 			[first, ...rest],
 			git.cause === undefined ? {} : { cause: git.cause },
 		);
-	return { selection: selection as Extract<StorageSelection, { kind: "adapter" }>, git: git.source };
+	return {
+		selection: selection as Extract<StorageSelection, { kind: "adapter" }>,
+		git: git.source,
+		gitCommand: git.command,
+	};
 }
 
 /** Whether git runs on this host through `git`: `system` when it does, `unavailable` when it does not. */
@@ -210,6 +235,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		private readonly shared: SqlSharedPool,
 		private readonly durable: ReturnType<typeof poolDurableJournal>,
 		private readonly git: WorkerHostGitSource,
+		private readonly gitCommand: WorkerHostGit | undefined,
 		private readonly options: WorkflowWorkerHostOptions,
 	) {
 		this.timer = setInterval(() => {
@@ -370,6 +396,7 @@ class WorkerHost implements WorkflowWorkerHost {
 					host: this.hostId,
 					...(this.options.placement?.prefer === undefined ? {} : { prefer: this.options.placement.prefer }),
 					...(restore === undefined ? {} : { restore }),
+					...(this.gitCommand === undefined ? {} : { git: this.gitCommand }),
 					detached: (reason) => {
 						satellite.detached = true;
 						if (reason !== undefined) this.lastDetach = failure(reason);
@@ -418,11 +445,9 @@ class WorkerHost implements WorkflowWorkerHost {
 		else if (this.draining && !this.stoppingNow)
 			// A stop during a drain stops at once: each satellite stops, and the drain ends with it.
 			for (const satellite of this.satellites.values())
-				void satellite.attached
-					.then(() => satellite.coordinator.stopSatellite())
-					.catch((error: Error) => {
-						this.lastDetach = failure(error);
-					});
+				void satellite.coordinator.stopSatellite().catch((error: Error) => {
+					this.lastDetach = failure(error);
+				});
 		this.stoppingNow = true;
 		return this.stopping;
 	}
@@ -436,9 +461,10 @@ class WorkerHost implements WorkflowWorkerHost {
 		const failures: unknown[] = [];
 		await this.polling;
 		for (const result of await Promise.allSettled(
+			// A satellite still attaching is wound down at once: its attach then starts nothing and settles.
 			[...this.satellites.values()].map(async (satellite) => {
-				await satellite.attached;
 				await each(satellite.coordinator);
+				await satellite.attached;
 			}),
 		))
 			if (result.status === "rejected") failures.push(result.reason);
@@ -472,14 +498,22 @@ function withCleanupFailures(primary: unknown, cleanup: readonly unknown[]): unk
 export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions): Promise<WorkflowWorkerHost> {
 	validated(options);
 	const agentDir = options.agentDir ?? getAgentDir();
-	const { selection, git } = await checkHostSetup(options, agentDir);
+	const { selection, git, gitCommand } = await checkHostSetup(options, agentDir);
 	const journal = await openSelectedRunJournal(selection, agentDir);
 	try {
 		// An adapter's journal is a SQL journal, whose database holds the pool's tables.
 		const durable = poolDurableJournal(journal);
 		const queue = await openSqlPoolQueue(journal);
 		const shared = await SqlSharedPool.open(journal, queue);
-		return new WorkerHost(options.hostId ?? poolHostId(durable.agentDir), journal, shared, durable, git, options);
+		return new WorkerHost(
+			options.hostId ?? poolHostId(durable.agentDir),
+			journal,
+			shared,
+			durable,
+			git,
+			gitCommand,
+			options,
+		);
 	} catch (error) {
 		const cleanup: unknown[] = [];
 		await journal.close().catch((closing) => cleanup.push(closing));

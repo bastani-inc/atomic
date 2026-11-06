@@ -1,5 +1,6 @@
 import type { WorkspaceBinding } from "@bastani/atomic";
 import { WorkspaceRestoreUnavailableError, workspaceBindingIdentity } from "./placement-errors.js";
+import type { WorkerHostGit } from "./worker-host-types.js";
 
 /**
  * The repository state a pooled child or stage runs against (#4310): #4245's binding. `remotes`, `head`, `tree` and
@@ -11,6 +12,8 @@ export type { WorkspaceBinding };
 /** What a worker host passes its placement hooks: `signal` aborts when the host stops waiting for them. */
 export interface WorkspaceHookOptions {
 	readonly signal: AbortSignal;
+	/** The git this host runs, as it was given or resolved: run it, with its environment, for the hook's git commands. */
+	readonly git?: WorkerHostGit;
 }
 
 /**

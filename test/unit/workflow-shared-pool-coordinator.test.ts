@@ -1054,6 +1054,121 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+	"a worker host runs the git it was given: its workers find it first on their PATH, and its restore is given it (#4310)",
+	async () => {
+		const f = await fixture("shared-coordinator-host-git", { workspace: binding });
+		const gitDirectory = join(f.directory, "host-git");
+		mkdirSync(gitDirectory);
+		const gitPath = join(gitDirectory, "git");
+		writeFileSync(gitPath, "#!/bin/sh\necho 'git version 2.45.0'\n", { mode: 0o755 });
+		const restored = join(f.directory, "restored");
+		mkdirSync(restored);
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "boundChild",
+			digest: await definitionDigest(childPath),
+		});
+		const { parent } = await fanOut(1)(child as never);
+		const execution = run(
+			parent,
+			{},
+			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+		);
+		const { startWorkflowWorkerHost } = await import("../../packages/workflows/src/workers/worker-host.js");
+		let host: Awaited<ReturnType<typeof startWorkflowWorkerHost>> | undefined;
+		const given: unknown[] = [];
+		const git = { path: gitPath, env: { SHARED_POOL_GIT_MARKER: "host-git" } };
+		try {
+			await f.root();
+			host = await startWorkflowWorkerHost({
+				journal: {
+					adapter: libsql,
+					options: { url: pathToFileURL(join(f.directory, "shared.db")).href },
+					prefix: PREFIX,
+				},
+				agentDir: join(f.directory, "host", "agent"),
+				maxWorkers: 1,
+				hostId: "host-b",
+				workerEntry: stubWorker,
+				git,
+				restore: async (_binding, options) => {
+					given.push(options.git);
+					return restored;
+				},
+			});
+			assert.equal((await host.stats()).git, "system");
+			const result = await execution;
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			assert.deepEqual(given, [git], "the restore port runs the host's git");
+			const [worker] = f.starts().filter((start) => (start.shared as { host: string }).host === "host-b");
+			assert.deepEqual([worker?.pathHead, worker?.gitMarker], [gitDirectory, "host-git"]);
+		} finally {
+			await host?.stop();
+			await execution.catch(() => {});
+			await f.close();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker host stops at once while it attaches, its worker still starting up, and that worker is stopped (#4310)",
+	async () => {
+		// The root keeps running: its bound child waits for a host with its tree, which this host is not.
+		const f = await fixture("shared-coordinator-stop-attaching", { workspace: binding });
+		vi.stubEnv("SHARED_POOL_STUB_HANG_HOST", "host-b");
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "boundChild",
+			digest: await definitionDigest(childPath),
+		});
+		const { parent } = await fanOut(1)(child as never);
+		const execution = run(
+			parent,
+			{},
+			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+		);
+		const { startWorkflowWorkerHost } = await import("../../packages/workflows/src/workers/worker-host.js");
+		let host: Awaited<ReturnType<typeof startWorkflowWorkerHost>> | undefined;
+		try {
+			await f.root();
+			host = await startWorkflowWorkerHost({
+				journal: {
+					adapter: libsql,
+					options: { url: pathToFileURL(join(f.directory, "shared.db")).href },
+					prefix: PREFIX,
+				},
+				agentDir: join(f.directory, "host", "agent"),
+				maxWorkers: 1,
+				hostId: "host-b",
+				workerEntry: stubWorker,
+			});
+			for (
+				let poll = 0;
+				poll < 1_200 && !f.starts().some((start) => (start.shared as { host: string }).host === "host-b");
+				poll++
+			)
+				await sleep(25);
+			const [worker] = f.starts().filter((start) => (start.shared as { host: string }).host === "host-b");
+			// Its worker never reports ready, so the attach would last until the root's worker startup timeout.
+			const stopped = await Promise.race([
+				host.stop().then(() => "stopped"),
+				sleep(10_000).then(() => "still attaching"),
+			]);
+			assert.equal(stopped, "stopped");
+			host = undefined;
+			assert.throws(() => process.kill(worker!.pid as number, 0), "the worker still starting up was stopped");
+		} finally {
+			await host?.stop();
+			await f.pool.close();
+			await execution.catch(() => {});
+			await f.close();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
 	"a worker that dies while its child's workspace restores puts the child back, and its replacement takes it (#4310)",
 	async () => {
 		const f = await fixture("shared-coordinator-restoring-death", { workspace: binding });

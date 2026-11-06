@@ -2,7 +2,7 @@ import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { setDebugSetting } from "@bastani/atomic";
@@ -112,10 +112,12 @@ import type {
 	WatchResult,
 } from "./stage-watch-types.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
+import type { WorkerHostGit } from "./worker-host-types.js";
 import { AttemptLeaseExtensions, WORKER_REQUEST_LANES, WorkerRequestLanes } from "./worker-request-lanes.js";
 import { defaultWorkerHeartbeatMs } from "./worker-timing.js";
 import {
 	type WorkspaceBinding,
+	type WorkspaceHookOptions,
 	type WorkspacePreference,
 	type WorkspaceRestore,
 	workspaceAffinityKey,
@@ -455,6 +457,8 @@ export interface SatellitePlacement {
 	readonly detached: (reason: Error | undefined) => void;
 	/** Called with each failure of `prefer` or `restore`; the work it was for goes back to the queue. */
 	readonly placementFailed?: (error: Error) => void;
+	/** The git the host runs: its workers run it first on their `PATH`, and its hooks are given it. */
+	readonly git?: WorkerHostGit;
 }
 
 /** Everything a satellite coordinator attaches with: the root it serves, as the shared journal holds it. */
@@ -1120,6 +1124,7 @@ export class PoolCoordinator {
 		this.queue = queue;
 		this.sources = attachment.sources;
 		this.promptNodes = config.promptNodes === true;
+		if (this.closed) return;
 		if (this.options.admission)
 			this.admission = await SqlResourceAdmission.open(journal, {
 				...this.options.admission,
@@ -1131,6 +1136,8 @@ export class PoolCoordinator {
 			});
 		this.logDirectory = workerLogDirectory(traceAnchor(this.options), root);
 		await mkdir(this.logDirectory, { recursive: true });
+		// A host that stopped while this satellite attached starts nothing for it: its stop does not wait for the attach.
+		if (this.closed) return;
 		this.starting = Promise.resolve();
 		this.startRecovery();
 		this.startSharedPasses();
@@ -1138,6 +1145,8 @@ export class PoolCoordinator {
 		try {
 			await Promise.any(workers);
 		} catch (error) {
+			// Workers that a stop ended before they were ready are no failed attach.
+			if (this.closed) return;
 			throw (error as AggregateError).errors[0];
 		}
 	}
@@ -1825,7 +1834,7 @@ export class PoolCoordinator {
 				stdio: ["ignore", "ignore", "pipe", "ipc"],
 				execArgv: [],
 				// The durable journal's selection goes through the environment: argv is readable by every process on the host.
-				env: poolWorkerEnvironment(options.durable),
+				env: withHostGit(poolWorkerEnvironment(options.durable), this.satellite?.git),
 			},
 		);
 		const disconnected = new Promise<void>((resolve) => child.once("disconnect", () => resolve()));
@@ -2348,7 +2357,7 @@ export class PoolCoordinator {
 			lease,
 			work,
 			leaseMs,
-			(signal) => restore(binding, { signal }),
+			(signal) => restore(binding, this.hookOptions(satellite, signal)),
 			AbortSignal.any([this.closedSignal.signal, slot.exited.signal]),
 		);
 		// A host that closed put the child back with the rest its workers held; one whose worker exited puts it back here.
@@ -2379,7 +2388,7 @@ export class PoolCoordinator {
 		let path: string | undefined;
 		try {
 			const answered = await this.untilClosed(
-				(signal) => Promise.resolve(prefer(binding, { signal })),
+				(signal) => Promise.resolve(prefer(binding, this.hookOptions(satellite, signal))),
 				AbortSignal.any([this.placingSignal.signal, workerExited]),
 			);
 			// A satellite that drains or closes, or whose asking worker exited, stopped waiting for the hook: nothing is
@@ -2436,6 +2445,11 @@ export class PoolCoordinator {
 			clearInterval(heartbeat);
 			await renewal;
 		}
+	}
+
+	/** What a worker host's hook is given: the signal that ends the wait for it, and the git the host runs. */
+	private hookOptions(satellite: SatellitePlacement, signal: AbortSignal): WorkspaceHookOptions {
+		return satellite.git === undefined ? { signal } : { signal, git: satellite.git };
 	}
 
 	/**
@@ -2761,6 +2775,20 @@ export class PoolCoordinator {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		}
 	}
+}
+
+/**
+ * A worker's environment with the host's git (#4310): its variables set, and an absolute path's directory first on
+ * `PATH`, so the git commands the worker runs resolve to it.
+ */
+function withHostGit(env: NodeJS.ProcessEnv, git: WorkerHostGit | undefined): NodeJS.ProcessEnv {
+	if (git === undefined) return env;
+	const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+	return {
+		...env,
+		...git.env,
+		...(isAbsolute(git.path) ? { [pathKey]: [dirname(git.path), env[pathKey]].filter(Boolean).join(delimiter) } : {}),
+	};
 }
 
 /** The retry limit message of one child, naming it by its child run and definition export. */
