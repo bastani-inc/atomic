@@ -1000,7 +1000,7 @@ describe("a resumed child checks only the commit of its latest completed step (#
 	 */
 	async function interruptedAfterSteps(
 		api: Workspace,
-		steps: (ctx: StepContext) => Promise<unknown>,
+		steps: (ctx: StepContext) => Promise<void>,
 		act: (stage: string, cwd: string) => void | Promise<void>,
 	) {
 		const state = { failFirst: true };
