@@ -49,8 +49,11 @@ export interface DurableChildInvocation {
 	readonly recordedWorkspace?: BoundWorkspace;
 	/** Whether an earlier attempt recorded any checkpoint inside the child, so its worktree may hold work to keep. */
 	recordedChildProgress(): boolean;
-	/** Heads of the changes that steps completed inside the child recorded on `binding`'s branch; resume needs them. */
-	recordedChildHeads(binding: Pick<BoundWorkspace, "repo" | "branch">): readonly string[];
+	/**
+	 * Head of the change that the latest completed step inside the child recorded on `binding`'s branch, which resume
+	 * checks; undefined when no completed step recorded one. See `latestChildHead` for the order.
+	 */
+	latestRecordedChildHead(binding: Pick<BoundWorkspace, "repo" | "branch">): string | undefined;
 	/** Workspace binding of this attempt, recorded with the boundary start. */
 	readonly workspace?: BoundWorkspace;
 	/** Writer lease this attempt holds on the bound worktree, released when the child settles. */
@@ -126,7 +129,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		identity,
 		recordedWorkspace,
 		recordedChildProgress: () => childCheckpoints.length > 0,
-		recordedChildHeads: (binding) => childHeads(childCheckpoints, binding),
+		latestRecordedChildHead: (binding) => latestChildHead(childCheckpoints, binding),
 		get workspace() {
 			return workspace;
 		},
@@ -465,18 +468,24 @@ function changeSetOf(
 		: undefined;
 }
 
-/** The `changeSet` heads that completed steps inside a child recorded on one repository's branch. */
-function childHeads(
+/**
+ * The `changeSet` head that the latest completed step inside a child recorded on one repository's branch: the step
+ * whose checkpoint has the greatest `completedAt`, and of steps that completed at the same time the one recorded last.
+ * Earlier steps' heads do not count, so a step may amend or squash the commits of the steps before it.
+ */
+export function latestChildHead(
 	childCheckpoints: readonly DurableCheckpoint[],
 	binding: Pick<BoundWorkspace, "repo" | "branch">,
-): string[] {
-	const heads = new Set<string>();
+): string | undefined {
+	let latest: { readonly completedAt: number; readonly head: string } | undefined;
 	for (const checkpoint of childCheckpoints) {
 		if (checkpoint.kind !== "stage") continue;
 		const changeSet = changeSetOf(checkpoint.output);
-		if (changeSet?.repo === binding.repo && changeSet.branch === binding.branch) heads.add(changeSet.headCommit);
+		if (changeSet?.repo !== binding.repo || changeSet.branch !== binding.branch) continue;
+		if (latest === undefined || checkpoint.completedAt >= latest.completedAt)
+			latest = { completedAt: checkpoint.completedAt, head: changeSet.headCommit };
 	}
-	return [...heads];
+	return latest?.head;
 }
 
 function invalid(input: Pick<DurableBoundaryDescriptor, "replayKey">, message: string): DurableNestedTopologyError {
