@@ -20,14 +20,22 @@ const SOURCE_ALIASES = JSON.stringify({
 });
 /** Spawning two real broker processes (and restarting one) is the structural cost of this suite. */
 const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
-/** An owner process loads the subagent, Intercom and session sources through jiti before it binds. */
+/**
+ * A start-up allowance for the first owner process, not a product timing: it loads the subagent, Intercom and session
+ * sources through jiti before it binds, which took close to a minute in a loaded Windows integration shard.
+ */
+const OWNER_START_ALLOWANCE_MS = 120_000;
+/** The launched child starts its shell, waits on it and is released, measured from when its owner bound. */
+const FIRST_RELEASE_MS = 60_000;
+/** The reopened owner process loads the same sources before it binds. */
 const OWNER_PROCESS_READY_MS = 60_000;
 /** A wake, the woken run, and its release after the fixture's short release delay. */
 const SETTLE_MS = 30_000;
 /** A crashed broker's presence lease for the child must be stale before a send stops routing to that broker. */
 const PRESENCE_GONE_MS = BROKER_LEASE_STALE_AFTER_MS + SETTLE_MS;
-/** Two owner processes start, the broker restarts once, and the child is woken five times. */
-const FAULTS_TEST_TIMEOUT_MS = 2 * OWNER_PROCESS_READY_MS + 6 * SETTLE_MS + PRESENCE_GONE_MS;
+/** Two owner processes start, the child is released, the broker restarts once, and the child is woken five times. */
+const FAULTS_TEST_TIMEOUT_MS =
+	OWNER_START_ALLOWANCE_MS + FIRST_RELEASE_MS + OWNER_PROCESS_READY_MS + 6 * SETTLE_MS + PRESENCE_GONE_MS;
 
 let harness: TwoBrokerHarness;
 const owners: OwnerProcess[] = [];
@@ -208,7 +216,8 @@ test(
 		const childName = `subagent-worker-rr-${randomUUID().slice(0, 8)}`;
 		const dir = join(harness.root, "owner");
 		const first = OwnerProcess.start("launch", dir, childName);
-		await first.when(() => first.ready && first.released(), OWNER_PROCESS_READY_MS, "never released on its shell");
+		await first.when(() => first.ready, OWNER_START_ALLOWANCE_MS, "the owner never bound");
+		await first.when(() => first.released(), FIRST_RELEASE_MS, "never released on its shell");
 		const sender: TwoBrokerClient = await harness.connect("a", `released-sender-${randomUUID().slice(0, 8)}`, {
 			group: first.group,
 		});
