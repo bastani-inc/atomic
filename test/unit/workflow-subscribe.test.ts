@@ -2062,38 +2062,52 @@ test("an event child interrupted after its session was recorded restarts from it
 test("a report returns once the subscriber admits it, without waiting for the subscriber's turn to end (#4311)", async () => {
 	const order: string[] = [];
 	const turnGate = Promise.withResolvers<void>();
-	const listeners = new Set<Listener>();
+	const listeners = new Set<(event: { readonly type: string; readonly message?: unknown }) => void>();
 	const watcherMessages: string[] = [];
+	const queuedIntoTurn: string[] = [];
 	let turnActive = false;
-	const emit = (type: string): void => {
-		for (const listener of [...listeners]) listener({ type });
+	const emit = (type: string, message?: unknown): void => {
+		for (const listener of [...listeners]) listener({ type, ...(message === undefined ? {} : { message }) });
 	};
+	const saved = (text: string): void => emit("message_end", { role: "user", content: text });
 	const watcherSession: StageSessionRuntime = {
 		...mockSession(),
+		get isStreaming() {
+			return turnActive;
+		},
 		async prompt(text: string) {
 			emit("agent_start");
 			watcherMessages.push(text);
 			emit("agent_end");
 		},
 		async sendUserMessage(content, options) {
-			watcherMessages.push(typeof content === "string" ? content : "");
-			if (turnActive && options?.deliverAs === "steer") return;
+			const text = typeof content === "string" ? content : "";
+			watcherMessages.push(text);
+			if (turnActive && options?.deliverAs === "steer") {
+				queuedIntoTurn.push(text);
+				return;
+			}
 			turnActive = true;
 			emit("subscriber_queued");
 			order.push("subscriber-queued");
 			for (let turn = 0; turn < 3; turn++) await nextTurn();
 			emit("agent_start");
+			saved(text);
 			order.push("subscriber-turn-start");
 			await turnGate.promise;
+			for (const queued of queuedIntoTurn.splice(0)) saved(queued);
 			order.push("subscriber-turn-end");
 			turnActive = false;
 			emit("agent_end");
 		},
 		subscribe(listener) {
-			listeners.add(listener as Listener);
-			return () => listeners.delete(listener as Listener);
+			listeners.add(listener as never);
+			return () => listeners.delete(listener as never);
 		},
 	};
+	const backend = await createMemoryTestBackend();
+	const runId = "abababab-abab-4bab-8bab-000000004311";
+	const processedWhileQueued: Record<string, boolean> = {};
 	const definition = workflow({
 		name: "unblocked-reports",
 		description: "",
@@ -2102,16 +2116,22 @@ test("a report returns once the subscriber admits it, without waiting for the su
 		run: async (ctx) => {
 			const watcher = ctx.stage("watcher");
 			await watcher.prompt("watch");
-			await ctx.subscribe(
+			const subscription = ctx.subscribe(
 				listSource("alerts", [{ id: "a" }, { id: "b" }]),
 				async (event, child) => {
 					order.push(`handler-${event.id}-start`);
 					await child.report(`${event.id} matters`);
 					order.push(`handler-${event.id}-reported`);
-					if (event.id === "b") turnGate.resolve();
 				},
 				{ subscriber: watcher, maxConcurrent: 1 },
-			).done;
+			);
+			await turnsUntil(() => order.includes("handler-b-reported"));
+			for (let turn = 0; turn < 20; turn++) await nextTurn();
+			for (const id of ["a", "b"]) {
+				processedWhileQueued[id] = subscriptionEventProcessed(backend, runId, "alerts#1", id);
+			}
+			turnGate.resolve();
+			await subscription.done;
 			return {};
 		},
 	}) as WorkflowDefinition;
@@ -2119,9 +2139,9 @@ test("a report returns once the subscriber admits it, without waiting for the su
 		definition,
 		{},
 		{
-			runId: "abababab-abab-4bab-8bab-000000004311",
+			runId,
 			store: createStore(),
-			durableBackend: await createMemoryTestBackend(),
+			durableBackend: backend,
 			adapters: { agentSession: { create: async () => watcherSession } },
 		},
 	);
@@ -2135,6 +2155,8 @@ test("a report returns once the subscriber admits it, without waiting for the su
 		"handler-b-reported",
 		"subscriber-turn-end",
 	]);
+	assert.deepEqual(processedWhileQueued, { a: true, b: false });
+	assert.equal(subscriptionEventProcessed(backend, runId, "alerts#1", "b"), true);
 	assert.deepEqual(watcherMessages, [
 		"watch",
 		'Report from event child "alerts#1/a" (event a):\n\na matters',
@@ -2143,10 +2165,10 @@ test("a report returns once the subscriber admits it, without waiting for the su
 });
 
 test("a run settles the turns its reports started before it completes, and cancelling it meanwhile ends it (#4311)", async () => {
-	const listeners = new Set<Listener>();
+	const listeners = new Set<(event: { readonly type: string; readonly message?: unknown }) => void>();
 	const watcherMessages: string[] = [];
-	const emit = (type: string): void => {
-		for (const listener of [...listeners]) listener({ type });
+	const emit = (type: string, message?: unknown): void => {
+		for (const listener of [...listeners]) listener({ type, ...(message === undefined ? {} : { message }) });
 	};
 	const watcherSession: StageSessionRuntime = {
 		...mockSession(),
@@ -2156,13 +2178,15 @@ test("a run settles the turns its reports started before it completes, and cance
 			emit("agent_end");
 		},
 		async sendUserMessage(content) {
+			const text = typeof content === "string" ? content : "";
 			emit("agent_start");
-			watcherMessages.push(typeof content === "string" ? content : "");
+			watcherMessages.push(text);
+			emit("message_end", { role: "user", content: [{ type: "text", text }] });
 			await new Promise<void>(() => {});
 		},
 		subscribe(listener) {
-			listeners.add(listener as Listener);
-			return () => listeners.delete(listener as Listener);
+			listeners.add(listener as never);
+			return () => listeners.delete(listener as never);
 		},
 	};
 	let bodyReturned = false;

@@ -11,10 +11,22 @@ import type { StageControlHandle } from "../../runs/foreground/stage-control-reg
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowEventSubscriber } from "../../shared/types.js";
 
+/** A session event as a subscriber stage reports it; `message_end` carries the message its session just saved. */
+interface SubscriberSessionEvent {
+	readonly type: string;
+	readonly message?: { readonly role?: string; readonly content?: unknown };
+}
+
 /** A workflow stage of this run that subscribed: it takes steering messages and reports its session's events. */
 export interface LiveSubscriberStage {
+	readonly isStreaming: boolean;
 	sendUserMessage(content: string, options?: { readonly deliverAs?: "steer" | "followUp" }): Promise<unknown>;
-	subscribe(listener: (event: { readonly type: string }) => void): () => void;
+	subscribe(listener: (event: SubscriberSessionEvent) => void): () => void;
+}
+
+/** A report the subscriber took in. `saved` settles once the subscriber's session has saved it. */
+export interface DeliveredReport {
+	readonly saved: Promise<void>;
 }
 
 export interface SubscriberReportDelivery {
@@ -35,10 +47,11 @@ export interface SubscriberReportDelivery {
  *
  * A report to a workflow stage returns as soon as the stage admits it, so the event child never waits for the turn the
  * report starts in the subscriber. A turn that fails after admission is the subscriber's failure and is recorded
- * through `turnFailed`.
+ * through `turnFailed`. A report steered into a running turn waits in the subscriber's queue in memory until that turn
+ * takes it; `saved` lets the caller hold the event's processed record until the subscriber's session saved the report.
  */
 export interface SubscriberReports {
-	deliver(delivery: SubscriberReportDelivery): Promise<void>;
+	deliver(delivery: SubscriberReportDelivery): Promise<DeliveredReport>;
 	/** Before the run completes: waits for the turns that reports started. The run races it with its cancellation. */
 	settle(): Promise<void>;
 	/** At the end of the run: lets each reopened session go once its turn ends. */
@@ -65,22 +78,46 @@ function turnEnded(handle: StageControlHandle): Promise<void> {
 	});
 }
 
-/** Sends a report and calls `admitted` once the subscriber has taken it in; resolves when the subscriber's turn ends. */
-type AdmittedSend = (admitted: () => void) => Promise<unknown>;
+/**
+ * Sends a report and calls `admitted` once the subscriber has taken it in and `saved` once its session saved it;
+ * resolves when the subscriber's turn ends, or, for a report steered into a running turn, once it is queued.
+ */
+type AdmittedSend = (admitted: () => void, saved: () => void) => Promise<unknown>;
+
+function messageText(content: unknown): string | undefined {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	return content
+		.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
+			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+		)
+		.join("\n");
+}
 
 /**
- * An idle stage starts a turn for the report, which counts as taken in when that turn starts. A stage already in a turn
- * takes the report into that turn, and the send settles once the report is queued.
+ * An idle stage starts a turn for the report, which counts as taken in when that turn starts, and as saved once that
+ * turn ends. A stage already in a turn queues the report; it counts as taken in once queued, and as saved when the
+ * turn takes it and the session saves it (`message_end`, which a session emits after saving the message).
  */
 function sendToLiveStage(stage: LiveSubscriberStage, message: string): AdmittedSend {
-	return (admitted) => {
+	return (admitted, saved) => {
+		const queuedIntoTurn = stage.isStreaming;
 		const stopWatching = stage.subscribe((event) => {
-			if (event.type !== "agent_start") return;
+			if (event.type === "agent_start") admitted();
+			if (event.type !== "message_end" || event.message?.role !== "user") return;
+			if (messageText(event.message.content) !== message) return;
 			stopWatching();
 			admitted();
+			saved();
 		});
 		const turn = stage.sendUserMessage(message, { deliverAs: "steer" });
-		void turn.then(stopWatching, stopWatching);
+		const settled = (): void => {
+			stopWatching();
+			saved();
+		};
+		void turn.then(() => {
+			if (!queuedIntoTurn) settled();
+		}, settled);
 		return turn;
 	};
 }
@@ -103,13 +140,17 @@ export function createSubscriberReports(
 	>();
 	const turns = new Set<Promise<void>>();
 
-	const untilAdmitted = async (stage: string, send: AdmittedSend): Promise<void> => {
+	const untilAdmitted = async (stage: string, send: AdmittedSend): Promise<DeliveredReport> => {
 		let admitted = false;
 		const admission = Promise.withResolvers<void>();
-		const turn = send(() => {
-			admitted = true;
-			admission.resolve();
-		});
+		const saved = Promise.withResolvers<void>();
+		const turn = send(
+			() => {
+				admitted = true;
+				admission.resolve();
+			},
+			() => saved.resolve(),
+		);
 		const settled = turn.then(
 			() => undefined,
 			(error: unknown) => {
@@ -119,6 +160,7 @@ export function createSubscriberReports(
 		turns.add(settled);
 		void settled.then(() => turns.delete(settled));
 		await Promise.race([admission.promise, turn]);
+		return { saved: saved.promise };
 	};
 
 	const letGo = async (waitForTurns: boolean): Promise<void> => {
@@ -142,10 +184,9 @@ export function createSubscriberReports(
 			if (stage?.replayed !== true) {
 				if (live === undefined || stage === undefined) {
 					await subscriber.sendUserMessage(message, { deliverAs: "steer" });
-					return;
+					return { saved: Promise.resolve() };
 				}
-				await untilAdmitted(stage.name, sendToLiveStage(live, message));
-				return;
+				return await untilAdmitted(stage.name, sendToLiveStage(live, message));
 			}
 			let owned = reopened.get(stage.id);
 			if (owned === undefined) {
@@ -170,10 +211,13 @@ export function createSubscriberReports(
 			}
 			const sendUserMessage = handle.sendUserMessage;
 			const reopenedStage: LiveSubscriberStage = {
+				get isStreaming() {
+					return handle.isStreaming;
+				},
 				sendUserMessage: (content, options) => sendUserMessage.call(handle, content, options),
 				subscribe: (listener) => handle.subscribe(listener),
 			};
-			await untilAdmitted(stage.name, sendToLiveStage(reopenedStage, message));
+			return await untilAdmitted(stage.name, sendToLiveStage(reopenedStage, message));
 		},
 		async settle() {
 			while (turns.size > 0) await Promise.all([...turns]);

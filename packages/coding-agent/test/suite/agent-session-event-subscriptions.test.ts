@@ -316,13 +316,21 @@ describe("AgentSession.subscribe(source, handler)", () => {
 				return fauxAssistantMessage("no tools");
 			},
 		]);
-		let childSessionId = "";
-		await harness.session.subscribe(listSource([{ id: "bare-1" }]), async (_event, child) => {
-			childSessionId = (await child.task({ prompt: "Answer without tools.", noTools: "all" })).sessionId;
-		}).done;
-		assert.deepEqual(toolNames, [[]]);
-		const persisted = await harness.session.sessionManager.getSessionStore().readHeader(childSessionId);
-		assert.equal(persisted, undefined);
+		const inMemory = vi.spyOn(SessionManager, "inMemory");
+		try {
+			let childSessionId = "";
+			await harness.session.subscribe(listSource([{ id: "bare-1" }]), async (_event, child) => {
+				childSessionId = (await child.task({ prompt: "Answer without tools.", noTools: "all" })).sessionId;
+			}).done;
+			assert.deepEqual(toolNames, [[]]);
+			const childManagers = inMemory.mock.results.map((result) => result.value as SessionManager);
+			assert.deepEqual(
+				childManagers.map((manager) => manager.getSessionId()),
+				[childSessionId],
+			);
+		} finally {
+			inMemory.mockRestore();
+		}
 	});
 
 	it("a child limited to an explicit tool list can still call report_to_subscriber (#4311)", async () => {

@@ -60,7 +60,7 @@ export interface WorkflowEventRuntime {
 		subscriber: WorkflowEventSubscriber,
 		message: string,
 		subscriptionId: string,
-	) => Promise<void>;
+	) => Promise<{ readonly saved: Promise<void> }>;
 	/** Lets an unobserved subscription failure fail the run. */
 	readonly watch: <T>(promise: Promise<T>) => Promise<T>;
 }
@@ -154,6 +154,8 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		});
 		let reportCount = 0;
 		let closed = false;
+		/** Reports per event that the subscriber has taken in but may not have saved yet. */
+		const unsavedReports = new Map<string, Promise<void>[]>();
 		const handle: EventSubscriptionHandle = openEventSubscription({
 			id,
 			source,
@@ -170,7 +172,8 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 						reportCount += 1;
 						runtime.recordReportNotice(`${id}:report:${reportCount}`, message);
 					} else {
-						await runtime.deliverReport(subscriber, message, id);
+						const { saved } = await runtime.deliverReport(subscriber, message, id);
+						unsavedReports.set(event.id, [...(unsavedReports.get(event.id) ?? []), saved]);
 					}
 					handle.recordReport();
 				};
@@ -203,7 +206,11 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 				};
 				await handler(event, child);
 			},
-			recordProcessed: (event) => recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id),
+			recordProcessed: async (event) => {
+				await Promise.all(unsavedReports.get(event.id) ?? []);
+				unsavedReports.delete(event.id);
+				await recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id);
+			},
 		});
 		const markClosed = (): void => {
 			closed = true;
