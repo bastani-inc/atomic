@@ -19,6 +19,7 @@ import {
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { refusedAtChildStart } from "../../packages/workflows/src/engine/run-resume-preflight.js";
 import type { StageWaitKind } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import type { StageWaitToolResult } from "../../packages/workflows/src/shared/stage-wait.js";
 import {
@@ -27,7 +28,7 @@ import {
 } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { rehydrateTypedFailure } from "../../packages/workflows/src/shared/typed-failure-detail.js";
+import { rehydrateTypedFailure, typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import {
 	failedOnPoolFault,
 	isRetryableWorkflowError,
@@ -40,6 +41,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 const ROOT_RUN_ID = "44400000-0000-4000-8000-000000000001";
 const CHILD_RUN_ID = "44400000-0000-4000-8000-000000000002";
 const SCOPE = "workflow:pooled-child:1";
+const BOUNDARY_ID = "pooled-child-boundary";
 const CHILD_NAME = "pooled-child";
 /** The root journal a worker reads, and the pool session store it hands the child, as one kind of worker host keeps them. */
 interface WorkerHost {
@@ -139,7 +141,13 @@ async function seedWaitingChild(host: WorkerHost, stages: readonly SeededStage[]
 				nextCheckpointId: createCheckpointIdGenerator(),
 				nextReplayKey: createStageReplayKeyGenerator(CHILD_RUN_ID),
 				now: () => 3_000,
-				runTopology: { runId: CHILD_RUN_ID, runName: CHILD_NAME, parentRunId: ROOT_RUN_ID, rootRunId: ROOT_RUN_ID },
+				runTopology: {
+					runId: CHILD_RUN_ID,
+					runName: CHILD_NAME,
+					parentRunId: ROOT_RUN_ID,
+					parentStageId: BOUNDARY_ID,
+					rootRunId: ROOT_RUN_ID,
+				},
 			},
 			stage,
 			{ force: true },
@@ -204,7 +212,7 @@ async function runChildAttempt(host: WorkerHost, seeded: SeededChild): Promise<C
 			durableBackend: seeded.backend,
 			durableRootBackend: seeded.backend,
 			durableScope: { rootWorkflowId: ROOT_RUN_ID, scopePrefix: SCOPE },
-			parentRun: { runId: ROOT_RUN_ID, stageId: "boundary", rootRunId: ROOT_RUN_ID },
+			parentRun: { runId: ROOT_RUN_ID, stageId: BOUNDARY_ID, rootRunId: ROOT_RUN_ID },
 			adapters: {
 				sessionStore: workerSessionStore({
 					reader: host.sessions,
@@ -385,6 +393,42 @@ describe("a pooled child checks the sessions of its waiting stages before it run
 			error.hint,
 		);
 		assert.equal(error.message, attempt.result.failureDetail?.message);
+		await seeded.backend.close();
+	});
+
+	test("only the refusal of a child's start check is run again by a later incarnation of its root (#4440)", async () => {
+		const host = await openHost("memory");
+		const seeded = await seedWaitingChild(host, [{ name: "alpha", kind: "release", saved: false }]);
+		const attempt = await runChildAttempt(host, seeded);
+		const crossed = JSON.parse(JSON.stringify(attempt.result)) as typeof attempt.result;
+		assert.equal(refusedAtChildStart(crossed), true);
+
+		const detail = (fields: ConstructorParameters<typeof StageRehydrationError>[0], code?: "session-unavailable") =>
+			typedFailureDetail(new StageRehydrationError(fields, { code: code ?? "session-not-found" }));
+		// A root's own refusal, and a stage that found its session gone when it reopened, are not the child's start check.
+		assert.equal(refusedAtChildStart({ failureDetail: detail({ runId: ROOT_RUN_ID, sessionIds: ["s"] }) }), false);
+		assert.equal(
+			refusedAtChildStart({ failureDetail: detail({ runId: CHILD_RUN_ID, stageName: "alpha", sessionId: "s" }) }),
+			false,
+		);
+		assert.equal(
+			refusedAtChildStart({
+				failureDetail: detail(
+					{ runId: CHILD_RUN_ID, rootRunId: ROOT_RUN_ID, sessionId: "s" },
+					"session-unavailable",
+				),
+			}),
+			false,
+		);
+		const untyped: { readonly status: string; readonly error: string; readonly failureDetail?: unknown } = {
+			status: "failed",
+			error: "child failed",
+		};
+		assert.equal(refusedAtChildStart(untyped), false);
+		assert.equal(
+			refusedAtChildStart({ failureDetail: { name: "StageRehydrationError", code: "session-not-found" } }),
+			false,
+		);
 		await seeded.backend.close();
 	});
 });

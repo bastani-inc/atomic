@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 import { JsonlSessionStore, resolveSessionStore, type SessionStore } from "@bastani/atomic";
 import type { DurableWaitingStage } from "../durable/stage-primitive.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner-types.js";
-import { StageRehydrationError } from "../shared/stage-wait-errors.js";
+import { isStageRehydrationError, StageRehydrationError } from "../shared/stage-wait-errors.js";
 
 /** The session storage a run's stages reopen from, as the run was started. */
 export interface ResumeSessionStorage {
@@ -80,6 +80,21 @@ export async function assertWaitingStageSessionsExist(
 	} finally {
 		if (opened.owned) await opened.store.close();
 	}
+}
+
+/**
+ * Whether a child's recorded result is the refusal of the check it makes when it starts (#4440). A worker pool keeps
+ * that refusal as the child's outcome for the rest of its root's incarnation, so the pool never retries the child on
+ * its own, and runs the child again when a later incarnation of the root asks for it, so a resume with the storage
+ * the error names checks the sessions again instead of replaying the refusal.
+ */
+export function refusedAtChildStart(result: { readonly failureDetail?: unknown }): boolean {
+	const detail = result.failureDetail;
+	return (
+		isStageRehydrationError(detail) &&
+		detail.code === "session-not-found" &&
+		typeof detail.fields?.rootRunId === "string"
+	);
 }
 
 /** The stage a resume checks in the store its own `sessionStore` option supplies. */

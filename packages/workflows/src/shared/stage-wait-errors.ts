@@ -82,8 +82,8 @@ const MAX_CAUSE_DEPTH = 8;
 export interface StageWaitErrorFields extends WorkflowSerializableObject {
 	readonly runId?: string;
 	/**
-	 * The root run to resume when the run that failed is a child workflow, which cannot be resumed on its own
-	 * (`session-not-found`, #4440).
+	 * The root run to resume, set when a child workflow's check of its waiting stages refused it as it started: a child
+	 * cannot be resumed on its own (`session-not-found`, #4440).
 	 */
 	readonly rootRunId?: string;
 	readonly stageId?: string;

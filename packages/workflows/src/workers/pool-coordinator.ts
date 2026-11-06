@@ -25,6 +25,7 @@ import {
 	type StageInputLease,
 } from "../durable/journal/sql-shared-pool.js";
 import { isStaleLeaseError, type Lease, type RunJournal } from "../durable/journal/types.js";
+import { refusedAtChildStart } from "../engine/run-resume-preflight.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
@@ -223,6 +224,11 @@ function isLiveStage(stage: StageSnapshot): boolean {
 		stage.status !== "failed" &&
 		stage.status !== "skipped"
 	);
+}
+
+/** Whether a later incarnation of a root runs again a child an earlier one completed with this result. */
+function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
+	return failedOnPoolFault(result) || refusedAtChildStart(result);
 }
 
 /** The root run as the route mirror needs it: identities and child links of its stages, no payloads. */
@@ -1324,10 +1330,11 @@ export class PoolCoordinator {
 			);
 			// A child an earlier incarnation completed with a failure of the pool's own, such as a stage that lost its
 			// worker's delivery or lease on a busy host, runs again when the resumed root asks for it: the failure was not
-			// the child's, and replaying it would fail the child for good.
+			// the child's, and replaying it would fail the child for good. So does a child its start check refused for a
+			// missing session (#4440): the resume may bring the storage back, and the child checks again before any work.
 			if (enqueued.state === "completed" && enqueued.epoch < lease.epoch)
 				enqueued =
-					(await this.whileRootLate(queue, () => queue.reopenCompleted(lease, enqueued.id, failedOnPoolFault))) ??
+					(await this.whileRootLate(queue, () => queue.reopenCompleted(lease, enqueued.id, rerunsOnRootResume))) ??
 					enqueued;
 			const retained = this.retained.get(enqueued.id);
 			if (retained) retained.enqueued = true;
