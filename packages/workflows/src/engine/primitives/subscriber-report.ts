@@ -84,14 +84,10 @@ function turnEnded(handle: StageControlHandle): Promise<void> {
  */
 type AdmittedSend = (admitted: () => void, saved: () => void) => Promise<unknown>;
 
-function messageText(content: unknown): string | undefined {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return undefined;
-	return content
-		.flatMap((part: { readonly type?: unknown; readonly text?: unknown }) =>
-			part.type === "text" && typeof part.text === "string" ? [part.text] : [],
-		)
-		.join("\n");
+/** The text of a user message as a session saves it: plain text, or the text part of its content. */
+function messageText(content: unknown): unknown {
+	if (!Array.isArray(content)) return content;
+	return content.find((part: { readonly type?: unknown; readonly text?: unknown }) => part.type === "text")?.text;
 }
 
 /**
@@ -107,7 +103,6 @@ function sendToLiveStage(stage: LiveSubscriberStage, message: string): AdmittedS
 			if (event.type !== "message_end" || event.message?.role !== "user") return;
 			if (messageText(event.message.content) !== message) return;
 			stopWatching();
-			admitted();
 			saved();
 		});
 		const turn = stage.sendUserMessage(message, { deliverAs: "steer" });

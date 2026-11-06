@@ -154,8 +154,8 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		});
 		let reportCount = 0;
 		let closed = false;
-		/** Reports per event that the subscriber has taken in but may not have saved yet. */
-		const unsavedReports = new Map<string, Promise<void>[]>();
+		/** Per event, settles once the subscriber has saved every report the event's child sent. */
+		const unsavedReports = new Map<string, Promise<unknown>>();
 		const handle: EventSubscriptionHandle = openEventSubscription({
 			id,
 			source,
@@ -173,7 +173,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 						runtime.recordReportNotice(`${id}:report:${reportCount}`, message);
 					} else {
 						const { saved } = await runtime.deliverReport(subscriber, message, id);
-						unsavedReports.set(event.id, [...(unsavedReports.get(event.id) ?? []), saved]);
+						unsavedReports.set(event.id, Promise.all([unsavedReports.get(event.id), saved]));
 					}
 					handle.recordReport();
 				};
@@ -207,7 +207,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 				await handler(event, child);
 			},
 			recordProcessed: async (event) => {
-				await Promise.all(unsavedReports.get(event.id) ?? []);
+				await unsavedReports.get(event.id);
 				unsavedReports.delete(event.id);
 				await recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id);
 			},
