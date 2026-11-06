@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, it, onTestFinished, vi } from "vitest";
 import {
 	RPC_OUTPUT_AFTER_READY_TIMEOUT_MS,
 	RPC_OUTPUT_POLL_INTERVAL_MS,
@@ -10,7 +11,7 @@ import {
 	RpcBashOutputWaitError,
 	realClock,
 	waitForRpcBashOutput,
-} from "./helpers/rpc-bash-output-wait.ts";
+} from "./helpers/rpc-bash-output-wait.js";
 
 /** Bounds the synchronous stall below so a child that never starts fails the test instead of freezing the worker. */
 const CHILD_WRITE_STALL_LIMIT_MS = 60_000;
@@ -39,8 +40,13 @@ async function failureOf(pending: Promise<void>): Promise<RpcBashOutputWaitError
 		() => undefined,
 		(failure: Error) => failure,
 	);
-	expect(error).toBeInstanceOf(RpcBashOutputWaitError);
-	return error as RpcBashOutputWaitError;
+	assert.ok(error instanceof RpcBashOutputWaitError, `expected an RpcBashOutputWaitError, got ${String(error)}`);
+	return error;
+}
+
+function fieldsOf(failure: RpcBashOutputWaitError) {
+	const { reason, id, expectedPrefix, observed, settlement } = failure;
+	return { reason, id, expectedPrefix, observed, settlement };
 }
 
 function stallUntil(done: () => boolean): void {
@@ -64,7 +70,7 @@ describe("waitForRpcBashOutput", () => {
 			isReady: () => false,
 			clock,
 		});
-		expect(counts).toEqual({ sleeps: startupMs / RPC_OUTPUT_POLL_INTERVAL_MS, drains: 0 });
+		assert.deepEqual(counts, { sleeps: startupMs / RPC_OUTPUT_POLL_INTERVAL_MS, drains: 0 });
 	});
 
 	it("fails at the next poll with the response when the request settles before its prefix (#4477)", async () => {
@@ -79,14 +85,14 @@ describe("waitForRpcBashOutput", () => {
 				clock,
 			}),
 		);
-		expect(failure).toMatchObject({
+		assert.deepEqual(fieldsOf(failure), {
 			reason: "settled-before-output",
 			id: "exited",
 			expectedPrefix: "before",
 			observed: "bef",
 			settlement: { response },
 		});
-		expect(counts).toEqual({ sleeps: 1, drains: 0 });
+		assert.deepEqual(counts, { sleeps: 1, drains: 0 });
 	});
 
 	it("reports a rejected request as its settlement (#4477)", async () => {
@@ -101,8 +107,8 @@ describe("waitForRpcBashOutput", () => {
 				clock,
 			}),
 		);
-		expect(failure.reason).toBe("settled-before-output");
-		expect(failure.settlement).toEqual({ error });
+		assert.equal(failure.reason, "settled-before-output");
+		assert.deepEqual(failure.settlement, { error });
 	});
 
 	it("fails once a ready shell stays silent for the post-readiness budget, after draining pending I/O (#4477)", async () => {
@@ -117,14 +123,16 @@ describe("waitForRpcBashOutput", () => {
 				clock,
 			}),
 		);
-		expect(failure).toMatchObject({
+		assert.deepEqual(fieldsOf(failure), {
 			reason: "silent-after-ready",
 			id: "silent",
+			expectedPrefix: "before",
 			observed: "",
 			settlement: undefined,
 		});
-		expect(counts).toEqual({ sleeps: RPC_OUTPUT_AFTER_READY_TIMEOUT_MS / RPC_OUTPUT_POLL_INTERVAL_MS, drains: 1 });
-		expect(failure.message).toBe(
+		assert.deepEqual(counts, { sleeps: RPC_OUTPUT_AFTER_READY_TIMEOUT_MS / RPC_OUTPUT_POLL_INTERVAL_MS, drains: 1 });
+		assert.equal(
+			failure.message,
 			'RPC bash "silent" did not stream output prefix "before" (silent-after-ready); observed accumulated output: ""; settlement: "pending"',
 		);
 	});
@@ -144,8 +152,8 @@ describe("waitForRpcBashOutput", () => {
 				clock,
 			}),
 		);
-		expect(failure.reason).toBe("silent-after-ready");
-		expect(counts.sleeps).toBe((startupMs + afterReadyTimeoutMs) / RPC_OUTPUT_POLL_INTERVAL_MS);
+		assert.equal(failure.reason, "silent-after-ready");
+		assert.equal(counts.sleeps, (startupMs + afterReadyTimeoutMs) / RPC_OUTPUT_POLL_INTERVAL_MS);
 	});
 
 	it("observes output that is already pending when the post-readiness verdict is due (#4477)", async () => {
@@ -162,7 +170,7 @@ describe("waitForRpcBashOutput", () => {
 			afterReadyTimeoutMs: 0,
 			clock,
 		});
-		expect(counts).toEqual({ sleeps: 0, drains: 1 });
+		assert.deepEqual(counts, { sleeps: 0, drains: 1 });
 	});
 
 	it("reads a pipe write that arrived while the test process was stalled before giving a verdict (#4477)", async () => {
@@ -186,7 +194,7 @@ describe("waitForRpcBashOutput", () => {
 			observed += chunk;
 		});
 		stallUntil(() => existsSync(written));
-		expect(observed).toBe("");
+		assert.equal(observed, "");
 
 		await waitForRpcBashOutput({
 			id: "stalled",
@@ -196,7 +204,7 @@ describe("waitForRpcBashOutput", () => {
 			isReady: () => true,
 			afterReadyTimeoutMs: 0,
 		});
-		expect(observed).toBe("before");
+		assert.equal(observed, "before");
 	});
 
 	it("uses wall-clock time and timer sleeps by default", async () => {
@@ -204,15 +212,15 @@ describe("waitForRpcBashOutput", () => {
 		onTestFinished(() => {
 			vi.useRealTimers();
 		});
-		expect(realClock.now()).toBe(1_000);
+		assert.equal(realClock.now(), 1_000);
 		let slept = false;
 		const sleeping = realClock.sleep(RPC_OUTPUT_POLL_INTERVAL_MS).then(() => {
 			slept = true;
 		});
 		await vi.advanceTimersByTimeAsync(RPC_OUTPUT_POLL_INTERVAL_MS - 1);
-		expect(slept).toBe(false);
+		assert.equal(slept, false);
 		await vi.advanceTimersByTimeAsync(1);
 		await sleeping;
-		expect(slept).toBe(true);
+		assert.equal(slept, true);
 	});
 });

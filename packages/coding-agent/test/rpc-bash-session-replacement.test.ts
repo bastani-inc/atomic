@@ -8,7 +8,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.ts";
 import type { RpcCommand } from "../src/modes/rpc/rpc-types.ts";
-import { type RpcBashResponse, waitForRpcBashOutput } from "./helpers/rpc-bash-output-wait.ts";
+import { type RpcBashResponse, waitForRpcBashOutput } from "./helpers/rpc-bash-output-wait.js";
 import { delayedOutputCommand, gatedOutputCommand } from "./helpers/rpc-shell-commands.js";
 import { createHarness } from "./suite/harness.ts";
 
