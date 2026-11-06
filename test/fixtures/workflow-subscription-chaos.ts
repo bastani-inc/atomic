@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import { type AgentSession, SessionManager } from "@bastani/atomic";
 import { findSubscriptionError } from "../../packages/coding-agent/src/core/event-subscriptions/errors.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -45,7 +45,10 @@ const SUBSCRIPTIONS = [
 ] as const;
 const sharedJournal = process.env.ATOMIC_CHAOS_SHARED_JOURNAL === "1";
 assert.ok(!sharedJournal || process.env.ATOMIC_CODING_AGENT_DIR, "shared mode needs ATOMIC_CODING_AGENT_DIR");
-if (!sharedJournal) process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+if (!sharedJournal) {
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+	process.env.ATOMIC_CODING_AGENT_DIR = join(directory, "agent");
+}
 if (mode === "resume") expireWorkflowLease(join(directory, "journal.sqlite"), runId);
 const backend = await initializeDurableBackend();
 assert.ok(backend instanceof JournalDurableBackend);
@@ -115,22 +118,34 @@ const definition = workflow({
 	},
 }) as WorkflowDefinition;
 
-/** An event child's model: it reads its seeded event and answers `answer:<subscription>:<event id>`. */
-function scriptedChildSession(): StageSessionRuntime {
+/**
+ * An event child's model: it answers `answer:<subscription>:<event id>` from the event seeded into its conversation. It
+ * keeps the conversation in the selected session store (the shared server in a distributed run, a store under the test
+ * directory otherwise), so a child interrupted by a crash resumes in the same session, on any node.
+ */
+function scriptedChildSession(manager: SessionManager): StageSessionRuntime {
 	let answer = "";
+	const seededText = (): string => {
+		for (const entry of manager.getEntries()) {
+			if (entry.type !== "message" || entry.message.role !== "user") continue;
+			const content = entry.message.content;
+			if (typeof content === "string" && /^Subscription: /m.test(content)) return content;
+		}
+		return "";
+	};
 	return {
 		async prompt(text: string) {
-			const subscription = /^Subscription: (.*)$/m.exec(text)?.[1];
-			const eventId = /^Event id: (.*)$/m.exec(text)?.[1];
-			answer = `answer:${subscription}:${eventId}`;
+			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			const seed = /^Subscription: /m.test(text) ? text : seededText();
+			answer = `answer:${/^Subscription: (.*)$/m.exec(seed)?.[1]}:${/^Event id: (.*)$/m.exec(seed)?.[1]}`;
 		},
 		async steer() {},
 		async followUp() {},
 		subscribe() {
 			return () => {};
 		},
-		sessionFile: undefined,
-		sessionId: `chaos-child-${label}`,
+		sessionFile: manager.getSessionFile(),
+		sessionId: manager.getSessionId(),
 		async setModel() {},
 		setThinkingLevel() {},
 		cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
@@ -158,7 +173,10 @@ const adapters = {
 			return text;
 		},
 	},
-	agentSession: { create: async () => scriptedChildSession() },
+	agentSession: {
+		create: async (options: { readonly sessionManager?: SessionManager }) =>
+			scriptedChildSession(options.sessionManager ?? (await SessionManager.create(directory))),
+	},
 };
 const store = createStore();
 if (mode === "records") {
@@ -197,7 +215,8 @@ if (mode === "records") {
 		assert.ok(Date.now() < deadline, "resumed workflow did not settle");
 		await sleep(20);
 	}
-	console.log(JSON.stringify({ status: store.runs().find((entry) => entry.id === runId)?.status }));
+	const settled = store.runs().find((entry) => entry.id === runId);
+	console.log(JSON.stringify({ status: settled?.status, ...(settled?.error === undefined ? {} : { error: settled.error }) }));
 	await backend.close();
 } else {
 	const result = await run(definition, {}, { runId, cwd: directory, store, adapters, modelOwner: "subscription-chaos" });

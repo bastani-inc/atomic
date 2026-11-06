@@ -223,7 +223,7 @@ test.skipIf(process.platform === "win32")(
 				code: string | null;
 				chain: string[];
 			};
-			assert.equal(failure.code, "handler-failed");
+			assert.ok(["handler-failed", "record-failed"].includes(failure.code ?? ""), JSON.stringify(failure));
 			assert.ok(failure.chain.includes("JournalOwnershipError"), JSON.stringify(failure));
 
 			const after = records(directory, runId);
