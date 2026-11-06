@@ -343,6 +343,7 @@ describe("replies to released askers across nodes (#4386)", () => {
 				askerSessionId: child.info.id,
 				replierSessionId: replier.info.id,
 				childName: "worker",
+				ownerSessionId: owner.info.id,
 				state: "answered",
 				replyMessageId: sent.id,
 			},
@@ -355,6 +356,33 @@ describe("replies to released askers across nodes (#4386)", () => {
 			framesOf(owner).filter((frame) => frame.type === "message"),
 			[],
 			"never an ordinary message",
+		);
+	});
+
+	test("a reply reaches the owner of a released asker that woke for another reason first (#4386)", async () => {
+		const { a, b, owner, replier, children } = await releasedScene();
+		const [{ child, questionId }] = children as [{ child: Session; questionId: string }];
+		const woken = reconnected(child);
+		a.sessions.set(woken.info.id, woken);
+		await a.router.sessionRegistered(woken, {
+			childName: "worker",
+			groups: new Set([CREW]),
+			authorizedBy: owner.info.id,
+		});
+		await flush();
+		const reservation = await a.state.reservations.read(releasedReservationKey("worker"));
+		assert.deepEqual(reservation.status === "ended" && reservation.end, { outcome: "consumed" });
+		const sent = reply(replier, child.info.id, questionId, { expectedRecipientId: child.info.id });
+		b.router.routeSend(sent.request);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		const handoff = only(handoffsTo(owner), "handoffs");
+		assert.equal(handoff.message.id, sent.id);
+		a.router.releasedReplyAcknowledged(owner, sent.id, handoff.handoffId, true);
+		assert.equal((await settled(replier, sent.id)).type, "delivered");
+		assert.deepEqual(
+			framesOf(woken).filter((frame) => frame.type === "message"),
+			[],
+			"the reply goes to the owner",
 		);
 	});
 
@@ -589,6 +617,31 @@ describe("replies to released askers across nodes (#4386)", () => {
 		});
 		assert.deepEqual(handoffsTo(owner), []);
 		assert.equal(handoffsTo(returned).length, 1);
+	});
+
+	test("a supervised asker that left without being released is not reached through its owner (#4386)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared);
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		const child = session("worker", { supervisorId: owner.info.id });
+		await register(a, child);
+		const questionId = randomUUID();
+		await a.state.pendingAsks.record({
+			senderSessionId: child.info.id,
+			targetSessionId: replier.info.id,
+			messageId: questionId,
+		});
+		await leave(a, child);
+		const sent = reply(replier, child.info.id, questionId);
+		b.router.routeSend(sent.request);
+		const refused = await settled(replier, sent.id);
+		assert.ok(refused.type === "delivery_failed");
+		assert.equal(refused.reason, PENDING_REPLY_REFUSAL);
+		assert.deepEqual(handoffsTo(owner), []);
 	});
 
 	test("an unsupervised session's question is not kept, so a reply after it leaves is refused as before (#4386)", async () => {
@@ -1579,7 +1632,13 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 });
 
 describe("released-asker reply decisions (#4386)", () => {
-	const ask = { questionId: "q", askerSessionId: "asker-id", replierSessionId: "replier", childName: " Worker One " };
+	const ask = {
+		questionId: "q",
+		askerSessionId: "asker-id",
+		replierSessionId: "replier",
+		childName: " Worker One ",
+		ownerSessionId: "owner-id",
+	};
 
 	test("only a plain reply that answers a question is offered to a released asker (#4386)", () => {
 		const message = (fields: object) => ({ id: "m", timestamp: 1, content: { text: "x" }, ...fields });

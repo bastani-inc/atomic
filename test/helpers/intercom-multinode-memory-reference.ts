@@ -760,7 +760,7 @@ function releasedAskStore(entries: ReleasedAskEntry[]): ReleasedAskStore {
 		async keep(asks, ttlMs) {
 			for (const ask of asks) {
 				if (ask.questionId.length === 0) return invalid("empty-message-id");
-				if (ask.askerSessionId.length === 0 || ask.replierSessionId.length === 0)
+				if (ask.askerSessionId.length === 0 || ask.replierSessionId.length === 0 || ask.ownerSessionId.length === 0)
 					return invalid("empty-session-id");
 				if (ask.childName.length === 0) return invalid("empty-child-name");
 			}

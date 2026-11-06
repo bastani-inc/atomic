@@ -1335,6 +1335,7 @@ export function registerReleasedAskStoreConformance(
 		askerSessionId: "asker",
 		replierSessionId,
 		childName,
+		ownerSessionId: "owner",
 	});
 	const by = (questionId: string, replyMessageId: string, replierSessionId = "replier") => ({
 		questionId,
@@ -1405,10 +1406,14 @@ export function registerReleasedAskStoreConformance(
 	check("loses an open ask at its deadline but keeps a claimed one until it is pruned", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.keep([asked("open-past-deadline")], -1);
-		await a.keep([asked("claimed-then-lapsed")], 200);
+		await a.keep([asked("claimed-then-lapsed")], RENEWAL_GAP_MS);
+		assert.equal(
+			(await b.claim(by("claimed-then-lapsed", "reply-1"))).status,
+			"claimed",
+			"claimed before its deadline",
+		);
 		await a.keep([asked("open-in-time")], KEEP_MS);
-		await b.claim(by("claimed-then-lapsed", "reply-1"));
-		await sleep(400);
+		await sleep(RENEWAL_GAP_MS + RENEWAL_GAP_MS / 2);
 		assert.deepEqual(await b.lookup({ questionId: "open-past-deadline", replierSessionId: "replier" }), {
 			status: "missing",
 		});
@@ -1502,6 +1507,7 @@ export function registerReleasedAskStoreConformance(
 		assert.deepEqual(await a.keep([{ ...asked("q1"), askerSessionId: "" }], KEEP_MS), empty("empty-session-id"));
 		assert.deepEqual(await a.keep([asked("q1", "")], KEEP_MS), empty("empty-session-id"));
 		assert.deepEqual(await a.keep([asked("q1", "replier", "")], KEEP_MS), empty("empty-child-name"));
+		assert.deepEqual(await a.keep([{ ...asked("q1"), ownerSessionId: "" }], KEEP_MS), empty("empty-session-id"));
 		assert.deepEqual(await a.lookup({ questionId: "q1", replierSessionId: "replier" }), { status: "missing" });
 		assert.deepEqual(await a.lookup({ questionId: "", replierSessionId: "replier" }), empty("empty-message-id"));
 		assert.deepEqual(await a.lookup({ questionId: "q1", replierSessionId: "" }), empty("empty-session-id"));

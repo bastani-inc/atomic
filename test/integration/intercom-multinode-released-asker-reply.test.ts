@@ -119,11 +119,8 @@ async function restartOwnerBroker(
 
 test(
 	"a reply through another node reaches the owner of the subagent released while it waited, once (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const released = await releaseAsker();
 		const handoffs = recordHandoffs(released.owner);
 		const result = await replyTo(released, "config.ts");
@@ -142,11 +139,8 @@ test(
 
 test(
 	"a second reply is refused with a typed error, and a retry of the delivered one is not handed over again (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const released = await releaseAsker();
 		const handoffs = recordHandoffs(released.owner);
 		const first = await replyTo(released, "config.ts");
@@ -173,11 +167,8 @@ test(
 
 test(
 	"a restart of the asker's broker between the release and the reply loses nothing (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const released = await releaseAsker();
 		const before = recordHandoffs(released.owner);
 		const { owner, handoffs } = await restartOwnerBroker(released, "accept");
@@ -195,11 +186,8 @@ test(
 
 test(
 	"a reply handed over just before the owner's broker restarts is handed over again and accepted once (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const released = await releaseAsker();
 		const unanswered = recordHandoffs(released.owner, "withhold");
 		const messageId = randomUUID();
@@ -226,11 +214,8 @@ test(
 
 test(
 	"an ask from another node to a subagent that is then released is answered once it wakes (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const ownerToken = randomUUID();
 		const owner = await harness.connect("b", unique("owner"), { supervisorOwnerToken: ownerToken });
 		const childName = unique("subagent-asked");
@@ -274,11 +259,8 @@ test(
 
 test(
 	"an ask from another node follows a released subagent that wakes under a new session id (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const owner = await harness.connect("b", unique("owner"), { supervisorOwnerToken: randomUUID() });
 		const childName = unique("subagent-renamed");
 		const first = await owner.client.authorizeSupervisorChild(childName);
@@ -316,11 +298,8 @@ test(
 
 test(
 	"an ask from another node to a session that leaves without being released ends with it, as before (#4386)",
-	async ({ annotate }) => {
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: nothing crosses brokers");
-			return;
-		}
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
 		const target = await harness.connect("b", unique("plain-target"));
 		const asker = await harness.connect("a", unique("asker"));
 		const questionId = randomUUID();

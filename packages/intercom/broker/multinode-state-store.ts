@@ -537,6 +537,8 @@ export interface ReleasedAsk {
 	readonly replierSessionId: string;
 	/** The asker's registration name, verbatim: its owner holds it under `releasedReservationKey(childName)`. */
 	readonly childName: string;
+	/** The asker's supervisor when it left: its owner still after its reservation ends because it woke. */
+	readonly ownerSessionId: string;
 }
 
 /** `open` until a reply claims it; `claimed` while that reply is handed to the owner; `answered` once accepted. */

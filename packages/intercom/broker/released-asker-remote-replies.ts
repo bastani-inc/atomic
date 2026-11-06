@@ -112,11 +112,19 @@ async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string)
 	return session === undefined ? undefined : { identity: session.targetIdentity, sessionId: ownerSessionId };
 }
 
-/** The owner that holds the released asker now; none once the owner dropped it or the asker came back. */
+/**
+ * The owner that holds the released asker: its reservation's owner, or, once the asker woke for another reason and its
+ * reservation ended that way, the owner it left under, whose saved call still takes the reply. None once the owner
+ * dropped it or left, or it is gone, as for a route on the asker's own broker.
+ */
 async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
 	const read = await state.reservations.read(releasedReservationKey(ask.childName));
-	if (read.status !== "active" || read.reservation.gone !== undefined) return undefined;
-	return ownerOfSession(state, read.reservation.ownerSessionId);
+	if (read.status === "active") {
+		return read.reservation.gone === undefined ? ownerOfSession(state, read.reservation.ownerSessionId) : undefined;
+	}
+	return read.status === "ended" && read.end.outcome !== "released"
+		? ownerOfSession(state, ask.ownerSessionId)
+		: undefined;
 }
 
 /** A reply already sent, retried, goes where its row went, whoever holds the asker now. */
@@ -216,8 +224,8 @@ export async function keepReleasedAsks(
 	state: Pick<IntercomBrokerStateStore, "pendingAsks" | "releasedAsks">,
 	asker: { readonly info: SessionInfo; readonly supervisorId?: string; readonly registrationName?: string },
 ): Promise<void> {
-	const childName = asker.registrationName;
-	if (asker.supervisorId === undefined || childName === undefined) return;
+	const { registrationName: childName, supervisorId: ownerSessionId } = asker;
+	if (ownerSessionId === undefined || childName === undefined) return;
 	const listed = await state.pendingAsks.listForSender(asker.info.id);
 	if (listed.status !== "listed" || listed.asks.length === 0) return;
 	await state.releasedAsks.keep(
@@ -226,6 +234,7 @@ export async function keepReleasedAsks(
 			askerSessionId: ask.senderSessionId,
 			replierSessionId: ask.targetSessionId,
 			childName,
+			ownerSessionId,
 		})),
 		ASK_REPLY_TIMEOUT_MS,
 	);

@@ -19,6 +19,7 @@ interface ReleasedAskRow extends SqliteRow {
 	readonly replier_session_id: string;
 	readonly asker_session_id: string;
 	readonly child_name: string;
+	readonly owner_session_id: string;
 	readonly state: ReleasedAskState;
 	readonly reply_message_id: string | null;
 	/** 1 when the ask is open past its deadline. */
@@ -31,7 +32,9 @@ const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ statu
 
 export function invalidReleasedAsk(ask: ReleasedAsk): InvalidStateInput | undefined {
 	if (ask.questionId.length === 0) return invalid("empty-message-id");
-	if (ask.askerSessionId.length === 0 || ask.replierSessionId.length === 0) return invalid("empty-session-id");
+	if (ask.askerSessionId.length === 0 || ask.replierSessionId.length === 0 || ask.ownerSessionId.length === 0) {
+		return invalid("empty-session-id");
+	}
 	return ask.childName.length === 0 ? invalid("empty-child-name") : undefined;
 }
 
@@ -54,6 +57,7 @@ function toRecord(row: ReleasedAskRow): ReleasedAskRecord {
 		askerSessionId: row.asker_session_id,
 		replierSessionId: row.replier_session_id,
 		childName: row.child_name,
+		ownerSessionId: row.owner_session_id,
 		state: row.state,
 		...(row.reply_message_id === null ? {} : { replyMessageId: row.reply_message_id }),
 	};
@@ -70,6 +74,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 				replier_session_id TEXT NOT NULL,
 				asker_session_id TEXT NOT NULL,
 				child_name TEXT NOT NULL,
+				owner_session_id TEXT NOT NULL,
 				state TEXT NOT NULL CHECK (state IN ('open', 'claimed', 'answered')),
 				reply_message_id TEXT,
 				claimed_at INTEGER,
@@ -80,7 +85,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 	);
 	const select = (executor: SqliteExecutor, key: ReleasedAskKey) =>
 		executor.get<ReleasedAskRow>(
-			`SELECT question_id, replier_session_id, asker_session_id, child_name, state, reply_message_id,
+			`SELECT question_id, replier_session_id, asker_session_id, child_name, owner_session_id, state, reply_message_id,
 				(state = 'open' AND expires_at <= ${STORE_NOW}) AS lapsed,
 				CASE WHEN claimed_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - claimed_at) END AS claim_age
 			 FROM ${table} WHERE question_id = ? AND replier_session_id = ?`,
@@ -100,12 +105,14 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 				let inserted = 0;
 				for (const ask of asks) {
 					const { changes } = await tx.run(
-						`INSERT INTO ${table}(question_id, replier_session_id, asker_session_id, child_name, state, expires_at)
-						 VALUES (?, ?, ?, ?, 'open', ${STORE_NOW} + ?) ON CONFLICT DO NOTHING`,
+						`INSERT INTO ${table}(question_id, replier_session_id, asker_session_id, child_name, owner_session_id, state,
+							expires_at)
+						 VALUES (?, ?, ?, ?, ?, 'open', ${STORE_NOW} + ?) ON CONFLICT DO NOTHING`,
 						ask.questionId,
 						ask.replierSessionId,
 						ask.askerSessionId,
 						ask.childName,
+						ask.ownerSessionId,
 						ttlMs,
 					);
 					inserted += changes;
