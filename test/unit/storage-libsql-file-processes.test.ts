@@ -86,3 +86,44 @@ test("opening a libSQL file another process is writing waits for its lock to swi
 		await removeLibsqlDirectory(directory);
 	}
 });
+
+test("a write that gave up on another process's lock leaves the file usable: later writes and transactions commit", async () => {
+	const directory = makeLibsqlDirectory();
+	try {
+		const path = join(directory, "shared.sqlite");
+		const database = await openAdapterDatabase({ url: pathToFileURL(path).href });
+		try {
+			await database.exec("CREATE TABLE writes(n INTEGER NOT NULL)");
+			// Give up at once instead of after the 5-second busy timeout; the failure is the same.
+			await database.exec("PRAGMA busy_timeout = 0");
+			const holder = await holdSqliteWriteLock(path);
+			try {
+				await assert.rejects(database.run("INSERT INTO writes VALUES (1)"), (error: Error) => {
+					assert.match(String((error.cause as Error | undefined)?.message), /SQLITE_BUSY: database is locked/);
+					return true;
+				});
+			} finally {
+				await holder.release();
+			}
+
+			await database.transaction(async (transaction) => {
+				await transaction.run("INSERT INTO writes VALUES (2)");
+			});
+			await database.run("INSERT INTO writes VALUES (3)");
+		} finally {
+			await database.close();
+		}
+		// Read from another connection: a write the failed statement's connection kept uncommitted is not saved.
+		const reader = await openLibsqlDatabase({ url: pathToFileURL(path).href });
+		try {
+			assert.deepEqual(
+				(await reader.all<{ n: number }>("SELECT n FROM writes ORDER BY n")).map((row) => Number(row.n)),
+				[2, 3],
+			);
+		} finally {
+			await reader.close();
+		}
+	} finally {
+		await removeLibsqlDirectory(directory);
+	}
+});

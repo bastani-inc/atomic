@@ -75,15 +75,15 @@ function urlCredentials(url) {
 }
 
 /**
- * @param {() => import("@libsql/client").Client | import("@libsql/client").Transaction} connection
+ * @param {() => Promise<import("@libsql/client").Client | import("@libsql/client").Transaction>} connection
+ * @param {<T>(operation: () => Promise<T>) => Promise<T>} watch
  * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
  */
-function statements(connection) {
+function statements(connection, watch) {
 	return {
-		async execute(sql, params) {
-			return driverResult(await connection().execute({ sql, args: [...params] }));
-		},
-		executeMultiple: (sql) => connection().executeMultiple(sql),
+		execute: (sql, params) =>
+			watch(async () => driverResult(await (await connection()).execute({ sql, args: [...params] }))),
+		executeMultiple: (sql) => watch(async () => (await connection()).executeMultiple(sql)),
 	};
 }
 
@@ -121,32 +121,59 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	// Create the client inside a driver call, so the facade redacts credentials from its failures. The busy timeout is a
 	// client option, not a PRAGMA, because the client opens more connections than the one that ran the PRAGMA, and
 	// each needs it; a connection waits for a lock on the calling thread.
-	const connection = () =>
-		(client ??= createClient({
+	const create = () =>
+		createClient({
 			url,
 			authToken,
 			intMode: "bigint",
 			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
 			...(added.length > 0 ? { fetch: fetchWith(added) } : {}),
-		}));
+		});
+	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
+	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
+	// Until then that connection commits nothing ("cannot commit transaction - SQL statements in progress"), and a
+	// write outside a transaction reports success but is never committed. So after a local failure the next call gets
+	// new connections. The facade runs one call at a time, so no call is still using the old ones.
+	let replace = false;
+	/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
+	const watch = async (operation) => {
+		try {
+			return await operation();
+		} catch (error) {
+			if (local) replace = true;
+			throw error;
+		}
+	};
+	const connection = async () => {
+		if (replace) {
+			replace = false;
+			client?.close();
+			const fresh = create();
+			client = fresh;
+			// A new connection does not have the PRAGMA the open ran on the one it replaces.
+			await watch(() => fresh.execute("PRAGMA foreign_keys = ON"));
+		}
+		return (client ??= create());
+	};
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "libsql", location: url },
 		redact: redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]),
-		...statements(connection),
+		...statements(connection, watch),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way.
-		async batch(batched) {
-			const results = await connection().batch(
-				batched.map(({ sql, params }) => ({ sql, args: [...params] })),
-				"write",
-			);
-			return results.map(driverResult);
-		},
+		batch: (batched) =>
+			watch(async () => {
+				const results = await (await connection()).batch(
+					batched.map(({ sql, params }) => ({ sql, args: [...params] })),
+					"write",
+				);
+				return results.map(driverResult);
+			}),
 		async beginTransaction() {
-			const transaction = await connection().transaction("write");
+			const transaction = await watch(async () => (await connection()).transaction("write"));
 			return {
-				...statements(() => transaction),
-				commit: () => transaction.commit(),
-				rollback: () => transaction.rollback(),
+				...statements(async () => transaction, watch),
+				commit: () => watch(() => transaction.commit()),
+				rollback: () => watch(() => transaction.rollback()),
 				close: () => transaction.close(),
 			};
 		},
