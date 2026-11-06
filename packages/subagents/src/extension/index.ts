@@ -27,6 +27,7 @@ import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
 import {
 	endWorkflowRunStageSubagentChildren,
+	saveUnsavedSubagentChildRecords,
 	subagentChildOwner,
 	WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT,
 	type WorkflowRunEndedStageSubagentsRequest,
@@ -481,7 +482,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
-			bindSubagentChildCards(ctx);
+			// A subagent's own session launches no children (#4395): it adds nothing to the child index.
+			if (!isSubagentChildSession(ctx)) bindSubagentChildCards(ctx);
 		};
 		let stopReleasedChildWakes: (() => void) | undefined;
 		pi.on("session_start", (event, ctx) => {
@@ -496,6 +498,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true) {
 				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
 				watchWorkflowStageSubagentChildren(pi, ctx);
+				// Children an older Atomic recorded in partial records get one complete record, which wakes wait for.
+				void saveUnsavedSubagentChildRecords(pi, subagentChildOwner(ctx).sessionId);
 				// Released children wake through this session: their tool results, Intercom sends and asks (#4326).
 				stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);

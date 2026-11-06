@@ -44,6 +44,25 @@ describe("ReleasedChildError", () => {
 		assert.equal(error.retryable, true);
 	});
 
+	test("an unreadable child record names the entry and the session it is in, and is not retryable (#4395)", () => {
+		const fields = { ownerSessionId: "owner-1", childId: "run:7", sessionId: "fork-1", entryId: "a1b2c3d4" };
+		const error = new ReleasedChildError("child-record-unreadable", fields);
+		assert.equal(
+			error.message,
+			"The latest record of subagent run:7 is in entry a1b2c3d4 of session fork-1, which is not open in this process (child-record-unreadable). Open the session that launched the subagent, then try again from it: a subagent's record is read from that session's history.",
+		);
+		assert.equal(error.retryable, false);
+		assert.deepEqual(error.fields, fields);
+		const copy = JSON.parse(JSON.stringify(error));
+		assert.equal(isReleasedChildError(copy), true);
+		assert.deepEqual(copy.fields, fields);
+	});
+
+	test("an unreadable child record without a saved entry names the owner's session (#4395)", () => {
+		const error = new ReleasedChildError("child-record-unreadable", { ownerSessionId: "owner-2", childId: "run:8" });
+		assert.ok(error.message.startsWith("The latest record of subagent run:8 is in entry (none) of session owner-2,"));
+	});
+
 	test("a failed hold names the child and is retryable (#4326)", () => {
 		const error = new ReleasedChildError("hold-failed", { childName: "worker-9" });
 		assert.ok(

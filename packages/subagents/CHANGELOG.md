@@ -14,6 +14,7 @@
 
 ### Changed
 
+- A released subagent keeps one small entry of a fixed size in the session that launched it, instead of a copy of its whole latest record, so its task, held messages and held results no longer stay in memory while it waits; they are read from the session's history when it wakes. Each record a subagent saves is now complete, and a session saved by an older Atomic gets one complete record per subagent the first time it is opened. A released subagent launched in a parallel run no longer keeps that run's scheduler in memory; when it wakes, it is limited by `parallel.runningCapacity` like any other released subagent. A record that cannot be read fails with the new `ReleasedChildError` code `child-record-unreadable` ([#4395](https://github.com/bastani-inc/atomic/issues/4395))
 - A child that does not start within its start budget fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch` or `event-loop`), instead of a message that always blamed session creation and a resource-admission wait. The child's result carries it as `startError`, and the budget now also covers dispatching the child's task ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
 
 ### Fixed

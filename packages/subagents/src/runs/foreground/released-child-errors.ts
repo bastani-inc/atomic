@@ -1,5 +1,6 @@
 export type ReleasedChildErrorCode =
 	| "child-record-missing"
+	| "child-record-unreadable"
 	| "child-unrestorable"
 	| "record-append-failed"
 	| "hold-failed"
@@ -14,12 +15,17 @@ export interface ReleasedChildErrorFields {
 	readonly reason?: string;
 	readonly state?: string;
 	readonly terminalStatus?: string;
+	/** The session whose history holds a child's latest record. */
+	readonly sessionId?: string;
+	/** The session entry holding a child's latest record. */
+	readonly entryId?: string;
 }
 
 export const RELEASED_CHILD_ERROR_NAME = "ReleasedChildError";
 
 const RELEASED_CHILD_ERROR_CODES: ReadonlySet<string> = new Set<ReleasedChildErrorCode>([
 	"child-record-missing",
+	"child-record-unreadable",
 	"child-unrestorable",
 	"record-append-failed",
 	"hold-failed",
@@ -41,6 +47,8 @@ function hintFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields)
 	switch (code) {
 		case "child-record-missing":
 			return "Wake the subagent from the session that launched it: only a session's own children are recorded there.";
+		case "child-record-unreadable":
+			return "Open the session that launched the subagent, then try again from it: a subagent's record is read from that session's history.";
 		case "child-unrestorable":
 			return `Fix what the reason names, then resume it with { action: "resume", id: "${describeChild(fields)}", message? }, or launch a new subagent.`;
 		case "record-append-failed":
@@ -58,6 +66,8 @@ function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFiel
 	switch (code) {
 		case "child-record-missing":
 			return `Session ${fields.ownerSessionId} has no record of subagent ${fields.childId}`;
+		case "child-record-unreadable":
+			return `The latest record of subagent ${fields.childId} is in entry ${fields.entryId ?? "(none)"} of session ${fields.sessionId ?? fields.ownerSessionId}, which is not open in this process`;
 		case "child-unrestorable":
 			return `Subagent ${fields.childId} cannot be restored: ${fields.reason}`;
 		case "record-append-failed":

@@ -656,6 +656,7 @@ export async function runAgentTask(input: {
 					// A child that stays restorable is marked stopped before its dispatch's hold is released.
 					if (released || stoppedByStagePause || (ownerClosed() && !endedForGood)) parkRunWorktree(runId, index);
 					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
+					if (released) childSchedules.delete(childId);
 					if (released && child.released) {
 						// The record goes first: a result forwarded before it would find the child still recorded running.
 						recordChild(

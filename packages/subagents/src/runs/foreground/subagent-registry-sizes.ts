@@ -10,7 +10,7 @@ import { retainedTaskOutputCount } from "./task-output-retention.js";
 
 /**
  * Every per-child registry the subagents extension keeps in this process, by name. A released child keeps one entry,
- * its latest record in `records`; the rest must not grow with released children.
+ * in `records`: where its latest record is (#4395). The rest must not grow with released children.
  */
 export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 	const card = subagentChildCardStateSizes();
@@ -25,9 +25,11 @@ export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 	return {
 		...controlSizes,
 		records: card.records,
+		unsavedRecords: card.unsavedRecords,
 		taskIds: card.taskIds,
-		transcripts: card.transcripts,
 		cardOwners: card.owners,
+		recordReaders: card.readers,
+		cardWatchers: card.watchers,
 		appendChains: records.appendChains,
 		stopRequests: records.stopRequests,
 		activeRestorations: restore.active,

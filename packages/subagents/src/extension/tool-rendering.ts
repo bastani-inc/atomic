@@ -2,6 +2,7 @@ import { keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	type SubagentChildIndexEntry,
 	subagentChildCardRecord,
 	subagentChildTranscript,
 	watchSubagentChildCard,
@@ -10,7 +11,6 @@ import {
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
-	type SubagentChildRecord,
 } from "../runs/foreground/subagent-child-records.js";
 import { getBurstDisplay } from "../runs/foreground/subagent-executor-burst-display.js";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-types.js";
@@ -56,7 +56,7 @@ const SETTLED_VIEWS: Readonly<Record<string, { icon: string; label: string; colo
 };
 
 /** What a launch card shows for its child's latest record, rather than the snapshot taken at launch. */
-function childStateView(record: SubagentChildRecord): { icon: string; label: string; color: ThemeColor } {
+function childStateView(record: SubagentChildIndexEntry): { icon: string; label: string; color: ThemeColor } {
 	if (record.state === "running") return { icon: "∀", label: "Running in background", color: "accent" };
 	return (
 		SETTLED_VIEWS[record.terminalStatus ?? ""] ?? {
@@ -195,7 +195,7 @@ export function renderSubagentToolResult(
 				const identity = labels[index];
 				const name =
 					outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
-				const transcript = options.expanded ? subagentChildTranscript(record) : undefined;
+				const transcript = options.expanded ? subagentChildTranscript(context.state, record) : undefined;
 				return [
 					theme.fg(view.color, `${view.icon} ${name}${view.label}${resumed}`),
 					theme.fg(
