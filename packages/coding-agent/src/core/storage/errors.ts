@@ -411,7 +411,7 @@ function sessionBlobSubject(code: SessionBlobErrorCode, fields: SessionBlobError
 		case "blobs-unsupported":
 			return `Session store cannot hold blobs: ${fields.adapter} store of session ${fields.sessionId}`;
 		case "blob-missing":
-			return `Session blob not found: ${fields.hash}${fields.missing !== undefined && fields.missing > 1 ? ` and ${fields.missing - 1} more` : ""} in session ${fields.sessionId}`;
+			return `Session blob not found: ${fields.hash}${(fields.missing ?? 0) > 1 ? ` and ${fields.missing! - 1} more` : ""} in session ${fields.sessionId}`;
 		case "blob-corrupt":
 			return `Session blob does not match its hash: ${fields.hash} in session ${fields.sessionId}`;
 		case "blob-incomplete":
