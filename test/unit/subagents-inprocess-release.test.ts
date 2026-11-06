@@ -42,6 +42,124 @@ const agent: AgentConfig = {
 const waitCall = () =>
 	fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "7" }, { id: "ci-1" })], { stopReason: "toolUse" });
 
+type MessagePart = { readonly type: string; readonly text?: string };
+
+function textOf(content: string | readonly MessagePart[]): string {
+	if (typeof content === "string") return content;
+	return content.flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : [])).join("");
+}
+
+/** Each user, assistant and tool result message of the saved transcript, with its text. */
+function savedTranscript(manager: SessionManager): string[] {
+	return manager.buildSessionProjection().messages.flatMap((message) => {
+		if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return [];
+		const text = textOf(message.content);
+		return [text === "" ? message.role : `${message.role}: ${text}`];
+	});
+}
+
+test(
+	"a released child woken with a result and messages continues its turn, then reads its resume message and the message held for it (#4326)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
+		env.faux.setResponses([waitCall()]);
+		const released = await runSingleInProcess(env.root, agent, "watch CI", {
+			...env.options("release-wake-input", {
+				sessionManager: childSession,
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+			}),
+		});
+		assert.equal(released.status, "interrupted");
+
+		env.faux.setResponses([
+			fauxAssistantMessage("CI is green."),
+			fauxAssistantMessage("Deploying now."),
+			fauxAssistantMessage("Noted the held message."),
+		]);
+		const woken = await runSingleInProcess(env.root, agent, "Resume: deploy now.", {
+			...env.options("release-wake-input", {
+				sessionManager: await SessionManager.open(store, childSession.getSessionId()),
+				resumeSession: true,
+				resumeToolResults: [
+					{
+						toolCallId: "ci-1",
+						toolName: "wait_for_ci",
+						result: { content: [{ type: "text", text: "green" }], details: undefined },
+						isError: false,
+					},
+				],
+				resumeFollowUps: ["A message held while you were released."],
+				resumeTaskLiteral: true,
+			}),
+		});
+
+		assert.equal(woken.status, "ok");
+		assert.equal(env.faux.getPendingResponseCount(), 0, "the model answered the turn and each message");
+		assert.equal(woken.finalOutput, "Noted the held message.");
+		assert.deepEqual(savedTranscript(await SessionManager.open(store, childSession.getSessionId())).slice(2), [
+			"toolResult: green",
+			"assistant: CI is green.",
+			"user: Resume: deploy now.",
+			"assistant: Deploying now.",
+			"user: A message held while you were released.",
+			"assistant: Noted the held message.",
+		]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a woken child released again before it reads the messages that woke it hands them back, in order, for its next wake (#4326)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
+		env.faux.setResponses([waitCall()]);
+		const released = await runSingleInProcess(env.root, agent, "watch CI", {
+			...env.options("release-again", {
+				sessionManager: childSession,
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+			}),
+		});
+		assert.equal(released.status, "interrupted");
+
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "8" }, { id: "ci-2" })], { stopReason: "toolUse" }),
+		]);
+		const woken = await runSingleInProcess(env.root, agent, "Resume: deploy now.", {
+			...env.options("release-again", {
+				sessionManager: await SessionManager.open(store, childSession.getSessionId()),
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+				resumeToolResults: [
+					{
+						toolCallId: "ci-1",
+						toolName: "wait_for_ci",
+						result: { content: [{ type: "text", text: "green" }], details: undefined },
+						isError: false,
+					},
+				],
+				resumeFollowUps: ["A message held while you were released."],
+				resumeTaskLiteral: true,
+			}),
+		});
+
+		assert.equal(woken.status, "interrupted");
+		assert.deepEqual(woken.released?.waitingOn, [{ toolCallId: "ci-2", toolName: "wait_for_ci" }]);
+		assert.deepEqual(woken.pendingMessages, ["Resume: deploy now.", "A message held while you were released."]);
+		assert.equal(woken.pendingTaskExpands, undefined, "both are delivered as written");
+		assert.deepEqual(savedTranscript(await SessionManager.open(store, childSession.getSessionId())).slice(2), [
+			"toolResult: green",
+			"assistant",
+		]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
 test(
 	"a live child whose detachable call outlasts the policy is released, its calls handed over, and a wake finishes its turn (#4326)",
 	async () => {

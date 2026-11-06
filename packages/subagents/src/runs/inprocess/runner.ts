@@ -922,21 +922,28 @@ function cancelledEnvelope(
 /** Text a resumed child receives as written: never expanded as a prompt template or run as a command. */
 const LITERAL_TEXT = { expandPromptTemplates: false } as const;
 
+interface UnsentInput {
+	task: string | undefined;
+	readonly followUps: string[];
+}
+
 /**
  * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
  * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
  */
 function pendingMessagesOf(
 	session: AgentSession | undefined,
-	unsent: readonly string[],
+	unsent: UnsentInput,
 	taskLiteral: boolean | undefined,
 ): { pendingMessages?: readonly string[]; pendingTaskExpands?: true } {
 	const queued = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
-	const [task, ...followUps] = unsent;
-	const pending = task === undefined ? queued : [task, ...queued, ...followUps];
+	const pending = [...(unsent.task === undefined ? [] : [unsent.task]), ...queued, ...unsent.followUps];
 	if (pending.length === 0) return {};
 	// Only an original task it never read keeps a fresh launch's handling; everything else is delivered as written.
-	return { pendingMessages: pending, ...(task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}) };
+	return {
+		pendingMessages: pending,
+		...(unsent.task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}),
+	};
 }
 
 function attemptStatus(termination: TerminationCauseName | undefined): "ok" | "error" | "interrupted" {
@@ -1314,7 +1321,7 @@ export class SubagentControlRuntime {
 									cause: PARENT_CANCEL_CAUSE,
 									...pendingMessagesOf(
 										undefined,
-										[admitted.spec.task, ...(admitted.spec.resumeFollowUps ?? [])],
+										{ task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] },
 										admitted.spec.resumeTaskLiteral,
 									),
 								}
@@ -1367,7 +1374,7 @@ export class SubagentControlRuntime {
 
 		let termination: TerminationCauseName | undefined;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
-		const unsent = [admitted.spec.task, ...(admitted.spec.resumeFollowUps ?? [])];
+		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
 		let terminationWasKill = false;
 		let unsubscribe: (() => void) | undefined;
@@ -1754,20 +1761,36 @@ export class SubagentControlRuntime {
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
-			if (redispatched !== undefined) unsent.splice(0, 1);
-			else {
-				if (!termination && admitted.spec.resumeToolResults?.length) {
+			if (redispatched !== undefined) unsent.task = unsent.followUps.shift();
+			else if (!termination && admitted.spec.resumeToolResults?.length) {
+				if (!admitted.spec.skipTaskPrompt) {
+					await session.followUp(
+						admitted.spec.task,
+						undefined,
+						admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
+					);
+					unsent.task = undefined;
+				}
+				for (const followUp of admitted.spec.resumeFollowUps ?? []) {
+					if (termination) break;
+					await session.followUp(followUp, undefined, LITERAL_TEXT);
+					unsent.followUps.shift();
+				}
+				if (!termination) {
+					unsent.task = undefined;
 					await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
 					taskHooks?.toolResultsSaved?.(admitted.spec.resumeToolResults.map((result) => result.toolCallId));
 				}
+				startBudget.end();
+			} else {
 				for (const followUp of admitted.spec.resumeFollowUps ?? []) {
 					if (termination) break;
 					// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
 					await session.followUp(followUp, undefined, LITERAL_TEXT);
-					unsent.splice(1, 1);
+					unsent.followUps.shift();
 				}
 				if (!termination) {
-					unsent.splice(0, 1);
+					unsent.task = undefined;
 					if (admitted.spec.skipTaskPrompt) startBudget.end();
 					else {
 						const prompting = session.prompt(
