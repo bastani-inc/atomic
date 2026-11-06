@@ -9,7 +9,14 @@ type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) =>
 const EmptyParams = Type.Object({});
 type EmptyParams = Static<typeof EmptyParams>;
 
-function fixture(options: { child?: boolean; childSessionName?: string; authorizationReject?: boolean } = {}) {
+function fixture(
+	options: {
+		child?: boolean;
+		childSessionName?: string;
+		authorizationReject?: boolean;
+		heavyMayDetach?: () => boolean;
+	} = {},
+) {
 	const handlers = new Map<string, Handler[]>();
 	const eventHandlers = new Map<string, Array<(payload: unknown) => void>>();
 	const tools = new Map<string, ToolDefinition>();
@@ -69,6 +76,7 @@ function fixture(options: { child?: boolean; childSessionName?: string; authoriz
 							label: name,
 							description: name,
 							parameters: EmptyParams,
+							detachable: () => options.heavyMayDetach?.() === true,
 							async execute() {
 								sequence.push(`${name}-connected`);
 								return { content: [{ type: "text", text: "connected" }], details: {} };
@@ -98,6 +106,7 @@ function fixture(options: { child?: boolean; childSessionName?: string; authoriz
 	return {
 		sequence,
 		sessionNames,
+		tools,
 		get imports() {
 			return imports;
 		},
@@ -108,6 +117,25 @@ function fixture(options: { child?: boolean; childSessionName?: string; authoriz
 }
 
 describe("lightweight intercom tool-driven connection", () => {
+	test("lightweight tools defer reply-wait detachment to the connected broker's policy (#4326)", async () => {
+		let local = false;
+		const current = fixture({ child: true, heavyMayDetach: () => local });
+		const mayDetach = (name: string, params: Record<string, string>): boolean => {
+			const predicate = current.tools.get(name)?.detachable;
+			return typeof predicate === "function" ? predicate(params as never) : predicate === true;
+		};
+		await current.emit("session_start", { type: "session_start", reason: "startup" });
+		assert.equal(mayDetach("intercom", { action: "ask" }), true, "a call may start before its connection exists");
+		assert.equal(mayDetach("intercom", { action: "send" }), false);
+		await current.executeTool("intercom");
+		assert.equal(mayDetach("intercom", { action: "ask" }), false, "multi-node routing keeps the call live");
+		assert.equal(mayDetach("contact_supervisor", { reason: "need_decision" }), false);
+		local = true;
+		assert.equal(mayDetach("intercom", { action: "ask" }), true);
+		assert.equal(mayDetach("contact_supervisor", { reason: "need_decision" }), true);
+		assert.equal(mayDetach("intercom", { action: "send" }), false);
+	});
+
 	test("foreground subagent launch does not load or connect Intercom", async () => {
 		const current = fixture();
 		await current.emit("session_start", { type: "session_start", reason: "startup" });

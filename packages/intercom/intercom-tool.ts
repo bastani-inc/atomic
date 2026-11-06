@@ -4,8 +4,10 @@ import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
 import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
+import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
-import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
+import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
+import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
   type ChildOrchestratorMetadata,
@@ -244,6 +246,10 @@ interface IntercomToolDeps {
   confirmSend: boolean;
   /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
+  /** True only when this registration has confirmed that the broker routes locally. */
+  mayDetachReplyWait?: () => boolean;
+  /** True unless the broker is known to route across machines; a call may start before its connection exists. */
+  mayAdmitReplyWait?: () => boolean;
   replyTracker: ReplyTracker | (() => ReplyTracker);
   /** Internal test seam for exercising retry pressure before public tool side effects. */
   retryIdentityMaxEntries?: number;
@@ -263,6 +269,8 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   pi.registerTool({
     name: "intercom",
     exposure: "model-only",
+    detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && intercomCallMayDetach(params),
+    detachmentRequiresReady: true,
     label: "Intercom",
     description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
@@ -334,7 +342,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       })),
     }),
 
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
       if ("retryToken" in params) {
         return {
           content: [{ type: "text", text: "Intercom manages retries internally. Caller-supplied retry tokens are not supported; this call was not sent." }],
@@ -346,7 +354,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       const { action, to, message, replyTo, group } = params;
       const deliveryOption = params.delivery === undefined || params.delivery === "steer" ? {} : { delivery: params.delivery };
       const attachments = params.attachments?.map((attachment) => ({ ...attachment }));
-      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal): Promise<IntercomAttemptResult> => {
+      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0): Promise<IntercomAttemptResult> => {
       if (retryToken !== undefined) {
         if (action !== "send" && action !== "ask" && action !== "reply") {
           const error = new RetryTokenError("mismatch");
@@ -1019,6 +1027,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               messageId: sendResult.id,
               timestamp: Date.now(),
             });
+            await prepareReleasedReplyWait(
+              pi,
+              wait,
+              signal,
+              { toolCallId, questionId, from: replyFrom, retryCount: retries },
+              () => deps.mayDetachReplyWait?.() === true,
+            );
             const replyMessage = await wait.promise;
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
@@ -1026,7 +1041,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
               : "";
-            await pi.appendEntry("intercom_received", {
+            await appendEntryUnlessReleased(pi, "intercom_received", {
               from: to,
               message: { text: replyText, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,
@@ -1045,6 +1060,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: {},
             };
           } catch (error) {
+            if (error instanceof ReleasedReplyHandoff) {
+              if (retryIdentity !== undefined) retryIdentities.release(retryIdentity);
+              return releasedReplyHandoffResult();
+            }
             wait?.cancel(toError(error));
             let failure = error;
             let retained: { readonly retryToken?: string; readonly remainingRetries: number } | undefined;

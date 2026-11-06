@@ -5,6 +5,12 @@ import { reopenChildSession } from "./subagent-child-session.js";
 /** Session entry type that durably records each background child a session launched (#3760). */
 export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
 
+/**
+ * `terminalStatus` of a background child released while it waited on detached tool calls (#4326): it holds no session,
+ * task or connection, and a tool result, an Intercom send or ask, or `resume` rehydrates it from its session.
+ */
+export const SUBAGENT_CHILD_RELEASED_STATUS = "released";
+
 export function isSubagentChildRecord(value: SessionEntry): value is CustomEntry<SubagentChildRecord> {
 	if (value.type !== "custom" || value.customType !== SUBAGENT_CHILD_RECORD_TYPE) return false;
 	const data = value.data as Partial<SubagentChildRecord> | undefined;
@@ -25,8 +31,7 @@ const TRANSCRIPT_LINE_CHARS = 200;
 const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
 
 const latest = new Map<string, SubagentChildRecord>();
-/** Children whose state came from their owner: written live, or read from the owner's own session. */
-const fromOwner = new Set<string>();
+const copiedRecords = new Map<string, SubagentChildRecord>();
 const childIdsByTaskId = new Map<string, string>();
 const watchers = new Map<string, Set<WeakRef<object>>>();
 const invalidators = new WeakMap<object, () => void>();
@@ -51,14 +56,21 @@ function notify(key: string): void {
  * own records gave, which may be newer.
  */
 export function observeSubagentChildRecord(record: SubagentChildRecord, copied = false): void {
-	if (copied && fromOwner.has(record.childId)) return;
-	if (!copied) fromOwner.add(record.childId);
-	const previous = latest.get(record.childId);
-	latest.set(record.childId, previous ? { ...previous, ...record } : record);
+	if (copied && latest.has(record.childId)) return;
+	const previous = latest.get(record.childId) ?? copiedRecords.get(record.childId);
+	const merged = previous ? { ...previous, ...record } : record;
+	(copied ? copiedRecords : latest).set(record.childId, merged);
+	if (!copied) copiedRecords.delete(record.childId);
 	notify(record.childId);
-	if (record.taskId === undefined) return;
-	if (!childIdsByTaskId.has(record.taskId)) childIdsByTaskId.set(record.taskId, record.childId);
-	notify(record.taskId);
+	if (merged.taskId === undefined) return;
+	if (merged.state === "terminal" && merged.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) {
+		if (childIdsByTaskId.get(merged.taskId) === merged.childId) childIdsByTaskId.delete(merged.taskId);
+	} else if (!childIdsByTaskId.has(merged.taskId)) childIdsByTaskId.set(merged.taskId, merged.childId);
+	notify(merged.taskId);
+}
+
+function indexedRecords(): SubagentChildRecord[] {
+	return [...latest.values(), ...copiedRecords.values()];
 }
 
 function observeEntries(entries: readonly SessionEntry[], sessionId: string): void {
@@ -77,16 +89,58 @@ export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManag
 	observeEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());
 }
 
-/** The latest record of the child a launch card shows, by its child id or any task id it ran as. */
+/**
+ * Index `ctx`'s session once, if it was not read yet: the wake path then finds a child without scanning the owner's
+ * whole history, however many children it launched.
+ */
+export function indexSubagentChildOwner(ctx: Pick<ExtensionContext, "sessionManager">): void {
+	const ownerSessionId = ctx.sessionManager.getSessionId();
+	if (loadedOwners.has(ownerSessionId)) return;
+	loadedOwners.add(ownerSessionId);
+	observeEntries(ctx.sessionManager.getEntries(), ownerSessionId);
+}
+
+/** The latest record of one of `ownerSessionId`'s children, from the index. */
+export function subagentChildRecordOf(ownerSessionId: string, childId: string): SubagentChildRecord | undefined {
+	const record = latest.get(childId) ?? copiedRecords.get(childId);
+	return record?.owner?.sessionId === ownerSessionId ? record : undefined;
+}
+
+/** The child of `ownerSessionId` that was launched with this Intercom name. Walks the index, as a wake by name is rare. */
+export function subagentChildRecordForTarget(
+	ownerSessionId: string,
+	intercomTarget: string,
+): SubagentChildRecord | undefined {
+	if (typeof intercomTarget !== "string") return undefined;
+	return indexedRecords().findLast(
+		(record) => record.intercomTarget === intercomTarget && record.owner?.sessionId === ownerSessionId,
+	);
+}
+
+/** Every child of `ownerSessionId` in the index. Walks the whole index: for a restart or a reconnect, not a wake. */
+export function subagentChildRecordsOf(ownerSessionId: string): SubagentChildRecord[] {
+	return indexedRecords().filter((record) => record.owner?.sessionId === ownerSessionId);
+}
+
+/** How many children the index holds; counted by tests and the benchmark. */
+export function subagentChildIndexSize(): number {
+	return latest.size + copiedRecords.size;
+}
+
+/**
+ * The latest record of the child a launch card shows, by its child id or any task id it ran as. A released child keeps
+ * no task id entry, so its current task is found by walking the index.
+ */
 export function subagentChildCardRecord(childId: string | undefined, taskId: string): SubagentChildRecord | undefined {
 	const id = childId ?? childIdsByTaskId.get(taskId);
-	return id === undefined ? undefined : latest.get(id);
+	if (id !== undefined) return latest.get(id) ?? copiedRecords.get(id);
+	return indexedRecords().find((record) => record.taskId === taskId);
 }
 
 /** Run ids of the children this process has seen records of whose owner is `ownerSessionId`. */
 export function observedSubagentRunIds(ownerSessionId: string): Set<string> {
 	const runIds = new Set<string>();
-	for (const record of latest.values()) if (record.owner?.sessionId === ownerSessionId) runIds.add(record.runId);
+	for (const record of indexedRecords()) if (record.owner?.sessionId === ownerSessionId) runIds.add(record.runId);
 	return runIds;
 }
 
@@ -170,4 +224,19 @@ export function subagentChildTranscript(record: SubagentChildRecord): readonly s
 		if (running) setTimeout(() => notify(record.childId), RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
 	})().catch(() => undefined);
 	return entry.lines;
+}
+
+/** What the child cards keep, by kind; counted by tests and the benchmark. */
+export function subagentChildCardStateSizes(): {
+	readonly records: number;
+	readonly taskIds: number;
+	readonly transcripts: number;
+	readonly owners: number;
+} {
+	return {
+		records: latest.size + copiedRecords.size,
+		taskIds: childIdsByTaskId.size,
+		transcripts: transcripts.size,
+		owners: loadedOwners.size,
+	};
 }

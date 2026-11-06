@@ -112,6 +112,38 @@ A workflow run that was interrupted and can continue with `/workflow resume` sta
 
 The background subagents that the run's stages launched stay addressable too. While the run waits, the launching session holds sends to them by name, Atomic session ID, or pre-restart Intercom session ID. When the stage runs again and restores them, it takes the hold over, so each held message is delivered once after the subagent reconnects. If another session takes over the run, it also takes over these targets, and senders still waiting for a subagent get an error that names the other session. A stage whose saved session cannot be read has no held subagents; the stage's own route is unaffected. See [Intercom operations](/intercom/operations#connection-states-and-recovery).
 
+### Released subagents
+
+A [released subagent](/subagents#released-subagents) stays addressable through the session that launched it: that session asks the broker to hold sends to the child's name and ids, and the broker tells it to wake the child when one arrives. Only that session owns the child's hold. The owner is the session that reserved the child first, or the one that authorized it as its supervisor when launching it. A session that reconnects with the same Intercom session id stays the owner. Another session cannot reserve, drop or acknowledge the child.
+
+A background subagent waiting on an `ask`, or on `contact_supervisor` with `need_decision` or `interview_request`, is released like any other waiting subagent when its broker uses local routing. Its question stays open while it holds no session.
+
+- **How the reply arrives:** reply as usual, with `reply` or a send with `replyTo`. The reply reaches the session that launched the subagent, and the subagent wakes with it as the result of its `ask` or `contact_supervisor` call.
+- **Exactly once:** each question takes one reply. The first is delivered once and reported `delivered` to you. A later reply to the same question is refused, and no reply is also queued as an ordinary message for the subagent.
+- **When a reply is refused:** you get a not-delivered result, and nothing reaches the subagent, when any of these is true:
+  - the session that launched the subagent has disconnected;
+  - that session ended or dropped the subagent's hold;
+  - the subagent's call is no longer waiting, for example because it was stopped.
+- **Who receives held sends:** only the subagent that its owner relaunched, which registers with the supervisor capability the owner issued for it. A session that merely registers under the same name and group, with no capability or with one another session issued, receives none of the held sends and does not end the owner's hold.
+- **Reply confirmation:** the owner confirms a reply once it has saved it. If it has not within about 8 seconds, the replier gets the [uncertain-outcome failure](/intercom/operations#how-it-works) and can reply again; a replier that disconnects while its reply waits can reply again after it reconnects. A message ID already waiting for confirmation of another reply is refused with `message_id_conflict`.
+- **How long a question stays open:** the usual 10-minute reply wait, counted from when the question was asked.
+- **Where it works:** both the replier and the subagent's launching session must be connected to the same broker on the same machine. With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, the subagent stays live while it waits for the reply.
+- **After a restart:** when the launching session reopens, the same question remains open until its original deadline; a reply wakes the child. If the broker itself restarts, its question route is lost, and the child receives the timeout instead.
+- **Capacity:** the broker keeps at most 10,000 released-asker reply routes at once. If it reaches that limit, additional routes cannot receive replies and their calls time out. `broker_status` reports `droppedReleasedReplyRoutes`, the number refused at capacity since the broker started; the broker also logs the first overflow.
+
+A refused request changes nothing: when one child in a request is refused, no child in it is reserved or dropped. Requests to reserve, drop or acknowledge a released child are refused with these typed errors. Each carries `code`, `childName` when one child caused it, a `hint`, and `retryable: false`. Check `isIntercomReleasedChildError` or the class, never the message.
+
+SDK integrations can import these classes, their guards, `IntercomReleasedChildErrorCode`, and `serializeIntercomReleasedChildError` / `rehydrateIntercomReleasedChildError` from `@bastani/intercom`.
+
+| Class | `code` | When | What to do |
+| --- | --- | --- | --- |
+| `ReleasedChildReservationError` | `not_owner` | Another session owns the child: it reserved the child first, or authorized it as its supervisor. | Send the request from the owning session, or reconnect as that session. Otherwise launch a new child. |
+| `ReleasedChildReservationError` | `group_not_allowed` | The child is reserved in a `workflow:` group that this session is not a member of. Other groups, including subagent auto-groups and task groups, are allowed. | Reserve from a session in that workflow group, or omit `group`. |
+| `ReleasedChildReservationError` | `invalid_frame`, `invalid_child_name`, `invalid_alias`, `too_many_aliases`, `invalid_group` | The request is malformed: 1–500 children per frame, a non-empty name other than `*`, at most 4 session-id aliases, and a string group. | Fix the named child and send the request again. |
+| `UnknownReleasedChildError` | `unknown_released_child` | A wake acknowledgement names a child that no session has reserved. | Reserve the child first. |
+
+With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, a child reserved through one broker stays with its owner. A reservation that another session makes for it through a different broker is withdrawn as soon as the shared store refuses it.
+
 ### Groups
 
 Every session belongs to a non-empty set of intercom **groups**. Sessions with no group configured retain exactly the legacy behavior: they belong only to the implicit `"default"` group and can see and message each other. A session can ordinarily discover, resolve, and message another session when their membership sets intersect; exact-ID sends with no shared membership are rejected by the broker.

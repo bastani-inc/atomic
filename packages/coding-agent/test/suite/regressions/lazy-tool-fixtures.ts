@@ -145,10 +145,16 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			join(tempDir, "durable-inbox.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/durable-inbox.ts"), "utf-8"),
 		);
+		for (const file of ["detachable-calls.ts", "released-reply-format.ts", "intercom-utils.ts", "group.ts"])
+			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });
 		writeFileSync(
 			join(tempDir, "broker", "client-message-validation.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/client-message-validation.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "broker", "released-child-errors.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-child-errors.ts"), "utf-8"),
 		);
 		writeFileSync(
 			join(tempDir, "result-renderers.ts"),

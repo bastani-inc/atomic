@@ -461,6 +461,23 @@ describe("lazy intercom registration", () => {
 	});
 });
 
+describe("detachable Intercom calls (#4326)", () => {
+	test("the session-visible tools admit only reply waits for detachment before the broker's routing mode is known (#4326)", () => {
+		const captured = captureIntercomRegistration({ ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: "parent" });
+		const mayDetach = (name: string, params: Record<string, string>): boolean => {
+			const detachable = captured.tools.find((tool) => tool.name === name)?.detachable;
+			return typeof detachable === "function" ? detachable(params as never) : detachable === true;
+		};
+		assert.equal(mayDetach("intercom", { action: "ask", to: "peer", message: "?" }), true);
+		for (const action of ["send", "reply", "list", "pending", "status", "join", "leave", "groups"]) {
+			assert.equal(mayDetach("intercom", { action }), false, action);
+		}
+		assert.equal(mayDetach("contact_supervisor", { reason: "need_decision", message: "?" }), true);
+		assert.equal(mayDetach("contact_supervisor", { reason: "interview_request" }), true);
+		assert.equal(mayDetach("contact_supervisor", { reason: "progress_update", message: "done" }), false);
+	});
+});
+
 describe("intercom package manifest compatibility", () => {
 	test("bundled intercom publishes preferred atomic metadata and legacy pi metadata", () => {
 		const manifest = JSON.parse(readFileSync("packages/intercom/package.json", "utf8")) as {

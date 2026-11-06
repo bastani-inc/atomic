@@ -1,0 +1,408 @@
+import assert from "node:assert/strict";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { Type } from "typebox";
+import { afterEach, describe, test, vi } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.ts";
+import { armedIdleSessionCount } from "../src/core/agent-session-release.ts";
+import {
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionFromServices,
+	createAgentSessionRuntime,
+	createAgentSessionServices,
+} from "../src/core/agent-session-runtime.ts";
+import { AgentWakeDispatcher } from "../src/core/agent-wake-dispatcher.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { createEventBus } from "../src/core/event-bus.ts";
+import type { ToolDefinition } from "../src/core/extensions/index.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionConflictError } from "../src/core/storage/session/errors.ts";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
+import type { SessionStore } from "../src/core/storage/session/types.ts";
+import { resetSessionTempCleanupScheduleForTesting } from "../src/core/tools/session-temp-cleanup.ts";
+
+/**
+ * CI-sized counting variant of scripts/perf/idle-agents (#4326): agents run tool turns through the real runtime with a
+ * scripted model, wait on a detachable long tool, and are released. Everything is counted, nothing is timed: active
+ * timers, sockets and processes, shared event-bus subscriptions, dispatcher entries, live sessions, and store
+ * operations per wake. A resident run is the positive control: it shows the counters see per-agent state.
+ */
+const AGENTS_PER_WAVE = 12;
+const TURNS = 3;
+const WAIT_TOOL = "wait_for_ci";
+
+const cleanups: Array<() => Promise<void> | void> = [];
+afterEach(async () => {
+	while (cleanups.length > 0) await cleanups.pop()?.();
+	vi.unstubAllEnvs();
+});
+
+function countingStore(inner: SessionStore = new MemorySessionStore()) {
+	const counts = new Map<string, number>();
+	const counted =
+		<T extends unknown[], R>(name: string, operation: (...args: T) => R) =>
+		(...args: T): R => {
+			counts.set(name, (counts.get(name) ?? 0) + 1);
+			return operation(...args);
+		};
+	const store: SessionStore = {
+		get descriptor() {
+			return inner.descriptor;
+		},
+		create: counted("create", inner.create.bind(inner)),
+		append: counted("append", inner.append.bind(inner)),
+		replace: counted("replace", inner.replace.bind(inner)),
+		load: counted("load", inner.load.bind(inner)),
+		readHeader: counted("readHeader", inner.readHeader.bind(inner)),
+		delete: counted("delete", inner.delete.bind(inner)),
+		list: counted("list", inner.list.bind(inner)),
+		findMostRecent: counted("findMostRecent", inner.findMostRecent.bind(inner)),
+		close: counted("close", inner.close.bind(inner)),
+	};
+	return { store, get: (name: string) => counts.get(name) ?? 0, reset: () => counts.clear() };
+}
+
+/** Timers, sockets and child processes this process holds now. */
+function handles(): { timers: number; sockets: number; processes: number } {
+	const resources = process.getActiveResourcesInfo();
+	const count = (kinds: readonly string[]) => resources.filter((resource) => kinds.includes(resource)).length;
+	return {
+		timers: count(["Timeout", "Immediate"]),
+		sockets: count(["TCPSocketWrap", "PipeWrap", "TCPServerWrap", "PipeServerWrap", "TLSWrap", "UDPWrap"]),
+		processes: count(["ProcessWrap"]),
+	};
+}
+
+/** Event-loop turns a snapshot may wait for work still finishing (an auth check, a close) to let go of its timer. */
+const SETTLE_TURNS = 500;
+
+/**
+ * Handles once nothing is still finishing: the counts are read after each event-loop turn until they repeat five
+ * times. The one process-wide temp-directory sweep a new session schedules is cancelled first: it is a single
+ * debounced timer for the whole process, armed or not by timing alone.
+ */
+async function settledHandles(): Promise<{ timers: number; sockets: number; processes: number }> {
+	let previous = "";
+	let repeats = 0;
+	for (let turn = 0; turn < SETTLE_TURNS; turn++) {
+		resetSessionTempCleanupScheduleForTesting();
+		await new Promise((resolve) => setImmediate(resolve));
+		const current = JSON.stringify(handles());
+		repeats = current === previous ? repeats + 1 : 0;
+		previous = current;
+		if (repeats >= 5 && JSON.parse(current).timers === 0) break;
+	}
+	return handles();
+}
+
+async function host() {
+	const tempDir = join(tmpdir(), `atomic-idle-count-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	mkdirSync(tempDir, { recursive: true });
+	vi.stubEnv("PI_CACHE_RETENTION", "none");
+	const faux = registerFauxProvider();
+	const model = faux.getModel();
+	const authStorage = AuthStorage.inMemory();
+	await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
+	const modelRuntime = await ModelRuntime.create({
+		credentials: authStorage,
+		modelsPath: join(tempDir, "models.json"),
+	});
+	modelRuntime.registerProvider(model.provider, {
+		baseUrl: model.baseUrl,
+		api: model.api,
+		models: [
+			{
+				id: model.id,
+				name: model.name,
+				api: model.api,
+				reasoning: model.reasoning,
+				input: model.input,
+				cost: model.cost,
+				contextWindow: model.contextWindow,
+				maxTokens: model.maxTokens,
+				baseUrl: model.baseUrl,
+			},
+		],
+	});
+	const bus = createEventBus();
+	let subscriptions = 0;
+	const eventBus = {
+		emit: bus.emit,
+		on(channel: string, handler: (data: unknown) => void): () => void {
+			subscriptions += 1;
+			const off = bus.on(channel, handler);
+			let active = true;
+			return () => {
+				if (active) subscriptions -= 1;
+				active = false;
+				off();
+			};
+		},
+	};
+	const tools: ToolDefinition[] = [
+		{
+			name: "lookup",
+			label: "Lookup",
+			description: "Returns a fixed result",
+			parameters: Type.Object({ key: Type.String() }),
+			execute: async () => ({ content: [{ type: "text", text: "found" }], details: undefined }),
+		},
+		{
+			name: WAIT_TOOL,
+			label: "Wait for CI",
+			description: "Waits for CI",
+			parameters: Type.Object({ run: Type.String() }),
+			detachable: true,
+			execute: () => new Promise(() => {}),
+		},
+	];
+	faux.setResponses([]);
+	const respond = (context: {
+		readonly messages: readonly { readonly role: string; readonly toolName?: string }[];
+	}) => {
+		const last = context.messages.at(-1);
+		const turn = context.messages.filter((message) => message.role === "user").length;
+		if (last?.role === "user")
+			return fauxAssistantMessage([fauxText("x".repeat(1200)), fauxToolCall("lookup", { key: `${turn}` })], {
+				stopReason: "toolUse",
+			});
+		if (last?.toolName === "lookup" && turn >= TURNS)
+			return fauxAssistantMessage([fauxToolCall(WAIT_TOOL, { run: `${turn}` })], { stopReason: "toolUse" });
+		return fauxAssistantMessage(last?.toolName === WAIT_TOOL ? "ci passed" : "turn done");
+	};
+	const script = (requests: number) => faux.appendResponses(Array.from({ length: requests }, () => respond));
+	const store = countingStore();
+	const services = await createAgentSessionServices({
+		cwd: tempDir,
+		agentDir: tempDir,
+		modelRuntime,
+		resourceLoaderOptions: {
+			builtinPackagePaths: [],
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			eventBus,
+		},
+	});
+	const factory: CreateAgentSessionRuntimeFactory = async (options) => {
+		const shared = options.services ?? services;
+		return {
+			...(await createAgentSessionFromServices({
+				services: shared,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+				model,
+				customTools: tools,
+			})),
+			services: shared,
+			diagnostics: shared.diagnostics,
+		};
+	};
+	const runtime = await createAgentSessionRuntime(factory, {
+		cwd: tempDir,
+		agentDir: tempDir,
+		sessionManager: await SessionManager.create(store.store, tempDir),
+	});
+	const live: AgentSession[] = [];
+	cleanups.push(async () => {
+		for (const session of live) await session.dispose();
+		await runtime.dispose();
+		faux.unregister();
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+	/** Run one agent through its turns until it waits on the long tool; returns its live session. */
+	const runAgent = async (index: number): Promise<AgentSession> => {
+		const { session } = await factory({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: await SessionManager.create(store.store, tempDir),
+		});
+		session.setToolDetachment({ afterMs: 0 });
+		for (let turn = 1; turn <= TURNS; turn++) await session.prompt(`agent ${index} turn ${turn}`);
+		assert.deepEqual(
+			session.takeDetachedToolCalls().map((call) => call.toolName),
+			[WAIT_TOOL],
+		);
+		return session;
+	};
+	return { runtime, store, script, runAgent, live, subscriptions: () => subscriptions };
+}
+
+describe("idle agents hold nothing per agent (#4326)", () => {
+	test("released agents add no timer, socket, process, listener, dispatcher entry or live session", async () => {
+		const h = await host();
+		const dispatcher = new AgentWakeDispatcher();
+		const released: string[] = [];
+		const wave = async (offset: number) => {
+			h.script(AGENTS_PER_WAVE * TURNS * 2);
+			const sessions = await Promise.all(
+				Array.from({ length: AGENTS_PER_WAVE }, (_, index) => h.runAgent(offset + index)),
+			);
+			for (const session of sessions) released.push((await session.release()).sessionId);
+		};
+
+		await wave(0);
+		const afterFirst = { handles: await settledHandles(), listeners: h.subscriptions() };
+		await wave(AGENTS_PER_WAVE);
+		await wave(AGENTS_PER_WAVE * 2);
+
+		assert.equal(released.length, AGENTS_PER_WAVE * 3);
+		assert.deepEqual(await settledHandles(), afterFirst.handles);
+		assert.equal(h.subscriptions(), afterFirst.listeners);
+		assert.equal(h.runtime.rehydratedSessionCount, 0);
+		assert.equal(armedIdleSessionCount(), 0);
+		assert.deepEqual(dispatcher.stats(), {
+			keys: 0,
+			queued: 0,
+			running: 0,
+			scheduled: 0,
+			timers: 0,
+			handlers: 0,
+			namespaces: 0,
+			unobservedFailures: 0,
+		});
+	});
+
+	test("a wake reads the agent's history once, finishes its turn, and leaves nothing behind", async () => {
+		const h = await host();
+		const dispatcher = new AgentWakeDispatcher();
+		h.script(AGENTS_PER_WAVE * TURNS * 2);
+		const sessions = await Promise.all(Array.from({ length: AGENTS_PER_WAVE }, (_, index) => h.runAgent(index)));
+		const released: string[] = [];
+		for (const session of sessions) released.push((await session.release()).sessionId);
+		const idle = { handles: await settledHandles(), listeners: h.subscriptions() };
+		dispatcher.handle("bench", async (wakeKey, wakes) => {
+			const session = await h.runtime.rehydrate(wakeKey.slice("bench:".length));
+			await session.resumeDetachedTurn(wakes.flatMap((wake) => (wake.toolResult ? [wake.toolResult] : [])));
+			await session.release();
+		});
+
+		for (const sessionId of released) {
+			const transcript = (await h.store.store.load(sessionId)).entries;
+			const call = transcript
+				.flatMap((entry) =>
+					entry.type === "message" && entry.message.role === "assistant" ? entry.message.content : [],
+				)
+				.find((part) => part.type === "toolCall" && part.name === WAIT_TOOL) as { id: string };
+			h.script(1);
+			h.store.reset();
+			await dispatcher.deliver(`bench:${sessionId}`, {
+				id: `ci:${call.id}`,
+				kind: "tool-result",
+				toolResult: {
+					toolCallId: call.id,
+					toolName: WAIT_TOOL,
+					result: { content: [{ type: "text", text: "green" }], details: undefined },
+					isError: false,
+				},
+			});
+			assert.equal(h.store.get("readHeader"), 1);
+			assert.equal(h.store.get("load"), 1);
+		}
+
+		assert.deepEqual(await settledHandles(), idle.handles);
+		assert.equal(h.subscriptions(), idle.listeners);
+		assert.equal(h.runtime.rehydratedSessionCount, 0);
+		assert.deepEqual(
+			{ ...dispatcher.stats(), handlers: 0, namespaces: 0 },
+			{ keys: 0, queued: 0, running: 0, scheduled: 0, timers: 0, handlers: 0, namespaces: 0, unobservedFailures: 0 },
+		);
+		const finished = (await h.store.store.load(released[0] as string)).entries.at(-1);
+		assert.equal(finished?.type === "message" && finished.message.role === "assistant", true);
+	});
+
+	test("positive control: resident agents keep their extension listeners, one set per agent", async () => {
+		const h = await host();
+		const before = h.subscriptions();
+		h.script(AGENTS_PER_WAVE * TURNS * 2);
+		for (let index = 0; index < AGENTS_PER_WAVE; index++) h.live.push(await h.runAgent(index));
+		const perAgent = (h.subscriptions() - before) / AGENTS_PER_WAVE;
+		assert.ok(Number.isInteger(perAgent) && perAgent >= 1, `expected whole listener sets per agent, saw ${perAgent}`);
+		for (const session of h.live.splice(0)) await session.release();
+		assert.equal(h.subscriptions(), before);
+	});
+});
+
+describe("in-memory history costs its UTF-8 size (#4326)", () => {
+	test("records with text outside Latin-1 round-trip exactly and are held as UTF-8 bytes", async () => {
+		const store = new MemorySessionStore();
+		const text = `${"plain ascii — arrows → ellipsis … ".repeat(1500)}lone \ud800 surrogate`;
+		const header = (id: string) => ({ id, version: 4 as const, createdAt: "2026-11-05T00:00:00.000Z", cwd: "/repo" });
+		const entry = (id: string) => ({
+			type: "custom" as const,
+			id,
+			parentId: null,
+			timestamp: "2026-11-05T00:00:00.000Z",
+			customType: "note",
+			data: { text },
+		});
+		const sessions = 40;
+		const expected = Buffer.byteLength(JSON.stringify({ header: header("s-00"), entries: [entry("e")], lastSeq: 1 }));
+		const before = process.memoryUsage().arrayBuffers;
+		for (let index = 0; index < sessions; index++)
+			await store.create(header(`s-${String(index).padStart(2, "0")}`), [entry("e")]);
+		const grown = process.memoryUsage().arrayBuffers - before;
+
+		const loaded = await store.load("s-07");
+		assert.equal((loaded.entries[0] as { data: { text: string } }).data.text, text);
+		assert.ok(
+			grown >= sessions * expected * 0.9 && grown <= sessions * expected * 1.1,
+			`expected about ${sessions * expected} bytes of UTF-8, the store grew by ${grown}`,
+		);
+	});
+
+	test("an append encodes only the entries it adds and reads nothing back, however long the session already is (#4326)", async () => {
+		const store = new MemorySessionStore();
+		const header = { id: "s-long", version: 4 as const, createdAt: "2026-11-05T00:00:00.000Z", cwd: "/repo" };
+		const entry = (index: number) => ({
+			type: "custom" as const,
+			id: `e-${index}`,
+			parentId: null,
+			timestamp: "2026-11-05T00:00:00.000Z",
+			customType: "note",
+			data: { text: `note ${index} → ${"x".repeat(400)}` },
+		});
+		const appends = 300;
+		await store.create(header, []);
+		const encode = vi.spyOn(TextEncoder.prototype, "encode");
+		const decode = vi.spyOn(TextDecoder.prototype, "decode");
+		const encodedPerAppend: number[] = [];
+		let encodedByConflict: number;
+		try {
+			for (let index = 0; index < appends; index++) {
+				encode.mockClear();
+				await store.append(header.id, [entry(index)], { expectSeq: index });
+				encodedPerAppend.push(encode.mock.results.reduce((sum, result) => sum + result.value.byteLength, 0));
+			}
+			encode.mockClear();
+			await assert.rejects(
+				store.append(header.id, [entry(appends)], { expectSeq: appends - 1 }),
+				(error: Error) => error instanceof SessionConflictError,
+			);
+			encodedByConflict = encode.mock.calls.length;
+			assert.equal(decode.mock.calls.length, 0);
+		} finally {
+			encode.mockRestore();
+			decode.mockRestore();
+		}
+
+		assert.deepEqual(
+			encodedPerAppend,
+			Array.from({ length: appends }, (_, index) => Buffer.byteLength(JSON.stringify(entry(index)))),
+		);
+		assert.equal(encodedByConflict, 0);
+		const loaded = await store.load(header.id);
+		assert.deepEqual(loaded, {
+			header,
+			entries: Array.from({ length: appends }, (_, index) => entry(index)),
+			lastSeq: appends,
+		});
+		assert.deepEqual(await store.load(header.id), loaded, "loading again returns the same snapshot");
+		const reopened = await store.reopen();
+		await reopened.append(header.id, [entry(appends)], { expectSeq: appends });
+		assert.deepEqual((await store.load(header.id)).entries.at(-1), entry(appends), "a reopened store shares records");
+	});
+});

@@ -129,9 +129,50 @@ export interface BrokerStatusReport {
 	pid: number;
 	/** Sessions connected to this broker. */
 	sessions: number;
+	/** Reservations this broker holds for subagents that are being restored or released; absent from an older broker. */
+	reservations?: number;
+	/** Sends this broker holds for those reservations; absent from an older broker. */
+	heldSends?: number;
+	/** Released-asker reply routes refused at capacity since broker start; absent from an older broker. */
+	droppedReleasedReplyRoutes?: number;
 	/** The shared storage selection the broker read, as a digest of its JSON, and where it read it; absent without one. */
 	storage?: { digest: string; source: "env" | "settings" };
 	multiNode: BrokerMultiNodeStatus;
+}
+
+/**
+ * Why a send or ask was refused, for callers that branch on it; the free-text `reason` stays for people.
+ * `recipient_not_restored`: the sender was held for a subagent that was being restored or woken, and the hold ended
+ * first. `recipient_parked`: the subagent's owner keeps it parked (paused or quit) and never wakes it for a send.
+ */
+export type DeliveryFailureReasonCode =
+	| "message_id_conflict"
+	| "session_not_found"
+	| "recipient_not_restored"
+	| "recipient_parked";
+
+/** One released subagent in a `reserve_released_children` frame. */
+export interface ReleasedChildReservationFrame {
+	childName: string;
+	group?: string;
+	aliases?: string[];
+	wake: boolean;
+}
+
+export type ReleasedChildRefusalCode =
+	| "invalid_frame"
+	| "invalid_child_name"
+	| "invalid_alias"
+	| "too_many_aliases"
+	| "invalid_group"
+	| "unknown_released_child"
+	| "not_owner"
+	| "group_not_allowed";
+
+/** The broker's typed refusal of a released-child request; `childName` names the offending item when there is one. */
+export interface ReleasedChildRefusal {
+	code: ReleasedChildRefusalCode;
+	childName?: string;
 }
 
 export type IntercomDeliveryMode = "steer" | "followUp" | "interrupt";
@@ -214,13 +255,21 @@ export type ClientMessage =
    * with the capability. A `dormant` hold only keeps the child addressable until the supervisor that restores it
    * reserves the same child and group, which takes the hold over together with the sends held so far.
    */
-  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean }
+  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean; wake?: boolean }
   /**
    * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With `refusal`,
    * the senders held now are told that reason instead and later ones are routed normally. Otherwise held sends are
    * routed normally.
    */
   | { type: "release_restoring_recipient"; requestId: string; capability: string; gone?: string; refusal?: string }
+  /** #4326: reserve released subagents by child name, in a frame of at most 500; this connection becomes their owner. */
+  | { type: "reserve_released_children"; requestId: string; children: ReleasedChildReservationFrame[] }
+  /** #4326: end the reservations this connection made for these child names. */
+  | { type: "drop_released_children"; requestId: string; childNames: string[]; gone?: string; refusal?: string }
+  /** #4326: the owner is waking this child; the broker extends the sends held for it once per wake. */
+  | { type: "acknowledge_released_child_wake"; requestId: string; childName: string }
+  /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
+  | { type: "released_child_reply_ack"; messageId: string; handoffId: string; accepted: boolean }
   | {
       type: "send" | "supervisor_send";
       to: string;
@@ -328,6 +377,8 @@ export type BrokerMessage =
 			claimsWorkflowInvocations?: true;
 			/** #3983: this broker accepts `saving`; absent on older brokers, which drop a client that sends it. */
 			extendsSaves?: true;
+			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
+			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }
@@ -367,6 +418,7 @@ export type BrokerMessage =
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }
   | { type: "peer_disconnected"; replyTo: string; peerSessionId: string; peerName?: string }
+  | { type: "peer_rebound"; replyTo: string; previousSessionId: string; sessionId: string }
   | { type: "presence_ack"; requestId: string; group: string }
   | { type: "presence_failed"; requestId: string; reason: string }
   | { type: "error"; error: string }
@@ -374,7 +426,15 @@ export type BrokerMessage =
 	| { type: "queued"; messageId: string; attemptId?: string; target: string; position: number }
 	/** #3760: the send is held for a subagent that is being restored; wait up to `timeoutMs` for its outcome. */
 	| { type: "send_held"; messageId: string; attemptId?: string; timeoutMs: number }
+	/**
+	 * #4326: a send or ask is held for a released subagent this session reserved with `wake`; wake it. Sent once per
+	 * hold that starts empty, so a wake that fails is asked for again by the next send.
+	 */
+	| { type: "restoring_recipient_wake"; childName: string; capability?: string }
+	/** #4326: `handoffId` identifies this handoff, so the owner's acknowledgement cannot confirm another reply that reuses the message id. */
+	| { type: "released_child_reply"; childName: string; handoffId: string; replyTo: string; from: SessionInfo; message: Message }
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
-	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string }
+	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal }
+	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: DeliveryFailureReasonCode; attemptId?: string }
 	| { type: "broker_status"; requestId: string; report: BrokerStatusReport }
 	| { type: "shutdown_ack"; requestId: string };

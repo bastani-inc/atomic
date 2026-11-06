@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { RETRY_IDENTITY_MAX_REUSES, RETRY_IDENTITY_TTL_MS } from "./retry-identity.js";
-import { RECONNECT_DELAYS_MS } from "./retry-policy.js";
+import { intercomRecoveryStoppedText, RECONNECT_DELAYS_MS } from "./retry-policy.js";
 
 /** Private attempt results. Retry identity never crosses the registered tool boundary. */
 export interface IntercomAttemptResult {
@@ -11,7 +11,7 @@ export interface IntercomAttemptResult {
 
 /** One invocation owns all retries; separate invocations always start fresh. */
 export async function runIntercomOperation(
-	attempt: (retryToken: string | undefined, signal: AbortSignal) => Promise<IntercomAttemptResult>,
+	attempt: (retryToken: string | undefined, signal: AbortSignal, retries: number) => Promise<IntercomAttemptResult>,
 	release: (retryToken: string) => void,
 	signal?: AbortSignal,
 ): Promise<IntercomAttemptResult> {
@@ -29,7 +29,7 @@ export async function runIntercomOperation(
 	try {
 		for (;;) {
 			if (operationSignal.aborted) break;
-			last = await attempt(token, operationSignal);
+			last = await attempt(token, operationSignal, retries);
 			const { retryToken, retryable, deliveryUncertain, ...details } = last.details;
 			last = { ...last, details };
 			if (!last.isError) return last;
@@ -57,7 +57,7 @@ export async function runIntercomOperation(
 			content: [{
 				type: "text",
 				text: recovering
-					? `${reason}\nIntercom recovery stopped after ${retries} automatic retries. Delivery may already have occurred. Do not repeat this operation automatically; check with the recipient before intentionally sending a new message.`
+					? intercomRecoveryStoppedText(reason, retries)
 					: reason,
 			}],
 			isError: true,

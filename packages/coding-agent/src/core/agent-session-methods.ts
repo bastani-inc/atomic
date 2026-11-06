@@ -375,6 +375,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
 	startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
+	/** Keep only the stored history and let go of everything live; rehydrate with `AgentSessionRuntime.rehydrate`. */
+	release(): Promise<import("./agent-session-release.ts").ReleasedAgentSession>;
 	/** Let calls of `detachable` tools that run longer than `policy.afterMs` go on without the run; `undefined` runs them inline. */
 	setToolDetachment(policy: ToolDetachmentPolicy | undefined): void;
 	/** The calls the session's runs detached and the host has not taken yet; taking them clears the list. */
@@ -541,6 +543,7 @@ export interface AgentSessionPublicSurface
 		| "setBackgroundCompactionThresholdPercent"
 		| "bindExtensions"
 		| "startPendingRecovery"
+		| "release"
 		| "setToolDetachment"
 		| "takeDetachedToolCalls"
 		| "hasPendingDetachedTurn"

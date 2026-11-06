@@ -97,7 +97,7 @@ function emitIntercomRequest(events: IntercomEventBus, eventName: string, reques
  */
 export async function holdChildTargets(
 	events: IntercomEventBus,
-	record: SubagentChildRecord,
+	record: Pick<SubagentChildRecord, "intercomTarget" | "childSessionId">,
 	group: string | undefined,
 	options: { readonly dormant?: boolean } = {},
 ): Promise<ChildTargetHold | undefined> {
@@ -343,4 +343,9 @@ export function holdDormantRunSubagentChildren(
 			await ready;
 		},
 	};
+}
+
+/** Holds made before a child's restoration took them over; counted by tests and the benchmark. */
+export function earlyChildHoldCount(): number {
+	return earlyHolds.size;
 }

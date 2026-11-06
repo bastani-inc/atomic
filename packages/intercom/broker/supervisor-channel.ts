@@ -1,4 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { normalizeReservationTarget } from "./released-children.js";
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES = 10_000;
@@ -34,6 +35,11 @@ interface SupervisorAuthorizationRecord {
   boundChildName?: string;
 }
 
+export interface SupervisedChildOwner {
+  readonly supervisorId: string;
+  readonly ownerToken: string;
+}
+
 
 /**
  * Bounded record of `contact_supervisor` vertical-channel crossings. It lets the
@@ -45,6 +51,7 @@ interface SupervisorAuthorizationRecord {
 export class SupervisorChannelCache {
   private readonly crossings = new Map<string, SupervisorCrossing>();
   private readonly authorizations = new Map<string, SupervisorAuthorizationRecord>();
+  private readonly latestByChild = new Map<string, string>();
 
   constructor(
     private readonly ttlMs = DEFAULT_TTL_MS,
@@ -68,12 +75,31 @@ export class SupervisorChannelCache {
       ownerToken,
       ...(existing?.boundChildName ? { boundChildName: existing.boundChildName } : {}),
     });
+    if (childName !== "*") this.latestByChild.set(normalizeReservationTarget(childName), capability);
     while (this.authorizations.size > this.maxEntries) {
       const oldest = this.authorizations.keys().next().value as string | undefined;
       if (oldest === undefined) break;
-      this.authorizations.delete(oldest);
+      this.evict(oldest);
     }
     return capability;
+  }
+
+  supervisorOf(childName: string): SupervisedChildOwner | undefined {
+    const capability = this.latestByChild.get(normalizeReservationTarget(childName));
+    const authorization = capability === undefined ? undefined : this.authorizations.get(capability);
+    return authorization === undefined
+      ? undefined
+      : { supervisorId: authorization.supervisorId, ownerToken: authorization.ownerToken };
+  }
+
+  private evict(capability: string): void {
+    const authorization = this.authorizations.get(capability);
+    this.authorizations.delete(capability);
+    for (const name of [authorization?.childName, authorization?.boundChildName]) {
+      if (name === undefined || name === "*") continue;
+      const key = normalizeReservationTarget(name);
+      if (this.latestByChild.get(key) === capability) this.latestByChild.delete(key);
+    }
   }
 
   /** Resolve a capability for its exact child, binding a dynamic slot on first use. */
@@ -83,6 +109,7 @@ export class SupervisorChannelCache {
     if (authorization.childName === "*") {
       if (authorization.boundChildName && authorization.boundChildName !== childName) return undefined;
       authorization.boundChildName = childName;
+      this.latestByChild.set(normalizeReservationTarget(childName), capability);
     } else if (authorization.childName !== childName) {
       return undefined;
     }

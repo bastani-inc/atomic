@@ -13,7 +13,7 @@ import {
 	type SessionTargetResolution,
 	sessionTargetFailureReason,
 } from "../session-target.js";
-import type { SessionInfo } from "../types.js";
+import type { DeliveryFailureReasonCode, SessionInfo } from "../types.js";
 import type { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { sameGroup } from "./group-isolation.js";
 import { sessionGroups } from "./group-membership.js";
@@ -38,7 +38,12 @@ import {
 } from "./multinode-state-store.js";
 import type { PendingQuestionIndex } from "./pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
-import { RESTORING_RECIPIENT_HOLD_MS, restoringRecipientRetryReason } from "./restoring-recipients.js";
+import { isReleasedReservationKey, releasedReservationKey } from "./released-children.js";
+import {
+	RESTORING_RECIPIENT_HOLD_MS,
+	restoringRecipientRetryReason,
+	unrestoredReasonCode,
+} from "./restoring-recipients.js";
 import {
 	type BrokerConnectedSession,
 	deliveryTargetIdentity,
@@ -160,6 +165,7 @@ export interface MultiNodeHost {
 	readonly deliveredMessages: Pick<DeliveredMessageCache, "lookupForTarget" | "lookupQuestionTarget">;
 	/** Route a held send again as its sender, exactly like a new send (local delivery or the outbox). */
 	dispatch(socket: BrokerConnectedSession["socket"], clientMessage: SendClientMessage, senderId: string): void;
+	revokeReleasedReservation(reservationKey: string, ownerSessionId: string): void;
 }
 
 export interface MultiNodeRouterOptions {
@@ -212,6 +218,7 @@ interface TrackedHold {
 	readonly senderId: string;
 	readonly attemptId?: string;
 	readonly clientMessage: SendClientMessage;
+	readonly reasonCode: DeliveryFailureReasonCode;
 	readonly timer: ReturnType<typeof setTimeout>;
 }
 
@@ -223,8 +230,23 @@ interface PresenceEntry {
 	terminal?: boolean;
 }
 
+interface ConsumedReservation {
+	readonly capability?: string;
+	readonly childName?: string;
+	readonly groups: ReadonlySet<string>;
+	readonly authorizedBy?: string;
+}
+
 interface MirroredReservation {
 	lease: RestoringReservationLease;
+	readonly capability?: string;
+	wake: boolean;
+}
+
+/** How a mirrored reservation differs from a plain restoring one. */
+export interface ReservationOptions {
+	readonly wake?: boolean;
+	readonly replaceAliases?: boolean;
 }
 
 interface RemoteTarget {
@@ -322,7 +344,7 @@ export class MultiNodeRouter {
 	 */
 	sessionRegistered(
 		session: BrokerConnectedSession,
-		consumed?: { readonly capability: string; readonly childName?: string; readonly groups: ReadonlySet<string> },
+		consumed?: ConsumedReservation,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
@@ -540,11 +562,14 @@ export class MultiNodeRouter {
 		group: string,
 		aliases: readonly string[],
 		dormant: boolean,
+		options: ReservationOptions = {},
 	): void {
 		if (this.closed) return;
 		const reservationKey = reservationKeyFor(capability);
 		const owner = this.host.sessions.get(ownerSessionId);
+		const wake = options.wake === true;
 		this.serial(`reservation:${reservationKey}`, async () => {
+			const wasWakeable = this.mirrored.get(reservationKey)?.wake === true;
 			const reserved = await this.state.reservations.reserve({
 				reservationKey,
 				ownerSessionId,
@@ -554,7 +579,14 @@ export class MultiNodeRouter {
 				aliases: aliases.map(normalizeTarget).filter((alias) => alias.length > 0),
 				group,
 				dormant,
+				wake,
+				...(options.replaceAliases === true ? { replaceAliases: true } : {}),
+				staleAfterMs: BROKER_LEASE_STALE_AFTER_MS,
 			});
+			if (reserved.status === "not-owner") {
+				this.host.revokeReleasedReservation(reservationKey, ownerSessionId);
+				return;
+			}
 			if (reserved.status !== "reserved") return;
 			// The owner left (or its id was taken over) while the reserve was being written: its departure scanned the
 			// mirrors before this one existed, so end the reservation here instead of renewing it for a gone owner.
@@ -563,8 +595,39 @@ export class MultiNodeRouter {
 				await this.wakeHeldOrigins(reservationKey);
 				return;
 			}
-			this.mirrored.set(reservationKey, { lease: reserved.lease });
+			this.mirrored.set(reservationKey, {
+				lease: reserved.lease,
+				wake,
+				...(isReleasedReservationKey(capability) ? {} : { capability }),
+			});
+			if (!wake || wasWakeable) return;
+			const listed = await this.state.heldSends.list(reservationKey);
+			if (listed.status === "listed" && listed.sends.length > 0) await this.requestWake(reservationKey, this.brokerId);
 		});
+	}
+
+	/** Ask the broker that owns a released child's reservation to wake it; this broker when it is the owner. */
+	private async requestWake(reservationKey: string, ownerBrokerId: string): Promise<void> {
+		const requested = await this.state.reservations.requestWake(reservationKey);
+		if (requested.status !== "requested") return;
+		if (ownerBrokerId === this.brokerId) await this.deliverWakeRequests();
+		else await this.bus.publish({ brokerId: ownerBrokerId, reason: "outcome", version: 0 });
+	}
+
+	/** Tell the owners connected here that a send started holding for a released child they reserved (#4326). */
+	private async deliverWakeRequests(): Promise<void> {
+		const taken = await this.state.reservations.takeWakeRequests(this.brokerId);
+		if (taken.status !== "taken") return;
+		for (const request of taken.requests) {
+			const owner = this.host.sessions.get(request.ownerSessionId);
+			if (owner === undefined) continue;
+			const capability = this.mirrored.get(request.reservationKey)?.capability;
+			this.host.write(owner.socket, {
+				type: "restoring_recipient_wake",
+				childName: request.childName,
+				...(capability === undefined ? {} : { capability }),
+			});
+		}
 	}
 
 	/** The owner released the reservation; `gone` is the formatted gone refusal kept as a marker. */
@@ -584,17 +647,24 @@ export class MultiNodeRouter {
 		});
 	}
 
-	private async consumeReservation(consumed: {
-		readonly capability: string;
-		readonly childName?: string;
-		readonly groups: ReadonlySet<string>;
-	}): Promise<void> {
-		const reservationKey = reservationKeyFor(consumed.capability);
+	private async consumeReservation(consumed: ConsumedReservation): Promise<void> {
+		const reservationKey =
+			consumed.capability !== undefined
+				? reservationKeyFor(consumed.capability)
+				: consumed.childName === undefined
+					? undefined
+					: releasedReservationKey(consumed.childName);
+		if (reservationKey === undefined) return;
 		const result = await this.state.reservations.consume(
 			reservationKey,
 			consumed.childName === undefined
 				? undefined
-				: { childTarget: normalizeTarget(consumed.childName), groups: [...consumed.groups] },
+				: {
+						childTarget: normalizeTarget(consumed.childName),
+						groups: [...consumed.groups],
+						...(consumed.authorizedBy === undefined ? {} : { authorizedBy: consumed.authorizedBy }),
+						...(consumed.capability === undefined ? { releasedOnly: true as const } : {}),
+					},
 		);
 		if (result.status !== "consumed") return;
 		for (const key of result.reservationKeys) {
@@ -1083,8 +1153,9 @@ export class MultiNodeRouter {
 		}
 		const listed = await this.state.heldSends.list(reservation.reservationKey);
 		const count = listed.status === "listed" ? listed.sends.length : 0;
+		const reasonCode = unrestoredReasonCode(reservation.reservationKey, reservation.wake);
 		if (!request.awaitRestoringRecipient || count >= MAX_HELD_SENDS) {
-			this.fail(request, restoringRecipientRetryReason(reservation.childName));
+			this.fail(request, restoringRecipientRetryReason(reservation.childName), reasonCode);
 			return true;
 		}
 		const held = {
@@ -1110,6 +1181,7 @@ export class MultiNodeRouter {
 			senderId: from.info.id,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			clientMessage: request.clientMessage,
+			reasonCode,
 			timer,
 		});
 		this.host.write(request.socket, {
@@ -1118,6 +1190,7 @@ export class MultiNodeRouter {
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			timeoutMs: RESTORING_RECIPIENT_HOLD_MS,
 		});
+		if (reservation.wake && count === 0) await this.requestWake(reservation.reservationKey, reservation.ownerBrokerId);
 		return true;
 	}
 
@@ -1130,15 +1203,16 @@ export class MultiNodeRouter {
 		} catch (error) {
 			this.report(error);
 		}
-		this.writeHoldFailure(hold, restoringRecipientRetryReason(hold.childName));
+		this.writeHoldFailure(hold, restoringRecipientRetryReason(hold.childName), hold.reasonCode);
 	}
 
-	private writeHoldFailure(hold: TrackedHold, reason: string): void {
+	private writeHoldFailure(hold: TrackedHold, reason: string, reasonCode?: DeliveryFailureReasonCode): void {
 		this.host.write(hold.socket, {
 			type: "delivery_failed",
 			messageId: hold.messageId,
 			...(hold.attemptId === undefined ? {} : { attemptId: hold.attemptId }),
 			reason,
+			...(reasonCode === undefined ? {} : { reasonCode }),
 		});
 	}
 
@@ -1523,12 +1597,14 @@ export class MultiNodeRouter {
 			this.scanAll();
 			void this.checkOutcomes();
 			void this.guard(this.checkHolds());
+			void this.guard(this.deliverWakeRequests());
 			return;
 		}
 		if (event.hint.reason === "outbox") this.scanAll();
 		else {
 			void this.checkOutcomes();
 			void this.guard(this.checkHolds());
+			void this.guard(this.deliverWakeRequests());
 		}
 	}
 
@@ -1587,6 +1663,7 @@ export class MultiNodeRouter {
 	private async outcomePoll(): Promise<void> {
 		if ([...this.waiters.values()].some((waiter) => !waiter.queued)) await this.checkOutcomes();
 		if (this.holds.size > 0) await this.checkHolds();
+		if (this.mirrored.size > 0) await this.deliverWakeRequests();
 	}
 
 	private async recordKnown(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
@@ -1620,7 +1697,7 @@ export class MultiNodeRouter {
 		};
 	}
 
-	private fail(request: RemoteSendRequest, reason: string, reasonCode?: "session_not_found"): void {
+	private fail(request: RemoteSendRequest, reason: string, reasonCode?: DeliveryFailureReasonCode): void {
 		this.host.write(request.socket, {
 			type: "delivery_failed",
 			messageId: request.message.id,

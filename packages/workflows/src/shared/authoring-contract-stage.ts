@@ -185,9 +185,10 @@ export interface WorkflowCustomToolDefinition<TParams extends TSchema = TSchema,
 	/**
 	 * The call's work does not need the stage session once started, and running it again with the same call id and
 	 * arguments after a restart is safe. A call still running after the stage's `releaseWhenWaiting` threshold then
-	 * lets the stage release its session until the result arrives.
+	 * lets the stage release its session until the result arrives. A function decides per call from the call's
+	 * arguments: only the calls it accepts may detach.
 	 */
-	readonly detachable?: boolean;
+	readonly detachable?: boolean | { decide(params: Static<TParams>): boolean }["decide"];
 	execute(
 		toolCallId: string,
 		params: Static<TParams>,

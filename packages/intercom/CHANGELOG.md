@@ -4,18 +4,26 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
-### Added
-
-- While multi-node routing is on, a session with no explicit group joins a project group, `project:<owner>/<repo>` from its `origin` remote (the repository or directory name otherwise), instead of `default`, so sessions of different repositories sharing one database cannot see or message each other. Explicit groups still win, joining `default` explicitly warns that every teammate's sessions can address it (a session without a UI, such as a print run or a workflow stage, writes the warning to stderr once per process), and a missing or failing Git inside a repository fails fast with `ProjectGroupError` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
-- The broker follows `ATOMIC_PROFILE=ci` like `ATOMIC_STORAGE` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
-
 ### Breaking Changes
 
 - A queued workflow send reports how its target relates to the run's stages as `prediction` (`known`, `predicted` or `unknown`) in the send result and the tool's `details`, replacing `notInKnownSet`. Read `prediction === "unknown"` where you read `notInKnownSet` ([#4359](https://github.com/bastani-inc/atomic/issues/4359))
 
 ### Added
 
+- While multi-node routing is on, a session with no explicit group joins a project group, `project:<owner>/<repo>` from its `origin` remote (the repository or directory name otherwise), instead of `default`, so sessions of different repositories sharing one database cannot see or message each other. Explicit groups still win, joining `default` explicitly warns that every teammate's sessions can address it (a session without a UI, such as a print run or a workflow stage, writes the warning to stderr once per process), and a missing or failing Git inside a repository fails fast with `ProjectGroupError` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
+- The broker follows `ATOMIC_PROFILE=ci` like `ATOMIC_STORAGE` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 - `intercom list` labels future rows the decision model predicted as `predicted <probability>`, `confirmed` or `unused` ([#4359](https://github.com/bastani-inc/atomic/issues/4359))
+- A released subagent stays addressable without a connection: the broker holds sends and asks to it, asks its owner to wake it, and delivers them once each, in the order they were sent, when it is back ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A released subagent's owner can reserve any number of children by name in one call (`reserveReleasedChildren`, in frames of up to 500) instead of one round trip per child, park a child so sends are held without asking the owner to wake it, and confirm a wake (`acknowledgeReleasedChildWake`) so the sends waiting for it are held for up to 120 seconds instead of 20. A frame with an invalid child is refused whole with a typed error that names the child ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A send or ask held for a released subagent on another machine now wakes it on its owner's machine, and the sender's delivery failure carries a `reasonCode` of `recipient_not_restored` (the hold ended while the subagent was being restored or woken) or `recipient_parked` (the subagent is parked and is not woken for a send) alongside the existing text ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- `broker_status` reports how many reservations the broker holds, how many sends are waiting on them, and how many released-asker reply routes were dropped at capacity since the broker started ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A released subagent's hold belongs to the session that launched it: the session that reserved it first, or that authorized it as its supervisor, and it keeps the hold after reconnecting with the same Intercom session id. Another session's reserve, drop or wake acknowledgement for that child is refused whole with a `not_owner` `ReleasedChildReservationError` and changes nothing, also across machines with multi-node routing. A child reserved in a `workflow:` group that the session is not a member of is refused with `group_not_allowed`. The released-child errors (`IntercomReleasedChildError`, `ReleasedChildReservationError`, `UnknownReleasedChildError`) carry a `code` from a closed set, can be serialized and rehydrated across processes, and are documented in the Intercom reference ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- Sends held for a released subagent go only to the child its owner relaunches, which registers with the supervisor capability that owner issued for it. A session that only shares the child's name and group, or that holds a capability another session issued, receives none of them and does not end the hold. Atomic's `resume` and automatic wakes already register the child this way. An SDK host that relaunches a released child itself must request the child's capability from the owning session's Intercom extension (the `subagent:supervisor-authorization` event) and register the child with it ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A background subagent waiting on an `ask`, or on `contact_supervisor` with `need_decision` or `interview_request`, is released while it waits when its broker uses local routing. Its question stays open: the reply reaches the session that launched it, and the subagent wakes with that reply as the result of its call. Each question takes exactly one reply; a later reply is refused, and the reply is not also queued as an ordinary message. With multi-node routing on, the subagent stays live while it waits for the reply ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+
+### Fixed
+
+- A reconnect re-authorizes only the subagents that are still running. Children that were released, parked, dropped, reported gone or finished are no longer re-authorized one by one on every reconnect, and waking a child again no longer adds another entry for it ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
 
 ### Changed
 

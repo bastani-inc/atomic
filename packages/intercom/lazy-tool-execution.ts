@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@bastani/atomic";
 import { setTimeout as delay } from "node:timers/promises";
+import { heavyToolCallMayDetach } from "./detachable-calls.js";
 import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RECONNECT_DELAYS_MS } from "./retry-policy.js";
 
@@ -21,7 +22,7 @@ export async function executeHeavyTool<THeavy extends ExecutableHeavy>(
 ): Promise<Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>> {
 	// Loading/replaying startup precedes tool execution and cannot have sent the
 	// requested message. Retry only that boundary, never an executed heavy call.
-	const params = args[1] as { action?: string };
+	const params = args[1] as { action?: string; reason?: string };
 	const recoverInitialization = name === "intercom" && ["send", "ask", "reply"].includes(params.action ?? "");
 	let handle: HeavyHandle<THeavy>;
 	let retries = 0;
@@ -48,7 +49,7 @@ export async function executeHeavyTool<THeavy extends ExecutableHeavy>(
 	const tool = handle.heavy.tools.get(name);
 	if (!tool?.execute) throw new Error(`Intercom tool implementation not found: ${name}`);
 	const result = await tool.execute(...args);
-	handle.assertCurrent();
+	if (!heavyToolCallMayDetach(name, params)) handle.assertCurrent();
 	return result as Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
 }
 

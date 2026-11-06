@@ -1,4 +1,5 @@
 import {
+	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type SessionEntry,
@@ -9,15 +10,18 @@ import type { AgentSource } from "../../agents/agent-types.js";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
+import { ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	isSubagentChildRecord,
 	observeSubagentChildRecord,
 	SUBAGENT_CHILD_RECORD_TYPE,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	subagentChildCardRecord,
+	subagentChildRecordOf,
 } from "./subagent-child-card-state.js";
 
-export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE };
+export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE, SUBAGENT_CHILD_RELEASED_STATUS };
 
 export type SubagentChildOwner =
 	| { readonly kind: "session"; readonly sessionId: string }
@@ -70,6 +74,19 @@ export function pendingMessagesOfResult(result: {
 }): SubagentChildPendingMessages | undefined {
 	if (!result.pendingMessages?.length) return undefined;
 	return { messages: result.pendingMessages, taskExpands: result.pendingTaskExpands === true };
+}
+
+/** A detached tool call a released child waits on. */
+export interface SubagentChildWaitingCall {
+	readonly toolCallId: string;
+	readonly toolName: string;
+	/** Broker-routed reply wait, recorded after the question was delivered. */
+	readonly replyWait?: {
+		readonly questionId: string;
+		readonly deadline: number;
+		readonly from: string;
+		readonly retryCount?: number;
+	};
 }
 
 export interface SubagentChildRecord {
@@ -131,6 +148,35 @@ export interface SubagentChildRecord {
 	readonly requestedModel?: string;
 	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
 	readonly modelConstraints?: ModelConstraints;
+	/**
+	 * The detached tool calls a released child is waiting on (#4326): its run ended with them still running, and their
+	 * results wake it. Empty once nothing is outstanding.
+	 */
+	readonly waitingOn?: readonly SubagentChildWaitingCall[];
+	/**
+	 * The Intercom session id a released child was registered under. The broker reserves it with the child's name, so a
+	 * reply or a send addressed to that id still reaches the hold that wakes the child (#4326).
+	 */
+	readonly releasedIntercomId?: string;
+	/**
+	 * Results of its detached calls that arrived while the child could not take them (paused, quit, or live in another
+	 * attempt), in arrival order. The next wake or resume delivers them once; empty after that.
+	 */
+	readonly heldToolResults?: readonly DetachedToolResult[];
+	readonly ownerGeneration?: string;
+	readonly wakeFailure?: SubagentChildWakeFailure;
+}
+
+export interface SubagentChildWakeFailure {
+	readonly taskId?: string;
+	readonly code: ReleasedChildErrorCode;
+	readonly reason: string;
+	readonly hint: string;
+	readonly reported?: true;
+}
+
+export function currentWakeFailure(record: SubagentChildRecord): SubagentChildWakeFailure | undefined {
+	return record.wakeFailure?.taskId === record.taskId ? record.wakeFailure : undefined;
 }
 
 /**
@@ -228,11 +274,16 @@ export function subagentChildLaunch(
 export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "childId" | "owner">;
 
 export interface SubagentChildRecordSink {
+	/** The session that owns the children this sink records; their wake keys are under it (#4326). */
+	readonly ownerSessionId?: string;
 	record(input: SubagentChildRecordInput): void;
 	/** Whether the owner is a workflow stage whose generation is closing for good, not merely interrupted. */
 	ownerEndedForGood?(): boolean;
 	/** Settles once every record this sink was given has been appended. */
 	flushed?(): Promise<void>;
+	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
+	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
+	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
 }
 
 /** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
@@ -313,18 +364,69 @@ export function subagentChildOwner(
 
 const appendChains = new Map<string, Promise<void>>();
 
-/** Append records of one owner in order, across every sink of that owner. */
+/** Failed appends of child records, counted so a record that could not be saved is not lost silently. */
+export const subagentChildRecordFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
+
+interface ChildRecordFailureNotice {
+	readonly childId?: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint: string;
+}
+const pendingRecordFailures = new Map<string, ChildRecordFailureNotice>();
+
+/** Record one owner-scoped notice without retaining the error or its cause. */
+export function observeChildRecordFailure(ownerSessionId: string, error: ReleasedChildError): void {
+	subagentChildRecordFailures.count += 1;
+	subagentChildRecordFailures.last = error;
+	pendingRecordFailures.set(ownerSessionId, {
+		...(error.fields.childId === undefined ? {} : { childId: error.fields.childId }),
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+	});
+}
+
+/** Take the owner's latest unreported failure once, leaving other owners' failures untouched. */
+export function takeChildRecordFailure(ownerSessionId: string, childId?: string): ChildRecordFailureNotice | undefined {
+	const failure = pendingRecordFailures.get(ownerSessionId);
+	if (failure === undefined || (childId !== undefined && failure.childId !== childId)) return undefined;
+	pendingRecordFailures.delete(ownerSessionId);
+	return failure;
+}
+
+/** Run `step` after every earlier step of this owner. The result rejects when `step` does; later steps still run. */
+function inOrder(ownerSessionId: string, step: () => Promise<void>): Promise<void> {
+	const run = (appendChains.get(ownerSessionId) ?? Promise.resolve()).then(step);
+	const settled = run.catch(() => undefined);
+	appendChains.set(ownerSessionId, settled);
+	void settled.then(() => {
+		if (appendChains.get(ownerSessionId) === settled) appendChains.delete(ownerSessionId);
+	});
+	return run;
+}
+
+function recordAppendFailure(record: SubagentChildRecord, error: Error): ReleasedChildError {
+	return new ReleasedChildError(
+		"record-append-failed",
+		{
+			ownerSessionId: record.owner.sessionId,
+			childId: record.childId,
+			state: record.state,
+			...(record.terminalStatus === undefined ? {} : { terminalStatus: record.terminalStatus }),
+		},
+		{ cause: error },
+	);
+}
+
+/** Append records of one owner in order, across every sink of that owner. A failed append is counted, not lost. */
 function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
 	observeSubagentChildRecord(record);
-	const key = record.owner.sessionId;
-	const appended = (appendChains.get(key) ?? Promise.resolve())
-		.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record))
-		.catch(() => undefined);
-	appendChains.set(key, appended);
-	void appended.then(() => {
-		if (appendChains.get(key) === appended) appendChains.delete(key);
-	});
-	return appended;
+	return inOrder(record.owner.sessionId, () => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(
+		(error: Error) => {
+			observeChildRecordFailure(record.owner.sessionId, recordAppendFailure(record, error));
+		},
+	);
 }
 
 /** Settles once every record of this owner handed to a sink so far has been appended. */
@@ -446,6 +548,7 @@ export function createSubagentChildRecordSink(
 	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
 	let appended: Promise<void> = Promise.resolve();
 	return {
+		ownerSessionId: owner.sessionId,
 		record(input) {
 			const record: SubagentChildRecord = {
 				version: 1,
@@ -460,7 +563,61 @@ export function createSubagentChildRecordSink(
 		},
 		ownerEndedForGood: () => stage?.endedForGood() === true,
 		flushed: () => appended,
+		clearHeldToolResults: (childId, toolCallIds) =>
+			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
+		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),
 	};
+}
+
+/** Whether held messages were kept, and for which kind of stopped child: a released one is woken for them. */
+export type HeldMessagesOutcome = "released" | "stopped" | "not-held";
+
+const STOPPED_STATUSES: ReadonlySet<string | undefined> = new Set([
+	"paused",
+	"quit",
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
+]);
+
+/**
+ * Add `messages` after the ones a released or stopped child already holds for its current task, in the owner's
+ * append order, so its next wake or resume delivers them once. A child that runs again or has ended holds nothing:
+ * the caller delivers the messages some other way.
+ */
+export async function holdSubagentChildMessages(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	messages: readonly string[],
+): Promise<HeldMessagesOutcome> {
+	let outcome: HeldMessagesOutcome = "not-held";
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest?.state !== "terminal") return;
+		const kind =
+			latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS
+				? "released"
+				: STOPPED_STATUSES.has(latest.terminalStatus)
+					? "stopped"
+					: undefined;
+		if (kind === undefined || latest.taskId === undefined) return;
+		const held = latest.heldMessages?.taskId === latest.taskId ? latest.heldMessages : undefined;
+		const record: SubagentChildRecord = {
+			...latest,
+			heldMessages: {
+				taskId: latest.taskId,
+				messages: [...(held?.messages ?? []), ...messages],
+				taskExpands: held?.taskExpands ?? false,
+			},
+		};
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		outcome = kind;
+	});
+	return outcome;
 }
 
 /** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */
@@ -488,6 +645,177 @@ export async function recordSubagentChildStatus(
 	const next: SubagentChildRecord = { ...record, state: "terminal", terminalStatus };
 	observeSubagentChildRecord(next);
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
+}
+
+/**
+ * Append a new latest observation of a child that adds tool results to the ones it holds for its next wake. The
+ * record is taken from the index when this step's turn comes in the owner's order, never from an earlier snapshot:
+ * one made before a later record was written would write that record's state over again. Failing loudly: a result
+ * that is not saved must not be dropped.
+ */
+export async function recordSubagentChildHeldToolResults(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	heldToolResults: readonly DetachedToolResult[],
+): Promise<SubagentChildRecord> {
+	let next: SubagentChildRecord | undefined;
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
+		const record: SubagentChildRecord = {
+			...latest,
+			heldToolResults: withHeldToolResults(latest.heldToolResults, heldToolResults),
+		};
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		next = record;
+	});
+	return next as SubagentChildRecord;
+}
+
+export async function clearSubagentChildHeldToolResults(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	toolCallIds: readonly string[],
+): Promise<void> {
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		const held = latest?.heldToolResults ?? [];
+		const kept = held.filter((result) => !toolCallIds.includes(result.toolCallId));
+		if (latest === undefined) return;
+		const waitingOn = latest.waitingOn?.filter(
+			(call) => call.replyWait === undefined || !toolCallIds.includes(call.toolCallId),
+		);
+		if (kept.length === held.length && waitingOn?.length === latest.waitingOn?.length) return;
+		const record: SubagentChildRecord = {
+			...latest,
+			heldToolResults: kept,
+			...(waitingOn === undefined ? {} : { waitingOn }),
+		};
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+	}).catch((error: ReleasedChildError) => {
+		observeChildRecordFailure(ownerSessionId, error);
+	});
+}
+
+function withHeldToolResults(
+	held: readonly DetachedToolResult[] | undefined,
+	added: readonly DetachedToolResult[],
+): DetachedToolResult[] {
+	const kept = [...(held ?? [])];
+	for (const result of added)
+		if (!kept.some((existing) => existing.toolCallId === result.toolCallId)) kept.push(result);
+	return kept;
+}
+
+/** Record a reply before its broker acknowledges it; a duplicate or expired question is refused. */
+export async function recordSubagentChildReply(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	questionId: string,
+	result: DetachedToolResult,
+	arrivedAt: number,
+): Promise<boolean> {
+	let accepted = false;
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		const call = latest?.waitingOn?.find(
+			(item) => item.toolCallId === result.toolCallId && item.replyWait?.questionId === questionId,
+		);
+		if (
+			latest === undefined ||
+			latest.terminalStatus === "killed" ||
+			latest.terminalStatus === SUBAGENT_CHILD_GONE_STATUS ||
+			latest.terminalStatus === SUBAGENT_CHILD_STAGE_CLOSED_STATUS ||
+			call?.replyWait === undefined ||
+			arrivedAt >= call.replyWait.deadline ||
+			latest.heldToolResults?.some((item) => item.toolCallId === result.toolCallId)
+		)
+			return;
+		const record: SubagentChildRecord = {
+			...latest,
+			heldToolResults: withHeldToolResults(latest.heldToolResults, [result]),
+		};
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		observeSubagentChildRecord(record);
+		accepted = true;
+	});
+	return accepted;
+}
+
+async function appendInTurn(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	next: (latest: SubagentChildRecord) => SubagentChildRecord | undefined,
+): Promise<SubagentChildRecord | undefined> {
+	let written: SubagentChildRecord | undefined;
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
+		const record = next(latest);
+		if (record === undefined) return;
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		written = record;
+	});
+	return written;
+}
+
+export async function recordSubagentChildWakeFailure(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	toolResults: readonly DetachedToolResult[],
+	failure: ReleasedChildError,
+): Promise<void> {
+	await appendInTurn(pi, ownerSessionId, childId, (latest) => {
+		const reported = currentWakeFailure(latest)?.reported;
+		return {
+			...latest,
+			heldToolResults: withHeldToolResults(latest.heldToolResults, toolResults),
+			wakeFailure: {
+				...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
+				code: failure.code,
+				reason: failure.fields.reason ?? failure.message,
+				hint: failure.hint,
+				...(reported ? { reported } : {}),
+			},
+		};
+	});
+}
+
+export function reportSubagentChildWakeFailure(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+): Promise<SubagentChildRecord | undefined> {
+	return appendInTurn(pi, ownerSessionId, childId, (latest) => {
+		const failure = currentWakeFailure(latest);
+		return failure === undefined || failure.reported
+			? undefined
+			: { ...latest, wakeFailure: { ...failure, reported: true } };
+	});
 }
 
 /**
@@ -536,4 +864,9 @@ export function findSubagentChildRecord(
 		if (record.taskId === target || record.intercomTarget === target) return record;
 	}
 	return undefined;
+}
+
+/** Owners with appends in flight and stop requests not taken yet; both are empty when nothing is happening. */
+export function subagentChildRecordRegistrySizes(): { readonly appendChains: number; readonly stopRequests: number } {
+	return { appendChains: appendChains.size, stopRequests: stopRequests.size };
 }

@@ -17,6 +17,61 @@ export const CHILD_RESTORATION_WAIT_MS = 20_000;
  * it is restoring, by the capability it was just issued for that child (#3760).
  */
 export const SUBAGENT_RESERVE_RESTORING_CHILD_EVENT = "subagent:reserve-restoring-child";
+/**
+ * Intercom tells Subagents that a send or ask waits at the broker for a released child of this session (#4326), so
+ * Subagents wakes it. Payload: {@link ReleasedChildWakeNotice}.
+ */
+export const SUBAGENT_RELEASED_CHILD_WAKE_EVENT = "subagent:released-child-wake";
+
+/** A send or ask waits for the released child named `childName`. */
+export interface ReleasedChildWakeNotice {
+	readonly childName: string;
+}
+
+/**
+ * Subagents asks Intercom to reserve released children by name for this session's broker connection, any number at a
+ * time, or to park them (`wake: false`); calling again replaces a child's reservation (#4326).
+ */
+export const SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT = "subagent:reserve-released-children";
+/** Subagents tells Intercom that released children ended or were taken over, so their reservations end (#4326). */
+export const SUBAGENT_DROP_RELEASED_CHILDREN_EVENT = "subagent:drop-released-children";
+/** Subagents tells Intercom it is waking a released child, so the sends held for it may wait longer (#4326). */
+export const SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT = "subagent:acknowledge-released-child-wake";
+/**
+ * Intercom tells every extension that this session is connected to the broker, at start and after each reconnect,
+ * when the broker has forgotten every reservation this connection made (#4326). Payload: {@link IntercomConnectedNotice}.
+ */
+export const INTERCOM_CONNECTED_EVENT = "intercom:connected";
+
+/** One released child to reserve: see {@link SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT}. */
+export interface ReleasedChildReservationRequest {
+	readonly childName: string;
+	readonly group?: string;
+	readonly aliases?: readonly string[];
+	readonly wake: boolean;
+}
+
+export interface ReserveReleasedChildrenRequest {
+	readonly children: readonly ReleasedChildReservationRequest[];
+	completion?: Promise<void>;
+}
+
+export interface DropReleasedChildrenRequest {
+	readonly childNames: readonly string[];
+	readonly gone?: string;
+	readonly refusal?: string;
+	completion?: Promise<void>;
+}
+
+export interface AcknowledgeReleasedChildWakeRequest {
+	readonly childName: string;
+	completion?: Promise<void>;
+}
+
+export interface IntercomConnectedNotice {
+	readonly sessionId: string;
+}
+
 /** Subagents ends that hold; with `gone` (the reason) senders are told the child did not survive the restart. */
 export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restoring-child";
 /**
@@ -102,6 +157,43 @@ export function isReserveRestoringChildRequest(value: unknown): value is Reserve
 		(request.dormant === undefined || typeof request.dormant === "boolean") &&
 		Array.isArray(request.aliases) &&
 		request.aliases.every((alias) => typeof alias === "string")
+	);
+}
+
+export function isReserveReleasedChildrenRequest(value: unknown): value is ReserveReleasedChildrenRequest {
+	if (!value || typeof value !== "object") return false;
+	const request = value as Partial<ReserveReleasedChildrenRequest>;
+	return (
+		Array.isArray(request.children) &&
+		request.children.every(
+			(child: Partial<ReleasedChildReservationRequest> | null) =>
+				typeof child === "object" &&
+				child !== null &&
+				typeof child.childName === "string" &&
+				typeof child.wake === "boolean" &&
+				(child.group === undefined || typeof child.group === "string") &&
+				(child.aliases === undefined ||
+					(Array.isArray(child.aliases) && child.aliases.every((alias) => typeof alias === "string"))),
+		)
+	);
+}
+
+export function isDropReleasedChildrenRequest(value: unknown): value is DropReleasedChildrenRequest {
+	if (!value || typeof value !== "object") return false;
+	const request = value as Partial<DropReleasedChildrenRequest>;
+	return (
+		Array.isArray(request.childNames) &&
+		request.childNames.every((name) => typeof name === "string") &&
+		(request.gone === undefined || typeof request.gone === "string") &&
+		(request.refusal === undefined || typeof request.refusal === "string")
+	);
+}
+
+export function isAcknowledgeReleasedChildWakeRequest(value: unknown): value is AcknowledgeReleasedChildWakeRequest {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof (value as Partial<AcknowledgeReleasedChildWakeRequest>).childName === "string"
 	);
 }
 

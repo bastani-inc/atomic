@@ -658,7 +658,7 @@ Workflow stages use the same upstream-compatible `bash` tool as normal Atomic se
 readonly customTools?: readonly WorkflowCustomToolDefinition[];
 ```
 
-Adds stage-local tool definitions using the Atomic tool contract. Each definition supplies its schema and execute handler. Set `detachable: true` on a tool whose work does not need the stage session once it has started and can safely run again with the same call id and arguments after a restart; a call of it that outlasts the stage's [`releaseWhenWaiting`](#releasewhenwaiting) threshold lets the stage release its session until the result arrives.
+Adds stage-local tool definitions using the Atomic tool contract. Each definition supplies its schema and execute handler. Set `detachable: true` on a tool whose work does not need the stage session once it has started and can safely run again with the same call id and arguments after a restart; a call of it that outlasts the stage's [`releaseWhenWaiting`](#releasewhenwaiting) threshold lets the stage release its session until the result arrives. `detachable` may also be a function of the call's arguments; then only the calls it accepts may detach, and every other call runs inline.
 
 ### `releaseWhenWaiting`
 

@@ -50,6 +50,8 @@ interface DetachmentState {
 	/** How each detachable tool's work starts, by tool name. */
 	readonly executes: Map<string, DetachableExecute>;
 	readonly concurrency: Map<string, AgentTool["concurrency"]>;
+	/** For a tool that detaches only some of its calls, which ones, by tool name. */
+	readonly detachesCall: Map<string, DetachesCall>;
 }
 
 const states = new WeakMap<object, DetachmentState>();
@@ -60,10 +62,21 @@ const DETACHED_PLACEHOLDER_TEXT =
 function detachmentState(session: AgentSession): DetachmentState {
 	let state = states.get(session);
 	if (state === undefined) {
-		state = { policy: undefined, detached: new Map(), executes: new Map(), concurrency: new Map() };
+		state = {
+			policy: undefined,
+			detached: new Map(),
+			executes: new Map(),
+			concurrency: new Map(),
+			detachesCall: new Map(),
+		};
 		states.set(session, state);
 	}
 	return state;
+}
+
+/** Whether the host set a detachment policy on this session, so its detachable calls may outlive its runs. */
+export function hasToolDetachment(session: AgentSession): boolean {
+	return states.get(session)?.policy !== undefined;
 }
 
 export function isDetachedToolCall(session: AgentSession, toolCallId: string): boolean {
@@ -113,6 +126,21 @@ export type DetachableExecute = (
 /** The session's tool context for a call that runs inline, bound to the call's own abort signal. */
 export type DetachableContext = (toolCallId: string, signal: AbortSignal) => ExtensionToolContext;
 
+/** Whether one call of a tool may detach, decided from the call's arguments. */
+export type DetachesCall = (params: ToolParams) => boolean;
+
+const readinessCallbacks = new WeakMap<AbortSignal, () => void>();
+
+/** Marks the durable handoff of a call ready for detachment. No-op without a waiting detachment policy. */
+export function markToolCallReadyForDetachment(signal: AbortSignal): void {
+	readinessCallbacks.get(signal)?.();
+}
+
+/** Whether this call must prepare a durable handoff before it can detach. */
+export function toolCallNeedsDetachmentHandoff(signal: AbortSignal | undefined): boolean {
+	return signal !== undefined && readinessCallbacks.has(signal);
+}
+
 /**
  * What a detachable call's work reaches of its session, only while the call runs inline. Detaching clears it, so
  * the work keeps neither the agent loop nor the session's context reachable for as long as it goes on.
@@ -142,14 +170,18 @@ function startOperation(
 	facts: DetachedCallFacts,
 	createContext: DetachableContext | undefined,
 	start?: Promise<void>,
-): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult> } {
+): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult>; readonly signal: AbortSignal } {
 	return outsideAnySession(() => {
 		const controller = new AbortController();
 		if (createContext !== undefined) inline.context = createContext(facts.toolCallId, controller.signal);
 		const onUpdate = inline.onUpdate === undefined ? undefined : forwardedUpdate(inline);
 		const context = callContext(inline, facts);
 		const settled = invokeDetached(execute, facts.toolCallId, params, controller.signal, onUpdate, context, start);
-		return { settled, call: detachedCall(toolName, facts.toolCallId, settled, controller) };
+		return {
+			settled,
+			signal: controller.signal,
+			call: detachedCall(toolName, facts.toolCallId, settled, controller),
+		};
 	});
 }
 
@@ -257,6 +289,7 @@ function releaseWhenSettled(settled: Promise<AgentToolResult>, permit: Scheduler
 export function forgetDetachableTools(session: AgentSession): void {
 	states.get(session)?.executes.clear();
 	states.get(session)?.concurrency.clear();
+	states.get(session)?.detachesCall.clear();
 }
 
 /**
@@ -273,15 +306,18 @@ export function detachableTool(
 	tool: AgentTool,
 	execute: DetachableExecute,
 	createContext: DetachableContext,
+	detachesCall?: DetachesCall,
+	requiresReady = false,
 ): AgentTool {
 	const state = detachmentState(session);
 	state.executes.set(tool.name, execute);
 	state.concurrency.set(tool.name, tool.concurrency);
+	if (detachesCall !== undefined) state.detachesCall.set(tool.name, detachesCall);
 	return {
 		...tool,
 		execute: async (toolCallId, params, signal, onUpdate) => {
 			const policy = state.policy;
-			if (policy === undefined || !isTopLevelToolCall(session, toolCallId))
+			if (policy === undefined || !isTopLevelToolCall(session, toolCallId) || detachesCall?.(params) === false)
 				return tool.execute(toolCallId, params, signal, onUpdate);
 			const permit = takeSchedulerPermit(
 				session._toolExecutionScheduler,
@@ -303,7 +339,7 @@ export function detachableTool(
 				permit.release();
 				throw error;
 			}
-			const { call, settled } = operation;
+			const { call, settled, signal: operationSignal } = operation;
 			releaseWhenSettled(settled, permit);
 			const forwardAbort = (): void => call.abort(signal?.reason);
 			if (signal?.aborted) forwardAbort();
@@ -312,11 +348,22 @@ export function detachableTool(
 			// created in the run's context stays on the call once it detaches.
 			const gate = Promise.withResolvers<symbol>();
 			openGateWhenSettled(settled, gate);
-			const timer = setTimeout(() => gate.resolve(DETACH), policy.afterMs);
+			let ready = !requiresReady;
+			let elapsed = false;
+			if (requiresReady)
+				readinessCallbacks.set(operationSignal, () => {
+					ready = true;
+					if (elapsed) gate.resolve(DETACH);
+				});
+			const timer = setTimeout(() => {
+				elapsed = true;
+				if (ready) gate.resolve(DETACH);
+			}, policy.afterMs);
 			try {
 				if ((await gate.promise) === INLINE) return await settled;
 			} finally {
 				clearTimeout(timer);
+				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}
 			inline.onUpdate = undefined;
@@ -421,10 +468,13 @@ function pendingDetachableCalls(session: AgentSession): {
 	const answered = new Set(
 		later.flatMap((message) => (message.role === "toolResult" ? [(message as ToolResultMessage).toolCallId] : [])),
 	);
-	const executes = states.get(session)?.executes;
+	const state = states.get(session);
 	const detachable = assistant.content.flatMap((block): DetachableCall[] => {
-		const execute = block.type === "toolCall" ? executes?.get(block.name) : undefined;
-		return execute === undefined ? [] : [{ toolCall: block as ToolCall, execute }];
+		if (block.type !== "toolCall") return [];
+		const execute = state?.executes.get(block.name);
+		if (execute === undefined) return [];
+		if (state?.detachesCall.get(block.name)?.(block.arguments as ToolParams) === false) return [];
+		return [{ toolCall: block as ToolCall, execute }];
 	});
 	return {
 		assistant,

@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderIntercomToolResult } from "./result-renderers.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
+import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
@@ -17,16 +18,26 @@ import {
 	type IntercomRecoveryPeersRequest,
 	awaitRestoredIntercomPeers,
 	isAwaitIntercomPeerRequest,
+	isAcknowledgeReleasedChildWakeRequest,
+	isDropReleasedChildrenRequest,
 	isReleaseRestoringChildRequest,
+	isReserveReleasedChildrenRequest,
 	isReserveRestoringChildRequest,
 	planIntercomRecoveryReplay,
+	type AcknowledgeReleasedChildWakeRequest,
+	type DropReleasedChildrenRequest,
 	type ReleaseRestoringChildRequest,
+	type ReserveReleasedChildrenRequest,
 	type ReserveRestoringChildRequest,
+	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
+import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,
@@ -37,6 +48,21 @@ import {
 	type ForwardedEventMap,
 	type ToolRenderResultArgs,
 } from "./lazy-heavy-proxy.js";
+
+export {
+	IntercomReleasedChildError,
+	type IntercomReleasedChildErrorCode,
+	isIntercomReleasedChildError,
+	isReleasedChildErrorCode,
+	isReleasedChildReservationError,
+	isUnknownReleasedChildError,
+	RELEASED_CHILD_ERROR_CODES,
+	ReleasedChildReservationError,
+	rehydrateIntercomReleasedChildError,
+	type SerializedIntercomReleasedChildError,
+	serializeIntercomReleasedChildError,
+	UnknownReleasedChildError,
+} from "./broker/released-child-errors.js";
 
 type LifecycleSnapshot<K extends keyof ForwardedEventMap> = {
 	event: ForwardedEventMap[K];
@@ -259,6 +285,11 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
   const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
   let heavyAttempt: HeavyAttempt | null = null;
   let loadedHeavy: IntercomHeavyHandle | null = null;
+  const heavyReplyWaitMayDetach = (name: string, params: { action?: string; reason?: string }): boolean => {
+    if (loadedHeavy === null) return true;
+    const predicate = loadedHeavy.heavy.tools.get(name)?.detachable;
+    return typeof predicate === "function" ? predicate(params) : predicate === true;
+  };
   let sessionSnapshot: SessionSnapshot | null = null;
 	// Event subscriptions outlive shutdown replay state; never use this owner to load heavy state.
 	let shutdownDiagnosticRoute: DiagnosticRoute | undefined;
@@ -523,6 +554,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
       pi.registerTool({
         name: "contact_supervisor",
         exposure: "model-only",
+        detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
+        detachmentRequiresReady: true,
         label: "Contact Supervisor",
         description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
         promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
@@ -750,6 +783,47 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			await forwarded.completion;
 		});
 	});
+	answerReleasedReplyFormatRequests(pi.events);
+	// #4326: the owner reserves its released children by name, in bulk, on its own broker connection.
+	pi.events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+		if (!isReserveReleasedChildrenRequest(payload) || payload.completion) return;
+		const forwarded: ReserveReleasedChildrenRequest = { children: payload.children };
+		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, forwarded);
+			if (!forwarded.completion) throw new Error("Intercom cannot reserve released subagents");
+			await forwarded.completion;
+		});
+	});
+	// A reservation lives on the connection that made it: without a loaded Intercom there is nothing to drop or to
+	// extend, and loading it just to say so would only report a failure at shutdown.
+	for (const [eventName, isRequest] of [
+		[SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, isDropReleasedChildrenRequest],
+		[SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, isAcknowledgeReleasedChildWakeRequest],
+	] as const) {
+		pi.events.on(eventName, (payload) => {
+			if (!isRequest(payload) || payload.completion) return;
+			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest = { ...payload };
+			const handle = loadedHeavy;
+			payload.completion = !handle
+				? Promise.resolve()
+				: (async () => {
+						try {
+							handle.assertCurrent();
+						} catch {
+							// This Intercom generation ended, and its reservations with it.
+							return;
+						}
+						try {
+							await dispatchEventHandlers(handle.heavy, eventName, forwarded);
+							await forwarded.completion;
+						} catch (error) {
+							// A lost connection took its reservations with it; a broker's refusal is the caller's to see.
+							if (!isRecoverableIntercomDisconnect(error)) throw error;
+						}
+					})();
+		});
+	}
 	pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
 		if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
 		const forwarded: ReleaseRestoringChildRequest = {
@@ -897,6 +971,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	pi.registerTool({
 		name: "intercom",
 		exposure: "model-only",
+		detachable: (params) => intercomCallMayDetach(params) && heavyReplyWaitMayDetach("intercom", params),
+		detachmentRequiresReady: true,
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
@@ -948,6 +1024,8 @@ Usage:
 		pi.registerTool({
 			name: "contact_supervisor",
 			exposure: "model-only",
+			detachable: (params) => contactSupervisorCallMayDetach(params) && heavyReplyWaitMayDetach("contact_supervisor", params),
+			detachmentRequiresReady: true,
 			label: "Contact Supervisor",
 			description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
 			promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",

@@ -26,6 +26,7 @@ interface SubagentRelayDeps {
   sendIncomingMessage(entry: { from: SessionInfo; message: Message; bodyText: string }, delivery: "trigger" | "followUp", generation?: number): unknown;
   ensureConnected(reason: "background"): Promise<IntercomClient>;
   authorizeSupervisorChild?(childName: string): Promise<import("./broker/client.js").SupervisorAuthorization>;
+  forgetSupervisedChildren?(childNames: readonly string[]): void;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup?(): string;
   /** Internal test seam for exercising authority pressure and storage failure. */
@@ -306,6 +307,8 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
     });
   });
   pi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
+    const finished = parseSubagentResultBarrier(payload);
+    if (finished) deps.forgetSupervisedChildren?.(finished.sourceSessionTargets);
     relaySubagentIntercomPayload(payload, {
       sender: "subagent-result",
       status: "result",

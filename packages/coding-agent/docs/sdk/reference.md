@@ -444,6 +444,12 @@ const waitForCi = defineTool({
 });
 ```
 
+`detachable` may also be a function of the call's arguments. Only a call for which it returns `true` may detach; every other call runs inline however long it takes. The built-in shell tools and Intercom use this, so only a shell `wait` without a budget, an Intercom `ask` and a `contact_supervisor` decision request may detach. Intercom reply waits remain live when multi-node routing is active.
+
+A detachable call is scheduled like any other call of its message: it starts only once the calls it must follow, as its `concurrency` says, have finished.
+
+A tool that must save a durable handoff before detaching can also set `detachmentRequiresReady: true`. While the call runs, `toolCallNeedsDetachmentHandoff(signal)` tells it whether a handoff is needed. After saving the handoff, call `markToolCallReadyForDetachment(signal)`; the call detaches only after both that signal and the host's delay. If the call finishes first, its result is returned inline. Both helpers are exported from `@bastani/atomic`.
+
 Without a detachment policy a detachable call runs inline like any other. A host that can keep the conversation in a session store sets one with `session.setToolDetachment({ afterMs })`, where `afterMs` is from 0 to `MAX_TOOL_DETACHMENT_AFTER_MS` (2,147,483,647, the longest timer delay):
 
 - A call that finishes within `afterMs` runs inline.
@@ -1069,6 +1075,37 @@ getExamplesPath
 generateDiffString
 generateUnifiedPatch
 type EditDiffResult
+
+// Releasing idle sessions and waking them (see "Releasing idle sessions" in the SDK guide)
+type ReleasedAgentSession
+type ReleaseWhenIdleOptions
+AgentWakeDispatcher
+agentWakeDispatcher
+wakeKeyNamespace
+type AgentWake
+type AgentWakeKind
+type AgentWakeHandler
+type AgentWakeHandlerOptions
+type AgentWakeClock
+type AgentWakeTimer
+type AgentWakeDispatcherOptions
+type AgentWakeDispatcherStats
+type AgentWakeFailureListener
+AgentRehydrateError
+AgentReleaseConfigError
+type AgentRehydrateErrorCode
+type AgentRehydrateErrorFields
+type AgentReleaseConfigSource
+type AgentSessionActivity
+type SerializedAgentRehydrateError
+type SerializedAgentErrorCause
+isAgentRehydrateError
+isAgentReleaseConfigError
+isRetryableAgentRehydrateError
+isLocalOnlySessionStorage
+serializeAgentRehydrateError
+rehydrateAgentRehydrateError
+TEAM_JOIN_COMMAND
 
 // Session output
 createTranscript

@@ -19,3 +19,8 @@ export const RECIPIENT_RECEIPT_TIMEOUT_MS = 8_000;
 export const RECIPIENT_SAVING_REPORT_INTERVAL_MS = RECIPIENT_RECEIPT_TIMEOUT_MS / 4;
 /** No save holds its sender longer than this, however long the recipient keeps reporting progress. */
 export const RECIPIENT_SAVE_MAX_WAIT_MS = 120_000;
+
+/** Wording shared with a released question that reaches the same timeout. */
+export function intercomRecoveryStoppedText(reason: string, retries: number): string {
+	return `${reason}\nIntercom recovery stopped after ${retries} automatic retries. Delivery may already have occurred. Do not repeat this operation automatically; check with the recipient before intentionally sending a new message.`;
+}

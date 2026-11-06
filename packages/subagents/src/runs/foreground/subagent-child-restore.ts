@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentTaskHost,
+	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	isStaleExtensionContextError,
@@ -31,7 +32,10 @@ import {
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
+import { formatReleasedReplyResults } from "./released-child-replies.js";
+import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
+import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
@@ -41,10 +45,12 @@ import {
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
 	subagentChildOwner,
+	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
 import { readPreviousIntercomId, reopenChildSession } from "./subagent-child-session.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
@@ -53,6 +59,7 @@ import type { ExecutorDeps } from "./subagent-executor-types.js";
 import {
 	type QueuedSubagentChildStart,
 	runAgentTask,
+	subagentChildClosed,
 	subagentChildSchedule,
 	takeStoppedQueuedSubagentChild,
 } from "./task-execution.js";
@@ -111,6 +118,13 @@ export interface SubagentChildResumeRequest {
 	readonly continuation?: string;
 	/** The caller's message; a child stopped before it ever started gets it after its original task. */
 	readonly message?: string;
+	/** Additional resume messages batched with the first, in arrival order. */
+	readonly followUps?: readonly string[];
+	/** Results of the child's detached calls that arrived for it (#4326), in arrival order. */
+	readonly toolResults?: readonly DetachedToolResult[];
+	/** Only `toolResults` woke the child: nothing is prompted unless a result came too late for its call. */
+	readonly promptless?: boolean;
+	readonly redispatch?: true;
 }
 
 export type SubagentChildRestoreOutcome =
@@ -135,6 +149,7 @@ interface ActiveRestoration {
 	readonly ownerSessionId: string;
 	readonly record: SubagentChildRecord;
 	readonly outcome: Promise<SubagentChildRestoreOutcome>;
+	readonly finished: Promise<void>;
 	/** The Intercom id the child registered under before the restart; settles once its session is reopened. */
 	readonly previousIntercomId: Promise<string | undefined>;
 	/** Set once the restoration finished: the child was relaunched, or could not be. */
@@ -238,7 +253,12 @@ function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResume
 	// or the resume's own message, is delivered as written whether or not anything was held (#4027).
 	const taskExpands =
 		recorded !== undefined && heldTaskExpands(recorded) && held.length > 0 && held[0] === recorded.messages[0];
-	const [task = prompt, ...followUps] = [...held, prompt, ...(resume?.continuation ? [resume.continuation] : [])];
+	const [task = prompt, ...followUps] = [
+		...held,
+		prompt,
+		...(resume?.followUps ?? []),
+		...(resume?.continuation ? [resume.continuation] : []),
+	];
 	return { task, followUps, taskLiteral: !taskExpands };
 }
 
@@ -307,6 +327,7 @@ async function relaunchChild(
 		record,
 		reason,
 	});
+	await subagentChildClosed(record.runId, record.index);
 	const host = ctx.getAgentTaskHost?.();
 	const queued = record.taskId && host ? takeStoppedQueuedSubagentChild(record.taskId) : undefined;
 	if (queued && host)
@@ -404,11 +425,39 @@ async function relaunchChild(
 			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
 		);
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
-	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
+	const redispatch = resume?.redispatch === true && !fresh && sessionManager !== undefined;
+	const supervisorAuthorization =
+		redispatch || (childOptions && !childAllowsIntercom(childOptions)) ? undefined : hold?.authorization;
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
 	if (!supervisorAuthorization) await hold?.release();
 	const intercomGroup = launchIntercomGroup(record, ctx);
-	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
+	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
+	const kept = record.heldToolResults ?? [];
+	const heldResults = [
+		...kept,
+		...(resume?.toolResults ?? []).filter((result) => !kept.some((held) => held.toolCallId === result.toolCallId)),
+	];
+	const toolResults = sessionManager
+		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
+		: heldResults;
+	const heldMessages =
+		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	const promptless = resume?.promptless === true && heldMessages.length === 0;
+	const wakePlan =
+		!redispatch &&
+		!fresh &&
+		sessionManager &&
+		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
+			(record.waitingOn?.length ?? 0) > 0 ||
+			toolResults.length > 0)
+			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, !promptless)
+			: undefined;
+	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
+	const prompts = redispatch
+		? { task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT, followUps: heldMessages, taskLiteral: true }
+		: wakePlan
+			? wakePrompts(basePrompts, wakePlan.lateMessages, promptless)
+			: basePrompts;
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -428,13 +477,24 @@ async function relaunchChild(
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
 		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
+		// Present, even empty, whenever the wake took the results its record held: they are cleared once delivered.
+		...(wakePlan
+			? {
+					resumeToolResults: wakePlan.resumeToolResults,
+					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
+				}
+			: {}),
+		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),
+		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
 		workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 		...(record.intercomTarget ? { intercomSessionName: record.intercomTarget } : {}),
 		...(supervisorAuthorization ? { supervisorAuthorization } : {}),
-		...(bridge?.active && bridge.orchestratorTarget ? { orchestratorIntercomTarget: bridge.orchestratorTarget } : {}),
+		...(bridge?.active && bridge.orchestratorTarget && !redispatch
+			? { orchestratorIntercomTarget: bridge.orchestratorTarget }
+			: {}),
 		...(intercomGroup ? { intercomGroup } : {}),
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
 		knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
@@ -514,6 +574,16 @@ async function relaunchChild(
 		intercomGroup,
 	);
 	return fresh ? startedFresh(outcome) : outcome;
+}
+
+/**
+ * What a woken child is prompted with: results that came too late for their calls first, as messages, then what the
+ * resume or wake brought. A wake by tool results alone prompts only the late results.
+ */
+function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promptless: boolean): ResumePrompts {
+	if (lateMessages.length === 0) return base;
+	const [task = "", ...followUps] = promptless ? lateMessages : [...lateMessages, base.task, ...base.followUps];
+	return { task, followUps, taskLiteral: true };
 }
 
 /** A restored child that had no session started fresh on its launch rather than resuming one. */
@@ -646,17 +716,23 @@ export async function restoreSubagentChild(
 	resume?: SubagentChildResumeRequest,
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
-	const record = findSubagentChildRecord(
-		readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId),
-		id,
-	);
+	indexSubagentChildOwner(ctx);
+	const record =
+		subagentChildRecordOf(ownerSessionId, id) ??
+		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };
 	const key = childHoldKey(ownerSessionId, record.childId);
 	const active = activeRestorations.get(key);
-	if (active) return active.outcome;
+	if (active) {
+		if (resume === undefined) return active.outcome;
+		await active.finished;
+		await subagentChildRecordsAppended(ownerSessionId);
+		return restoreSubagentChild(deps, ctx, id, resume);
+	}
 	goneChildren.delete(key);
 	const previousIntercomId = Promise.withResolvers<string | undefined>();
+	const finished = Promise.withResolvers<void>();
 	let knownPreviousIntercomId: string | undefined;
 	const onReopened = (intercomId: string | undefined) => {
 		knownPreviousIntercomId = intercomId;
@@ -664,6 +740,7 @@ export async function restoreSubagentChild(
 	};
 	const release = () => {
 		if (activeRestorations.get(key)?.outcome === restoration) activeRestorations.delete(key);
+		finished.resolve();
 	};
 	let hold: ChildTargetHold | undefined;
 	const markGone = async (reason: string) => {
@@ -720,6 +797,7 @@ export async function restoreSubagentChild(
 		ownerSessionId,
 		record,
 		outcome: restoration,
+		finished: finished.promise,
 		previousIntercomId: previousIntercomId.promise,
 	});
 	return restoration;
@@ -900,4 +978,9 @@ export async function recordReportedGoneSubagentChildren(
 		if (outcome.kind !== "unrestorable" || !outcome.record) continue;
 		await recordSubagentChildGone(pi, outcome.record).catch(() => undefined);
 	}
+}
+
+/** Restorations in flight and children reported gone, held in this process; counted by tests and the benchmark. */
+export function subagentRestoreRegistrySizes(): { readonly active: number; readonly gone: number } {
+	return { active: activeRestorations.size, gone: goneChildren.size };
 }

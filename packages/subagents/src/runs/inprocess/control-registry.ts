@@ -74,3 +74,8 @@ export function findChildIdentity(
 export function clearSubagentControls(): void {
 	controls.clear();
 }
+
+/** Runs whose controls are registered; counted by tests and the benchmark. */
+export function subagentControlCount(): number {
+	return controls.size;
+}

@@ -31,6 +31,7 @@ import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-c
 import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
 import { agentSessionRecoveryMethods } from "./agent-session-recovery.ts";
+import { agentSessionReleaseMethods } from "./agent-session-release.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionSummaryMethods, type SessionSummaryRun } from "./agent-session-summary.ts";
@@ -502,6 +503,7 @@ Object.assign(
 	agentSessionExtensionBindingsMethods,
 	agentSessionRecoveryMethods,
 	agentSessionDetachedToolMethods,
+	agentSessionReleaseMethods,
 	agentSessionToolRegistryMethods,
 	agentSessionRetryMethods,
 	agentSessionBashMethods,

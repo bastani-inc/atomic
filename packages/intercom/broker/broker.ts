@@ -44,6 +44,7 @@ import type {
 	Message,
 	BrokerMessage,
 	BrokerStatusReport,
+	DeliveryFailureReasonCode,
 	SupervisorRegistration,
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
@@ -51,6 +52,7 @@ import type {
 	WorkflowFutureStageRosterEntry,
 	WorkflowRunParentAnnouncement,
 	PendingStageRouteRefusalCode,
+	ReleasedChildRefusal,
 } from "../types.js";
 import {
 	formatWorkflowStageTarget,
@@ -65,6 +67,7 @@ import {
 	handleBrokerSend,
 	type BrokerConnectedSession,
 	type PendingStageRoute,
+	type ReleasedAskerReplyRouter,
 	type RemoteSendRequest,
 	type RemoteSendRouter,
 	type RestoringRecipientHold,
@@ -82,7 +85,17 @@ import {
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
-import { type HeldSend, RestoringRecipients } from "./restoring-recipients.js";
+import {
+	isReleasedReservationKey,
+	isRestoringRecipientAlias,
+	isValidChildName,
+	type ParsedReleasedChild,
+	RELEASED_CHILD_FRAME_MAX,
+	releasedReservationKey,
+	validateReleasedChildFrame,
+} from "./released-children.js";
+import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
+import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -91,10 +104,10 @@ import {
 	setSessionGroups,
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
-import { PendingQuestionIndex } from "./pending-question-index.js";
+import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
-import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
+import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
 import {
   BROKER_RETIRING_CODE,
@@ -205,6 +218,21 @@ interface LiveWorkflowStageRouteActivation {
 
 type ConnectedSession = BrokerConnectedSession;
 
+interface PendingReleasedReplyAck {
+  readonly handoffId: string;
+  readonly timer: ReturnType<typeof setTimeout>;
+  readonly socket: net.Socket;
+  readonly attemptId?: string;
+  readonly ownerSessionId: string;
+  readonly questionId: string;
+  readonly childName: string;
+  readonly route: ReleasedAskerReplyRoute;
+}
+
+function releasedAskerReplyRefusal(childName: string): string {
+  return `Subagent \`${childName}\` is released and no longer waiting for this reply`;
+}
+
 function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -250,18 +278,9 @@ function isSupervisorRegistration(value: unknown): value is SupervisorRegistrati
 
 const RESTORING_RECIPIENT_ALIASES_MAX = 4;
 const RESTORING_RECIPIENT_GONE_REASON_MAX = 1_000;
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isRestoringRecipientAliasList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
-}
-
-/**
- * A restoring subagent's extra targets are ids only: its Atomic session id and its pre-restart Intercom id (#3760).
- * Its name comes from the supervisor capability, so no reservation can claim another child's name.
- */
-function isRestoringRecipientAlias(alias: string): boolean {
-  return SESSION_ID_PATTERN.test(alias.trim());
 }
 
 function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): boolean {
@@ -374,7 +393,13 @@ class IntercomBroker {
   private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
-  private restoringRecipients = new RestoringRecipients((held, reason) => this.failHeldSend(held, reason));
+  private releasedAskerReplies = new ReleasedAskerReplies(undefined, undefined, undefined, () => {
+    console.error("Intercom broker released-asker reply route capacity reached; dropped routes are counted in broker_status");
+  });
+  private releasedReplyAcks = new Map<string, PendingReleasedReplyAck>();
+  private restoringRecipients = new RestoringRecipients((held, reason, reasonCode) =>
+    this.failHeldSend(held, reason, reasonCode),
+  );
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
 	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
@@ -1785,6 +1810,7 @@ class IntercomBroker {
             brokerStatus: true as const,
             claimsWorkflowInvocations: true as const,
             extendsSaves: true as const,
+            multiNodeRouting: this.multiNodeStatus,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -1798,14 +1824,23 @@ class IntercomBroker {
           flushHeldWrites(socket, held);
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
           // for it while it was being restored go out now, once each and in the order they arrived.
-          if (consumedCapability !== undefined) {
-            const registered = info.name?.trim();
-            for (const send of this.restoringRecipients.consume(
-              consumedCapability,
-              registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
-            ))
-              this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+          const registered = info.name?.trim();
+          if (registered !== undefined && supervisorId !== undefined) {
+            for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
+              this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
+              const asker = this.sessions.get(question.senderSessionId);
+              if (asker !== undefined) writeMessageIfOpen(asker.socket, {
+                type: "peer_rebound", replyTo: question.messageId, previousSessionId: question.targetSessionId, sessionId: id,
+              });
+            }
           }
+          for (const send of this.restoringRecipients.consume(
+            consumedCapability,
+            registered
+              ? { childName: registered, groups: sessionGroups(info), ...(supervisorId ? { authorizedBy: supervisorId } : {}) }
+              : undefined,
+          ))
+            this.dispatchSend(send.socket, send.clientMessage, send.senderId);
         };
         // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
         // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
@@ -1815,12 +1850,13 @@ class IntercomBroker {
             ? undefined
             : this.multiNode?.sessionRegistered(
                 rejoined,
-                consumedCapability === undefined
+                consumedCapability === undefined && !info.name?.trim()
                   ? undefined
                   : {
-                      capability: consumedCapability,
+                      ...(consumedCapability === undefined ? {} : { capability: consumedCapability }),
                       ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
                       groups: sessionGroups(info),
+                      ...(supervisorId ? { authorizedBy: supervisorId } : {}),
                     },
               );
         if (presence === undefined) completeRegistration();
@@ -1917,7 +1953,9 @@ class IntercomBroker {
           throw new Error("Invalid reserve_restoring_recipient message");
         }
         // Only the supervisor the capability was issued to may hold sends for that child (#3760).
-        const childName = this.supervisorChannel.supervisedChildName(clientMessage.capability, currentId);
+        const childName = isReleasedReservationKey(clientMessage.capability)
+          ? undefined
+          : this.supervisorChannel.supervisedChildName(clientMessage.capability, currentId);
         const aliases = (clientMessage.aliases ?? []) as string[];
         if (childName === undefined || !aliases.every(isRestoringRecipientAlias)) {
           writeMessageIfOpen(socket, {
@@ -1929,7 +1967,7 @@ class IntercomBroker {
           });
           break;
         }
-        this.restoringRecipients.reserve(
+        this.reserveRestoringRecipient(
           clientMessage.capability,
           currentId,
           childName,
@@ -1937,15 +1975,85 @@ class IntercomBroker {
           aliases,
           { dormant: clientMessage.dormant === true },
         );
-        this.multiNode?.restoringReserved(
-          clientMessage.capability,
-          currentId,
-          childName,
-          normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
-          aliases,
-          clientMessage.dormant === true,
-        );
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
+        break;
+      }
+
+      case "reserve_released_children": {
+        const owner = this.sessions.get(currentId);
+        if (owner === undefined || typeof clientMessage.requestId !== "string") {
+          throw new Error("Invalid reserve_released_children message");
+        }
+        const validation = validateReleasedChildFrame(clientMessage.children);
+        const refusal = validation.ok ? this.releasedChildrenRefusal(owner, validation.children) : validation.refusal;
+        if (!validation.ok || refusal !== undefined) {
+          writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
+          break;
+        }
+        for (const child of validation.children) {
+          this.reserveReleasedChild(currentId, owner.registrationGroup, child);
+          this.releasedAskerReplies.attach(child.childName, currentId);
+        }
+        writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
+        break;
+      }
+
+      case "drop_released_children": {
+        const owner = this.sessions.get(currentId);
+        if (
+          owner === undefined ||
+          typeof clientMessage.requestId !== "string" ||
+          !Array.isArray(clientMessage.childNames) ||
+          clientMessage.childNames.length > RELEASED_CHILD_FRAME_MAX ||
+          !clientMessage.childNames.every((name) => typeof name === "string") ||
+          (clientMessage.gone !== undefined && typeof clientMessage.gone !== "string") ||
+          (clientMessage.refusal !== undefined && typeof clientMessage.refusal !== "string")
+        ) {
+          throw new Error("Invalid drop_released_children message");
+        }
+        const childNames = clientMessage.childNames as string[];
+        const refusal = childNames
+          .map((childName) => this.releasedChildOwnerRefusal(owner, childName))
+          .find((candidate) => candidate !== undefined);
+        if (refusal !== undefined) {
+          writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
+          break;
+        }
+        for (const childName of childNames) {
+          this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
+          this.failParkedQuestions(this.pendingQuestions.takeParked(childName, currentId), childName);
+          this.releasedAskerReplies.dropChild(childName, currentId);
+        }
+        writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
+        break;
+      }
+
+      case "acknowledge_released_child_wake": {
+        const owner = this.sessions.get(currentId);
+        if (owner === undefined || typeof clientMessage.requestId !== "string" || typeof clientMessage.childName !== "string") {
+          throw new Error("Invalid acknowledge_released_child_wake message");
+        }
+        const childName = clientMessage.childName;
+        const valid = isValidChildName(childName);
+        const refusal: ReleasedChildRefusal | undefined = valid ? this.releasedChildOwnerRefusal(owner, childName) : undefined;
+        const extended = valid && refusal === undefined ? this.restoringRecipients.extendHolds(childName, currentId) : undefined;
+        if (extended === undefined) {
+          writeMessageIfOpen(socket, {
+            type: "released_children_ack",
+            requestId: clientMessage.requestId,
+            refusal: refusal ?? { code: "unknown_released_child", childName },
+          });
+          break;
+        }
+        for (const { held, timeoutMs } of extended) {
+          writeMessageIfOpen(held.socket, {
+            type: "send_held",
+            messageId: held.messageId,
+            ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
+            timeoutMs,
+          });
+        }
+        writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
         break;
       }
 
@@ -1957,23 +2065,8 @@ class IntercomBroker {
         ) {
           throw new Error("Invalid release_restoring_recipient message");
         }
-        const released = this.restoringRecipients.release(
-          clientMessage.capability,
-          currentId,
-          typeof clientMessage.gone === "string" ? clientMessage.gone.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
-          typeof clientMessage.refusal === "string" && clientMessage.refusal.trim()
-            ? clientMessage.refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX)
-            : undefined,
-        );
-        if (released !== undefined) {
-          this.multiNode?.restoringReleased(clientMessage.capability, currentId, released.gone, released.refusal);
-        }
+        this.releaseReservation(clientMessage.capability, currentId, clientMessage.gone, clientMessage.refusal);
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
-        for (const send of released?.held ?? []) {
-          if (released?.gone !== undefined) this.failHeldSend(send, released.gone);
-          else if (released?.refusal !== undefined) this.failHeldSend(send, released.refusal);
-          else this.dispatchSend(send.socket, send.clientMessage, send.senderId);
-        }
         break;
       }
 
@@ -2253,6 +2346,17 @@ class IntercomBroker {
 			break;
 		}
 
+		case "released_child_reply_ack": {
+			if (typeof clientMessage.messageId !== "string" || typeof clientMessage.accepted !== "boolean") {
+				throw new Error("Invalid released_child_reply_ack message");
+			}
+			const pending = this.releasedReplyAcks.get(clientMessage.messageId);
+			if (pending?.ownerSessionId === currentId && pending.handoffId === clientMessage.handoffId) {
+				this.settleReleasedReply(clientMessage.messageId, clientMessage.accepted ? "accepted" : "refused");
+			}
+			break;
+		}
+
 		case "received": {
 			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid received message");
 			const recipient = this.sessions.get(currentId);
@@ -2326,7 +2430,84 @@ class IntercomBroker {
       this.receipts,
       this.routeRemote,
       (sender, group) => this.canInspectSelectedGroup(sender, group),
+      this.routeReleasedAskerReply,
     );
+  }
+
+  private readonly routeReleasedAskerReply: ReleasedAskerReplyRouter = ({
+    socket,
+    from,
+    message,
+    target,
+    attemptId,
+    expectedRecipientId,
+  }) => {
+    const route = this.releasedAskerReplies.take(message.replyTo, from.info.id, target, expectedRecipientId);
+    if (route === undefined) return false;
+    if (this.releasedReplyAcks.has(message.id)) {
+      this.releasedAskerReplies.restore(route, route.ownerSessionId);
+      writeMessageIfOpen(socket, {
+        type: "delivery_failed",
+        messageId: message.id,
+        ...(attemptId === undefined ? {} : { attemptId }),
+        reason: `Intercom message ID '${message.id}' is already waiting for a released subagent's owner to confirm another reply`,
+        reasonCode: "message_id_conflict",
+      });
+      return true;
+    }
+    const owner = this.sessions.get(route.ownerSessionId);
+    const timer = setTimeout(() => this.settleReleasedReply(message.id, "uncertain"), RECIPIENT_RECEIPT_TIMEOUT_MS);
+    timer.unref?.();
+    const handoffId = randomUUID();
+    const pending: PendingReleasedReplyAck = {
+      handoffId,
+      timer,
+      socket,
+      ...(attemptId === undefined ? {} : { attemptId }),
+      ownerSessionId: route.ownerSessionId,
+      questionId: route.questionId,
+      childName: route.childName,
+      route,
+    };
+    this.releasedReplyAcks.set(message.id, pending);
+    const written =
+      owner !== undefined &&
+      writeMessageIfOpen(owner.socket, {
+        type: "released_child_reply",
+        childName: route.childName,
+        handoffId,
+        replyTo: route.questionId,
+        from: from.info,
+        message,
+      });
+    if (!written) this.settleReleasedReply(message.id, "refused");
+    return true;
+  };
+
+  private settleReleasedReply(messageId: string, outcome: "accepted" | "refused" | "uncertain"): void {
+    const pending = this.releasedReplyAcks.get(messageId);
+    if (pending === undefined) return;
+    clearTimeout(pending.timer);
+    this.releasedReplyAcks.delete(messageId);
+    const attempt = pending.attemptId === undefined ? {} : { attemptId: pending.attemptId };
+    if (outcome === "accepted") {
+      this.deliveredMessages.settleQuestion(pending.questionId);
+      writeMessageIfOpen(pending.socket, { type: "delivered", messageId, ...attempt });
+      return;
+    }
+    const ownerStillHolds = this.restoringRecipients.releasedOwner(pending.childName) === pending.ownerSessionId;
+    if (outcome === "uncertain") {
+      // The owner may have saved the reply, late or before disconnecting; its record will deduplicate a later retry.
+      this.releasedAskerReplies.restore(pending.route, ownerStillHolds ? pending.ownerSessionId : undefined);
+    } else if (ownerStillHolds) {
+      this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
+    }
+    writeMessageIfOpen(pending.socket, {
+      type: "delivery_failed",
+      messageId,
+      ...attempt,
+      reason: outcome === "uncertain" ? UNCERTAIN_RECEIPT_REASON : releasedAskerReplyRefusal(pending.childName),
+    });
   }
 
   /** Multi-node S5: a send no local session resolved goes to the shared state once it is open. */
@@ -2376,6 +2557,9 @@ class IntercomBroker {
     return {
       pid: process.pid,
       sessions: this.sessions.size,
+      reservations: this.restoringRecipients.size,
+      heldSends: this.restoringRecipients.heldSendCount,
+      droppedReleasedReplyRoutes: this.releasedAskerReplies.droppedRoutes,
       ...(setting === undefined
         ? {}
         : { storage: { digest: sharedStorageDigest(setting), source: sharedStorageSettingSource() } }),
@@ -2441,6 +2625,7 @@ class IntercomBroker {
                 pendingQuestions: this.pendingQuestions,
                 deliveredMessages: this.deliveredMessages,
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
+                revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
               },
             });
           } catch (error) {
@@ -2459,6 +2644,7 @@ class IntercomBroker {
               reservation.group,
               reservation.aliases,
               reservation.dormant,
+              { wake: reservation.wake },
             );
             if (reservation.gone !== undefined) {
               this.multiNode.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
@@ -2494,18 +2680,123 @@ class IntercomBroker {
       clientMessage.awaitRestoringRecipient === true,
     );
     if (admission.kind === "none") return false;
-    if (admission.kind === "refused") this.failHeldSend(held, admission.reason);
+    if (admission.kind === "refused") this.failHeldSend(held, admission.reason, admission.reasonCode);
     else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
+    if (admission.kind === "held" && admission.wake !== undefined) this.wakeRestoringRecipientOwner(admission.wake);
     return true;
   };
 
-  private failHeldSend(held: HeldSend, reason: string): void {
+  /** #4326: the child is released; its owner rehydrates it, and it takes the held sends in order when it registers. */
+  private wakeRestoringRecipientOwner(wake: RestoringRecipientWake): void {
+    const owner = this.sessions.get(wake.ownerSessionId);
+    if (owner === undefined) return;
+    writeMessageIfOpen(owner.socket, {
+      type: "restoring_recipient_wake",
+      childName: wake.childName,
+      ...(wake.capability === undefined ? {} : { capability: wake.capability }),
+    });
+  }
+
+  private reserveRestoringRecipient(
+    key: string,
+    ownerSessionId: string,
+    childName: string,
+    group: string,
+    aliases: readonly string[],
+    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true },
+  ): void {
+    const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
+    this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {
+      wake: options.wake === true,
+      ...(options.replaceAliases === true ? { replaceAliases: true } : {}),
+    });
+    if (wake !== undefined) this.wakeRestoringRecipientOwner(wake);
+  }
+
+  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild): void {
+    this.reserveRestoringRecipient(
+      releasedReservationKey(child.childName),
+      ownerSessionId,
+      child.childName,
+      normalizeGroup(child.group ?? ownerGroup),
+      child.aliases,
+      { dormant: true, wake: child.wake, replaceAliases: true },
+    );
+  }
+
+  private releasedChildrenRefusal(
+    owner: ConnectedSession,
+    children: readonly ParsedReleasedChild[],
+  ): ReleasedChildRefusal | undefined {
+    for (const child of children) {
+      const refusal = this.releasedChildGroupRefusal(owner, child) ?? this.releasedChildOwnerRefusal(owner, child.childName);
+      if (refusal !== undefined) return refusal;
+    }
+    return undefined;
+  }
+
+  private releasedChildGroupRefusal(owner: ConnectedSession, child: ParsedReleasedChild): ReleasedChildRefusal | undefined {
+    if (child.group === undefined) return undefined;
+    const group = normalizeGroup(child.group);
+    if (!group.startsWith("workflow:")) return undefined;
+    if (group === normalizeGroup(owner.registrationGroup) || hasGroup(sessionGroups(owner.info), group)) return undefined;
+    return { code: "group_not_allowed", childName: child.childName };
+  }
+
+  private releasedChildOwnerRefusal(requester: ConnectedSession, childName: string): ReleasedChildRefusal | undefined {
+    const reservedBy = this.restoringRecipients.releasedOwner(childName);
+    if (reservedBy !== undefined) return reservedBy === requester.info.id ? undefined : { code: "not_owner", childName };
+    const supervisor = this.supervisorChannel.supervisorOf(childName);
+    if (
+      supervisor === undefined ||
+      supervisor.supervisorId === requester.info.id ||
+      (requester.supervisorOwnerToken !== undefined && requester.supervisorOwnerToken === supervisor.ownerToken)
+    ) {
+      return undefined;
+    }
+    return { code: "not_owner", childName };
+  }
+
+  private revokeReleasedReservation(key: string, ownerSessionId: string): void {
+    const revoked = this.restoringRecipients.release(key, ownerSessionId, undefined);
+    for (const send of revoked?.held ?? []) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+  }
+
+  private releaseReservation(key: string, ownerSessionId: string, gone: string | undefined, refusal: string | undefined): void {
+    const released = this.restoringRecipients.release(
+      key,
+      ownerSessionId,
+      gone === undefined ? undefined : gone.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX),
+      refusal !== undefined && refusal.trim() ? refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
+    );
+    if (released === undefined) return;
+    this.multiNode?.restoringReleased(key, ownerSessionId, released.gone, released.refusal);
+    for (const send of released.held) {
+      if (released.gone !== undefined) this.failHeldSend(send, released.gone);
+      else if (released.refusal !== undefined) this.failHeldSend(send, released.refusal);
+      else this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+    }
+  }
+
+  private failHeldSend(held: HeldSend, reason: string, reasonCode?: DeliveryFailureReasonCode): void {
     writeMessageIfOpen(held.socket, {
       type: "delivery_failed",
       messageId: held.messageId,
       ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
       reason,
+      ...(reasonCode === undefined ? {} : { reasonCode }),
     });
+  }
+
+  private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
+    for (const question of questions) {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (asker === undefined) continue;
+      writeMessageIfOpen(asker.socket, {
+        type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
+        ...(peerName === undefined ? {} : { peerName }),
+      });
+    }
   }
 
   private disconnectSession(sessionId: string): void {
@@ -2515,17 +2806,28 @@ class IntercomBroker {
     this.restoringRecipients.dropSender(sessionId);
     // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
     const unreserved = this.restoringRecipients.dropOwner(sessionId);
+    this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
-    this.pendingQuestions.pruneSender(sessionId);
-    for (const question of this.pendingQuestions.takeForTarget(sessionId)) {
-      const asker = this.sessions.get(question.senderSessionId);
-      if (!asker) continue;
-      writeMessageIfOpen(asker.socket, {
-        type: "peer_disconnected",
-        replyTo: question.messageId,
-        peerSessionId: departed.info.id,
-        ...(departed.info.name !== undefined ? { peerName: departed.info.name } : {}),
-      });
+    const unanswered = this.pendingQuestions.takeForSender(sessionId);
+    if (unanswered.length > 0 && departed.supervisorId !== undefined && departed.registrationName !== undefined) {
+      this.releasedAskerReplies.keep(
+        { sessionId, childName: departed.registrationName },
+        unanswered,
+        this.restoringRecipients.releasedOwner(departed.registrationName),
+      );
+    }
+    this.releasedAskerReplies.dropOwner(sessionId);
+    for (const [messageId, pending] of [...this.releasedReplyAcks]) {
+      if (pending.ownerSessionId === sessionId || pending.socket === departed.socket) {
+        this.settleReleasedReply(messageId, "uncertain");
+      }
+    }
+    const childName = departed.registrationName;
+    const releasedOwner = childName === undefined ? undefined : this.restoringRecipients.releasedOwner(childName);
+    if (childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId) {
+      this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
+    } else {
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
     }
 
     for (const [runId, owner] of this.pendingStageRoutes) {
@@ -2621,6 +2923,9 @@ class IntercomBroker {
     this.liveWorkflowStageRoutes.clear();
     this.liveWorkflowStageRouteActivations.clear();
     this.restoringRecipients.clear();
+    this.releasedAskerReplies.clear();
+    for (const pending of this.releasedReplyAcks.values()) clearTimeout(pending.timer);
+    this.releasedReplyAcks.clear();
     this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();

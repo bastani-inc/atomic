@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
 import { afterEach, test, vi } from "vitest";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { type HeldSend, RestoringRecipients } from "../../packages/intercom/broker/restoring-recipients.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 
@@ -166,4 +167,71 @@ test("a dormant reservation the restoring stage never replaced ends with the chi
 	assert.deepEqual(recipients.admit(CHILD, sender("third", ["workflow:run"]), send("later", "third"), true), {
 		kind: "none",
 	});
+});
+
+test("a released subagent's reservation asks its owner to wake it when a send starts waiting, once per hold (#4326)", () => {
+	vi.useFakeTimers();
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true, wake: true });
+
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("ask-1", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+		wake: { ownerSessionId: "owner", capability: "capability", childName: CHILD },
+	});
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-2", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+	});
+	vi.advanceTimersByTime(20_000);
+	assert.deepEqual(
+		recipients.admit(CHILD, sender("peer"), send("send-3", "peer"), true),
+		{
+			kind: "held",
+			timeoutMs: 20_000,
+			wake: { ownerSessionId: "owner", capability: "capability", childName: CHILD },
+		},
+		"once the held sends expired, the next send asks for a wake again",
+	);
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-4", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+	});
+
+	recipients.reserve("restore-capability", "owner", CHILD, "default", []);
+	assert.deepEqual(
+		recipients.consume("restore-capability").map((held) => held.messageId),
+		["send-3", "send-4"],
+		"the restoring supervisor takes the released child's held sends over, in order, once",
+	);
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-5", "peer"), true), { kind: "none" });
+});
+
+test("a reservation without wake never asks its owner to wake the child (#4326)", () => {
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true });
+	const admission = recipients.admit(CHILD, sender("peer"), send("send-1", "peer"), true);
+	assert.deepEqual(admission, { kind: "held", timeoutMs: 20_000 });
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true, wake: true });
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-2", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+	});
+});
+
+test("a client passes on a broker's wake notice for its released child and rejects a malformed one (#4326)", () => {
+	const client = new IntercomClient();
+	const internals = client as unknown as { _sessionId: string; handleBrokerMessage(message: object): void };
+	internals._sessionId = "owner";
+	const notices: object[] = [];
+	client.on("restoring_recipient_wake", (notice: object) => notices.push(notice));
+	internals.handleBrokerMessage({ type: "restoring_recipient_wake", capability: "capability", childName: CHILD });
+	internals.handleBrokerMessage({ type: "restoring_recipient_wake", childName: CHILD });
+	assert.deepEqual(notices, [{ capability: "capability", childName: CHILD }, { childName: CHILD }]);
+	for (const malformed of [
+		{ type: "restoring_recipient_wake", capability: "capability" },
+		{ type: "restoring_recipient_wake", capability: 1, childName: CHILD },
+	])
+		assert.throws(() => internals.handleBrokerMessage(malformed), /Invalid restoring_recipient_wake message/);
+	assert.equal(notices.length, 2);
 });

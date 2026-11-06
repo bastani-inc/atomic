@@ -104,6 +104,15 @@ export interface SendClientMessage extends Record<string, unknown> {
   type: string;
 }
 
+export type ReleasedAskerReplyRouter = (reply: {
+  readonly socket: net.Socket;
+  readonly from: BrokerConnectedSession;
+  readonly message: Message & { readonly replyTo: string };
+  readonly target: string;
+  readonly attemptId?: string;
+  readonly expectedRecipientId?: string;
+}) => boolean;
+
 /**
  * Multi-node S5: a validated send whose target no local session, local hold or workflow route resolved. The
  * router answers it through the shared state (another broker's recipient, a shared hold or an offline session),
@@ -171,6 +180,7 @@ export function handleBrokerSend(
 	routeRemote?: RemoteSendRouter,
 	/** #4079: whether the sender's read-only `list` peek may inspect a group; names a hidden target's group. */
 	canPeekGroup?: (sender: BrokerConnectedSession, group: string) => boolean,
+	routeReleasedAskerReply?: ReleasedAskerReplyRouter,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -245,6 +255,22 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
     return;
   }
+	const replyTo = message.replyTo;
+	if (
+		!supervisorSend &&
+		replyTo !== undefined &&
+		message.expectsReply !== true &&
+		routeReleasedAskerReply?.({
+			socket,
+			from: fromSession,
+			message: { ...message, replyTo },
+			target: trimmedTo,
+			...(attemptId === undefined ? {} : { attemptId }),
+			...(expectedRecipientId === undefined ? {} : { expectedRecipientId }),
+		}) === true
+	) {
+		return;
+	}
 	const workflowTarget = parseWorkflowStageTarget(trimmedTo);
 	if (isNonAgentWorkflowTarget?.(trimmedTo)) {
 		write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: NON_AGENT_RECIPIENT_REFUSAL });
@@ -410,6 +436,7 @@ export function handleBrokerSend(
           receipts,
           undefined,
           canPeekGroup,
+          routeReleasedAskerReply,
         ),
     });
     return;
@@ -478,6 +505,7 @@ export function handleBrokerSend(
 					receipts,
 					routeRemote,
 					canPeekGroup,
+					routeReleasedAskerReply,
 				);
 			},
 		});

@@ -273,6 +273,36 @@ Resume also refuses a child that is still running (pause or quit it first) and a
 
 An SDK session without a task host runs its subagents directly and records them in its session the same way, so `pause`, `resume` (with or without `message`, queued messages included) and `quit` work there by id and with `all: true`, also after the session is reopened. A child resumed there runs in the background, and its result arrives as a completion notice. Closing the session stops such a child; reopening the session relaunches it automatically, and the messages it had queued and not read are delivered once, in order. For a terminal child, launch a fresh child with an explicit context handoff.
 
+#### Released subagents
+
+A background subagent that waits more than a minute on a tool call marked `detachable` (extension tools opt in with `detachable: true`) is **released**: the call keeps running, but the child gives up its session, task and Intercom connection and holds nothing else while it waits. Its parent gets a resumable-stop notice whose result reads `Released while waiting on <tool> (<call id>)`, and `subagent({ action: "status" })` lists it as `released · waiting on <tool> (<call id>)`.
+
+- Only background subagents are released. A foreground subagent stays a live session for as long as it waits, because your turn is waiting for its result.
+- When the call finishes, the child wakes from its saved session and continues the turn with the call's result.
+- An Intercom message or ask sent to a released child wakes it too. Senders wait while it wakes, and it receives every message once, in the order they were sent. Calls it is still waiting on are marked as still running, and their results arrive later as messages.
+- An ask already awaiting a child's reply stays open if the child is released and both use the same broker; it can be answered after the child wakes. If the child is gone instead, the asker is told it disconnected. If the ask was sent through another node's broker, it is not preserved: the asker waits until its reply timeout, and a later reply is refused.
+- Steering and follow-up messages the child had queued and not yet read when it was released are delivered when it wakes, once and in order.
+- A result that arrives while a woken child is running is kept, and wakes the child again once that run ends.
+- `pause` and `quit` on a released child only stop it from being woken; results that arrive meanwhile are kept and delivered when you `resume` it. `resume` wakes it with your `message` if given, as soon as fewer than `parallel.runningCapacity` of the session's released children are waking; it does not count once the child runs, and results that arrive while that run goes on are saved with the child at once.
+- Released children wake through the session that launched them, so that session must stay open.
+- While it is released, a child keeps only its latest record in the session that launched it. Each run of a child that has finished stays listed in `/tasks` as one small record, with no live session, socket or timer, until that session closes.
+- The results a wake carries are saved with the child before the child is reopened, so a restart in between wakes it with them instead of running the finished call again. If a wake fails, for example because the child's agent is no longer defined, the results it carried stay saved with the child. `status` shows the failure, its code and what to do, and the session that launched the child gets one notice. `resume` tries again and delivers the saved results.
+- If a child record could not be saved, `status` reports the last failure and its hint for the launching session. Check the session store before retrying; unsaved state cannot survive a restart.
+- When you reopen the session after Atomic restarts, a released child's detachable calls start again with the same call ids and arguments, without a model turn; new results wake it. Mark a tool `detachable` only if running it twice is safe. An Intercom question is not sent again: its original reply or timeout wakes the child. If it was waiting on both an Intercom question and another detached call, that other call is not restarted automatically. If the broker itself restarts, the open question is lost and the child receives the timeout. A child already holding its call's result is woken with it instead. At most `parallel.runningCapacity` of a session's released children wake at a time. If a call's tool is no longer available, the child waits for its next message or `resume`.
+- A shell `wait` without a `budgetMs` waits until its task finishes, so a child that waits on its own background shell this way is released too, and the task's result wakes it. A shell task a released child started that finishes while it is released wakes it with the task's completion notice; while it is paused or quit, the notice waits for its `resume`.
+- An Intercom `ask`, and `contact_supervisor` with `need_decision` or `interview_request`, release a waiting child too: the reply reaches the session that launched it and wakes the child with that reply as the call's result, once. When [multi-node Intercom routing](/intercom/operations#running-intercom-across-machines) is active, the child stays live while waiting for the reply instead.
+
+When waking or keeping track of a released subagent fails, `status` and the notice show a typed `ReleasedChildError`. Its `code` says why:
+
+| Code | When it happens | What to do |
+| --- | --- | --- |
+| `child-record-missing` | The session waking the child has no record of it. | Wake it from the session that launched it. |
+| `child-unrestorable` | The child's session or agent cannot be restored, for example because its agent is no longer defined. | Fix what the reason names, then `resume` it, or launch a new subagent. |
+| `record-append-failed` | The child's record could not be saved to the session store. Retryable. | Check the session store. Until the record is saved, a restart would not know this state of the child. |
+| `hold-failed` | Sends to the released child could not be held at the Intercom broker. Retryable. | Check that Intercom is connected. Until the reservation exists, sends to the child are answered as not found. |
+| `completion-not-held` | A shell task finished after the child that started it ran again or ended. | Nothing: the session that launched the child receives the completion notice instead. |
+| `wake-failed` | A wake failed for any other reason. Retryable. | The results are kept: `resume` the child to try again. |
+
 The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 
 ```text

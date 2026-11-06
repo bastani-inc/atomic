@@ -10,6 +10,8 @@ import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
+	type DetachedToolCall,
+	type DetachedToolResult,
 	findSessionStartError,
 	getAgentDir,
 	getBuiltinPackagePaths,
@@ -36,6 +38,10 @@ import {
 	getSupportedThinkingLevels,
 	type Model,
 } from "@bastani/pi-ai/compat";
+import type {
+	ChildCommandTaskOwner,
+	ChildTaskCompletionRoute,
+} from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import {
@@ -64,6 +70,9 @@ import {
 	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
+import { releasedChildWaitingCalls } from "../foreground/released-child-replies.js";
+import type { SubagentChildWaitingCall } from "../foreground/subagent-child-records.js";
+import { readPreviousIntercomId } from "../foreground/subagent-child-session.js";
 import {
 	lastNonEmptyAssistantText,
 	PARENT_CANCEL_CAUSE,
@@ -186,6 +195,55 @@ export interface ChildSpec {
 	readonly requestedThinking?: string;
 	/** Resolves a fallback entry (`provider/model[:thinking]`) to its model, to pick the level it runs at. */
 	readonly resolveCandidateModel?: CandidateModelResolver;
+	/**
+	 * Release the child when it waits (#4326): a call of a `detachable` tool still running after `afterMs` goes on
+	 * without the child's run, the run ends, and the attempt ends as released, handing back the calls so their results
+	 * can wake the child later. Without it detachable calls run inline.
+	 */
+	readonly releaseWhenWaiting?: SubagentReleasePolicy;
+	readonly onBeforeRelease?: () => Promise<void>;
+	/**
+	 * Results for the detached calls the reopened transcript ends on, recorded as those calls' results before any
+	 * follow-up or prompt; the turn that issued them continues.
+	 */
+	readonly resumeToolResults?: readonly DetachedToolResult[];
+	/** The wake only hands back tool results: the continued turn is the whole run, and `task` is not prompted. */
+	readonly skipTaskPrompt?: boolean;
+	readonly redispatchDetachedCalls?: boolean;
+}
+
+/** When a child is released: see {@link ChildSpec.releaseWhenWaiting}. */
+export interface SubagentReleasePolicy {
+	readonly afterMs: number;
+}
+
+/** A detached call a released child waits on. */
+export type SubagentWaitingCall = SubagentChildWaitingCall;
+
+/** What a released attempt hands back: the calls the child waits on, still running, and how to name them. */
+export interface SubagentReleased {
+	readonly waitingOn: readonly SubagentWaitingCall[];
+	readonly calls: readonly DetachedToolCall[];
+	/** The Intercom session id the child was registered under, when its session recorded one. */
+	readonly intercomId?: string;
+	/**
+	 * Route the completions of shell tasks the child launched and that still run to `route` instead of the session that
+	 * launched it. Returns false when none runs. Present when the child ran in its parent's task owner.
+	 */
+	readonly routeShellCompletions?: (route: ChildTaskCompletionRoute) => boolean;
+}
+
+function shellCompletionRouter(
+	owner: ChildCommandTaskOwner,
+	childSessionId: string,
+): (route: ChildTaskCompletionRoute) => boolean {
+	return (route) => owner.routeReleased(childSessionId, route);
+}
+
+/** The envelope a released child's attempt reports: what it waits on, and what wakes it. */
+export function releasedEnvelope(waitingOn: readonly SubagentWaitingCall[]): string {
+	const calls = waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ");
+	return `Released while waiting on ${calls}. It holds nothing while it waits; a tool result, an Intercom message or ask, or resume wakes it from its saved session.`;
 }
 
 /**
@@ -325,6 +383,8 @@ export type AttemptOutcome = (
 	| {
 			readonly status: "interrupted" | "killed";
 			readonly cause?: string;
+			/** The child was released while waiting on these detached calls, not stopped (#4326). */
+			readonly released?: SubagentReleased;
 			/** Steering then follow-up messages the child had queued but not read when its parent stopped it, in order. */
 			readonly pendingMessages?: readonly string[];
 			/** The first pending message is the child's original task it never read, prompted as a fresh launch prompts it. */
@@ -661,6 +721,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			cost: 0,
 		}),
 		startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+		// A scripted session runs no tools, so none of its calls ever detaches.
+		setToolDetachment: () => {},
+		takeDetachedToolCalls: () => [],
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
 	testOptions.onSession?.({
@@ -684,6 +747,16 @@ function settledTranscript(manager: SessionManager): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const entries = manager.getEntries();
 	return { getSessionId: () => sessionId, getEntries: () => [...entries] };
+}
+
+function releasedIntercomId(manager: SessionManager): { intercomId: string } | Record<string, never> {
+	const intercomId = readPreviousIntercomId(manager);
+	return intercomId === undefined ? {} : { intercomId };
+}
+
+/** What a released child keeps for task inspection: only its session id. Its history is in its session store. */
+function releasedTranscript(sessionId: string): TranscriptSource {
+	return { getSessionId: () => sessionId, getEntries: () => [] };
 }
 
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
@@ -849,21 +922,28 @@ function cancelledEnvelope(
 /** Text a resumed child receives as written: never expanded as a prompt template or run as a command. */
 const LITERAL_TEXT = { expandPromptTemplates: false } as const;
 
+interface UnsentInput {
+	task: string | undefined;
+	readonly followUps: string[];
+}
+
 /**
  * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
  * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
  */
 function pendingMessagesOf(
 	session: AgentSession | undefined,
-	unsent: readonly string[],
+	unsent: UnsentInput,
 	taskLiteral: boolean | undefined,
 ): { pendingMessages?: readonly string[]; pendingTaskExpands?: true } {
 	const queued = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
-	const [task, ...followUps] = unsent;
-	const pending = task === undefined ? queued : [task, ...queued, ...followUps];
+	const pending = [...(unsent.task === undefined ? [] : [unsent.task]), ...queued, ...unsent.followUps];
 	if (pending.length === 0) return {};
 	// Only an original task it never read keeps a fresh launch's handling; everything else is delivered as written.
-	return { pendingMessages: pending, ...(task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}) };
+	return {
+		pendingMessages: pending,
+		...(unsent.task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}),
+	};
 }
 
 function attemptStatus(termination: TerminationCauseName | undefined): "ok" | "error" | "interrupted" {
@@ -1061,11 +1141,35 @@ export class SubagentControlRuntime {
 		return this.childIds.get(pathValue);
 	}
 
+	/** What this control keeps per child, by kind; counted by tests and the benchmark. */
+	registrySizes(): Readonly<Record<string, number>> {
+		return {
+			controlRunning: this.runningAttempts.size,
+			controlTokens: this.attemptTokens.size,
+			controlTerminators: this.attemptTerminators.size,
+			controlDelivered: this.delivered.size,
+			controlEnvelopes: this.deliveredEnvelopes.size,
+			controlKilled: this.killedChildren.size,
+			controlChildIds: this.childIds.size,
+		};
+	}
+
 	/** The latest admitted path of a child id; a resumed child is admitted again under a new path. */
 	pathOfChildId(childId: string): string | undefined {
 		let latest: string | undefined;
 		for (const [pathValue, id] of this.childIds) if (id === childId) latest = pathValue;
 		return latest;
+	}
+
+	forgetReleasedChild(pathValue: string): void {
+		this.childIds.delete(pathValue);
+		this.delivered.delete(pathValue);
+		this.deliveredEnvelopes.delete(pathValue);
+		this.killedChildren.delete(pathValue);
+	}
+
+	holdsNothing(): boolean {
+		return Object.values(this.registrySizes()).every((size) => size === 0);
 	}
 
 	registerAgents(agents: readonly AgentConfig[]): void {
@@ -1127,6 +1231,7 @@ export class SubagentControlRuntime {
 			| "bindTranscript"
 			| "bindChildSession"
 			| "bindChildLaunch"
+			| "toolResultsSaved"
 			| "setExtensionStatus"
 			| "clearExtensionStatuses"
 		>,
@@ -1161,6 +1266,7 @@ export class SubagentControlRuntime {
 					| "bindTranscript"
 					| "bindChildSession"
 					| "bindChildLaunch"
+					| "toolResultsSaved"
 					| "setExtensionStatus"
 					| "clearExtensionStatuses"
 			  >
@@ -1172,6 +1278,7 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
+		let releasedAttempt = false;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
@@ -1214,7 +1321,7 @@ export class SubagentControlRuntime {
 									cause: PARENT_CANCEL_CAUSE,
 									...pendingMessagesOf(
 										undefined,
-										[admitted.spec.task, ...(admitted.spec.resumeFollowUps ?? [])],
+										{ task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] },
 										admitted.spec.resumeTaskLiteral,
 									),
 								}
@@ -1260,13 +1367,14 @@ export class SubagentControlRuntime {
 		const token = guard.token;
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
+		let parentCommandTaskOwner: ChildCommandTaskOwner | undefined;
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
 		const executionEnded = new AbortController();
 
 		let termination: TerminationCauseName | undefined;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
-		const unsent = [admitted.spec.task, ...(admitted.spec.resumeFollowUps ?? [])];
+		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
 		let terminationWasKill = false;
 		let unsubscribe: (() => void) | undefined;
@@ -1363,6 +1471,7 @@ export class SubagentControlRuntime {
 					excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
 				};
 				const inherited = admitted.spec.parent?.getChildSessionOptions?.(childOptions) ?? childOptions;
+				parentCommandTaskOwner = inherited.parentCommandTaskOwner;
 				// The child has no UI of its own; its extensions' status writes belong to its task's pages,
 				// never to the parent's footer.
 				const extensionBindings: CreateAgentSessionOptions["extensionBindings"] = taskHooks?.setExtensionStatus
@@ -1500,6 +1609,8 @@ export class SubagentControlRuntime {
 			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
 			else startBudget.enter("dispatching-task");
 			session = created.session;
+			const release = admitted.spec.releaseWhenWaiting;
+			if (release !== undefined) session.setToolDetachment({ afterMs: release.afterMs });
 			if (!admitted.spec.testSession) {
 				const ownModel = candidate.model ?? admitted.policy.model;
 				// A named model the launch could not resolve itself, as with a host that supplies no resolver, runs only when
@@ -1648,28 +1759,92 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
-			for (const followUp of admitted.spec.resumeFollowUps ?? []) {
-				if (termination) break;
-				// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
-				await session.followUp(followUp, undefined, LITERAL_TEXT);
-				unsent.splice(1, 1);
-			}
-			if (!termination) {
-				unsent.splice(0, 1);
-				const prompting = session.prompt(
-					admitted.spec.task,
-					admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-				);
-				// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
-				// extension, ends dispatch too.
-				void prompting.then(markTaskDispatched, markTaskDispatched);
-				await beforeStartDeadline(taskDispatched);
+			const redispatched =
+				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
+			if (redispatched !== undefined) unsent.task = unsent.followUps.shift();
+			else if (!termination && admitted.spec.resumeToolResults?.length) {
+				if (!admitted.spec.skipTaskPrompt) {
+					await session.followUp(
+						admitted.spec.task,
+						undefined,
+						admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
+					);
+					unsent.task = undefined;
+				}
+				for (const followUp of admitted.spec.resumeFollowUps ?? []) {
+					if (termination) break;
+					await session.followUp(followUp, undefined, LITERAL_TEXT);
+					unsent.followUps.shift();
+				}
+				if (!termination) {
+					unsent.task = undefined;
+					await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
+					taskHooks?.toolResultsSaved?.(admitted.spec.resumeToolResults.map((result) => result.toolCallId));
+				}
 				startBudget.end();
-				await prompting;
+			} else {
+				for (const followUp of admitted.spec.resumeFollowUps ?? []) {
+					if (termination) break;
+					// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
+					await session.followUp(followUp, undefined, LITERAL_TEXT);
+					unsent.followUps.shift();
+				}
+				if (!termination) {
+					unsent.task = undefined;
+					if (admitted.spec.skipTaskPrompt) startBudget.end();
+					else {
+						const prompting = session.prompt(
+							admitted.spec.task,
+							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
+						);
+						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
+						// extension, ends dispatch too.
+						void prompting.then(markTaskDispatched, markTaskDispatched);
+						await beforeStartDeadline(taskDispatched);
+						startBudget.end();
+						await prompting;
+					}
+				}
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
+			// Only a session given a release policy detaches calls.
+			const detached = redispatched ?? (release === undefined ? [] : session.takeDetachedToolCalls());
+			// A stopped child is not waiting on anything: what it detached ends with it.
+			if (termination !== undefined) for (const call of detached) call.abort(termination);
+			else if (detached.length > 0 || redispatched !== undefined) {
+				await admitted.spec.onBeforeRelease?.();
+				releasedAttempt = true;
+				const waitingOn = releasedChildWaitingCalls(sessionManager, detached);
+				this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
+				this.native.finishChildAttempt(token, nativeStatus("interrupted"));
+				return {
+					status: "interrupted",
+					released: {
+						waitingOn,
+						calls: detached,
+						...releasedIntercomId(sessionManager),
+						...(parentCommandTaskOwner === undefined
+							? {}
+							: {
+									routeShellCompletions: shellCompletionRouter(
+										parentCommandTaskOwner,
+										sessionManager.getSessionId(),
+									),
+								}),
+					},
+					...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
+					stats,
+					path: admitted.identity.path,
+					envelope: releasedEnvelope(waitingOn),
+					sessionFile,
+					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
+					...skillReport,
+				};
+			}
 			const producedMessages = ownMessages();
 			const output = outputFor(producedMessages);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
@@ -1799,32 +1974,37 @@ export class SubagentControlRuntime {
 			const settleTranscript = (): void => {
 				statusesOpen = false;
 				taskHooks?.clearExtensionStatuses?.();
-				if (transcriptManager !== undefined) taskHooks?.bindTranscript?.(settledTranscript(transcriptManager));
+				if (transcriptManager === undefined) return;
+				taskHooks?.bindTranscript?.(
+					releasedAttempt
+						? releasedTranscript(transcriptManager.getSessionId())
+						: settledTranscript(transcriptManager),
+				);
 			};
-			onDisposal(
-				(async (): Promise<SessionDisposal> => {
-					try {
-						await session?.dispose();
-						return { cleanup: { kind: "reaped" } };
-					} catch (error) {
-						return {
-							cleanup: {
-								kind: "failed",
-								resources: [
-									{
-										resource: "agent-session",
-										code: "CleanupFailed",
-										message: error instanceof Error ? error.message : String(error),
-									},
-								],
-							},
-							error,
-						};
-					} finally {
-						settleTranscript();
-					}
-				})(),
-			);
+			const disposal = (async (): Promise<SessionDisposal> => {
+				try {
+					await session?.dispose();
+					return { cleanup: { kind: "reaped" } };
+				} catch (error) {
+					return {
+						cleanup: {
+							kind: "failed",
+							resources: [
+								{
+									resource: "agent-session",
+									code: "CleanupFailed",
+									message: error instanceof Error ? error.message : String(error),
+								},
+							],
+						},
+						error,
+					};
+				} finally {
+					settleTranscript();
+				}
+			})();
+			onDisposal(disposal);
+			if (releasedAttempt) await disposal;
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)

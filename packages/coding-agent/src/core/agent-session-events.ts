@@ -17,6 +17,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import { normalizeQueuedMessageImages } from "./agent-session-prompt.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
+import { sessionClosing } from "./agent-session-release.ts";
 import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
 	type AgentSessionEvent,
@@ -681,6 +682,7 @@ export function closeAgentSession(
 	const retired = { promise: retirement, resolve: resolveRetired, reject: rejectRetired };
 	session._disposed = true;
 	session._cacheWarmer?.cancel();
+	sessionClosing(session);
 	const closing = Promise.resolve().then(async () => {
 		const errors: Error[] = [];
 		const attempt = async (component: string, cleanup: () => void | Promise<void>) => {

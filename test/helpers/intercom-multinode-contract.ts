@@ -716,6 +716,7 @@ function reservationRequest(overrides: Partial<RestoringReservationRequest> = {}
 		aliases: ["atomic-session-7", "intercom-old-7"],
 		group: "team",
 		dormant: false,
+		wake: false,
 		...overrides,
 	};
 }
@@ -737,6 +738,7 @@ export function registerRestoringReservationStoreConformance(
 		targets: ["worker", "atomic-session-7", "intercom-old-7"],
 		group: "team",
 		dormant: false,
+		wake: false,
 		fencingToken,
 		...overrides,
 	});
@@ -955,6 +957,148 @@ export function registerRestoringReservationStoreConformance(
 			assert.deepEqual(await b.release(gone.lease, { gone: "gone" }), { status: "gone" });
 			assert.deepEqual(await c.consume(goneKey), { status: "consumed", reservationKeys: [] });
 			assert.equal((await a.lookup("worker", { sessionId: "gone-owner", groups: [] }, LIVE_MS)).status, "gone");
+		},
+	);
+
+	check(
+		"carries the wake flag and a replaced alias list through reserve, lookup and read (#4326)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const first = await reserve(b, { wake: true });
+			assert.deepEqual(
+				expectStatus(await a.lookup("worker", TEAMMATE, LIVE_MS), "reserved").reservation,
+				expected(first.lease.fencingToken, { wake: true }),
+			);
+			await reserve(b, { wake: false, aliases: ["fresh-alias"], replaceAliases: true });
+			assert.deepEqual(
+				expectStatus(await a.read(RESERVATION_KEY), "active").reservation,
+				expected(first.lease.fencingToken, {
+					wake: false,
+					targets: ["worker", "fresh-alias"],
+				}),
+			);
+			assert.deepEqual(await a.lookup("atomic-session-7", TEAMMATE, LIVE_MS), { status: "none" });
+		},
+	);
+
+	check(
+		"hands a wake request to the owner's broker once, only while the reservation is wakeable (#4326)",
+		async (connect) => {
+			const [a, b, c] = [await connect(), await connect(), await connect()];
+			const parkedKey = reservationKeyFor("capability-parked");
+			const goneKey = reservationKeyFor("capability-gone-wake");
+			await reserve(b, { wake: true });
+			await reserve(b, {
+				reservationKey: parkedKey,
+				childName: "parked",
+				childTarget: "parked",
+				aliases: [],
+				wake: false,
+			});
+			const gone = await reserve(b, {
+				reservationKey: goneKey,
+				childName: "gone",
+				childTarget: "gone",
+				aliases: [],
+				ownerSessionId: "gone-owner",
+				wake: true,
+			});
+			assert.deepEqual(await b.release(gone.lease, { gone: "gone" }), { status: "gone" });
+			assert.deepEqual(await a.requestWake(parkedKey), { status: "not-wakeable" });
+			assert.deepEqual(await a.requestWake(goneKey), { status: "not-wakeable" });
+			assert.deepEqual(await a.requestWake(reservationKeyFor("capability-unknown")), { status: "not-wakeable" });
+			assert.deepEqual(await a.requestWake(RESERVATION_KEY), { status: "requested" });
+			assert.deepEqual(await c.requestWake(RESERVATION_KEY), { status: "requested" });
+			assert.deepEqual(await a.takeWakeRequests("broker-a"), { status: "taken", requests: [] });
+			assert.deepEqual(await a.takeWakeRequests("broker-b"), {
+				status: "taken",
+				requests: [
+					{ reservationKey: RESERVATION_KEY, ownerSessionId: "supervisor-session", childName: " Worker " },
+				],
+			});
+			assert.deepEqual(await c.takeWakeRequests("broker-b"), { status: "taken", requests: [] });
+			assert.deepEqual(await a.requestWake(RESERVATION_KEY), { status: "requested" });
+			assert.deepEqual(await a.takeWakeRequests(""), { status: "invalid", reason: "empty-broker-id" });
+			assert.deepEqual(await a.requestWake(""), { status: "invalid", reason: "empty-reservation-key" });
+		},
+	);
+
+	check(
+		"keeps a released child's key with its live owner: another owner's reserve is not-owner and changes nothing (#4326)",
+		async (connect) => {
+			const [a, b, c] = [await connect(), await connect(), await connect()];
+			const releasedKey = "released:worker";
+			const first = await reserve(b, { reservationKey: releasedKey, wake: true, staleAfterMs: LIVE_MS });
+			const before = expectStatus(await a.read(releasedKey), "active").reservation;
+			const intruder = {
+				reservationKey: releasedKey,
+				ownerSessionId: "intruder-session",
+				ownerBrokerId: "broker-c",
+			};
+			const notOwner = { status: "not-owner", ownerSessionId: "supervisor-session" };
+			assert.deepEqual(
+				await c.reserve(reservationRequest({ ...intruder, aliases: [], wake: false, staleAfterMs: LIVE_MS })),
+				notOwner,
+			);
+			assert.deepEqual(await c.reserve(reservationRequest(intruder)), notOwner);
+			assert.deepEqual(expectStatus(await a.read(releasedKey), "active").reservation, before);
+			assert.deepEqual(await b.renew(first.lease), { status: "renewed" });
+			const again = await reserve(b, { reservationKey: releasedKey, wake: false, staleAfterMs: LIVE_MS });
+			assert.deepEqual(again.lease, first.lease);
+			const takeover = await reserve(c, {
+				...intruder,
+				ownerSessionId: "restarted-owner",
+				staleAfterMs: EXPIRED_MS,
+			});
+			assert.ok(takeover.lease.fencingToken > first.lease.fencingToken);
+			assert.deepEqual(await b.renew(first.lease), {
+				status: "stale",
+				currentFencingToken: takeover.lease.fencingToken,
+			});
+			assert.deepEqual(await c.release(takeover.lease), { status: "released" });
+			const reopened = await reserve(b, { reservationKey: releasedKey, staleAfterMs: LIVE_MS });
+			assert.equal(reopened.lease.ownerSessionId, "supervisor-session");
+		},
+	);
+
+	check(
+		"ends a released child's reservation only when its owner authorized the child that registers in its group (#4326)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const releasedKey = "released:worker";
+			const otherKey = "released:reviewer";
+			await reserve(b, { reservationKey: releasedKey, wake: true });
+			await reserve(b, {
+				reservationKey: otherKey,
+				childName: "reviewer",
+				childTarget: "reviewer",
+				aliases: [],
+				wake: true,
+			});
+			const owner = "supervisor-session";
+			const registered = { childTarget: "worker", groups: ["team"] };
+			const untouched = { status: "consumed", reservationKeys: [] };
+			assert.deepEqual(
+				await a.consume(releasedKey, { ...registered, groups: ["elsewhere"], authorizedBy: owner }),
+				untouched,
+			);
+			assert.deepEqual(
+				await a.consume(releasedKey, registered),
+				untouched,
+				"sharing the name and group is not enough",
+			);
+			assert.deepEqual(
+				await a.consume(releasedKey, { ...registered, authorizedBy: "another-session" }),
+				untouched,
+				"another session's capability is not enough",
+			);
+			assert.equal((await a.read(releasedKey)).status, "active");
+			assert.deepEqual(await a.consume(releasedKey, { ...registered, authorizedBy: owner }), {
+				status: "consumed",
+				reservationKeys: [releasedKey],
+			});
+			assert.deepEqual(await a.read(releasedKey), { status: "ended", end: { outcome: "consumed" } });
+			assert.equal((await a.read(otherKey)).status, "active");
 		},
 	);
 

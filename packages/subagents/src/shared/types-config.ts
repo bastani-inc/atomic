@@ -141,6 +141,16 @@ export interface RunSyncOptions {
 	resumeFollowUps?: readonly string[];
 	/** The task is a resume's message or one the child already received, delivered as written rather than as a fresh launch's task. */
 	resumeTaskLiteral?: boolean;
+	/** Release the child while it waits on detachable tool calls, and hand those calls to `onReleased` (#4326). */
+	releaseWhenWaiting?: import("../runs/inprocess/runner.js").SubagentReleasePolicy;
+	/** Reserve the child's address before its released session disconnects. */
+	onBeforeRelease?: () => Promise<void>;
+	/** Results for the detached calls the reopened child's transcript ends on; its interrupted turn continues with them. */
+	resumeToolResults?: readonly import("@bastani/atomic").DetachedToolResult[];
+	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
+	skipTaskPrompt?: boolean;
+	wakeToolResultIds?: readonly string[];
+	redispatchDetachedCalls?: boolean;
 	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
 	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;
 	/** Told the model and thinking level the child's session started on, and its leaf entry then, as `onChildSession`. */

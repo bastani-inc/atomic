@@ -103,14 +103,17 @@ export function _refreshToolRegistry(
 		const guarded = rejectMalformedToolArguments(tool, () => this.agent.state.messages);
 		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
+		const detachable = definition?.detachable;
 		toolRegistry.set(
 			tool.name,
-			definition?.detachable === true
+			definition !== undefined && (detachable === true || typeof detachable === "function")
 				? detachableTool(
 						this,
 						scheduled,
 						(id, params, signal, onUpdate, context) => definition.execute(id, params, signal, onUpdate, context),
 						(id, signal) => runner.createToolContext(id, signal),
+						typeof detachable === "function" ? (params) => detachable(params) : undefined,
+						definition.detachmentRequiresReady === true,
 					)
 				: scheduled,
 		);

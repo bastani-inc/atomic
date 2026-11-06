@@ -27,6 +27,8 @@ export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSumm
 export type AgentSessionEvent =
 	| (AgentEvent & { parentToolCallId?: string })
 	| { type: "agent_settled"; aborted: boolean }
+	/** The session let go of its in-memory state; only its stored history remains. Emitted before teardown. */
+	| { type: "session_released"; released: import("./agent-session-release.ts").ReleasedAgentSession }
 	| { type: "entry_appended"; entry: import("./session-manager.ts").SessionEntry }
 	| {
 			type: "queue_update";
