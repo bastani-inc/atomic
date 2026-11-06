@@ -134,6 +134,11 @@ export interface WorkerReply {
 	 * (`StaleLeaseError`) means the root no longer holds its lease, so the worker has nothing to serve.
 	 */
 	readonly error?: SerializedError;
+	/**
+	 * On a `claim` reply: the pool runs more workers than its waiting children need, so this idle worker ends, cleanly,
+	 * and nothing replaces it.
+	 */
+	readonly retire?: true;
 	readonly delivery?: {
 		readonly id: string;
 		readonly from: Parameters<WorkerDeliver>[0];

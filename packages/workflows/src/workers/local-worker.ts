@@ -276,8 +276,11 @@ export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart):
 
 async function runWorker(start: WorkerStart): Promise<void> {
 	let sequence = 0;
-	/** Set by replies: a fenced attempt ends without failing the worker, and a lost root lease ends it cleanly (#3979). */
-	const replies: WorkerReplyState = { attemptFenced: false, rootLeaseLost: false };
+	/**
+	 * Set by replies: a fenced attempt ends without failing the worker, a lost root lease ends it cleanly (#3979), and a
+	 * pool with more workers than its waiting children need retires it, cleanly too.
+	 */
+	const replies: WorkerReplyState = { attemptFenced: false, rootLeaseLost: false, retired: false };
 	/** The attempt this worker runs, which a refusal of its requests fences. */
 	let heldAttempt: PoolWork | undefined;
 	const pending = new Map<number, PendingWorkerRequest>();
@@ -311,7 +314,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	});
 	/** Set once the worker ends between children to give its memory back; the pool starts a fresh one (#4197). */
 	let recycled = false;
-	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled ? 0 : 1));
+	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled || replies.retired ? 0 : 1));
 	const request = (message: Request, deliver?: WorkerDeliver): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
@@ -476,6 +479,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			replies.attemptFenced = false;
 			if (!work) {
+				if (replies.retired) break;
 				await delay(25 + Math.random() * 25);
 				continue;
 			}
@@ -746,5 +750,5 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		if (poolJournal !== journal) await poolJournal.close().catch(() => {});
 	}
 	// Closing the channel ends the process (exit code 0) instead of waiting for the pool to disconnect it.
-	if (replies.rootLeaseLost || recycled) process.disconnect?.();
+	if (replies.rootLeaseLost || recycled || replies.retired) process.disconnect?.();
 }

@@ -16,6 +16,8 @@ export interface WorkerReplyState {
 	attemptFenced: boolean;
 	/** The root no longer holds its lease: the worker ends cleanly instead of crashing. */
 	rootLeaseLost: boolean;
+	/** The pool runs more workers than its waiting children need: this idle worker ends cleanly, and is not replaced. */
+	retired: boolean;
 }
 
 /**
@@ -46,6 +48,7 @@ export function receiveWorkerReply(
 			);
 	}
 	pending.delete(reply.id);
+	if (reply.retire === true) state.retired = true;
 	if (reply.error === undefined) {
 		receiver?.resolve(reply.value);
 		return undefined;
