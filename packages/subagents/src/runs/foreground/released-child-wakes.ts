@@ -98,8 +98,11 @@ export function bindReleasedChildWakes(
 	const unsubscribeHoldFailure = events.on(SUBAGENT_HOLD_FAILURE_EVENT, (payload) => {
 		const failure = payload as ReleasedChildHoldFailure;
 		indexSubagentChildOwner(ctx);
+		const recordsByName = new Map<string, SubagentChildRecord>();
+		for (const record of subagentChildRecordsOf(ownerSessionId))
+			if (record.intercomTarget !== undefined) recordsByName.set(record.intercomTarget, record);
 		for (const childName of failure.childNames) {
-			const record = subagentChildRecordForTarget(ownerSessionId, childName);
+			const record = recordsByName.get(childName);
 			if (record === undefined) continue;
 			failure.handled = true;
 			const error = new ReleasedChildError(
@@ -142,10 +145,15 @@ export function bindReleasedChildWakes(
 		const host = ctx.getAgentTaskHost?.();
 		if (outcome.kind === "restored" && host !== undefined) await awaitTaskSettlement(host, outcome.taskId);
 	};
+	const holdResults = holdToolResultsInRecord(deps.pi);
 	const disposeHandler = handleReleasedChildWakes(
 		ctx,
 		{
 			wake: async (record, decision) => {
+				const unsaved = decision.toolResults.filter(
+					(result) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === result.toolCallId),
+				);
+				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
 				await restore(record, {
 					prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
@@ -153,7 +161,7 @@ export function bindReleasedChildWakes(
 					...(decision.prompt ? {} : { promptless: true }),
 				});
 			},
-			hold: holdToolResultsInRecord(deps.pi),
+			hold: holdResults,
 			resume: async (record, request) => {
 				const outcome = await restoreSubagentChild(deps, ctx, record.childId, request);
 				if (outcome.kind === "unrestorable")

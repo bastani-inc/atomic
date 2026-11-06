@@ -432,7 +432,11 @@ async function relaunchChild(
 	if (!supervisorAuthorization) await hold?.release();
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
-	const heldResults = [...(record.heldToolResults ?? []), ...(resume?.toolResults ?? [])];
+	const kept = record.heldToolResults ?? [];
+	const heldResults = [
+		...kept,
+		...(resume?.toolResults ?? []).filter((result) => !kept.some((held) => held.toolCallId === result.toolCallId)),
+	];
 	const toolResults = sessionManager
 		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
 		: heldResults;

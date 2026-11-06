@@ -3853,3 +3853,82 @@ test("disposing an older extension generation leaves the newer resume handler bo
 	assert.equal(outcome.kind, "restored");
 	assert.equal(resumeWaiterCount(), 0);
 });
+
+async function releasedChildren(h: Harness, runIds: readonly string[]): Promise<void> {
+	h.releaseOriginal = true;
+	for (const runId of runIds) {
+		await settled(h, await h.admit(runId));
+		await h.waitForLatest(`${runId}:0`, (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	}
+	h.releaseOriginal = false;
+}
+
+test("a manual resume waits behind the wakes already using parallel.runningCapacity, and counts only until it is admitted (#4326)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	await releasedChildren(h, ["slot-a", "slot-b"]);
+	const owner = h.sessionManager.getSessionId();
+	const wakeGate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", wakeGate);
+	const ranResumed = () => h.runs.filter((run) => run.task.includes("go second")).length;
+
+	const wake = dispatcher.deliver(subagentWakeKey(owner, "slot-a:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+	await h.waitForLatest("slot-a:0", (record) => record.state === "running" && record.launchLeafId !== undefined);
+	const resumed = h.call({ action: "resume", id: "slot-b:0", message: "go second" });
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (dispatcher.stats().queued === 0 && ranResumed() === 0 && Date.now() < deadline) await sleep(10);
+
+	assert.equal(ranResumed(), 0, "the resume waits while a wake holds the only slot");
+	assert.deepEqual(
+		{ running: dispatcher.stats().running, queued: dispatcher.stats().queued },
+		{ running: 1, queued: 1 },
+	);
+	wakeGate.resolve();
+	await wake;
+	const response = await resumed;
+	assert.equal(response.isError, undefined);
+	await settled(h, resumedTaskId(response));
+	assert.equal(await drained(dispatcher), 0);
+});
+
+test("a wake saves the results it carries in the child's record before the child is restored, and the record no longer holds them once its run has them (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "save-first");
+	const owner = h.sessionManager.getSessionId();
+	const green = waitResult("CI green");
+	const heldWhenRestoreBegan: Array<readonly DetachedToolResult[] | undefined> = [];
+	const emit = h.deps.pi.events.emit.bind(h.deps.pi.events);
+	h.deps.pi.events.emit = (channel: string, data: object) => {
+		if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT)
+			heldWhenRestoreBegan.push(h.latest("save-first:0")?.heldToolResults);
+		emit(channel, data);
+	};
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", gate);
+
+	const woken = dispatcher.deliver(subagentWakeKey(owner, "save-first:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: green,
+	});
+	const running = await h.waitForLatest(
+		"save-first:0",
+		(record) => record.state === "running" && record.launchLeafId !== undefined,
+	);
+
+	assert.deepEqual(heldWhenRestoreBegan, [[green]], "stored before the child is reopened");
+	assert.deepEqual(running.heldToolResults, [green], "still held while its run has not read it");
+	gate.resolve();
+	await woken;
+	const done = await h.waitForLatest("save-first:0", clearedOk);
+	await settled(h, done.taskId ?? "");
+	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
