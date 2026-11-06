@@ -5,9 +5,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+	closeSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
@@ -37,7 +39,13 @@ useTemporaryAgentDir();
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
-	return { ...actual, writeSync: vi.fn(actual.writeSync) };
+	return {
+		...actual,
+		writeSync: vi.fn(actual.writeSync),
+		openSync: vi.fn(actual.openSync),
+		closeSync: vi.fn(actual.closeSync),
+		rmSync: vi.fn(actual.rmSync),
+	};
 });
 
 const directories: string[] = [];
@@ -330,4 +338,104 @@ test("an export that fails part way leaves the file it was to replace as it was,
 		readdirSync(directory).filter((name) => name.endsWith(".partial")),
 		[],
 	);
+});
+
+test("an export for sharing ends with the share context, chained to the last entry (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-share-");
+	const { harness } = await sessionWithOutputs(directory, 1);
+
+	const path = await harness.session.exportToJsonl(join(directory, "export.jsonl"), { includeShareContext: true });
+
+	const entries = fileLines(path).map(
+		(line) =>
+			JSON.parse(line) as { type: string; id: string; parentId: string | null; customType?: string; data?: unknown },
+	);
+	const share = entries.at(-1);
+	assert.equal(share?.type, "custom");
+	assert.equal(share?.customType, "atomic.share");
+	assert.equal(share?.parentId, entries.at(-2)?.id);
+	const data = share?.data as { systemPrompt: string; tools: { name: string; parameters: unknown }[] };
+	assert.equal(data.systemPrompt, harness.session.systemPrompt);
+	assert.deepEqual(
+		data.tools.map((tool) => tool.name),
+		harness.session.agent.state.tools.map((tool) => tool.name),
+	);
+	assert.equal(entries.filter((entry) => entry.customType === "atomic.share").length, 1);
+	const without = await harness.session.exportToJsonl(join(directory, "plain.jsonl"));
+	assert.equal(
+		fileLines(without).some((line) => line.includes("atomic.share")),
+		false,
+	);
+});
+
+test("an export closes the file it opened, whether it succeeds or fails (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-close-");
+	const { store, harness } = await sessionWithOutputs(directory, 2);
+	const opened = vi.mocked(openSync);
+	const closed = vi.mocked(closeSync);
+	opened.mockClear();
+	closed.mockClear();
+
+	await harness.session.exportToJsonl(join(directory, "export.jsonl"));
+	const descriptors = opened.mock.results.map((result) => result.value as number);
+	assert.equal(descriptors.length, 1);
+	assert.deepEqual(
+		closed.mock.calls.map(([descriptor]) => descriptor),
+		descriptors,
+	);
+
+	opened.mockClear();
+	closed.mockClear();
+	store.getBlob = async () => {
+		throw new Error("disk read failed");
+	};
+	await assert.rejects(harness.session.exportToJsonl(join(directory, "failed.jsonl")), /disk read failed/);
+	assert.deepEqual(
+		closed.mock.calls.map(([descriptor]) => descriptor),
+		opened.mock.results.map((result) => result.value as number),
+	);
+});
+
+test("a failure to open the file is the export's failure alone, with nothing to clean up (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-unopenable-");
+	const { harness } = await sessionWithOutputs(directory, 1);
+	const failure = Object.assign(new Error("no permission"), { code: "EACCES" });
+	const actualOpen = (await vi.importActual<typeof import("node:fs")>("node:fs")).openSync;
+	vi.mocked(openSync).mockImplementationOnce((() => {
+		throw failure;
+	}) as never);
+
+	try {
+		await assert.rejects(harness.session.exportToJsonl(join(directory, "export.jsonl")), (error) => {
+			assert.equal(error, failure);
+			assert.equal("cleanupCause" in (error as object), false, "removing a file that was never made is no failure");
+			return true;
+		});
+	} finally {
+		vi.mocked(openSync).mockImplementation(actualOpen as never);
+	}
+});
+
+test("a failure to remove the partial file is attached to the export's failure, which stays the error (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-unremovable-");
+	const { store, harness } = await sessionWithOutputs(directory, 1);
+	const failure = new Error("disk read failed");
+	const removal = new Error("cannot remove");
+	store.getBlob = async () => {
+		throw failure;
+	};
+	const actualRemove = (await vi.importActual<typeof import("node:fs")>("node:fs")).rmSync;
+	vi.mocked(rmSync).mockImplementationOnce((() => {
+		throw removal;
+	}) as never);
+
+	try {
+		await assert.rejects(harness.session.exportToJsonl(join(directory, "export.jsonl")), (error) => {
+			assert.equal(error, failure);
+			assert.equal((error as { cleanupCause?: unknown }).cleanupCause, removal);
+			return true;
+		});
+	} finally {
+		vi.mocked(rmSync).mockImplementation(actualRemove as never);
+	}
 });
