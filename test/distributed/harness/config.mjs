@@ -38,6 +38,34 @@ export const CHAOS_PROFILES = Object.freeze([
 	"nic-detach",
 ]);
 
+/** The chaos profiles each suite with scenarios runs; a run's `--chaos` selection is narrowed to them per suite. */
+export const SUITE_PROFILES = Object.freeze({
+	smoke: CHAOS_PROFILES,
+	"idle-density": Object.freeze([
+		"partition",
+		"sigkill",
+		"latency",
+		"loss",
+		"sigstop",
+		"clock-skew",
+		"disk-full",
+		"slow-disk",
+	]),
+});
+
+/** Suites that need more than one node: the idle-density owner and its senders run on different nodes. */
+export const SUITE_MIN_NODES = Object.freeze({ "idle-density": 2 });
+
+/**
+ * The profiles of `chaos` that `suite` runs, in the order given.
+ * @param {string} suite
+ * @param {readonly string[]} chaos
+ */
+export function suiteProfiles(suite, chaos) {
+	const supported = /** @type {Readonly<Record<string, readonly string[]>>} */ (SUITE_PROFILES)[suite] ?? [];
+	return chaos.filter((profile) => supported.includes(profile));
+}
+
 export const DB_STORAGE = Object.freeze(["premium-ssd", "local-nvme"]);
 export const RUN_ID_PATTERN = /^adt\d{10}-[0-9a-f]{4}$/;
 /** Nodes take host addresses from .20 and secondary NICs from .120 of a /24, so more than 80 would collide. */
@@ -416,6 +444,26 @@ export function resolveRunOptions(args, topology, { randomSeed, replay = {} }) {
 			});
 		}
 	}
+	const runnable = (suite === "all" ? Object.keys(SUITES) : [suite]).filter((name) =>
+		Object.hasOwn(SUITE_PROFILES, name),
+	);
+	const unsupported = chaos.filter((profile) => !runnable.some((name) => suiteProfiles(name, [profile]).length > 0));
+	if (chaosSelection !== "smoke" && runnable.length > 0 && unsupported.length > 0)
+		throw cliError(
+			"--chaos",
+			`profiles the ${suite} suite runs: ${suiteProfiles(suite, CHAOS_PROFILES).join(", ")}`,
+			unsupported.join(","),
+		);
+	const minNodes = Math.max(
+		...runnable.map((name) => /** @type {Readonly<Record<string, number>>} */ (SUITE_MIN_NODES)[name] ?? 1),
+		1,
+	);
+	if (Number(nodesText) < minNodes)
+		throw cliError(
+			"--nodes",
+			`at least ${minNodes}: the idle-density suite runs its owner and its senders on different nodes`,
+			nodesText,
+		);
 	const seedText = args.seed ?? replay.seed;
 	if (seedText !== undefined && (!/^\d+$/.test(seedText) || Number(seedText) > 0xffffffff)) {
 		throw cliError("--seed", "an integer from 0 to 4294967295", seedText);

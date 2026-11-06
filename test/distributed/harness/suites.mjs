@@ -77,7 +77,7 @@ export const FEATURE_PROBES = Object.freeze({
 		issue: "#4309/#4326",
 		capability: "AgentSessionRuntime.rehydrate",
 		present: memberOf("atomic.AgentSessionRuntime", "rehydrate"),
-		implemented: false,
+		implemented: true,
 	},
 	"subscription-flood": {
 		issue: "#4311",

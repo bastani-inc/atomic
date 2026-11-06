@@ -231,21 +231,22 @@ export function dmVolumeScript({ name, sizeMb, user }) {
 }
 
 /**
+ * Coverage of each selected profile. A profile a suite exercised more than once (the idle-density suite kills two
+ * processes) counts as exercised only when every one of its faults was applied, observed and recovered.
  * @param {readonly { profile: string, applied: boolean, effectObserved: boolean, recovered: boolean, skipped?: { code: string } }[]} results
  * @param {readonly string[]} selected
  */
 export function profileCoverage(results, selected) {
 	return selected.map((profile) => {
-		const result = results.find((item) => item.profile === profile);
-		if (result === undefined) return { profile, status: /** @type {const} */ ("missing") };
-		if (result.skipped !== undefined)
-			return { profile, status: /** @type {const} */ ("skipped"), reason: result.skipped.code };
+		const records = results.filter((item) => item.profile === profile);
+		const skipped = records.find((item) => item.skipped !== undefined)?.skipped;
+		if (records.length === 0) return { profile, status: /** @type {const} */ ("missing") };
+		if (skipped !== undefined) return { profile, status: /** @type {const} */ ("skipped"), reason: skipped.code };
 		return {
 			profile,
-			status:
-				result.applied && result.effectObserved && result.recovered
-					? /** @type {const} */ ("exercised")
-					: /** @type {const} */ ("incomplete"),
+			status: records.every((result) => result.applied && result.effectObserved && result.recovered)
+				? /** @type {const} */ ("exercised")
+				: /** @type {const} */ ("incomplete"),
 		};
 	});
 }

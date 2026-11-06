@@ -129,7 +129,7 @@ Before any scenario, the gate checks and records:
 | `multi-node-resume` | #4329 | skips: no `WorkspaceError` export |
 | `cross-host-pools` | #4310 | skips: no `WorkerPlacementError` export |
 | `shard-contention` | #4325 | skips: no `JournalShardUnavailableError` export |
-| `idle-density` | #4309/#4326 | skips: no `AgentSessionRuntime.rehydrate` |
+| `idle-density` | #4309/#4326, #4394 | skips: no `AgentSessionRuntime.rehydrate` |
 | `subscription-flood` | #4311 | skips: no `SubscriptionError` export |
 | `fork-under-load` | #4321 | skips: no `forkRun` export |
 | `restore-cold` | #4245 | skips: no `GitProvisionError` export |
@@ -140,7 +140,9 @@ Before any scenario, the gate checks and records:
 A skip is a result with `status: "skipped"` and a typed reason: `feature-unavailable` when the deployed ref does not
 export the interface, `scenario-pending` when it does but the suite's scenarios have not been written yet. A failed
 import, a broken deployment or a failing call into an available feature is a failure, never a skip. The PR that adds a
-feature adds its scenarios to `test/distributed/harness/suites.mjs` and sets `implemented: true` on its probe.
+feature adds its scenarios under `test/distributed/harness/` and sets `implemented: true` on its probe in
+`suites.mjs`. `smoke` and `idle-density` have scenarios; the others skip as `scenario-pending` on a ref that has their
+interface.
 
 ### The smoke suite
 
@@ -164,10 +166,64 @@ At the end the suite checks:
 - the replica caught up with the primary;
 - a node with a skewed clock never took over a live lease.
 
+### The idle-density suite
+
+Background subagents released on one node are woken by Intercom sends that arrive through brokers on other nodes. It
+needs at least two nodes (`--nodes 1` is rejected before any side effect): the first node runs the owner and every other
+node runs one sender. All of them run `test/distributed/node/released.mjs` against the deployed ref in run-owned
+systemd units.
+
+- **Owner.** A session with the built-in Intercom and subagents extensions and a scripted model launches 20 background
+  subagents. Each starts a long shell task in the background and waits on it, so it is released. The owner's sessions
+  stay in a SQLite file on its own node. Its unit restarts on failure, and a restarted owner reopens the same session.
+- **Senders.** Each sender connects through its own node's broker, in the project group the Intercom extension joins
+  when routing is multi-node, and sends numbered messages (`ADT <sender> <child> <k>`) to every child, one message per
+  child at a time, so each sender's order to a child is defined. A send that loses its broker connection is retried with the same message id after Intercom's reconnect
+  delays. Every outcome is logged: `delivered`, `queued`, `reason` and `reasonCode`, or the thrown error's name and code.
+- **Shared store.** Every node's agent directory selects the run's first namespace on sqld through
+  `@bastani/atomic-storage-libsql`, with a table prefix of its own per attempt, so the brokers route across nodes
+  through it.
+
+Each fault starts only after the senders logged new outcomes, and is reverted before the next one. They run in the
+order below; the two SIGKILLs come last, so every other fault runs against an owner that was never restarted:
+
+| Profile | Target | Mechanism | Counts as exercised when |
+| --- | --- | --- | --- |
+| `latency`, `loss` | owner node | netem towards the gateway for 30 s | netem passed packets; for `loss`, dropped some |
+| `partition` | first sender's node | iptables DROP to the gateway for 30 s | drops counted, rules gone afterwards |
+| `sigstop` | last sender's broker | SIGSTOP for 30 s, then SIGCONT | process state `T`, then running again and the sender progressing |
+| `clock-skew` | first sender's node | chrony stopped, clock stepped +300 s for at least 30 s | offset observed while sends continue; restored within 5 s |
+| `slow-disk` | sqld primary | cgroup write limit on `adt-sqld` (20 IOPS, 1 MB/s) | a synchronous 4 MiB write in sqld's cgroup slows by at least 200 ms, then speeds up again |
+| `disk-full` | sqld primary | the data volume filled with a filler file | a write fails with `No space left on device`; afterwards sqld is active and writes succeed |
+| `sigkill` | the owner node's broker, then the owner unit | `kill -KILL` of the broker; `systemctl kill --signal=SIGKILL` | a new broker took over; the unit restarted and rebound its children; deliveries resumed |
+
+Then the senders stop and the children get at least two minutes, and at most five, to settle: long enough for each of
+multi-node Intercom's 30-second recovery windows (a stale outbox claim, a stale broker lease, the outbox backup poll).
+The owner is stopped, and every child's transcript is read back from its session. The suite checks:
+
+- every sender and owner log is complete, and every child the owner launched was read back;
+- every send that returned `delivered` reached its child exactly once;
+- each sender's messages reached each child in the order they were sent;
+- no message id reached a child twice, whatever its send returned;
+- every send accepted as `queued` reached its child exactly once by the end;
+- no refused send arrived;
+- every non-delivery has a `reasonCode` or a typed error name;
+- no wake was lost: every accepted send arrived, and no child recorded a wake failure;
+- every child was released again before the owner stopped;
+- `PRAGMA integrity_check` is `ok` for the shared database and the owner's store, and every child's session reads back;
+- after each SIGKILL the owner restarted by itself, reopened its session with every child, and deliveries resumed,
+  with no other crash.
+
+The report's metrics count outcomes by kind, non-deliveries by reason or error name, retried sends, broker
+connections per sender, the latency of delivered sends, and how long the children took to settle.
+
 ## Chaos profiles
 
-`--chaos smoke` (the default) runs all of them; `--chaos none` runs none; a profile name or a comma-separated list
-runs those.
+`--chaos smoke` (the default) runs every profile each selected suite supports: all of them in `smoke`, the eight listed
+above in `idle-density`. `--chaos none` runs none; a profile name or a comma-separated list runs those, and a profile
+that none of the selected suites runs is rejected before any side effect. Coverage is reported per suite, and a profile
+a suite exercises twice (the two SIGKILLs of `idle-density`) counts as exercised only when both were. The table below
+describes the profiles as `smoke` runs them.
 
 | Profile | Mechanism | Counts as exercised when |
 | --- | --- | --- |
@@ -204,8 +260,9 @@ same values; explicit flags override them. A seed reproduces choices and their o
 timing.
 
 `--keep` leaves the topology up after the run, unless its security gate failed. `--reuse <run-id>` runs the security
-gate and the suites again on a kept topology, which is the fast way to iterate on a scenario. If the kept run used
-`--out <dir>`, pass the same directory with `--reuse <run-id> --out <dir>`. The report includes that reuse command.
+gate and the suites again on a kept topology, which is the fast way to iterate on a scenario; it copies the current
+node scripts to the nodes first. If the kept run used `--out <dir>`, pass the same directory with
+`--reuse <run-id> --out <dir>`. The report includes that reuse command.
 Before it changes or tears down anything, `--reuse` checks that the current `az` subscription and control VNet are the
 ones the run was created with. On a mismatch it exits with code 2 and leaves the kept topology alone.
 

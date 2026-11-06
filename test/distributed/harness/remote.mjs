@@ -13,6 +13,7 @@ import { agentCommandError, DistributedProvisionError, DistributedTimeoutError, 
 export const REMOTE_ROOT = "/opt/adt";
 export const NODE_BIN = `${REMOTE_ROOT}/node/bin/node`;
 export const AGENT = `${REMOTE_ROOT}/harness/agent.mjs`;
+export const RELEASED = `${REMOTE_ROOT}/harness/released.mjs`;
 export const REF_DIR = `${REMOTE_ROOT}/atomic`;
 export const SECRETS = `${REMOTE_ROOT}/secrets`;
 
@@ -24,7 +25,7 @@ export const SECRETS = `${REMOTE_ROOT}/secrets`;
  *   security: { checks: AgentSecurityCheck[] },
  *   read: { entries: import("./invariants.mjs").JournalObservation[], lease: { holderId: string, epoch: number } | null },
  *   "stale-append": { outcome: "appended" | "rejected", status?: string, seq?: number, epoch?: number, error?: AgentError },
- *   integrity: { result: string[] } }} AgentDocuments
+ *   integrity: { result: string[] }, inspect: import("./released-invariants.mjs").Inspection }} AgentDocuments
  * @typedef {{ pid: number, active: string, result: string, state: string }} UnitState
  */
 
@@ -204,16 +205,16 @@ export class Host {
 	}
 
 	/**
-	 * Runs the node agent and returns its JSON document. When the agent fails it prints its typed failure and exits 1;
-	 * that failure becomes the cause of the thrown command error.
+	 * Runs the node agent (or another harness script with the same conventions) and returns its JSON document. When the
+	 * script fails it prints its typed failure and exits 1; that failure becomes the cause of the thrown command error.
 	 * @template {keyof AgentDocuments} C
 	 * @param {C} command
 	 * @param {readonly string[]} args
-	 * @param {{ timeoutMs?: number, sudo?: boolean }} [options]
+	 * @param {{ timeoutMs?: number, script?: string }} [options]
 	 * @returns {Promise<AgentDocuments[C]>}
 	 */
-	async agent(command, args, { timeoutMs = 300_000 } = {}) {
-		const words = [`NODE_EXTRA_CA_CERTS=${SECRETS}/ca.pem`, NODE_BIN, AGENT, command, ...args]
+	async agent(command, args, { timeoutMs = 300_000, script = AGENT } = {}) {
+		const words = [`NODE_EXTRA_CA_CERTS=${SECRETS}/ca.pem`, NODE_BIN, script, command, ...args]
 			.map(shellQuote)
 			.join(" ");
 		const operation = `agent ${command}`;
@@ -236,14 +237,23 @@ export async function stageBase(host, { nodeTarball, harnessDir }) {
 		{ operation: "prepare directories" },
 	);
 	await host.upload(nodeTarball, `${REMOTE_ROOT}/node.tar.xz`, "upload Node runtime");
-	for (const file of ["agent.mjs", "gateway.mjs"])
-		await host.upload(join(harnessDir, file), `${REMOTE_ROOT}/harness/${file}`, `upload ${file}`);
+	await stageHarness(host, harnessDir);
 	await host.run(
 		`tar -xJf ${REMOTE_ROOT}/node.tar.xz -C ${REMOTE_ROOT}/node --strip-components=1 && rm ${REMOTE_ROOT}/node.tar.xz && ${NODE_BIN} --version`,
 		{
 			operation: "install Node runtime",
 		},
 	);
+}
+
+/**
+ * Copies the harness scripts to the host. A reused run calls it again, so it runs the controller's current scripts.
+ * @param {Host} host
+ * @param {string} harnessDir
+ */
+export async function stageHarness(host, harnessDir) {
+	for (const file of ["agent.mjs", "gateway.mjs", "released.mjs"])
+		await host.upload(join(harnessDir, file), `${REMOTE_ROOT}/harness/${file}`, `upload ${file}`);
 }
 
 /**
@@ -372,11 +382,12 @@ export async function listeningSockets(host) {
 }
 
 /**
- * Starts the node agent as a transient systemd unit owned by the run, with its output appended to a log file.
+ * Starts a harness script (the node agent unless `script` says otherwise) as a transient systemd unit owned by the
+ * run, with its output appended to a log file.
  * @param {Host} host
- * @param {{ unit: string, args: readonly string[], properties?: readonly string[] }} input
+ * @param {{ unit: string, args: readonly string[], properties?: readonly string[], script?: string }} input
  */
-export async function startAgentUnit(host, { unit, args, properties = [] }) {
+export async function startAgentUnit(host, { unit, args, properties = [], script = AGENT }) {
 	const words = [
 		"sudo",
 		"systemd-run",
@@ -389,7 +400,7 @@ export async function startAgentUnit(host, { unit, args, properties = [] }) {
 		`--property=StandardError=append:${REMOTE_ROOT}/logs/${unit}.log`,
 		...properties.map((property) => `--property=${property}`),
 		NODE_BIN,
-		AGENT,
+		script,
 		...args,
 	];
 	await host.run(words.map(shellQuote).join(" "), { operation: `start ${unit}` });
