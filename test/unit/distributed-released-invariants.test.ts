@@ -350,6 +350,7 @@ test("no message id reaches a child twice, whatever its send's outcome (#4394)",
 	const failedTwice = withMessages((children) => {
 		children[0]?.messages.push({ id: "uncertain", text: "ADT s1 c1 3" }, { id: "uncertain", text: "ADT s1 c1 3" });
 	});
+	assert.equal(result(evidence({ inspection: failedTwice }), "no-duplicate-messages").passed, false);
 	assert.deepEqual(result(evidence({ inspection: failedTwice }), "no-duplicate-messages").actual, {
 		repeated: 1,
 		first: "c1 uncertain",
@@ -381,6 +382,7 @@ test("an accepted queued send must arrive once the children settle; a refused on
 		],
 		inspection: lost,
 	});
+	assert.equal(result(failed, "queued-eventually-delivered").passed, false);
 	assert.deepEqual(result(failed, "queued-eventually-delivered").actual, {
 		sends: 1,
 		missing: 1,
@@ -390,6 +392,7 @@ test("an accepted queued send must arrive once the children settle; a refused on
 	});
 	assert.equal(result(failed, "delivered-exactly-once").passed, true);
 	assert.deepEqual(result(failed, "no-lost-wakes").actual, { accepted: 8, acceptedNotArrived: 1, wakeFailures: 0 });
+	assert.equal(result(failed, "no-lost-wakes").passed, false);
 	const doubled = withMessages((children) => {
 		const message = children[1]?.messages[2];
 		if (message) children[1]?.messages.push(message);
@@ -666,6 +669,10 @@ test("the owner restarts by itself after each kill, reopens its session and rebi
 		"owner-recovered",
 	);
 	assert.equal(atShutdown.passed, true);
+	const unstopped = result(evidence({ owner: [start, { event: "uncaught" }] }), "owner-recovered");
+	assert.deepEqual(field(unstopped.actual, "shutdownCrashes"), [], "without a final status every crash is a crash");
+	const stoppedCleanly = result(evidence({ owner: [...ownerLog(0), { event: "owner-stopped" }] }), "owner-recovered");
+	assert.deepEqual(field(stoppedCleanly.actual, "shutdownCrashes"), []);
 	assert.deepEqual(field(atShutdown.actual, "crashes"), []);
 	assert.deepEqual(field(atShutdown.actual, "shutdownCrashes"), ["Error"]);
 	const late = ownerLog(1).map((record) =>

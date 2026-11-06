@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { profileCoverage } from "../distributed/harness/chaos.mjs";
 import {
 	CHAOS_PROFILES,
@@ -107,7 +107,11 @@ class FakeRemote {
 		return { outcomes, delivered: outcomes };
 	};
 	status: OwnerRecord = { event: "status", children: 2, released: 2, running: 0, other: 0 };
-	ownerLog = async () => [...this.ownerRecords, this.status, { event: "heartbeat" }];
+	ownerLog: () => Promise<OwnerRecord[] | undefined> = async () => [
+		...this.ownerRecords,
+		this.status,
+		{ event: "heartbeat" },
+	];
 	senderLog = async (sender: { name: string }) => this.sent.get(sender.name);
 	stopSenders = async () => {
 		this.record("stop senders");
@@ -599,9 +603,9 @@ test("cancellation while reading evidence stays a cancellation (#4394)", async (
 test("children still running after the settle window are reported, not waited for forever (#4394)", async () => {
 	const remote = new FakeRemote();
 	remote.status = { event: "status", children: 2, released: 1, running: 1, other: 0 };
-	const result = await released(remote, []);
+	const result = await releasedOnFakeTime(remote, {});
 	assert.equal(result.metrics.settled, false);
-	assert.ok(result.metrics.settleMs >= FAST.settleMaxMs - 5);
+	assert.ok(result.metrics.settleMs >= FAST.settleMaxMs);
 	const sizes = { ...RELEASED_SETTINGS };
 	assert.ok(sizes.settleMinMs >= 3 * 30_000, "the settle window covers multi-node Intercom's three recovery windows");
 	assert.ok(sizes.settleMaxMs > sizes.settleMinMs);
@@ -933,13 +937,32 @@ test("timeouts are typed, name their phase and report the time they took (#4394)
 	await assert.rejects(released(unread, []), (error) => isDistributedTimeoutError(error));
 });
 
+/** Runs the scenario on fake timers, so its time windows are exact rather than dependent on the machine's load. */
+async function releasedOnFakeTime(remote: FakeRemote, settings: Partial<typeof FAST>) {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	try {
+		await vi.advanceTimersByTimeAsync(10_000);
+		let finished = false;
+		const run = released(remote, [], { settings });
+		run.then(
+			() => {
+				finished = true;
+			},
+			() => {
+				finished = true;
+			},
+		);
+		while (!finished) await vi.advanceTimersByTimeAsync(10);
+		return await run;
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
 test("the settle window lasts at least its minimum and ends when every child is released (#4394)", async () => {
-	const settledRun = await released(new FakeRemote(), [], { settings: { settleMinMs: 30, settleMaxMs: 400 } });
+	const settledRun = await releasedOnFakeTime(new FakeRemote(), { settleMinMs: 30, settleMaxMs: 400 });
 	assert.equal(settledRun.metrics.settled, true);
-	assert.ok(
-		settledRun.metrics.settleMs >= 30 && settledRun.metrics.settleMs < 400,
-		String(settledRun.metrics.settleMs),
-	);
+	assert.equal(settledRun.metrics.settleMs, 30);
 	for (const status of [
 		{ children: 3, released: 2, running: 0 },
 		{ children: 2, released: 1, running: 0 },
@@ -947,9 +970,9 @@ test("the settle window lasts at least its minimum and ends when every child is 
 	]) {
 		const remote = new FakeRemote();
 		remote.status = { event: "status", other: 0, ...status };
-		const run = await released(remote, [], { settings: { settleMinMs: 20, settleMaxMs: 60 } });
+		const run = await releasedOnFakeTime(remote, { settleMinMs: 20, settleMaxMs: 60 });
 		assert.equal(run.metrics.settled, false, JSON.stringify(status));
-		assert.ok(run.metrics.settleMs >= 55 && run.metrics.settleMs < 300, String(run.metrics.settleMs));
+		assert.ok(run.metrics.settleMs >= 60 && run.metrics.settleMs <= 65, String(run.metrics.settleMs));
 	}
 	assert.deepEqual(RELEASED_SETTINGS, {
 		children: 20,
@@ -1050,7 +1073,21 @@ test("each sender gate names its fault and phase when the senders stall there (#
 test("the settle window is bounded by its maximum, not by the maximum plus the minimum (#4394)", async () => {
 	const remote = new FakeRemote();
 	remote.status = { event: "status", children: 2, released: 1, running: 1, other: 0 };
-	const run = await released(remote, [], { settings: { settleMinMs: 100, settleMaxMs: 300 } });
+	const run = await releasedOnFakeTime(remote, { settleMinMs: 100, settleMaxMs: 300 });
 	assert.equal(run.metrics.settled, false);
-	assert.ok(run.metrics.settleMs >= 300 && run.metrics.settleMs < 390, String(run.metrics.settleMs));
+	assert.ok(run.metrics.settleMs >= 300 && run.metrics.settleMs <= 305, String(run.metrics.settleMs));
+});
+
+test("an owner log that is not there yet counts as no start and no status (#4394)", async () => {
+	const remote = new FakeRemote();
+	const log = remote.ownerLog;
+	let reads = 0;
+	remote.ownerLog = async () => (++reads <= 2 ? undefined : log());
+	const result = await released(remote, ["sigkill"]);
+	assert.equal(result.faults.find((fault) => fault.target === "n1 owner")?.effectObserved, true);
+	const silent = new FakeRemote();
+	silent.ownerLog = async () => undefined;
+	const settledRun = await releasedOnFakeTime(silent, { settleMinMs: 0, settleMaxMs: 50 });
+	assert.equal(settledRun.metrics.settled, false);
+	assert.equal(settledRun.invariants.find((item) => item.name === "evidence-complete")?.passed, false);
 });
