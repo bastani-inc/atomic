@@ -221,6 +221,35 @@ export function createTrackedStageCaller(input: {
 		throw runtime.budget.finishWrapUp(runtime.name, summary, usage, summary !== undefined);
 	};
 
+	let slotUsers = 0;
+	let slotAcquisition: Promise<void> | undefined;
+	const holdSlot = async (): Promise<void> => {
+		slotUsers += 1;
+		try {
+			if (slotAcquisition === undefined && runtime.state.limiterSlot !== "none") return;
+			slotAcquisition ??= input.limiter.acquire().then(
+				() => {
+					runtime.state.limiterSlot = "held";
+					slotAcquisition = undefined;
+				},
+				(error: Error) => {
+					slotAcquisition = undefined;
+					throw error;
+				},
+			);
+			await slotAcquisition;
+		} catch (error) {
+			slotUsers -= 1;
+			throw error;
+		}
+	};
+	const letGoSlot = (): void => {
+		slotUsers -= 1;
+		if (slotUsers > 0) return;
+		if (runtime.state.limiterSlot === "held") input.limiter.release();
+		runtime.state.limiterSlot = "none";
+	};
+
 	const runTrackedCall = async <T>(
 		call: () => Promise<T>,
 		eagerSessionOrOptions?: boolean | TrackedStageCallOptions,
@@ -231,15 +260,13 @@ export function createTrackedStageCaller(input: {
 		await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 		if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
-		await input.limiter.acquire();
-		runtime.state.limiterSlot = "held";
+		await holdSlot();
 		try {
 			await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 			runtime.exit.throwIfWorkflowExitSelected();
 			if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 		} catch (err) {
-			runtime.state.limiterSlot = "none";
-			input.limiter.release();
+			letGoSlot();
 			throw err;
 		}
 
@@ -589,8 +616,7 @@ export function createTrackedStageCaller(input: {
 			}
 			runtime.state.sessionCheckpointed = finalizationError === undefined;
 			if (runtime.state.contextUnreachable) void runtime.stageRegistry.releaseIdle(runtime.runId, runtime.stageId);
-			if (runtime.state.limiterSlot === "held") input.limiter.release();
-			runtime.state.limiterSlot = "none";
+			letGoSlot();
 			if (finalizationError !== undefined) throwFinalizationError(finalizationError.error);
 			delete runtime.state.readinessController;
 			if (terminalStateIsSuccess && readinessGateEnabled) runtime.signal.throwIfAborted();

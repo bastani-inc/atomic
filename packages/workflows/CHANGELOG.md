@@ -61,6 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A finished stage keeps its completed or failed status when a follow-up message waits on a detached tool and then reopens, instead of appearing as running after its run ends ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 - A waiting stage keeps tool results and wait-state changes recorded in the same millisecond instead of silently discarding them as duplicate checkpoints, so resume does not dispatch already-finished tool calls again ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 - `stage.setThinkingLevel()` can set a resumed, released stage's level even when its previous level is unknown, without reopening the session. The next reopen applies the saved level, and unrelated getter failures still propagate unchanged ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
+- Concurrent messages to one idle stage share its concurrency slot until the last call ends instead of leaking a slot and blocking later stages ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 
 ## [0.9.71] - 2026-11-03
 
