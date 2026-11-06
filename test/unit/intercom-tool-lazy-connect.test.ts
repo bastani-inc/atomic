@@ -125,7 +125,8 @@ describe("lightweight intercom tool-driven connection", () => {
 			return typeof predicate === "function" ? predicate(params as never) : predicate === true;
 		};
 		await current.emit("session_start", { type: "session_start", reason: "startup" });
-		assert.equal(mayDetach("intercom", { action: "ask" }), false);
+		assert.equal(mayDetach("intercom", { action: "ask" }), true, "a call may start before its connection exists");
+		assert.equal(mayDetach("intercom", { action: "send" }), false);
 		await current.executeTool("intercom");
 		assert.equal(mayDetach("intercom", { action: "ask" }), false, "multi-node routing keeps the call live");
 		assert.equal(mayDetach("contact_supervisor", { reason: "need_decision" }), false);

@@ -28,7 +28,10 @@ interface ContactSupervisorDeps {
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
 	/** Atomically reserves one correlation-keyed reply waiter from the shared capacity. */
 	beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
+	/** True only when this registration has confirmed that the broker routes locally. */
 	mayDetachReplyWait?: () => boolean;
+	/** True unless the broker is known to route across machines; a call may start before its connection exists. */
+	mayAdmitReplyWait?: () => boolean;
 }
 
 export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSupervisorDeps): void {
@@ -44,7 +47,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
     pi.registerTool({
       name: "contact_supervisor",
       exposure: "model-only",
-      detachable: (params) => deps.mayDetachReplyWait?.() === true && contactSupervisorCallMayDetach(params),
+      detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && contactSupervisorCallMayDetach(params),
       detachmentRequiresReady: true,
       label: "Contact Supervisor",
       description: "Subagent-only tool for contacting the supervisor agent that delegated this task. In a live foreground child, need_decision and interview_request end the child and return a fresh-subagent handoff to the supervisor; fallback Intercom delivery waits for a reply when no foreground owner claims the request. One blocking supervisor request is allowed per child and may coexist with ordinary intercom asks. progress_update is fire-and-forget. Do not use for routine completion handoffs.",
@@ -282,7 +285,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             timestamp: Date.now(),
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
-          await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 });
+          await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 }, () => deps.mayDetachReplyWait?.() === true);
           const replyMessage = await wait.promise;
           const replyText = replyMessage.content.text;
           const replyAttachments = replyMessage.content.attachments?.length

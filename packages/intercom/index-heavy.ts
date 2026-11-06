@@ -1852,6 +1852,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
   });
 
+  const replyWaitMayStartBeforeRouting = (): boolean => client?.isConnected() !== true || client.multiNodeRouting === "off";
   registerContactSupervisorTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
@@ -1859,6 +1860,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     resolveSessionTarget: resolveSessionTargetId,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     mayDetachReplyWait: () => client?.isConnected() === true && client.multiNodeRouting === "off",
+    mayAdmitReplyWait: replyWaitMayStartBeforeRouting,
   });
   registerIntercomTool(pi, {
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
@@ -1866,6 +1868,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     mayDetachReplyWait: () => client?.isConnected() === true && client.multiNodeRouting === "off",
+    mayAdmitReplyWait: replyWaitMayStartBeforeRouting,
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
     multiNodeRouting,

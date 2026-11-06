@@ -246,8 +246,10 @@ interface IntercomToolDeps {
   confirmSend: boolean;
   /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
-  /** True only when this registration knows the broker routes locally. */
+  /** True only when this registration has confirmed that the broker routes locally. */
   mayDetachReplyWait?: () => boolean;
+  /** True unless the broker is known to route across machines; a call may start before its connection exists. */
+  mayAdmitReplyWait?: () => boolean;
   replyTracker: ReplyTracker | (() => ReplyTracker);
   /** Internal test seam for exercising retry pressure before public tool side effects. */
   retryIdentityMaxEntries?: number;
@@ -267,7 +269,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   pi.registerTool({
     name: "intercom",
     exposure: "model-only",
-    detachable: (params) => deps.mayDetachReplyWait?.() === true && intercomCallMayDetach(params),
+    detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && intercomCallMayDetach(params),
     detachmentRequiresReady: true,
     label: "Intercom",
     description: `Send a message to another local agent session running on this machine.
@@ -1025,7 +1027,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               messageId: sendResult.id,
               timestamp: Date.now(),
             });
-            await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: replyFrom, retryCount: retries });
+            await prepareReleasedReplyWait(
+              pi,
+              wait,
+              signal,
+              { toolCallId, questionId, from: replyFrom, retryCount: retries },
+              () => deps.mayDetachReplyWait?.() === true,
+            );
             const replyMessage = await wait.promise;
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;

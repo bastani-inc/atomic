@@ -34,14 +34,18 @@ export function isReleasedReplyHandoffResult(details: JsonValue | undefined): bo
 	return typeof details === "object" && details !== null && (details as { [HANDOFF_RESULT]?: boolean })[HANDOFF_RESULT] === true;
 }
 
-/** Record the question before allowing its wait to outlive the child's live session. */
+/**
+ * Record the question before allowing its wait to outlive the child's live session. A call that was admitted before
+ * its connection existed marks itself ready only once local routing is confirmed.
+ */
 export async function prepareReleasedReplyWait(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	wait: ReplyWait,
 	signal: AbortSignal | undefined,
 	data: Omit<ReleasedReplyWaitData, "deadline">,
+	routingConfirmedLocal: () => boolean,
 ): Promise<void> {
-	if (signal === undefined || !toolCallNeedsDetachmentHandoff(signal)) return;
+	if (signal === undefined || !toolCallNeedsDetachmentHandoff(signal) || !routingConfirmedLocal()) return;
 	await pi.appendEntry(RELEASED_REPLY_WAIT_ENTRY, { ...data, deadline: wait.deadline });
 	if (!wait.isPending()) return;
 	wait.readyForHandoff();

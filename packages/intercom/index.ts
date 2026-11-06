@@ -286,7 +286,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
   let heavyAttempt: HeavyAttempt | null = null;
   let loadedHeavy: IntercomHeavyHandle | null = null;
   const heavyReplyWaitMayDetach = (name: string, params: { action?: string; reason?: string }): boolean => {
-    const predicate = loadedHeavy?.heavy.tools.get(name)?.detachable;
+    if (loadedHeavy === null) return true;
+    const predicate = loadedHeavy.heavy.tools.get(name)?.detachable;
     return typeof predicate === "function" ? predicate(params) : predicate === true;
   };
   let sessionSnapshot: SessionSnapshot | null = null;
