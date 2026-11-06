@@ -2277,6 +2277,7 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `startup-benchmark` | `StartupBenchmarkError`, `StartupBenchmarkConfigError` | `isStartupBenchmarkError` |
 | `subscription` | [`SubscriptionError`](#subscription-errors) and its subclasses | `isSubscriptionError` |
 | `task-tool` | `TaskToolError` | `isTaskToolError` |
+| `intercom-broker` | [`IntercomBrokerError`](/intercom/operations) and its subclass `IntercomBrokerSuccessorTimeoutError` | `isIntercomBrokerError` |
 | `worker-pool`, `workflow-infrastructure`, `journal`, `worker-placement`, `task-cleanup` | The [worker pool errors](#worker-pool-errors), journal lease errors, shared placement and setup errors (`WorkerPlacementConfigError`, `SharedPoolSetupError`, `WorkspaceRestoreUnavailableError`, `StaleStageLeaseError`) and `TaskCleanupError` | Each class's guard |
 | `storage`, `journal-store`, `fork` | Storage errors (team profile errors among them), journal store errors and [fork errors](#fork-errors) | Each family's guard |
 

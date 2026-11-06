@@ -8,8 +8,10 @@ import {
 	type StickyLiveDeliveredNotice,
 } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
+import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
 import { loadConfig } from "./config.js";
 import { jitteredReconnectDelayMs } from "./reconnect-backoff.js";
+import { isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
 import type {
 	WorkflowPossibleStageAnnouncement,
 	WorkflowRunParentAnnouncement,
@@ -139,6 +141,56 @@ export function createWorkflowRouteOwner(cwd: string) {
 		void client.disconnect().catch(() => {});
 	}
 
+	/** One registration of a new client for `connection`, after spawning the broker when none is running. */
+	async function register(connection: RouteConnection, extensionDir: string): Promise<IntercomClient> {
+		if (connections.get(connection.key) !== connection) throw closedError();
+		await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, extensionDir);
+		if (connections.get(connection.key) !== connection) throw closedError();
+		const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`, {
+			multiplexesPendingStageRoutes: true,
+		});
+		connection.client = client;
+		connection.acknowledged = false;
+		client.on("error", () => {});
+		client.on("disconnected", () => drop(connection, client));
+		client.on("pending_stage_message", (request: PendingStageMessageRequest) => {
+			if (connection.client !== client) return;
+			const event: PendingMessage = { ...request, handled: false };
+			events.emit("atomic:workflow-pending-stage-message", event);
+			const completion =
+				event.handled && event.completion !== undefined
+					? event.completion
+					: Promise.resolve<PendingStageMessageResult>({ outcome: "refused", reason: "Session not found" });
+			void completion
+				.catch((error: Error): PendingStageMessageResult => ({ outcome: "refused", reason: error.message }))
+				.then((result) => client.respondPendingStageMessage(request.requestId, result))
+				.catch(() => {});
+		});
+		client.on("sticky_live_delivered", (notice: StickyLiveDeliveredNotice) => {
+			if (connection.client !== client) return;
+			events.emit("atomic:workflow-sticky-live-delivered", { ...notice, handled: false });
+		});
+		try {
+			await client.connect({
+				cwd,
+				model: "workflow",
+				pid: process.pid,
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: connection.group,
+				groups: [connection.group],
+				recipientPurpose: "control",
+			});
+			if (connections.get(connection.key) !== connection) throw closedError();
+		} catch (error) {
+			// A broker that retired first is replaced and registered with again; the runs waiting on that keep waiting.
+			if (isIntercomBrokerRetiring(error)) connection.client = undefined;
+			drop(connection, client);
+			throw error;
+		}
+		return client;
+	}
+
 	function connect(connection: RouteConnection): Promise<IntercomClient> {
 		if (connection.client?.isConnected()) return Promise.resolve(connection.client);
 		connection.connecting ??= (async () => {
@@ -149,48 +201,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 				"web-access": false,
 			});
 			if (extensionDir === undefined) throw new Error("Intercom builtin package is unavailable");
-			await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, extensionDir);
-			if (connections.get(connection.key) !== connection) throw closedError();
-			const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`, {
-				multiplexesPendingStageRoutes: true,
-			});
-			connection.client = client;
-			connection.acknowledged = false;
-			client.on("error", () => {});
-			client.on("disconnected", () => drop(connection, client));
-			client.on("pending_stage_message", (request: PendingStageMessageRequest) => {
-				if (connection.client !== client) return;
-				const event: PendingMessage = { ...request, handled: false };
-				events.emit("atomic:workflow-pending-stage-message", event);
-				const completion =
-					event.handled && event.completion !== undefined
-						? event.completion
-						: Promise.resolve<PendingStageMessageResult>({ outcome: "refused", reason: "Session not found" });
-				void completion
-					.catch((error: Error): PendingStageMessageResult => ({ outcome: "refused", reason: error.message }))
-					.then((result) => client.respondPendingStageMessage(request.requestId, result))
-					.catch(() => {});
-			});
-			client.on("sticky_live_delivered", (notice: StickyLiveDeliveredNotice) => {
-				if (connection.client !== client) return;
-				events.emit("atomic:workflow-sticky-live-delivered", { ...notice, handled: false });
-			});
-			try {
-				await client.connect({
-					cwd,
-					model: "workflow",
-					pid: process.pid,
-					startedAt: Date.now(),
-					lastActivity: Date.now(),
-					group: connection.group,
-					groups: [connection.group],
-					recipientPurpose: "control",
-				});
-				if (connections.get(connection.key) !== connection) throw closedError();
-			} catch (error) {
-				drop(connection, client);
-				throw error;
-			}
+			const client = await registerWithBrokerSuccessor(() => register(connection, extensionDir));
 			// Runs that lost their route with the previous connection register now, not on their own timers.
 			for (const state of connection.routes.values()) {
 				if (state.registered || state.retry === undefined) continue;

@@ -469,6 +469,23 @@ export {
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export {
+	IntercomBrokerError,
+	type IntercomBrokerErrorCode,
+	type IntercomBrokerErrorFields,
+	type IntercomBrokerErrorFieldValue,
+	type IntercomBrokerErrorOptions,
+	type IntercomBrokerSuccessorTimeoutCode,
+	IntercomBrokerSuccessorTimeoutError,
+	type IntercomBrokerSuccessorTimeoutFields,
+	type IntercomBrokerSuccessorTimeoutPhase,
+	isIntercomBrokerError,
+	isIntercomBrokerSuccessorTimeoutError,
+	isRetryableIntercomBrokerError,
+	rehydrateIntercomBrokerError,
+	type SerializedIntercomBrokerError,
+	serializeIntercomBrokerError,
+} from "./core/intercom-broker-error.ts";
+export {
 	isProjectGroupError,
 	ProjectGroupError,
 	type ProjectGroupErrorCode,

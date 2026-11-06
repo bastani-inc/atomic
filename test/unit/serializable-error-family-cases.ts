@@ -8,6 +8,7 @@ import {
 	EventSourceError,
 	GitHubCopilotRateLimitError,
 	GitUnavailableError,
+	IntercomBrokerSuccessorTimeoutError,
 	isAgentRehydrateError,
 	isBackgroundCompactionPersistError,
 	isDebugLogUnwritableError,
@@ -16,6 +17,7 @@ import {
 	isEventSourceError,
 	isGitHubCopilotRateLimitError,
 	isGitUnavailableError,
+	isIntercomBrokerSuccessorTimeoutError,
 	isLlamaServerUnreachableError,
 	isSessionStartTimeoutError,
 	isShellTimeoutError,
@@ -35,6 +37,7 @@ import {
 	serializeDecisionError,
 	serializeFileToolError,
 	serializeGitHubCopilotError,
+	serializeIntercomBrokerError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
 	serializeWorkspaceError,
@@ -320,6 +323,17 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: TaskToolError,
 		guard: isTaskToolError,
 		facts: ownFacts(toJSON),
+	},
+	{
+		family: "intercom-broker",
+		make: () =>
+			new IntercomBrokerSuccessorTimeoutError(
+				{ timeoutMs: 10_000, elapsedMs: 10_500, attempts: 14 },
+				{ cause: new Error("Intercom broker went away before it registered this session: read ECONNRESET") },
+			),
+		type: IntercomBrokerSuccessorTimeoutError,
+		guard: isIntercomBrokerSuccessorTimeoutError,
+		facts: ownFacts(serializeIntercomBrokerError),
 	},
 ];
 
