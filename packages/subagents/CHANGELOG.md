@@ -20,6 +20,7 @@
 ### Fixed
 
 - SDK subagent launches return their start timeout even when an extension's `input` or `before_agent_start` handler never settles. Session cleanup continues separately instead of holding the timeout result ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+- A background subagent that was woken when its owner's process died is released again when the reopened session restores it, instead of ending with an error at its next release. The message Intercom had saved for it just before the crash is read once, after the call it was waiting on gets its result, instead of starting a turn on top of that call ([#4488](https://github.com/bastani-inc/atomic/issues/4488))
 
 ## [0.9.71] - 2026-11-03
 
