@@ -5,6 +5,8 @@
 ### Fixed
 
 - A `file:` database stays usable after a statement fails. A statement that gave up part way, for example a write that waited out the busy timeout while another process held the lock, stayed active on its connection until garbage collection. After that, every transaction on the database failed with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`, and a write outside a transaction reported success but was never committed. The adapter now replaces its local connections after any failed statement, before the next call, and turns foreign keys on again on the new one.
+- Closing a `file:` database now releases its files before `close()` resolves, so they can be deleted or moved right away, including on Windows. libsql 0.5 keeps a closed connection open until its statements are garbage-collected; the adapter now runs two full garbage collections, shared by closes that arrive together, and waits for the driver to release its handles ([#4433](https://github.com/bastani-inc/atomic/issues/4433))
+- When opening a database fails and closing it afterwards fails too, the close failure is attached to the open error as `cleanupCause` instead of being discarded ([#4433](https://github.com/bastani-inc/atomic/issues/4433))
 
 ## [0.9.71] - 2026-11-03
 
