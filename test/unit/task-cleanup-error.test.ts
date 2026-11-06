@@ -493,6 +493,17 @@ test("other infrastructure faults rehydrate as their class, and a process cleanu
 			protocolRefusal("error.fields.resources", "a task cleanup phase and resources, each with its task"),
 			JSON.stringify(fields),
 		);
+	for (const fields of [
+		{},
+		{ ...process.fields, phase: "lost" },
+		{ ...process.fields, resources: "none" },
+		{ ...process.fields, resources: [resource!, null] },
+	])
+		assert.throws(
+			() => rehydrateWorkflowInfrastructureError({ ...process, fields }),
+			protocolRefusal("error.fields.resources", "a task cleanup phase and resources, each with its task"),
+			`a usable cause does not excuse ${JSON.stringify(fields)}`,
+		);
 	assert.throws(
 		() => rehydrateWorkflowInfrastructureError(serializeError(new TaskCleanupError("stage-close", []))),
 		protocolRefusal("error.family", "workflow-infrastructure"),

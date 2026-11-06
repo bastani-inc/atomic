@@ -245,8 +245,9 @@ function validTaskCleanup(fields: FieldReader, name: string): TaskCleanupError {
 }
 
 /**
- * The task cleanup a stage cleanup error's `resources` describe, for a copy that lost its cause: consecutive resources
- * of one task regrouped, in order, then validated by the task layer's own rehydration.
+ * The task cleanup a stage cleanup error's `phase` and `resources` describe: consecutive resources of one task
+ * regrouped, in order, then validated by the task layer's own rehydration. A copy that lost its cause is rebuilt from
+ * it; one that kept its cause must still describe a valid cleanup.
  */
 function cleanupFromResources(fields: FieldReader): TaskCleanupError {
 	const expected = "a task cleanup phase and resources, each with its task";
@@ -316,10 +317,10 @@ const CODECS: ReadonlyMap<string, Codec<Error>> = new Map([
 			phase: error.phase,
 			resources: error.resources.map(({ taskId, resource, code, message }) => ({ taskId, resource, code, message })),
 		}),
-		create: (fields, options) =>
-			new ProcessCleanupUnconfirmedError(
-				isTaskCleanupError(options.cause) ? options.cause : cleanupFromResources(fields),
-			),
+		create: (fields, options) => {
+			const described = cleanupFromResources(fields);
+			return new ProcessCleanupUnconfirmedError(isTaskCleanupError(options.cause) ? options.cause : described);
+		},
 	}),
 	codec("WorkerPlacementConfigError", {
 		family: "worker-placement",
