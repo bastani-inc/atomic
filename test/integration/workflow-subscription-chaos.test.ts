@@ -57,10 +57,15 @@ function lastJson<T>(output: Uint8Array | string): T {
 const SUBSCRIPTIONS = 3;
 const OTHER_SUBSCRIPTIONS_DONE = { chaos2: EVENTS, "chaos2/x": EVENTS };
 
-function records(
-	directory: string,
-	runId: string,
-): { processed: string[]; eventRecords: number; others: Record<string, number> } {
+interface Records {
+	readonly processed: string[];
+	readonly eventRecords: number;
+	readonly others: Record<string, number>;
+	/** The subscriber's persisted conversation: its prompt, then one message per delivered report. */
+	readonly watcherMessages: string[] | null;
+}
+
+function records(directory: string, runId: string): Records {
 	const result = fixture(["records", directory, runId, "inspector"]);
 	assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
 	return lastJson(result.stdout);
@@ -76,6 +81,57 @@ function integrity(directory: string): string {
 }
 
 const allIds = Array.from({ length: EVENTS }, (_, index) => `e${index}`);
+/** Every tenth event of the `chaos` subscription matters, and its child reports it to the watcher. */
+const RELEVANT_IDS = allIds.filter((_id, index) => index % 10 === 0);
+const WATCHER_PROMPT = "Watch the chaos events and act on reports.";
+
+async function lines(directory: string, file: string): Promise<string[]> {
+	const path = join(directory, file);
+	return (await fileExists(path)) ? (await readText(path)).trim().split("\n").filter(Boolean) : [];
+}
+
+/** Every event child that ran, also after a resume or a takeover, was seeded with its own subscription and event. */
+async function assertEveryChildSeeded(directory: string, labels: readonly string[]): Promise<void> {
+	const seeded = (await lines(directory, "prompts.txt")).filter((line) => labels.includes(line.split(" ")[0]!));
+	assert.ok(seeded.length >= EVENTS * SUBSCRIPTIONS, `only ${seeded.length} event children ran`);
+	for (const line of seeded) {
+		const [label, stage, seed] = line.split(" ") as [string, string, string];
+		const keyEnd = stage.lastIndexOf("#");
+		const own = `${stage.slice(0, keyEnd)}:${decodeURIComponent(stage.slice(stage.indexOf("/", keyEnd) + 1))}`;
+		assert.equal(seed, own, `${label} ran ${stage} without its own seed`);
+	}
+}
+
+/**
+ * Every relevant event reached the subscriber at least once and nothing else did. `failovers` bounds the repeats:
+ * only a report sent by a child that was still running when its owner stopped can arrive again.
+ */
+async function assertReports(
+	directory: string,
+	labels: readonly string[],
+	watcherMessages: string[] | null,
+	failovers: number,
+): Promise<void> {
+	const reported = (await lines(directory, "reports.txt"))
+		.map((line) => line.split(" ") as [string, string])
+		.filter(([label]) => labels.includes(label))
+		.map(([, id]) => id);
+	const maxRepeats = failovers * MAX_CONCURRENT;
+	assert.deepEqual([...new Set(reported)].sort(), [...RELEVANT_IDS].sort());
+	assert.ok(reported.length <= RELEVANT_IDS.length + maxRepeats, `${reported.length} reports`);
+	assert.ok(watcherMessages !== null, "the watcher stage has no recorded session");
+	const [prompt, ...grown] = watcherMessages;
+	assert.equal(prompt, WATCHER_PROMPT);
+	const delivered = grown.map((message) => {
+		const match = /^Report from event child "chaos#1\/(e\d+)" \(event (e\d+)\):\n\nevent (e\d+) matters$/.exec(
+			message,
+		);
+		assert.ok(match !== null && match[1] === match[2] && match[2] === match[3], `not a report: ${message}`);
+		return match[1]!;
+	});
+	assert.deepEqual([...new Set(delivered)].sort(), [...RELEVANT_IDS].sort());
+	assert.ok(delivered.length <= RELEVANT_IDS.length + maxRepeats, `${delivered.length} messages in the watcher`);
+}
 
 /** SQLite's primary result code for a lock held by another connection. */
 const SQLITE_BUSY = 5;
@@ -171,6 +227,8 @@ test(
 			assert.equal(after.eventRecords, EVENTS * SUBSCRIPTIONS);
 			assert.deepEqual(after.others, OTHER_SUBSCRIPTIONS_DONE);
 			assert.equal(await fileExists(join(directory, "wrong-tree.txt")), false);
+			await assertEveryChildSeeded(directory, ["first", "second"]);
+			await assertReports(directory, ["first", "second"], after.watcherMessages, 1);
 			assert.equal(integrity(directory), "ok");
 			assert.deepEqual(
 				(await readText(join(directory, "anchor.txt"))).trim().split("\n"),
@@ -240,6 +298,8 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(after.eventRecords, EVENTS * SUBSCRIPTIONS);
 			assert.deepEqual(after.others, OTHER_SUBSCRIPTIONS_DONE);
 			assert.equal(await fileExists(join(directory, "wrong-tree.txt")), false);
+			await assertEveryChildSeeded(directory, ["owner", "takeover"]);
+			await assertReports(directory, ["owner", "takeover"], after.watcherMessages, 1);
 			assert.equal(integrity(directory), "ok");
 		} finally {
 			if (owner.exitCode === null) {
@@ -284,6 +344,8 @@ test(
 				assert.deepEqual(written.processed, allIds);
 				assert.equal(written.eventRecords, EVENTS * SUBSCRIPTIONS);
 				assert.deepEqual(written.others, OTHER_SUBSCRIPTIONS_DONE);
+				await assertEveryChildSeeded(directory, [writer.label]);
+				await assertReports(directory, [writer.label], written.watcherMessages, 0);
 			}
 			assert.equal(await fileExists(join(directory, "wrong-tree.txt")), false);
 			assert.equal(integrity(directory), "ok");

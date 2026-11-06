@@ -9,23 +9,31 @@
  * the crashed owner's SQLite lease; `takeover` instead waits, with no manual step, until the journal's own clock
  * reports the owner's lease stale. `steal` makes one resume attempt against a live owner and exits 0 when it is refused.
  *
- * Every event runs a tracked event child (`child.task`) whose scripted model answers `answer:<subscription>:<event id>`.
- * Beside the main `chaos` subscription, two more subscriptions run at the same time whose children shared names under
- * the old `<name>/<event id>` naming (`chaos2` with ids `x/eN` and `chaos2/x` with ids `eN`). A child that replays
- * another subscription's answer after a resume is appended to `wrong-tree.txt`.
+ * Every event runs a tracked event child (`child.task`) whose scripted model answers `answer:<subscription>:<event id>`,
+ * read only from the seeded prompt it received, and appends `<label> <stage name> <seeded subscription>:<seeded event
+ * id>` to `prompts.txt`. Beside the main `chaos` subscription, two more subscriptions run at the same time whose children
+ * shared names under the old `<name>/<event id>` naming (`chaos2` with ids `x/eN` and `chaos2/x` with ids `eN`). A child
+ * whose answer is not its own subscription's and event's is appended to `wrong-tree.txt`.
+ *
+ * The `chaos` subscription reports to a `watcher` stage that finished its prompt before subscribing. Every tenth event
+ * (`relevant: true`) is reported by its child through `report_to_subscriber`; the watcher appends `<label> <event id>`
+ * to `reports.txt` and keeps each report in its persisted session, so a watcher replayed after a takeover takes reports
+ * in its reopened session. `records` prints the watcher's persisted conversation as user-message texts.
  */
 import assert from "node:assert/strict";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type AgentSession, SessionManager } from "@bastani/atomic";
+import { type AgentSession, SessionManager, SUBSCRIPTION_REPORT_TOOL_NAME, type ToolDefinition } from "@bastani/atomic";
 import { findSubscriptionError } from "../../packages/coding-agent/src/core/event-subscriptions/errors.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { subscriptionEventProcessed } from "../../packages/workflows/src/durable/subscription-records.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
+import { stageSessionStore } from "../../packages/workflows/src/shared/stage-session-store.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -38,6 +46,8 @@ const eventCount = Number(countText ?? "60");
 const handlerDelayMs = Number(delayText ?? "20");
 const maxConcurrent = Number(concurrencyText ?? "4");
 const SUBSCRIPTION_KEY = "chaos#1";
+const WATCHER = "watcher";
+const RELEVANT_EVERY = 10;
 const SUBSCRIPTIONS = [
 	{ name: "chaos", ids: (index: number) => `e${index}` },
 	{ name: "chaos2", ids: (index: number) => `x/e${index}` },
@@ -71,6 +81,8 @@ const definition = workflow({
 	outputs: {},
 	async run(ctx) {
 		await ctx.stage("anchor").complete("anchored");
+		const watcher = ctx.stage(WATCHER);
+		await watcher.prompt("Watch the chaos events and act on reports.");
 		try {
 			await Promise.all(
 				SUBSCRIPTIONS.map(
@@ -81,7 +93,7 @@ const definition = workflow({
 								start: async (_signal, emit) => {
 									for (let index = 0; index < eventCount; index++) {
 										const id = subscription.ids(index);
-										emit({ id, payload: { id } });
+										emit({ id, payload: { id, relevant: index % RELEVANT_EVERY === 0 } });
 									}
 								},
 							},
@@ -96,7 +108,11 @@ const definition = workflow({
 								}
 								await sleep(handlerDelayMs);
 							},
-							{ name: subscription.name, maxConcurrent },
+							{
+								name: subscription.name,
+								maxConcurrent,
+								...(subscription.name === "chaos" ? { subscriber: watcher } : {}),
+							},
 						).done,
 				),
 			);
@@ -118,27 +134,42 @@ const definition = workflow({
 	},
 }) as WorkflowDefinition;
 
-/**
- * An event child's model: it answers `answer:<subscription>:<event id>`, read from its own stage name
- * (`<subscription>#<n>/<URI-encoded event id>`), so a child resumed after a crash answers for itself even when the
- * resumed conversation no longer shows the seeded event. It keeps its conversation in the selected session store (the
- * shared server in a distributed run, a store under the test directory otherwise), so it resumes on any node.
- */
-function scriptedChildSession(manager: SessionManager, stageName: string): StageSessionRuntime {
-	const keyEnd = stageName.lastIndexOf("#");
-	const subscription = stageName.slice(0, keyEnd);
-	const eventId = decodeURIComponent(stageName.slice(stageName.indexOf("/", keyEnd) + 1));
+interface ScriptedSession {
+	readonly manager: SessionManager;
+	readonly prompt: (text: string) => Promise<void>;
+	readonly sendUserMessage?: (text: string) => Promise<void>;
+	readonly lastText: () => string;
+}
+
+function scriptedSessionRuntime(script: ScriptedSession): StageSessionRuntime {
+	const listeners = new Set<(event: { readonly type: string }) => void>();
+	const emit = (type: string): void => {
+		for (const listener of [...listeners]) listener({ type });
+	};
+	const turn = async (work: () => Promise<void>): Promise<void> => {
+		emit("agent_start");
+		try {
+			await work();
+		} finally {
+			emit("agent_end");
+		}
+	};
 	return {
-		async prompt(text: string) {
-			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-		},
+		prompt: (text: string) => turn(() => script.prompt(text)),
+		...(script.sendUserMessage === undefined
+			? {}
+			: {
+					sendUserMessage: (content: Parameters<NonNullable<StageSessionRuntime["sendUserMessage"]>>[0]) =>
+						turn(() => script.sendUserMessage!(typeof content === "string" ? content : JSON.stringify(content))),
+				}),
 		async steer() {},
 		async followUp() {},
-		subscribe() {
-			return () => {};
+		subscribe(listener) {
+			listeners.add(listener as (event: { readonly type: string }) => void);
+			return () => listeners.delete(listener as (event: { readonly type: string }) => void);
 		},
-		sessionFile: manager.getSessionFile(),
-		sessionId: manager.getSessionId(),
+		sessionFile: script.manager.getSessionFile(),
+		sessionId: script.manager.getSessionId(),
 		async setModel() {},
 		setThinkingLevel() {},
 		cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
@@ -153,10 +184,52 @@ function scriptedChildSession(manager: SessionManager, stageName: string): Stage
 		abortCompaction() {},
 		async abort() {},
 		dispose() {},
-		getLastAssistantText() {
-			return `answer:${subscription}:${eventId}`;
-		},
+		getLastAssistantText: script.lastText,
 	};
+}
+
+/**
+ * An event child's model. It reads its subscription, event id and payload only from the prompt it was given, so a
+ * child that runs without its seed answers `answer:undefined:undefined`. Relevant events are reported through the
+ * child's `report_to_subscriber` tool.
+ */
+function scriptedChildSession(
+	manager: SessionManager,
+	stageName: string,
+	customTools: readonly ToolDefinition[] | undefined,
+): StageSessionRuntime {
+	let answer = "";
+	return scriptedSessionRuntime({
+		manager,
+		async prompt(text) {
+			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			const subscription = /^Subscription: (.*)$/m.exec(text)?.[1];
+			const eventId = /^Event id: (.*)$/m.exec(text)?.[1];
+			appendDurably(join(directory, "prompts.txt"), `${label} ${stageName} ${subscription}:${eventId}`);
+			answer = `answer:${subscription}:${eventId}`;
+			if (!/"relevant": true/.test(text)) return;
+			const report = customTools?.find((tool) => tool.name === SUBSCRIPTION_REPORT_TOOL_NAME);
+			assert.ok(report !== undefined, `${stageName} has no ${SUBSCRIPTION_REPORT_TOOL_NAME} tool`);
+			await report.execute(`report-${eventId}`, { text: `event ${eventId} matters` }, undefined, undefined, undefined as never);
+		},
+		lastText: () => answer,
+	});
+}
+
+/** The subscriber: its first prompt, then one persisted user message per report. */
+function scriptedWatcherSession(manager: SessionManager): StageSessionRuntime {
+	return scriptedSessionRuntime({
+		manager,
+		async prompt(text) {
+			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+		},
+		async sendUserMessage(text) {
+			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			const eventId = /\(event ([^)]*)\)/.exec(text)?.[1];
+			appendDurably(join(directory, "reports.txt"), `${label} ${eventId}`);
+		},
+		lastText: () => "watching",
+	});
 }
 
 const adapters = {
@@ -167,8 +240,16 @@ const adapters = {
 		},
 	},
 	agentSession: {
-		create: async (options: { readonly sessionManager?: SessionManager }, meta?: { readonly stageName: string }) =>
-			scriptedChildSession(options.sessionManager ?? (await SessionManager.create(directory)), meta?.stageName ?? ""),
+		create: async (
+			options: { readonly sessionManager?: SessionManager; readonly customTools?: readonly ToolDefinition[] },
+			meta?: { readonly stageName: string },
+		) => {
+			const manager = options.sessionManager ?? (await SessionManager.create(directory));
+			const stageName = meta?.stageName ?? "";
+			return stageName === WATCHER
+				? scriptedWatcherSession(manager)
+				: scriptedChildSession(manager, stageName, options.customTools);
+		},
 	},
 };
 const store = createStore();
@@ -186,7 +267,22 @@ if (mode === "records") {
 			).length,
 		]),
 	);
-	console.log(JSON.stringify({ processed, eventRecords, others }));
+	const watcherSessionId = backend
+		.listCheckpoints(runId)
+		.find(
+			(checkpoint): checkpoint is DurableStageCheckpoint => checkpoint.kind === "stage" && checkpoint.name === WATCHER,
+		)?.sessionId;
+	const sessions = await stageSessionStore({ cwd: directory });
+	const watcherMessages =
+		watcherSessionId === undefined
+			? null
+			: (await sessions.load(watcherSessionId)).entries.flatMap((entry) =>
+					entry.type === "message" && entry.message.role === "user" && typeof entry.message.content === "string"
+						? [entry.message.content]
+						: [],
+				);
+	await sessions.close();
+	console.log(JSON.stringify({ processed, eventRecords, others, watcherMessages }));
 	await backend.close();
 } else if (mode === "steal") {
 	const runtime = createExtensionRuntime({ definitions: [definition], cwd: directory, store, adapters });
