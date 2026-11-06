@@ -80,11 +80,11 @@ export function sessionBlobHashes(store: SessionStore, entries: readonly Session
 }
 
 /**
- * Throws `blobs-unsupported` when there are blobs to store and `store` cannot hold them. Call it before writing
- * anything, so a copy that cannot keep its blobs fails without leaving a session behind.
+ * Throws `blobs-unsupported` when there are `blobCount` blobs to store and `store` cannot hold them. Call it before
+ * writing anything, so a copy that cannot keep its blobs fails without leaving a session behind.
  */
-export function assertSessionBlobStore(store: SessionStore, sessionId: string, hashes: readonly string[]): void {
-	if (hashes.length > 0 && store.putBlob === undefined) {
+export function assertSessionBlobStore(store: SessionStore, sessionId: string, blobCount: number): void {
+	if (blobCount > 0 && store.putBlob === undefined) {
 		throw new SessionBlobError("blobs-unsupported", { sessionId, adapter: store.descriptor.adapter });
 	}
 }
@@ -109,11 +109,7 @@ export function storeSessionBlobs(
 	blobs: readonly SessionBlobCopy[],
 ): Promise<void> {
 	return writeOrDelete(store, sessionId, async () => {
-		assertSessionBlobStore(
-			store,
-			sessionId,
-			blobs.map((blob) => blob.hash),
-		);
+		assertSessionBlobStore(store, sessionId, blobs.length);
 		for (const blob of blobs) await store.putBlob!(sessionId, blob.data);
 	});
 }
@@ -132,7 +128,7 @@ export function copySessionBlobs(
 	hashes: readonly string[],
 ): Promise<void> {
 	return writeOrDelete(target, targetSessionId, async () => {
-		assertSessionBlobStore(target, targetSessionId, hashes);
+		assertSessionBlobStore(target, targetSessionId, hashes.length);
 		for (const hash of hashes) {
 			const data = await source.getBlob?.(sourceSessionId, hash);
 			if (data !== undefined) await target.putBlob!(targetSessionId, data);

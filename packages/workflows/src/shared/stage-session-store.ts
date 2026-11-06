@@ -52,7 +52,7 @@ export async function forkStageSession(
 			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
 	const hashes = sessionBlobHashes(store, entries);
-	assertSessionBlobStore(destination, id, hashes);
+	assertSessionBlobStore(destination, id, hashes.length);
 	await destination.create(
 		{
 			id,

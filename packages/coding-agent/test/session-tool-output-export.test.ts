@@ -4,13 +4,15 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
+import { getAgentDir } from "../src/config.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
-import { SessionManager } from "../src/core/session-manager.js";
+import { getDefaultSessionDirPath, SessionManager } from "../src/core/session-manager.js";
 import {
 	sessionBlobOutput,
 	TOOL_OUTPUT_ENTRY_TYPE,
@@ -20,7 +22,7 @@ import { isSessionBlobError } from "../src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
-import { createHarness, type Harness } from "./suite/harness.js";
+import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 useTemporaryAgentDir();
 
@@ -62,7 +64,7 @@ async function exported(directory: string, options?: { readonly toolOutputConten
 	const kept = await sessionBlobOutput(manager, "call-1")!(OUTPUT);
 	assert.equal(kept.location, `tool-output://${HASH}`);
 	const path = await harness.session.exportToJsonl(join(directory, "export.jsonl"), options);
-	return { path, sessionId: manager.getSessionId() };
+	return { path, sessionId: manager.getSessionId(), harness };
 }
 
 function references(lines: readonly string[]): ToolOutputReference[] {
@@ -193,4 +195,39 @@ test("forking an exported file is checked before anything is created: a session 
 
 	assert.equal(creates.mock.calls.length, 0, "no session was created");
 	creates.mockRestore();
+});
+
+test("a persisted session reads its tool output and its artifacts through one resource router (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-router-");
+	const { harness } = await exported(directory);
+	const artifacts = join(getDefaultSessionDirPath(harness.sessionManager.getCwd(), getAgentDir()), "artifacts");
+	mkdirSync(artifacts, { recursive: true });
+	writeFileSync(join(artifacts, "0.note.log"), "an artifact line\n");
+	harness.setResponses([
+		fauxAssistantMessage(
+			[
+				fauxToolCall("read", { path: `tool-output://${HASH}:1-1:raw` }, { id: "read-output" }),
+				fauxToolCall("read", { path: "artifact://0" }, { id: "read-artifact" }),
+			],
+			{ stopReason: "toolUse" },
+		),
+		fauxAssistantMessage("done"),
+	]);
+
+	await harness.session.prompt("read both");
+
+	const results = new Map(
+		harness.sessionManager
+			.buildSessionProjection()
+			.messages.flatMap((message) =>
+				message.role === "toolResult" ? [[message.toolCallId, message] as const] : [],
+			),
+	);
+	const output = results.get("read-output");
+	const artifact = results.get("read-artifact");
+	assert.ok(output && artifact);
+	assert.equal(output.isError, false, getMessageText(output));
+	assert.match(getMessageText(output), /^BEGIN\b/);
+	assert.equal(artifact.isError, false, getMessageText(artifact));
+	assert.match(getMessageText(artifact), /an artifact line/);
 });

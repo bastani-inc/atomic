@@ -290,7 +290,7 @@ export class SessionManager {
 			const header = this.recordHeader();
 			const entries = this.getEntries();
 			const hashes = sessionBlobHashes(this.store, entries);
-			assertSessionBlobStore(store, this.sessionId, hashes);
+			assertSessionBlobStore(store, this.sessionId, hashes.length);
 			const result = await store.create(header, entries);
 			await copySessionBlobs(this.store, this.sessionId, store, this.sessionId, hashes);
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
@@ -338,11 +338,7 @@ export class SessionManager {
 		try {
 			const loaded = await source.loadFile(inputPath);
 			const { entries, blobs } = takeInlineToolOutput(loaded.entries, loaded.header.id);
-			assertSessionBlobStore(
-				this.store,
-				loaded.header.id,
-				blobs.map((blob) => blob.hash),
-			);
+			assertSessionBlobStore(this.store, loaded.header.id, blobs.length);
 			const snapshot = {
 				...loaded,
 				entries: await adoptInlineSnapshotBlobs(entries, this.store.snapshotBlobs),
@@ -843,7 +839,7 @@ export class SessionManager {
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
 			const entries = this.getEntries();
 			const hashes = sessionBlobHashes(this.store, entries);
-			assertSessionBlobStore(store, manager.sessionId, hashes);
+			assertSessionBlobStore(store, manager.sessionId, hashes.length);
 			manager.fileEntries.push(...entries);
 			await manager.initialize();
 			await copySessionBlobs(this.store, this.sessionId, store, manager.sessionId, hashes);
@@ -1045,11 +1041,7 @@ export class SessionManager {
 				...options,
 				parentSession: source.header.id,
 			});
-			assertSessionBlobStore(
-				store,
-				manager.sessionId,
-				blobs.map((blob) => blob.hash),
-			);
+			assertSessionBlobStore(store, manager.sessionId, blobs.length);
 			manager.fileEntries.push(...entries);
 			await manager.initialize();
 			await storeSessionBlobs(store, manager.sessionId, blobs);

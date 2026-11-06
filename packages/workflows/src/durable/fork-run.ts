@@ -598,8 +598,9 @@ function isStaleLease(error: unknown): error is Error {
  * What this guarantees: the fork materializes everything it reads from the source (journal events, then every
  * session entry) and calls `assertHeld` after that and before it writes. A takeover starts a new lease epoch and
  * the renewal checks the epoch, so a renewal that succeeds proves the source was not taken over, and so was not
- * written by a resume, at any time since the claim; the snapshot is one consistent state of the source. Nothing is
- * read from the source afterwards, so the write itself needs no fence: a takeover is possible only
+ * written by a resume, at any time since the claim; the snapshot is one consistent state of the source. The only
+ * thing read from the source afterwards is the session blobs those entries name, which are content-addressed and
+ * never change, so the write itself needs no fence: a takeover is possible only
  * {@link FOREIGN_LIVE_WORKFLOW_WINDOW_MS} after the last renewal, and it cannot change a snapshot already read.
  * A holder that was paused past its own lease and writes after waking is fenced out of the journal by its stale
  * epoch; its writes to a session store are not.
@@ -1282,8 +1283,9 @@ type SessionSnapshots = Map<
 >;
 
 /**
- * Reads every source session to copy. The source stores stay open for the copy, which reads their blobs one at a time;
- * the caller closes them with `closeSourceSessions`. On failure they are closed here.
+ * Reads every source session to copy, then checks the claim is still held. The source stores stay open for the copy,
+ * which reads their blobs one at a time; the caller closes them with `closeSourceSessions`. On failure they are
+ * closed here.
  */
 async function readSessions(
 	source: ForkSource,
@@ -1305,6 +1307,8 @@ async function readSessions(
 			const { entries, store } = await loadSession(sourceStore, sessionId, { runId: source.runId });
 			snapshots.set(sessionId, { entries, store, hashes: sessionBlobHashes(store, entries), checkpoint });
 		}
+		request.signal?.throwIfAborted();
+		await claim.assertHeld();
 		return { snapshots, sources: sourceStore };
 	} catch (error) {
 		await closeSourceSessions(sourceStore, cleanup);
@@ -1330,19 +1334,6 @@ async function copySessions(
 	if (sessions.length === 0) return [];
 	await claim.assertHeld();
 	const { snapshots, sources } = await readSessions(source, sessions, request, cleanup, claim);
-	let sourcesOpen = true;
-	const closeSources = async (): Promise<void> => {
-		if (!sourcesOpen) return;
-		sourcesOpen = false;
-		await closeSourceSessions(sources, cleanup);
-	};
-	try {
-		request.signal?.throwIfAborted();
-		await claim.assertHeld();
-	} catch (error) {
-		await closeSources();
-		throw error;
-	}
 	const copied: CopiedSessions[] = [];
 	let project: CopiedSessions | undefined;
 	let pool: CopiedSessions | undefined;
@@ -1388,7 +1379,7 @@ async function copySessions(
 			const destination = await destinationFor(pooled(checkpoint));
 			const id = randomUUID();
 			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
-			assertSessionBlobStore(destination.store, id, hashes);
+			assertSessionBlobStore(destination.store, id, hashes.length);
 			destination.copies.push({ id, runId });
 			await destination.store.create(
 				{
@@ -1410,10 +1401,10 @@ async function copySessions(
 			const file = (await SessionManager.open(destination.store, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
-		await closeSources();
+		await closeSourceSessions(sources, cleanup);
 		return copied;
 	} catch (error) {
-		await closeSources();
+		await closeSourceSessions(sources, cleanup);
 		await removeCopies(copied, ids.forkRunId, cleanup);
 		await closeCopies(copied, ids.forkRunId, cleanup);
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;

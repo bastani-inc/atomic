@@ -197,6 +197,8 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		});
 
 		assert.deepEqual(await inlineToolOutput(entries, withoutBlobs, manager.getSessionId()), entries);
+		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { getBlob: undefined });
+		assert.deepEqual(await inlineToolOutput(entries, blobless, manager.getSessionId()), entries);
 	});
 });
 describe("tool-output entries and blob copies (#4379)", () => {
@@ -258,6 +260,19 @@ describe("tool-output entries and blob copies (#4379)", () => {
 			`put ${second.hash}`,
 		]);
 		assert.equal(Buffer.from((await target.getBlob("copy", second.hash))!).toString(), "second");
+	});
+
+	test("a copy from a store that holds no blobs copies nothing and keeps the new session (#4379)", async () => {
+		const target = new MemorySessionStore();
+		await target.create({ id: "copy", version: 4, createdAt: new Date(0).toISOString(), cwd: "/" }, []);
+		const source = Object.assign(Object.create(new MemorySessionStore()) as MemorySessionStore, {
+			getBlob: undefined,
+		});
+
+		await copySessionBlobs(source, "source", target, "copy", ["a".repeat(64)]);
+
+		assert.ok(await target.readHeader("copy"));
+		assert.equal(await target.getBlob("copy", "a".repeat(64)), undefined);
 	});
 
 	test("a copy into a store that cannot hold blobs deletes the session just created (#4379)", async () => {
