@@ -1,4 +1,4 @@
-import type { WorkspaceBinding } from "@bastani/atomic";
+import type { WorkspaceBinding, WorktreeSnapshot } from "@bastani/atomic";
 import type { WorkerHostGit } from "./worker-host-types.js";
 
 /**
@@ -13,12 +13,19 @@ export interface WorkspaceHookOptions {
 	readonly signal: AbortSignal;
 	/** The git this host runs, as it was given or resolved: run it, with its environment, for the hook's git commands. */
 	readonly git?: WorkerHostGit;
+	/**
+	 * For `restore`: the worktree snapshot the root captured of the work's bound worktree on its own host when it
+	 * dispatched the work (#4492), uncommitted and unpushed content included. Restoring it, for example with
+	 * `restoreWorktree(snapshot)`, rebuilds the tree the work runs on. Absent when the root had no worktree to capture.
+	 */
+	readonly snapshot?: WorktreeSnapshot;
 }
 
 /**
  * Makes a binding's tree available on this host: resolves the path of a verified worktree whose current tree is
- * `binding.tree`, or rejects with a typed error. A worker host without one of its own restores from the worktree
- * snapshots recorded in its shared journal (#4416). A host that stops aborts `signal` and no longer waits for it.
+ * `binding.tree`, or the tree of `options.snapshot` when the work carries one, or rejects with a typed error. A worker
+ * host without one of its own restores the carried snapshot, or else from the worktree snapshots recorded in its
+ * shared journal (#4416, #4492). A host that stops aborts `signal` and no longer waits for it.
  */
 export type WorkspaceRestore = (binding: WorkspaceBinding, options: WorkspaceHookOptions) => Promise<string>;
 
