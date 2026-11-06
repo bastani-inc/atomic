@@ -973,18 +973,33 @@ export class MultiNodeRouter {
 		return releasedAskAnswered(this.state, request);
 	}
 
-	/** Where a send answered from its row went: a released asker's owner for its reply, otherwise the local session. */
-	private async rowRecipient(row: OutboxRow, target: BrokerConnectedSession): Promise<RemoteTarget> {
-		if (row.frame.type === "released_child_reply") {
-			return { ...(await ownerOfReleasedReplyRow(this.state, row)), groups: new Set(), gates: {} };
+	/**
+	 * Where a send answered from its row went: the local session, or for a released asker's reply its owner. A settled
+	 * reply needs nothing more; an unsettled one waits for the owner where it is live, or as queued when its presence
+	 * cannot be read within the local bound.
+	 */
+	private async rowRecipient(
+		row: OutboxRow,
+		target: BrokerConnectedSession,
+		expired: Promise<"expired">,
+	): Promise<RemoteTarget> {
+		if (row.frame.type !== "released_child_reply") {
+			return {
+				identity: deliveryTargetIdentity(target),
+				sessionId: target.info.id,
+				groups: sessionGroups(target.info),
+				gates: target.info,
+				hostBrokerId: this.brokerId,
+			};
 		}
-		return {
-			identity: deliveryTargetIdentity(target),
-			sessionId: target.info.id,
-			groups: sessionGroups(target.info),
-			gates: target.info,
-			hostBrokerId: this.brokerId,
-		};
+		const offline: RemoteTarget = { identity: row.targetIdentity, sessionId: "", groups: new Set(), gates: {} };
+		if (row.state === "delivered" || row.state === "failed") return offline;
+		const owner = ownerOfReleasedReplyRow(this.state, row).catch((error: Error) => {
+			this.report(error);
+			return undefined;
+		});
+		const found = await Promise.race([owner, expired]);
+		return found === "expired" || found === undefined ? offline : { ...found, groups: new Set(), gates: {} };
 	}
 
 	/** Enqueue the owner's frame; a same-id retry is answered from the row it already has, exactly as any send. */
@@ -1080,7 +1095,8 @@ export class MultiNodeRouter {
 			}
 			if (existing.status === "found") {
 				const digest = crossNodeDigest(request.signature);
-				await this.answerExistingRow(request, await this.rowRecipient(existing.row, target), digest, existing.row);
+				const recipient = await this.rowRecipient(existing.row, target, expired);
+				await this.answerExistingRow(request, recipient, digest, existing.row);
 				return;
 			}
 			const moved = await Promise.race([released, expired]);

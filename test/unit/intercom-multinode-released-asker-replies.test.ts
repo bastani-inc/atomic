@@ -6,7 +6,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const { LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter } = await import(
+const { crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter } = await import(
 	"../../packages/intercom/broker/multinode-router.js"
 );
 const { PendingQuestionIndex } = await import("../../packages/intercom/broker/pending-question-index.js");
@@ -394,8 +394,12 @@ describe("replies to released askers across nodes (#4386)", () => {
 	});
 
 	test("a reply reaches the owner of a released asker that woke on the replier's broker under the same id, and its retries are answered from its row (#4386)", async () => {
-		let lookup: "answers" | "stalls" | "fails" = "answers";
+		type Fault = "answers" | "stalls" | "fails";
+		let lookup: Fault = "answers";
+		let presence: Fault = "answers";
 		let lookups = 0;
+		let presenceReads = 0;
+		const stalledReads: Array<() => void> = [];
 		const { a, b, owner, replier, children } = await releasedScene({
 			wrapB: (state) => ({
 				...state,
@@ -406,6 +410,18 @@ describe("replies to released askers across nodes (#4386)", () => {
 						if (lookup === "fails") return Promise.reject(new Error("released-ask lookup failed"));
 						lookups++;
 						return state.releasedAsks.lookup(key);
+					},
+				},
+				leases: {
+					...state.leases,
+					listLive: (kind, staleAfterMs) => {
+						if (kind !== "presence") return state.leases.listLive(kind, staleAfterMs);
+						presenceReads++;
+						if (presence === "fails") return Promise.reject(new Error("presence read failed"));
+						if (presence === "answers") return state.leases.listLive(kind, staleAfterMs);
+						return new Promise((resolve) =>
+							stalledReads.push(() => resolve(state.leases.listLive(kind, staleAfterMs))),
+						);
 					},
 				},
 			}),
@@ -420,25 +436,144 @@ describe("replies to released askers across nodes (#4386)", () => {
 		});
 		await flush();
 		const sent = reply(replier, child.info.id, questionId, { expectedRecipientId: child.info.id });
+		const retry = (attempt: number, label: string) => {
+			const retried = reply(replier, child.info.id, questionId, { id: sent.id, expectedRecipientId: child.info.id });
+			b.router.routeSend({ ...retried.request, localTarget: woken });
+			return async (expected: Frame["type"]) => {
+				const outcome = await vi.waitFor(
+					() => outcomesFor(replier, sent.id)[attempt - 1] ?? assert.fail("no outcome"),
+					{
+						timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000,
+						interval: 5,
+					},
+				);
+				assert.equal(outcome.type, expected, label);
+				assert.deepEqual(retried.notFound, [], label);
+			};
+		};
 		b.router.routeSend({ ...sent.request, localTarget: woken });
 		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
 		assert.deepEqual(sent.notFound, [], "not delivered on the local path");
 		assert.equal(lookups, 1, "the question is looked up once");
+		assert.deepEqual(outcomesFor(replier, sent.id), [], "the reply waits for the owner");
+		const waiting = reply(replier, child.info.id, questionId, { id: sent.id, expectedRecipientId: child.info.id });
+		const readsBeforeWaiting = presenceReads;
+		b.router.routeSend({ ...waiting.request, localTarget: woken });
+		await vi.waitFor(() => assert.ok(presenceReads > readsBeforeWaiting), { timeout: 2_000, interval: 5 });
+		await flush();
+		assert.deepEqual(outcomesFor(replier, sent.id), [], "a retry waits for the owner where it is live");
+		assert.deepEqual(waiting.notFound, []);
+		for (const [attempt, read] of [
+			[1, "stalls"],
+			[2, "fails"],
+		] as const) {
+			presence = read;
+			await retry(attempt, `owner's presence ${read}`)("queued");
+		}
+		presence = "answers";
+		for (const release of stalledReads.splice(0)) release();
 		const handoff = only(handoffsTo(owner), "handoffs");
 		assert.equal(handoff.message.id, sent.id);
 		a.router.releasedReplyAcknowledged(owner, sent.id, handoff.handoffId, true);
-		assert.equal((await settled(replier, sent.id)).type, "delivered");
+		assert.equal((await settled(replier, sent.id, 3)).type, "delivered");
+		const readsBeforeSettledRetries = presenceReads;
 		for (const [attempt, retried] of [
-			[2, "stalls"],
-			[3, "fails"],
+			[4, "stalls"],
+			[5, "fails"],
 		] as const) {
 			lookup = retried;
-			const retry = reply(replier, child.info.id, questionId, { id: sent.id, expectedRecipientId: child.info.id });
-			b.router.routeSend({ ...retry.request, localTarget: woken });
-			assert.equal((await settled(replier, sent.id, attempt)).type, "delivered", retried);
-			assert.deepEqual(retry.notFound, [], retried);
+			await retry(attempt, `released-ask lookup ${retried}`)("delivered");
 		}
+		assert.equal(presenceReads, readsBeforeSettledRetries, "a settled reply's owner is not looked up");
 		assert.equal(handoffsTo(owner).length, 1);
+	});
+
+	test("a retry of a moved reply its owner refused is answered from its row without reading the owner's presence (#4386)", async () => {
+		let presenceReads = 0;
+		const scene = await releasedScene({
+			wrapB: (state) => ({
+				...state,
+				leases: {
+					...state.leases,
+					listLive: (kind, staleAfterMs) => {
+						if (kind === "presence") presenceReads++;
+						return state.leases.listLive(kind, staleAfterMs);
+					},
+				},
+			}),
+		});
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const woken = reconnected(child);
+		scene.b.sessions.set(woken.info.id, woken);
+		await scene.b.router.sessionRegistered(woken, {
+			childName: "worker",
+			groups: new Set([CREW]),
+			authorizedBy: scene.owner.info.id,
+		});
+		const sent = reply(scene.replier, child.info.id, questionId, { expectedRecipientId: child.info.id });
+		scene.b.router.routeSend({ ...sent.request, localTarget: woken });
+		await vi.waitFor(() => assert.equal(handoffsTo(scene.owner).length, 1), { timeout: 2_000, interval: 5 });
+		const handoff = only(handoffsTo(scene.owner), "handoffs");
+		scene.a.router.releasedReplyAcknowledged(scene.owner, sent.id, handoff.handoffId, false);
+		const refused = await settled(scene.replier, sent.id);
+		assert.ok(refused.type === "delivery_failed");
+		const readsBeforeRetry = presenceReads;
+		const retried = reply(scene.replier, child.info.id, questionId, {
+			id: sent.id,
+			expectedRecipientId: child.info.id,
+		});
+		scene.b.router.routeSend({ ...retried.request, localTarget: woken });
+		const again = await settled(scene.replier, sent.id, 2);
+		assert.equal(again.type === "delivery_failed" && again.reason, refused.reason);
+		assert.deepEqual(retried.notFound, []);
+		assert.equal(presenceReads, readsBeforeRetry, "a settled reply's owner is not looked up");
+	});
+
+	test("a same-id send whose row went to another session than the one it resolves to on this broker is a conflict (#4386)", async () => {
+		const shared = await cluster();
+		const b = await startNode(shared);
+		const [first, second, sender] = [session("first"), session("second"), session("sender")];
+		for (const target of [first, second, sender]) await register(b, target);
+		const sent = reply(sender, second.info.id, randomUUID());
+		await b.state.outbox.enqueue({
+			targetIdentity: deliveryTargetIdentity(first),
+			originBrokerId: "another-broker",
+			digest: crossNodeDigest(sent.request.signature),
+			frame: { type: "message", from: sender.info, message: sent.request.message },
+		});
+		b.router.routeSend({ ...sent.request, localTarget: second });
+		const outcome = await settled(sender, sent.id);
+		assert.equal(outcome.type === "delivery_failed" && outcome.reasonCode, "message_id_conflict");
+		assert.deepEqual(sent.notFound, []);
+	});
+
+	test("an outbox read that fails after the local bound is reported, and the send has taken the local path (#4386)", async () => {
+		const shared = await cluster();
+		const b = await startNode(shared, (state) => ({
+			...state,
+			outbox: {
+				...state.outbox,
+				read: () =>
+					new Promise<never>((_, reject) =>
+						setTimeout(() => reject(new Error("late outbox read failed")), LOCAL_RETRY_LOOKUP_BOUND_MS + 50),
+					),
+			},
+		}));
+		const [asker, sender] = [session("asker"), session("sender")];
+		for (const target of [asker, sender]) await register(b, target);
+		const sent = reply(sender, asker.info.id, randomUUID(), { expectsReply: true });
+		b.router.routeSend({ ...sent.request, localTarget: asker });
+		await vi.waitFor(() => assert.deepEqual(sent.notFound, [sent.id]), {
+			timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000,
+			interval: 5,
+		});
+		await vi.waitFor(
+			() =>
+				assert.ok(
+					vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("late outbox read failed")),
+				),
+			{ timeout: 2_000, interval: 5 },
+		);
 	});
 
 	test("a reply whose released-ask lookup stalls or fails takes the local path within the local bound (#4386)", async () => {
