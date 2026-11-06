@@ -4,6 +4,7 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOption
 import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
+import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -19,6 +20,7 @@ import {
 	type SessionSummaryText,
 } from "./session-summary.js";
 import type {
+	SessionBlob,
 	SessionCwdMatcher,
 	SessionListQuery,
 	SessionRecordHeader,
@@ -36,6 +38,7 @@ export const SESSION_TABLES = Object.freeze({
 	sessions: "sessions",
 	entries: "entries",
 	searchTexts: "search_texts",
+	blobs: "blobs",
 });
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
@@ -157,6 +160,10 @@ export class SqlSessionStore implements SessionStore {
 					session_id TEXT NOT NULL, seq INTEGER NOT NULL,
 					text_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)
 				) STRICT;
+				CREATE TABLE IF NOT EXISTS ${tables.blobs} (
+					session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, data BLOB NOT NULL,
+					PRIMARY KEY(session_id, hash)
+				) STRICT;
 			`);
 			// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
 			const revision = await tx.get(
@@ -252,10 +259,44 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		await this.database.transaction(async (tx) => {
+			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
 		}, SESSION_TRANSACTION);
+	}
+
+	/** One row per session and hash, written only while the session exists, so `delete` leaves no blob behind. */
+	async putBlob(sessionId: string, data: Uint8Array): Promise<SessionBlob> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const stored = Uint8Array.from(data);
+		const blob = { hash: await sha256Hex(stored), bytes: stored.byteLength };
+		await this.database.transaction(async (tx) => {
+			if (!(await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, sessionId))) {
+				throw new SessionNotFoundError(sessionId);
+			}
+			await tx.run(
+				`INSERT INTO ${this.tables.blobs} (session_id, hash, bytes, data) VALUES (?, ?, ?, coalesce(?, X''))
+					ON CONFLICT(session_id, hash) DO NOTHING`,
+				sessionId,
+				blob.hash,
+				blob.bytes,
+				stored,
+			);
+		});
+		return blob;
+	}
+
+	async getBlob(sessionId: string, hash: string): Promise<Uint8Array | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
+			`SELECT data FROM ${this.tables.blobs} WHERE session_id = ? AND hash = ?`,
+			sessionId,
+			hash,
+		);
+		return row?.data;
 	}
 
 	/**

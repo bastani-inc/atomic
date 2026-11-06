@@ -10,6 +10,7 @@ import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	SessionBlob,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -40,11 +41,22 @@ export class LegacySessionStore implements SessionStore {
 	private index?: Promise<ReadonlyMap<string, readonly JsonlSessionFile[]>>;
 	private readonly summaries = new Map<string, { readonly stamp: string; readonly summary: SessionSummary | null }>();
 	private deletions?: Promise<SqliteDatabase>;
+	/** The wrapped store's blobs; a legacy session is converted before it stores one. */
+	readonly putBlob?: (sessionId: string, data: Uint8Array) => Promise<SessionBlob>;
+	readonly getBlob?: (sessionId: string, hash: string) => Promise<Uint8Array | undefined>;
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
 		this.legacyDirectory = options.legacyDirectory;
 		this.databasePath = options.databasePath;
+		const { putBlob, getBlob } = inner;
+		if (putBlob !== undefined && getBlob !== undefined) {
+			this.putBlob = async (sessionId, data) => {
+				await this.convert(sessionId);
+				return putBlob.call(inner, sessionId, data);
+			};
+			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
+		}
 	}
 
 	get descriptor(): StorageDescriptor {

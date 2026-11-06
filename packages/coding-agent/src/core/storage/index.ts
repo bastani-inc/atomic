@@ -48,7 +48,7 @@ export {
 	type TeamStorageSelection,
 	teamProfileSelection,
 } from "./selection.js";
-export type { SessionStore } from "./session/types.js";
+export type { SessionBlob, SessionStore } from "./session/types.js";
 export * from "./sqlite-facade.js";
 export type {
 	JoinTeamOptions,

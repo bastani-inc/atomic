@@ -58,6 +58,12 @@ export interface SessionWriteOptions {
 	readonly expectSeq: number;
 }
 
+/** A blob a session holds: the lowercase hex SHA-256 of its bytes, and how many bytes it has. */
+export interface SessionBlob {
+	readonly hash: string;
+	readonly bytes: number;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
 	/**
@@ -65,6 +71,14 @@ export interface SessionStore {
 	 * hold them; snapshots are then not recorded.
 	 */
 	readonly snapshotBlobs?: SnapshotBlobStore;
+	/**
+	 * Stores `data` for the session under the SHA-256 of its bytes, apart from its entries, and resolves with that hash
+	 * and the size; storing the same bytes again keeps one copy. The blob is deleted with its session. Rejects with
+	 * `SessionNotFoundError` when the session does not exist. Absent when the store cannot hold blobs.
+	 */
+	putBlob?(sessionId: string, data: Uint8Array): Promise<SessionBlob>;
+	/** The bytes the session stored under `hash`, or `undefined` when it holds none. Absent with `putBlob`. */
+	getBlob?(sessionId: string, hash: string): Promise<Uint8Array | undefined>;
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }>;
 	append(
 		sessionId: string,
