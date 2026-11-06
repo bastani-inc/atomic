@@ -10,8 +10,9 @@
  * barrier directory and blocks until `<point>.go` exists; at `kill` it SIGKILLs itself. Each point acts once.
  *
  * `read <store> <stop file> <events> <run>...` reads every given run through the store over and over until the stop
- * file exists, and prints how many reads were complete, how many ended in the retryable `run-moved`, and how many were
- * short or not dense, which must be none.
+ * file exists. After each pass it prints how many reads so far were complete, how many ended in the retryable
+ * `run-moved`, and how many were short or not dense, which must be none. Its first line counts its first pass, and its
+ * last line every pass.
  */
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
@@ -135,7 +136,7 @@ if (mode === "consolidate") {
 		} finally {
 			await journal.close();
 		}
+		process.stdout.write(`${JSON.stringify({ complete, retried, truncated })}\n`);
 		await delay(5);
 	}
-	process.stdout.write(`${JSON.stringify({ complete, retried, truncated })}\n`);
 }

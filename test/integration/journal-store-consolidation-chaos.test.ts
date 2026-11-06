@@ -3,6 +3,7 @@
  * the catalog, several consolidators at once, and readers paging through multi-page runs the whole time. After each, every
  * run reads in full, dense and once, through the catalog; no adopted file keeps a run or a fence; and every shard and the
  * catalog pass `PRAGMA integrity_check`. A reader sees a complete run or the retryable `run-moved`, never a short one.
+ * Readers read every run in full once before any consolidator starts, and keep reading until the consolidators finish.
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
@@ -77,23 +78,36 @@ async function seed(): Promise<void> {
 function start(args: readonly string[]) {
 	const child = spawnProcess([bunExecutable(), CONSOLIDATOR, ...args], { cwd: ROOT });
 	children.push(child);
+	const firstLine = Promise.withResolvers<string | undefined>();
 	const stdout = (async () => {
 		const reader = decodeStream(child.stdout!).getReader();
 		let output = "";
 		for (;;) {
 			const { done, value } = await reader.read();
-			if (done) return output;
+			if (done) {
+				firstLine.resolve(undefined);
+				return output;
+			}
 			output += value;
+			const end = output.indexOf("\n");
+			if (end !== -1) firstLine.resolve(output.slice(0, end));
 		}
 	})();
 	const stderr = readStreamText(child.stderr);
-	return { child, stdout, stderr };
+	return { child, stdout, firstLine: firstLine.promise, stderr };
 }
 
 async function finished(process: ReturnType<typeof start>): Promise<Record<string, number>> {
 	const exitCode = await process.child.exited;
 	assert.equal(exitCode, 0, await process.stderr);
 	return JSON.parse((await process.stdout).trim().split("\n").at(-1)!) as Record<string, number>;
+}
+
+/** The counts a reader printed after its first pass over every run. */
+async function firstPass(reader: ReturnType<typeof start>): Promise<Record<string, number>> {
+	const line = await reader.firstLine;
+	if (line === undefined) assert.fail(`the reader exited with ${await reader.child.exited} before it finished a pass`);
+	return JSON.parse(line) as Record<string, number>;
 }
 
 async function assertConsolidatedAndIntact(): Promise<void> {
@@ -154,11 +168,17 @@ for (const step of ["fence", "copy", "repoint"] as const)
 	);
 
 test(
-	"concurrent consolidators and readers lose no checkpoint, repeat none, and no reader sees a short run (#4325)",
+	"concurrent consolidators and readers lose no checkpoint, repeat none, and no reader sees a short run (#4325, #4444)",
 	async () => {
 		await seed();
 		const stopFile = join(directory, "stop");
 		const readers = [0, 1].map(() => start(["read", store, stopFile, String(EVENTS), ...runIds]));
+		for (const reader of readers)
+			assert.deepEqual(
+				await firstPass(reader),
+				{ complete: RUNS, retried: 0, truncated: 0 },
+				"every reader read every run in full before the consolidators started",
+			);
 		const consolidators = [0, 1, 2].map(() => start(["consolidate", store]));
 		const reports = await Promise.all(consolidators.map(finished));
 		assert.equal(
