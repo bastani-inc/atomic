@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
@@ -12,6 +12,8 @@ import {
 	WorkspaceGitError,
 	WorkspaceSnapshotError,
 } from "./errors.ts";
+import { worktreeSnapshotExcludedRoots } from "./excluded-roots.ts";
+import { canonicalizeWorktreePath } from "./paths.ts";
 
 /** The Git executable snapshot operations run, with the environment it needs (a provisioned Git may need some). */
 export interface GitExecutable {
@@ -183,9 +185,28 @@ function isDirectory(path: string): boolean {
 	}
 }
 
-/** Runs one Git command through the injected executable. Rejects with the signal's reason when aborted. */
+/** The `not-a-repository` refusal for a working directory in a root excluded from snapshots, if it is in one. */
+function excludedDirectory(cwd: string): WorkspaceSnapshotError | undefined {
+	const roots = worktreeSnapshotExcludedRoots();
+	if (roots.length === 0) return undefined;
+	const directory = canonicalizeWorktreePath(cwd);
+	for (const root of roots) {
+		const path = relative(canonicalizeWorktreePath(root), directory);
+		if (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)) {
+			return new WorkspaceSnapshotError("not-a-repository", cwd);
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Runs one Git command through the injected executable. Rejects with the signal's reason when aborted, and with
+ * `not-a-repository` before resolving Git when the working directory lies in a root excluded from snapshots.
+ */
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
+	const excluded = excludedDirectory(options.cwd);
+	if (excluded !== undefined) throw excluded;
 	const executable = await resolveExecutable(options.signal);
 	options.signal?.throwIfAborted();
 	const env = createGitEnvironment(
