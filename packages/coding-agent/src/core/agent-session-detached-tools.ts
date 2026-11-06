@@ -7,12 +7,17 @@ import type {
 	AgentTool,
 	AgentToolResult,
 } from "@earendil-works/pi-agent-core";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.js";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
-import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
-import type { ExtensionToolContext } from "./extensions/context-types.ts";
-import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
-import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
+import { finalizeToolResult } from "./agent-session-tool-hooks.js";
+import type { ExtensionToolContext } from "./extensions/context-types.js";
+import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.js";
+import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.js";
+import {
+	resolveToolConcurrency,
+	type ToolConcurrencyMode,
+	type ToolExecutionScheduler,
+} from "./tools/tool-concurrency.js";
 
 /** How long a call of a `detachable` tool runs inline before the session lets it go on without the session. */
 export interface ToolDetachmentPolicy {
@@ -44,6 +49,7 @@ interface DetachmentState {
 	readonly detached: Map<string, DetachedToolCall>;
 	/** How each detachable tool's work starts, by tool name. */
 	readonly executes: Map<string, DetachableExecute>;
+	readonly concurrency: Map<string, AgentTool["concurrency"]>;
 }
 
 const states = new WeakMap<object, DetachmentState>();
@@ -54,7 +60,7 @@ const DETACHED_PLACEHOLDER_TEXT =
 function detachmentState(session: AgentSession): DetachmentState {
 	let state = states.get(session);
 	if (state === undefined) {
-		state = { policy: undefined, detached: new Map(), executes: new Map() };
+		state = { policy: undefined, detached: new Map(), executes: new Map(), concurrency: new Map() };
 		states.set(session, state);
 	}
 	return state;
@@ -135,13 +141,14 @@ function startOperation(
 	inline: InlineSession,
 	facts: DetachedCallFacts,
 	createContext: DetachableContext | undefined,
+	start?: Promise<void>,
 ): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult> } {
 	return outsideAnySession(() => {
 		const controller = new AbortController();
 		if (createContext !== undefined) inline.context = createContext(facts.toolCallId, controller.signal);
 		const onUpdate = inline.onUpdate === undefined ? undefined : forwardedUpdate(inline);
 		const context = callContext(inline, facts);
-		const settled = invokeDetached(execute, facts.toolCallId, params, controller.signal, onUpdate, context);
+		const settled = invokeDetached(execute, facts.toolCallId, params, controller.signal, onUpdate, context, start);
 		return { settled, call: detachedCall(toolName, facts.toolCallId, settled, controller) };
 	});
 }
@@ -153,8 +160,9 @@ function invokeDetached(
 	signal: AbortSignal,
 	onUpdate: ToolUpdate,
 	context: ExtensionToolContext,
+	start: Promise<void> = Promise.resolve(),
 ): Promise<AgentToolResult> {
-	return Promise.resolve().then(() => execute(toolCallId, params, signal, onUpdate, context));
+	return start.then(() => execute(toolCallId, params, signal, onUpdate, context));
 }
 
 /** Progress a call reports reaches the agent loop while the call runs inline; once it detaches, it is dropped. */
@@ -217,15 +225,48 @@ function openGateWhenSettled(settled: Promise<AgentToolResult>, gate: { resolve(
 const INLINE = Symbol("inline");
 const DETACH = Symbol("detach");
 
+interface SchedulerPermit {
+	readonly grantedLater: Promise<void> | undefined;
+	release(): void;
+}
+
+function takeSchedulerPermit(scheduler: ToolExecutionScheduler, mode: ToolConcurrencyMode): SchedulerPermit {
+	return outsideAnySession(() => {
+		const granted = Promise.withResolvers<void>();
+		const held = Promise.withResolvers<void>();
+		let grantedNow = false;
+		void scheduler.schedule(mode, () => {
+			grantedNow = true;
+			granted.resolve();
+			return held.promise;
+		});
+		return { grantedLater: grantedNow ? undefined : granted.promise, release: () => held.resolve() };
+	});
+}
+
+function releaseWhenSettled(settled: Promise<AgentToolResult>, permit: SchedulerPermit): void {
+	outsideAnySession(() => {
+		settled.then(
+			() => permit.release(),
+			() => permit.release(),
+		);
+	});
+}
+
 /** Forget the session's detachable tools before its tools are registered again, so a removed tool is not one. */
 export function forgetDetachableTools(session: AgentSession): void {
 	states.get(session)?.executes.clear();
+	states.get(session)?.concurrency.clear();
 }
 
 /**
  * Run a call of a detachable tool inline until the session's detachment policy elapses, then let it go on without
  * the run. The loop then records a placeholder that never reaches the transcript, listeners, or the provider, and
  * the run ends after its turn so the host can release the session and hand the result back later.
+ *
+ * The call keeps its declared concurrency: it starts once the calls before it in the session's scheduler allow, and
+ * it holds its place there until its work settles, also after it detaches, so an exclusive call never overlaps another
+ * call of the session.
  */
 export function detachableTool(
 	session: AgentSession,
@@ -235,21 +276,35 @@ export function detachableTool(
 ): AgentTool {
 	const state = detachmentState(session);
 	state.executes.set(tool.name, execute);
+	state.concurrency.set(tool.name, tool.concurrency);
 	return {
 		...tool,
 		execute: async (toolCallId, params, signal, onUpdate) => {
 			const policy = state.policy;
 			if (policy === undefined || !isTopLevelToolCall(session, toolCallId))
 				return tool.execute(toolCallId, params, signal, onUpdate);
-			const inline: InlineSession = { onUpdate, context: undefined };
-			const { call, settled } = startOperation(
-				tool.name,
-				execute,
-				params,
-				inline,
-				detachedCallFacts(session, toolCallId),
-				createContext,
+			const permit = takeSchedulerPermit(
+				session._toolExecutionScheduler,
+				resolveToolConcurrency(tool.concurrency, params as Record<string, unknown>),
 			);
+			if (permit.grantedLater !== undefined) await permit.grantedLater;
+			const inline: InlineSession = { onUpdate, context: undefined };
+			let operation: ReturnType<typeof startOperation>;
+			try {
+				operation = startOperation(
+					tool.name,
+					execute,
+					params,
+					inline,
+					detachedCallFacts(session, toolCallId),
+					createContext,
+				);
+			} catch (error) {
+				permit.release();
+				throw error;
+			}
+			const { call, settled } = operation;
+			releaseWhenSettled(settled, permit);
 			const forwardAbort = (): void => call.abort(signal?.reason);
 			if (signal?.aborted) forwardAbort();
 			else signal?.addEventListener("abort", forwardAbort, { once: true });
@@ -401,11 +456,27 @@ export function waitsOnDetachedResults(session: AgentSession): boolean {
  * detached from the start: it reports no progress and its context answers only `cwd`.
  */
 export function redispatchDetachedToolCalls(this: AgentSession): DetachedToolCall[] {
+	const concurrency = states.get(this)?.concurrency;
 	return pendingDetachableCalls(this).calls.map(({ toolCall, execute }) => {
 		this._reissuedToolCallIds.add(toolCall.id);
 		const inline: InlineSession = { onUpdate: undefined, context: undefined };
 		const facts = detachedCallFacts(this, toolCall.id);
-		return startOperation(toolCall.name, execute, toolCall.arguments as ToolParams, inline, facts, undefined).call;
+		const params = toolCall.arguments as ToolParams;
+		const permit = takeSchedulerPermit(
+			this._toolExecutionScheduler,
+			resolveToolConcurrency(concurrency?.get(toolCall.name), params as Record<string, unknown>),
+		);
+		const { call, settled } = startOperation(
+			toolCall.name,
+			execute,
+			params,
+			inline,
+			facts,
+			undefined,
+			permit.grantedLater,
+		);
+		releaseWhenSettled(settled, permit);
+		return call;
 	});
 }
 
