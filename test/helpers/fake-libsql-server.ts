@@ -344,6 +344,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		response.writeHead(404, { "content-type": "text/plain" });
 		response.end("not found");
 	});
+	// Node closes an idle keep-alive connection after 5 s. A client stopped longer would then meet a closed connection
+	// instead of its expired stream, so idle connections stay open, however long a client stays stopped.
+	server.keepAliveTimeout = 0;
 	server.on("connection", (socket) => {
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));

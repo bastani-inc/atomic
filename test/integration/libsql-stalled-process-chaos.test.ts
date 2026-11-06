@@ -80,7 +80,11 @@ test(
 			await resumed;
 			assert.equal(await child.exited, 0, JSON.stringify(report.failure));
 			assert.equal(stalls, 1);
-			assert.equal(fake.expiredStatements, 1, "the stall ended the writer's transaction on the server");
+			assert.equal(
+				fake.expiredStatements,
+				1,
+				`the stall ended the writer's transaction on the server; the writer saw ${JSON.stringify(report.warnings)} after requests ${JSON.stringify(fake.pipelines.slice(-6))}`,
+			);
 			assert.deepEqual(
 				report.outcomes,
 				Array.from({ length: 2 * ROUNDS }, () => "appended"),
