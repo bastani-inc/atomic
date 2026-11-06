@@ -82,6 +82,8 @@ interface PoolCoordinatorCommonOptions {
 	readonly maxWorkerRssBytes?: number;
 	/** Module forked for each worker; undefined forks the coordinator's own entry module. */
 	readonly workerEntry?: string;
+	/** Internal, tests only: how long the root waits for a stage input's receipt (`STAGE_INPUT_RECEIPT_TIMEOUT_MS`). */
+	readonly stageInputTimeoutMs?: number;
 }
 
 export type PoolCoordinatorOptions = PoolCoordinatorCommonOptions &
@@ -143,8 +145,22 @@ export type CoordinatorCommandBody =
 	| { readonly kind: "stage-unwatch"; readonly watch: WatchId }
 	/** Admits user text into a watched stage at most once per op; answered with a `DeliveryResult`. */
 	| ({ readonly kind: "stage-deliver" } & PooledStageDelivery)
-	/** Reads the brokered question a pooled stage waits on; answered with a `PooledStageQuestion` or undefined. */
-	| { readonly kind: "stage-question"; readonly runId: string; readonly stageId: string }
+	/**
+	 * Reads the brokered question `promptId` a pooled stage waits on; answered with a `PooledStageQuestion` or undefined.
+	 * A stage on another host's worker is read through its input queue (#4391).
+	 */
+	| { readonly kind: "stage-question"; readonly runId: string; readonly stageId: string; readonly promptId: string }
+	/**
+	 * Hands an Intercom message to the session `sessionId` of a stage that the attempt `work` runs on another host's
+	 * worker, through the stage's input queue (#4391); answered once the stage took it, and failed typed when it did not.
+	 */
+	| ({
+			readonly kind: "stage-intercom";
+			readonly work: PoolWorkToken;
+			readonly runId: string;
+			readonly stageId: string;
+			readonly sessionId: string;
+	  } & DeliveryPayload)
 	/** Answers a prompt a pooled stage raised; answered with a `PromptResult`. */
 	| {
 			readonly kind: "stage-answer";

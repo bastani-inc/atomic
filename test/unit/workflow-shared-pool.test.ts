@@ -9,7 +9,7 @@ import {
 	WorkspaceRestoreError,
 } from "../../packages/coding-agent/src/index.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { observeSqlPoolTransactions, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { openSqlPoolQueue, type SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -20,6 +20,10 @@ import {
 	workerHost,
 } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import {
+	type PooledStageInputKind,
+	stageInputOp,
+} from "../../packages/workflows/src/durable/journal/stage-input-kinds.js";
+import {
 	JournalInvalidTextError,
 	type Lease,
 	RUN_EVENT_TYPES,
@@ -28,7 +32,9 @@ import {
 import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import {
+	isStageInputInvalidError,
 	isStaleStageLeaseError,
+	StageInputInvalidError,
 	StaleStageLeaseError,
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
@@ -47,6 +53,20 @@ const binding: WorkspaceBinding = {
 	envHash: "env-1",
 };
 const definition = { definition: "fixture/child", digest: "sha256:child" };
+
+/** A stage chat follow-up whose text is `text`, as the root queues it; `op` names it in its stage. */
+function followUp(op: string, text = op) {
+	return {
+		kind: "user-message" as const,
+		op,
+		payload: JSON.stringify({ deliveryOp: op, text, intent: "followUp" }),
+	};
+}
+
+/** The text of a queued user message, from its payload. */
+function textOf(input: { readonly payload: string } | undefined): string | undefined {
+	return input === undefined ? undefined : (JSON.parse(input.payload) as { text: string }).text;
+}
 
 /** A prefixed journal in a libSQL file, the adapter shared placement is for, with a root that holds its lease. */
 async function fixture() {
@@ -125,7 +145,7 @@ test("a stage's inputs are taken in order, one at a time, each under a stage lea
 		const attempt = await claimed(f.queue, f.lease, "ordered");
 		const stage = { runId: attempt.childRunId, stageId: "stage-a" };
 		for (const op of ["first", "second", "third"])
-			await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, kind: "note", op, payload: op });
+			await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...followUp(op) });
 		const seen: string[] = [];
 		for (;;) {
 			const taken = await shared.takeStageInput(f.lease, attempt, stage, 60_000);
@@ -142,7 +162,7 @@ test("a stage's inputs are taken in order, one at a time, each under a stage lea
 				taken,
 				"while an input is in flight the stage's holder is given the same input again, never the next one",
 			);
-			seen.push(taken.payload);
+			seen.push(textOf(taken)!);
 			await shared.ackStageInput(f.lease, taken, JSON.stringify({ ok: true }));
 		}
 		assert.deepEqual(seen, ["first", "second", "third"]);
@@ -166,12 +186,12 @@ test("stages run their inputs in parallel: each stage has its own lease (#4310)"
 		const attempt = await claimed(f.queue, f.lease, "parallel");
 		const one = { runId: attempt.childRunId, stageId: "one" };
 		const two = { runId: attempt.childRunId, stageId: "two" };
-		await shared.appendStageInput(f.lease, { work: attempt.id, ...one, kind: "note", op: "a", payload: "a" });
-		await shared.appendStageInput(f.lease, { work: attempt.id, ...two, kind: "note", op: "b", payload: "b" });
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...one, ...followUp("a") });
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...two, ...followUp("b") });
 		const first = await shared.takeStageInput(f.lease, attempt, one, 60_000);
 		const second = await shared.takeStageInput(f.lease, attempt, two, 60_000);
-		assert.equal(first?.payload, "a");
-		assert.equal(second?.payload, "b", "a busy stage does not hold up another stage");
+		assert.equal(textOf(first), "a");
+		assert.equal(textOf(second), "b", "a busy stage does not hold up another stage");
 		assert.deepEqual(
 			(await shared.stagesWithInputs("root", [attempt.id])).map(({ stageId }) => stageId),
 			["one", "two"],
@@ -187,8 +207,8 @@ test("an idle stage's next input goes to the attempt that holds its work now; th
 		const shared = await f.shared();
 		const first = await claimed(f.queue, f.lease, "displaced", "host-a/worker-1");
 		const stage = { runId: first.childRunId, stageId: "stage" };
-		await shared.appendStageInput(f.lease, { work: first.id, ...stage, kind: "note", op: "1", payload: "1" });
-		await shared.appendStageInput(f.lease, { work: first.id, ...stage, kind: "note", op: "2", payload: "2" });
+		await shared.appendStageInput(f.lease, { work: first.id, ...stage, ...followUp("1") });
+		await shared.appendStageInput(f.lease, { work: first.id, ...stage, ...followUp("2") });
 		const taken = (await shared.takeStageInput(f.lease, first, stage, 60_000))!;
 		// Host A's worker is lost: its attempt is released and host B's worker claims the work.
 		assert.equal(await f.queue.releaseExited(f.lease, first), true);
@@ -206,10 +226,10 @@ test("an idle stage's next input goes to the attempt that holds its work now; th
 		assert.equal(quick, undefined, "a live stage lease is not taken over");
 		await f.database.run(`UPDATE ${PREFIX}wf_runs_stage_leases SET expires_at = 0`);
 		const retaken = (await shared.takeStageInput(f.lease, second, stage, 60_000))!;
-		assert.deepEqual([retaken.seq, retaken.payload, retaken.attempt.worker], [1, "1", "host-b/worker-1"]);
+		assert.deepEqual([retaken.seq, textOf(retaken), retaken.attempt.worker], [1, "1", "host-b/worker-1"]);
 		assert.equal(retaken.token, taken.token + 1);
 		await shared.ackStageInput(f.lease, retaken, "{}");
-		assert.equal((await shared.takeStageInput(f.lease, second, stage, 60_000))?.payload, "2");
+		assert.equal(textOf(await shared.takeStageInput(f.lease, second, stage, 60_000)), "2");
 	} finally {
 		await f.close();
 	}
@@ -221,7 +241,7 @@ test("a stage lease that expired is taken again, and its former holder's acknowl
 		const shared = await f.shared();
 		const attempt = await claimed(f.queue, f.lease, "expired");
 		const stage = { runId: attempt.childRunId, stageId: "stage" };
-		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, kind: "note", op: "1", payload: "1" });
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...followUp("1") });
 		const stale = (await shared.takeStageInput(f.lease, attempt, stage, 1))!;
 		await sleep(20);
 		const fresh = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
@@ -236,7 +256,7 @@ test("a stage lease that expired is taken again, and its former holder's acknowl
 		);
 		await shared.ackStageInput(f.lease, fresh, '{"ok":true}');
 		assert.deepEqual(await shared.stageInputs("root", stage.runId, stage.stageId), [
-			{ seq: 1, op: "1", kind: "note", state: "done", receipt: '{"ok":true}' },
+			{ seq: 1, op: "1", kind: "user-message", state: "done", receipt: '{"ok":true}' },
 		]);
 	} finally {
 		await f.close();
@@ -249,14 +269,21 @@ test("an input appended again with the same op keeps one place; a release leaves
 		const shared = await f.shared();
 		const attempt = await claimed(f.queue, f.lease, "idempotent");
 		const stage = { runId: attempt.childRunId, stageId: "stage" };
-		const input = { work: attempt.id, ...stage, kind: "prompt-answer", op: "prompt:p1", payload: "{}" };
+		const answer = JSON.stringify({ kind: "prompt", promptId: "p1", response: "yes" });
+		const input = { work: attempt.id, ...stage, kind: STAGE_INPUT_PROMPT_ANSWER, op: "prompt:p1", payload: answer };
 		assert.equal(await shared.appendStageInput(f.lease, input), 1);
-		assert.equal(await shared.appendStageInput(f.lease, { ...input, payload: "changed" }), 1);
+		assert.equal(
+			await shared.appendStageInput(f.lease, {
+				...input,
+				payload: JSON.stringify({ kind: "prompt", promptId: "p1", response: "changed" }),
+			}),
+			1,
+		);
 		assert.equal(await shared.appendStageInput(f.lease, { ...input, op: "prompt:p2" }), 2);
 		const taken = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
 		await shared.releaseStageInput(f.lease, taken);
 		const again = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
-		assert.deepEqual([again.seq, again.payload], [1, "{}"]);
+		assert.deepEqual([again.seq, again.payload], [1, answer]);
 	} finally {
 		await f.close();
 	}
@@ -497,7 +524,7 @@ test("stage leases refuse bad durations, unknown stages and a second acknowledge
 			...stage,
 			kind: STAGE_INPUT_PROMPT_ANSWER,
 			op: "1",
-			payload: "1",
+			payload: JSON.stringify({ kind: "prompt", promptId: "1", response: "yes" }),
 		});
 		assert.equal(STAGE_INPUT_PROMPT_ANSWER, "prompt-answer");
 		const refused = await shared
@@ -533,9 +560,7 @@ test("stage leases refuse bad durations, unknown stages and a second acknowledge
 			shared.appendStageInput(f.lease, {
 				work: attempt.id,
 				...stage,
-				kind: "note",
-				op: "bad\u0000op",
-				payload: "",
+				...followUp("bad\u0000op"),
 			}),
 			(error: Error) => error.name === "JournalInvalidTextError",
 		);
@@ -564,7 +589,7 @@ test("a released input is taken again under a new token; a stage with nothing wa
 		const stage = { runId: attempt.childRunId, stageId: "stage" };
 		assert.equal(await shared.takeStageInput(f.lease, attempt, stage, 60_000), undefined);
 		assert.deepEqual(await shared.stagesWithInputs("root", []), []);
-		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, kind: "note", op: "1", payload: "1" });
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...followUp("1") });
 		const taken = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
 		await shared.releaseStageInput(f.lease, taken);
 		const [idle] = await f.database.all(`SELECT seq, expires_at FROM ${PREFIX}wf_runs_stage_leases`);
@@ -652,7 +677,7 @@ test("host reports and stats say what each host is and holds; activity and roots
 				stageId: "s\u0000",
 				kind: "prompt-answer",
 				op: "o",
-				payload: "{}",
+				payload: JSON.stringify({ kind: "prompt", promptId: "p", response: "yes" }),
 			}),
 			(error) => error instanceof JournalInvalidTextError && error.field === "key",
 		);
@@ -945,6 +970,359 @@ test("work put back unplaced is ready at the generation it had before the claim:
 			["ready", 1],
 			"an attempt that ran keeps its generation",
 		);
+	} finally {
+		await f.close();
+	}
+});
+
+/** One input of each kind a stage takes, as the root queues it for attempt `generation` (#4391). */
+function inputsOfEveryKind(generation: number) {
+	return [
+		{
+			kind: STAGE_INPUT_PROMPT_ANSWER,
+			op: `prompt:p1:${generation}`,
+			payload: JSON.stringify({ kind: "prompt", promptId: "p1", response: "yes" }),
+		},
+		{
+			kind: "question-read" as const,
+			op: stageInputOp("question-read", "q1", generation),
+			payload: JSON.stringify({ promptId: "q1" }),
+		},
+		{
+			kind: "user-message" as const,
+			op: stageInputOp("user-message", "d1", generation),
+			payload: JSON.stringify({ deliveryOp: "d1", text: "steer this", intent: "steer" }),
+		},
+		{
+			kind: "intercom-message" as const,
+			op: stageInputOp("intercom-message", "s1:m1", generation),
+			payload: JSON.stringify({ sessionId: "s1", generation, from: { id: "sender" }, message: { id: "m1" } }),
+		},
+	];
+}
+
+test("inputs of every kind are taken in queue order, one at a time, each settled with its receipt (#4391)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const attempt = await claimed(f.queue, f.lease, "mixed");
+		const stage = { runId: attempt.childRunId, stageId: "stage" };
+		const inputs = inputsOfEveryKind(attempt.generation);
+		for (const input of inputs) await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...input });
+		const taken: string[] = [];
+		for (;;) {
+			const next = await shared.takeStageInput(f.lease, attempt, stage, 60_000);
+			if (next === undefined) break;
+			assert.deepEqual(
+				await shared.takeStageInput(f.lease, attempt, stage, 60_000),
+				next,
+				"one input of a stage is in flight at a time, whatever its kind",
+			);
+			taken.push(next.kind);
+			await shared.ackStageInput(f.lease, next, JSON.stringify({ ok: true, kind: next.kind }));
+		}
+		assert.deepEqual(
+			taken,
+			inputs.map((input) => input.kind),
+		);
+		assert.deepEqual(
+			(await shared.stageInputs("root", stage.runId, stage.stageId)).map((input) => [
+				input.seq,
+				input.kind,
+				input.state,
+				JSON.parse(input.receipt!).kind,
+			]),
+			inputs.map((input, index) => [index + 1, input.kind, "done", input.kind]),
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("each input kind keeps its delivery id: queued again with its op, it is the same input (#4391)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const attempt = await claimed(f.queue, f.lease, "dedup");
+		const stage = { runId: attempt.childRunId, stageId: "stage" };
+		const inputs = inputsOfEveryKind(attempt.generation);
+		const seqs = [];
+		for (const input of inputs)
+			seqs.push(await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...input }));
+		for (const [index, input] of inputs.entries())
+			assert.equal(await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...input }), seqs[index]);
+		assert.deepEqual(seqs, [1, 2, 3, 4]);
+		// The next attempt's op of the same delivery is a new input: that attempt deduplicates it against its session.
+		const replacement = inputsOfEveryKind(attempt.generation + 1);
+		assert.equal(await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...replacement[2]! }), 5);
+		assert.equal((await shared.stageInputs("root", stage.runId, stage.stageId)).length, 5);
+		assert.deepEqual(
+			[
+				stageInputOp("question-read", "q1", 2),
+				stageInputOp("user-message", "d1", 2),
+				stageInputOp("intercom-message", "s1:m1", 2),
+			],
+			["question:q1:2", "user:d1:2", "intercom:s1:m1:2"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a displaced holder's acknowledgement of every input kind is refused with StaleStageLeaseError; its replacement applies each once (#4391)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const first = await claimed(f.queue, f.lease, "fenced", "host-b/worker-1");
+		const stage = { runId: first.childRunId, stageId: "stage" };
+		const inputs = inputsOfEveryKind(first.generation);
+		for (const input of inputs) await shared.appendStageInput(f.lease, { work: first.id, ...stage, ...input });
+		// Host B takes the first input, then dies: host C's worker claims the work.
+		const displaced = (await shared.takeStageInput(f.lease, first, stage, 60_000))!;
+		assert.equal(await f.queue.releaseExited(f.lease, first), true);
+		const second = (await f.queue.claim(f.lease, "host-c/worker-1", [definition], 60_000))!;
+		await f.database.run(`UPDATE ${PREFIX}wf_runs_stage_leases SET expires_at = 0`);
+		const applied: string[] = [];
+		for (const input of inputs) {
+			const taken = (await shared.takeStageInput(f.lease, second, stage, 60_000))!;
+			assert.equal(taken.kind, input.kind);
+			// Host B, still believing it holds the stage, acknowledges an input of this kind: refused, nothing written.
+			const refused = await shared
+				.ackStageInput(f.lease, { ...displaced, seq: taken.seq, kind: taken.kind }, "{}")
+				.catch((error: Error) => error);
+			assert.ok(isStaleStageLeaseError(refused), `${input.kind}: ${String(refused)}`);
+			assert.equal(refused.code, "stale-stage-lease");
+			assert.equal(refused.reason, "attempt-replaced");
+			assert.equal(refused.seq, taken.seq);
+			assert.equal(
+				(await shared.stageInput("root", stage.runId, stage.stageId, taken.seq))?.done,
+				false,
+				`${input.kind}: the displaced acknowledgement wrote nothing`,
+			);
+			await shared.ackStageInput(f.lease, taken, JSON.stringify({ ok: true }));
+			applied.push(taken.kind);
+		}
+		assert.deepEqual(
+			applied,
+			inputs.map((input) => input.kind),
+			"the replacement applied every input once, in order",
+		);
+		assert.equal(await shared.takeStageInput(f.lease, second, stage, 60_000), undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a holder whose stage lease another holder took cannot settle an input of any kind (#4391)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const attempt = await claimed(f.queue, f.lease, "lease-replaced");
+		const stage = { runId: attempt.childRunId, stageId: "stage" };
+		for (const input of inputsOfEveryKind(attempt.generation)) {
+			const seq = await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...input });
+			const stale = (await shared.takeStageInput(f.lease, attempt, stage, 1))!;
+			await sleep(20);
+			const fresh = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
+			assert.deepEqual([stale.seq, fresh.seq, fresh.kind], [seq, seq, input.kind]);
+			for (const settle of [
+				() => shared.ackStageInput(f.lease, stale, "{}"),
+				() => shared.releaseStageInput(f.lease, stale),
+			]) {
+				const refused = await settle().catch((error: Error) => error);
+				assert.ok(refused instanceof StaleStageLeaseError, input.kind);
+				assert.equal(refused.reason, "stage-lease-replaced");
+			}
+			await shared.ackStageInput(f.lease, fresh, '{"ok":true}');
+		}
+	} finally {
+		await f.close();
+	}
+});
+
+test("one input's read says whether it is settled, its receipt, and whether a host holds it now (#4391)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const attempt = await claimed(f.queue, f.lease, "read-one");
+		const stage = { runId: attempt.childRunId, stageId: "stage" };
+		assert.equal(await shared.stageInput("root", stage.runId, stage.stageId, 1), undefined);
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...followUp("a") });
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...followUp("b") });
+		assert.deepEqual(await shared.stageInput("root", stage.runId, stage.stageId, 1), {
+			done: false,
+			receipt: null,
+			held: false,
+		});
+		const taken = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
+		assert.deepEqual(await shared.stageInput("root", stage.runId, stage.stageId, 1), {
+			done: false,
+			receipt: null,
+			held: true,
+		});
+		assert.equal(
+			(await shared.stageInput("root", stage.runId, stage.stageId, 2))?.held,
+			false,
+			"only the input the stage lease names is held",
+		);
+		await f.database.run(`UPDATE ${PREFIX}wf_runs_stage_leases SET expires_at = 1`);
+		assert.equal(
+			(await shared.stageInput("root", stage.runId, stage.stageId, 1))?.held,
+			false,
+			"an expired lease holds nothing",
+		);
+		const retaken = (await shared.takeStageInput(f.lease, attempt, stage, 60_000))!;
+		assert.equal(retaken.seq, taken.seq);
+		await shared.ackStageInput(f.lease, retaken, '{"ok":true}');
+		assert.deepEqual(await shared.stageInput("root", stage.runId, stage.stageId, 1), {
+			done: true,
+			receipt: '{"ok":true}',
+			held: false,
+		});
+		assert.deepEqual(await shared.stageInput("other-root", stage.runId, stage.stageId, 1), undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("an input whose kind or payload a stage cannot take is refused typed, before any write (#4391)", async () => {
+	const f = await fixture();
+	try {
+		let transactions = 0;
+		observeSqlPoolTransactions(f.journal, () => transactions++);
+		const shared = await f.shared();
+		const attempt = await claimed(f.queue, f.lease, "invalid");
+		const stage = { work: attempt.id, runId: attempt.childRunId, stageId: "stage" };
+		const cases: readonly (readonly [string, string, "unknown-kind" | "malformed-payload", string])[] = [
+			["steer", JSON.stringify({ deliveryOp: "d", text: "t", intent: "steer" }), "unknown-kind", "kind"],
+			["user-message", "not json", "malformed-payload", "payload"],
+			["user-message", "null", "malformed-payload", "payload"],
+			["user-message", "[]", "malformed-payload", "payload"],
+			["user-message", '"text"', "malformed-payload", "payload"],
+			["user-message", JSON.stringify({ text: "t", intent: "steer" }), "malformed-payload", "deliveryOp"],
+			["user-message", JSON.stringify({ deliveryOp: "d", intent: "steer" }), "malformed-payload", "text"],
+			[
+				"user-message",
+				JSON.stringify({ deliveryOp: "d", text: "t", intent: "shout" }),
+				"malformed-payload",
+				"intent",
+			],
+			[
+				"user-message",
+				JSON.stringify({ deliveryOp: "d", text: "t", intent: "auto", expandPromptTemplates: "yes" }),
+				"malformed-payload",
+				"expandPromptTemplates",
+			],
+			["question-read", JSON.stringify({ promptId: 7 }), "malformed-payload", "promptId"],
+			["prompt-answer", JSON.stringify({ kind: "guess", promptId: "p" }), "malformed-payload", "kind"],
+			["prompt-answer", JSON.stringify({ kind: "prompt" }), "malformed-payload", "promptId"],
+			[
+				"intercom-message",
+				JSON.stringify({ from: { id: "a" }, message: { id: "m" } }),
+				"malformed-payload",
+				"sessionId",
+			],
+			[
+				"intercom-message",
+				JSON.stringify({ sessionId: "s", from: { id: "a" }, message: { id: "m" } }),
+				"malformed-payload",
+				"generation",
+			],
+			...[0, 1.5, "1"].map(
+				(generation) =>
+					[
+						"intercom-message",
+						JSON.stringify({ sessionId: "s", generation, from: { id: "a" }, message: { id: "m" } }),
+						"malformed-payload",
+						"generation",
+					] as const,
+			),
+			[
+				"intercom-message",
+				JSON.stringify({ sessionId: "s", generation: 1, from: {}, message: { id: "m" } }),
+				"malformed-payload",
+				"from",
+			],
+			[
+				"intercom-message",
+				JSON.stringify({ sessionId: "s", generation: 1, from: { id: "a" }, message: null }),
+				"malformed-payload",
+				"message",
+			],
+		];
+		transactions = 0;
+		for (const [kind, payload, reason, field] of cases) {
+			const refused = await shared
+				.appendStageInput(f.lease, { ...stage, kind: kind as PooledStageInputKind, op: "op", payload })
+				.catch((error: Error) => error);
+			assert.ok(isStageInputInvalidError(refused), `${kind} ${payload}: ${String(refused)}`);
+			assert.ok(refused instanceof StageInputInvalidError);
+			assert.deepEqual(
+				[
+					refused.code,
+					refused.reason,
+					refused.kind,
+					refused.field,
+					refused.runId,
+					refused.stageId,
+					refused.retryable,
+				],
+				["stage-input-invalid", reason, kind, field, stage.runId, "stage", false],
+				`${kind} ${payload}`,
+			);
+			assert.equal(
+				refused.hint,
+				"Nothing was written. Queue the input with a stage input kind and the payload that kind takes.",
+			);
+			// A payload that is not JSON keeps the parser's error as the refusal's cause.
+			assert.equal(refused.cause instanceof SyntaxError, payload === "not json", `${kind} ${payload}`);
+		}
+		assert.equal(transactions, 0, "every refusal came before the first transaction");
+		assert.deepEqual(await shared.stageInputs("root", stage.runId, "stage"), []);
+		// A valid input of each kind is taken, with optional fields absent or set.
+		await shared.appendStageInput(f.lease, {
+			...stage,
+			kind: "user-message",
+			op: "ok",
+			payload: JSON.stringify({ deliveryOp: "d", text: "t", intent: "auto", expandPromptTemplates: true }),
+		});
+		for (const answer of ["input", "failed"])
+			await shared.appendStageInput(f.lease, {
+				...stage,
+				kind: STAGE_INPUT_PROMPT_ANSWER,
+				op: answer,
+				payload: JSON.stringify({ kind: answer, promptId: "p" }),
+			});
+		assert.equal((await shared.stageInputs("root", stage.runId, "stage")).length, 3);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage that defers its text has its next input of another kind taken, then its text in order (#4391)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const attempt = await claimed(f.queue, f.lease, "deferred");
+		const stage = { runId: attempt.childRunId, stageId: "stage" };
+		const [answer, read, user, intercom] = inputsOfEveryKind(attempt.generation);
+		for (const input of [user!, answer!, intercom!, read!])
+			await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...input });
+		const text = ["user-message", "intercom-message"] as const;
+		const order: string[] = [];
+		for (const deferred of [text, text, [], []] as const) {
+			const taken = (await shared.takeStageInput(f.lease, attempt, stage, 60_000, deferred))!;
+			order.push(`${taken.seq}:${taken.kind}`);
+			await shared.ackStageInput(f.lease, taken, '{"ok":true}');
+		}
+		assert.deepEqual(order, ["2:prompt-answer", "4:question-read", "1:user-message", "3:intercom-message"]);
+		await shared.appendStageInput(f.lease, { work: attempt.id, ...stage, ...followUp("only-text") });
+		assert.equal(
+			await shared.takeStageInput(f.lease, attempt, stage, 60_000, text),
+			undefined,
+			"a stage with only deferred inputs takes nothing",
+		);
+		assert.equal(textOf(await shared.takeStageInput(f.lease, attempt, stage, 60_000)), "only-text");
 	} finally {
 		await f.close();
 	}

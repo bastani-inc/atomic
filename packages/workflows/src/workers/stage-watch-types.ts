@@ -218,6 +218,22 @@ export type PromptRefusal = "StaleAttempt" | "StageNotLive" | "PromptNotPending"
 
 export type PromptResult = { readonly ok: true } | { readonly ok: false; readonly refusal: PromptRefusal };
 
+/**
+ * Why a worker did not hand an Intercom message to a stage session (#4391).
+ * - `StaleAttempt`: the stage cannot take it yet (its attempt is changing, or its session has not started its
+ *   delivery); it stays the stage's next input.
+ * - `StageNotLive`: the stage finished.
+ * - `SessionReplaced`: the stage now runs another session than the one the message was meant for.
+ */
+export type IntercomRefusal = "StaleAttempt" | "StageNotLive" | "SessionReplaced";
+
+/**
+ * Why a worker did not take a user message or an Intercom message from a stage's input queue yet (#4391): the stage
+ * waits for an answer, and cannot take the text until it has its answer (a replacement whose replay asked its question
+ * again before its session took a turn, say). Inputs behind it that are not text, such as that answer, go first.
+ */
+export type StageInputDeferral = "AwaitingInput";
+
 /** One user delivery through a watch. */
 export interface PooledStageDelivery {
 	readonly watch: WatchId;

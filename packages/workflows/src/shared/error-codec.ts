@@ -33,11 +33,20 @@ import {
 } from "../durable/journal/types.js";
 import {
 	isWorkerPlacementErrorValue,
+	REMOTE_STAGE_COMMANDS,
+	RemoteStageCommandUnsupportedError,
 	SHARED_POOL_OPERATIONS,
 	SHARED_POOL_SETUP_CODES,
 	SharedPoolSetupError,
 	type SharedPoolSetupProblem,
+	STAGE_INPUT_INVALID_REASONS,
+	STAGE_INPUT_REFUSED_REASONS,
+	STAGE_INPUT_TIMEOUT_PHASES,
 	STALE_STAGE_LEASE_REASONS,
+	type StageInputIdentity,
+	StageInputInvalidError,
+	StageInputRefusedError,
+	StageInputTimeoutError,
 	StaleStageLeaseError,
 	WORKER_PLACEMENT_CONFIG_CODES,
 	WORKER_PLACEMENT_CONFIG_SOURCES,
@@ -47,6 +56,7 @@ import {
 	type WorkspaceBindingIdentity,
 	WorkspaceRestoreUnavailableError,
 } from "../workers/placement-errors.js";
+import { POOLED_STAGE_INPUT_KINDS } from "../workers/stage-input-kind.js";
 import { MAX_CAUSE_DEPTH } from "./error-cause-chain.js";
 import {
 	isSerializableErrorFamilyName,
@@ -329,6 +339,21 @@ function bindingIdentity(fields: FieldReader): WorkspaceBindingIdentity {
 	return { remotes: [...(remotes as string[])], head, tree, envHash };
 }
 
+/** The stage input a stage input error names, as its envelope's fields carry it. */
+function stageInputFields(input: StageInputIdentity): SerializedErrorFields {
+	return { root: input.root, runId: input.runId, stageId: input.stageId, seq: input.seq, kind: input.kind };
+}
+
+function stageInput(fields: FieldReader): StageInputIdentity {
+	return {
+		root: fields.string("root"),
+		runId: fields.string("runId"),
+		stageId: fields.string("stageId"),
+		seq: fields.number("seq"),
+		kind: fields.literal("kind", POOLED_STAGE_INPUT_KINDS),
+	};
+}
+
 const CODECS: ReadonlyMap<string, Codec<Error>> = new Map([
 	codec("ProcessCleanupUnconfirmedError", {
 		family: "workflow-infrastructure",
@@ -412,6 +437,69 @@ const CODECS: ReadonlyMap<string, Codec<Error>> = new Map([
 				options,
 			);
 		},
+	}),
+	codec("StageInputInvalidError", {
+		family: "worker-placement",
+		type: StageInputInvalidError,
+		fields: (error) => ({
+			reason: error.reason,
+			kind: error.kind,
+			runId: error.runId,
+			stageId: error.stageId,
+			field: error.field,
+		}),
+		create: (fields, options) =>
+			new StageInputInvalidError(
+				fields.literal("reason", STAGE_INPUT_INVALID_REASONS),
+				{
+					kind: fields.string("kind"),
+					runId: fields.string("runId"),
+					stageId: fields.string("stageId"),
+					field: fields.string("field"),
+				},
+				options,
+			),
+	}),
+	codec("StageInputTimeoutError", {
+		family: "worker-placement",
+		type: StageInputTimeoutError,
+		fields: (error) => ({
+			...stageInputFields(error),
+			timeoutMs: error.timeoutMs,
+			elapsedMs: error.elapsedMs,
+			phase: error.phase,
+		}),
+		create: (fields, options) =>
+			new StageInputTimeoutError(
+				stageInput(fields),
+				{
+					timeoutMs: fields.number("timeoutMs"),
+					elapsedMs: fields.number("elapsedMs"),
+					phase: fields.literal("phase", STAGE_INPUT_TIMEOUT_PHASES),
+				},
+				options,
+			),
+	}),
+	codec("StageInputRefusedError", {
+		family: "worker-placement",
+		type: StageInputRefusedError,
+		fields: (error) => defined({ reason: error.reason, ...stageInputFields(error), detail: error.detail }),
+		create: (fields, options) =>
+			new StageInputRefusedError(fields.literal("reason", STAGE_INPUT_REFUSED_REASONS), stageInput(fields), {
+				detail: fields.optionalString("detail"),
+				...options,
+			}),
+	}),
+	codec("RemoteStageCommandUnsupportedError", {
+		family: "worker-placement",
+		type: RemoteStageCommandUnsupportedError,
+		fields: (error) => ({ command: error.command, runId: error.runId, stageId: error.stageId }),
+		create: (fields, options) =>
+			new RemoteStageCommandUnsupportedError(
+				fields.literal("command", REMOTE_STAGE_COMMANDS),
+				{ runId: fields.string("runId"), stageId: fields.string("stageId") },
+				options,
+			),
 	}),
 	codec("TaskCleanupError", {
 		family: "task-cleanup",

@@ -24,9 +24,18 @@ import {
 	STAGE_INPUT_PROMPT_ANSWER,
 	type StageInputLease,
 } from "../durable/journal/sql-shared-pool.js";
+import {
+	type IntercomMessageInput,
+	type PooledStageInputKind,
+	type PooledStageInputPayloads,
+	type QuestionReadInput,
+	stageInputOp,
+	type UserMessageInput,
+} from "../durable/journal/stage-input-kinds.js";
 import { isStaleLeaseError, type Lease, type RunJournal } from "../durable/journal/types.js";
 import { refusedAtChildStart } from "../engine/run-resume-preflight.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
+import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
 import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
@@ -71,6 +80,7 @@ import {
 	POOL_SUMMARY_INTERVAL_MS,
 } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { EndedWatches } from "./ended-watches.js";
 import {
 	type BoundWait,
 	boundWait,
@@ -81,7 +91,11 @@ import {
 	waitedMs,
 } from "./placement-choice.js";
 import {
+	isStageInputTimeoutError,
 	isStaleStageLeaseError,
+	RemoteStageCommandUnsupportedError,
+	type StageInputIdentity,
+	StageInputRefusedError,
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "./placement-errors.js";
@@ -97,6 +111,7 @@ import type {
 	WorkerStageCommand,
 } from "./protocol.js";
 import { RateLimitObservationOutbox, RateLimitObservationSet } from "./rate-limit-sharing.js";
+import { type RemoteStageWatch, RemoteStageWatches } from "./remote-stage-watches.js";
 import {
 	type AdmissionConfiguration,
 	type ProcessPermitScope,
@@ -106,6 +121,21 @@ import {
 } from "./resource-admission.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { RunChangesEncoder } from "./run-changes.js";
+import {
+	earlierSessionReceipt,
+	endedIntercomReason,
+	endedUserMessage,
+	type IntercomMessageReceipt,
+	intercomMessageOutcome,
+	intercomMessageResult,
+	type QuestionReadReceipt,
+	questionReadOutcome,
+	questionReadResult,
+	type UserMessageReceipt,
+	userMessageOutcome,
+	userMessageResult,
+} from "./stage-input-receipts.js";
+import { awaitStageInputReceipt, isAttempt, StageInputScheduler, workEnded, workHeld } from "./stage-input-wait.js";
 import { runsWhilePaused } from "./stage-session-commands.js";
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
@@ -115,6 +145,7 @@ import type {
 	DeliveryOpId,
 	DeliveryRefusal,
 	DeliveryResult,
+	IntercomRefusal,
 	PooledBashResult,
 	PooledPromptAnswer,
 	PooledStageChatSnapshot,
@@ -126,6 +157,7 @@ import type {
 	PromptResult,
 	SeqEvent,
 	SessionCommandResult,
+	StageInputDeferral,
 	WatchEndReason,
 	WatchId,
 	WatchRefusal,
@@ -177,6 +209,16 @@ const SHARED_POLL_MS = 500;
 const SHARED_IDLE_CLAIM_MS = 500;
 /** Stage lease of an input being processed; renewed while it is. */
 const STAGE_INPUT_LEASE_MS = 30_000;
+/**
+ * Longest the root waits for the receipt of a stage input it queued for a stage on another host (#4391), other than a
+ * prompt answer, which waits for the attempt that asks. The input stays queued past it and is applied once.
+ */
+export const STAGE_INPUT_RECEIPT_TIMEOUT_MS = 60_000;
+/**
+ * Longest a host waits before it takes again an input its stage could not take yet: each time the stage refuses it,
+ * the wait doubles from {@link SHARED_POLL_MS} up to this, so a stage that starts slowly costs few journal writes.
+ */
+export const STAGE_INPUT_RETRY_MAX_MS = 4_000;
 /** A registered worker host counts as live this long after its last report. */
 export const WORKER_HOST_TTL_MS = 15_000;
 /** Workers that may crash without work, in a row, before the pool fails. */
@@ -239,6 +281,26 @@ function isLiveStage(stage: StageSnapshot): boolean {
 /** Whether a later incarnation of a root runs again a child an earlier one completed with this result. */
 function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
 	return failedOnPoolFault(result) || refusedAtChildStart(result);
+}
+
+/**
+ * What a view of a stage on another host's worker opens with (#4391): the stage's status and session from its relayed
+ * run, and no transcript, since none streams from that host. Its session and turn read as started, so text sent to it
+ * goes out at once; the host holds it until the stage can take it.
+ */
+function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
+	return {
+		sessionId: stage.sessionId,
+		status: stage.status,
+		isStreaming: false,
+		messages: [],
+		pendingToolExecutionEvents: [],
+		queued: EMPTY_STAGE_QUEUED_USER_MESSAGES,
+		deliveredOps: [],
+		turnStarted: true,
+		sessionStarted: true,
+		seq: 0,
+	};
 }
 
 /** The root run as the route mirror needs it: identities and child links of its stages, no payloads. */
@@ -500,7 +562,13 @@ export interface SatelliteAttachment {
 
 interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
-	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
+	readonly refusal?:
+		| WatchRefusal
+		| DeliveryRefusal
+		| ControlRefusal
+		| PromptRefusal
+		| IntercomRefusal
+		| StageInputDeferral;
 	readonly action?: StageUserMessageDeliveryAction;
 	readonly question?: PooledStageQuestion;
 	readonly bash?: PooledBashResult;
@@ -561,7 +629,7 @@ export class PoolCoordinator {
 	private readonly inflight = new Set<Promise<unknown>>();
 	private readonly slots = new Set<WorkerSlot>();
 	private readonly watches = new Map<WatchId, StageWatch>();
-	private readonly endedWatches = new Map<WatchId, WatchEndReason>();
+	private readonly endedWatches = new EndedWatches(ENDED_WATCHES_REMEMBERED);
 	private stageCommandSequence = 0;
 	private promptNodes = false;
 	/** Provider and model limits recorded anywhere in the pool, sent to every worker and the root (#4023). */
@@ -647,8 +715,6 @@ export class PoolCoordinator {
 	private sharedPass?: Promise<void>;
 	/** Relayed activity already read, by version (the root's coordinator of a shared pool). */
 	private activityCursor = 0;
-	/** Runs of attempts on other hosts, by run id, as their activity was relayed (the root's coordinator). */
-	private readonly remoteRuns = new Map<string, PoolWorkToken>();
 	/** Work whose result reached the root. */
 	private readonly reportedResults = new Set<string>();
 	/** How long each bound work item has waited for a host that runs it, by `performance.now()` (#4416). */
@@ -657,8 +723,10 @@ export class PoolCoordinator {
 	private readonly restoreBackoff = new RestoreBackoff();
 	/** Activity of this host's attempts not relayed yet (a satellite). */
 	private readonly relayPending = new Map<string, PoolActivityEntry>();
-	/** Stages whose next input this coordinator is processing, by run and stage. */
-	private readonly takingInputs = new Set<string>();
+	/** Which stages' next inputs this coordinator takes on a pass, by run and stage. */
+	private readonly inputScheduler = new StageInputScheduler(SHARED_POLL_MS, STAGE_INPUT_RETRY_MAX_MS);
+	/** Runs of attempts on other hosts, as their activity was relayed, and the root's views of their stages (#4391). */
+	private readonly remoteWatches = new RemoteStageWatches(isLiveStage);
 	/** Warm worktrees by binding identity, as the host last answered, with when it answered. */
 	private readonly preferences = new Map<string, { readonly path: string | undefined; readonly at: number }>();
 	/** Set once a satellite stops taking new work, to finish what it holds and close. */
@@ -823,7 +891,9 @@ export class PoolCoordinator {
 			case "stage-deliver":
 				return this.stageDeliver(command);
 			case "stage-question":
-				return this.stageQuestion(command.runId, command.stageId);
+				return this.stageQuestion(command.runId, command.stageId, command.promptId);
+			case "stage-intercom":
+				return this.stageIntercom(command);
 			case "stage-answer":
 				return this.stageAnswer(command.runId, command.stageId, command.answer);
 			case "stage-pause":
@@ -1306,10 +1376,16 @@ export class PoolCoordinator {
 			// A work item this host now runs publishes through its own worker.
 			if (local.has(entry.work.id) || !this.attemptBase.has(entry.work.id)) continue;
 			const runs = JSON.parse(entry.runs) as readonly RunSnapshot[];
-			for (const run of runs) this.remoteRuns.set(run.id, entry.work);
 			this.pendingActivity.set(entry.work.id, { work: entry.work, runs });
+			for (const [id, reason] of this.remoteWatches.relayed(entry.work, runs)) this.endRemoteWatch(id, reason);
 		}
 		if (relayed.length > 0) this.scheduleFlush();
+	}
+
+	/** Ends a view of a stage on another host for the root, as a worker ends a watch. */
+	private endRemoteWatch(id: WatchId, reason: WatchEndReason): void {
+		this.endedWatches.remember(id, reason);
+		this.port.send({ kind: "stage-watch-ended", watch: id, reason });
 	}
 
 	/** Takes up the pool's usage total, which other hosts' workers add to, so the root's budgets count their spending. */
@@ -1320,55 +1396,91 @@ export class PoolCoordinator {
 
 	/**
 	 * Takes and processes the next input of each stage this host's workers run, one input per stage at a time. An
-	 * input the stage cannot take yet stays its next input; a replaced attempt's input goes to its replacement.
+	 * input the stage cannot take yet stays its next input, taken again after a growing wait; a replaced attempt's
+	 * input goes to its replacement.
 	 */
 	private async takeStageInputs(shared: SqlSharedPool, lease: Lease, root: string): Promise<void> {
+		// The attempts as the pass starts: one that ends meanwhile takes no input, since the stage lease fences it.
 		const held = new Map(
-			[...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [[slot.work.id, slot] as const])),
+			[...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [[slot.work.id, slot.work] as const])),
 		);
 		if (held.size === 0) return;
 		const waiting = await shared.stagesWithInputs(root, [...held.keys()]);
-		for (const { work, runId, stageId } of waiting) {
-			const slot = held.get(work);
-			const key = JSON.stringify([runId, stageId]);
-			if (slot?.work === undefined || this.takingInputs.has(key)) continue;
-			this.takingInputs.add(key);
-			const attempt = slot.work;
-			void this.processStageInput(shared, lease, attempt, { runId, stageId })
-				.catch((error: Error) => {
+		for (const { stage, deferred } of this.inputScheduler.start(waiting, performance.now())) {
+			const { work, runId, stageId } = stage;
+			void this.processStageInput(shared, lease, held.get(work)!, { runId, stageId }, deferred).then(
+				(outcome) => this.inputScheduler.finish(stage, performance.now(), outcome),
+				(error: Error) => {
+					this.inputScheduler.finish(stage, performance.now());
 					// The attempt was replaced while it held the input: the replacement takes it, and nothing here was written.
 					if (isStaleStageLeaseError(error) || isStaleLeaseError(error)) return;
 					this.fail(error);
-				})
-				.finally(() => this.takingInputs.delete(key));
+				},
+			);
 		}
 	}
 
+	/**
+	 * Takes, applies and settles the stage's next input of a kind it does not defer; "retry" or "defer" when the stage
+	 * gave it back for later.
+	 */
 	private async processStageInput(
 		shared: SqlSharedPool,
 		lease: Lease,
 		attempt: PoolWork,
 		stage: { readonly runId: string; readonly stageId: string },
-	): Promise<void> {
-		const taken = await shared.takeStageInput(lease, attempt, stage, STAGE_INPUT_LEASE_MS);
-		if (taken === undefined) return;
+		deferred: readonly PooledStageInputKind[],
+	): Promise<"retry" | "defer" | "settled" | "idle"> {
+		const taken = await shared.takeStageInput(lease, attempt, stage, STAGE_INPUT_LEASE_MS, deferred);
+		if (taken === undefined) return "idle";
 		const outcome = await this.applyStageInput(taken);
-		if (outcome === "retry") await shared.releaseStageInput(lease, taken);
-		else await shared.ackStageInput(lease, taken, JSON.stringify(outcome));
+		if (outcome === "retry" || outcome === "defer") {
+			await shared.releaseStageInput(lease, taken);
+			return outcome;
+		}
+		await shared.ackStageInput(lease, taken, JSON.stringify(outcome));
+		return "settled";
 	}
 
-	/** Gives one stage input to the stage on this host's worker; "retry" leaves it the stage's next input. */
-	private async applyStageInput(taken: StageInputLease): Promise<"retry" | Record<string, string | boolean>> {
-		if (taken.kind !== STAGE_INPUT_PROMPT_ANSWER) return { ok: false, refusal: "UnsupportedInput" };
-		const result = await this.answerOnWorker(
-			taken.runId,
-			taken.stageId,
-			JSON.parse(taken.payload) as PooledPromptAnswer,
+	/**
+	 * Gives one stage input to the stage on this host's worker; "retry" leaves it the stage's next input, and "defer"
+	 * leaves it waiting while the stage's inputs that are not text go first.
+	 */
+	private async applyStageInput(taken: StageInputLease): Promise<"retry" | "defer" | object> {
+		if (taken.kind === STAGE_INPUT_PROMPT_ANSWER) {
+			const result = await this.answerOnWorker(
+				taken.runId,
+				taken.stageId,
+				JSON.parse(taken.payload) as PooledPromptAnswer,
+			);
+			if (result.ok) return { ok: true };
+			// The stage has not raised the prompt yet, or its attempt is changing: the answer waits for it.
+			if (result.refusal === "StaleAttempt") return "retry";
+			return { ok: false, refusal: result.refusal };
+		}
+		const slot = [...this.slots].find((candidate) => isAttempt(candidate.work, taken.attempt));
+		// The worker holding the attempt exited: the attempt's replacement takes the input.
+		if (slot === undefined) return "retry";
+		const attempt = { workId: taken.attempt.id, generation: taken.attempt.generation };
+		const stage = { runId: taken.runId, stageId: taken.stageId };
+		if (taken.kind === "question-read") {
+			const { promptId } = JSON.parse(taken.payload) as QuestionReadInput;
+			return questionReadOutcome(await this.stageCommand(slot, { attempt, op: "question", ...stage }), promptId);
+		}
+		if (taken.kind === "user-message")
+			return userMessageOutcome(
+				await this.stageCommand(slot, {
+					attempt,
+					op: "user-message",
+					...stage,
+					...(JSON.parse(taken.payload) as UserMessageInput),
+				}),
+			);
+		const { generation, ...intercom } = JSON.parse(taken.payload) as IntercomMessageInput;
+		return (
+			earlierSessionReceipt({ generation }, taken.attempt) ??
+			intercomMessageOutcome(await this.stageCommand(slot, { attempt, op: "intercom", ...stage, ...intercom }))
 		);
-		if (result.ok) return { ok: true };
-		// The stage has not raised the prompt yet, or its attempt is changing: the answer waits for it.
-		if (result.refusal === "StaleAttempt") return "retry";
-		return { ok: false, refusal: result.refusal };
 	}
 
 	private async enqueue(command: Extract<CoordinatorCommandBody, { kind: "enqueue" }>) {
@@ -1567,7 +1679,8 @@ export class PoolCoordinator {
 				(candidate) => `${candidate.worker}:${candidate.work?.generation ?? "-"}:${candidate.runs.has(runId)}`,
 			),
 		});
-		if (slot?.work === undefined) return { ok: false, refusal: "StageNotOnWorker" };
+		if (slot?.work === undefined)
+			return this.remoteStageWatch(id, runId, stageId) ?? { ok: false, refusal: "StageNotOnWorker" };
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
 		const watch: StageWatch = {
 			slot,
@@ -1607,6 +1720,7 @@ export class PoolCoordinator {
 	}
 
 	private stageUnwatch(id: WatchId): void {
+		if (this.remoteWatches.close(id)) return;
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
 		this.watches.delete(id);
@@ -1616,6 +1730,8 @@ export class PoolCoordinator {
 
 	/** Admits user text through the airlock of the worker that holds the watch's attempt. */
 	private async stageDeliver(delivery: PooledStageDelivery): Promise<DeliveryResult> {
+		const remote = this.remoteWatches.get(delivery.watch);
+		if (remote !== undefined) return this.deliverRemote(remote, delivery);
 		const watch = this.watches.get(delivery.watch);
 		if (watch === undefined || !watch.open)
 			return {
@@ -1648,6 +1764,119 @@ export class PoolCoordinator {
 	}
 
 	/**
+	 * Opens a view of a stage that runs on another host's worker (#4391), from the root's copy of its relayed run: no
+	 * transcript or events stream from that host, so the view shows the stage's status, and its user text goes through
+	 * the stage's input queue. Undefined when no other host runs the stage live.
+	 */
+	private remoteStageWatch(id: WatchId, runId: string, stageId: string): WatchResult | undefined {
+		const stage = this.routes?.mirror.run(runId)?.stages.find((candidate) => candidate.id === stageId);
+		if (stage === undefined) return undefined;
+		const work = this.remoteWatches.open(id, runId, stageId, stage);
+		if (work === undefined) return undefined;
+		return {
+			ok: true,
+			watch: { id, attempt: { workId: work.id, generation: work.generation }, snapshot: remoteStageSnapshot(stage) },
+		};
+	}
+
+	/**
+	 * Admits user text into a stage on another host's worker through the stage's input queue (#4391), at most once per
+	 * op and attempt: its receipt is the worker's admission. Text whose receipt does not come within the bound stays
+	 * queued and reads as unconfirmed, so the stage's handle sends it again by its op.
+	 */
+	private async deliverRemote(watch: RemoteStageWatch, delivery: PooledStageDelivery): Promise<DeliveryResult> {
+		const payload: UserMessageInput = {
+			deliveryOp: delivery.op,
+			text: delivery.text,
+			intent: delivery.intent,
+			...(delivery.options?.expandPromptTemplates === undefined
+				? {}
+				: { expandPromptTemplates: delivery.options.expandPromptTemplates }),
+		};
+		try {
+			const outcome = await this.queueRemoteInput<"user-message", UserMessageReceipt>(
+				watch.work,
+				watch,
+				"user-message",
+				stageInputOp("user-message", delivery.op, watch.work.generation),
+				payload,
+				this.stageInputTimeoutMs(),
+			);
+			if ("ended" in outcome) return endedUserMessage(outcome.ended);
+			return userMessageResult(outcome.receipt, outcome.input);
+		} catch (error) {
+			if (isStageInputTimeoutError(error)) return { ok: false, refusal: "Unconfirmed" };
+			throw error;
+		}
+	}
+
+	/**
+	 * Hands an Intercom message to a stage session on another host's worker through the stage's input queue (#4391),
+	 * at most once per message, session and attempt. Settles once the session took it; fails typed when it did not, or
+	 * when its receipt does not come within the bound, and the message stays queued in the root's store.
+	 */
+	private async stageIntercom(command: Extract<CoordinatorCommandBody, { kind: "stage-intercom" }>): Promise<void> {
+		const { work, runId, stageId, sessionId, from, message } = command;
+		const outcome = await this.queueRemoteInput<"intercom-message", IntercomMessageReceipt>(
+			work,
+			{ runId, stageId },
+			"intercom-message",
+			stageInputOp("intercom-message", `${sessionId}:${message.id}`, work.generation),
+			{ sessionId, generation: work.generation, from, message },
+			this.stageInputTimeoutMs(),
+		);
+		if ("ended" in outcome) throw new StageInputRefusedError(endedIntercomReason(outcome.ended), outcome.input);
+		intercomMessageResult(outcome.receipt, outcome.input);
+	}
+
+	/** How long the root waits for the receipt of an input it queued for a stage on another host. */
+	private stageInputTimeoutMs(): number {
+		// Only a root's coordinator, whose options are set before it serves anything, queues these inputs.
+		return this.options!.stageInputTimeoutMs ?? STAGE_INPUT_RECEIPT_TIMEOUT_MS;
+	}
+
+	/**
+	 * Queues one input for a stage that the attempt `work` runs (#4310, #4391): whichever worker holds the stage's
+	 * attempt takes it, in order, one at a time. Resolves with the receipt that worker records, or with why nothing will
+	 * take it any more; fails with {@link StageInputTimeoutError} once `timeoutMs` passes without a receipt.
+	 */
+	private async queueRemoteInput<Kind extends PooledStageInputKind, Receipt>(
+		work: PoolWorkToken,
+		stage: { readonly runId: string; readonly stageId: string },
+		kind: Kind,
+		op: string,
+		payload: PooledStageInputPayloads[Kind],
+		timeoutMs?: number,
+	): Promise<
+		| { readonly receipt: Receipt; readonly input: StageInputIdentity }
+		| { readonly ended: "pool-closed" | "work-ended"; readonly input: StageInputIdentity }
+	> {
+		// Only a shared pool's root queues stage inputs, so its tables and lease are set.
+		const shared = this.sharedPool!;
+		const lease = this.lease!;
+		const queue = this.queue!;
+		const { runId, stageId } = stage;
+		const seq = await this.whileRootLate(queue, () =>
+			shared.appendStageInput(lease, { work: work.id, runId, stageId, kind, op, payload: JSON.stringify(payload) }),
+		);
+		const input: StageInputIdentity = { root: lease.runId, runId, stageId, seq, kind };
+		const outcome = await awaitStageInputReceipt(input, {
+			read: () => shared.stageInput(lease.runId, runId, stageId, seq),
+			ended: async () => {
+				if (this.closed) return "pool-closed";
+				// A child that ended has no stage left to take it.
+				return workEnded(await queue.inspect(lease.runId), work.id) ? "work-ended" : undefined;
+			},
+			workHeld: async () => workHeld(await queue.inspect(lease.runId), work.id),
+			pollMs: SHARED_POLL_MS,
+			timeoutMs,
+		});
+		return "ended" in outcome
+			? { ended: outcome.ended, input }
+			: { receipt: JSON.parse(outcome.receipt) as Receipt, input };
+	}
+
+	/**
 	 * Answers a prompt of a stage that runs on another host's worker (#4310): the answer becomes that stage's next input,
 	 * which whichever worker holds the stage's attempt takes. Its result is the receipt that worker records, as a local
 	 * worker's reply is: a refused answer comes back refused, so the root holds it for the attempt that asks again. Each
@@ -1658,40 +1887,58 @@ export class PoolCoordinator {
 		stageId: string,
 		answer: PooledPromptAnswer,
 	): Promise<PromptResult | undefined> {
-		const work = this.remoteRuns.get(runId);
+		const work = this.remoteWatches.attemptOf(runId);
 		if (work === undefined) return undefined;
-		// Only a shared pool's root reads other hosts' runs, so its tables and lease are set.
-		const shared = this.sharedPool!;
-		const lease = this.lease!;
-		const queue = this.queue!;
-		const seq = await this.whileRootLate(queue, () =>
-			shared.appendStageInput(lease, {
-				work: work.id,
-				runId,
-				stageId,
-				kind: STAGE_INPUT_PROMPT_ANSWER,
-				op: `${answer.kind}:${answer.promptId}:${work.generation}`,
-				payload: JSON.stringify(answer),
-			}),
+		const outcome = await this.queueRemoteInput<typeof STAGE_INPUT_PROMPT_ANSWER, PromptResult>(
+			work,
+			{ runId, stageId },
+			STAGE_INPUT_PROMPT_ANSWER,
+			`${answer.kind}:${answer.promptId}:${work.generation}`,
+			answer,
 		);
-		for (;;) {
-			const input = (await shared.stageInputs(lease.runId, runId, stageId)).find((entry) => entry.seq === seq);
-			if (input?.state === "done") return JSON.parse(input.receipt!) as PromptResult;
-			if (this.closed) return { ok: false, refusal: "StaleAttempt" };
-			// A child that ended has no stage left to take it.
-			const current = (await queue.inspect(lease.runId)).find((entry) => entry.id === work.id);
-			if (current === undefined || current.state === "completed" || current.state === "failed")
-				return { ok: false, refusal: "StageNotLive" };
-			await delay(SHARED_POLL_MS);
-		}
+		if ("ended" in outcome)
+			return { ok: false, refusal: outcome.ended === "pool-closed" ? "StaleAttempt" : "StageNotLive" };
+		return outcome.receipt;
 	}
 
 	/** Reads a stage's brokered question from the worker whose attempt published the stage's run. */
-	private async stageQuestion(runId: string, stageId: string): Promise<PooledStageQuestion | undefined> {
+	private async stageQuestion(
+		runId: string,
+		stageId: string,
+		promptId: string,
+	): Promise<PooledStageQuestion | undefined> {
 		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
-		if (slot?.work === undefined) return undefined;
+		if (slot?.work === undefined) return this.remoteQuestion(runId, stageId, promptId);
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
 		return (await this.stageCommand(slot, { attempt, op: "question", runId, stageId }))?.question;
+	}
+
+	/**
+	 * Reads the question `promptId` of a stage that runs on another host's worker through the stage's input queue
+	 * (#4391). Undefined when no other host runs it, when the stage no longer waits on that question, or when the read's
+	 * receipt does not come within the bound: the stage's next publication asks again and finds the same read.
+	 */
+	private async remoteQuestion(
+		runId: string,
+		stageId: string,
+		promptId: string,
+	): Promise<PooledStageQuestion | undefined> {
+		const work = this.remoteWatches.attemptOf(runId);
+		if (work === undefined) return undefined;
+		try {
+			const outcome = await this.queueRemoteInput<"question-read", QuestionReadReceipt>(
+				work,
+				{ runId, stageId },
+				"question-read",
+				stageInputOp("question-read", promptId, work.generation),
+				{ promptId },
+				this.stageInputTimeoutMs(),
+			);
+			return "ended" in outcome ? undefined : questionReadResult(outcome.receipt);
+		} catch (error) {
+			if (isStageInputTimeoutError(error)) return undefined;
+			throw error;
+		}
 	}
 
 	/** Answers a prompt through the airlock of the worker whose attempt published the stage's run. */
@@ -1727,6 +1974,8 @@ export class PoolCoordinator {
 			| { readonly op: "pause" }
 			| { readonly op: "resume"; readonly message?: { readonly deliveryOp: DeliveryOpId; readonly text: string } },
 	): Promise<ControlResult> {
+		const remote = this.remoteWatches.get(id);
+		if (remote !== undefined) throw new RemoteStageCommandUnsupportedError(command.op, remote);
 		const watch = this.watches.get(id);
 		if (watch === undefined || !watch.open)
 			return {
@@ -1750,6 +1999,8 @@ export class PoolCoordinator {
 
 	/** Runs a session command on one watched stage through its worker's airlock. */
 	private async stageSession(id: WatchId, command: PooledStageSessionCommand): Promise<SessionCommandResult> {
+		const remote = this.remoteWatches.get(id);
+		if (remote !== undefined) throw new RemoteStageCommandUnsupportedError("session", remote);
 		const watch = this.watches.get(id);
 		if (watch === undefined || !watch.open)
 			return {
@@ -1844,9 +2095,7 @@ export class PoolCoordinator {
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
 		this.watches.delete(id);
-		this.endedWatches.set(id, reason);
-		if (this.endedWatches.size > ENDED_WATCHES_REMEMBERED)
-			this.endedWatches.delete(this.endedWatches.keys().next().value!);
+		this.endedWatches.remember(id, reason);
 		if (reason === "resync") {
 			// The watcher reopens for a fresh snapshot; the backlog it fell behind on is dropped.
 			void this.stageCommand(watch.slot, { attempt: watch.attempt, op: "unwatch", watch: id });
@@ -2240,6 +2489,9 @@ export class PoolCoordinator {
 						}
 						slot.work = claimed.work;
 						slot.worktree = claimed.worktree;
+						// Views of the work on another host's attempt reconnect to this worker's (#4391).
+						for (const id of this.remoteWatches.takenOver(claimed.work.id))
+							this.endRemoteWatch(id, "attempt_fenced");
 						// A child placed on a warm or restored worktree runs there, not in the root's recorded directory.
 						return claimed.worktree === undefined
 							? claimed.work
@@ -2378,7 +2630,10 @@ export class PoolCoordinator {
 						),
 					(error: unknown) => {
 						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
-						if (isStaleLeaseError(error)) this.rootLeaseLost = true;
+						if (isStaleLeaseError(error)) {
+							this.rootLeaseLost = true;
+							this.detach(error);
+						}
 						child.send({ id: message.id, error: serializeError(error) }, replied);
 					},
 				);

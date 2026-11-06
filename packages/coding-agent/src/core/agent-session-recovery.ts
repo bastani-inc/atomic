@@ -49,7 +49,7 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 	if (isClosing(session)) return report;
 	// A resumed stage starts its pending detachable calls again once its turn resumes; a chat may show the stage
 	// before then, and must see them in flight, not interrupted (#4022).
-	if (reason === "workflow_stage_resume") holdPendingDetachedCalls(session);
+	const callsPending = reason === "workflow_stage_resume" && holdPendingDetachedCalls(session);
 
 	const pending = pendingProtectedStreamingCustomMessages(session);
 	let replay = pending;
@@ -97,7 +97,9 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 		{ triggerTurn: false, excludeFromContext: true },
 	);
 	report.replayed = recoverProtectedStreamingCustomMessages(session, replay);
-	if (!session.isStreaming && !session._isPreparingRun) await session._continueQueuedAgentMessages();
+	// A resumed stage whose detachable calls are pending takes the replayed deliveries in the turn those calls resume:
+	// a turn of their own ahead of them would answer the calls as interrupted (#4391).
+	if (!session.isStreaming && !session._isPreparingRun && !callsPending) await session._continueQueuedAgentMessages();
 	return report;
 }
 

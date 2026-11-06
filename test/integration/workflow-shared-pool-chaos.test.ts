@@ -71,9 +71,9 @@ test.skipIf(process.platform === "win32")(
 							work: held.id,
 							runId: held.childRunId,
 							stageId: `stage${stage}`,
-							kind: "note",
+							kind: "user-message",
 							op: `${stage}:${seq}`,
-							payload: `${seq}`,
+							payload: JSON.stringify({ deliveryOp: `${stage}:${seq}`, text: `${seq}`, intent: "followUp" }),
 						});
 			}
 			const spawn = (

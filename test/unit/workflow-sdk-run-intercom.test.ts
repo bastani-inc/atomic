@@ -70,7 +70,7 @@ async function connectStage(options: StageSessionCreateOptions) {
 	const context = options.orchestrationContext;
 	assert.ok(context?.kind === "workflow-stage");
 	const delivery = context.pendingStageDelivery;
-	assert.ok(delivery);
+	assert.ok(delivery?.routeCapability !== undefined);
 	const group = context.intercomGroup;
 	assert.ok(group);
 	const client = await connectClient(group);

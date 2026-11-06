@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
@@ -18,6 +18,9 @@ const { createJobTracker } = await load("../../packages/workflows/src/runs/backg
 const { createStore } = await load("../../packages/workflows/src/shared/store.ts");
 const { createRegistry } = await load("../../packages/workflows/src/workflows/registry.ts");
 const { loadWorkerWorkflow } = await load("../../packages/workflows/src/workers/definitions.ts");
+const { createStageControlRegistry } = await load("../../packages/workflows/src/runs/foreground/stage-control-registry.ts");
+const { StageUiBroker } = await load("../../packages/workflows/src/shared/stage-ui-broker.ts");
+const { pendingStageMessageRouter } = await load("../../packages/workflows/src/shared/external-run-routes.ts");
 const { isWorkspaceRestoreUnavailableError } = await load("../../packages/workflows/src/workers/placement-errors.ts");
 const { WorkflowGitRequiredError } = await load("../../packages/workflows/src/shared/workflow-git-required-error.ts");
 const { GitUnavailableError, isGitUnavailableError } = await jiti.import("@bastani/atomic");
@@ -47,7 +50,9 @@ const placementCode = (error) => {
 };
 
 const childPath = fileURLToPath(new URL("./shared-pool-child.ts", import.meta.url));
-const exportName = { bound: "boundChild", distributed: "distributedChild", typed: "typedFailureChild" }[scenario] ?? "sharedChild";
+const exportName =
+	{ bound: "boundChild", distributed: "distributedChild", typed: "typedFailureChild", remote: "remoteStageChild" }[scenario] ??
+	"sharedChild";
 // A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE).
 const secrets =
 	process.env.SHARED_POOL_TOKEN_FILE === undefined ? {} : { secrets: { authToken: { file: process.env.SHARED_POOL_TOKEN_FILE } } };
@@ -77,9 +82,11 @@ const parent = workflow({
 					inputs:
 						scenario === "bound" || scenario === "typed"
 							? {}
-							: scenario === "distributed"
-								? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
-								: { directory, index, hosts: 2 },
+							: scenario === "remote"
+								? { directory }
+								: scenario === "distributed"
+									? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
+									: { directory, index, hosts: 2 },
 				}),
 			),
 		);
@@ -100,7 +107,11 @@ const parent = workflow({
 	},
 });
 const options = {
-	localWorkers: { count: Number(workers), definitions: [{ path: childPath, exportName }] },
+	localWorkers: {
+		count: Number(workers),
+		definitions: [{ path: childPath, exportName }],
+		...(process.env.SHARED_POOL_LEASE_MS === undefined ? {} : { leaseMs: Number(process.env.SHARED_POOL_LEASE_MS) }),
+	},
 	workers: {
 		placement: "shared",
 		...(binding === undefined ? {} : { workspace: binding }),
@@ -128,11 +139,116 @@ const ui = {
 	},
 };
 const store = createStore();
+// The remote scenario (#4391): an operator on the root's host steers the stage that runs on another host, sends it an
+// Intercom message through the root's bridge, as the broker hands one over, and answers its ask_user_question form.
+const broker = new StageUiBroker(store);
+const registry = createStageControlRegistry();
+const remoteOptions = scenario === "remote" ? { stageUiBroker: broker, stageControlRegistry: registry } : {};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function operate() {
+	// With SHARED_POOL_REMOTE_FAILOVER=1, the host running the stage is killed once the steer and the Intercom message
+	// reached it: the operator writes that host's id to `failover-request` and waits for `failover-done`, then goes on
+	// with the host that took the stage over, which asks its question again. That host's replay waits for the answer
+	// before it takes text, so the operator holds the stage's reply (`hold-replies`) until the steer reached it.
+	const failover = process.env.SHARED_POOL_REMOTE_FAILOVER === "1";
+	const hostOf = (stage) => String(stage.workerExecution?.worker ?? "").split("/")[0];
+	const found = (skipHost) => {
+		for (const candidate of store.runs())
+			for (const stage of candidate.stages)
+				if (
+					stage.name === "agent" &&
+					hostOf(stage) !== skipHost &&
+					broker.peekStageQuestionnaire(candidate.id, stage.id) !== undefined
+				)
+					return { runId: candidate.id, stage };
+		return undefined;
+	};
+	// What the operator did and waits for, on stderr: a test that times out shows it.
+	const step = (text) => process.stderr.write(`operator: ${text}\n`);
+	let target;
+	while ((target = found(undefined)) === undefined) await sleep(50);
+	const { runId, stage } = target;
+	let handle;
+	while ((handle = registry.get(runId, stage.id)) === undefined) await sleep(50);
+	const questionParams = broker.peekStageQuestionnaire(runId, stage.id).params;
+	const steer = await handle.sendUserMessage("steer-from-root", { deliverAs: "steer" });
+	const route = async (id, text, expectsReply) => {
+		const event = {
+			handled: false,
+			runId: ROOT,
+			target: `workflow:${ROOT}/${runId}/${stage.id}`,
+			from: { id: "operator", name: "operator", group: `workflow:${ROOT}` },
+			message: { id, timestamp: Date.now(), content: { text }, ...(expectsReply ? { expectsReply: true } : {}) },
+		};
+		pendingStageMessageRouter(store).route(event);
+		return event.handled ? await event.completion : { outcome: "unhandled" };
+	};
+	const routed = await route("intercom-remote-1", "intercom-body-from-root", false);
+	const ask = await route("intercom-remote-ask", "can you answer?", true);
+	while (store.pendingStageMessagesFor(runId, stage.id).length > 0) await sleep(50);
+	let killed;
+	if (failover) {
+		// The stage's first host took the Intercom message into its session: it dies with the message there.
+		killed = hostOf(store.run(runId).stages.find((candidate) => candidate.id === stage.id));
+		writeFileSync(join(directory, "failover-request"), killed);
+		step(`steered ${steer} and delivered the Intercom message on ${killed}; asked for its failover`);
+		while (!existsSync(join(directory, "failover-done"))) await sleep(50);
+		while (found(killed) === undefined) await sleep(50);
+		step("the stage asks again on the host that took it over");
+		writeFileSync(join(directory, "hold-replies"), "");
+	}
+	const worker = () =>
+		store.run(runId).stages.find((candidate) => candidate.id === stage.id).workerExecution?.worker ?? null;
+	const answeredOn = worker();
+	broker.answerStagePrompt(runId, stage.id, { optionLabels: ["yes"] });
+	if (failover) {
+		// The replacement takes the steer again under its own attempt once it has the answer.
+		const generation = store.run(runId).stages.find((candidate) => candidate.id === stage.id).workerExecution.generation;
+		const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
+		const database = await openLibsqlDatabase({ url: process.env.SHARED_POOL_URL });
+		try {
+			for (let polls = 1; ; polls++) {
+				const inputs = await database.all(
+					`SELECT seq, kind, op, state FROM ${prefix}wf_runs_stage_inputs WHERE root = ? ORDER BY seq`,
+					ROOT,
+				);
+				const steered = inputs.some(
+					(input) => input.kind === "user-message" && input.op.endsWith(`:${generation}`) && input.state === "done",
+				);
+				if (steered) break;
+				if (polls % 100 === 0) step(`waiting for the steer on attempt ${generation}: ${JSON.stringify(inputs)}`);
+				await sleep(50);
+			}
+		} finally {
+			await database.close();
+		}
+		step("the steer reached the host that took the stage over");
+		writeFileSync(join(directory, "release-replies"), "");
+	}
+	return { steer, routed, ask, questionParams, worker: answeredOn, ...(killed === undefined ? {} : { killed }) };
+}
 let record;
 try {
 	if (mode === "start") {
-		const result = await run(parent, {}, { runId: ROOT, cwd: directory, store, ui, durableBackend: backend, ...options });
-		record = { status: result.status, error: result.error ?? null };
+		const execution = run(parent, {}, {
+			runId: ROOT,
+			cwd: directory,
+			store,
+			ui,
+			durableBackend: backend,
+			...options,
+			...remoteOptions,
+		});
+		const operating =
+			scenario === "remote"
+				? operate().then(
+						(value) => ({ value }),
+						(error) => ({ error: error?.stack ?? String(error) }),
+					)
+				: undefined;
+		const result = await execution;
+		const operator = await operating;
+		record = { status: result.status, error: result.error ?? null, ...(operator === undefined ? {} : { operator }) };
 	} else {
 		// The dead host's root lease would expire on its own; the test does not wait for that.
 		const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");

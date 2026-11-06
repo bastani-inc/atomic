@@ -1455,11 +1455,9 @@ test.each(["tool", "prompt"] as const)(
 					startedAt: 0,
 					lastActivity: 0,
 				});
-				await agent.registerLiveWorkflowStageRoute(
-					runId,
-					[stage.id],
-					createWorkflowPendingStageDelivery(store, runId, stage.id, stage.name).routeCapability,
-				);
+				const { routeCapability } = createWorkflowPendingStageDelivery(store, runId, stage.id, stage.name);
+				assert.ok(routeCapability !== undefined);
+				await agent.registerLiveWorkflowStageRoute(runId, [stage.id], routeCapability);
 			}
 			const ask = await executeIntercom(sender, { action: "ask", to: `${group}/shared`, message: "which agent?" });
 			assert.equal(ask.isError, true);

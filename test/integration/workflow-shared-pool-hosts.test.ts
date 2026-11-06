@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { REMOTE_QUESTION } from "../fixtures/shared-pool-child.js";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, readJson, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -20,6 +21,12 @@ const SESSIONS = 2;
 const FANOUT_BUDGET = poolTestBudgetMs(3);
 /** The root's pool and two worker hosts. */
 const PLACEMENT_BUDGET = poolTestBudgetMs(3);
+/** The root's pool and one worker host, whose agent stage takes the root's inputs. */
+const REMOTE_STAGE_BUDGET = poolTestBudgetMs(2);
+/** The root's pool and two worker hosts, one of which takes the stage over: three pools cold-start. */
+const REMOTE_FAILOVER_BUDGET = poolTestBudgetMs(3);
+/** A short work lease, so the surviving host takes the dead host's child over within the test. */
+const FAILOVER_LEASE_MS = 4_000;
 /** The root's pool and one worker host. */
 const TYPED_FAILURE_BUDGET = poolTestBudgetMs(2);
 
@@ -93,10 +100,16 @@ function markers(directory: string, prefix: string): string[] {
 	return readdirSync(directory).filter((name) => name.startsWith(prefix));
 }
 
-function startHost(s: Scenario, name: string, workers: number, extra: Record<string, string> = {}): BudgetedProcess {
+function startHost(
+	s: Scenario,
+	name: string,
+	workers: number,
+	extra: Record<string, string> = {},
+	detached = false,
+): BudgetedProcess {
 	return spawnWithinBudget(
 		[process.execPath, hostFixture, s.directory, String(workers)],
-		{ cwd: s.directory, stdout: "ignore", env: s.env(name, extra) },
+		{ cwd: s.directory, stdout: "ignore", env: s.env(name, extra), ...(detached ? { detached: true } : {}) },
 		s.deadline,
 	);
 }
@@ -407,4 +420,199 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 	TYPED_FAILURE_BUDGET.timeoutMs,
+);
+
+/** How many Intercom cards from the root's operator that carry `body` the stage's model saw. */
+function intercomCards(users: readonly string[], body: string): number {
+	return users.filter((text) => text.startsWith("**📨 From operator**") && text.includes(body)).length;
+}
+
+/** What the remote stage's session held at each model call, in call order. */
+function seenByStage(directory: string): { host: string; users: string[]; results: string[] }[] {
+	return markers(directory, "seen-")
+		.map((name) => ({ name, call: Number(name.split("-")[2]!.replace(".json", "")) }))
+		.sort((left, right) => left.call - right.call)
+		.map(({ name }) => JSON.parse(readFileSync(join(directory, name), "utf8")));
+}
+
+test.skipIf(process.platform === "win32")(
+	"a stage on another host receives an Intercom message, a steer and an ask_user_question answer from the root, each once (#4391)",
+	async () => {
+		const s = scenario("shared-pool-remote-stage", REMOTE_STAGE_BUDGET.waitMs);
+		const restored = join(s.directory, "restored");
+		mkdirSync(restored);
+		let hostB: BudgetedProcess | undefined;
+		try {
+			// Only host B can restore the child's tree, so the child, and its stage, run there and never on the root's host.
+			hostB = startHost(s, "B", 1, { SHARED_POOL_RESTORE: restored });
+			await until("host B", s.deadline, () => existsSync(join(s.directory, "host-ready-B")), [hostB]);
+			const root = spawnWithinBudget(
+				[process.execPath, rootFixture, "start", s.directory, "1", "1", "remote"],
+				{ cwd: s.directory, stdout: "ignore", env: s.env("A", { SHARED_POOL_BINDING: JSON.stringify(BINDING) }) },
+				s.deadline,
+			);
+			await expectExitedCleanly(root);
+			const outcome = await readJson<{
+				status: string;
+				children: { status: string; host: string; reply: string }[];
+				operator: {
+					error?: string;
+					value?: {
+						steer: string;
+						routed: { outcome: string };
+						ask: { outcome: string; reason?: string };
+						questionParams: unknown;
+						worker: string | null;
+					};
+				};
+			}>(join(s.directory, "outcome-start.json"));
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			assert.equal(outcome.operator.error, undefined, outcome.operator.error);
+			const operator = outcome.operator.value!;
+			assert.equal(String(operator.worker).split("/")[0], s.hostId("B"), "the stage ran on host B");
+			assert.deepEqual([outcome.children[0]?.status, outcome.children[0]?.host], ["completed", "B"]);
+			// The root's chat steered it, its Intercom message was queued for it, and an ask was refused as unanswerable.
+			assert.equal(operator.steer, "steer");
+			assert.equal(operator.routed.outcome, "queued");
+			assert.equal(operator.ask.outcome, "refused");
+			assert.match(String(operator.ask.reason), /runs on another worker host/);
+			// The root showed the stage's own form, with its exact parameters, and its answer reached the stage.
+			assert.deepEqual(operator.questionParams, REMOTE_QUESTION);
+			const seen = seenByStage(s.directory);
+			const last = seen.at(-1)!;
+			assert.equal(last.host, "B");
+			const count = (needle: string) => last.users.filter((text) => text.includes(needle)).length;
+			assert.equal(count("steer-from-root"), 1, JSON.stringify(last.users));
+			assert.equal(intercomCards(last.users, "intercom-body-from-root"), 1, JSON.stringify(last.users));
+			assert.equal(count("can you answer?"), 0, "a refused ask never reaches the stage");
+			assert.match(last.results.join(" "), /yes/);
+			assert.match(String(outcome.children[0]?.reply), /answered: .*yes/s);
+			// Each went through the stage's input queue in the shared journal, and each was settled.
+			const inputs = await s.query(
+				`SELECT kind, state FROM ${PREFIX}wf_runs_stage_inputs WHERE root = ? ORDER BY seq`,
+				s.root,
+			);
+			assert.deepEqual(
+				inputs.map((input) => String(input.kind)).sort(),
+				["intercom-message", "prompt-answer", "question-read", "user-message"],
+				JSON.stringify(inputs),
+			);
+			assert.ok(
+				inputs.every((input) => input.state === "done"),
+				JSON.stringify(inputs),
+			);
+			await stopHost(hostB);
+			hostB = undefined;
+		} finally {
+			hostB?.process.kill("SIGKILL");
+			removeTempDirectory(s.directory);
+		}
+	},
+	REMOTE_STAGE_BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"when the host running a stage dies, the host that takes it over gets the root's steer, Intercom message and answer once each (#4391)",
+	async () => {
+		const s = scenario("shared-pool-remote-failover", REMOTE_FAILOVER_BUDGET.waitMs);
+		const restored = join(s.directory, "restored");
+		mkdirSync(restored);
+		const hosts = new Map<string, BudgetedProcess>();
+		try {
+			for (const name of ["B", "C"]) hosts.set(name, startHost(s, name, 1, { SHARED_POOL_RESTORE: restored }, true));
+			await until(
+				"hosts B and C",
+				s.deadline,
+				() => existsSync(join(s.directory, "host-ready-B")) && existsSync(join(s.directory, "host-ready-C")),
+				[...hosts.values()],
+			);
+			const root = spawnWithinBudget(
+				[process.execPath, rootFixture, "start", s.directory, "1", "1", "remote"],
+				{
+					cwd: s.directory,
+					stdout: "ignore",
+					env: s.env("A", {
+						SHARED_POOL_BINDING: JSON.stringify(BINDING),
+						SHARED_POOL_REMOTE_FAILOVER: "1",
+						SHARED_POOL_LEASE_MS: String(FAILOVER_LEASE_MS),
+					}),
+				},
+				s.deadline,
+			);
+			// The operator has steered the stage on its first host and its Intercom message reached that host's session:
+			// the host dies with both there, the steer still queued behind the stage's question.
+			const request = join(s.directory, "failover-request");
+			await until("the operator's failover request", s.deadline, () => existsSync(request), [root]);
+			const killed = readFileSync(request, "utf8");
+			const victim = hosts.get(killed);
+			assert.ok(victim !== undefined, `the stage ran on a worker host, not ${killed}`);
+			process.kill(-victim.process.pid!, "SIGKILL");
+			await victim.process.exited;
+			hosts.delete(killed);
+			writeFileSync(join(s.directory, "failover-done"), "");
+			await expectExitedCleanly(root);
+			const outcome = await readJson<{
+				status: string;
+				children: { status: string; host: string; reply: string }[];
+				operator: {
+					error?: string;
+					value?: { steer: string; routed: { outcome: string }; worker: string; killed: string };
+				};
+			}>(join(s.directory, "outcome-start.json"));
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			assert.equal(outcome.operator.error, undefined, outcome.operator.error);
+			const survivor = [...hosts.keys()][0]!;
+			assert.equal(
+				String(outcome.operator.value!.worker).split("/")[0],
+				survivor,
+				"the surviving host took the stage over",
+			);
+			assert.deepEqual([outcome.children[0]?.status, outcome.children[0]?.host], ["completed", survivor]);
+			assert.equal(outcome.operator.value!.steer, "steer");
+			assert.equal(outcome.operator.value!.routed.outcome, "queued");
+			// The surviving host's session holds the steer that died with the first host, the Intercom message that host's
+			// session took, and the answer, each once.
+			const seen = seenByStage(s.directory);
+			assert.ok(
+				seen.some((call) => call.host === killed),
+				"the first host's stage ran its first turn",
+			);
+			const last = seen.at(-1)!;
+			assert.equal(last.host, survivor);
+			const count = (needle: string) => last.users.filter((text) => text.includes(needle)).length;
+			assert.equal(count("steer-from-root"), 1, JSON.stringify(last.users));
+			// The message reaches the replacement as the operator's own card, not as a recovery notice that quotes it.
+			assert.equal(intercomCards(last.users, "intercom-body-from-root"), 1, JSON.stringify(last.users));
+			assert.ok(
+				!last.users.some((text) =>
+					/Intercom peer `operator`|Intercom could not be reached after the restart/.test(text),
+				),
+				JSON.stringify(last.users),
+			);
+			assert.match(last.results.join(" "), /yes/);
+			const inputs = await s.query(
+				`SELECT kind, op, state FROM ${PREFIX}wf_runs_stage_inputs WHERE root = ? ORDER BY seq`,
+				s.root,
+			);
+			assert.ok(
+				inputs.every((input) => input.state === "done"),
+				JSON.stringify(inputs),
+			);
+			assert.deepEqual(
+				inputs
+					.filter((input) => input.kind === "intercom-message")
+					.map((input) => String(input.op).split(":").at(-1)),
+				["1"],
+				`the Intercom message went in once, on the first attempt: ${JSON.stringify(inputs)}`,
+			);
+			assert.equal(inputs.filter((input) => input.kind === "prompt-answer").length, 1, JSON.stringify(inputs));
+			for (const host of hosts.values()) await stopHost(host);
+			hosts.clear();
+		} finally {
+			for (const host of hosts.values())
+				if (host.process.exitCode === null) process.kill(-host.process.pid!, "SIGKILL");
+			removeTempDirectory(s.directory);
+		}
+	},
+	REMOTE_FAILOVER_BUDGET.timeoutMs,
 );

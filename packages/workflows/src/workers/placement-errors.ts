@@ -6,6 +6,7 @@
  */
 
 import { SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
+import type { PooledStageInputKind } from "./stage-input-kind.js";
 import type { WorkspaceBinding } from "./workspace-binding.js";
 
 /** Where a configuration value came from. */
@@ -27,12 +28,31 @@ export type SharedPoolSetupErrorCode =
 export type SharedPoolOperation = "shared-placement" | "worker-host" | "resume" | "local-pool";
 export type WorkspaceRestoreUnavailableReason = "no-restore-port" | "no-capable-host";
 export type StaleStageLeaseReason = "attempt-replaced" | "stage-lease-replaced";
+/** Why a stage input was refused before it was written: its kind is not one a stage takes, or its payload is malformed. */
+export type StageInputInvalidReason = "unknown-kind" | "malformed-payload";
+/**
+ * How far a stage input got before its receipt wait ran out: no host runs the stage's work (`unclaimed`), the host that
+ * runs it has not had the stage take the input yet (`deferred`), or the host that took it is applying it (`applying`).
+ */
+export type StageInputTimeoutPhase = "unclaimed" | "deferred" | "applying";
+/**
+ * Why a stage did not take one of its inputs: the stage finished (`stage-not-live`), the stage session the input was
+ * meant for was replaced (`session-replaced`), the stage failed to take it (`stage-failed`), or the root's pool closed
+ * before a host took it (`pool-closed`).
+ */
+export type StageInputRefusedReason = "stage-not-live" | "session-replaced" | "stage-failed" | "pool-closed";
+/** A stage chat command that only a stage on the root's own host runs. */
+export type RemoteStageCommand = "pause" | "resume" | "session";
 
 export type WorkerPlacementErrorCode =
 	| WorkerPlacementConfigErrorCode
 	| SharedPoolSetupErrorCode
 	| "workspace-restore-unavailable"
-	| "stale-stage-lease";
+	| "stale-stage-lease"
+	| "stage-input-invalid"
+	| "stage-input-timeout"
+	| "stage-input-refused"
+	| "remote-stage-command-unsupported";
 
 export const WORKER_PLACEMENT_CONFIG_SOURCES: readonly WorkerPlacementConfigSource[] = ["sdk", "settings", "env"];
 export const WORKER_PLACEMENT_CONFIG_CODES: readonly WorkerPlacementConfigErrorCode[] = [
@@ -60,6 +80,15 @@ export const WORKSPACE_RESTORE_UNAVAILABLE_REASONS: readonly WorkspaceRestoreUna
 	"no-capable-host",
 ];
 export const STALE_STAGE_LEASE_REASONS: readonly StaleStageLeaseReason[] = ["attempt-replaced", "stage-lease-replaced"];
+export const STAGE_INPUT_INVALID_REASONS: readonly StageInputInvalidReason[] = ["unknown-kind", "malformed-payload"];
+export const STAGE_INPUT_TIMEOUT_PHASES: readonly StageInputTimeoutPhase[] = ["unclaimed", "deferred", "applying"];
+export const STAGE_INPUT_REFUSED_REASONS: readonly StageInputRefusedReason[] = [
+	"stage-not-live",
+	"session-replaced",
+	"stage-failed",
+	"pool-closed",
+];
+export const REMOTE_STAGE_COMMANDS: readonly RemoteStageCommand[] = ["pause", "resume", "session"];
 
 type JsonField = string | number | boolean | null | readonly JsonField[] | { readonly [key: string]: JsonField };
 
@@ -410,11 +439,223 @@ export class StaleStageLeaseError extends WorkerPlacementError {
 	}
 }
 
+/** The stage input an error is about, as its stage's input queue holds it. */
+export interface StageInputIdentity {
+	readonly root: string;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly seq: number;
+	readonly kind: PooledStageInputKind;
+}
+
+/**
+ * A stage input refused before anything was written (#4391): its kind is not one a stage takes (`unknown-kind`), or its
+ * payload lacks what its kind needs (`malformed-payload`, with the payload `field` at fault). A defect of the code that
+ * queued it, never of the stage.
+ */
+export class StageInputInvalidError extends WorkerPlacementError {
+	override readonly name = "StageInputInvalidError" as const;
+	declare readonly code: "stage-input-invalid";
+	readonly reason: StageInputInvalidReason;
+	/** The kind the input was queued with, as given. */
+	readonly kind: string;
+	readonly runId: string;
+	readonly stageId: string;
+	/** The payload field at fault, or `kind` for an unknown kind. */
+	readonly field: string;
+	constructor(
+		reason: StageInputInvalidReason,
+		input: { readonly kind: string; readonly runId: string; readonly stageId: string; readonly field: string },
+		options: { readonly cause?: unknown } = {},
+	) {
+		const hint = "Nothing was written. Queue the input with a stage input kind and the payload that kind takes.";
+		super(
+			"stage-input-invalid",
+			`Invalid stage input: ${reason === "unknown-kind" ? `kind ${input.kind}` : `field ${input.field} of a ${input.kind} input`} for stage ${input.stageId} in run ${input.runId} (stage-input-invalid). ${hint}`,
+			{ hint, retryable: false, cause: options.cause },
+		);
+		this.reason = reason;
+		this.kind = input.kind;
+		this.runId = input.runId;
+		this.stageId = input.stageId;
+		this.field = input.field;
+	}
+	override fields(): Readonly<Record<string, JsonField>> {
+		return { reason: this.reason, kind: this.kind, runId: this.runId, stageId: this.stageId, field: this.field };
+	}
+}
+
+const TIMEOUT_HINTS: Readonly<Record<StageInputTimeoutPhase, string>> = {
+	unclaimed:
+		"It stays queued: the worker host that holds the stage takes it once one runs, so check that a worker host serving this root is running.",
+	deferred:
+		"It stays queued: the stage cannot take it yet, as while it waits for an answer or before its session starts, and its host offers it again until it does.",
+	applying:
+		"It stays queued under its stage lease: if the host applying it stopped, the host that takes the stage over applies it once.",
+};
+
+const TIMEOUT_STATES: Readonly<Record<StageInputTimeoutPhase, string>> = {
+	unclaimed: "no worker host took it",
+	deferred: "the host running the stage has not had the stage take it",
+	applying: "the host that took it did not acknowledge it",
+};
+
+/**
+ * The root stopped waiting for a stage input's receipt (#4391): no worker host took the input (`unclaimed`), the host
+ * running the stage has not had the stage take it (`deferred`), or the host that took it did not acknowledge it
+ * (`applying`), within `timeoutMs`. The input stays queued and is applied once, so a caller may wait for it again.
+ */
+export class StageInputTimeoutError extends WorkerPlacementError {
+	override readonly name = "StageInputTimeoutError" as const;
+	declare readonly code: "stage-input-timeout";
+	readonly root: string;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly seq: number;
+	readonly kind: PooledStageInputKind;
+	readonly timeoutMs: number;
+	readonly elapsedMs: number;
+	readonly phase: StageInputTimeoutPhase;
+	constructor(
+		input: StageInputIdentity,
+		timing: { readonly timeoutMs: number; readonly elapsedMs: number; readonly phase: StageInputTimeoutPhase },
+		options: { readonly cause?: unknown } = {},
+	) {
+		const hint = TIMEOUT_HINTS[timing.phase];
+		super(
+			"stage-input-timeout",
+			`Stage input timed out: ${input.kind} input ${input.seq} of stage ${input.stageId} in run ${input.runId} (stage-input-timeout): ${TIMEOUT_STATES[timing.phase]} within ${timing.timeoutMs} ms. ${hint}`,
+			{ hint, retryable: true, cause: options.cause },
+		);
+		this.root = input.root;
+		this.runId = input.runId;
+		this.stageId = input.stageId;
+		this.seq = input.seq;
+		this.kind = input.kind;
+		this.timeoutMs = timing.timeoutMs;
+		this.elapsedMs = timing.elapsedMs;
+		this.phase = timing.phase;
+	}
+	override fields(): Readonly<Record<string, JsonField>> {
+		return {
+			root: this.root,
+			runId: this.runId,
+			stageId: this.stageId,
+			seq: this.seq,
+			kind: this.kind,
+			timeoutMs: this.timeoutMs,
+			elapsedMs: this.elapsedMs,
+			phase: this.phase,
+		};
+	}
+}
+
+const REFUSED: Readonly<Record<StageInputRefusedReason, { readonly what: string; readonly hint: string }>> = {
+	"stage-not-live": {
+		what: "the stage finished before it took it",
+		hint: "Send it to a stage that is still running, or continue in the stage's post-mortem chat.",
+	},
+	"session-replaced": {
+		what: "the stage session it was meant for was replaced",
+		hint: "It stays queued for the stage's current session.",
+	},
+	"stage-failed": {
+		what: "the stage could not take it",
+		hint: "Check the stage on its worker host, then send it again.",
+	},
+	"pool-closed": {
+		what: "the root's worker pool closed before a host took it",
+		hint: "It stays queued and is delivered once the root resumes.",
+	},
+};
+
+/**
+ * A stage did not take one of its inputs (#4391), as the receipt its worker host recorded says: the stage finished
+ * (`stage-not-live`), the session the input was meant for was replaced (`session-replaced`), or the stage could not take
+ * it (`stage-failed`, with the stage's own short `detail`). `pool-closed`: the root's pool closed before a host took it.
+ */
+export class StageInputRefusedError extends WorkerPlacementError {
+	override readonly name = "StageInputRefusedError" as const;
+	declare readonly code: "stage-input-refused";
+	readonly reason: StageInputRefusedReason;
+	readonly root: string;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly seq: number;
+	readonly kind: PooledStageInputKind;
+	readonly detail: string | undefined;
+	constructor(
+		reason: StageInputRefusedReason,
+		input: StageInputIdentity,
+		options: { readonly detail?: string | undefined; readonly cause?: unknown } = {},
+	) {
+		const { what, hint } = REFUSED[reason];
+		super(
+			"stage-input-refused",
+			`Stage input refused: ${input.kind} input ${input.seq} of stage ${input.stageId} in run ${input.runId} (stage-input-refused): ${what}${options.detail === undefined ? "" : `: ${options.detail}`}. ${hint}`,
+			{ hint, retryable: false, cause: options.cause },
+		);
+		this.reason = reason;
+		this.root = input.root;
+		this.runId = input.runId;
+		this.stageId = input.stageId;
+		this.seq = input.seq;
+		this.kind = input.kind;
+		this.detail = options.detail;
+	}
+	override fields(): Readonly<Record<string, JsonField>> {
+		return {
+			reason: this.reason,
+			root: this.root,
+			runId: this.runId,
+			stageId: this.stageId,
+			seq: this.seq,
+			kind: this.kind,
+			...(this.detail === undefined ? {} : { detail: this.detail }),
+		};
+	}
+}
+
+/**
+ * A stage chat command that only a stage on the root's own host runs (#4391): pausing or resuming one stage, or a
+ * session command such as `/compact` or a `!` shell command, sent to a stage that runs on another worker host.
+ */
+export class RemoteStageCommandUnsupportedError extends WorkerPlacementError {
+	override readonly name = "RemoteStageCommandUnsupportedError" as const;
+	declare readonly code: "remote-stage-command-unsupported";
+	readonly command: RemoteStageCommand;
+	readonly runId: string;
+	readonly stageId: string;
+	constructor(
+		command: RemoteStageCommand,
+		stage: { readonly runId: string; readonly stageId: string },
+		options: { readonly cause?: unknown } = {},
+	) {
+		const hint =
+			"Send the stage a message, a steer or a follow-up instead: pause, resume, /compact and ! commands reach only stages on the root's host.";
+		super(
+			"remote-stage-command-unsupported",
+			`Stage command unsupported: ${command === "session" ? "a session command" : command} for stage ${stage.stageId} in run ${stage.runId} (remote-stage-command-unsupported): the stage runs on another worker host. ${hint}`,
+			{ hint, retryable: false, cause: options.cause },
+		);
+		this.command = command;
+		this.runId = stage.runId;
+		this.stageId = stage.stageId;
+	}
+	override fields(): Readonly<Record<string, JsonField>> {
+		return { command: this.command, runId: this.runId, stageId: this.stageId };
+	}
+}
+
 const CONCRETE_NAMES = new Set([
 	"WorkerPlacementConfigError",
 	"SharedPoolSetupError",
 	"WorkspaceRestoreUnavailableError",
 	"StaleStageLeaseError",
+	"StageInputInvalidError",
+	"StageInputTimeoutError",
+	"StageInputRefusedError",
+	"RemoteStageCommandUnsupportedError",
 ]);
 
 function structural(value: unknown, name?: string): value is WorkerPlacementError {
@@ -499,6 +740,69 @@ export function isStaleStageLeaseError(error: unknown): error is StaleStageLease
 	);
 }
 
+/** Whether `error`, or an error in its cause chain, is a {@link StageInputInvalidError}. */
+export function isStageInputInvalidError(error: unknown): error is StageInputInvalidError {
+	return (
+		inChain(
+			error,
+			(value): value is StageInputInvalidError =>
+				value instanceof StageInputInvalidError || structural(value, "StageInputInvalidError"),
+		) !== undefined
+	);
+}
+
+/** Whether `error`, or an error in its cause chain, is a {@link StageInputTimeoutError}. */
+export function isStageInputTimeoutError(error: unknown): error is StageInputTimeoutError {
+	return (
+		inChain(
+			error,
+			(value): value is StageInputTimeoutError =>
+				value instanceof StageInputTimeoutError || structural(value, "StageInputTimeoutError"),
+		) !== undefined
+	);
+}
+
+const isStageInputRefusal = (value: unknown): value is StageInputRefusedError =>
+	value instanceof StageInputRefusedError || structural(value, "StageInputRefusedError");
+
+/** Whether `error`, or an error in its cause chain, is a {@link StageInputRefusedError}. */
+export function isStageInputRefusedError(error: unknown): error is StageInputRefusedError {
+	return inChain(error, isStageInputRefusal) !== undefined;
+}
+
+/** The {@link StageInputRefusedError} that is `error` or in its cause chain, if any. */
+export function stageInputRefusal(error: unknown): StageInputRefusedError | undefined {
+	return inChain(error, isStageInputRefusal);
+}
+
+/** Why a stage refused an input: the reason of the {@link StageInputRefusedError} that is `error` or in its cause chain. */
+export function stageInputRefusedReason(error: unknown): StageInputRefusedReason | undefined {
+	return stageInputRefusal(error)?.reason;
+}
+
+/** Whether `error`, or an error in its cause chain, is a {@link RemoteStageCommandUnsupportedError}. */
+export function isRemoteStageCommandUnsupportedError(error: unknown): error is RemoteStageCommandUnsupportedError {
+	return (
+		inChain(
+			error,
+			(value): value is RemoteStageCommandUnsupportedError =>
+				value instanceof RemoteStageCommandUnsupportedError ||
+				structural(value, "RemoteStageCommandUnsupportedError"),
+		) !== undefined
+	);
+}
+
+/** Whether `error`, or an error in its cause chain, is a {@link WorkerPlacementError} its caller may retry. */
+export function isRetryableWorkerPlacementError(error: unknown): boolean {
+	return (
+		inChain(
+			error,
+			(value): value is WorkerPlacementError =>
+				(value instanceof WorkerPlacementError || structural(value)) && value.retryable,
+		) !== undefined
+	);
+}
+
 function serializeCause(cause: unknown, depth: number): SerializedWorkerPlacementError["cause"] {
 	if (cause === undefined || cause === null || depth >= MAX_CAUSE_DEPTH) return undefined;
 	if (cause instanceof WorkerPlacementError) return serializeAt(cause, depth);
@@ -574,6 +878,38 @@ export function rehydrateWorkerPlacementError(serialized: SerializedWorkerPlacem
 			},
 			{ cause },
 		);
+	if (serialized.name === "StageInputInvalidError")
+		return new StageInputInvalidError(
+			fields.reason as StageInputInvalidReason,
+			{
+				kind: fields.kind as string,
+				runId: fields.runId as string,
+				stageId: fields.stageId as string,
+				field: fields.field as string,
+			},
+			{ cause },
+		);
+	if (serialized.name === "StageInputTimeoutError")
+		return new StageInputTimeoutError(
+			stageInputIdentity(fields),
+			{
+				timeoutMs: fields.timeoutMs as number,
+				elapsedMs: fields.elapsedMs as number,
+				phase: fields.phase as StageInputTimeoutPhase,
+			},
+			{ cause },
+		);
+	if (serialized.name === "StageInputRefusedError")
+		return new StageInputRefusedError(fields.reason as StageInputRefusedReason, stageInputIdentity(fields), {
+			detail: fields.detail as string | undefined,
+			cause,
+		});
+	if (serialized.name === "RemoteStageCommandUnsupportedError")
+		return new RemoteStageCommandUnsupportedError(
+			fields.command as RemoteStageCommand,
+			{ runId: fields.runId as string, stageId: fields.stageId as string },
+			{ cause },
+		);
 	const error = new WorkerPlacementError(serialized.code, serialized.message, {
 		...(serialized.hint === undefined ? {} : { hint: serialized.hint }),
 		retryable: serialized.retryable,
@@ -581,4 +917,14 @@ export function rehydrateWorkerPlacementError(serialized: SerializedWorkerPlacem
 	});
 	Object.defineProperty(error, "name", { value: serialized.name, enumerable: false });
 	return error;
+}
+
+function stageInputIdentity(fields: Readonly<Record<string, JsonField | undefined>>): StageInputIdentity {
+	return {
+		root: fields.root as string,
+		runId: fields.runId as string,
+		stageId: fields.stageId as string,
+		seq: fields.seq as number,
+		kind: fields.kind as PooledStageInputKind,
+	};
 }

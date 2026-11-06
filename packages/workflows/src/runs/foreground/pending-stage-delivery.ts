@@ -93,6 +93,12 @@ export interface WorkflowPendingStageDeliveryOptions {
 	 * what it read from the journal and does not hold its stage's startup on this drain.
 	 */
 	readonly holdUntilDrained?: boolean;
+	/**
+	 * Why the stage's session will never take a message whose hand-over failed with `error`; undefined while it may
+	 * (#4391). Such a message is settled undeliverable, so its sender is told once, and the drain goes on to the
+	 * stage's later messages; a sticky message stays queued for the other stages it targets.
+	 */
+	readonly undeliverable?: (error: unknown) => string | undefined;
 }
 
 export function createWorkflowPendingStageDelivery(
@@ -238,6 +244,7 @@ export function createWorkflowPendingStageDelivery(
 			},
 			progressingCommit,
 			recipient,
+			options.undeliverable,
 		);
 		const drain = attempt.then(
 			() => {
@@ -380,6 +387,7 @@ async function deliverPendingStageMessages(
 	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
 	commit: PendingStageDeliveryCommit,
 	recipient?: WorkflowPendingStageRecipient,
+	undeliverable?: WorkflowPendingStageDeliveryOptions["undeliverable"],
 ): Promise<void> {
 	// A stage that ended before its drain ran (a pooled stage's root drain finishes in the background) still gets
 	// the receipts of the messages its session received; nothing new is delivered to it.
@@ -467,8 +475,19 @@ async function deliverPendingStageMessages(
 				}
 				continue;
 			}
-			if (!recipient?.receivedMessageIds.includes(entry.message.id))
-				await deliver(toPendingStageSender(entry), entry.message);
+			if (!recipient?.receivedMessageIds.includes(entry.message.id)) {
+				try {
+					await deliver(toPendingStageSender(entry), entry.message);
+				} catch (error) {
+					const reason = undeliverable?.(error);
+					if (reason === undefined) throw error;
+					if (entry.sticky !== true)
+						await commit(() =>
+							activeStore.markPendingStageMessageUndeliverable(runId, entry.stageKey, entry.id, reason, backend),
+						);
+					continue;
+				}
+			}
 			if (entry.sticky === true) {
 				// D3: sticky entries stay queued for future matching stages; only this
 				// stage's exactly-once delivery record is written.

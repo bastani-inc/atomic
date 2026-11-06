@@ -32,6 +32,12 @@ export interface InboundMessageEntry {
    * a turn nor supply reply context, whichever path writes it and whatever is written around it.
    */
   historyOnly?: true;
+  /**
+   * A card a workflow stage's pending-stage queue handed over (#4391). That queue owns its delivery and has recorded it
+   * delivered, so a session recovery replays the card whatever its sender's liveness: the message never expects a
+   * reply, and nothing else delivers it again.
+   */
+  stageQueued?: true;
 }
 
 /** Whether writing this entry may start a turn. */

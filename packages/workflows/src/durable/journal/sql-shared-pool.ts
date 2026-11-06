@@ -6,15 +6,17 @@ import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
+import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
 import { validateText } from "./values.js";
 
 export type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
+export type { PooledStageInputKind } from "./stage-input-kinds.js";
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 /** A stage input that answers a prompt the stage raised; its payload is the answer. */
-export const STAGE_INPUT_PROMPT_ANSWER = "prompt-answer";
+export const STAGE_INPUT_PROMPT_ANSWER = "prompt-answer" as const satisfies PooledStageInputKind;
 
 /** The work lease an attempt holds, which fences every write it makes for one of its stages. */
 export type AttemptLease = Pick<PoolWork, "id" | "generation" | "worker" | "epoch">;
@@ -54,7 +56,7 @@ export interface StageInputLease {
 	readonly seq: number;
 	readonly token: number;
 	readonly attempt: AttemptLease;
-	readonly kind: string;
+	readonly kind: PooledStageInputKind;
 	readonly op: string;
 	readonly payload: string;
 	readonly expiresAt: number;
@@ -64,7 +66,7 @@ export interface StageInputAppend {
 	readonly work: string;
 	readonly runId: string;
 	readonly stageId: string;
-	readonly kind: string;
+	readonly kind: PooledStageInputKind;
 	/** Identifies the input within its stage: an input appended again with the same op is the same input. */
 	readonly op: string;
 	readonly payload: string;
@@ -409,9 +411,11 @@ export class SqlSharedPool {
 
 	/**
 	 * Appends an input to one stage's ordered group, under the root's lease. The same op appended again is the same
-	 * input, and keeps its place. Returns the input's sequence number in its stage.
+	 * input, and keeps its place. Returns the input's sequence number in its stage. An input whose kind or payload a
+	 * stage cannot take is refused with {@link StageInputInvalidError} before anything is written.
 	 */
 	async appendStageInput(lease: Lease, input: StageInputAppend): Promise<number> {
+		validateStageInput(input);
 		for (const value of [input.work, input.runId, input.stageId, input.kind, input.op]) validateText("key", value);
 		return this.storage.transaction(async (tx) => {
 			const now = await this.queue.assertRootIn(tx, lease);
@@ -471,6 +475,8 @@ export class SqlSharedPool {
 		attempt: AttemptLease,
 		stage: { readonly runId: string; readonly stageId: string },
 		durationMs: number,
+		/** Kinds the stage defers for now (#4391): its lowest pending input of another kind is taken instead. */
+		deferred: readonly PooledStageInputKind[] = [],
 	): Promise<StageInputLease | undefined> {
 		if (!Number.isSafeInteger(durationMs) || durationMs <= 0)
 			throw new Error("Stage lease duration must be a positive safe integer");
@@ -484,12 +490,16 @@ export class SqlSharedPool {
 				if (!sameAttempt(held, attempt)) return undefined;
 				return this.inFlight(tx, lease.runId, stage, held);
 			}
-			const next = await tx.get<SqliteRow & { seq: number; kind: string; op: string; payload: string }>(
-				`SELECT seq, kind, op, payload FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND work = ? AND state = 'pending' ORDER BY seq LIMIT 1`,
+			const next = await tx.get<
+				SqliteRow & { seq: number; kind: PooledStageInputKind; op: string; payload: string }
+			>(
+				`SELECT seq, kind, op, payload FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND work = ? AND state = 'pending'
+				AND kind NOT IN (SELECT value FROM json_each(?)) ORDER BY seq LIMIT 1`,
 				lease.runId,
 				stage.runId,
 				stage.stageId,
 				attempt.id,
+				JSON.stringify(deferred),
 			);
 			if (next === undefined) return undefined;
 			const token = Number(held?.token ?? 0) + 1;
@@ -580,6 +590,31 @@ export class SqlSharedPool {
 		);
 	}
 
+	/**
+	 * One input of a stage: whether it is processed, its receipt, and whether a live stage lease holds it now (a host
+	 * took it and has not settled it). Undefined when the stage has no input `seq`. Read without the write lock.
+	 */
+	async stageInput(
+		root: string,
+		runId: string,
+		stageId: string,
+		seq: number,
+	): Promise<{ readonly done: boolean; readonly receipt: string | null; readonly held: boolean } | undefined> {
+		const row = await this.storage.read((executor) =>
+			executor.get<SqliteRow & { state: string; receipt: string | null; held: number }>(
+				`SELECT i.state, i.receipt, EXISTS (SELECT 1 FROM ${this.stageLeases} l WHERE l.root = i.root AND l.run_id = i.run_id
+				AND l.stage_id = i.stage_id AND l.seq = i.seq AND l.expires_at >= ${STORE_NOW}) AS held
+				FROM ${this.inputs} i WHERE i.root = ? AND i.run_id = ? AND i.stage_id = ? AND i.seq = ?`,
+				root,
+				runId,
+				stageId,
+				seq,
+			),
+		);
+		if (row === undefined) return undefined;
+		return { done: row.state === "done", receipt: row.receipt, held: Number(row.held) === 1 };
+	}
+
 	/** Records where one stage of the attempt ran and on what binding, under the attempt's work lease. */
 	async recordStageWorkspace(
 		lease: Lease,
@@ -659,7 +694,7 @@ export class SqlSharedPool {
 		stage: { readonly runId: string; readonly stageId: string },
 		held: StageLeaseRow,
 	): Promise<StageInputLease | undefined> {
-		const input = (await tx.get<SqliteRow & { kind: string; op: string; payload: string }>(
+		const input = (await tx.get<SqliteRow & { kind: PooledStageInputKind; op: string; payload: string }>(
 			`SELECT kind, op, payload FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND seq = ? AND state = 'pending'`,
 			root,
 			stage.runId,

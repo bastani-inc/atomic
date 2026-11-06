@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { GitUnavailableError, WorkflowGitRequiredError, workflow } from "@bastani/atomic/workflows";
 import { poolStageOptions } from "./pool-stage-options.js";
@@ -132,5 +133,103 @@ export const typedFailureChild = workflow({
 			);
 		});
 		return {};
+	},
+});
+
+/** The question the remote stage asks, as `ask_user_question` parameters. */
+export const REMOTE_QUESTION = {
+	questions: [
+		{
+			question: "Ship the release from the worker host?",
+			header: "Ship",
+			multiSelect: false,
+			options: [
+				{ label: "yes", description: "Ship it now" },
+				{ label: "no", description: "Hold the release" },
+			],
+		},
+	],
+};
+
+function textOf(message: { readonly content?: unknown } | undefined): string {
+	const content = message?.content;
+	if (typeof content === "string") return content;
+	return Array.isArray(content)
+		? content.map((part: { type?: string; text?: string }) => (part.type === "text" ? (part.text ?? "") : "")).join("")
+		: "";
+}
+
+/**
+ * A child whose agent stage, on whichever host runs it, asks `ask_user_question` and then replies (#4391). Each model
+ * call writes what the stage's session holds to `seen-<pid>-<call>.json` in `directory`: every user message's text and
+ * every tool result's text, so a test sees which root inputs reached the stage, and how often.
+ */
+export const remoteStageChild = workflow({
+	name: "shared-pool-remote-stage-child",
+	description: "A pooled child whose stage takes Intercom messages, steers and an answer from the root (#4391)",
+	inputs: { directory: Type.String() },
+	outputs: { host: Type.String(), reply: Type.String() },
+	async run(ctx) {
+		const options = await poolStageOptions(ctx.cwd ?? process.cwd(), false, "never");
+		let calls = 0;
+		options.modelRuntime.registerProvider("pool-fixture", {
+			api: "openai-completions",
+			baseUrl: "https://example.invalid",
+			apiKey: "fixture",
+			models: [
+				{
+					id: "fixture",
+					name: "Fixture",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 100000,
+					maxTokens: 1000,
+				},
+			],
+			streamSimple(model, context) {
+				const users = context.messages.filter((message) => message.role === "user").map(textOf);
+				const results = context.messages.filter((message) => message.role === "toolResult").map(textOf);
+				writeFileSync(
+					join(ctx.inputs.directory, `seen-${process.pid}-${++calls}.json`),
+					JSON.stringify({ host: host(), users, results }),
+				);
+				const asked = results.length > 0;
+				const content: AssistantMessage["content"] = asked
+					? [{ type: "text", text: `answered: ${results.join(" | ")}` }]
+					: [{ type: "toolCall", id: "remote-question", name: "ask_user_question", arguments: REMOTE_QUESTION }];
+				const message: AssistantMessage = {
+					role: "assistant",
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					timestamp: Date.now(),
+					content,
+					stopReason: asked ? "stop" : "toolUse",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				};
+				const stream = createAssistantMessageEventStream();
+				void (async () => {
+					// A test holding the stage's replies (`hold-replies`) lets them go with `release-replies`.
+					if (asked && existsSync(join(ctx.inputs.directory, "hold-replies")))
+						while (!existsSync(join(ctx.inputs.directory, "release-replies"))) await delay(50);
+					stream.push({ type: "done", reason: asked ? "stop" : "toolUse", message });
+					stream.end();
+				})();
+				return stream;
+			},
+		});
+		// The stage takes Intercom messages, as a stage with Intercom does by default.
+		const stage = ctx.stage("agent", { ...options, builtins: { ...options.builtins, intercom: true } } as never);
+		const reply = await stage.complete("Ask before shipping");
+		const where = await ctx.tool("where", {}, async () => host());
+		return { host: where, reply: String(reply) };
 	},
 });

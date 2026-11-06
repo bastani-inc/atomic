@@ -5,7 +5,8 @@
  * mid-compaction. `ready` lets the planner finish and marks `ready` once the result is stored but
  * before any turn boundary commits it. Both then wait to be killed.
  */
-import { writeFile } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -16,6 +17,16 @@ if ((mode !== "planning" && mode !== "ready") || !directory) throw new Error("us
 
 const longPrompt = Array.from({ length: 24 }, (_, index) => `context line ${index + 1}`).join("\n");
 const sessionManager = await SessionManager.create(directory, join(directory, "sessions"));
+
+async function publishMarker() {
+	const sessionFile = sessionManager.getSessionFile();
+	assert.ok(sessionFile);
+	const marker = join(directory, mode);
+	const pendingMarker = `${marker}.tmp`;
+	await writeFile(pendingMarker, sessionFile);
+	await rename(pendingMarker, marker);
+}
+
 const harness = await createHarnessWithExtensions({
 	contextWindow: 1_000,
 	settings: { compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 } },
@@ -28,7 +39,7 @@ const harness = await createHarnessWithExtensions({
 		(pi) => {
 			pi.on("session_before_compact", async () => {
 				if (mode === "planning") {
-					await writeFile(join(directory, "planning"), sessionManager.getSessionFile() ?? "");
+					await publishMarker();
 					await new Promise<never>(() => setInterval(() => {}, 1_000));
 				}
 				return { compactedText: "[User]: retained" };
@@ -43,6 +54,6 @@ await harness.session.prompt(`${longPrompt}\nsecond`);
 if (mode === "ready") {
 	const state = await harness.session.awaitBackgroundCompaction();
 	if (state.state !== "ready") throw new Error(`expected a ready result, got ${state.state}`);
-	await writeFile(join(directory, "ready"), sessionManager.getSessionFile() ?? "");
+	await publishMarker();
 }
 setInterval(() => {}, 1_000);

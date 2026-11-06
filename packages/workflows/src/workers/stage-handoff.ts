@@ -23,9 +23,19 @@ import {
 	type StaleWorkLeaseReason,
 } from "../shared/worker-pool-errors.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
+import { stageInputRefusal, stageInputRefusedReason } from "./placement-errors.js";
 import { isRunChanges, type PublishedRun, type RunChanges, type RunHeader } from "./run-changes.js";
 
 type PendingDelivery = ReturnType<typeof createWorkflowPendingStageDelivery>;
+
+/**
+ * Why a stage on another host will never take a message its session failed (#4391): the stage's host settled the
+ * message's input with that failure, so the drain settles the message undeliverable and goes on to the next one.
+ */
+export function failedInSession(error: unknown): string | undefined {
+	const refusal = stageInputRefusal(error);
+	return refusal?.reason === "stage-failed" ? `The stage's session failed to take it: ${refusal.detail}` : undefined;
+}
 type PendingDeliver = Parameters<PendingDelivery["deliverPending"]>[0];
 type PendingRecipient = NonNullable<Parameters<PendingDelivery["deliverPending"]>[1]>;
 
@@ -263,9 +273,15 @@ export class PoolStageHandoff {
 			await drain;
 		} catch (error) {
 			// An attempt that was fenced or replaced, whether the handoff or the pool's receipt guard refused it, or a
-			// session that was replaced, ends its drain by design. A refused coordinator authority is still reported.
+			// session that was replaced, here or on the host that took the stage over (#4391), ends its drain by design.
+			// A refused coordinator authority is still reported.
 			const current = this.attempts.get(work.id) === attempt && !attempt.fenced;
-			if (current && attempt.sessions.get(stage) === recipient.sessionId && !causedByStaleWorkLease(error))
+			if (
+				current &&
+				attempt.sessions.get(stage) === recipient.sessionId &&
+				!causedByStaleWorkLease(error) &&
+				stageInputRefusedReason(error) !== "session-replaced"
+			)
 				this.recordDeliveryIssue(error as Error);
 			throw error;
 		} finally {
@@ -806,7 +822,7 @@ export class PoolStageHandoff {
 					),
 				// A drain's transport is the worker's delivery request, which `deliver` answers: it must stay open for as
 				// long as the drain runs, however slowly a starved worker acknowledges. The stage does not wait for it.
-				{ holdUntilDrained: true },
+				{ holdUntilDrained: true, undeliverable: failedInSession },
 			);
 			attempt.deliveries.set(key, delivery);
 		}

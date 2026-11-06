@@ -18,6 +18,7 @@ import { StorageUnavailableError } from "../../packages/workflows/src/durable/jo
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import { claimExternalRunRoute } from "../../packages/workflows/src/shared/external-run-routes.js";
 import { workflowPendingStageRouteReady } from "../../packages/workflows/src/shared/pending-stage-route-readiness.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { StageStatus } from "../../packages/workflows/src/shared/store-types.js";
@@ -249,9 +250,11 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			group = GROUP,
 			stageKey = "reviewer",
 			messageOverride: Message = message(id, 1_725_000_000_000 + Number(id)),
+			live?: true,
 		) => {
 			const payload: {
 				handled: boolean;
+				live?: true;
 				completion?: Promise<
 					| { readonly outcome: "queued"; readonly position: number }
 					| { readonly outcome: "delivered" }
@@ -269,6 +272,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 				runId: RUN_ID,
 				target: `workflow:${RUN_ID}/${stageKey}`,
 				message: messageOverride,
+				...(live === undefined ? {} : { live }),
 			};
 			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
 			return { payload, result: payload.completion === undefined ? undefined : await payload.completion };
@@ -290,6 +294,96 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 0);
 		dispose();
+	});
+
+	test("a send to a live stage on another worker host is queued for its input queue, and an ask to it is refused (#4391)", async () => {
+		const { store, request, dispose } = await harness();
+		const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		store.recordRunStart({
+			...run,
+			stages: [
+				{ ...run.stages[0]!, status: "running", sessionId: "remote-session", pendingStageDeliveryAvailable: true },
+			],
+		});
+		const asked: string[] = [];
+		let elsewhere = true;
+		const release = claimExternalRunRoute(store, RUN_ID, {
+			notifyUndeliverable: async () => true,
+			deliversQueued: (runId, stageId) => {
+				asked.push(`${runId}/${stageId}`);
+				return elsewhere;
+			},
+		});
+		try {
+			const queued = await request("1");
+			assert.deepEqual([queued.payload.handled, queued.result], [true, { outcome: "queued", position: 1 }]);
+			assert.deepEqual(
+				store.pendingStageMessagesFor(RUN_ID, "reviewer").map((entry) => entry.message.id),
+				["1"],
+				"the send waits in the stage's queue for its owner to deliver it",
+			);
+			const ask = await request("2", GROUP, "reviewer", { ...message("2"), expectsReply: true });
+			assert.deepEqual(ask.result, {
+				outcome: "refused",
+				reason:
+					"Cannot ask a workflow stage that runs on another worker host: its replies cannot reach you. Use send; Atomic delivers the message through the stage's input queue.",
+			});
+			assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1, "a refused ask is not queued");
+			assert.deepEqual(asked, [`${RUN_ID}/reviewer-id`, `${RUN_ID}/reviewer-id`]);
+			// A send that asks for live delivery only is never queued for the stage's input queue.
+			const liveOnly = await request("5", GROUP, "reviewer", message("5"), true);
+			assert.equal(liveOnly.result?.outcome, "forward");
+			assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
+			assert.equal(asked.length, 2, "its owner is not asked");
+			// A stage on the root's own host is forwarded live, as before.
+			elsewhere = false;
+			const live = await request("3");
+			assert.equal(live.result?.outcome, "forward");
+			assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 1);
+			// A finished stage is never asked: its send falls through to the queue for the next matching stage.
+			const finished = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+			store.recordRunStart({ ...finished, stages: [{ ...finished.stages[0]!, status: "completed" }] });
+			asked.length = 0;
+			elsewhere = true;
+			await request("4");
+			assert.deepEqual(asked, [], "only a live stage's owner is asked");
+		} finally {
+			release();
+			dispose();
+		}
+	});
+
+	test("a send to a live stage on another worker host whose session has no Intercom is refused before anything is queued (#4391)", async () => {
+		const { store, request, dispose } = await harness();
+		const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		const release = claimExternalRunRoute(store, RUN_ID, {
+			notifyUndeliverable: async () => true,
+			deliversQueued: () => true,
+		});
+		try {
+			for (const pendingStageDeliveryAvailable of [false, undefined]) {
+				store.recordRunStart({
+					...run,
+					stages: [
+						{ ...run.stages[0]!, status: "running", sessionId: "remote-session", pendingStageDeliveryAvailable },
+					],
+				});
+				assert.deepEqual((await request("1")).result, {
+					outcome: "refused",
+					reason: `Workflow stage workflow:${RUN_ID}/reviewer runs on another worker host without Intercom access, so it cannot receive Intercom messages`,
+				});
+			}
+			const ask = await request("2", GROUP, "reviewer", { ...message("2"), expectsReply: true });
+			assert.match(
+				ask.result?.outcome === "refused" ? ask.result.reason : "",
+				/^Cannot ask a workflow stage that runs on another worker host/,
+			);
+			assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "reviewer"), [], "nothing was queued");
+			assert.deepEqual(store.run(RUN_ID)?.pendingStageMessages ?? [], []);
+		} finally {
+			release();
+			dispose();
+		}
 	});
 
 	test("a direct send to a paused stage reaches the stage its replacement worker re-materializes, exactly once (#3869)", async () => {

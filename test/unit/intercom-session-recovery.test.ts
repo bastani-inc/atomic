@@ -121,6 +121,33 @@ test("a relaunched subagent that registered in time replays and one that is neit
 	]);
 });
 
+test("a card a workflow stage's queue handed over replays whether or not its sender is live or Intercom is reachable (#4391)", () => {
+	const operator = peer("operator");
+	const queued = (entryId: string): PendingRecoveryDelivery => {
+		const delivery = card(entryId, operator, `queued ${entryId}`);
+		return { ...delivery, details: { ...(delivery.details as object), stageQueued: true } };
+	};
+	for (const peers of [undefined, [], [peer("reviewer")], [operator]])
+		assert.deepEqual(
+			planIntercomRecoveryReplay([queued("a"), queued("b")], peers),
+			{
+				decisions: [
+					{ entryId: "a", action: "replay" },
+					{ entryId: "b", action: "replay" },
+				],
+			},
+			`peers ${JSON.stringify(peers?.map((entry) => entry.name))}`,
+		);
+	// A card that did not come through the queue keeps the #3760 decisions, beside a queued one.
+	const plan = planIntercomRecoveryReplay([queued("q"), card("direct", operator, "direct note")], []);
+	assert.deepEqual(plan.decisions, [
+		{ entryId: "q", action: "replay" },
+		{ entryId: "direct", action: "drop" },
+	]);
+	assert.equal(plan.notices?.length, 1);
+	assert.doesNotMatch(plan.notices![0]!, /queued q/, "the replayed card is not shown as history");
+});
+
 test("Intercom leaves other recovery deliveries and local subagent relays to their owners (#3760)", () => {
 	const relay = card("relay", { ...peer("subagent-result"), id: "subagent-result" }, "result text");
 	const other: PendingRecoveryDelivery = { ...card("heartbeat", peer("x"), "beat"), customType: "workflow-heartbeat" };

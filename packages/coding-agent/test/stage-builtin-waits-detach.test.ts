@@ -695,4 +695,47 @@ describe("a call started again after a restart (#4374)", () => {
 		assert.equal(answered.length, 1);
 		assert.match(answered[0]!, /SQLite/);
 	});
+
+	test("takes a delivery its resume recovery replays in the turn the call resumes, not in a turn ahead of it (#4391)", async () => {
+		const store = new MemorySessionStore();
+		const crashed = await SessionManager.create(store, process.cwd());
+		await crashed.appendMessage({ role: "user", content: "pick a database", timestamp: Date.now() });
+		await crashed.appendMessage(askTurn("q-1"));
+		// A message the stage's queue delivered while the question waited, which its earlier process never took.
+		await crashed.appendCustomMessageEntry(
+			"intercom_message",
+			"**📨 From operator**\n\nprefer SQLite",
+			true,
+			{ from: { id: "operator", name: "operator" }, stageQueued: true },
+			true,
+			{ delivery: "steer" },
+			"intercom:prefer-sqlite",
+		);
+		const restarted = await session({ context: stageContext(), store }, crashed.getSessionId());
+		const ui = stageUi();
+		await restarted.session.bindExtensions({ uiContext: ui.ui, mode: "tui" });
+		const contexts: string[][] = [];
+		restarted.setResponses([
+			(context) => {
+				contexts.push(context.messages.map((message) => getMessageText(message)));
+				return fauxAssistantMessage("SQLite it is");
+			},
+		]);
+
+		const report = await restarted.session.startPendingRecovery("workflow_stage_resume");
+		assert.equal(report.replayed, 1);
+		assert.deepEqual(contexts, [], "no turn runs before the question is answered");
+		const [asked] = restarted.session.redispatchDetachedToolCalls();
+		await vi.waitFor(() => assert.equal(ui.askedBy.length, 1));
+		ui.answer(0, answer("SQLite"));
+		await restarted.session.resumeDetachedTurn([await asked!.result]);
+
+		assert.equal(contexts.length, 1, "one turn, with the answer and the delivery");
+		assert.equal(contexts[0]!.filter((text) => text.includes("prefer SQLite")).length, 1);
+		assert.ok(
+			contexts[0]!.some((text) => /SQLite/.test(text) && !text.includes("prefer")),
+			"the answer",
+		);
+		assert.ok(!contexts[0]!.some((text) => /interrupted/i.test(text)), "the question is not answered as interrupted");
+	});
 });

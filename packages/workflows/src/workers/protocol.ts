@@ -14,6 +14,7 @@ import type {
 	DeliveryIntent,
 	DeliveryOpId,
 	DeliveryRefusal,
+	IntercomRefusal,
 	PooledBashResult,
 	PooledPromptAnswer,
 	PooledStageChatSnapshot,
@@ -22,6 +23,7 @@ import type {
 	PooledTaskReply,
 	PromptRefusal,
 	SeqEvent,
+	StageInputDeferral,
 	WatchEndReason,
 	WatchId,
 	WatchRefusal,
@@ -45,8 +47,9 @@ export interface WorkerStart {
 	/** The SQLite database holding the pool's tables; absent for a shared pool, opened by its durable selection. */
 	readonly journalPath?: string;
 	/**
-	 * Set for a shared pool (#4310). `routes: false` is a worker on a host that does not run the root: its stages start
-	 * without the root's Intercom routes, which only the root's host announces.
+	 * Set for a shared pool (#4310). `routes: false` is a worker on a host that does not run the root: its stages hold
+	 * no live route of the root's, which only the root's host announces, and take Intercom messages through their input
+	 * queues instead (#4391).
 	 */
 	readonly shared?: { readonly host: string; readonly routes: boolean };
 	readonly root: string;
@@ -117,7 +120,13 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly kind: "stage-command-result";
 			readonly commandId: number;
 			readonly snapshot?: PooledStageChatSnapshot;
-			readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
+			readonly refusal?:
+				| WatchRefusal
+				| DeliveryRefusal
+				| ControlRefusal
+				| PromptRefusal
+				| IntercomRefusal
+				| StageInputDeferral;
 			readonly action?: StageUserMessageDeliveryAction;
 			readonly question?: PooledStageQuestion;
 			/** The result of a `!` shell command run on the stage's session. */
@@ -174,6 +183,31 @@ export type WorkerStageCommand = {
 	/** Answers a prompt of the attempt's stage; needs no watch, since a prompt waits for whoever answers. */
 	/** Reads the brokered question the attempt's stage waits on; needs no watch either. */
 	| { readonly op: "question"; readonly runId: string; readonly stageId: string }
+	/**
+	 * Admits stage chat text into the attempt's stage without a watch, at most once per op: the root sends it through
+	 * the stage's input queue when the stage runs on another host, which streams no watch to it (#4391).
+	 */
+	| {
+			readonly op: "user-message";
+			readonly runId: string;
+			readonly stageId: string;
+			readonly deliveryOp: DeliveryOpId;
+			readonly text: string;
+			readonly intent: DeliveryIntent;
+			readonly expandPromptTemplates?: boolean;
+	  }
+	/**
+	 * Hands an Intercom message to the stage session's own pending-stage delivery, which holds no live route on a host
+	 * that does not run the root: its messages arrive through the stage's input queue (#4391).
+	 */
+	| {
+			readonly op: "intercom";
+			readonly runId: string;
+			readonly stageId: string;
+			readonly sessionId: string;
+			readonly from: Parameters<WorkerDeliver>[0];
+			readonly message: Parameters<WorkerDeliver>[1];
+	  }
 	| {
 			readonly op: "answer";
 			readonly runId: string;
