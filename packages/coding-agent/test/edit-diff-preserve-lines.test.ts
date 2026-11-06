@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
 	applyEditsToNormalizedContent,
-	applyReplacementsPreservingUnchangedLines,
+	applyReplacementsToOriginal,
+	type TextReplacement,
+	widenReplacementsToLines,
 } from "../src/core/tools/edit-diff.js";
+
+function applyPreservingUnchangedLines(original: string, base: string, replacements: TextReplacement[]): string {
+	return applyReplacementsToOriginal(original, widenReplacementsToLines(original, base, replacements));
+}
 
 describe("fuzzy edits keep untouched lines byte for byte", () => {
 	it("keeps trailing whitespace on untouched lines before and after the edit", () => {
@@ -51,7 +57,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 
 	it("orders replacements itself when given out of order", () => {
 		const base = "aa\nbb\ncc\n";
-		const result = applyReplacementsPreservingUnchangedLines("aa \nbb \ncc \n", base, [
+		const result = applyPreservingUnchangedLines("aa \nbb \ncc \n", base, [
 			{ matchIndex: 6, matchLength: 2, newText: "CC" },
 			{ matchIndex: 0, matchLength: 2, newText: "AA" },
 		]);
@@ -59,7 +65,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 	});
 
 	it("widens a replacement that spans lines to every line it touches", () => {
-		const result = applyReplacementsPreservingUnchangedLines("x \naa \nbb \ny \n", "x\naa\nbb\ny\n", [
+		const result = applyPreservingUnchangedLines("x \naa \nbb \ny \n", "x\naa\nbb\ny\n", [
 			{ matchIndex: 2, matchLength: 5, newText: "AB" },
 		]);
 		assert.equal(result, "x \nAB\ny \n");
@@ -75,7 +81,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 	});
 
 	it("extends a shared rewrite to the end of a later multiline replacement (#4328)", () => {
-		const result = applyReplacementsPreservingUnchangedLines("aa bb \ncc \nkeep \n", "aa bb\ncc\nkeep\n", [
+		const result = applyPreservingUnchangedLines("aa bb \ncc \nkeep \n", "aa bb\ncc\nkeep\n", [
 			{ matchIndex: 0, matchLength: 2, newText: "AA" },
 			{ matchIndex: 3, matchLength: 5, newText: "BC" },
 		]);
