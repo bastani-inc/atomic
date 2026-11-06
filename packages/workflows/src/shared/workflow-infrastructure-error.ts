@@ -5,8 +5,8 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { causeChain, failureMessage, hasIdentity } from "./error-cause-chain.js";
-import { isLocalWorkerPoolError } from "./worker-pool-errors.js";
 import { isStageWaitError } from "./stage-wait-errors.js";
+import { isLocalWorkerPoolError } from "./worker-pool-errors.js";
 
 export type WorkflowInfrastructureFault =
 	| "worker_lost"

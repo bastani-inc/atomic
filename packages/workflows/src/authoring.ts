@@ -355,8 +355,6 @@ export declare function run<
 	inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
-export type { SerializedWorkflowInfrastructureError } from "./shared/error-codec.js";
-export { rehydrateWorkflowInfrastructureError, serializeWorkflowInfrastructureError } from "./shared/error-codec.js";
 export type {
 	ReleaseWhenWaiting,
 	StageLifecycleEvent,
@@ -364,6 +362,8 @@ export type {
 	StageWaitSnapshot,
 	StageWaitToolCall,
 } from "./shared/authoring-contract-stage.js";
+export type { SerializedWorkflowInfrastructureError } from "./shared/error-codec.js";
+export { rehydrateWorkflowInfrastructureError, serializeWorkflowInfrastructureError } from "./shared/error-codec.js";
 export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,

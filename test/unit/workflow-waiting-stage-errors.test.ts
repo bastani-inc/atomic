@@ -709,10 +709,7 @@ describe("isRetryableWorkflowError and stage waits (#4309)", () => {
 		const retryable = new StageRehydrationError({});
 		assert.equal(isRetryableWorkflowError(causeChain(CAUSE_DEPTH - 1, retryable)), true);
 		assert.equal(isRetryableWorkflowError(causeChain(CAUSE_DEPTH, retryable)), false);
-		const infrastructure = new WorkflowInfrastructureError(
-			"worker_lost",
-			"Worker exited before delivery acknowledgement",
-		);
+		const infrastructure = new WorkflowInfrastructureError("worker_lost");
 		assert.equal(isRetryableWorkflowError(causeChain(CAUSE_DEPTH - 1, infrastructure)), true);
 	});
 });
