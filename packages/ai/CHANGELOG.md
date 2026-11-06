@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `openai-completions` no longer sends `"tools": []` when a request has no tools but the conversation contains tool calls or tool results; the field is omitted. This fixes 400 errors (`tools must not be an empty array`) from vLLM 0.20+, also behind LiteLLM. Proxies that require `tools` once the history has tool calls, such as older LiteLLM versions in front of Anthropic, now reject these requests; set `compat.requiresToolsWithToolHistory: true` on those models to send the empty array again (upstream [#11891](https://github.com/earendil-works/pi/pull/11891))
+
 ### Added
 
 - Added the GPT Image 2.6 models `gpt-image-2.6-sunburst` and `gpt-image-2.6-flare` to the `openai-images` provider, priced at $5 text input, $1.25 cached input and $30 image output per million tokens ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
