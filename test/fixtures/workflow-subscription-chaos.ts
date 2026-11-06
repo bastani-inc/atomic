@@ -7,7 +7,7 @@
  * journal that the settings in `ATOMIC_CODING_AGENT_DIR` select (for example a shared libSQL server in a distributed
  * run). Shared mode refuses to start without an explicit agent directory, so it can never fall back to a default journal. `resume` expires
  * the crashed owner's SQLite lease; `takeover` instead waits, with no manual step, until the journal's own clock
- * reports the owner's lease stale. `steal` makes one resume attempt against a live owner and exits 0 when it is refused.
+ * reports the owner's lease stale, and exits 0 when another owner finished the run meanwhile. `steal` makes one resume attempt against a live owner and exits 0 when it is refused.
  *
  * Every event runs a tracked event child (`child.task`) whose scripted model answers `answer:<subscription>:<event id>`,
  * read only from the seeded prompt it received, and appends `<label> <stage name> <seeded subscription>:<seeded event
@@ -296,6 +296,11 @@ if (mode === "records") {
 	while (mode === "takeover" && !resumed.ok && Date.now() < takeoverDeadline) {
 		await sleep(5_000);
 		await backend.hydrateWorkflow(runId);
+		if (backend.getWorkflow(runId)?.status === "completed") {
+			console.log(JSON.stringify({ status: "completed", by: "another owner" }));
+			await backend.close();
+			process.exit(0);
+		}
 		resumed = await runtime.resumeDurableWorkflow(runId);
 	}
 	assert.ok(resumed.ok, JSON.stringify(resumed));
