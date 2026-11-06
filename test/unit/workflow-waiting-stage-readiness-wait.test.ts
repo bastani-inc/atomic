@@ -5,6 +5,7 @@ import { READINESS_GATE_ADVANCE_LABEL } from "../../packages/workflows/src/runs/
 import type { StageLifecycleEvent } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { store as defaultStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { StageContext } from "../../packages/workflows/src/shared/types.js";
 import {
 	assert,
 	mockSession,
@@ -97,7 +98,9 @@ function answer(): boolean {
 }
 
 describe("a readiness question that waits while the stage may release its session (#4309)", () => {
+	const stopAnswering: (() => void)[] = [];
 	afterEach(() => {
+		while (stopAnswering.length > 0) stopAnswering.pop()?.();
 		defaultStore.clear();
 		vi.restoreAllMocks();
 	});
@@ -134,47 +137,48 @@ describe("a readiness question that waits while the stage may release its sessio
 		const events: StageLifecycleEvent[] = [];
 		const idle = Promise.withResolvers<void>();
 		let answered = false;
-		const stopAnswering = stageUiBroker.onStageRequestRegistered(() => {
-			answered = answer();
-		});
+		stopAnswering.push(
+			stageUiBroker.onStageRequestRegistered(() => {
+				answered = answer();
+			}),
+		);
+		const held: StageContext[] = [];
 		const definition = workflow({
 			name: "readiness-then-idle",
 			description: "",
 			inputs: {},
 			outputs: {},
 			run: async (ctx) => {
-				await ctx.stage("interview").prompt("ask the user");
+				const interview = ctx.stage("interview");
+				held.push(interview);
+				await interview.prompt("ask the user");
 				await idle.promise;
 				return {};
 			},
 		});
-		try {
-			const result = await run(
-				definition,
-				{},
-				{
-					store: defaultStore,
-					usePromptNodesForUi: true,
-					releaseWhenWaiting: { afterMs: IDLE_THRESHOLD_MS },
-					adapters: askingAdapters(sessions),
-					onStageLifecycleEvent: (_runId, event) => {
-						events.push(event);
-						if (event.type === "stage_waiting" && event.wait.kind === "idle") idle.resolve();
-					},
+		const result = await run(
+			definition,
+			{},
+			{
+				store: defaultStore,
+				usePromptNodesForUi: true,
+				releaseWhenWaiting: { afterMs: IDLE_THRESHOLD_MS },
+				adapters: askingAdapters(sessions),
+				onStageLifecycleEvent: (_runId, event) => {
+					events.push(event);
+					if (event.type === "stage_waiting" && event.wait.kind === "idle") idle.resolve();
 				},
-			);
+			},
+		);
 
-			assert.equal(answered, true);
-			assert.equal(result.status, "completed", result.error);
-			assert.deepEqual(
-				events.map((event) => [event.type, event.wait.kind]),
-				[["stage_waiting", "idle"]],
-			);
-			assert.equal(sessions.created, 1);
-			assert.equal(sessions.disposed, 1);
-		} finally {
-			stopAnswering();
-		}
+		assert.equal(answered, true);
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(
+			events.map((event) => [event.type, event.wait.kind]),
+			[["stage_waiting", "idle"]],
+		);
+		assert.equal(sessions.created, 1);
+		assert.equal(sessions.disposed, 1);
 	});
 
 	test("a run ended while the question waits released does not reopen the session for an answer that will not come (#4309)", async () => {

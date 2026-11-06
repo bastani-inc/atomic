@@ -95,10 +95,12 @@ test("concurrent messages to one stage hold one slot and give it back, so later 
 test("the stage's slot stays held until its last overlapping message ends (#4309)", async () => {
 	const entered: string[] = [];
 	const firstGate = Promise.withResolvers<void>();
+	const firstEntered = Promise.withResolvers<void>();
 	const secondGate = Promise.withResolvers<void>();
 	const laterGate = Promise.withResolvers<void>();
 	const gateFor = (stageName: string, prompt: number): Promise<void> => {
 		if (stageName !== "a") return laterGate.promise;
+		if (prompt === 0) firstEntered.resolve();
 		return prompt === 0 ? firstGate.promise : secondGate.promise;
 	};
 	const later = (): string[] => entered.filter((stageName) => stageName !== "a");
@@ -113,21 +115,18 @@ test("the stage's slot stays held until its last overlapping message ends (#4309
 			run: async (ctx) => {
 				const a = ctx.stage("a");
 				const first = a.sendUserMessage("first");
+				await firstEntered.promise;
 				const second = a.sendUserMessage("second");
 				await turns(START_TURNS);
-				// The first message ends while the second is still in flight.
 				firstGate.resolve();
 				await first;
 				await turns(START_TURNS);
 
-				// Stage a still holds its one slot, so of two later stages only one fits under the limit of 2.
 				const b = ctx.stage("b").prompt("plan b");
 				const c = ctx.stage("c").prompt("plan c");
 				await turns(START_TURNS);
 				startedWhileSecondRan = later();
 
-				// Once the last message ends, the slot is free and the other later stage starts. Whether the second message
-				// is delivered after the first ended the stage is not what this checks, only that its end frees the slot.
 				secondGate.resolve();
 				await second.then(
 					() => undefined,
