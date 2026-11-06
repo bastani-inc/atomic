@@ -716,6 +716,8 @@ export async function _runAgentPrompt(
 		if (ownsPreparation) {
 			await this._flushPendingBashMessages();
 			await this._flushPendingCustomMessages();
+			const thinkingLevelWrite = this._recordThinkingLevel();
+			if (thinkingLevelWrite) await thinkingLevelWrite;
 			this._isPreparingRun = false;
 		}
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))

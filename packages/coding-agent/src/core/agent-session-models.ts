@@ -7,6 +7,7 @@ import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } fro
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { requestedThinkingLevelForModelSwitch } from "./model-switch-thinking-level.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
+import type { ThinkingLevelChangeEntry } from "./session-manager-types.ts";
 import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
@@ -411,6 +412,27 @@ export function _clampThinkingLevel(
 	return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 }
 
+/**
+ * Record the live thinking level on the current branch when the branch implies another one (pi #11451): tree
+ * navigation can leave the latest `thinking_level_change` on another branch, and a resume restores the branch's.
+ * The recorded level is compared after clamping to the current model, so a level clamped on resume (`xhigh` running
+ * as `high`) is not recorded over the requested one. Returns the pending write, or `undefined` when the branch
+ * already implies the live level, so a prompt that needs no write starts without yielding.
+ */
+export function _recordThinkingLevel(this: AgentSession): Promise<string> | undefined {
+	const recorded = this.sessionManager
+		.getBranch()
+		.findLast((entry): entry is ThinkingLevelChangeEntry => entry.type === "thinking_level_change");
+	if (!recorded) return undefined;
+	const recordedLevel = recorded.thinkingLevel as ThinkingLevel;
+	const availableLevels = this.getAvailableThinkingLevels();
+	const effectiveLevel = availableLevels.includes(recordedLevel)
+		? recordedLevel
+		: this._clampThinkingLevel(recordedLevel, availableLevels);
+	if (effectiveLevel === this.thinkingLevel) return undefined;
+	return this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
+}
+
 // =========================================================================
 // Queue Mode Management
 // =========================================================================
@@ -434,4 +456,5 @@ export const agentSessionModelsMethods = {
 	supportsThinking,
 	_getThinkingLevelForModelSwitch,
 	_clampThinkingLevel,
+	_recordThinkingLevel,
 };
