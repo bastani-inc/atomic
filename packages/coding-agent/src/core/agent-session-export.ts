@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fchmodSync,
+	mkdirSync,
+	openSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
@@ -212,9 +223,13 @@ export async function exportToJsonl(
 
 	// One line at a time into a file beside the target, moved into place when complete: carried tool outputs can be
 	// large enough that the whole file would not fit in one string, and a failed export leaves the target as it was.
-	const partialPath = `${filePath}.${randomUUID()}.partial`;
+	// The partial file is owner-only while it is written, and takes the mode of the file it replaces, so a private
+	// export never becomes readable by others; a new file stays owner-only.
+	const target = existsSync(filePath) ? realpathSync(filePath) : filePath;
+	const mode = existsSync(target) ? statSync(target).mode & 0o7777 : 0o600;
+	const partialPath = `${target}.${randomUUID()}.partial`;
 	try {
-		const file = openSync(partialPath, "w");
+		const file = openSync(partialPath, "w", 0o600);
 		try {
 			writeLine(file, JSON.stringify(header));
 			// Re-chain parentIds to form a linear sequence
@@ -224,10 +239,11 @@ export async function exportToJsonl(
 				prevId = entry.id;
 			}
 			if (options.includeShareContext) writeLine(file, JSON.stringify(shareEntry(prevId)));
+			fchmodSync(file, mode);
 		} finally {
 			closeSync(file);
 		}
-		renameSync(partialPath, filePath);
+		renameSync(partialPath, target);
 	} catch (error) {
 		try {
 			rmSync(partialPath, { force: true });

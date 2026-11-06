@@ -5,14 +5,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	closeSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
+	statSync,
+	symlinkSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
@@ -439,3 +444,56 @@ test("a failure to remove the partial file is attached to the export's failure, 
 		vi.mocked(rmSync).mockImplementation(actualRemove as never);
 	}
 });
+
+const modeOf = (path: string) => statSync(path).mode & 0o777;
+
+test.skipIf(process.platform === "win32")("a new export is readable by its owner alone (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-mode-new-");
+	const { harness } = await sessionWithOutputs(directory, 1);
+
+	const path = await harness.session.exportToJsonl(join(directory, "export.jsonl"));
+
+	assert.equal(modeOf(path), 0o600);
+});
+
+test.skipIf(process.platform === "win32")(
+	"an export that replaces a file keeps that file's mode, narrow or wide (#4379)",
+	async () => {
+		const directory = temporaryDirectory("atomic-tool-output-export-mode-existing-");
+		const { harness } = await sessionWithOutputs(directory, 1);
+		const target = join(directory, "export.jsonl");
+		for (const mode of [0o600, 0o640, 0o644]) {
+			writeFileSync(target, "previous export");
+			chmodSync(target, mode);
+
+			await harness.session.exportToJsonl(target);
+
+			assert.equal(modeOf(target), mode);
+			assert.match(readFileSync(target, "utf8"), /"type":"session"/);
+		}
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"an export to a symbolic link replaces the file it points to (#4379)",
+	async () => {
+		const directory = temporaryDirectory("atomic-tool-output-export-link-");
+		const { harness } = await sessionWithOutputs(directory, 1);
+		const real = join(directory, "real.jsonl");
+		const link = join(directory, "link.jsonl");
+		writeFileSync(real, "previous export");
+		chmodSync(real, 0o640);
+		symlinkSync(real, link);
+
+		await harness.session.exportToJsonl(link);
+
+		assert.ok(lstatSync(link).isSymbolicLink(), "the link is still a link");
+		assert.equal(readlinkSync(link), real);
+		assert.match(readFileSync(real, "utf8"), /"type":"session"/);
+		assert.equal(modeOf(real), 0o640);
+		assert.deepEqual(
+			readdirSync(directory).filter((name) => name.endsWith(".partial")),
+			[],
+		);
+	},
+);
