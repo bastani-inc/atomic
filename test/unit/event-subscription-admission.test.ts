@@ -1027,6 +1027,7 @@ test("openEventSubscription validates its input before it starts anything (#4311
 	assert.deepEqual(attempt({ handle: "nope" }), ["handle", "not-function"]);
 	assert.deepEqual(attempt({ recordProcessed: "nope" }), ["recordProcessed", "not-function"]);
 	assert.deepEqual(attempt({ alreadyProcessed: "nope" }), ["alreadyProcessed", "not-function"]);
+	assert.deepEqual(attempt({ beforeRecord: "nope" }), ["beforeRecord", "not-function"]);
 	assert.equal(starts, 0);
 	const valid = openEventSubscription({
 		id: uniqueId("valid"),
@@ -1145,4 +1146,118 @@ test("a handler that swallows the cancellation and returns does not record its e
 	await settle();
 	assert.deepEqual(recorded, []);
 	assert.equal(subscription.stats().handled, 0);
+});
+
+test("beforeRecord runs with the event's slot already free, holds only its record, and done waits for it (#4311)", async () => {
+	const source = openSource();
+	const started: string[] = [];
+	const recorded: string[] = [];
+	const gates = new Map<string, PromiseWithResolvers<void>>();
+	const subscription = openEventSubscription({
+		id: uniqueId("before-record"),
+		source,
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			started.push(event.id);
+		},
+		beforeRecord: (event) => {
+			const gate = Promise.withResolvers<void>();
+			gates.set(event.id, gate);
+			return gate.promise;
+		},
+		recordProcessed: async (event) => {
+			recorded.push(event.id);
+		},
+	});
+	await settle();
+	for (const id of ["a", "b"]) source.emit({ id });
+	await settle();
+	assert.deepEqual(started, ["a", "b"]);
+	assert.deepEqual(recorded, []);
+	assert.deepEqual(subscription.stats(), { received: 2, duplicates: 0, handled: 0, active: 0, queued: 0, reports: 0 });
+	let closed = false;
+	void subscription.close().then(() => {
+		closed = true;
+	});
+	gates.get("b")!.resolve();
+	await settle();
+	assert.deepEqual(recorded, ["b"]);
+	assert.equal(closed, false);
+	gates.get("a")!.resolve();
+	assert.deepEqual((await subscription.done).handled, 2);
+	assert.deepEqual(recorded, ["b", "a"]);
+	assert.equal(closed, true);
+});
+
+test("a failing beforeRecord stops the subscription with a record error, and a cancelled one records nothing (#4311)", async () => {
+	const failure = new Error("could not confirm the report");
+	const failing = openSource();
+	const failed = openEventSubscription({
+		id: uniqueId("before-record-fails"),
+		source: failing,
+		handle: async () => {},
+		beforeRecord: async () => {
+			throw failure;
+		},
+		recordProcessed: async () => {},
+	});
+	await settle();
+	failing.emit({ id: "x" });
+	await assert.rejects(failed.done, (error) => {
+		assert.equal(isSubscriptionRecordError(error), true);
+		assert.deepEqual(
+			{
+				record: (error as SubscriptionRecordError).record,
+				eventId: (error as SubscriptionRecordError).eventId,
+				cause: (error as Error).cause,
+			},
+			{ record: "processed-event", eventId: "x", cause: failure },
+		);
+		return true;
+	});
+
+	const recorded: string[] = [];
+	const gate = Promise.withResolvers<void>();
+	const cancelling = openSource();
+	const cancelled = openEventSubscription({
+		id: uniqueId("before-record-cancelled"),
+		source: cancelling,
+		handle: async () => {},
+		beforeRecord: () => gate.promise,
+		recordProcessed: async (event) => {
+			recorded.push(event.id);
+		},
+	});
+	await settle();
+	cancelling.emit({ id: "y" });
+	await settle();
+	const reason = new DOMException("owner closed", "AbortError");
+	cancelled.cancel(reason);
+	await assert.rejects(cancelled.done, (error) => error === reason);
+	gate.resolve();
+	await settle();
+	assert.deepEqual(recorded, []);
+	assert.equal(cancelled.stats().handled, 0);
+});
+
+test("an event for which beforeRecord returns nothing is recorded inside its slot, before the next event starts (#4311)", async () => {
+	const source = openSource();
+	const steps: string[] = [];
+	const subscription = openEventSubscription({
+		id: uniqueId("before-record-nothing"),
+		source,
+		admission: { maxConcurrent: 1 },
+		handle: async (event) => {
+			steps.push(`handle ${event.id}`);
+		},
+		beforeRecord: () => undefined,
+		recordProcessed: async (event) => {
+			await settle();
+			steps.push(`record ${event.id}`);
+		},
+	});
+	await settle();
+	for (const id of ["a", "b"]) source.emit({ id });
+	await subscription.close();
+	assert.deepEqual(steps, ["handle a", "record a", "handle b", "record b"]);
 });

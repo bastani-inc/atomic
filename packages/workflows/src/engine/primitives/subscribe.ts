@@ -206,11 +206,12 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 				};
 				await handler(event, child);
 			},
-			recordProcessed: async (event) => {
-				await unsavedReports.get(event.id);
+			beforeRecord: (event) => {
+				const unsaved = unsavedReports.get(event.id);
 				unsavedReports.delete(event.id);
-				await recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id);
+				return unsaved;
 			},
+			recordProcessed: (event) => recordSubscriptionEventProcessed(runtime.backend, runtime.runId, key, event.id),
 		});
 		const markClosed = (): void => {
 			closed = true;

@@ -11,10 +11,10 @@ import type { StageControlHandle } from "../../runs/foreground/stage-control-reg
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowEventSubscriber } from "../../shared/types.js";
 
-/** A session event as a subscriber stage reports it; `message_end` carries the message its session just saved. */
+/** A session event as a subscriber stage reports it; `message_end` comes after the session saved the message. */
 interface SubscriberSessionEvent {
 	readonly type: string;
-	readonly message?: { readonly role?: string; readonly content?: unknown };
+	readonly message?: { readonly role?: string };
 }
 
 /** A workflow stage of this run that subscribed: it takes steering messages and reports its session's events. */
@@ -84,35 +84,36 @@ function turnEnded(handle: StageControlHandle): Promise<void> {
  */
 type AdmittedSend = (admitted: () => void, saved: () => void) => Promise<unknown>;
 
-/** The text of a user message as a session saves it: plain text, or the text part of its content. */
-function messageText(content: unknown): unknown {
-	if (!Array.isArray(content)) return content;
-	return content.find((part: { readonly type?: unknown; readonly text?: unknown }) => part.type === "text")?.text;
+function isSavedUserMessage(event: SubscriberSessionEvent): boolean {
+	return event.type === "message_end" && event.message?.role === "user";
 }
 
 /**
- * An idle stage starts a turn for the report, which counts as taken in when that turn starts, and as saved once that
- * turn ends. A stage already in a turn queues the report; it counts as taken in once queued, and as saved when the
- * turn takes it and the session saves it (`message_end`, which a session emits after saving the message).
+ * An idle stage starts a turn for the report: the report counts as taken in when that turn starts, and as saved once
+ * the turn's first user message, the report, is saved (`message_end`, which a session emits after saving). A stage
+ * already in a turn queues the report: it counts as taken in once queued, and as saved when that turn ends
+ * (`agent_end`), because a turn takes the reports queued into it before it ends and saves every message first. An input
+ * hook may rewrite the report's text, so nothing here matches the saved message by its text.
  */
 function sendToLiveStage(stage: LiveSubscriberStage, message: string): AdmittedSend {
 	return (admitted, saved) => {
 		const queuedIntoTurn = stage.isStreaming;
-		const stopWatching = stage.subscribe((event) => {
-			if (event.type === "agent_start") admitted();
-			if (event.type !== "message_end" || event.message?.role !== "user") return;
-			if (messageText(event.message.content) !== message) return;
-			stopWatching();
-			saved();
-		});
-		const turn = stage.sendUserMessage(message, { deliverAs: "steer" });
-		const settled = (): void => {
+		let turnStarted = false;
+		const savedNow = (): void => {
 			stopWatching();
 			saved();
 		};
+		const stopWatching = stage.subscribe((event) => {
+			if (event.type === "agent_start") {
+				turnStarted = true;
+				admitted();
+			}
+			if (queuedIntoTurn ? event.type === "agent_end" : turnStarted && isSavedUserMessage(event)) savedNow();
+		});
+		const turn = stage.sendUserMessage(message, { deliverAs: "steer" });
 		void turn.then(() => {
-			if (!queuedIntoTurn) settled();
-		}, settled);
+			if (!queuedIntoTurn) savedNow();
+		}, savedNow);
 		return turn;
 	};
 }

@@ -48,6 +48,12 @@ export interface OpenEventSubscriptionInput {
 	 * `SubscriptionRecordError`, not a handler failure: the handler itself succeeded.
 	 */
 	readonly recordProcessed?: (event: SubscriptionEvent) => Promise<void>;
+	/**
+	 * Called after `handle` resolved. A promise it returns is awaited before the event is recorded, with the event's
+	 * admission slot already free so the next events can start meanwhile, and the subscription settles only after it
+	 * settles. Returning nothing records the event at once, inside its slot.
+	 */
+	readonly beforeRecord?: (event: SubscriptionEvent) => Promise<unknown> | undefined;
 	/** Owner of rate-admission waits. Defaults to the process-wide dispatcher. */
 	readonly dispatcher?: WakeDispatcher;
 }
@@ -139,6 +145,9 @@ function validateOpenInput(input: OpenEventSubscriptionInput): void {
 	if (input.alreadyProcessed !== undefined && typeof input.alreadyProcessed !== "function") {
 		throw new SubscriptionConfigError("alreadyProcessed", "not-function");
 	}
+	if (input.beforeRecord !== undefined && typeof input.beforeRecord !== "function") {
+		throw new SubscriptionConfigError("beforeRecord", "not-function");
+	}
 }
 
 /**
@@ -172,6 +181,8 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	/** Settles once a started source has ended and let go of what it held, such as a webhook route. */
 	let sourceReleased: Promise<void> = Promise.resolve();
 	const done = Promise.withResolvers<SubscriptionStats>();
+	/** Handled events whose slot is free but that wait for `beforeRecord` before they are recorded. */
+	const recordingOutsideSlots = new Set<Promise<void>>();
 
 	const stats = (): SubscriptionStats => ({ received, duplicates, handled, active, queued: queue.length, reports });
 
@@ -183,7 +194,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 
 	const finish = (): void => {
 		if (stopped === undefined && (!started || intakeOpen || queue.length > 0)) return;
-		if (active > 0 && !cancelled) return;
+		if ((active > 0 || recordingOutsideSlots.size > 0) && !cancelled) return;
 		rateWake?.cancel();
 		if (stopped !== undefined) done.reject(stopped.error);
 		else void sourceReleased.then(() => done.resolve(stats()));
@@ -197,14 +208,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 		finish();
 	};
 
-	const handleEvent = async (event: SubscriptionEvent): Promise<void> => {
-		let consumed: boolean | undefined;
-		try {
-			consumed = (await input.handle(event, handlerStop.signal)) as boolean | undefined;
-		} catch (error) {
-			stop(new SubscriptionHandlerError(id, event.id, error));
-			return;
-		}
+	const recordHandled = async (event: SubscriptionEvent, consumed: boolean | undefined): Promise<void> => {
 		if (handlerStop.signal.aborted) return;
 		if (consumed !== false && input.recordProcessed !== undefined) {
 			try {
@@ -215,6 +219,30 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 			}
 		}
 		handled += 1;
+	};
+
+	const handleEvent = async (event: SubscriptionEvent): Promise<void> => {
+		let consumed: boolean | undefined;
+		try {
+			consumed = (await input.handle(event, handlerStop.signal)) as boolean | undefined;
+		} catch (error) {
+			stop(new SubscriptionHandlerError(id, event.id, error));
+			return;
+		}
+		const waitBeforeRecord = input.beforeRecord?.(event);
+		if (waitBeforeRecord === undefined) {
+			await recordHandled(event, consumed);
+			return;
+		}
+		const recording = waitBeforeRecord.then(
+			() => recordHandled(event, consumed),
+			(error: unknown) => stop(new SubscriptionRecordError(id, "processed-event", event.id, { cause: error })),
+		);
+		recordingOutsideSlots.add(recording);
+		void recording.then(() => {
+			recordingOutsideSlots.delete(recording);
+			finish();
+		});
 	};
 
 	const runHandler = (event: SubscriptionEvent): void => {

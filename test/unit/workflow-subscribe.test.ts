@@ -2117,7 +2117,7 @@ test("a report returns once the subscriber admits it, without waiting for the su
 			const watcher = ctx.stage("watcher");
 			await watcher.prompt("watch");
 			const subscription = ctx.subscribe(
-				listSource("alerts", [{ id: "a" }, { id: "b" }]),
+				listSource("alerts", [{ id: "a" }, { id: "b" }, { id: "c" }]),
 				async (event, child) => {
 					order.push(`handler-${event.id}-start`);
 					await child.report(`${event.id} matters`);
@@ -2125,9 +2125,9 @@ test("a report returns once the subscriber admits it, without waiting for the su
 				},
 				{ subscriber: watcher, maxConcurrent: 1 },
 			);
-			await turnsUntil(() => order.includes("handler-b-reported"));
+			await turnsUntil(() => order.includes("handler-c-reported"));
 			for (let turn = 0; turn < 20; turn++) await nextTurn();
-			for (const id of ["a", "b"]) {
+			for (const id of ["a", "b", "c"]) {
 				processedWhileQueued[id] = subscriptionEventProcessed(backend, runId, "alerts#1", id);
 			}
 			turnGate.resolve();
@@ -2153,14 +2153,18 @@ test("a report returns once the subscriber admits it, without waiting for the su
 		"handler-a-reported",
 		"handler-b-start",
 		"handler-b-reported",
+		"handler-c-start",
+		"handler-c-reported",
 		"subscriber-turn-end",
 	]);
-	assert.deepEqual(processedWhileQueued, { a: true, b: false });
+	assert.deepEqual(processedWhileQueued, { a: true, b: false, c: false });
 	assert.equal(subscriptionEventProcessed(backend, runId, "alerts#1", "b"), true);
+	assert.equal(subscriptionEventProcessed(backend, runId, "alerts#1", "c"), true);
 	assert.deepEqual(watcherMessages, [
 		"watch",
 		'Report from event child "alerts#1/a" (event a):\n\na matters',
 		'Report from event child "alerts#1/b" (event b):\n\nb matters',
+		'Report from event child "alerts#1/c" (event c):\n\nc matters',
 	]);
 });
 

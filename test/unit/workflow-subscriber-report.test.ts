@@ -16,7 +16,10 @@ const REPORT = 'Report from event child "ci#1/e1" (event e1):\n\ne1 matters';
 type SessionEvent = { readonly type: string; readonly message?: unknown };
 
 /** A subscriber's retained session, reopened after a resume: it either is in a turn or idle when a report arrives. */
-function retainedSession(streaming: boolean) {
+function retainedSession(
+	streaming: boolean,
+	turn: () => Promise<unknown> = async () => (streaming ? "steer" : "prompt"),
+) {
 	const listeners = new Set<(event: SessionEvent) => void>();
 	const handle = {
 		runId: RUN_ID,
@@ -33,7 +36,7 @@ function retainedSession(streaming: boolean) {
 		followUp: async () => {},
 		pause: async () => {},
 		resume: async () => undefined,
-		sendUserMessage: async () => (streaming ? "steer" : "prompt"),
+		sendUserMessage: turn,
 		subscribe: (listener: (event: SessionEvent) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -83,34 +86,23 @@ async function flush(): Promise<void> {
 	for (let turn = 0; turn < 5; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-test("a report queued into a subscriber's running turn counts as saved only when the session saves that report (#4311)", async () => {
+test("a report queued into a subscriber's running turn counts as saved only when that turn ends (#4311)", async () => {
 	const session = retainedSession(true);
 	const { saved } = await deliverTo(session.handle);
 	const isSaved = watchSettled(saved);
-	const notIt: SessionEvent[] = [
-		{ type: "message_end" },
-		{ type: "message_end", message: { role: "user" } },
-		{ type: "message_end", message: { role: "assistant", content: REPORT } },
-		{ type: "message_end", message: { role: "user", content: "another message" } },
-		{ type: "message_end", message: { role: "user", content: [{ type: "image", data: "x" }] } },
-		{ type: "message_update", message: { role: "user", content: REPORT } },
+	const notYet: SessionEvent[] = [
+		{ type: "message_end", message: { role: "user", content: "a rewritten report" } },
+		{ type: "agent_start" },
+		{ type: "message_update" },
+		{ type: "turn_end" },
 	];
-	for (const event of notIt) {
+	for (const event of notYet) {
 		session.emit(event);
 		await flush();
 		assert.equal(isSaved(), false, JSON.stringify(event));
 	}
 	assert.equal(session.listeners.size, 1);
-	session.emit({
-		type: "message_end",
-		message: {
-			role: "user",
-			content: [
-				{ type: "image", data: "x" },
-				{ type: "text", text: REPORT },
-			],
-		},
-	});
+	session.emit({ type: "agent_end" });
 	await flush();
 	assert.equal(isSaved(), true);
 	assert.equal(session.listeners.size, 0);
@@ -120,6 +112,28 @@ test("a report to an idle subscriber counts as saved once the turn it started en
 	const session = retainedSession(false);
 	const { saved } = await deliverTo(session.handle);
 	await saved;
+	assert.equal(session.listeners.size, 0);
+});
+
+test("a report that starts an idle subscriber's turn counts as saved once that turn saved its first user message (#4311)", async () => {
+	const session = retainedSession(false, () => new Promise(() => {}));
+	const delivery = deliverTo(session.handle);
+	await flush();
+	session.emit({ type: "message_end", message: { role: "user" } });
+	session.emit({ type: "agent_start" });
+	const { saved } = await delivery;
+	const isSaved = watchSettled(saved);
+	for (const event of [
+		{ type: "message_end", message: { role: "assistant" } },
+		{ type: "message_update", message: { role: "user" } },
+	]) {
+		session.emit(event);
+		await flush();
+		assert.equal(isSaved(), false, JSON.stringify(event));
+	}
+	session.emit({ type: "message_end", message: { role: "user" } });
+	await flush();
+	assert.equal(isSaved(), true);
 	assert.equal(session.listeners.size, 0);
 });
 
