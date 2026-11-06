@@ -12,7 +12,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";
-import type { DetachedToolResult } from "../src/core/agent-session-detached-tools.js";
+import type { DetachedCallFailure, DetachedToolResult } from "../src/core/agent-session-detached-tools.js";
 import type {
 	ExtensionFactory,
 	ExtensionUIContext,
@@ -23,6 +23,7 @@ import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { QuestionnaireResult, QuestionParams } from "../src/core/tools/ask-user-question/tool/types.js";
+import { isTaskToolError, rehydrateTaskToolError } from "../src/core/tools/shell-task-status.js";
 import { parkWorkflowStageForRelease } from "../src/index.js";
 import { waitTool } from "./helpers/detached-tools.js";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
@@ -252,14 +253,19 @@ describe("a stage's shell wait (#4374)", () => {
 		await restarted.session.resumeDetachedTurn([result]);
 
 		assert.equal(result.isError, true);
-		assert.deepEqual(result.result.details, {
-			error: {
-				name: "TaskToolError",
-				code: "UnknownTask",
-				message: (result.result.content[0] as { readonly text: string }).text,
-				taskId: "task-of-a-dead-process",
-			},
-		});
+		const { error } = result.result.details as { readonly error: DetachedCallFailure };
+		assert.ok(isTaskToolError(error));
+		assert.deepEqual(
+			[error.code, error.fields, error.retryable, error.message],
+			[
+				"UnknownTask",
+				{ taskId: "task-of-a-dead-process" },
+				false,
+				(result.result.content[0] as { readonly text: string }).text,
+			],
+		);
+		assert.equal(typeof error.hint, "string");
+		assert.equal(rehydrateTaskToolError(JSON.parse(JSON.stringify(error)))?.taskId, "task-of-a-dead-process");
 		assert.deepEqual(
 			toolResults(restarted).map((recorded) => [recorded.id, recorded.isError]),
 			[["w-1", true]],
@@ -525,6 +531,97 @@ describe("a detached call's failure (#4374)", () => {
 				[true, undefined],
 			],
 		);
+	});
+
+	test("carries a thrown error's hint, retryability, JSON-safe fields and cause chain when it has no JSON form of its own (#4374)", async () => {
+		const ci = waitTool();
+		const harness = await session({ store: new MemorySessionStore(), customTools: [ci.definition] });
+		harness.session.setToolDetachment({ afterMs: 0 });
+		harness.setResponses([
+			fauxAssistantMessage(
+				["ci-1", "ci-2", "ci-3", "ci-4"].map((id) => fauxToolCall("wait_for_ci", { run: id }, { id })),
+				{ stopReason: "toolUse" },
+			),
+		]);
+		await harness.session.prompt("watch four runs");
+		const calls = harness.session.takeDetachedToolCalls();
+		const lost = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+
+		ci.fail(
+			0,
+			Object.assign(new Error("the runner is gone", { cause: lost }), {
+				code: "RUNNER_GONE",
+				hint: "Start the run again.",
+				retryable: true,
+				fields: { runner: "ci-7", attempt: 2, idle: false, region: null },
+			}),
+		);
+		ci.fail(
+			1,
+			Object.assign(new Error("the runner is gone"), {
+				code: "RUNNER_GONE",
+				hint: 7,
+				retryable: "yes",
+				fields: { runner: "ci-7", nested: { runner: "ci-7" } },
+			}),
+		);
+		ci.fail(2, Object.assign(new Error("the runner is gone"), { code: "RUNNER_GONE", fields: null }));
+		ci.fail(3, Object.assign(new Error("the runner is gone"), { code: "RUNNER_GONE", fields: ["ci-7"] }));
+		const results = await Promise.all(calls.map((call) => call.result));
+
+		assert.deepEqual(
+			results.map((result) => (result.result.details as { readonly error: DetachedCallFailure }).error),
+			[
+				{
+					name: "Error",
+					code: "RUNNER_GONE",
+					message: "the runner is gone",
+					hint: "Start the run again.",
+					retryable: true,
+					fields: { runner: "ci-7", attempt: 2, idle: false, region: null },
+					cause: { name: "Error", code: "ECONNRESET", message: "connection reset" },
+				},
+				{ name: "Error", code: "RUNNER_GONE", message: "the runner is gone" },
+				{ name: "Error", code: "RUNNER_GONE", message: "the runner is gone" },
+				{ name: "Error", code: "RUNNER_GONE", message: "the runner is gone" },
+			],
+		);
+	});
+
+	test("an error whose own JSON form throws still settles as an error result, marked as a fallback (#4374)", async () => {
+		const ci = waitTool();
+		const harness = await session({ store: new MemorySessionStore(), customTools: [ci.definition] });
+		harness.session.setToolDetachment({ afterMs: 0 });
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "ci-1" }, { id: "ci-1" })], {
+				stopReason: "toolUse",
+			}),
+		]);
+		await harness.session.prompt("watch one run");
+		const [call] = harness.session.takeDetachedToolCalls();
+
+		ci.fail(
+			0,
+			Object.assign(new Error("the runner is gone"), {
+				code: "RUNNER_GONE",
+				hint: "Start the run again.",
+				toJSON() {
+					throw new TypeError("circular");
+				},
+			}),
+		);
+		const result = await call!.result;
+
+		assert.equal(result.isError, true);
+		assert.deepEqual(result.result.details, {
+			error: {
+				name: "Error",
+				code: "RUNNER_GONE",
+				message: "the runner is gone",
+				hint: "Start the run again.",
+				serialization: "fallback",
+			},
+		});
 	});
 });
 

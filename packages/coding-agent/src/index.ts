@@ -259,6 +259,8 @@ export {
 } from "./core/agent-session.js";
 export { AgentSessionBusyError, isAgentSessionBusyError } from "./core/agent-session-busy-error.ts";
 export type {
+	DetachedCallFailure,
+	DetachedCallFailureCause,
 	DetachedToolCall,
 	DetachedToolResult,
 	ToolDetachmentPolicy,
@@ -883,6 +885,14 @@ export {
 	ShellToolError,
 	type ShellToolErrorCode,
 } from "./core/tools/shell-errors.ts";
+export {
+	isTaskToolError,
+	rehydrateTaskToolError,
+	type SerializedTaskToolError,
+	TaskToolError,
+	type TaskToolErrorFields,
+	type TaskToolFailureCode,
+} from "./core/tools/shell-task-status.ts";
 export {
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,

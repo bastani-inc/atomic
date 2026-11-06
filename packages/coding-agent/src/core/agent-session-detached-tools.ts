@@ -10,6 +10,7 @@ import type {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
+import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
@@ -110,22 +111,67 @@ function errorToolResult(error: Error | DOMException | string | object): AgentTo
 
 /**
  * The typed failure a detached call's error result carries in `details.error`, so a host branches on its `code`
- * instead of its text: the error's own JSON form when it has one, otherwise its name, code and message. Undefined for
- * an error without a string `code`.
+ * instead of its text: the error's own JSON form when it has one, otherwise what its properties give. An error whose
+ * `toJSON()` throws gets the latter too, marked `serialization: "fallback"`. Undefined for an error without a string
+ * `code`.
  */
 function typedFailure(error: Error | DOMException | string | object): DetachedCallFailure | undefined {
 	if (!(error instanceof Error)) return undefined;
 	const { code } = error as { readonly code?: unknown };
 	if (typeof code !== "string") return undefined;
 	const json = (error as { readonly toJSON?: () => DetachedCallFailure }).toJSON;
-	return typeof json === "function" ? json.call(error) : { name: error.name, code, message: error.message };
+	if (typeof json !== "function") return failureOf(error, code);
+	try {
+		return json.call(error);
+	} catch {
+		return { ...failureOf(error, code), serialization: "fallback" };
+	}
 }
+
+function failureOf(error: Error, code: string): DetachedCallFailure {
+	const { hint, retryable, fields } = error as {
+		readonly hint?: unknown;
+		readonly retryable?: unknown;
+		readonly fields?: unknown;
+	};
+	const cause = serializeErrorCause(error.cause);
+	return {
+		name: error.name,
+		code,
+		message: error.message,
+		...(typeof hint === "string" ? { hint } : {}),
+		...(typeof retryable === "boolean" ? { retryable } : {}),
+		...(isErrorFields(fields) ? { fields } : {}),
+		...(cause === undefined ? {} : { cause }),
+	};
+}
+
+function isErrorFields(value: unknown): value is Readonly<Record<string, ErrorFieldValue>> {
+	if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) return false;
+	return Object.values(value).every(
+		(field) => field === null || ["string", "number", "boolean"].includes(typeof field),
+	);
+}
+
+/** A cause in a {@link DetachedCallFailure}'s chain, without stack traces. */
+export type DetachedCallFailureCause = {
+	readonly name: string;
+	readonly message: string;
+	readonly code?: string;
+	readonly cause?: DetachedCallFailureCause;
+};
 
 /** A detached call's typed failure, as its error result's `details.error` reports it. */
 export type DetachedCallFailure = {
 	readonly name: string;
 	readonly code: string;
 	readonly message: string;
+	readonly hint?: string;
+	readonly retryable?: boolean;
+	readonly fields?: Readonly<Record<string, ErrorFieldValue>>;
+	readonly cause?: DetachedCallFailureCause;
+	/** The error's own `toJSON()` threw, so this carries only what the error's properties give. */
+	readonly serialization?: "fallback";
 };
 
 /**
