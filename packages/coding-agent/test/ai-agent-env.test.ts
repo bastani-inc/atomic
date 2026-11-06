@@ -61,7 +61,12 @@ function runEntrypointProbe(entrypoint: string): string {
 		],
 		{
 			cwd: process.cwd(),
-			env: { ...process.env, AI_AGENT: "parent", ATOMIC_AI_AGENT_PROBE_FILE: probe },
+			env: {
+				...process.env,
+				AI_AGENT: "parent",
+				ATOMIC_AI_AGENT_PROBE_FILE: probe,
+				ATOMIC_CODING_AGENT_DIR: join(directory, "agent"),
+			},
 			encoding: "utf8",
 			timeout: REAL_ENTRYPOINT_PROBE_TIMEOUT_MS,
 		},

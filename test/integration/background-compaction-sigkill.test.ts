@@ -24,7 +24,7 @@ const SIGKILL_RESTART_TIMEOUT_MS = 2 * CHILD_STARTUP_AND_MARKER_TIMEOUT_MS;
 async function runUntilKilled(mode: "planning" | "ready", directory: string): Promise<string> {
 	const child = spawnProcess([process.execPath, "--import", "jiti/register", FIXTURE, mode, directory], {
 		cwd: ROOT,
-		env: { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") },
+		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") },
 	});
 	const stderr = new Response(child.stderr).text();
 	try {

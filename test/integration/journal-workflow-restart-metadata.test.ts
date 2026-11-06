@@ -25,7 +25,7 @@ for (const runtime of ["node", "bun"] as const) {
 			const directory = makeTempDirectory("journal-cached-stage-");
 			const fixture = join(ROOT, "test/fixtures/journal-cached-stage-restart.ts");
 			const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-			const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
+			const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 			const seeded = spawnSyncCollect([...command, fixture, "seed", directory], {
 				cwd: ROOT,
 				env: environment,
@@ -66,10 +66,12 @@ for (const runtime of ["node", "bun"] as const) {
 		async () => {
 			const directory = makeTempDirectory("journal-workflow-exit-");
 			const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
+			const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 			try {
 				for (const mode of ["pause-exit", "resume-user"]) {
 					const result = spawnSyncCollect([...command, FIXTURE, mode, directory], {
 						cwd: ROOT,
+						env: environment,
 						timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,
 					});
 					assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());

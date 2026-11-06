@@ -24,7 +24,7 @@ for (const runtime of ["node", "bun"] as const) {
 		async () => {
 			const directory = makeTempDirectory("journal-workflow-restart-");
 			const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-			const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
+			const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 			const child = spawnProcess([...command, FIXTURE, "start", directory], { cwd: ROOT, env: environment });
 			const stdout = new Response(child.stdout).text();
 			const stderr = new Response(child.stderr).text();

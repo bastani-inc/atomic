@@ -60,7 +60,7 @@ async function killThenResume(
 	// Real run ids are UUIDs, which Intercom requires to route a run's stages; each test runs its own.
 	const runId = randomUUID();
 	const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-	const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
+	const environment = { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "agent") };
 	const child = spawnProcess([...command, FIXTURE, mode, directory, String(STAGES), runId, scenario], {
 		cwd: ROOT,
 		env: environment,
