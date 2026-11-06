@@ -253,6 +253,7 @@ export async function dropSnapshotIndex(database: SqliteDatabase, prefix = ""): 
 		"snapshot_session_refs",
 		"snapshot_session_links",
 		"snapshot_session_records",
+		"snapshot_carried_refs",
 		"snapshot_collection",
 		"snapshot_index_sources",
 	])

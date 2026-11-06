@@ -2695,6 +2695,7 @@
 		"test/unit/worktree-snapshot-capture-mutants-cleanup.test.ts": 5,
 		"test/unit/worktree-snapshot-capture-mutants.test.ts": 1535,
 		"test/unit/worktree-snapshot-capture.test.ts": 2632,
+		"test/unit/worktree-snapshot-carried-references.test.ts": 768,
 		"test/unit/worktree-snapshot-collection-background.test.ts": 710,
 		"test/unit/worktree-snapshot-collection-counting.test.ts": 1160,
 		"test/unit/worktree-snapshot-collection-schedule.test.ts": 485,

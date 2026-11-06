@@ -55,6 +55,12 @@ export interface SnapshotIndexTables {
 	readonly sessionLinks: string;
 	/** `(session_id, seq, snapshot_id, hash)`: the blobs of each snapshot record a session entry carries. */
 	readonly sessionRecords: string;
+	/**
+	 * `(owner, hash)`: the blobs of each snapshot that dispatched work carries (#4503), once per row that carries it: a
+	 * pool work row (owner `work:<id>`) or a root's pool binding (owner `root:<run id>`). A reference lasts as long as its
+	 * row, whatever any run's status.
+	 */
+	readonly carriedRefs: string;
 	/** One row: the last collection's claim on the database clock and its outcome. */
 	readonly collection: string;
 	/** `(source, watermark, backfilled_through)`: how far the index covers each table that holds references. */
@@ -70,6 +76,7 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 		sessionRefs: `${p}snapshot_session_refs`,
 		sessionLinks: `${p}snapshot_session_links`,
 		sessionRecords: `${p}snapshot_session_records`,
+		carriedRefs: `${p}snapshot_carried_refs`,
 		collection: `${p}snapshot_collection`,
 		sources: `${p}snapshot_index_sources`,
 	});
@@ -263,6 +270,7 @@ const HEADER_SEQ = -1;
 
 type Column = (name: string) => string;
 const newRow: Column = (name) => `NEW.${name}`;
+const oldRow: Column = (name) => `OLD.${name}`;
 const storedRow: Column = (name) => name;
 
 /** `test` on a payload that may not be JSON: SQLite does not promise to stop at the first false term of an AND. */
@@ -310,6 +318,70 @@ function retainedByStatus(payload: string): string {
 
 function createTrigger(name: string, event: string, table: string, body: readonly string[], when?: string): string {
 	return `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === undefined ? "" : ` WHEN ${when}`} BEGIN ${body.join("; ")}; END;`;
+}
+
+/** A table whose rows each carry the snapshot that dispatched work restores its tree from (#4503). */
+interface CarriedSnapshots {
+	readonly name: string;
+	readonly table: string;
+	/** The prefix of each row's owner in {@link SnapshotIndexTables.carriedRefs}, before the row's `key`. */
+	readonly owner: "work" | "root";
+	readonly key: string;
+	/** The JSON column that holds the snapshot, at `path`. */
+	readonly json: string;
+	readonly path: string;
+	/** Text `json` holds whenever its row carries a snapshot, so a row that carries none costs the index nothing. */
+	readonly marker?: string;
+}
+
+/**
+ * Indexes the blobs of the snapshot each row of `carried.table` carries as the row's references, from its insert until
+ * its delete; an update of the snapshot replaces them. A row whose JSON SQLite cannot parse references nothing, so a
+ * write never fails on the index. No statement inserts a reference that exists already: an upsert's update runs its
+ * triggers under its own conflict policy, which overrides their `OR IGNORE`.
+ */
+function carriedSource(t: SnapshotIndexTables, carried: CarriedSnapshots): IndexSource {
+	const { table, key, json, path, marker } = carried;
+	const owner = (row: Column) => `'${carried.owner}:' || ${row(key)}`;
+	const carries = (row: Column) => (marker === undefined ? undefined : `instr(${row(json)}, '${marker}') > 0`);
+	const rowOf = (row: Column) =>
+		`${owner(row)} AS owner, CASE WHEN json_valid(${row(json)}) THEN ${row(json)} ELSE '{}' END AS snapshot`;
+	const index = (rows: string) =>
+		[
+			{
+				from: `, json_each(r.snapshot, '${path}.chain') AS link`,
+				hash: `json_extract(r.snapshot, link.fullkey || '.patch')`,
+			},
+			{ from: "", hash: `json_extract(r.snapshot, '${path}.bundle.blob')` },
+		].map(
+			({ from, hash }) =>
+				`INSERT OR IGNORE INTO ${t.carriedRefs} (owner, hash) SELECT DISTINCT r.owner, ${hash} FROM ${rows} AS r${from} WHERE typeof(${hash}) = 'text' AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS held WHERE held.owner = r.owner AND held.hash = ${hash})`,
+		);
+	const inserted = `(SELECT ${rowOf(newRow)})`;
+	const release = `DELETE FROM ${t.carriedRefs} WHERE owner = ${owner(oldRow)}`;
+	const triggers = {
+		insert: `${table}_snapshot_carried_insert`,
+		update: `${table}_snapshot_carried_update`,
+		delete: `${table}_snapshot_carried_delete`,
+	};
+	return {
+		name: carried.name,
+		table,
+		triggers: Object.values(triggers),
+		createTriggers: [
+			createTrigger(triggers.insert, "INSERT", table, index(inserted), carries(newRow)),
+			createTrigger(
+				triggers.update,
+				`UPDATE OF ${json}`,
+				table,
+				[release, ...index(inserted)],
+				marker === undefined ? undefined : `${carries(oldRow)} OR ${carries(newRow)}`,
+			),
+			createTrigger(triggers.delete, "DELETE", table, [release], carries(oldRow)),
+		].join("\n"),
+		backfill: index(storedRows(table, [rowOf(storedRow)], carries(storedRow) ?? "1")),
+		reset: [`DELETE FROM ${t.carriedRefs} WHERE owner LIKE '${carried.owner}:%'`],
+	};
 }
 
 function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSource[] {
@@ -455,7 +527,26 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
-	return [eventsSource, runsSource, entriesSource];
+	// What a shared-placement root carries to its children (#4503): the snapshot each queued pool work row carries, and
+	// the one of the root's own binding, which its pool records while it is prepared, children queued or not.
+	const workSource = carriedSource(t, {
+		name: "journal-pool-work",
+		table: `${runs}_work`,
+		owner: "work",
+		key: "id",
+		json: "descriptor",
+		path: "$.execution.workspaceSnapshot",
+		marker: '"workspaceSnapshot"',
+	});
+	const rootSource = carriedSource(t, {
+		name: "journal-pool-root-snapshot",
+		table: `${runs}_pool_root_snapshot`,
+		owner: "root",
+		key: "root",
+		json: "snapshot",
+		path: "$",
+	});
+	return [eventsSource, runsSource, entriesSource, workSource, rootSource];
 }
 
 /** Creates the blob table and the tables of its reference index that are missing. */
@@ -473,6 +564,8 @@ async function createSnapshotIndexTables(transaction: SqliteExecutor, t: Snapsho
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
 		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID;
 		CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
+		CREATE TABLE IF NOT EXISTS ${t.carriedRefs} (owner TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (owner, hash)) STRICT, WITHOUT ROWID;
+		CREATE INDEX IF NOT EXISTS ${t.carriedRefs}_hash ON ${t.carriedRefs} (hash);
 		CREATE TABLE IF NOT EXISTS ${t.collection} (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT;
 		INSERT OR IGNORE INTO ${t.collection} (id) VALUES (1);
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID;
@@ -543,17 +636,19 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
-	 * Opens the table, creating it in its own transaction when it is missing. A store that already has the table opens
-	 * without taking the write lock.
-	 */
-	/**
-	 * Opens the blob table and its reference index, creating them in their own transaction when they are missing, and
-	 * indexes referencing tables created since. A store whose tables and index exist opens without the write lock.
+	 * Opens the blob table and its reference index, creating the tables that are missing in their own transaction, such
+	 * as those an index written by an earlier build lacks, and indexes referencing tables created since. A store whose
+	 * tables and index exist opens without the write lock.
 	 */
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const t = snapshotIndexTables(prefix);
-		const exists = await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", t.sources);
-		if (!exists) await database.transaction((transaction) => createSnapshotIndexTables(transaction, t));
+		const tables = Object.values(t);
+		const present = await database.all(
+			`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+			...tables,
+		);
+		if (present.length < tables.length)
+			await database.transaction((transaction) => createSnapshotIndexTables(transaction, t));
 		const store = new SqlSnapshotBlobStore(database, t, indexSources(prefix, t));
 		await store.installIndex();
 		return store;
@@ -679,12 +774,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Deletes every blob stored or re-stored at least `graceSeconds` ago on the database clock that no retained snapshot
-	 * references, in batches of {@link SNAPSHOT_COLLECTION_BATCH}, and resolves with the hashes deleted. Each batch is
-	 * one write transaction whose delete re-checks age and references in the same statement, so a reference published
-	 * before the batch commits keeps its blob and a process killed mid-collection leaves only garbage. Each batch's page
-	 * holds only blobs it can delete, so a sweep started again after a process exited makes progress even when the
-	 * oldest blobs are all retained. Reads the reference index and the blob table's age index, never a journal or a
-	 * session. Ages are counted in whole seconds, so a blob can stay up to a second past `graceSeconds`, never less.
+	 * and no snapshot dispatched work carries references, in batches of {@link SNAPSHOT_COLLECTION_BATCH}, and resolves
+	 * with the hashes deleted. Each batch is one write transaction whose delete re-checks age and references in the same
+	 * statement, so a reference published before the batch commits keeps its blob and a process killed mid-collection
+	 * leaves only garbage. Each batch's page holds only blobs it can delete, so a sweep started again after a process
+	 * exited makes progress even when the oldest blobs are all retained. Reads the reference index and the blob table's
+	 * age index, never a journal or a session. Ages are counted in whole seconds, so a blob can stay up to a second past
+	 * `graceSeconds`, never less.
 	 *
 	 * Every batch first checks, in its own transaction, that every referencing table has its triggers and a finished
 	 * backfill, as {@link completeIndex} leaves them. When one does not, because a table appeared or lost its triggers
@@ -704,7 +800,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					(record.session_id, record.snapshot_id) IN (${this.sessionHeads()})
 					OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
 				)
-			)`;
+			) AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS carried WHERE carried.hash = ${t.blobs}.hash)`;
 		const minimumAge = collectableAge(options.graceSeconds);
 		const deleted: string[] = [];
 		let cursor: PageRow | undefined;

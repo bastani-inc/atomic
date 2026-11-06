@@ -65,8 +65,6 @@ export async function fixture(
 		workspaceWorktree?: string;
 		/** The root's worktree snapshot settings. */
 		snapshots?: WorktreeSnapshotSettingsInput;
-		/** How often the root refreshes the blobs of the snapshots its waiting children carry. */
-		snapshotRefreshMs?: number;
 		claimWindowMs?: number;
 		admission?: AdmissionConfiguration;
 		maxLoadPerCpu?: number;
@@ -103,7 +101,6 @@ export async function fixture(
 		...(bound === undefined ? {} : { workspace: bound }),
 		...(options.workspaceWorktree === undefined ? {} : { workspaceWorktree: options.workspaceWorktree }),
 		...(options.snapshots === undefined ? {} : { snapshots: options.snapshots }),
-		...(options.snapshotRefreshMs === undefined ? {} : { snapshotRefreshMs: options.snapshotRefreshMs }),
 		...(options.admission === undefined ? {} : { admission: options.admission }),
 		...(options.maxLoadPerCpu === undefined ? {} : { maxLoadPerCpu: options.maxLoadPerCpu }),
 		...(options.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: options.maxWorkerRssBytes }),
