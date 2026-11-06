@@ -18,14 +18,11 @@ import {
 	removeTempDirectory,
 	type SpawnedProcess,
 	spawnProcess,
-	spawnSyncCollect,
 } from "../helpers/runtime.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
 /** Spawning Bun children that copy thousands of events is structural cost, not a slow test. */
 const CHAOS_TEST_TIMEOUT_MS = 120_000;
-const FORKER_STOP_TIMEOUT_MS = 15_000;
-const FORKER_STOP_POLL_MS = 20;
 const child = join(import.meta.dirname, "../fixtures/fork-chaos-child.ts");
 const definition = workflow({ name: "chaos-source", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
 const directories: string[] = [];
@@ -138,11 +135,14 @@ interface Forker {
 	readonly stderr: Promise<string>;
 }
 
-/** A forking child process; every one is killed and reaped after its test, whatever the test's outcome. */
+/**
+ * A forking child process; every one is killed and reaped after its test, whatever the test's outcome. One that holds
+ * after its claim stays there until its stdin is closed.
+ */
 function spawnForker(
 	journal: ChaosJournal,
 	attempts: number,
-	options: { readonly fromStage?: string; readonly skewMs?: number; readonly stopAfterClaim?: boolean } = {},
+	options: { readonly fromStage?: string; readonly skewMs?: number; readonly holdAfterClaim?: boolean } = {},
 ): Forker {
 	const spawned = spawnProcess(
 		[
@@ -153,9 +153,9 @@ function spawnForker(
 			String(attempts),
 			options.fromStage ?? "",
 			String(options.skewMs ?? 0),
-			options.stopAfterClaim === true ? "1" : "0",
+			options.holdAfterClaim === true ? "1" : "0",
 		],
-		{ stdout: "pipe", stderr: "pipe" },
+		{ stdin: options.holdAfterClaim === true ? "pipe" : "ignore", stdout: "pipe", stderr: "pipe" },
 	);
 	const stderr = readStreamText(spawned.stderr);
 	async function* lines(): AsyncGenerator<Record<string, unknown>> {
@@ -180,19 +180,6 @@ async function until(lines: AsyncGenerator<Record<string, unknown>>, event: stri
 	for (let next = await lines.next(); next.done !== true; next = await lines.next())
 		if (next.value.event === event) return next.value;
 	assert.fail(`the forker exited before ${event}`);
-}
-
-async function untilStopped(pid: number): Promise<void> {
-	const deadline = Date.now() + FORKER_STOP_TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		const result = spawnSyncCollect(["ps", "-o", "stat=", "-p", String(pid)], {
-			timeout: FORKER_STOP_TIMEOUT_MS,
-		});
-		assert.equal(result.exitCode, 0, `cannot inspect forker ${pid}: ${result.stderr.toString()}`);
-		if (result.stdout.toString().trim().startsWith("T")) return;
-		await new Promise((resolve) => setTimeout(resolve, FORKER_STOP_POLL_MS));
-	}
-	assert.fail(`forker ${pid} did not stop within ${FORKER_STOP_TIMEOUT_MS}ms`);
 }
 
 /** Ages every lease on the run past the live window, as time passing on the journal's own clock would. */
@@ -250,11 +237,10 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const journal = await seededJournal("fork-chaos-stop", 50);
 		const before = await sourceHash(journal.path, journal.sourceId);
-		const stopped = spawnForker(journal, 1, { skewMs: 3_600_000, stopAfterClaim: true });
+		const stopped = spawnForker(journal, 1, { skewMs: 3_600_000, holdAfterClaim: true });
 		await until(stopped.lines, "claimed");
 		try {
-			assert.ok(stopped.process.pid !== undefined);
-			await untilStopped(stopped.process.pid);
+			stopped.process.kill("SIGSTOP");
 			for (const skew of [-3_600_000, 0, 3_600_000]) {
 				const now = Date.now.bind(Date);
 				vi.spyOn(Date, "now").mockImplementation(() => now() + skew);
@@ -268,6 +254,7 @@ test.skipIf(process.platform === "win32")(
 			const fenced = await forkInProcess(journal);
 			assert.ok(fenced.runId);
 		} finally {
+			stopped.process.stdin?.end();
 			stopped.process.kill("SIGCONT");
 		}
 		const lost = await until(stopped.lines, "attempt");

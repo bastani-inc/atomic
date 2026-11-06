@@ -1,3 +1,4 @@
+import { readSync } from "node:fs";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { isForkError } from "../../packages/workflows/src/durable/fork-errors.js";
 import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
@@ -7,9 +8,25 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 /**
  * Forks a run in a SQLite journal file from a separate process, for the fork chaos tests. Prints one JSON line per
  * event: `claimed` once the source claim is taken, `copying` right before the single fork transaction, then one
- * `attempt` line per fork. Usage: fork-chaos-child.ts <path> <sourceRunId> <attempts> [fromStage] [skewMs] [stopAfterClaim]
+ * `attempt` line per fork. Usage: fork-chaos-child.ts <path> <sourceRunId> <attempts> [fromStage] [skewMs] [holdAfterClaim]
  */
-const [path, sourceRunId, attemptsText, fromStage, skewText, stopAfterClaim] = process.argv.slice(2);
+const [path, sourceRunId, attemptsText, fromStage, skewText, holdAfterClaim] = process.argv.slice(2);
+
+/**
+ * How long a held child sleeps after printing `claimed` before it blocks on stdin, so the parent's SIGSTOP usually
+ * lands before the child is parked: the order that left a child stopping itself stopped for good (#4432).
+ */
+const PARENT_STOP_WINDOW_MS = 250;
+
+/**
+ * Keeps the process at the claim it just took until the parent closes stdin. The read blocks the whole process, so the
+ * fork stays at its claim wherever the parent's SIGSTOP lands, and only the parent lets it go on.
+ */
+function holdUntilReleased(): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, PARENT_STOP_WINDOW_MS);
+	readSync(0, Buffer.alloc(1));
+}
+
 const skewMs = Number(skewText ?? "0");
 if (skewMs !== 0) {
 	const now = Date.now.bind(Date);
@@ -18,14 +35,14 @@ if (skewMs !== 0) {
 const definition = workflow({ name: "chaos-source", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
 const journal = await openSqlRunJournal(path!);
 const takeover = journal.takeoverExpired.bind(journal);
-let stoppedAfterClaim = false;
+let heldAfterClaim = false;
 journal.takeoverExpired = async (runId, holderId, staleAfterMs) => {
 	const outcome = await takeover(runId, holderId, staleAfterMs);
 	if (outcome.status === "acquired" && holderId.startsWith("fork:")) {
 		console.log(JSON.stringify({ event: "claimed" }));
-		if (stopAfterClaim === "1" && !stoppedAfterClaim) {
-			stoppedAfterClaim = true;
-			process.kill(process.pid, "SIGSTOP");
+		if (holdAfterClaim === "1" && !heldAfterClaim) {
+			heldAfterClaim = true;
+			holdUntilReleased();
 		}
 	}
 	return outcome;
