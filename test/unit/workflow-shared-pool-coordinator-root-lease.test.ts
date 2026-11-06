@@ -80,6 +80,7 @@ test.skipIf(process.platform === "win32")(
 				journal: selection,
 				agentDir: join(directory, "host", "agent"),
 				maxWorkers: 2,
+				restore: false,
 				hostId: "host-b",
 				workerEntry: stubWorker,
 			});

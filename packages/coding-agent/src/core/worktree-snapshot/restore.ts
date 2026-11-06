@@ -23,7 +23,15 @@ import {
 	WorkspaceRestoreError,
 	type WorkspaceRestoreErrorFields,
 } from "./errors.ts";
-import { type GitRunOptions, type GitRunResult, gitText, nulFields, runGit } from "./git.ts";
+import {
+	type GitExecutable,
+	type GitRunOptions,
+	type GitRunResult,
+	gitText,
+	nulFields,
+	runGit,
+	withWorktreeSnapshotGit,
+} from "./git.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord } from "./records.ts";
 import {
@@ -44,6 +52,11 @@ export interface RestoreWorktreeSnapshotOptions {
 	readonly storeDir?: string;
 	readonly onWarning?: (warning: WorktreeRestoreWarning) => void;
 	readonly signal?: AbortSignal;
+	/**
+	 * The Git this restore runs, with the environment it needs. Default: the Git every snapshot operation resolves,
+	 * provisioned when this machine has none.
+	 */
+	readonly git?: GitExecutable;
 }
 
 export interface RestoredWorktree {
@@ -729,7 +742,8 @@ function resolveSnapshot(
 /**
  * Restores a snapshot, or the snapshot a binding names, into a new worktree over the host's shared object store for
  * its repository, and returns the worktree only after its HEAD and recomputed tree match. Checks the target and every
- * blob before writing to the target; on failure removes what it created and throws a typed error.
+ * blob before writing to the target; on failure removes what it created and throws a typed error. With `git`, every Git
+ * command of the restore runs that executable.
  */
 export async function restoreWorktree(
 	target: WorkspaceBinding | WorktreeSnapshot,
@@ -741,6 +755,16 @@ export async function restoreWorktree(
 	if (options.into !== undefined && (typeof options.into !== "string" || options.into.length === 0)) {
 		throw new WorkspaceConfigError("sdk", "into", "a directory path");
 	}
+	if (options.git !== undefined && (typeof options.git?.path !== "string" || options.git.path.length === 0)) {
+		throw new WorkspaceConfigError("sdk", "git", "a Git executable with a non-empty path");
+	}
+	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options));
+}
+
+async function restoreValidated(
+	target: WorkspaceBinding,
+	options: RestoreWorktreeSnapshotOptions,
+): Promise<RestoredWorktree> {
 	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);

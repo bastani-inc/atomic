@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { type GitProvisionError, getAgentDir, getGitStatus, isGitProvisionError, resolveGit } from "@bastani/atomic";
+import { join } from "node:path";
+import { type GitProvisionError, getAgentDir, isGitProvisionError, resolveGit, resolveGitSync } from "@bastani/atomic";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
@@ -20,7 +21,9 @@ import {
 import { PoolCoordinator } from "./pool-coordinator.js";
 import { poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
 import { processContainmentAvailable } from "./public-pool.js";
+import { RestoreBackoff } from "./restore-backoff.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
+import { snapshotRestore } from "./snapshot-restore.js";
 import type {
 	WorkerHostFailure,
 	WorkerHostGit,
@@ -28,6 +31,7 @@ import type {
 	WorkflowWorkerHostOptions,
 	WorkflowWorkerHostStats,
 } from "./worker-host-types.js";
+import type { WorkspaceRestore } from "./workspace-binding.js";
 
 export type {
 	SharedJournalSelection,
@@ -74,15 +78,15 @@ function validated(options: WorkflowWorkerHostOptions): void {
 			throw new WorkerPlacementConfigError("sdk", `labels.${key}`, "invalid-option", "labels are strings");
 	if (options.hostId !== undefined && (options.hostId === "" || options.hostId.includes("/")))
 		throw new WorkerPlacementConfigError("sdk", "hostId", "invalid-option", "a non-empty id without '/'");
-	if (options.restore !== undefined && typeof options.restore !== "function")
-		throw new WorkerPlacementConfigError("sdk", "restore", "invalid-option", "a function");
+	if (options.restore !== undefined && options.restore !== false && typeof options.restore !== "function")
+		throw new WorkerPlacementConfigError("sdk", "restore", "invalid-option", "a function, or false");
 	if (options.placement?.prefer !== undefined && typeof options.placement.prefer !== "function")
 		throw new WorkerPlacementConfigError("sdk", "placement.prefer", "invalid-option", "a function");
 	if (options.git !== undefined && (typeof options.git.path !== "string" || options.git.path === ""))
 		throw new WorkerPlacementConfigError("sdk", "git.path", "invalid-option", "a non-empty path");
 }
 
-/** Where a host's git comes from and, for a host that restores but has none, the setup problem that says so. */
+/** Where a host's git comes from and, for a host given a restore function but no git, the setup problem that says so. */
 interface HostGit {
 	readonly source: WorkerHostGitSource;
 	/** The git the host runs, when it has one: given as `options.git`, or the one `@bastani/atomic` resolves. */
@@ -92,9 +96,10 @@ interface HostGit {
 }
 
 /**
- * The git a worker host runs: the one `options.git` names, probed, or else the git `resolveGit()` from
- * `@bastani/atomic` resolves. Only a host with a restore port, which needs git, is provisioned a portable git; any other
- * host reports the git this machine has and never downloads one.
+ * The git a worker host runs: the one `options.git` names, probed, or else the git `@bastani/atomic` resolves, with
+ * the environment it needs. Only a host given a restore function, which needs git, is provisioned a portable git
+ * (`resolveGit()`); any other host takes the git this machine has (`resolveGitSync()`), never downloads one, and
+ * restores by default only with it.
  */
 async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
 	if (options.git !== undefined) {
@@ -103,17 +108,12 @@ async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
 			? { source, problem: sharedPoolProblems.gitUnavailable(options.git.path) }
 			: { source, command: options.git };
 	}
-	if (options.restore === undefined) {
-		const status = getGitStatus();
-		return status.source === "unavailable"
-			? { source: status.source }
-			: { source: status.source, command: { path: status.path, env: {} } };
-	}
 	try {
-		const resolved = await resolveGit();
+		const resolved = typeof options.restore === "function" ? await resolveGit() : resolveGitSync();
 		return { source: resolved.source, command: { path: resolved.path, env: gitVariables(resolved.env) } };
 	} catch (error) {
 		if (!isGitProvisionError(error)) throw error;
+		if (typeof options.restore !== "function") return { source: "unavailable" };
 		return { source: "unavailable", problem: sharedPoolProblems.gitNotProvided(error), cause: error };
 	}
 }
@@ -144,7 +144,7 @@ async function checkHostSetup(
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const problems = await sharedSelectionProblems(selection, agentDir);
 	const git = await hostGit(options);
-	if (options.restore !== undefined && git.problem !== undefined) problems.push(git.problem);
+	if (typeof options.restore === "function" && git.problem !== undefined) problems.push(git.problem);
 	if (!(await processContainmentAvailable())) problems.push(sharedPoolProblems.processContainmentUnavailable());
 	const [first, ...rest] = problems;
 	if (first !== undefined)
@@ -228,6 +228,8 @@ class WorkerHost implements WorkflowWorkerHost {
 	private lastDetach?: WorkerHostFailure;
 	private reported?: { readonly workers: number; readonly roots: string; readonly at: number };
 	private lastHealth?: string;
+	/** When this host restores each binding again whose restores failed, across every root it serves (#4416). */
+	private readonly restoreBackoff = new RestoreBackoff();
 
 	constructor(
 		readonly hostId: string,
@@ -236,6 +238,8 @@ class WorkerHost implements WorkflowWorkerHost {
 		private readonly durable: ReturnType<typeof poolDurableJournal>,
 		private readonly git: WorkerHostGitSource,
 		private readonly gitCommand: WorkerHostGit | undefined,
+		/** The restore port this host runs: given, the snapshot restore by default, or none. */
+		private readonly restorePort: WorkspaceRestore | undefined,
 		private readonly options: WorkflowWorkerHostOptions,
 	) {
 		this.timer = setInterval(() => {
@@ -251,7 +255,7 @@ class WorkerHost implements WorkflowWorkerHost {
 	}
 
 	private get restores(): boolean {
-		return this.options.restore !== undefined && this.git !== "unavailable";
+		return this.restorePort !== undefined;
 	}
 
 	private workerCount(): { workers: number; busy: number } {
@@ -379,7 +383,6 @@ class WorkerHost implements WorkflowWorkerHost {
 			attached: Promise.resolve(),
 			attachedAt: performance.now(),
 		};
-		const restore = this.restores ? this.options.restore : undefined;
 		(satellite as { attached: Promise<void> }).attached = coordinator
 			.attachSatellite({
 				root: root.root,
@@ -395,7 +398,8 @@ class WorkerHost implements WorkflowWorkerHost {
 				placement: {
 					host: this.hostId,
 					...(this.options.placement?.prefer === undefined ? {} : { prefer: this.options.placement.prefer }),
-					...(restore === undefined ? {} : { restore }),
+					restore: this.restorePort,
+					restoreBackoff: this.restoreBackoff,
 					...(this.gitCommand === undefined ? {} : { git: this.gitCommand }),
 					detached: (reason) => {
 						satellite.detached = true;
@@ -489,6 +493,31 @@ function withCleanupFailures(primary: unknown, cleanup: readonly unknown[]): unk
 }
 
 /**
+ * The restore port a worker host runs (#4416): the function it was given, or else #4245's worktree snapshot restore
+ * from the snapshots recorded in `shared`'s journal, with the host's own `git`, into worktrees under this host's agent
+ * directory. None for a host started with `restore: false` or without git: it takes bound work only when its tree is
+ * warm.
+ */
+function hostRestorePort(
+	options: WorkflowWorkerHostOptions,
+	git: WorkerHostGit | undefined,
+	shared: SqlSharedPool,
+	journal: RunJournal,
+	agentDir: string,
+): WorkspaceRestore | undefined {
+	if (options.restore === false || git === undefined) return undefined;
+	return (
+		options.restore ??
+		snapshotRestore({
+			recorded: (binding) => shared.recordedSnapshots(binding),
+			blobs: journal.snapshotBlobs,
+			storeDir: join(agentDir, "worktree-snapshots"),
+			git,
+		})
+	);
+}
+
+/**
  * Joins this host to the shared pools of every root whose pool runs on `journal` (#4310): roots started with
  * `workers: { placement: "shared" }` on a journal every host opens through a storage adapter. The host runs up to
  * `maxWorkers` workers for them, each claiming a root's children from the journal's queue under the root's current
@@ -512,6 +541,7 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 			durable,
 			git,
 			gitCommand,
+			hostRestorePort(options, gitCommand, shared, journal, agentDir),
 			options,
 		);
 	} catch (error) {

@@ -90,6 +90,7 @@ import {
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
+import { childPlacement } from "./placement-choice.js";
 import { WorkerPlacementConfigError } from "./placement-errors.js";
 import { PoolCoordinator, projectRootRun, traceAnchor, workerLogDirectory } from "./pool-coordinator.js";
 import {
@@ -1317,8 +1318,9 @@ export class LocalWorkerPool {
 				worktreeRootMappings: options.worktreeRootMappings,
 				executionMode: options.executionMode,
 				workspace: options.workspace,
-				// A child of a shared pool's bound root runs only where its tree is warm or restored (#4310).
-				...(this.options.workspace === undefined ? {} : { workspaceBinding: this.options.workspace }),
+				// A child of a shared pool, bound to a workspace of its own or to its root's, runs only where that tree is
+				// warm or restored (#4310, #4416).
+				...childPlacement(this.options.shared !== undefined, this.options.workspace, options.workspace),
 			}),
 		) as WorkflowSerializableObject;
 		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;

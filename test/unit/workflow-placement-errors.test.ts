@@ -20,7 +20,7 @@ import {
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "../../packages/workflows/src/workers/placement-errors.js";
-import { restoreUnavailable, type WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
+import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
 
 /** A #3109 bound workspace carries more than the binding's identity: its branch, among others. */
 const binding: WorkspaceBinding & { readonly branch: string } = {
@@ -112,9 +112,7 @@ test("a setup error lists every missing piece with its remedy, without secret va
 });
 
 test("a restore-unavailable error carries the binding's identity without credentials (#4310)", async () => {
-	const refused = await restoreUnavailable(binding, { signal: new AbortController().signal }).catch(
-		(error: Error) => error,
-	);
+	const refused = new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding));
 	assert.ok(isWorkspaceRestoreUnavailableError(refused));
 	assert.equal(refused.code, "workspace-restore-unavailable");
 	assert.equal(refused.reason, "no-restore-port");
@@ -401,7 +399,7 @@ test("restore and stale-stage errors carry exactly their facts (#4310)", () => {
 	const port = new WorkspaceRestoreUnavailableError("no-restore-port", identity);
 	assert.equal(
 		port.message,
-		"Workspace restore unavailable: tree t at h (workspace-restore-unavailable): this host has no restore port. Configure restore on startWorkflowWorkerHost, or run the work on a host that already has this tree.",
+		"Workspace restore unavailable: tree t at h (workspace-restore-unavailable): this host cannot run a restore. Install git on this host or pass a git that runs as git: { path } to startWorkflowWorkerHost, or run the work on a host that already has this tree.",
 	);
 	assert.deepEqual(port.fields(), { reason: "no-restore-port", binding: identity });
 	assert.deepEqual([port.childRunId, port.claimWindowMs, port.retryable], [undefined, undefined, false]);

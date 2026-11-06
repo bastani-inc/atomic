@@ -281,6 +281,20 @@ test("a worker host on Windows is refused before it opens the journal: its worke
 			"Shared worker pool setup incomplete for startWorkflowWorkerHost: missing process containment for pooled workers (this host runs win32), which their tool processes need (process-containment-unavailable). Run worker hosts on Linux or macOS.",
 		);
 		assert.equal(lines(opens), 0, "the journal was never opened");
+		const restoring = await refused<SharedPoolSetupError>(
+			startWorkflowWorkerHost({
+				journal: { adapter: countingAdapter, options: { log: opens } },
+				agentDir: join(directory, "agent"),
+				maxWorkers: 1,
+				restore: async () => directory,
+				git: { path: "git", env: {} },
+			}),
+		);
+		assert.deepEqual(
+			restoring.problems.map((problem) => problem.code),
+			["process-containment-unavailable"],
+			"a host whose git runs has no git problem to report with it (#4416)",
+		);
 	} finally {
 		Object.defineProperty(process, "platform", platform);
 		await removeLibsqlDirectory(directory);
@@ -807,7 +821,9 @@ test("each worker host option names what is wrong with it, before any journal or
 			[{ labels: { zone: "east", rack: 7 } }, "labels.rack", "labels are strings"],
 			[{ hostId: "" }, "hostId", "a non-empty id without '/'"],
 			[{ hostId: "east/1" }, "hostId", "a non-empty id without '/'"],
-			[{ restore: "/srv/tree" }, "restore", "a function"],
+			[{ restore: "/srv/tree" }, "restore", "a function, or false"],
+			[{ restore: true }, "restore", "a function, or false"],
+			[{ restore: null }, "restore", "a function, or false"],
 			[{ placement: { prefer: "/srv/tree" } }, "placement.prefer", "a function"],
 			[{ git: { path: "", env: {} } }, "git.path", "a non-empty path"],
 			[{ git: { path: 7, env: {} } }, "git.path", "a non-empty path"],

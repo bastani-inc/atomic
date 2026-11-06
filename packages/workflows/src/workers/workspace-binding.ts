@@ -1,5 +1,4 @@
 import type { WorkspaceBinding } from "@bastani/atomic";
-import { WorkspaceRestoreUnavailableError, workspaceBindingIdentity } from "./placement-errors.js";
 import type { WorkerHostGit } from "./worker-host-types.js";
 
 /**
@@ -18,8 +17,8 @@ export interface WorkspaceHookOptions {
 
 /**
  * Makes a binding's tree available on this host: resolves the path of a verified worktree whose current tree is
- * `binding.tree`, or rejects with a typed error. Injected on the worker host; shared placement builds no restore of
- * its own. A host that stops aborts `signal` and no longer waits for it.
+ * `binding.tree`, or rejects with a typed error. A worker host without one of its own restores from the worktree
+ * snapshots recorded in its shared journal (#4416). A host that stops aborts `signal` and no longer waits for it.
  */
 export type WorkspaceRestore = (binding: WorkspaceBinding, options: WorkspaceHookOptions) => Promise<string>;
 
@@ -32,10 +31,6 @@ export type WorkspacePreference = (
 	binding: WorkspaceBinding,
 	options: WorkspaceHookOptions,
 ) => string | undefined | Promise<string | undefined>;
-
-/** The restore port of a host that has none: every bound restore is refused, typed. */
-export const restoreUnavailable: WorkspaceRestore = (binding) =>
-	Promise.reject(new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding)));
 
 /** The identity of a binding as the queue matches it: its repository's remotes and its tree. */
 export function workspaceAffinityKey(binding: Pick<WorkspaceBinding, "remotes" | "tree">): string {

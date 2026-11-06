@@ -31,13 +31,16 @@ export interface WorkflowWorkerHostOptions {
 		readonly prefer?: WorkspacePreference;
 	};
 	/**
-	 * Makes a binding's tree available on this host and resolves a verified worktree path, or rejects typed. Without
-	 * it, or without git, this host takes bound work only when its tree is warm here.
+	 * Makes a binding's tree available on this host and resolves a verified worktree path, or rejects typed. Default:
+	 * the worktree snapshot restore, which rebuilds a binding's tree, uncommitted content included, from the snapshots
+	 * recorded in the shared journal and the binding's remotes, and runs only where this host has git already. `false`:
+	 * none. Without a restore, or without git, this host takes bound work only when its tree is warm here. A binding
+	 * whose restore fails waits a backoff before this host tries it again.
 	 */
-	readonly restore?: WorkspaceRestore;
+	readonly restore?: WorkspaceRestore | false;
 	/**
-	 * How this host runs git. Default: the git `resolveGit()` from `@bastani/atomic` resolves. A host with a restore port
-	 * is provisioned a portable git when this machine has none; any other host never downloads one.
+	 * How this host runs git. Default: the git `resolveGit()` from `@bastani/atomic` resolves. A host given a `restore`
+	 * function is provisioned a portable git when this machine has none; any other host never downloads one.
 	 */
 	readonly git?: WorkerHostGit;
 	/** Internal, tests only: the module forked for each worker instead of the shipped worker entry. */

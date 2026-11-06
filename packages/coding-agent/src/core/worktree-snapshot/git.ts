@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
@@ -28,6 +29,20 @@ const provisionedGit: GitExecutableResolver = async (signal) => {
 	return resolveGit({ signal });
 };
 let resolveExecutable: GitExecutableResolver = provisionedGit;
+
+/** The Git every snapshot command of one scope runs instead of the resolver's, such as one restore's. */
+const scopedExecutable = new AsyncLocalStorage<GitExecutable>();
+
+/**
+ * Runs `action` with every snapshot Git command it starts on `executable`, which no resolver is asked for; other
+ * operations of this process keep theirs. Undefined: `action` runs as it would without this call.
+ */
+export function withWorktreeSnapshotGit<T>(
+	executable: GitExecutable | undefined,
+	action: () => Promise<T>,
+): Promise<T> {
+	return executable === undefined ? action() : scopedExecutable.run(executable, action);
+}
 
 /**
  * Why a snapshot cannot be recorded with the Git already on this machine, checked without downloading one: recording
@@ -207,7 +222,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	options.signal?.throwIfAborted();
 	const excluded = excludedDirectory(options.cwd);
 	if (excluded !== undefined) throw excluded;
-	const executable = await resolveExecutable(options.signal);
+	const executable = scopedExecutable.getStore() ?? (await resolveExecutable(options.signal));
 	options.signal?.throwIfAborted();
 	const env = createGitEnvironment(
 		{ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GCM_INTERACTIVE: "never" },

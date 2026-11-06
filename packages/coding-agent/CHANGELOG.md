@@ -67,6 +67,7 @@
 - `session.subscribe(source, handler, options?)` subscribes an SDK session to an event stream. Each event is handled by `handler(event, child)`: `child.task()` runs a short-lived child session seeded with the event, and `child.report()` delivers a short `event_report` message into the session only when the event matters. Processed event ids are recorded in the session transcript, so a reopened session does not handle them again ([#4311](https://github.com/bastani-inc/atomic/issues/4311))
 - Event sources for `session.subscribe` and the workflow `ctx.subscribe`/`ctx.events`: `githubChecks`, `githubReviews`, `logTail`, `webhook` and `interval`, plus the `EventSource` interface for your own, and `publishEvent(subscriptionId, event)` to bridge a host's own webhooks. Failures are typed: `SubscriptionError` and its subclasses carry a stable `code`, fields and a `hint` ([#4311](https://github.com/bastani-inc/atomic/issues/4311))
 - `redactUrlCredentials(text)` is exported from `@bastani/atomic`: it removes the user info, which can hold a token, from every URL in a text ([#4378](https://github.com/bastani-inc/atomic/issues/4378))
+- `restoreWorktree` and `restoreWorktreeSnapshot` take `git: { path, env }`, the Git executable one restore runs instead of the one worktree snapshot operations resolve ([#4416](https://github.com/bastani-inc/atomic/issues/4416))
 
 ### Changed
 

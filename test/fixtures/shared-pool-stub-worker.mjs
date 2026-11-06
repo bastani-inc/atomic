@@ -1,7 +1,8 @@
 // Protocol-level stand-in for a worker of a shared pool (#4310), forked by the test/unit/workflow-shared-pool-coordinator*.test.ts files
 // through the pool's internal `workerEntry`. It speaks the real worker IPC protocol: it claims work, records where its
 // stage runs, publishes its run, and completes the work once SHARED_POOL_STUB_RELEASE exists (at once without it). It
-// answers every stage prompt it is given. Each claim is one line in SHARED_POOL_STUB_LOG: `<host> <work id> <cwd>`, and
+// answers every stage prompt it is given. Each claim is one line in SHARED_POOL_STUB_LOG: `<host> <work id> <cwd>`, then
+// the worktree of the #3109 workspace the child is bound to when it is bound to one, and
 // each answer one line `answer <run id> <stage id> <prompt id>`; its start options, with its pid, the first entry of its
 // PATH and its SHARED_POOL_GIT_MARKER, are the line `start <json>`. With SHARED_POOL_STUB_CRASH=1 it exits with status 1
 // right after recording where its stage runs, as a worker that crashed mid-child. On the host SHARED_POOL_STUB_HANG_HOST
@@ -97,7 +98,8 @@ for (;;) {
 		await delay(25);
 		continue;
 	}
-	appendFileSync(log, `${host} ${work.id} ${work.execution.cwd}\n`);
+	const bound = work.execution.workspace?.kind === "bound-workspace" ? ` ${work.execution.workspace.worktree}` : "";
+	appendFileSync(log, `${host} ${work.id} ${work.execution.cwd}${bound}\n`);
 	await request({ kind: "stage-workspace", runId: work.childRunId, stageId: "stage" });
 	if (process.env.SHARED_POOL_STUB_CRASH === "1") process.exit(1);
 	await request({

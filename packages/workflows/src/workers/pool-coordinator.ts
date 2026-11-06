@@ -71,7 +71,14 @@ import {
 	POOL_SUMMARY_INTERVAL_MS,
 } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
-import { choosePlacement, sharedSettlement } from "./placement-choice.js";
+import {
+	type BoundWait,
+	boundWait,
+	choosePlacement,
+	placedExecution,
+	sharedSettlement,
+	waitedMs,
+} from "./placement-choice.js";
 import {
 	isStaleStageLeaseError,
 	WorkspaceRestoreUnavailableError,
@@ -96,6 +103,7 @@ import {
 	SqlResourceAdmission,
 	unconfirmedProcessGroups,
 } from "./resource-admission.js";
+import { RestoreBackoff } from "./restore-backoff.js";
 import { RunChangesEncoder } from "./run-changes.js";
 import { runsWhilePaused } from "./stage-session-commands.js";
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
@@ -457,10 +465,15 @@ export interface SatellitePlacement {
 	readonly prefer?: WorkspacePreference;
 	/** The host's restore port, present only when one is configured and git is available. */
 	readonly restore?: WorkspaceRestore;
+	/**
+	 * When the host restores each binding again whose restores failed, shared by every root it serves (#4416). Without
+	 * it, the satellite keeps its own.
+	 */
+	readonly restoreBackoff?: RestoreBackoff;
 	/** Called once when the satellite stops serving its root: its lease was lost or the satellite failed. */
 	readonly detached: (reason: Error | undefined) => void;
 	/** Called with each failure of `prefer` or `restore`; the work it was for goes back to the queue. */
-	readonly placementFailed?: (error: Error) => void;
+	readonly placementFailed: (error: Error) => void;
 	/** The git the host runs: its workers run it first on their `PATH`, and its hooks are given it. */
 	readonly git?: WorkerHostGit;
 }
@@ -630,8 +643,10 @@ export class PoolCoordinator {
 	private readonly remoteRuns = new Map<string, PoolWorkToken>();
 	/** Work whose result reached the root. */
 	private readonly reportedResults = new Set<string>();
-	/** Since when this coordinator has seen each bound work item ready and unclaimed, by `performance.now()`. */
-	private readonly boundReadySince = new Map<string, number>();
+	/** How long each bound work item has waited for a host that runs it, by `performance.now()` (#4416). */
+	private readonly boundWaits = new Map<string, BoundWait>();
+	/** When this satellite restores each binding again whose restores failed, unless its host shares its own (#4416). */
+	private readonly restoreBackoff = new RestoreBackoff();
 	/** Activity of this host's attempts not relayed yet (a satellite). */
 	private readonly relayPending = new Map<string, PoolActivityEntry>();
 	/** Stages whose next input this coordinator is processing, by run and stage. */
@@ -2182,7 +2197,7 @@ export class PoolCoordinator {
 						// A child placed on a warm or restored worktree runs there, not in the root's recorded directory.
 						return claimed.worktree === undefined
 							? claimed.work
-							: { ...claimed.work, execution: { ...claimed.work.execution, cwd: claimed.worktree } };
+							: { ...claimed.work, execution: placedExecution(claimed.work.execution, claimed.worktree) };
 					}
 					const held = slot.work;
 					if (!held) throw new Error("Worker has no active attempt");
@@ -2318,8 +2333,9 @@ export class PoolCoordinator {
 	 * Claims work for one of this coordinator's workers. The root's own pool takes any ready work, or, when the pool is
 	 * shared, only work without a workspace binding: its host cannot vouch for a tree. A worker host chooses by
 	 * placement (#4310): bound work whose tree it has warm first, then the oldest work without a binding, or bound work
-	 * it can restore. Bound work it can neither find warm nor restore is never its to run, however long it waited. A
-	 * restored child runs at the restore's verified path; a failed restore puts the work back for another host.
+	 * it can restore and does not back off from. Bound work it can neither find warm nor restore is never its to run,
+	 * however long it waited. A restored child runs at the restore's verified path; a failed restore puts the work back,
+	 * as no attempt of the child, for another host, and this host backs off from the binding (#4416).
 	 */
 	private async claimFor(
 		queue: SqlPoolQueue,
@@ -2338,10 +2354,11 @@ export class PoolCoordinator {
 			const work = await queue.claim(lease, worker, definitions, leaseMs, shared ? { kind: "unbound" } : undefined);
 			return work === undefined ? undefined : { work };
 		}
+		const backoff = satellite.restoreBackoff ?? this.restoreBackoff;
 		const chosen = await choosePlacement(
 			await queue.readyCandidates(lease, definitions, PLACEMENT_CANDIDATES),
 			(binding) => this.warmWorktree(satellite, binding, slot.exited.signal),
-			satellite.restore !== undefined,
+			(binding) => satellite.restore !== undefined && !backoff.waiting(workspaceAffinityKey(binding)),
 		);
 		// A host that began draining or closing while it asked its hooks takes no more work.
 		if (chosen === undefined || this.draining || this.closed) return undefined;
@@ -2375,11 +2392,50 @@ export class PoolCoordinator {
 			await this.releaseHeld(work);
 			return undefined;
 		}
-		if ("path" in restored) return { work, worktree: restored.path };
-		satellite.placementFailed?.(restored.error);
-		// The work goes back to the queue for a host that can restore it; an attempt replaced meanwhile has nothing to put back.
-		await queue.releaseExited(lease, work);
+		if ("path" in restored) {
+			await this.restoreSucceeded(satellite, backoff, binding);
+			return { work, worktree: restored.path };
+		}
+		satellite.placementFailed(restored.error);
+		// The work goes back to the queue unplaced, for a host that can restore it; an attempt replaced meanwhile has
+		// nothing to put back.
+		await queue.releaseUnplaced(lease, work);
+		if (restored.lost !== true) await this.restoreFailed(satellite, backoff, binding, restored.error);
 		return undefined;
+	}
+
+	/**
+	 * Backs this host off from restoring `binding`, whose restore failed with `error` (#4416), and records the backoff in
+	 * the shared journal, where the root sees that this host cannot restore the binding for now. A record that fails is
+	 * reported as a placement failure; the host backs off all the same.
+	 */
+	private async restoreFailed(
+		satellite: SatellitePlacement,
+		backoff: RestoreBackoff,
+		binding: WorkspaceBinding,
+		error: Error,
+	): Promise<void> {
+		const key = workspaceAffinityKey(binding);
+		const waitMs = backoff.failed(key);
+		await this.sharedPool!.recordRestoreBackoff(satellite.host, key, waitMs, serializeError(error)).catch(
+			(recording: Error) => satellite.placementFailed(recording),
+		);
+	}
+
+	/**
+	 * Forgets this host's failed restores of `binding`, which it restored now, here and in the shared journal (#4416). A
+	 * record that fails is reported as a placement failure; the restored child runs all the same.
+	 */
+	private async restoreSucceeded(
+		satellite: SatellitePlacement,
+		backoff: RestoreBackoff,
+		binding: WorkspaceBinding,
+	): Promise<void> {
+		const key = workspaceAffinityKey(binding);
+		if (!backoff.succeeded(key)) return;
+		await this.sharedPool!.clearRestoreBackoff(satellite.host, key).catch((clearing: Error) =>
+			satellite.placementFailed(clearing),
+		);
 	}
 
 	/** Where this host has `binding`'s tree warm, as its `prefer` hook answered within {@link PREFERENCE_CACHE_MS}. */
@@ -2406,7 +2462,7 @@ export class PoolCoordinator {
 			path = answered.value;
 		} catch (error) {
 			// A host whose hook failed does not have the tree warm, as far as placement can tell; the host reports why.
-			satellite.placementFailed?.(error instanceof Error ? error : new Error(String(error)));
+			satellite.placementFailed(error instanceof Error ? error : new Error(String(error)));
 		}
 		if (this.preferences.size >= PREFERENCE_CACHE_ENTRIES) this.preferences.clear();
 		this.preferences.set(key, { path, at: now });
@@ -2415,8 +2471,9 @@ export class PoolCoordinator {
 
 	/**
 	 * Runs `action` while renewing `work`'s lease on the worker heartbeat. Its failure is returned, never thrown, and so
-	 * is a renewal that failed meanwhile: the attempt was replaced, or the root's lease moved, and its work is not handed
-	 * out. Once `signal` aborts (by default when the coordinator closes), it stops waiting for `action` and renewing.
+	 * is a renewal that failed meanwhile (`lost`): the attempt was replaced, or the root's lease moved, and its work is
+	 * not handed out. Once `signal` aborts (by default when the coordinator closes), it stops waiting for `action` and
+	 * renewing.
 	 */
 	private async whileHolding(
 		queue: SqlPoolQueue,
@@ -2425,7 +2482,7 @@ export class PoolCoordinator {
 		leaseMs: number,
 		action: (signal: AbortSignal) => Promise<string>,
 		signal: AbortSignal = this.closedSignal.signal,
-	): Promise<{ readonly path: string } | { readonly error: Error } | { readonly closed: true }> {
+	): Promise<{ readonly path: string } | { readonly error: Error; readonly lost?: true } | { readonly closed: true }> {
 		let renewal: Promise<void> | undefined;
 		let lost: Error | undefined;
 		const heartbeat = setInterval(() => {
@@ -2447,7 +2504,7 @@ export class PoolCoordinator {
 			const outcome = await this.untilClosed(action, signal);
 			if ("closed" in outcome) return outcome;
 			await renewal;
-			return lost === undefined ? { path: outcome.value } : { error: lost };
+			return lost === undefined ? { path: outcome.value } : { error: lost, lost: true };
 		} catch (error) {
 			return { error: error instanceof Error ? error : new Error(String(error)) };
 		} finally {
@@ -2561,8 +2618,10 @@ export class PoolCoordinator {
 	/**
 	 * What the root's own coordinator of a shared pool settles for work other hosts run (#4310): a result another host
 	 * recorded reaches the root; a child other hosts released as often as its attempt limit allows fails, as one this
-	 * host's workers lost would; and bound work that no capable live host claimed within the claim window fails with a
-	 * {@link WorkspaceRestoreUnavailableError}, since no host may run it anywhere but in its binding's tree.
+	 * host's workers lost would; and bound work that waited the claim window for a host that runs it while no live host
+	 * could restore its binding, as none can or each backs off from it after its restores failed (#4416), fails with a
+	 * {@link WorkspaceRestoreUnavailableError} whose cause is the last of those failures, since no host may run it
+	 * anywhere but in its binding's tree.
 	 */
 	private async settleShared(
 		queue: SqlPoolQueue,
@@ -2572,20 +2631,20 @@ export class PoolCoordinator {
 	): Promise<void> {
 		const local = new Set([...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work.id])));
 		const claimWindowMs = this.options?.shared?.claimWindowMs ?? 0;
-		let capable: boolean | undefined;
+		const capable = new Map<string, boolean>();
 		for (const work of rows) {
 			if (!this.attemptBase.has(work.id)) continue;
-			// Bound work's wait counts from when this coordinator first saw it ready.
-			if (work.state === "ready" && work.execution.workspaceBinding !== undefined)
-				this.boundReadySince.set(work.id, this.boundReadySince.get(work.id) ?? performance.now());
-			else this.boundReadySince.delete(work.id);
+			const now = performance.now();
+			const wait = boundWait(this.boundWaits.get(work.id), work, now);
+			if (wait === undefined) this.boundWaits.delete(work.id);
+			else this.boundWaits.set(work.id, wait);
 			const settlement = sharedSettlement(work, {
 				reported: this.reportedResults.has(work.id),
 				heldHere: local.has(work.id),
 				epoch: lease.epoch,
 				attempts: this.attempts(work),
 				maxAttempts: MAX_CHILD_ATTEMPTS,
-				readyForMs: performance.now() - (this.boundReadySince.get(work.id) ?? performance.now()),
+				readyForMs: waitedMs(wait, now),
 				claimWindowMs,
 			});
 			if (settlement === "report-result") await this.sendResult(work.id);
@@ -2593,16 +2652,23 @@ export class PoolCoordinator {
 				if (await queue.failUnclaimed(lease, work))
 					this.failWork(work, this.retryLimit(work, "worker-lost", undefined));
 			} else if (settlement === "claim-window-passed") {
-				capable ??= await shared.capableHostLive(this.root!, WORKER_HOST_TTL_MS);
-				if (capable || !(await queue.failUnclaimed(lease, work))) continue;
-				this.boundReadySince.delete(work.id);
+				const binding = work.execution.workspaceBinding as unknown as WorkspaceBinding;
+				const key = workspaceAffinityKey(binding);
+				let live = capable.get(key);
+				if (live === undefined) {
+					live = await shared.capableHostLive(this.root!, WORKER_HOST_TTL_MS, key);
+					capable.set(key, live);
+				}
+				if (live || !(await queue.failUnclaimed(lease, work))) continue;
+				this.boundWaits.delete(work.id);
+				const failure = await shared.restoreFailure(key);
 				this.failWork(
 					work,
-					new WorkspaceRestoreUnavailableError(
-						"no-capable-host",
-						workspaceBindingIdentity(work.execution.workspaceBinding as unknown as WorkspaceBinding),
-						{ childRunId: work.childRunId, claimWindowMs },
-					),
+					new WorkspaceRestoreUnavailableError("no-capable-host", workspaceBindingIdentity(binding), {
+						childRunId: work.childRunId,
+						claimWindowMs,
+						cause: failure === undefined ? undefined : rehydrateError(failure),
+					}),
 				);
 			}
 		}

@@ -1282,7 +1282,20 @@ export class SqlPoolQueue {
 	async failExited(lease: Lease, token: WorkLease): Promise<boolean> {
 		return this.settleExited(lease, token, "failed");
 	}
-	private async settleExited(lease: Lease, token: WorkLease, state: "ready" | "failed"): Promise<boolean> {
+	/**
+	 * Puts back work a worker host claimed but never handed to a worker, because the restore of its workspace failed
+	 * (#4416): ready again at the generation it had before the claim, so the claim counts as none of the child's
+	 * attempts. False when the claim no longer holds the work.
+	 */
+	async releaseUnplaced(lease: Lease, token: WorkLease): Promise<boolean> {
+		return this.settleExited(lease, token, "ready", 1);
+	}
+	private async settleExited(
+		lease: Lease,
+		token: WorkLease,
+		state: "ready" | "failed",
+		rewind: 0 | 1 = 0,
+	): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		return this.transaction(async (tx) => {
@@ -1299,7 +1312,12 @@ export class SqlPoolQueue {
 				row.epoch !== token.epoch
 			)
 				return false;
-			await tx.run(`UPDATE ${this.work} SET state = ?, worker = NULL, expires_at = 0 WHERE id = ?`, state, row.id);
+			await tx.run(
+				`UPDATE ${this.work} SET state = ?, worker = NULL, expires_at = 0, generation = ? WHERE id = ?`,
+				state,
+				Number(row.generation) - rewind,
+				row.id,
+			);
 			return true;
 		});
 	}

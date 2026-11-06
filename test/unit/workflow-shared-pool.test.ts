@@ -3,6 +3,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	GitUnavailableError,
+	isGitUnavailableError,
+	WorkspaceRestoreError,
+} from "../../packages/coding-agent/src/index.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -17,11 +22,18 @@ import {
 import {
 	JournalInvalidTextError,
 	type Lease,
+	RUN_EVENT_TYPES,
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
-import { isStaleStageLeaseError, StaleStageLeaseError } from "../../packages/workflows/src/workers/placement-errors.js";
-import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
+import {
+	isStaleStageLeaseError,
+	StaleStageLeaseError,
+	WorkspaceRestoreUnavailableError,
+	workspaceBindingIdentity,
+} from "../../packages/workflows/src/workers/placement-errors.js";
+import { type WorkspaceBinding, workspaceAffinityKey } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { sleep } from "../helpers/runtime.js";
@@ -93,6 +105,7 @@ test("shared placement keeps the pool's tables in the shared journal, under its 
 			"acme_wf_runs_stage_inputs",
 			"acme_wf_runs_stage_leases",
 			"acme_wf_runs_stage_workspaces",
+			"acme_wf_runs_pool_restore_backoffs",
 		])
 			assert.ok(tables.includes(name), `${name} is in the journal`);
 		assert.deepEqual(
@@ -350,7 +363,7 @@ test("stages record their workspace; hosts register; activity of current attempt
 			"a replaced attempt records nothing",
 		);
 
-		assert.equal(await shared.capableHostLive("root", 60_000), false);
+		assert.equal(await shared.capableHostLive("root", 60_000, workspaceAffinityKey(binding)), false);
 		await shared.reportHost({
 			host: "host-c",
 			labels: {},
@@ -360,7 +373,11 @@ test("stages record their workspace; hosts register; activity of current attempt
 			maxWorkers: 1,
 			roots: ["root"],
 		});
-		assert.equal(await shared.capableHostLive("root", 60_000), false, "a host without git cannot restore");
+		assert.equal(
+			await shared.capableHostLive("root", 60_000, workspaceAffinityKey(binding)),
+			false,
+			"a host without git cannot restore",
+		);
 		await shared.reportHost({
 			host: "host-d",
 			labels: {},
@@ -370,7 +387,11 @@ test("stages record their workspace; hosts register; activity of current attempt
 			maxWorkers: 1,
 			roots: ["another-root"],
 		});
-		assert.equal(await shared.capableHostLive("root", 60_000), false, "a host that does not serve the root");
+		assert.equal(
+			await shared.capableHostLive("root", 60_000, workspaceAffinityKey(binding)),
+			false,
+			"a host that does not serve the root",
+		);
 		await shared.reportHost({
 			host: "host-b",
 			labels: { zone: "east" },
@@ -380,9 +401,13 @@ test("stages record their workspace; hosts register; activity of current attempt
 			maxWorkers: 4,
 			roots: ["another-root", "root"],
 		});
-		assert.equal(await shared.capableHostLive("root", 60_000), true);
+		assert.equal(await shared.capableHostLive("root", 60_000, workspaceAffinityKey(binding)), true);
 		await f.database.run(`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = 0`);
-		assert.equal(await shared.capableHostLive("root", 60_000), false, "a host that stopped reporting is not live");
+		assert.equal(
+			await shared.capableHostLive("root", 60_000, workspaceAffinityKey(binding)),
+			false,
+			"a host that stopped reporting is not live",
+		);
 
 		await shared.relayActivity(f.lease, [
 			{ work: attempt, runs: '[{"id":"current"}]' },
@@ -780,5 +805,147 @@ test("ready candidates carry a binding only when their child has one, and claims
 		await journal.close();
 		await database.close();
 		await removeLibsqlDirectory(directory);
+	}
+});
+
+test("a host that backs off from a binding's restore is no capable host for it until its wait ends (#4416)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const key = workspaceAffinityKey(binding);
+		const other = workspaceAffinityKey({ ...binding, tree: "3333333333333333333333333333333333333333" });
+		const report = (host: string) =>
+			shared.reportHost({
+				host,
+				labels: {},
+				git: "system",
+				restore: true,
+				workers: 1,
+				maxWorkers: 1,
+				roots: ["root"],
+			});
+		await report("host-b");
+		assert.equal(await shared.capableHostLive("root", 60_000, key), true);
+		assert.equal(await shared.restoreFailure(key), undefined, "no host failed to restore it yet");
+		const unreachable = serializeError(
+			new WorkspaceRestoreError("commits-unavailable", {
+				snapshotId: null,
+				head: binding.head,
+				commits: [binding.head],
+			}),
+		);
+		await shared.recordRestoreBackoff("host-b", key, 60_000, unreachable);
+		assert.equal(await shared.capableHostLive("root", 60_000, key), false, "its only capable host backs off from it");
+		assert.equal(await shared.capableHostLive("root", 60_000, other), true, "another binding is not held back");
+		assert.deepEqual(await shared.restoreFailure(key), unreachable);
+		assert.equal(await shared.restoreFailure(other), undefined);
+		await report("host-c");
+		assert.equal(await shared.capableHostLive("root", 60_000, key), true, "a capable host that does not back off");
+		const refused = serializeError(
+			new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding), {
+				cause: new GitUnavailableError({
+					code: "not-installed",
+					platform: "linux",
+					arch: "x64",
+					installDir: "/home/user/.atomic/agent/bin/git",
+					installCommand: "sudo apt-get install -y git",
+				}),
+			}),
+		);
+		await shared.recordRestoreBackoff("host-c", key, 60_000, refused);
+		assert.equal(await shared.capableHostLive("root", 60_000, key), false);
+		const last = await shared.restoreFailure(key);
+		assert.deepEqual(last, refused, "the failure recorded last");
+		const rehydrated = rehydrateError(last);
+		assert.ok(rehydrated instanceof WorkspaceRestoreUnavailableError, String(rehydrated));
+		assert.equal(rehydrated.reason, "no-restore-port");
+		assert.ok(isGitUnavailableError(rehydrated.cause), "its cause comes back as the git error it was");
+		assert.deepEqual(
+			[rehydrated.cause.code, rehydrated.cause.hint],
+			["not-installed", (refused.cause as { readonly hint: string }).hint],
+		);
+		await shared.recordRestoreBackoff("host-c", key, 0, refused);
+		assert.equal(await shared.capableHostLive("root", 60_000, key), true, "a host whose wait ended");
+		await shared.recordRestoreBackoff("host-c", key, 60_000, refused);
+		await shared.clearRestoreBackoff("host-c", key);
+		assert.equal(await shared.capableHostLive("root", 60_000, key), true, "a host that restored it again");
+		const kept = rehydrateError(await shared.restoreFailure(key));
+		assert.ok(kept instanceof WorkspaceRestoreError, "the host that still backs off keeps its failure, as its class");
+		assert.deepEqual(
+			[kept.code, kept.fields, kept.hint],
+			["commits-unavailable", { snapshotId: null, head: binding.head, commits: [binding.head] }, unreachable.hint],
+		);
+		await shared.forgetHost("host-b");
+		assert.equal(await shared.restoreFailure(key), undefined, "a host that stopped leaves no backoff behind");
+		await assert.rejects(
+			shared.recordRestoreBackoff("host\u0000", key, 1, unreachable),
+			(error: Error) => error instanceof JournalInvalidTextError && error.field === "key",
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("the snapshots recorded with a binding's tree and head are found in every run's checkpoints, oldest first (#4416)", async () => {
+	const f = await fixture();
+	try {
+		const shared = await f.shared();
+		const snapshot = (id: string, tree: string, head: string) => ({ id, tree, head, root: "/repo" });
+		const checkpoint = (worktreeSnapshots?: readonly ReturnType<typeof snapshot>[]) => ({
+			type: RUN_EVENT_TYPES.checkpointRecorded,
+			payload: {
+				kind: "tool",
+				checkpointId: `checkpoint ${binding.tree}`,
+				...(worktreeSnapshots === undefined ? {} : { worktreeSnapshots }),
+			} as never,
+		});
+		await f.journal.append(
+			f.lease,
+			checkpoint([snapshot("first", binding.tree, binding.head), snapshot("other-head", binding.tree, "9")]),
+		);
+		await f.journal.append(f.lease, checkpoint());
+		await f.journal.createRun({ ...header, runId: "producer" });
+		const producer = await f.journal.acquire("producer", "producer");
+		if (producer.status !== "acquired") assert.fail("no lease");
+		await f.journal.append(producer.lease, checkpoint([snapshot("unrelated", "4", binding.head)]));
+		await f.journal.append(producer.lease, checkpoint([snapshot("second", binding.tree, binding.head)]));
+		assert.deepEqual(
+			(await shared.recordedSnapshots(binding)).map((recorded) => recorded.id),
+			["first", "second"],
+		);
+		assert.deepEqual(await shared.recordedSnapshots({ head: binding.head, tree: "5" }), []);
+	} finally {
+		await f.close();
+	}
+});
+
+test("work put back unplaced is ready at the generation it had before the claim: the claim is no attempt (#4416)", async () => {
+	const f = await fixture();
+	try {
+		const held = await claimed(f.queue, f.lease, "unplaced", "host-b/worker-1");
+		assert.equal(held.generation, 1);
+		assert.equal(await f.queue.releaseUnplaced(f.lease, held), true);
+		const current = () => f.queue.inspect("root").then((rows) => rows.find((row) => row.id === held.id)!);
+		const unplaced = await current();
+		assert.deepEqual([unplaced.state, unplaced.generation, unplaced.worker], ["ready", 0, null]);
+		assert.equal(
+			await f.queue.releaseUnplaced(f.lease, held),
+			false,
+			"a claim that no longer holds it puts nothing back",
+		);
+		const again = await f.queue.claim(f.lease, "host-b/worker-2", [definition], 60_000, {
+			kind: "work",
+			id: held.id,
+			generation: 0,
+		});
+		assert.equal(again?.generation, 1, "the next claim is the child's first attempt again");
+		assert.equal(await f.queue.releaseExited(f.lease, again!), true);
+		assert.deepEqual(
+			[(await current()).state, (await current()).generation],
+			["ready", 1],
+			"an attempt that ran keeps its generation",
+		);
+	} finally {
+		await f.close();
 	}
 });
