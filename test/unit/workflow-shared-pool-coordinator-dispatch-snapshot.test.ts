@@ -15,19 +15,22 @@ import {
 } from "../../packages/coding-agent/src/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
-import { SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { openSqlPoolQueue, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
+import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import {
 	isWorkspaceRestoreUnavailableError,
 	type WorkspaceRestoreUnavailableError,
 } from "../../packages/workflows/src/workers/placement-errors.js";
+import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { recordedPlacement } from "../../packages/workflows/src/workers/public-pool.js";
 import type { startWorkflowWorkerHost } from "../../packages/workflows/src/workers/worker-host.js";
 import { sleep } from "../helpers/runtime.js";
+import { syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	COORDINATOR_TEST_TIMEOUT_MS,
@@ -418,6 +421,79 @@ test.skipIf(process.platform === "win32")(
 	},
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
+
+test.each([
+	{ name: "no bound worktree", options: {} },
+	{ name: "snapshots disabled", options: { workspaceWorktree: "/unused", snapshots: { enabled: false } } },
+])("a root resumed with $name releases its crashed incarnation's snapshot hold (#4503)", async ({ options }) => {
+	const f = await fixture("shared-dispatch-snapshot-resumed", options);
+	const releases = vi.spyOn(SqlPoolQueue.prototype, "releaseRootSnapshot");
+	try {
+		await f.hostJournal.createRun({
+			runId: "root",
+			name: "resumed",
+			cwd: f.directory,
+			createdAt: 1,
+			status: "running",
+		});
+		const old = await f.hostJournal.acquire("root", "crashed-holder");
+		assert.ok(old.status === "acquired");
+		const blob = textBlob("crashed root binding");
+		await rootBlobs(f).putBlobs([blob]);
+		const queue = await openSqlPoolQueue(f.hostJournal);
+		await queue.holdRootSnapshot(old.lease, syntheticSnapshot("crashed-root", [blob.hash]));
+		await f.hostJournal.release(old.lease);
+		const resumed = await f.hostJournal.acquire("root", f.backend.holderId);
+		assert.ok(resumed.status === "acquired");
+		assert.ok(resumed.lease.epoch > old.lease.epoch);
+		assert.deepEqual(await collectedAtZeroGrace(f, [blob.hash]), []);
+
+		await f.pool.prepare("root");
+
+		assert.deepEqual(await recordedRootSnapshots(f), []);
+		assert.deepEqual(await collectedAtZeroGrace(f, [blob.hash]), [blob.hash]);
+		await f.pool.close();
+		assert.deepEqual(await recordedRootSnapshots(f), []);
+		assert.equal(releases.mock.calls.length, 0, "without a held snapshot, closing makes no release write");
+	} finally {
+		releases.mockRestore();
+		await f.close();
+	}
+});
+
+test("a non-shared pool on a remote journal prepares without a mirrored lease or a carried snapshot write (#4503)", async () => {
+	const f = await fixture("local-dispatch-snapshot-remote", {});
+	await f.pool.close();
+	const pool = new LocalWorkerPool(f.backend, {
+		rootId: "root",
+		journalPath: join(f.directory, "coordination.sqlite"),
+		durable: poolDurableJournal(f.backend.journal),
+		workers: 1,
+		definitions: [],
+		workerEntry: stubWorker,
+		coordinator: "in-process",
+	});
+	try {
+		await f.hostJournal.createRun({
+			runId: "root",
+			name: "non-shared",
+			cwd: f.directory,
+			createdAt: 1,
+			status: "running",
+		});
+		const acquired = await f.hostJournal.acquire("root", f.backend.holderId);
+		assert.ok(acquired.status === "acquired");
+
+		await pool.prepare("root");
+		await pool.close();
+
+		assert.deepEqual(pool.health, []);
+		assert.deepEqual(await recordedRootSnapshots(f), []);
+	} finally {
+		await pool.close();
+		await f.close();
+	}
+});
 
 /** A snapshot record carrying only an id and the blob hashes of its chain and bundle. */
 function carried(id: string, patches: readonly string[], bundle: string): WorktreeSnapshot {

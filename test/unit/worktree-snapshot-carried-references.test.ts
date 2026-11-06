@@ -251,6 +251,43 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 		assert.deepEqual(await database.all("SELECT root FROM wf_runs_pool_root_snapshot"), []);
 	});
 
+	test("a resumed root without a snapshot drops its earlier hold but not queued references or a newer incarnation's hold (#4503)", async () => {
+		const { database, journal, queue, blobs, lease } = await openRootPool(subject);
+		const [rootOnly, queued] = blobsNamed("root only", "queued");
+		await blobs.putBlobs([rootOnly!, queued!]);
+		await queue.holdRootSnapshot(lease, syntheticSnapshot("old-root", [rootOnly!.hash, queued!.hash]));
+		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("queued", [queued!.hash])));
+		await journal.release(lease);
+		const resumed = await journal.acquire("root", "resumed-holder");
+		assert.ok(resumed.status === "acquired");
+		assert.ok(resumed.lease.epoch > lease.epoch);
+
+		await queue.holdRootSnapshot(resumed.lease, undefined);
+
+		assert.deepEqual(await collectAtZeroGrace(blobs), [rootOnly!.hash]);
+		assert.deepEqual(await carriedRefs(database), [["work:w1", queued!.hash]]);
+		await queue.holdRootSnapshot(resumed.lease, undefined);
+		await journal.release(resumed.lease);
+		const newer = await journal.acquire("root", "newer-holder");
+		assert.ok(newer.status === "acquired");
+		await blobs.putBlobs([rootOnly!]);
+		await queue.holdRootSnapshot(newer.lease, syntheticSnapshot("new-root", [rootOnly!.hash]));
+		for (const stale of [lease, resumed.lease, { ...newer.lease, holderId: "another-holder" }]) {
+			await assert.rejects(queue.holdRootSnapshot(stale, undefined), (error) => {
+				assert.ok(isStaleLeaseError(error));
+				assert.equal(error.code, "stale_lease");
+				assert.equal(error.currentEpoch, newer.lease.epoch);
+				return true;
+			});
+		}
+		await queue.releaseRootSnapshot(resumed.lease);
+		assert.deepEqual(await collectAtZeroGrace(blobs), []);
+		assert.deepEqual(await carriedRefs(database), [
+			["root:root", rootOnly!.hash],
+			["work:w1", queued!.hash],
+		]);
+	});
+
 	test("deleting the root run lets go of every snapshot its work and its binding carried", async () => {
 		const { database, journal, queue, blobs, lease } = await openRootPool(subject);
 		const [first, second, bound] = blobsNamed("first", "second", "bound");

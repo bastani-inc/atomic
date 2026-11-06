@@ -415,9 +415,9 @@ export class LocalWorkerPool {
 	private rootSnapshot?: Promise<WorktreeSnapshot | undefined>;
 	/**
 	 * The root's snapshot as the pool's tables record it from `prepare()` until the pool closes, which keeps its blobs
-	 * from collection at any grace window (#4503); resolves with what lets it go.
+	 * from collection at any grace window (#4503); resolves with what lets it go, or undefined when the root has none.
 	 */
-	private rootSnapshotHeld?: Promise<() => Promise<void>>;
+	private rootSnapshotHeld?: Promise<(() => Promise<void>) | undefined>;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -575,13 +575,15 @@ export class LocalWorkerPool {
 		);
 		// The pool records the root's snapshot, which keeps it from collection for as long as the pool serves the root,
 		// children waiting or not: a child dispatched after a long stretch of the root's own work still carries it (#4492,
-		// #4503). A pool closed while the capture ran records nothing.
+		// #4503). A shared pool whose root has no snapshot, as one resumed without a bound worktree or with snapshots
+		// disabled, lets go of the one an earlier incarnation recorded instead, so its blobs don't stay until the run is
+		// deleted. A pool closed while the capture ran records nothing.
 		const queue = this.queue;
 		const lease = this.lease;
-		if (rootSnapshot !== undefined && !this.closed)
+		if (!this.closed && (rootSnapshot !== undefined || this.options.shared !== undefined))
 			this.rootSnapshotHeld ??= queue
 				.holdRootSnapshot(lease, rootSnapshot)
-				.then(() => () => queue.releaseRootSnapshot(lease));
+				.then(() => (rootSnapshot === undefined ? undefined : () => queue.releaseRootSnapshot(lease)));
 		await this.rootSnapshotHeld;
 		// A pool that already ran for this root, as for a resumed root, is recovered now: its earlier attempts, their
 		// process groups and their undelivered events. Any other root starts its coordinator with its first pooled child,
@@ -1449,8 +1451,9 @@ export class LocalWorkerPool {
 	}
 	/**
 	 * Lets go of the root's snapshot the pool recorded as it was prepared (#4503). A record that failed failed
-	 * `prepare()`, which reported it, so there is nothing to let go; a release that fails is a health warning, since it
-	 * only keeps the snapshot's blobs until the root's next incarnation records its own or the run is deleted.
+	 * `prepare()`, which reported it, and a root without a snapshot recorded none, so there is nothing to let go; a release
+	 * that fails is a health warning, since it only keeps the snapshot's blobs until the root's next incarnation is
+	 * prepared or the run is deleted.
 	 */
 	private async releaseRootSnapshot(): Promise<void> {
 		const [held] = await Promise.allSettled([this.rootSnapshotHeld]);

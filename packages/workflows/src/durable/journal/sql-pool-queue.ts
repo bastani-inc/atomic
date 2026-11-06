@@ -396,21 +396,26 @@ export class SqlPoolQueue {
 	/**
 	 * Records `snapshot` as the one the root's binding carries to its unbound children (#4503), in place of any an earlier
 	 * incarnation of the root recorded. The snapshot reference index keeps its blobs from collection, at any grace
-	 * window, until {@link releaseRootSnapshot} or the run's deletion. A root that has queued nothing yet records it too,
-	 * so only the root's lease is checked: one another holder or epoch took is a {@link StaleLeaseError}.
+	 * window, until {@link releaseRootSnapshot} or the run's deletion. Without a snapshot, as for a root resumed without
+	 * a bound worktree or with snapshots disabled, it only lets go of the one an earlier incarnation recorded. A root that
+	 * has queued nothing yet records it too, so only the root's lease is checked: one another holder or epoch took is a
+	 * {@link StaleLeaseError}.
 	 */
-	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot): Promise<void> {
+	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot | undefined): Promise<void> {
 		lease = snapshotLease(lease);
-		const json = JSON.stringify(snapshot);
 		await this.transaction(async (tx) => {
 			const row = await this.leaseRow(tx, lease);
 			if (row?.epoch !== lease.epoch || row.holder_id !== lease.holderId)
 				throw new StaleLeaseError(lease.runId, lease.epoch, Number(row?.epoch ?? 0));
+			if (snapshot === undefined) {
+				await tx.run(`DELETE FROM ${this.rootSnapshots} WHERE root = ? AND epoch < ?`, lease.runId, lease.epoch);
+				return;
+			}
 			await tx.run(
 				`INSERT INTO ${this.rootSnapshots}(root, epoch, snapshot) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET epoch = excluded.epoch, snapshot = excluded.snapshot`,
 				lease.runId,
 				lease.epoch,
-				json,
+				JSON.stringify(snapshot),
 			);
 		});
 	}
