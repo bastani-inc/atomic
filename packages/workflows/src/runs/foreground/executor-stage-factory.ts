@@ -266,6 +266,8 @@ export function createWorkflowStageFactory(input: {
 			stageSnapshot.wait = wait;
 			// A stage waiting on a human keeps showing that it awaits input; its `wait` marks the released session.
 			if (wait.kind === "prompt") return;
+			// So does a stage waiting on its model's question, which detached and released the stage.
+			if (stageSnapshot.status === "awaiting_input") return;
 			// A stage released between turns goes back to how it was when it is rehydrated, or when the workflow ends.
 			statusBeforeRelease =
 				wait.kind !== "tool" || stageSnapshot.status === "completed" || stageSnapshot.status === "failed"

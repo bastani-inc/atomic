@@ -848,10 +848,12 @@ The threshold applies to these waits; `wait.kind` on the stage's snapshot says w
 
 | `wait.kind` | The stage waits on | Status | What reopens the session |
 |---|---|---|---|
-| `tool` | A call of a `detachable` tool in its turn. Calls of other tools always run inline | `waiting` | The call's result; the same turn continues without a new user message |
+| `tool` | A call of a `detachable` tool in its turn, including the built-in `bash`/`powershell` `wait` action without `budgetMs` and `ask_user_question`. Calls of other tools always run inline | `waiting`, or stays `awaiting_input` for an `ask_user_question` | The call's result (the task's end, or your answer); the same turn continues without a new user message |
 | `release` | `stage.release()` (see [StageContext](#stagecontext)), which releases at once | `waiting` | `stage.rehydrate()`, or the stage's next `sendUserMessage`, `steer`, or `followUp` |
 | `prompt` | A human answer to its readiness question (advance, or keep chatting) | stays `awaiting_input` | The answer, before the stage continues |
 | `idle` | Nothing: the workflow holds the finished stage without using it, for example while it awaits `ctx.workflow(...)` or a run-level `ctx.ui` prompt | `waiting` | The stage's next `sendUserMessage`, `steer`, or `followUp`, or `rehydrate()` |
+
+A stage's own shell `wait` without a budget waits until its task ends instead of returning after 10 seconds, so the stage can release while a long build or test run goes on; the task keeps running on the stage's task host. A question the model asks with `ask_user_question` stays on the stage, in its chat and in `status`, while the stage is released, and your answer reopens it. After a restart, `/workflow resume` starts the shell wait again, and a wait whose task ended with the old process gets an error result naming the task (`TaskToolError`, `UnknownTask`) instead of hanging; the question is asked again.
 
 While it waits the stage has no live session, no admission slot, and no timer or listener of its own; its conversation stays in the session store, and one scan per run finds idle stages. A stage whose session cannot be reopened (an in-memory session that no store keeps) stays resident, and the run logs that once. An invalid value throws [`StageWaitConfigError`](#stage-wait-errors) where it is passed, before the stage or run starts. `ctx.chain` and `ctx.parallel` check every step's value, and their shared one, before the first step starts.
 
@@ -869,7 +871,7 @@ Resuming a run whose stage stopped inside its `prompt()` or `complete()` call, o
 
 #### Waking stages with your own messages
 
-Everything that wakes a stage arrives as a typed message, a `StageWake`. Each stage has a mailbox from the moment it starts until it ends, and takes its messages one at a time, in arrival order. The kinds are the keys of the exported `StageWakeKinds` interface. Atomic sends one kind itself: `"tool-results"`, with the results of the detached calls the stage waits on.
+Everything that wakes a stage arrives as a typed message, a `StageWake`. Each stage has a mailbox from the moment it starts until it ends, and takes its messages one at a time, in arrival order. The kinds are the keys of the exported `StageWakeKinds` interface. Atomic sends one kind itself: `"tool-results"`, with the results of the detached calls the stage waits on, including a finished shell `wait` and an answered `ask_user_question`.
 
 To send your own kind:
 
@@ -2274,6 +2276,7 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `llama-server` | `LlamaServerError` and its subclasses | `isLlamaServerError` |
 | `startup-benchmark` | `StartupBenchmarkError`, `StartupBenchmarkConfigError` | `isStartupBenchmarkError` |
 | `subscription` | [`SubscriptionError`](#subscription-errors) and its subclasses | `isSubscriptionError` |
+| `task-tool` | `TaskToolError` | `isTaskToolError` |
 | `worker-pool`, `workflow-infrastructure`, `journal`, `worker-placement`, `task-cleanup` | The [worker pool errors](#worker-pool-errors), journal lease errors, shared placement and setup errors (`WorkerPlacementConfigError`, `SharedPoolSetupError`, `WorkspaceRestoreUnavailableError`, `StaleStageLeaseError`) and `TaskCleanupError` | Each class's guard |
 | `storage`, `journal-store`, `fork` | Storage errors (team profile errors among them), journal store errors and [fork errors](#fork-errors) | Each family's guard |
 

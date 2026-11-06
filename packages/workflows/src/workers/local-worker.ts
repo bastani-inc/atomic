@@ -58,6 +58,7 @@ import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
+import { AttemptPlace, attemptWaitsReleased } from "./waiting-workers.js";
 import { WorkerControl, workerControlHandlers } from "./worker-control.js";
 import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
 import { type PendingWorkerRequest, receiveWorkerReply, type WorkerReplyState } from "./worker-replies.js";
@@ -276,8 +277,11 @@ export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart):
 
 async function runWorker(start: WorkerStart): Promise<void> {
 	let sequence = 0;
-	/** Set by replies: a fenced attempt ends without failing the worker, and a lost root lease ends it cleanly (#3979). */
-	const replies: WorkerReplyState = { attemptFenced: false, rootLeaseLost: false };
+	/**
+	 * Set by replies: a fenced attempt ends without failing the worker, a lost root lease ends it cleanly (#3979), and a
+	 * pool with more workers than its waiting children need retires it, cleanly too.
+	 */
+	const replies: WorkerReplyState = { attemptFenced: false, rootLeaseLost: false, retired: false };
 	/** The attempt this worker runs, which a refusal of its requests fences. */
 	let heldAttempt: PoolWork | undefined;
 	const pending = new Map<number, PendingWorkerRequest>();
@@ -311,7 +315,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	});
 	/** Set once the worker ends between children to give its memory back; the pool starts a fresh one (#4197). */
 	let recycled = false;
-	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled ? 0 : 1));
+	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled || replies.retired ? 0 : 1));
 	const request = (message: Request, deliver?: WorkerDeliver): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
@@ -476,6 +480,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			replies.attemptFenced = false;
 			if (!work) {
+				if (replies.retired) break;
 				await delay(25 + Math.random() * 25);
 				continue;
 			}
@@ -501,6 +506,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// Stages of this attempt raise human input here; the root answers through the airlock (#3996).
 			const stageUiBroker = new WorkerStageUiBroker(store);
 			prompts = { store, broker: stageUiBroker, fail: failablePrompts(store) };
+			// The attempt gives its place among the pool's count back while it waits released, and takes it back before it
+			// starts anything again (#4374).
+			const place = new AttemptPlace(
+				async (op) => (await request({ kind: "place", op })) === true,
+				attempt,
+				(error) => controller.abort(error),
+			);
 			let publication: Promise<void> | undefined;
 			let activityDirty = false;
 			const publish = () => {
@@ -509,10 +521,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				const current = (async () => {
 					while (activityDirty) {
 						activityDirty = false;
-						await request({
-							kind: "activity",
-							runs: withQueuedCounts(structuredClone(store.runs()), stageControls),
-						});
+						const runs = withQueuedCounts(structuredClone(store.runs()), stageControls);
+						place.observe(attemptWaitsReleased(runs));
+						await request({ kind: "activity", runs });
 					}
 				})();
 				publication = current;
@@ -590,6 +601,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const resourceAdmission: ResourceAdmission = {
 				async acquire(kind, signal, requestOptions) {
 					await awaitAdmission(signal);
+					await place.take(signal);
 					if (!admission) return async () => {};
 					try {
 						return await admission.acquire(kind, signal, requestOptions);
@@ -746,5 +758,5 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		if (poolJournal !== journal) await poolJournal.close().catch(() => {});
 	}
 	// Closing the channel ends the process (exit code 0) instead of waiting for the pool to disconnect it.
-	if (replies.rootLeaseLost || recycled) process.disconnect?.();
+	if (replies.rootLeaseLost || recycled || replies.retired) process.disconnect?.();
 }

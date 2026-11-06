@@ -4,6 +4,8 @@
  * One source of truth for two audiences: the model reads compact sentences in the tool result text, and the
  * transcript renders the same facts as a single status line. Structured data stays in the result `details`.
  */
+
+import { hasErrorIdentity, type SerializedTypedError, serializeErrorCause } from "../error-contract.ts";
 import type {
 	CancelCause,
 	CancelError,
@@ -222,24 +224,81 @@ function isTaskToolFailureCode(code: string): code is TaskToolFailureCode {
 	return Object.hasOwn(TASK_ERROR_COPY, code);
 }
 
+const TASK_TOOL_ERROR_NAME = "TaskToolError";
+const TASK_TOOL_ERROR_NAMES: ReadonlySet<string> = new Set([TASK_TOOL_ERROR_NAME]);
+const TASK_TOOL_FAILURE_CODES: ReadonlySet<string> = new Set(Object.keys(TASK_ERROR_COPY));
+
+/** The facts a {@link TaskToolError} carries. */
+export interface TaskToolErrorFields {
+	/** The id the call named. */
+	readonly taskId: string;
+}
+
+/** A {@link TaskToolError} as it crosses a process boundary or a detached `wait` reports it in `details.error`. */
+export interface SerializedTaskToolError extends SerializedTypedError {
+	code: TaskToolFailureCode;
+	fields: { taskId: string };
+}
+
 /**
  * A task failure on the `wait`/`kill` path. The message is `<Code>: <plain-language headline naming the task>`;
  * callers that branch on the failure read `code` instead of parsing it. An evicted task's failure has a
- * {@link TaskEvictedError} as its `cause`.
+ * {@link TaskEvictedError} as its `cause`. Only `StaleGeneration` is retryable.
  */
 export class TaskToolError extends Error {
+	override readonly name = TASK_TOOL_ERROR_NAME;
 	readonly code: TaskToolFailureCode;
+	readonly hint?: string;
+	readonly retryable: boolean;
+	readonly fields: TaskToolErrorFields;
 	readonly taskId: string;
 
 	constructor(failure: Failure<TaskToolFailureCode>, taskId: string) {
+		const copy = TASK_ERROR_COPY[failure.code];
 		super(
-			`${failure.code}: ${TASK_ERROR_COPY[failure.code].headline(taskId, informativeMessage(failure.code, failure.message))}`,
+			`${failure.code}: ${copy.headline(taskId, informativeMessage(failure.code, failure.message))}`,
 			failure.code === "TaskEvicted" ? { cause: new TaskEvictedError({ taskId }) } : undefined,
 		);
-		this.name = "TaskToolError";
 		this.code = failure.code;
+		this.hint = copy.hint;
+		this.retryable = failure.code === "StaleGeneration";
+		this.fields = { taskId };
 		this.taskId = taskId;
 	}
+
+	/** The failure as data, for a result that reports it: a detached `wait` of a task that is gone carries it. */
+	toJSON(): SerializedTaskToolError {
+		const cause = serializeErrorCause(this.cause);
+		return {
+			name: this.name,
+			code: this.code,
+			message: this.message,
+			...(this.hint === undefined ? {} : { hint: this.hint }),
+			retryable: this.retryable,
+			fields: { taskId: this.taskId },
+			...(cause === undefined ? {} : { cause }),
+		};
+	}
+}
+
+/** True for a {@link TaskToolError}, also one from another realm or process that kept its `name` and `code`. */
+export function isTaskToolError(error: unknown): error is TaskToolError {
+	return error instanceof TaskToolError || hasErrorIdentity(error, TASK_TOOL_ERROR_NAMES, TASK_TOOL_FAILURE_CODES);
+}
+
+/**
+ * Rebuilds a {@link TaskToolError} from its serialized form, such as a detached `wait`'s `details.error` read back
+ * from a saved session. An evicted task's error gets its {@link TaskEvictedError} cause back. A copy without a known
+ * `code` or a string `fields.taskId` gives undefined.
+ */
+export function rehydrateTaskToolError(value: unknown): TaskToolError | undefined {
+	if (!isTaskToolError(value)) return undefined;
+	const { fields, message } = value as { readonly fields?: { readonly taskId?: unknown }; readonly message?: unknown };
+	const taskId = fields?.taskId;
+	if (typeof taskId !== "string") return undefined;
+	const error = new TaskToolError({ code: value.code, message: "" }, taskId);
+	if (typeof message === "string") Object.defineProperty(error, "message", { value: message });
+	return error;
 }
 
 export interface TaskErrorPresentation {

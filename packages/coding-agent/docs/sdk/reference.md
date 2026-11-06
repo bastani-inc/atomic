@@ -459,10 +459,10 @@ Without a detachment policy a detachable call runs inline like any other. A host
 
 - A call that finishes within `afterMs` runs inline.
 - A call still running after `afterMs` detaches: the turn's other results are saved, the call has no result yet, and `prompt()` resolves. The call's work goes on outside the session, so the host can dispose of the session meanwhile.
-- `session.takeDetachedToolCalls()` returns each detached call once. Every `DetachedToolCall` has `toolCallId`, `toolName`, a `result` promise that never rejects (a thrown error becomes an `isError` result), and `abort(reason)`.
+- `session.takeDetachedToolCalls()` returns each detached call once. Every `DetachedToolCall` has `toolCallId`, `toolName`, a `result` promise that never rejects (a thrown error becomes an `isError` result), and `abort(reason)`. When the thrown error has a string `code`, the result's `details.error` carries it as data, so a host can branch on `code` instead of the text: the error's own `toJSON()` form when it has one, otherwise its `name`, `code`, `message`, and its `hint`, `retryable`, JSON-safe `fields` and cause chain when it has them. If its `toJSON()` throws, `details.error` is built from its properties and carries `serialization: "fallback"`.
 - `session.resumeDetachedTurn(results)` on a session reopened from the store records each result as its call's result, right after the call, and continues the same turn, without a new user message, once every detachable call of the turn has its result. Results may be handed back together or across several calls: until the last one arrives, the call records what it gets and resolves without continuing, and `hasPendingDetachedTurn()` stays `true`. A result for a call that already has one, or repeated in `results`, is ignored. With no new result, a transcript that ends on a detachable call's turn whose every call already has its result continues that turn (the process that recorded the results stopped before the model answered), and a turn still waiting on a call is left as it is.
 - `session.hasPendingDetachedTurn()` tells whether a reopened transcript ends on such a turn, with or without some or all of its results. When it does, continue the turn with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again.
-- `session.redispatchDetachedToolCalls()` starts again the detachable calls that a reopened transcript ends on without a result, with their original ids and arguments. Calls that already have a result are not started again.
+- `session.redispatchDetachedToolCalls()` starts again the detachable calls that a reopened transcript ends on without a result, with their original ids and arguments. Calls that already have a result are not started again. Session listeners receive a `tool_execution_start` event for each call before the method returns, and extensions receive it in order with the session's other events.
 
 A result handed to `resumeDetachedTurn()` enters the transcript exactly as an inline call's result would: extension `tool_result` handlers see it and can rewrite it, images are resized for the provider, and output over the persistence threshold is stored with the session when its session store holds blobs (`SessionStore.putBlob`/`getBlob`, which the SQLite, libSQL and in-memory stores have), named `tool-output://<sha256>`, and otherwise saved to a file (see [Persisted tool output](/tools#persisted-tool-output)).
 
@@ -471,7 +471,9 @@ A detached call runs outside its session's async context and tool wrappers, so i
 - progress it reports with `onUpdate` is dropped;
 - `ctx` answers only `cwd`, and any other use throws `ToolDetachmentError` with code `context-detached`. Read what the work needs from `ctx` before it awaits anything long, or pass it in the tool's arguments.
 
-A call started again by `redispatchDetachedToolCalls()` is detached from the start. A detached call reports no host diagnostics.
+A call started again by `redispatchDetachedToolCalls()` reports no progress from the start. Its `ctx` reaches the session only while the work starts, until its first `await`; read what it needs from `ctx` before then. A call queued behind another call of the same turn gets that `ctx` when it starts, if the session is still open, and otherwise only `cwd`. A detached call reports no host diagnostics.
+
+`ask_user_question` is detachable only in a workflow stage's own session, where the question waits in the stage's UI rather than the session's: the stage releases its session while the model waits on the user's answer. In other sessions it always runs inline, because its question ends with the session that asked it. A shell `wait` whose task is gone after a restart returns an error result whose `details.error` is the serialized `TaskToolError` (see [Owner-bound task supervisor](#owner-bound-task-supervisor-s1)).
 
 While a transcript waits on a detached call's result, a background task's completion notice is saved but not added to the conversation, so nothing comes between the call and its result. It is delivered once `resumeDetachedTurn()` has continued the turn.
 
@@ -1187,6 +1189,10 @@ type SerializedSessionStartCause
 FINISHED_TASK_RETENTION
 TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvictedError
 type TaskEvictedErrorCode, type TaskEvictedErrorFields
+TaskToolError, isTaskToolError, rehydrateTaskToolError
+type TaskToolFailureCode, type TaskToolErrorFields, type SerializedTaskToolError
+// Detached tool call failures (see "Detachable tool calls")
+type DetachedCallFailure, type DetachedCallFailureCause
 // Git resolution (see "Resolving git")
 resolveGit, resolveGitSync, getGitStatus, GIT_MINIMUM_VERSION
 GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
@@ -1287,6 +1293,9 @@ An owner keeps its 256 most recently finished tasks (`FINISHED_TASK_RETENTION`):
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
 | `TaskEvictedError` | `task_evicted` | A task id or lease names a finished task its owner no longer keeps, because `retainedFinishedTasks` or more of its tasks finished after it. `retryable` is `false`. | `taskId`, `retainedFinishedTasks`, `hint` | Use the result the conversation already reported; a subagent's transcript stays in its own saved session. A shell command's full output is no longer available. |
+| `TaskToolError` | `UnknownTask`, `ScopeMismatch`, `TaskEvicted`, `OwnerClosed`, `EnvironmentClosing`, `ObserverCancelled`, `OutputUnavailable`, `CleanupFailed`, `StaleGeneration` | A `wait` or `kill` of a shell task failed: the id names no task of this session or stage, another session's task, an evicted task, a closed owner, or Atomic is shutting down; the wait was cancelled; the output or the stop could not be read or confirmed; or the task list changed while it was read. Only `StaleGeneration` is `retryable`. | `fields.taskId`, `hint` (absent for `EnvironmentClosing`), `retryable`; `cause` is a `TaskEvictedError` for `TaskEvicted` | Follow `hint`: run `/tasks` to see the current tasks, run the command again for a closed owner, or retry a `StaleGeneration`. |
+
+`isTaskToolError(value)` checks the class and then `name` and `code`. `rehydrateTaskToolError(value)` rebuilds the class, with an evicted task's `TaskEvictedError` cause, from its serialized form (`toJSON()`: `name`, `code`, `message`, `hint`, `retryable`, `fields`, `cause`), such as a detached shell wait's `details.error`, and returns `undefined` for a copy without a known `code` or a string `fields.taskId`.
 
 `isTaskEvictedError(value)` checks the class first and then `name` and `code`, so it also matches a copy from another realm or process. `findTaskEvictedError(error)` returns the `TaskEvictedError` that is the error or sits in its `cause` chain within eight links, such as the cause of a `TaskToolError`, or `undefined`. `rehydrateTaskEvictedError(value)` rebuilds the class from a copy such as `JSON.parse(JSON.stringify(error))`, and returns `undefined` for a copy without a string `taskId` or a positive integer `retainedFinishedTasks`.
 

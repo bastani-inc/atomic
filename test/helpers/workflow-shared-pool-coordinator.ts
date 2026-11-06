@@ -46,6 +46,8 @@ export interface Fixture {
 	readonly pool: LocalWorkerPool;
 	readonly shared: SqlSharedPool;
 	claims(): string[][];
+	/** `[host, work id, "released" | "refused"]` for each place an attempt gave back while its stage waited released. */
+	placesReleased(): string[][];
 	/** The start options of every worker forked so far, as each received them. */
 	starts(): Record<string, unknown>[];
 	root(): Promise<SharedPoolRoot>;
@@ -112,8 +114,19 @@ export async function fixture(
 		claims: () =>
 			readFileSync(log, "utf8")
 				.split("\n")
-				.filter((line) => line !== "" && !line.startsWith("answer ") && !line.startsWith("start "))
+				.filter(
+					(line) =>
+						line !== "" &&
+						!line.startsWith("answer ") &&
+						!line.startsWith("start ") &&
+						!line.startsWith("place-released "),
+				)
 				.map((line) => line.split(" ")),
+		placesReleased: () =>
+			readFileSync(log, "utf8")
+				.split("\n")
+				.filter((line) => line.startsWith("place-released "))
+				.map((line) => line.split(" ").slice(1)),
 		starts: () =>
 			readFileSync(log, "utf8")
 				.split("\n")

@@ -132,6 +132,7 @@ import type {
 } from "./stage-watch-types.js";
 import { ignoreStaleLease, ignoreStaleWorkLease } from "./stale-refusals.js";
 import { startupWaitedMs } from "./startup-timeout.js";
+import { PoolPlaces, WaitingWorkerReserve } from "./waiting-workers.js";
 import type { WorkerHostGit } from "./worker-host-types.js";
 import { AttemptLeaseExtensions, WORKER_REQUEST_LANES, WorkerRequestLanes } from "./worker-request-lanes.js";
 import { defaultWorkerHeartbeatMs } from "./worker-timing.js";
@@ -453,6 +454,8 @@ interface WorkerSlot {
 	recycled?: boolean;
 	/** Where the current attempt runs on this host when placement chose it: a warm or restored worktree (#4310). */
 	worktree?: string;
+	/** The pool had more workers than its waiting attempts needed: this idle worker ends, and nothing replaces it. */
+	retired?: boolean;
 }
 
 /**
@@ -629,6 +632,10 @@ export class PoolCoordinator {
 	private lateRoot?: Promise<boolean>;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
 	private readonly attemptBase = new Map<string, number>();
+	/** Extra workers started so attempts that wait released stop occupying the pool. */
+	private readonly waitingReserve = new WaitingWorkerReserve();
+	/** The pool's places, which bound the attempts that run at once to its count. */
+	private readonly places = new PoolPlaces<WorkerSlot>(() => this.options!.workers);
 	/** The shared pool's own tables, for a pool whose tables live in the root's shared journal (#4310). */
 	private sharedPool?: SqlSharedPool;
 	/** Set for a worker host's coordinator, which serves a root that runs on another host (#4310). */
@@ -1182,6 +1189,38 @@ export class PoolCoordinator {
 	/** How many workers this coordinator runs, and how many of them hold an attempt. */
 	workerCounts(): { readonly workers: number; readonly busy: number } {
 		return { workers: this.slots.size, busy: [...this.slots].filter(holding).length };
+	}
+
+	/**
+	 * The worker's attempt waits released and gives its place back. The place goes to a woken attempt that asked for one,
+	 * or to the next child; the pool starts a worker for each waiting attempt, at most its `count`, to run it, while the
+	 * waiting attempt stays where it runs. A worker host does not: its host bounds its workers. A worker that cannot
+	 * start is reported once.
+	 */
+	private releasePlace(slot: WorkerSlot): void {
+		this.places.release(slot);
+		if (this.closed || this.satellite !== undefined) return;
+		const reserve = this.waitingReserve;
+		for (let started = reserve.grow(this.places.waiting, this.options!.workers); started > 0; started--) {
+			void this.spawn().catch((error: Error) => {
+				reserve.lost();
+				this.reportHealth(undefined, `A worker started while children wait could not start: ${error.message}`);
+			});
+		}
+	}
+
+	/**
+	 * Whether an idle worker ends now: fewer attempts wait than the pool started extra workers for, and the pool keeps
+	 * `count` ready workers without it.
+	 */
+	private retiresIdle(slot: WorkerSlot): boolean {
+		const count = this.options!.workers;
+		let others = 0;
+		for (const other of this.slots)
+			if (other !== slot && other.retired !== true && this.readyWorkers.has(other.worker)) others++;
+		if (others < count || !this.waitingReserve.shrink(this.places.waiting, count)) return false;
+		slot.retired = true;
+		return true;
 	}
 
 	/** A satellite stops taking work, finishes what its workers hold, then closes. */
@@ -1953,6 +1992,7 @@ export class PoolCoordinator {
 				this.lastHeard.delete(worker);
 				this.awaiting.delete(worker);
 				this.slots.delete(slot);
+				this.places.end(slot);
 				this.endStageWatches((watch) => watch.slot === slot, "worker_exited");
 				for (const settle of slot.stageCommands.values()) settle(undefined);
 				slot.stageCommands.clear();
@@ -2001,7 +2041,7 @@ export class PoolCoordinator {
 						// A worker that ended itself between children to give its memory back (`maxWorkerRssBytes`, #4197) and
 						// exited cleanly leaves nothing to diagnose: its log goes with it, so a long run does not pile them up.
 						if (
-							slot.recycled === true &&
+							(slot.recycled === true || slot.retired === true) &&
 							slot.work === undefined &&
 							child.exitCode === 0 &&
 							!this.keptLogs.has(logPath)
@@ -2038,6 +2078,7 @@ export class PoolCoordinator {
 						// worker that ended itself between children for its memory did not crash: it is replaced without
 						// counting. A draining worker host replaces none.
 						if (this.draining) return;
+						if (slot.retired === true) return;
 						if (work === undefined && slot.recycled === true) await this.spawn();
 						else if (work === undefined && ++this.replacements > MAX_WORKER_REPLACEMENTS)
 							this.fail(
@@ -2129,6 +2170,7 @@ export class PoolCoordinator {
 						const fenced = slot.work;
 						slot.work = undefined;
 						slot.worktree = undefined;
+						this.places.end(slot);
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
 						// so refusals and faults stay bounded.
@@ -2170,8 +2212,10 @@ export class PoolCoordinator {
 					}
 					if (message.kind === "claim") {
 						if (slot.work) throw new Error("Worker already holds an attempt");
+						if (this.retiresIdle(slot)) return undefined;
 						let claimed: { readonly work: PoolWork; readonly worktree?: string } | undefined;
 						if (!this.budgetBlocked && !this.draining) {
+							if (!this.places.claim(slot)) return undefined;
 							slot.claiming = true;
 							try {
 								claimed = await leased(async () => {
@@ -2182,6 +2226,7 @@ export class PoolCoordinator {
 							} finally {
 								slot.claiming = false;
 								slot.claimed = undefined;
+								if (claimed === undefined) this.places.end(slot);
 							}
 						}
 						// A host that closed while the claim was in flight put its child back with the rest it held.
@@ -2201,6 +2246,8 @@ export class PoolCoordinator {
 					}
 					const held = slot.work;
 					if (!held) throw new Error("Worker has no active attempt");
+					if (message.kind === "place")
+						return message.op === "release" ? this.releasePlace(slot) : this.places.reacquire(slot);
 					// The heartbeat renews the attempt, records its usage and reads pool control in one transaction.
 					if (message.kind === "heartbeat") {
 						const record = this.usageLedger!.recording(lease, held, message.reports);
@@ -2298,6 +2345,7 @@ export class PoolCoordinator {
 					this.replacements = 0;
 					slot.work = undefined;
 					slot.worktree = undefined;
+					this.places.end(slot);
 					await this.sendResult(work.id);
 				};
 				const handled = this.counters.within(message.kind, () =>
@@ -2318,7 +2366,15 @@ export class PoolCoordinator {
 					void handled.then(answered, answered);
 				}
 				void response.then(
-					(value) => child.send({ id: message.id, value }, replied),
+					(value) =>
+						child.send(
+							{
+								id: message.id,
+								value,
+								...(slot.retired === true ? { retire: true } : {}),
+							},
+							replied,
+						),
 					(error: unknown) => {
 						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
 						if (isStaleLeaseError(error)) this.rootLeaseLost = true;

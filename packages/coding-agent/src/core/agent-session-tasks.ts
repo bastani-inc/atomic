@@ -39,6 +39,11 @@ function stageTaskAdmission(session: AgentSession) {
 	return isSubagentChildSession(session) ? undefined : session._workflowStageAdmission;
 }
 
+/** Whether the session runs its tasks on a workflow stage's own task host, which outlives each of its sessions. */
+export function isWorkflowStageTaskOwner(session: AgentSession): boolean {
+	return stageTaskAdmission(session) !== undefined;
+}
+
 export function replaceSessionTaskOwner(session: AgentSession): void {
 	if (stageTaskAdmission(session)) return;
 	replacementOwnerScopes.set(session, randomUUID());

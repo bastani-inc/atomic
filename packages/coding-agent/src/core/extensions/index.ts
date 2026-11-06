@@ -10,6 +10,7 @@ export type {
 	QuestionParams,
 } from "./host-input.js";
 export type {
+	DetachableCallPredicate,
 	ToolAnnotations,
 	ToolExposure,
 	ToolLoadout,

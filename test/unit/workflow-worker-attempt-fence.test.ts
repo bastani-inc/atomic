@@ -24,7 +24,7 @@ const quarantined = () => new QuarantinedCapacityError({ limits: ["processes"], 
 const staleWork = () => new StaleWorkLeaseError({ root: "root", workId: "work", generation: 2, reason: "expired" });
 
 function harness(fenced = false) {
-	const replies: WorkerReplyState = { attemptFenced: fenced, rootLeaseLost: false };
+	const replies: WorkerReplyState = { attemptFenced: fenced, rootLeaseLost: false, retired: false };
 	return { replies, fence: new AttemptFence(replies, attempt), controller: new AbortController() };
 }
 
