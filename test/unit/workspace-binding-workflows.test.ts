@@ -16,11 +16,12 @@ import {
 	findWorkspaceError,
 	GitUnavailableError,
 	isWorkspaceBindingError,
+	isWorkspaceError,
 	isWorkspaceRestoreError,
-	rehydrateWorkspaceError,
 	resolveWorkspace,
 	type Workspace,
 	WorkspaceBindingError,
+	type WorkspaceError,
 	WorkspaceRestoreError,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
@@ -41,6 +42,8 @@ import {
 	workflowChildReplaySnapshot,
 } from "../../packages/workflows/src/runs/foreground/executor-child-helpers.js";
 import { stageOptionsWithInputDefaults } from "../../packages/workflows/src/runs/foreground/executor-direct-helpers.js";
+import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowModelCatalogPort, WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
@@ -124,6 +127,13 @@ function boundaryStarts(checkpoints: readonly { kind: string }[]): DurableStageC
 	return (checkpoints as DurableStageCheckpoint[]).filter(
 		(checkpoint) => checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "start",
 	);
+}
+
+/** The workspace error a failed run carries as its typed failure detail, rebuilt (#4378). */
+function workspaceFailure(result: RunResult): WorkspaceError {
+	const error = rehydrateError(result.failureDetail);
+	assert.ok(isWorkspaceError(error), `no workspace error in ${JSON.stringify(result.failureDetail)}`);
+	return error;
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -796,9 +806,9 @@ describe("workspace bindings across resume (#3109)", () => {
 			{ runId: failed.runId, store: createStore(), durableBackend: resumedBackend },
 		);
 		assert.equal(resumed.status, "failed");
-		assert.equal(resumed.workspaceError?.name, "WorkspaceBindingError");
-		assert.equal(resumed.workspaceError?.code, "wrong-branch");
-		assert.equal(resumed.workspaceError?.fields?.actual, "somebody-else");
+		assert.equal(workspaceFailure(resumed).name, "WorkspaceBindingError");
+		assert.equal(workspaceFailure(resumed).code, "wrong-branch");
+		assert.equal(workspaceFailure(resumed).fields?.actual, "somebody-else");
 		await resumedBackend.close();
 	});
 
@@ -874,10 +884,10 @@ describe("workspace bindings across resume (#3109)", () => {
 		git(binding.worktree, "reset", "-q", "--hard", binding.head);
 		const { resumed, sessions } = await resume();
 		assert.equal(resumed.status, "failed");
-		assert.equal(resumed.workspaceError?.name, "WorkspaceBindingError");
-		assert.equal(resumed.workspaceError?.code, "drift");
-		assert.equal(resumed.workspaceError?.reason, "history-rewritten");
-		assert.equal(resumed.workspaceError?.fields?.expected, stepHead, "names the step's commit");
+		assert.equal(workspaceFailure(resumed).name, "WorkspaceBindingError");
+		assert.equal(workspaceFailure(resumed).code, "drift");
+		assert.equal(workspaceFailure(resumed).reason, "history-rewritten");
+		assert.equal(workspaceFailure(resumed).fields?.expected, stepHead, "names the step's commit");
 		assert.deepEqual(sessions, [], "no step ran on the tree without the step's work");
 	});
 
@@ -892,7 +902,7 @@ describe("workspace bindings across resume (#3109)", () => {
 		rmSync(join(dirs.home, "worktrees"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		const { resumed, sessions } = await resume();
 		assert.equal(resumed.status, "failed");
-		const error = rehydrateWorkspaceError(resumed.workspaceError!);
+		const error = rehydrateError(resumed.failureDetail);
 		assert.ok(error instanceof WorkspaceRestoreError);
 		assert.ok(isWorkspaceRestoreError(error));
 		assert.equal(error.code, "restore-failed");
@@ -917,9 +927,9 @@ describe("workspace bindings across resume (#3109)", () => {
 		git(repo, "gc", "-q", "--prune=now");
 		const { resumed, transcript } = await resume();
 		assert.equal(resumed.status, "failed");
-		assert.equal(resumed.workspaceError?.name, "WorkspaceRestoreError");
-		assert.equal(resumed.workspaceError?.reason, "commits-unavailable");
-		assert.deepEqual(resumed.workspaceError?.fields?.missingCommits, [stepHead]);
+		assert.equal(workspaceFailure(resumed).name, "WorkspaceRestoreError");
+		assert.equal(workspaceFailure(resumed).reason, "commits-unavailable");
+		assert.deepEqual(workspaceFailure(resumed).fields?.missingCommits, [stepHead]);
 		assert.equal(
 			transcript.some((line) => line.startsWith("fetch: ")),
 			false,
@@ -945,8 +955,8 @@ describe("workspace bindings across resume (#3109)", () => {
 		git(keep, "push", "-q", origin, "refs/heads/kept:refs/heads/feat/step");
 		const { resumed, transcript, sessions } = await resume();
 		assert.equal(resumed.status, "failed");
-		assert.equal(resumed.workspaceError?.code, "drift", "fetched, the commit exists but this worktree lacks it");
-		assert.equal(resumed.workspaceError?.fields?.expected, stepHead);
+		assert.equal(workspaceFailure(resumed).code, "drift", "fetched, the commit exists but this worktree lacks it");
+		assert.equal(workspaceFailure(resumed).fields?.expected, stepHead);
 		assert.ok(transcript.includes("fetch: fetch --prune origin"));
 		assert.deepEqual(sessions, []);
 	});
@@ -1162,7 +1172,7 @@ describe("a resumed child checks only the commit of its latest completed step (#
 		const rewritten = git(binding.worktree, "rev-parse", "HEAD");
 		const { resumed, sessions } = await resume();
 		assert.equal(resumed.status, "failed");
-		const error = rehydrateWorkspaceError(resumed.workspaceError!);
+		const error = rehydrateError(resumed.failureDetail);
 		assert.ok(error instanceof WorkspaceBindingError);
 		assert.ok(isWorkspaceBindingError(error));
 		assert.equal(error.code, "drift");
@@ -1213,7 +1223,7 @@ describe("a resumed child checks only the commit of its latest completed step (#
 		rmSync(join(dirs.home, "worktrees"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		const { resumed, transcript, sessions } = await resume();
 		assert.equal(resumed.status, "failed");
-		const error = rehydrateWorkspaceError(resumed.workspaceError!);
+		const error = rehydrateError(resumed.failureDetail);
 		assert.ok(error instanceof WorkspaceRestoreError);
 		assert.ok(isWorkspaceRestoreError(error));
 		assert.equal(error.code, "restore-failed");
@@ -1297,7 +1307,7 @@ describe("a resumed child checks only the commit of its latest completed step (#
 			git(binding.worktree, "reset", "-q", "--hard", older);
 			const { resumed, sessions } = await resume();
 			assert.equal(resumed.status, "failed");
-			const error = rehydrateWorkspaceError(resumed.workspaceError!);
+			const error = rehydrateError(resumed.failureDetail);
 			assert.ok(error instanceof WorkspaceBindingError);
 			assert.equal(error.code, "drift");
 			assert.equal(error.reason, "history-rewritten");
@@ -2134,7 +2144,7 @@ describe("unbound children and binding failures (#3109)", () => {
 		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
 		const failed = await run(parent, {}, { store: createStore(), durableBackend: firstBackend });
 		assert.equal(failed.status, "failed");
-		assert.equal(Object.hasOwn(failed, "workspaceError"), false, "a failure without a workspace error adds none");
+		assert.equal(Object.hasOwn(failed, "failureDetail"), false, "a failure without a typed error carries no detail");
 		assert.deepEqual(
 			children.map((child) => [(child as { exited: boolean }).exited, Object.hasOwn(child as object, "changeSet")]),
 			[
@@ -2492,7 +2502,7 @@ describe("unbound children and binding failures (#3109)", () => {
 			if (progressed !== undefined) {
 				assert.equal(resumed.status, "failed", `${progressed}: recorded work is never replayed on a new branch`);
 				const restoreError = findWorkspaceError(
-					resumed.workspaceError === undefined ? undefined : rehydrateWorkspaceError(resumed.workspaceError),
+					resumed.failureDetail === undefined ? undefined : rehydrateError(resumed.failureDetail),
 				);
 				assert.equal(restoreError?.name, "WorkspaceRestoreError");
 				assert.equal(restoreError?.reason, "branch-missing");

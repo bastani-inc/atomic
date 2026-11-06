@@ -87,8 +87,9 @@ export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "recycle"; readonly rssBytes: number; readonly attempts: number }
 	| { readonly kind: "controlled"; readonly revision: number }
 	/**
-	 * A failed stage carries the typed error it failed on as `failureDetail`, and so does the `complete` result for
-	 * the run (#4309). The root reads it as untrusted input when it makes a failed child its parent's error.
+	 * A failed stage carries the typed error it failed on as `failureDetail`, a `SerializedError`, and so does the
+	 * `complete` result for the run (#4309, #4378). The root reads it as untrusted input when it makes a failed child
+	 * its parent's error.
 	 */
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
 	| { readonly kind: "route"; readonly runId: string }

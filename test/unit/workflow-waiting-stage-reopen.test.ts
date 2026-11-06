@@ -2,6 +2,7 @@ import { describe, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { latestStageSessionCheckpoints } from "../../packages/workflows/src/durable/stage-primitive.js";
 import type { StageLifecycleEvent } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import { STAGE_WAIT_RETRY_ATTEMPTS } from "../../packages/workflows/src/shared/stage-wait.js";
 import {
 	deserializeStageWaitError,
@@ -88,8 +89,8 @@ describe("a waiting stage whose session store stays unreachable when it is woken
 		assert.equal(stage?.failureRecoverability, "recoverable");
 		assert.equal(stage?.failureDisposition, "active_blocked");
 		const detail = stage?.failureDetail;
-		assert.ok(detail?.family === "StageWaitError");
-		const rehydration = deserializeStageWaitError(detail);
+		assert.equal(detail?.family, "stage-wait");
+		const rehydration = rehydrateError(detail);
 		assert.ok(isStageRehydrationError(rehydration));
 		assert.equal(rehydration.code, "session-unavailable");
 		assert.equal(rehydration.fields.phase, "reopen");

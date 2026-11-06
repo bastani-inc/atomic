@@ -438,8 +438,19 @@ export type {
 	StageWaitSnapshot,
 	StageWaitToolCall,
 } from "./shared/authoring-contract-stage.js";
-export type { SerializedWorkflowInfrastructureError } from "./shared/error-codec.js";
-export { rehydrateWorkflowInfrastructureError, serializeWorkflowInfrastructureError } from "./shared/error-codec.js";
+export type {
+	ErrorFamily,
+	SerializedError,
+	SerializedErrorField,
+	SerializedErrorFields,
+	SerializedWorkflowInfrastructureError,
+} from "./shared/error-codec.js";
+export {
+	rehydrateError,
+	rehydrateWorkflowInfrastructureError,
+	serializeError,
+	serializeWorkflowInfrastructureError,
+} from "./shared/error-codec.js";
 export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,
@@ -547,7 +558,6 @@ export type {
 	StageWakeKinds,
 } from "./shared/stage-wake.js";
 export { registerStageWakeKind } from "./shared/stage-wake.js";
-export type { SerializedTypedError } from "./shared/typed-failure-detail.js";
 /**
  * Send a message to a stage of a live run in this process. Throws `StageWakeError` (`unknown-wake-kind`) when no
  * module registered the message's kind; otherwise returns what became of it.

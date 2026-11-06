@@ -10,13 +10,11 @@ import {
 	runResultFromSnapshot,
 	selectRunFailureDisposition,
 } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
+import type { SerializedError } from "../../packages/workflows/src/shared/error-codec.js";
 import { StageRehydrationError } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import {
-	type SerializedTypedError,
-	typedFailureDetail,
-} from "../../packages/workflows/src/shared/typed-failure-detail.js";
+import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import type { WorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 
 const RUN_ID = "run-failure-detail";
@@ -28,7 +26,7 @@ function rehydrationError(stageId: string): StageRehydrationError {
 	);
 }
 
-function detailOf(error: Error): SerializedTypedError {
+function detailOf(error: Error): SerializedError {
 	const detail = typedFailureDetail(error);
 	assert.ok(detail !== undefined, "the error carries a typed error");
 	return detail;

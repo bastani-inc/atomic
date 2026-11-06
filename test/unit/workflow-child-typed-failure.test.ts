@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { GitUnavailableError } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -12,10 +13,13 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { bindChildWorkerDispatcher } from "../../packages/workflows/src/workers/dispatch.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { assertSameFamilyError, FAMILY_CASES, type FamilyCase } from "./serializable-error-family-cases.js";
 import { makeMockSession, type StageSessionCreateOptions } from "./stage-runner-helpers.js";
 
 afterEach(closeMemoryTestBackends);
+useTemporaryAgentDir();
 
 const REHYDRATION_FIELDS = {
 	runId: "child-run",
@@ -190,7 +194,124 @@ test("a pooled child's malformed failure detail is reported once and the parent 
 	assert.equal(notices.length, 1, JSON.stringify(notices));
 	assert.equal(notices[0]?.level, "warning");
 	assert.match(notices[0]?.id ?? "", /^child-failure-detail-ignored:malformed-root:/);
-	assert.match(notices[0]?.message ?? "", /pooled-child.*typed failure that could not be read/);
+	assert.match(
+		notices[0]?.message ?? "",
+		/pooled-child.*typed failure that could not be read \(error\.message is not a string\)/,
+	);
+});
+
+test("a pooled child's failure detail of a family this side does not know is reported once, and the parent fails on its text (#4378)", async () => {
+	const caught: unknown[] = [];
+	const detail = { ...typedFailureDetail(rehydrationFailure()), family: "future-family" };
+
+	const { result, store } = await runWithDispatchedChild("future-root", catchingParent("root", pooledChild, caught), {
+		status: "failed",
+		error: "Cannot rehydrate stage",
+		failureDetail: detail,
+		stages: [],
+		toolNodes: [],
+	});
+
+	assert.equal(result.status, "failed");
+	assert.equal(findStageWaitError(caught[0]), undefined);
+	const notices = store.notices().filter((notice) => notice.runId === "future-root");
+	assert.deepEqual(
+		notices.map((notice) => notice.level),
+		["warning"],
+	);
+});
+
+/** A child whose tool fails with the case's error. */
+function failingChild(kase: FamilyCase, error: Error) {
+	return workflow({
+		name: `${kase.family}-child`,
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("fail", {}, async () => {
+				throw error;
+			});
+			return {};
+		},
+	});
+}
+
+/** The first error in `error`'s cause chain, eight links at most, that `guard` accepts. */
+function inChain(error: unknown, guard: (value: unknown) => boolean): Error | undefined {
+	let current = error;
+	for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
+		if (guard(current)) return current as Error;
+		current = (current as { readonly cause?: unknown }).cause;
+	}
+	return undefined;
+}
+
+test.each(FAMILY_CASES)(
+	"a $family error a pooled child failed on reaches its parent's error chain as itself, through the JSON result (#4378)",
+	async (kase) => {
+		const original = kase.make();
+		const caught: unknown[] = [];
+		const backend = await createMemoryTestBackend();
+		const sent: RunResult[] = [];
+		// As a local worker does: it runs the child, and the root reads the result the worker sent over IPC as JSON.
+		const release = bindChildWorkerDispatcher(backend, {
+			validateOptions() {},
+			async run(definition, inputs, options) {
+				const result = await run(definition, inputs, { runId: options.runId, store: createStore() });
+				sent.push(result);
+				return JSON.parse(JSON.stringify(result)) as RunResult;
+			},
+		});
+		try {
+			const result = await run(
+				catchingParent("root", failingChild(kase, original), caught),
+				{},
+				{
+					runId: `${kase.family}-root`,
+					store: createStore(),
+					durableBackend: backend,
+				},
+			);
+
+			assert.equal(sent[0]?.failureDetail?.family, kase.family, JSON.stringify(sent[0]));
+			assert.equal(caught.length, 1);
+			const found = inChain(caught[0], (value) => value instanceof kase.type);
+			assert.ok(found, `no ${original.name} in the parent's chain`);
+			assertSameFamilyError(found, original, kase);
+			assert.equal(result.failureDetail?.name, original.name, "the root's own result carries it on");
+		} finally {
+			release();
+		}
+	},
+);
+
+test.each(FAMILY_CASES)(
+	"a $family error an in-process child failed on reaches its parent's error chain as itself (#4378)",
+	async (kase) => {
+		const original = kase.make();
+		const caught: unknown[] = [];
+
+		await run(catchingParent("root", failingChild(kase, original), caught), {}, { runId: `${kase.family}-local` });
+
+		const found = inChain(caught[0], (value) => value instanceof kase.type);
+		assert.ok(found, `no ${original.name} in the parent's chain`);
+		assertSameFamilyError(found, original, kase);
+	},
+);
+
+test("a git-required error with its git cause, two child levels down, reaches the root's error chain typed (#4378)", async () => {
+	const kase = FAMILY_CASES.find((candidate) => candidate.family === "git-required")!;
+	const original = kase.make();
+	const caught: unknown[] = [];
+	const middle = catchingParent("middle", failingChild(kase, original), []);
+
+	await run(catchingParent("root", middle, caught), {}, { runId: "nested-git-root" });
+
+	const found = inChain(caught[0], (value) => value instanceof kase.type);
+	assert.ok(found, String(caught[0]));
+	assertSameFamilyError(found, original, kase);
+	assert.ok(found.cause instanceof GitUnavailableError);
 });
 
 test("a pooled child that failed without a failure detail fails the parent on its text and reports nothing (#4309)", async () => {
