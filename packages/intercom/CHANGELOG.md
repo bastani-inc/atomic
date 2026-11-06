@@ -25,6 +25,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - The intercom broker writes `broker.pid` before its socket accepts connections, so a client that has connected, including one that waited for the broker to answer, always finds the pid file naming the running broker. Brokers that start at the same time take turns, and one that finds a live broker leaves its pid file alone ([#4409](https://github.com/bastani-inc/atomic/issues/4409))
+- A send to a recipient on another broker node that is still saving the message no longer ends uncertain because one of the recipient's progress reports arrived late, as happens when its machine is busy. A recipient that still holds the message but misses one report gets one more receipt wait to report, so a recipient on another node that neither confirms nor reports is reported uncertain after about 16 seconds instead of 8 ([#4443](https://github.com/bastani-inc/atomic/issues/4443))
 
 ## [0.9.59] - 2026-11-01
 

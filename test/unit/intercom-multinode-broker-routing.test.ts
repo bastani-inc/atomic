@@ -31,6 +31,7 @@ import {
 } from "../../packages/intercom/broker/open-broker-state.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
+import { UNCERTAIN_RECEIPT_REASON } from "../../packages/intercom/broker/recipient-receipts.js";
 import { RESTORING_RECIPIENT_HOLD_MS } from "../../packages/intercom/broker/restoring-recipients.js";
 import {
 	type BrokerConnectedSession,
@@ -1352,6 +1353,198 @@ test(
 				"progress reports held the sender",
 			);
 		} finally {
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+/** Fine enough that a hold check's real outbox read answers before its `send_held`-while-reading grace. */
+const DECISION_STEP_MS = 100;
+
+function holdsOf(session: BrokerConnectedSession, id: string) {
+	return framesOf(session).filter((frame) => frame.type === "send_held" && frame.messageId === id);
+}
+
+/** Steps fake time until the sender's broker decides its next receipt wait: one more hold, or an outcome. */
+async function nextReceiptDecision(sender: BrokerConnectedSession, id: string): Promise<void> {
+	const holdsBefore = holdsOf(sender, id).length;
+	const decided = await advanceUntil(
+		() => (holdsOf(sender, id).length > holdsBefore || outcomeOf(sender, id) !== undefined ? true : undefined),
+		2 * RECIPIENT_RECEIPT_TIMEOUT_MS,
+		DECISION_STEP_MS,
+	);
+	assert.ok(decided !== undefined, "the sender's broker decided the receipt wait");
+}
+
+test(
+	"a remote recipient whose saving report lands only after a receipt wait keeps its sender waiting and is delivered once (#4443)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			// The recipient is stalled through the first receipt wait, so its saving report lands after that wait ends.
+			await nextReceiptDecision(sender, sent.id);
+			assert.equal(outcomeOf(sender, sent.id), undefined, JSON.stringify(outcomeOf(sender, sent.id)));
+			assert.equal(holdsOf(sender, sent.id).length, 1);
+			assert.equal(b!.router.saving(recipient, sent.id), true);
+			await nextReceiptDecision(sender, sent.id);
+			assert.equal(outcomeOf(sender, sent.id), undefined, JSON.stringify(outcomeOf(sender, sent.id)));
+			assert.equal(holdsOf(sender, sent.id).length, 2, "the late report kept the sender waiting");
+			assert.equal(b!.router.received(recipient, sent.id), true);
+			const delivered = await advanceUntil(() => outcomeOf(sender, sent.id), CROSS_NODE_WAIT_MS, DECISION_STEP_MS);
+			assert.equal(delivered?.value.type, "delivered", JSON.stringify(delivered));
+			assert.equal(
+				framesOf(sender).filter((frame) => frame.type === "delivery_failed" && frame.messageId === sent.id).length,
+				0,
+			);
+			assert.equal(messageFrames(recipient, sent.id).length, 1, "delivered once");
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+test(
+	"a remote recipient that holds a message but has stopped saving still ends its sender's wait uncertain, one forgiven receipt wait later and within the save cap (#4443)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			const sentAt = Date.now();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			await nextReceiptDecision(sender, sent.id);
+			assert.equal(outcomeOf(sender, sent.id), undefined, "one missed report does not decide the outcome");
+			await nextReceiptDecision(sender, sent.id);
+			const outcome = outcomeOf(sender, sent.id);
+			assert.equal(reasonOf(outcome), UNCERTAIN_RECEIPT_REASON, JSON.stringify(outcome));
+			assert.equal(holdsOf(sender, sent.id).length, 1, "exactly one receipt wait was forgiven");
+			const waited = Date.now() - sentAt;
+			assert.ok(waited >= 2 * RECIPIENT_RECEIPT_TIMEOUT_MS, `uncertain after only ${waited} ms`);
+			assert.ok(waited < 3 * RECIPIENT_RECEIPT_TIMEOUT_MS, `a stalled recipient held its sender ${waited} ms`);
+			assert.ok(waited < RECIPIENT_SAVE_MAX_WAIT_MS);
+			assert.equal(messageFrames(recipient, sent.id).length, 1, "delivered to the recipient once");
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+test(
+	"only two receipt waits in a row without a fresh saving report end a remote send uncertain, and a fresh report forgives the next miss (#4443)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		// The store clock is real, so the age of the recipient's last report as the sender's broker reads it is scripted.
+		let scriptedSavingAgeMs: number | undefined;
+		const spy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
+			const result = await read(messageId);
+			if (scriptedSavingAgeMs === undefined || result.status !== "found" || result.row.state !== "claimed")
+				return result;
+			return { ...result, row: { ...result.row, savingAgeMs: scriptedSavingAgeMs } };
+		});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			const decisions: Array<string | undefined> = [];
+			const decide = async (savingAgeMs: number | undefined) => {
+				scriptedSavingAgeMs = savingAgeMs;
+				const holdsBefore = holdsOf(sender, sent.id).length;
+				await nextReceiptDecision(sender, sent.id);
+				decisions.push(
+					holdsOf(sender, sent.id).length > holdsBefore ? "held" : reasonOf(outcomeOf(sender, sent.id)),
+				);
+			};
+			await decide(undefined);
+			await decide(RECIPIENT_RECEIPT_TIMEOUT_MS - 1);
+			await decide(RECIPIENT_RECEIPT_TIMEOUT_MS);
+			await decide(RECIPIENT_RECEIPT_TIMEOUT_MS);
+			assert.deepEqual(decisions, ["held", "held", "held", UNCERTAIN_RECEIPT_REASON]);
+			for (const hold of holdsOf(sender, sent.id))
+				assert.ok(hold.type === "send_held" && hold.timeoutMs === RECIPIENT_RECEIPT_TIMEOUT_MS);
+		} finally {
+			spy.mockRestore();
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+test(
+	"a hold check that finds no outbox row ends the remote send uncertain without reporting a routing error (#4443)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		let rowGone = false;
+		const spy = vi
+			.spyOn(outbox, "read")
+			.mockImplementation(async (messageId) => (rowGone ? { status: "missing" } : read(messageId)));
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			rowGone = true;
+			await nextReceiptDecision(sender, sent.id);
+			assert.equal(reasonOf(outcomeOf(sender, sent.id)), UNCERTAIN_RECEIPT_REASON);
+			assert.equal(holdsOf(sender, sent.id).length, 0);
+			assert.deepEqual(errors.mock.calls, []);
+		} finally {
+			errors.mockRestore();
+			spy.mockRestore();
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+test(
+	"a hold check whose read answers after the save cap has passed ends the remote send uncertain, never holding it for no time (#4443)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		let answerPastCap = false;
+		const spy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
+			const result = await read(messageId);
+			if (!answerPastCap || result.status !== "found" || result.row.state !== "claimed") return result;
+			// The read answers once the cap has passed, before the cap's own timer has run: a fresh report cannot hold.
+			vi.setSystemTime(Date.now() + RECIPIENT_SAVE_MAX_WAIT_MS);
+			return { ...result, row: { ...result.row, savingAgeMs: 0 } };
+		});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			answerPastCap = true;
+			await nextReceiptDecision(sender, sent.id);
+			assert.equal(reasonOf(outcomeOf(sender, sent.id)), UNCERTAIN_RECEIPT_REASON);
+			assert.deepEqual(holdsOf(sender, sent.id), []);
+		} finally {
+			spy.mockRestore();
 			vi.useRealTimers();
 		}
 	},
