@@ -221,6 +221,15 @@ export interface SnapshotSweepOptions extends SnapshotIndexOptions {
 type PageRow = SqliteRow & { created_at: number; hash: string };
 
 /**
+ * How many whole seconds a blob's `created_at` must lie behind the database clock for the blob to be at least
+ * `graceSeconds` old. Both count whole seconds, so a blob stored late in a second carries that second's start and can
+ * be almost a second younger than the difference says; one second more keeps it for the whole window. 0 keeps none.
+ */
+function collectableAge(graceSeconds: number): number {
+	return graceSeconds === 0 ? 0 : graceSeconds + 1;
+}
+
+/**
  * A table whose rows reference snapshot blobs, with the triggers that index its future rows and the statements that
  * index the rows it already holds. Both are built from the same statements, so they cannot disagree.
  */
@@ -675,7 +684,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * before the batch commits keeps its blob and a process killed mid-collection leaves only garbage. Each batch's page
 	 * holds only blobs it can delete, so a sweep started again after a process exited makes progress even when the
 	 * oldest blobs are all retained. Reads the reference index and the blob table's age index, never a journal or a
-	 * session.
+	 * session. Ages are counted in whole seconds, so a blob can stay up to a second past `graceSeconds`, never less.
 	 *
 	 * Every batch first checks, in its own transaction, that every referencing table has its triggers and a finished
 	 * backfill, as {@link completeIndex} leaves them. When one does not, because a table appeared or lost its triggers
@@ -696,6 +705,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
 				)
 			)`;
+		const minimumAge = collectableAge(options.graceSeconds);
 		const deleted: string[] = [];
 		let cursor: PageRow | undefined;
 		let repaired = false;
@@ -706,12 +716,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				const states = await readSourceStates(transaction, this.tables, this.sources);
 				if (!states.every((state) => state.installed && state.backfilled)) return undefined;
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-				const page = await this.page(transaction, options.graceSeconds, unreferenced, after);
+				const page = await this.page(transaction, minimumAge, unreferenced, after);
 				if (page.length === 0) return { page, deleted: [] };
 				const rows = await transaction.all<SqliteRow & { hash: string }>(
 					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM json_each(?)) AND created_at <= unixepoch() - ? AND ${unreferenced} RETURNING hash`,
 					JSON.stringify(page.map((row) => row.hash)),
-					options.graceSeconds,
+					minimumAge,
 				);
 				return { page, deleted: rows.map((row) => row.hash) };
 			});
@@ -769,10 +779,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			SELECT session_id, snapshot_id FROM session_heads`;
 	}
 
-	/** The next {@link SNAPSHOT_COLLECTION_BATCH} blobs old enough and `unreferenced`, oldest first, after `after`. */
+	/**
+	 * The next {@link SNAPSHOT_COLLECTION_BATCH} blobs whose `created_at` is at least `minimumAge` whole seconds behind
+	 * the database clock and that are `unreferenced`, oldest first, after `after`.
+	 */
 	private page(
 		transaction: SqliteExecutor,
-		graceSeconds: number,
+		minimumAge: number,
 		unreferenced: string,
 		after: PageRow | undefined,
 	): Promise<PageRow[]> {
@@ -780,12 +793,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		return after === undefined
 			? transaction.all<PageRow>(
 					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
-					graceSeconds,
+					minimumAge,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
 			: transaction.all<PageRow>(
 					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
-					graceSeconds,
+					minimumAge,
 					after.created_at,
 					after.hash,
 					SNAPSHOT_COLLECTION_BATCH,
