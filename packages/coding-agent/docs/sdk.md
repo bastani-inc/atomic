@@ -815,6 +815,8 @@ If the session is idle and already has messages when either is called, it starts
 
 `clearQueue()` removes the queued steering and follow-up messages and returns them. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` holds the same messages, in the same order, as they were submitted: give the user those to send again, so the hooks and expansions run once more and not twice. `typed` is left out when every message was queued as submitted.
 
+`images` holds each message's images at the same index as its text, with `undefined` for a message sent without images, so a caller that queues the messages again can give each one its own images back. It is left out when no cleared message had images. A workflow stage that gives up its session while it waits uses it, so messages queued at that moment reach the reopened session with their images.
+
 `pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
 
 The hold preserves content blocks, optional data, duplicate identities, raw text, message types, and order within each queue kind. Non-trigger custom messages remain history-only and do not start a turn.

@@ -1246,14 +1246,18 @@ export class StageSessionController {
 	private async releaseSession(wait: StageWaitSnapshot): Promise<void> {
 		const current = this.session;
 		if (current === undefined) return;
-		const cleared = (
-			current as StageSessionRuntime & { clearQueue?(): { steering: string[]; followUp: string[] } }
-		).clearQueue?.();
-		// Queued text was already prepared by the session; it is queued again literally.
-		for (const text of cleared?.steering ?? [])
-			this.holdInput({ content: text, kind: "steer", expandPromptTemplates: false });
-		for (const text of cleared?.followUp ?? [])
-			this.holdInput({ content: text, kind: "followUp", expandPromptTemplates: false });
+		const cleared = (current as StageSessionRuntime & { clearQueue?: AgentSession["clearQueue"] }).clearQueue?.();
+		// Queued text was already prepared by the session; it is queued again literally, with its own images.
+		for (const [lane, kind] of [
+			["steering", "steer"],
+			["followUp", "followUp"],
+		] as const) {
+			for (const [index, text] of (cleared?.[lane] ?? []).entries()) {
+				const images = cleared?.images?.[lane][index];
+				const content: StageUserMessageContent = images === undefined ? text : [{ type: "text", text }, ...images];
+				this.holdInput({ content, kind, expandPromptTemplates: false });
+			}
+		}
 		this.releasedWait = wait;
 		this.givenUp = wait;
 		this.reattachSessionId = current.sessionId;

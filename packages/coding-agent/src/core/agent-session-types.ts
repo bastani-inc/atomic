@@ -149,14 +149,23 @@ export interface QueuedTexts {
 	followUp: string[];
 }
 
+/** Images of queued messages, per lane, aligned with the text arrays: `undefined` for a message without images. */
+export interface QueuedImages {
+	steering: (ImageContent[] | undefined)[];
+	followUp: (ImageContent[] | undefined)[];
+}
+
 /**
  * What `clearQueue()` removed. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and
  * prompt templates. `typed` holds the same messages as they were submitted, in the same order, for a caller that gives
  * them back to the user to send again: sending the queued text would run those steps a second time (#4284). It is
- * left out when every message was queued as submitted, and by sessions from before it was added.
+ * left out when every message was queued as submitted, and by sessions from before it was added. `images` holds each
+ * message's images at the same index, so a caller that queues the messages again sends them whole (#4309). It is left
+ * out when no cleared message has images.
  */
 export interface ClearedQueue extends QueuedTexts {
 	typed?: QueuedTexts;
+	images?: QueuedImages;
 }
 
 export function drainAgentMessageQueue(queue: PendingAgentMessageQueue | undefined): AgentMessage[] {

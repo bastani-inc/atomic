@@ -199,7 +199,13 @@ function registerInputForCompaction(
 ): HeldInput | undefined {
 	if (!session.isCompacting && !hasHeldInput(session)) return undefined;
 	if (expandPromptTemplates && isExtensionCommand(session, text)) return undefined;
-	return registerHeldInput(session, text, options?.streamingBehavior ?? "steer", !isInsideInputHook());
+	return registerHeldInput(
+		session,
+		text,
+		options?.images,
+		options?.streamingBehavior ?? "steer",
+		!isInsideInputHook(),
+	);
 }
 
 /**
