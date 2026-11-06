@@ -293,32 +293,38 @@ test("a removal failure after successful work is thrown as the FixtureRemovalErr
 const windowsTest = process.platform === "win32" ? test : test.skip;
 const REAL_IMAGE_LOCK_TIMEOUT_MS = 90_000;
 const HOLDER_START_DEADLINE_MS = 60_000;
+const HOLDER_LIFETIME_MS = 30_000;
 
 windowsTest(
 	"a running image from the tree blocks one removal attempt but not the retried removal once it exits (#4483)",
 	async () => {
 		const control = mkdtempSync(join(tmpdir(), "atomic-fixture-removal-control-"));
 		const tree = mkdtempSync(join(tmpdir(), "atomic-fixture-removal-image-"));
+		const release = join(control, "release");
+		let holderExit: Promise<number | null> | undefined;
 		try {
 			const image = join(tree, "payload", "atomic.exe");
 			mkdirSync(join(tree, "payload"));
 			copyFileSync(process.execPath, image);
 			const ready = join(control, "ready");
-			const release = join(control, "release");
 			const holderScript = join(control, "holder.cjs");
 			writeFileSync(
 				holderScript,
 				[
 					'const { existsSync, writeFileSync } = require("node:fs");',
 					`writeFileSync(${JSON.stringify(ready)}, "");`,
-					`const poll = setInterval(() => { if (existsSync(${JSON.stringify(release)})) clearInterval(poll); }, 20);`,
+					`const giveUpAt = Date.now() + ${HOLDER_LIFETIME_MS};`,
+					`const poll = setInterval(() => { if (existsSync(${JSON.stringify(release)}) || Date.now() > giveUpAt) clearInterval(poll); }, 20);`,
 				].join("\n"),
 			);
 			const holder = spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${image}" "${holderScript}""`], {
 				windowsVerbatimArguments: true,
 				stdio: "ignore",
 			});
-			const holderExit = new Promise<number | null>((resolve) => holder.once("exit", resolve));
+			holderExit = new Promise<number | null>((resolve) => {
+				holder.once("exit", resolve);
+				holder.once("error", () => resolve(null));
+			});
 			for (let waited = 0; !existsSync(ready); waited += 25) {
 				assert.ok(waited < HOLDER_START_DEADLINE_MS, "the image copy never started");
 				await sleep(25);
@@ -349,9 +355,10 @@ windowsTest(
 			assert.equal(warnings.length, 1);
 			assert.equal(await holderExit, 0);
 		} finally {
-			writeFileSync(join(control, "release"), "");
-			rmSync(control, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-			rmSync(tree, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			writeFileSync(release, "");
+			await holderExit;
+			removeFixtureTree(control);
+			removeFixtureTree(tree);
 		}
 	},
 	REAL_IMAGE_LOCK_TIMEOUT_MS,
