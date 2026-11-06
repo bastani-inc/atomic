@@ -622,7 +622,7 @@ Built-in sources, exported from `@bastani/atomic` and `@bastani/atomic/workflows
 | `webhook({ path, port?, hostname?, maxBodyBytes? })` | One event per `POST` to `path`, a plain path such as `/hooks/ci` (a query string or fragment throws `SubscriptionConfigError`). The id comes from `X-GitHub-Delivery`, `X-Request-Id`, `Idempotency-Key` or the body's `id`. `listening()` resolves the URL to give the sender. Sources on the same host and port share one server and route by `path`, so any number of webhook subscriptions on the default port hold one socket; two sources cannot use the same `path`. `requestFailures()` returns the count and the latest typed error of deliveries that failed inside the source, which were answered with `500`. A sender that disconnects is not a failure. |
 | `interval(ms)` | A `tick` event every `ms` milliseconds. |
 
-Polling sources need no timer of their own: every source and rate limit waits on one shared wake dispatcher, and an idle subscriber holds no timer, listener or socket of its own.
+Polling sources need no timer of their own: every source and rate limit waits on one shared wake dispatcher, and webhook sources share one server per host and port, so an idle subscriber holds no timer or socket of its own. Each open source keeps one abort listener on its own subscription's signal.
 
 ### `publishEvent(subscriptionId, event)`
 
