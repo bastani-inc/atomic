@@ -10,6 +10,7 @@ import { calculateContextTokens, estimateProjectedContextTokens } from "./compac
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
+import { inlineToolOutput } from "./session-tool-output.ts";
 import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
@@ -154,7 +155,7 @@ export async function exportToHtml(
 /**
  * Export the current session branch to a JSONL file.
  * Writes the session header followed by all entries on the current branch path, with the patch and bundle content
- * of its worktree snapshots carried inline.
+ * of its worktree snapshots and the tool outputs kept as session blobs carried inline.
  * @param outputPath Target file path. If omitted, generates a timestamped file in cwd.
  * @returns The resolved output file path.
  */
@@ -162,7 +163,7 @@ export async function exportToHtml(
 export async function exportToJsonl(
 	this: AgentSession,
 	outputPath?: string,
-	options: { includeShareContext?: boolean; snapshotContent?: boolean } = {},
+	options: { includeShareContext?: boolean; snapshotContent?: boolean; toolOutputContent?: boolean } = {},
 ): Promise<string> {
 	const filePath = resolvePath(
 		outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
@@ -181,13 +182,18 @@ export async function exportToJsonl(
 		cwd: this.sessionManager.getCwd(),
 	};
 
-	const branchEntries = await inlineSnapshotBlobs(
+	const store = this.sessionManager.getSessionStore();
+	const snapshotEntries = await inlineSnapshotBlobs(
 		this.sessionManager.getBranch(),
 		this.sessionManager.getWorktreeSnapshotRecords(),
 		options.snapshotContent === false
 			? undefined
-			: sessionSnapshotBlobs(this.sessionManager.getSessionStore().snapshotBlobs, this.sessionManager.getEntries()),
+			: sessionSnapshotBlobs(store.snapshotBlobs, this.sessionManager.getEntries()),
 	);
+	const branchEntries =
+		options.toolOutputContent === false
+			? snapshotEntries
+			: await inlineToolOutput(snapshotEntries, store, this.sessionManager.getSessionId());
 	const lines = [JSON.stringify(header)];
 
 	// Re-chain parentIds to form a linear sequence
