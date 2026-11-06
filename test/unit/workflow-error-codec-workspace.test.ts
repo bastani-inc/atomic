@@ -70,6 +70,19 @@ test("a git error crosses as its own class, and so does the cause it was raised 
 	assert.deepEqual([(back.cause as Error).name, (back.cause as Error).message], ["SpawnError", "spawn failed"]);
 });
 
+test("GitUnavailableError crosses the protocol through the git-provision registry entry (#4416)", () => {
+	const git = notInstalled();
+	const envelope = serializeError(git);
+	assert.equal(envelope.family, "git-provision");
+	const back = rehydrateError(JSON.parse(JSON.stringify(envelope)));
+	assert.ok(back instanceof GitUnavailableError);
+	assert.ok(isGitUnavailableError(back));
+	assert.deepEqual(back.toJSON(), git.toJSON());
+	const twice = crossed(back);
+	assert.ok(twice instanceof GitUnavailableError);
+	assert.deepEqual(twice.toJSON(), git.toJSON());
+});
+
 test("a refusal whose git does not run keeps that git error as its cause, with its hint (#4416)", () => {
 	const git = notInstalled();
 	const refusal = new WorkspaceRestoreUnavailableError(
@@ -103,7 +116,7 @@ test("a workspace error of a class this version does not know keeps its name, co
 		cleanupCause: new Error("cleanup failed"),
 	});
 	const envelope = serializeError(future);
-	assert.equal(envelope.fields.workspaceReason, "sub-case");
+	assert.equal(envelope.extra?.reason, "sub-case");
 	const back = crossed(future);
 	assert.ok(isWorkspaceError(back) && back instanceof WorkspaceError, String(back));
 	assert.deepEqual(
