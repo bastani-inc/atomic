@@ -23,7 +23,6 @@ import {
 	subscriptionEventProcessed,
 } from "../../durable/subscription-records.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
-import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import type {
 	WorkflowEventChild,
 	WorkflowEventHandler,
@@ -36,6 +35,7 @@ import type {
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
 } from "../../shared/types.js";
+import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 
 export interface WorkflowEventRuntime {
 	readonly runId: string;

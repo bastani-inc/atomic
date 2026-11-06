@@ -2388,12 +2388,15 @@ test.runIf(process.platform !== "win32")(
 		ghAuthCheck.timeoutMs = 200;
 		try {
 			let failure: unknown;
+			const before = performance.now();
 			try {
 				githubChecks({ repo: "acme/widgets", pr: 7 });
 			} catch (error) {
 				failure = error;
 			}
+			const measured = performance.now() - before;
 			assert.ok(failure instanceof SubscriptionTimeoutError);
+			assert.ok(failure.elapsedMs <= Math.ceil(measured), `elapsed ${failure.elapsedMs} > measured ${measured}`);
 			assert.equal(isSubscriptionTimeoutError(failure), true);
 			assert.deepEqual(
 				[failure.code, failure.phase, failure.timeoutMs, failure.retryable],

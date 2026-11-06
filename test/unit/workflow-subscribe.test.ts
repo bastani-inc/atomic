@@ -726,6 +726,10 @@ test("cancelling the run cancels its subscriptions and aborts running handlers (
 		},
 	);
 	assert.equal(result.status, "killed");
+	assert.deepEqual(
+		{ kind: result.failure?.kind, code: result.failure?.code },
+		{ kind: "cancelled", code: "cancelled" },
+	);
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal((doneReason as Error | undefined)?.message, "operator cancelled");
 	void handlerSignal;
@@ -1924,6 +1928,9 @@ test("a run whose only tracked work is a subscription or an inline stream comple
 		},
 		async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
 			for await (const event of ctx.events(listSource("inline-only", [{ id: "i1" }]))) void event;
+		},
+		async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
+			await ctx.tool("tool-only", {}, async () => 1);
 		},
 	];
 	for (const [index, body] of runs.entries()) {
