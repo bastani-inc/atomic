@@ -8,6 +8,7 @@ import {
 	moduleDir,
 	readText,
 	removeTempDirectory,
+	type SpawnedProcess,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -68,6 +69,40 @@ function integrity(directory: string): string {
 }
 
 const allIds = Array.from({ length: EVENTS }, (_, index) => `e${index}`);
+
+/** SQLite's primary result code for a lock held by another connection. */
+const SQLITE_BUSY = 5;
+/** Bound on SIGSTOP retries: the owner holds the write lock for milliseconds between handler completions. */
+const STOP_ATTEMPTS = 200;
+
+function journalWriteLockFree(directory: string): boolean {
+	const database = new DatabaseSync(join(directory, "journal.sqlite"));
+	try {
+		database.exec("PRAGMA busy_timeout=0");
+		database.exec("BEGIN IMMEDIATE");
+		database.exec("ROLLBACK");
+		return true;
+	} catch (error) {
+		if ((error as { errcode?: number }).errcode === SQLITE_BUSY) return false;
+		throw error;
+	} finally {
+		database.close();
+	}
+}
+
+/**
+ * Stops `owner` at a moment it does not hold the journal's write lock. A journal transaction waits out a stopped
+ * lock holder for minutes by design, so stopping the owner mid-transaction would only test SQLite's lock wait.
+ */
+async function stopOutsideTransaction(owner: SpawnedProcess, directory: string): Promise<void> {
+	for (let attempt = 0; attempt < STOP_ATTEMPTS; attempt++) {
+		owner.kill("SIGSTOP");
+		if (journalWriteLockFree(directory)) return;
+		owner.kill("SIGCONT");
+		await sleep(5);
+	}
+	assert.fail(`the owner held the journal's write lock at each of ${STOP_ATTEMPTS} stops`);
+}
 
 test(
 	"SIGKILL mid-subscription, then resume: recorded events are never handled again and none are lost (#4311)",
@@ -148,7 +183,7 @@ test.skipIf(process.platform === "win32")(
 		const ownerStderr = new Response(owner.stderr).text();
 		try {
 			await waitForHandled(directory, "owner", EVENTS / 4);
-			owner.kill("SIGSTOP");
+			await stopOutsideTransaction(owner, directory);
 			const skewed = fixture(
 				["run", directory, runId, "skewed", String(EVENTS), HANDLER_DELAY_MS, String(MAX_CONCURRENT)],
 				{
