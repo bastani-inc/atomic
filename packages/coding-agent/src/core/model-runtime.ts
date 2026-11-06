@@ -186,6 +186,7 @@ export class ModelRuntime implements Models {
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
 	private availabilityError: string | undefined;
 	private refreshSequence = 0;
+	private readonly registrationRefreshes = new Set<Promise<ModelsRefreshResult>>();
 	private constructor(
 		credentials: RuntimeCredentials,
 		config: ModelConfig,
@@ -1220,7 +1221,19 @@ export class ModelRuntime implements Models {
 	private scheduleRegistrationRefresh(): void {
 		this.markCatalogInputsChanged();
 		const sequence = ++this.refreshSequence;
-		void this.runRefresh({ allowNetwork: false }, sequence, true);
+		const refresh = this.runRefresh({ allowNetwork: false }, sequence, true);
+		this.registrationRefreshes.add(refresh);
+		void refresh.finally(() => this.registrationRefreshes.delete(refresh));
+	}
+
+	/**
+	 * Resolves once no catalog refresh started by `registerProvider`, `registerNativeProvider` or
+	 * `unregisterProvider` is running, including one a registration starts while this waits. Those
+	 * refreshes run in the background, so this is how a caller knows their credential checks and
+	 * timers are done.
+	 */
+	async whenRegistrationRefreshesSettled(): Promise<void> {
+		while (this.registrationRefreshes.size > 0) await Promise.allSettled(this.registrationRefreshes);
 	}
 
 	private async runRefresh(
