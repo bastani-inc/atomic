@@ -11,6 +11,7 @@ import {
 } from "../../packages/workflows/src/shared/error-codec.js";
 import { SERIALIZABLE_ERROR_FAMILIES } from "../../packages/workflows/src/shared/serializable-error-families.js";
 import {
+	isStageReleaseError,
 	isStageWaitError,
 	StageRehydrationError,
 	StageReleaseError,
@@ -262,31 +263,48 @@ test("a family envelope without a code, or one its family refuses, is refused na
 	);
 });
 
-test("a git-required error whose git cause was cut off at the depth bound keeps its identity, and the chain above it its classes (#4378)", () => {
+test("a git-required error whose git cause was cut off at the depth bound keeps its identity over every hop, and the chain above it its classes (#4378)", () => {
 	const gitRequired = FAMILY_CASES.find((kase) => kase.family === "git-required")!.make() as WorkflowGitRequiredError;
 	let chain: Error = gitRequired;
 	for (let level = 0; level < MAX_CAUSE_DEPTH - 2; level++) chain = new Error(`level ${level}`, { cause: chain });
 	const outer = new ToolDetachmentError("session-busy", { sessionId: "session-1" }, { cause: chain });
 
-	const rebuilt = read(JSON.parse(JSON.stringify(serializeError(outer))));
+	const once = read(JSON.parse(JSON.stringify(serializeError(outer))));
+	const twice = read(JSON.parse(JSON.stringify(serializeError(once))));
 
-	assert.ok(rebuilt instanceof ToolDetachmentError, "the typed error above it is kept");
-	const links = causeChain(rebuilt);
-	assert.equal(links.length, MAX_CAUSE_DEPTH);
-	const copy = links.at(-1) as Error & Record<string, unknown>;
-	assert.equal(isWorkflowGitRequiredError(copy), true);
-	assert.equal(copy.cause, undefined, "its git cause was beyond the bound");
-	assert.deepEqual(
-		[copy.name, copy.code, copy.message, copy.hint, copy.retryable, copy.fields],
-		[
-			gitRequired.name,
-			gitRequired.code,
-			gitRequired.message,
-			gitRequired.hint,
-			gitRequired.retryable,
-			gitRequired.fields,
-		],
-	);
+	for (const rebuilt of [once, twice]) {
+		assert.ok(rebuilt instanceof ToolDetachmentError, "the typed error above it is kept");
+		const links = causeChain(rebuilt);
+		assert.equal(links.length, MAX_CAUSE_DEPTH);
+		const copy = links.at(-1) as Error & Record<string, unknown>;
+		assert.equal(isWorkflowGitRequiredError(copy), true);
+		assert.equal(copy.cause, undefined, "its git cause was beyond the bound");
+		assert.deepEqual(
+			[copy.name, copy.code, copy.message, copy.hint, copy.retryable, copy.fields],
+			[
+				gitRequired.name,
+				gitRequired.code,
+				gitRequired.message,
+				gitRequired.hint,
+				gitRequired.retryable,
+				gitRequired.fields,
+			],
+		);
+	}
+});
+
+test("a copy that only carries a family's name and code crosses as a plain error its guard still recognizes (#4378)", () => {
+	const copy = Object.assign(new Error("Cannot release stage review"), {
+		name: "StageReleaseError",
+		code: "stage-busy",
+	});
+	const sent = serializeError(new ToolDetachmentError("session-busy", { sessionId: "session-1" }, { cause: copy }));
+
+	assert.equal(sent.cause?.family, undefined);
+	const rebuilt = read(JSON.parse(JSON.stringify(sent)));
+	assert.ok(rebuilt instanceof ToolDetachmentError);
+	assert.equal(isStageReleaseError(rebuilt.cause), true);
+	assert.equal((rebuilt.cause as Error).message, "Cannot release stage review");
 });
 
 test("a family whose rehydration throws on what it received refuses it, keeping what it threw as the cause (#4378)", () => {

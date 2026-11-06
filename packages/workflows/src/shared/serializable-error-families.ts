@@ -1,30 +1,16 @@
 import {
-	type AgentRehydrateError,
-	type BackgroundCompactionError,
-	type DebugError,
-	type DecisionError,
+	AgentRehydrateError,
+	BackgroundCompactionError,
+	DebugError,
+	DecisionError,
 	deserializeGitHubCopilotError,
 	deserializeToolDetachmentError,
-	type EditToolError,
-	findGitHubCopilotError,
-	type GitHubCopilotError,
-	type GitProvisionError,
-	isAgentRehydrateError,
-	isBackgroundCompactionError,
-	isDebugError,
-	isDecisionError,
-	isEditToolError,
+	EditToolError,
+	GitHubCopilotError,
+	GitProvisionError,
 	isGitProvisionError,
-	isLlamaServerError,
 	isSerializedBackgroundCompactionError,
-	isSessionStartError,
-	isShellToolError,
-	isStartupBenchmarkError,
-	isTaskEvictedError,
-	isToolDetachmentError,
-	isWorkspaceError,
-	isWriteSelectorError,
-	type LlamaServerError,
+	LlamaServerError,
 	parseSerializedDecisionError,
 	rehydrateAgentRehydrateError,
 	rehydrateBackgroundCompactionError,
@@ -50,9 +36,9 @@ import {
 	type SerializedToolDetachmentError,
 	type SerializedTypedError,
 	type SerializedWorkspaceError,
-	type SessionStartError,
-	type ShellToolError,
-	type StartupBenchmarkError,
+	SessionStartError,
+	ShellToolError,
+	StartupBenchmarkError,
 	serializeAgentRehydrateError,
 	serializeBackgroundCompactionError,
 	serializeDebugError,
@@ -61,17 +47,12 @@ import {
 	serializeGitHubCopilotError,
 	serializeSessionStartError,
 	serializeWorkspaceError,
-	type TaskEvictedError,
-	type ToolDetachmentError,
-	type WorkspaceError,
-	type WriteSelectorError,
+	TaskEvictedError,
+	ToolDetachmentError,
+	WorkspaceError,
+	WriteSelectorError,
 } from "@bastani/atomic";
-import {
-	deserializeStageWaitError,
-	isStageWaitError,
-	type SerializedStageWaitError,
-	type StageWaitError,
-} from "./stage-wait-errors.js";
+import { deserializeStageWaitError, type SerializedStageWaitError, StageWaitError } from "./stage-wait-errors.js";
 import {
 	isWorkflowGitRequiredError,
 	type SerializedWorkflowGitRequiredError,
@@ -120,6 +101,30 @@ interface SerializedTaskEvictedError extends SerializableErrorForm {
 }
 
 /**
+ * Whether an error is an instance of the family's class. A copy that only carries a family's name and code, such as
+ * one rebuilt by another version, has none of the class's members its serializer reads, and crosses as a plain error
+ * with its name and code.
+ */
+function instanceOf(type: abstract new (...args: never[]) => Error): (error: Error) => boolean {
+	return (error) => error instanceof type;
+}
+
+/**
+ * A git-required error's JSON form, its cause aside, read from its members, so the copy {@link gitRequiredIdentity}
+ * makes crosses again as it arrived.
+ */
+function gitRequiredForm(error: WorkflowGitRequiredError): SerializedWorkflowGitRequiredError {
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		retryable: error.retryable,
+		fields: error.fields,
+	};
+}
+
+/**
  * A git-required error whose git cause the codec cut off at its depth bound, which its class cannot be built without:
  * its name, code, message, hint, retryable and fields, which `isWorkflowGitRequiredError` recognizes.
  */
@@ -139,38 +144,38 @@ function gitRequiredIdentity(form: SerializedWorkflowGitRequiredError): Error {
  */
 export const SERIALIZABLE_ERROR_FAMILIES = {
 	"stage-wait": family<StageWaitError, SerializedStageWaitError>({
-		is: isStageWaitError,
+		is: instanceOf(StageWaitError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: deserializeStageWaitError,
 	}),
 	"tool-detachment": family<ToolDetachmentError, SerializedToolDetachmentError>({
-		is: isToolDetachmentError,
+		is: instanceOf(ToolDetachmentError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: deserializeToolDetachmentError,
 	}),
 	"git-provision": family<GitProvisionError, SerializedGitProvisionError>({
-		is: isGitProvisionError,
+		is: instanceOf(GitProvisionError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: rehydrateGitProvisionError,
 	}),
 	"git-required": family<WorkflowGitRequiredError, SerializedWorkflowGitRequiredError>({
 		is: isWorkflowGitRequiredError,
-		serialize: (error) => error.toJSON(),
+		serialize: gitRequiredForm,
 		rehydrate: (form, cause) =>
 			isGitProvisionError(cause) ? new WorkflowGitRequiredError(form.fields, cause) : gitRequiredIdentity(form),
 	}),
 	workspace: family<WorkspaceError, SerializedWorkspaceError>({
-		is: isWorkspaceError,
+		is: instanceOf(WorkspaceError),
 		serialize: serializeWorkspaceError,
 		rehydrate: rehydrateWorkspaceError,
 	}),
 	"session-start": family<SessionStartError, SerializedSessionStartError>({
-		is: isSessionStartError,
+		is: instanceOf(SessionStartError),
 		serialize: serializeSessionStartError,
 		rehydrate: rehydrateSessionStartError,
 	}),
 	decision: family<DecisionError, SerializedDecisionError>({
-		is: isDecisionError,
+		is: instanceOf(DecisionError),
 		serialize: (error) => serializeDecisionError(error),
 		rehydrate: (form) => {
 			const valid = parseSerializedDecisionError(form);
@@ -178,7 +183,7 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		},
 	}),
 	"task-evicted": family<TaskEvictedError, SerializedTaskEvictedError>({
-		is: isTaskEvictedError,
+		is: instanceOf(TaskEvictedError),
 		serialize: (error) => ({
 			name: error.name,
 			code: error.code,
@@ -190,48 +195,48 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		rehydrate: (form) => rehydrateTaskEvictedError({ ...form.fields, name: form.name, code: form.code }),
 	}),
 	"agent-rehydrate": family<AgentRehydrateError, SerializedAgentRehydrateError>({
-		is: isAgentRehydrateError,
+		is: instanceOf(AgentRehydrateError),
 		serialize: serializeAgentRehydrateError,
 		rehydrate: rehydrateAgentRehydrateError,
 	}),
 	"background-compaction": family<BackgroundCompactionError, SerializedBackgroundCompactionError>({
-		is: isBackgroundCompactionError,
+		is: instanceOf(BackgroundCompactionError),
 		serialize: serializeBackgroundCompactionError,
 		rehydrate: (form) =>
 			isSerializedBackgroundCompactionError(form) ? rehydrateBackgroundCompactionError(form) : undefined,
 	}),
 	"github-copilot": family<GitHubCopilotError, SerializedGitHubCopilotError>({
-		is: (error) => findGitHubCopilotError(error) === error,
+		is: instanceOf(GitHubCopilotError),
 		serialize: serializeGitHubCopilotError,
 		rehydrate: deserializeGitHubCopilotError,
 	}),
 	debug: family<DebugError, SerializedDebugError>({
-		is: isDebugError,
+		is: instanceOf(DebugError),
 		serialize: (error) => serializeDebugError(error),
 		rehydrate: rehydrateDebugError,
 	}),
 	"edit-tool": family<EditToolError, SerializedFileToolError>({
-		is: isEditToolError,
+		is: instanceOf(EditToolError),
 		serialize: serializeFileToolError,
 		rehydrate: rehydrateEditToolError,
 	}),
 	"write-selector": family<WriteSelectorError, SerializedFileToolError>({
-		is: isWriteSelectorError,
+		is: instanceOf(WriteSelectorError),
 		serialize: serializeFileToolError,
 		rehydrate: rehydrateWriteSelectorError,
 	}),
 	"shell-tool": family<ShellToolError, SerializedTypedError>({
-		is: isShellToolError,
+		is: instanceOf(ShellToolError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: rehydrateShellToolError,
 	}),
 	"llama-server": family<LlamaServerError, SerializedTypedError>({
-		is: isLlamaServerError,
+		is: instanceOf(LlamaServerError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: rehydrateLlamaServerError,
 	}),
 	"startup-benchmark": family<StartupBenchmarkError, SerializedTypedError>({
-		is: isStartupBenchmarkError,
+		is: instanceOf(StartupBenchmarkError),
 		serialize: (error) => error.toJSON(),
 		rehydrate: rehydrateStartupBenchmarkError,
 	}),
