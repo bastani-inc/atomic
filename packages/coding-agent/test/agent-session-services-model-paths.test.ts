@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -167,12 +168,13 @@ describe("agent session service model paths", () => {
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 		});
 		try {
-			expect(
+			assert.deepEqual(
 				extensionsResult.extensions
 					.map((extension) => extension.path)
 					.filter((path) => !isSyntheticPath(path))
 					.map((path) => basename(dirname(path))),
-			).toEqual(["intercom"]);
+				["intercom"],
+			);
 			registerProvider = false;
 			await session.reload({ reason: "reload", failOnExtensionErrors: true });
 			expect(session.modelRuntime.getRegisteredProviderIds()).not.toContain(providerId);

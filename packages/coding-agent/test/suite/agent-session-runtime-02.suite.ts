@@ -1,10 +1,11 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
-import type { AgentSession } from "../../src/core/agent-session.ts";
+import type { AgentSession } from "../../src/core/agent-session.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -192,8 +193,8 @@ describe("AgentSessionRuntime characterization", () => {
 
 		expect(realpathSync(runtime.session.sessionManager.getCwd())).toBe(realpathSync(secondDir));
 		expect(realpathSync(runtime.cwd)).toBe(realpathSync(secondDir));
-		expect(packageExtensionDirs(otherRuntime.session)).toEqual(["intercom"]);
-		expect(packageExtensionDirs(runtime.session)).toEqual(["intercom"]);
+		assert.deepEqual(packageExtensionDirs(otherRuntime.session), ["intercom"]);
+		assert.deepEqual(packageExtensionDirs(runtime.session), ["intercom"]);
 	});
 	it("restores model and thinking state from the destination session", async () => {
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, {
