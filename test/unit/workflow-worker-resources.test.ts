@@ -244,3 +244,19 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+test("refusedResourceChanges names a workers setting as the workers option and an admission one as admission (#4310)", () => {
+	const placed = (tree: string): WorkflowExecutionResources["workers"] => ({
+		placement: "shared",
+		workspace: { remotes: [], head: "h", tree, envHash: "e" },
+	});
+	const saved = { ...savedWorkers, admission: { userLimits: { session: 1 } }, workers: placed("t1") };
+	const current = { ...savedWorkers, admission: { userLimits: { session: 2 } }, workers: placed("t2") };
+	assert.deepEqual(
+		refusedResourceChanges(saved, current, undefined).map(({ path, option }) => [path, option]),
+		[
+			["admission.userLimits.session", "admission"],
+			["workers.workspace.tree", "workers"],
+		],
+	);
+});

@@ -517,7 +517,13 @@ test.skipIf(process.platform === "win32")(
 		const directory = makeLibsqlDirectory();
 		const repo = join(directory, "repo");
 		const git = (...args: string[]) =>
-			execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: repo });
+			execFileSync(
+				"git",
+				["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args],
+				{
+					cwd: repo,
+				},
+			);
 		mkdirSync(repo);
 		git("init", "-q");
 		writeFileSync(join(repo, "a.txt"), "a\n");
@@ -619,6 +625,17 @@ test("a shared root's finished stage sessions are read from its journal even whe
 			undefined,
 			"a backend without a journal has none",
 		);
+		const memory = await JournalDurableBackend.open(new MemoryRunJournal());
+		const fresh = await JournalDurableBackend.open(
+			await resolveRunJournal({ journal: { path: join(directory, "fresh.sqlite") } }),
+		);
+		try {
+			assert.equal(await poolSessionStore(memory, "shared-root"), undefined, "a journal that is not SQL has none");
+			assert.equal(await poolSessionStore(fresh, "shared-root"), undefined, "a journal no pool ran on has none");
+		} finally {
+			await memory.close();
+			await fresh.close();
+		}
 	} finally {
 		await backend.close();
 		await coordination.close();
