@@ -13,7 +13,7 @@ import type { WorkflowEventSubscriber } from "../../shared/types.js";
 
 /** A workflow stage of this run that subscribed: it takes steering messages and reports its session's events. */
 export interface LiveSubscriberStage {
-	sendUserMessage(content: string, options?: { readonly deliverAs?: "steer" | "followUp" }): Promise<void>;
+	sendUserMessage(content: string, options?: { readonly deliverAs?: "steer" | "followUp" }): Promise<unknown>;
 	subscribe(listener: (event: { readonly type: string }) => void): () => void;
 }
 
@@ -168,10 +168,12 @@ export function createSubscriberReports(
 					"no-message-admission",
 				);
 			}
-			const send = handle.sendUserMessage;
-			await untilAdmitted(stage.name, (beforeDelivery) =>
-				send.call(handle, message, { deliverAs: "steer" }, beforeDelivery),
-			);
+			const sendUserMessage = handle.sendUserMessage;
+			const reopenedStage: LiveSubscriberStage = {
+				sendUserMessage: (content, options) => sendUserMessage.call(handle, content, options),
+				subscribe: (listener) => handle.subscribe(listener),
+			};
+			await untilAdmitted(stage.name, sendToLiveStage(reopenedStage, message));
 		},
 		async settle() {
 			while (turns.size > 0) await Promise.all([...turns]);

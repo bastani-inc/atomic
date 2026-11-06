@@ -116,6 +116,7 @@ export type SubscriptionConfigReason =
 	| "not-event-source"
 	| "not-function"
 	| "not-owner-repo"
+	| "not-plain-path"
 	| "not-positive-integer"
 	| "not-stage"
 	| "not-string"
@@ -128,6 +129,7 @@ const EXPECTED_BY_REASON: Readonly<Record<SubscriptionConfigReason, string>> = {
 	"not-event-source": "an EventSource with a string id and a start(signal, emit) function",
 	"not-function": "a function",
 	"not-owner-repo": "a repository as owner/name, for example acme/widgets",
+	"not-plain-path": "a path without a query string or fragment, for example /hooks/ci",
 	"not-positive-integer": "a positive integer",
 	"not-stage": "a stage returned by ctx.stage()",
 	"not-string": "a non-empty string",

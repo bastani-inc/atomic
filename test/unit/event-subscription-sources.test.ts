@@ -2410,3 +2410,41 @@ test.runIf(process.platform !== "win32")(
 		}
 	},
 );
+
+test("a webhook source started again after it stopped reports the URL it listens on now (#4311)", async () => {
+	const source = webhook({ path: "/hooks/restarted" });
+	const first = run(source);
+	await source.listening();
+	await first.stop();
+	const second = run(source);
+	const url = await source.listening();
+	const response = await fetch(url, {
+		method: "POST",
+		headers: { "x-request-id": "again-1" },
+		body: "ping",
+	});
+	assert.equal(response.status, 202);
+	assert.deepEqual(
+		second.events.map((event) => event.id),
+		["again-1"],
+	);
+	await second.stop();
+});
+
+test("webhook paths with a query string or fragment are refused before listening (#4311)", () => {
+	for (const path of ["/hooks/ci?v=1", "/hooks/ci#top", "/hooks?"]) {
+		const error = configError(() => webhook({ path }));
+		assert.deepEqual(
+			{ field: error.field, reason: error.reason, expected: error.expected },
+			{
+				field: "webhook.path",
+				reason: "not-plain-path",
+				expected: "a path without a query string or fragment, for example /hooks/ci",
+			},
+		);
+		assert.equal(
+			error.hint,
+			"Pass a path without a query string or fragment, for example /hooks/ci for webhook.path.",
+		);
+	}
+});

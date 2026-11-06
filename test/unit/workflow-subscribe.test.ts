@@ -1466,6 +1466,8 @@ interface ReplayedSubscriberCase {
 	readonly disposeFails?: boolean;
 	/** A second relevant event arrives after the first, so the reopened session takes two reports. */
 	readonly secondReport?: boolean;
+	/** The reopened session refuses the report before any turn starts. */
+	readonly reopenedRefuses?: boolean;
 }
 
 function writeRetainedSession(directory: string, sessionId: string): string {
@@ -1536,6 +1538,7 @@ async function runReplayedSubscriber(scenario: ReplayedSubscriberCase) {
 					text: typeof content === "string" ? content : "",
 					...(options?.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }),
 				});
+				if (label === "reopened" && scenario.reopenedRefuses === true) throw new Error("missing credentials");
 				if (label === "reopened" && scenario.cancelDuringReport === true) {
 					streaming = true;
 					delivering.resolve();
@@ -2337,4 +2340,61 @@ test("a report reaches a subscriber declared while the run was paused that nothi
 	);
 	assert.equal(result.status, "completed", result.error);
 	assert.deepEqual(watcherMessages, ['Report from event child "late#1/l1" (event l1):\n\nl1 matters']);
+});
+
+test("a replayed subscriber whose reopened session refuses a report fails that report, and the event stays unprocessed (#4311)", async () => {
+	const runId = "adadadad-adad-4dad-8dad-000000004311";
+	const { resumed, deliveries, failures } = await runReplayedSubscriber({
+		runId,
+		retainedIn: "host",
+		reopenedRefuses: true,
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(
+		deliveries.map((delivery) => delivery.session),
+		["reopened"],
+	);
+	assert.equal(failures.length, 1);
+	assert.equal(isSubscriptionHandlerError(failures[0]), true);
+	assert.equal(((failures[0] as Error).cause as Error).message, "missing credentials");
+});
+
+test("an inline event the body has not read yet is not processed by reading it or by closing the stream (#4311)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = "a1a1a1a1-a1a1-4a1a-8a1a-000000004311";
+	const processedWhileHeld: boolean[] = [];
+	const definition = workflow({
+		name: "buffered-inline",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const reading = ctx.events(listSource("buffered", [{ id: "b1" }, { id: "b2" }]));
+			for (let turn = 0; turn < 20; turn++) await nextTurn();
+			const first = await reading.next();
+			for (let turn = 0; turn < 20; turn++) await nextTurn();
+			processedWhileHeld.push(subscriptionEventProcessed(backend, runId, "buffered#1", "b1"));
+			assert.equal(first.done, false);
+			const unread = ctx.events(listSource("unread", [{ id: "u1" }]));
+			for (let turn = 0; turn < 20; turn++) await nextTurn();
+			await unread.close();
+			await reading.close();
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId,
+			store: createStore(),
+			durableBackend: backend,
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(processedWhileHeld, [false]);
+	assert.equal(subscriptionEventProcessed(backend, runId, "buffered#1", "b1"), true);
+	assert.equal(subscriptionEventProcessed(backend, runId, "buffered#1", "b2"), false);
+	assert.equal(subscriptionEventProcessed(backend, runId, "unread#1", "u1"), false);
 });

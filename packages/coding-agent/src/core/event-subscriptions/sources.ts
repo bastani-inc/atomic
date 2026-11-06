@@ -394,6 +394,7 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 	const path = options?.path;
 	requireNonEmptyString(path, "webhook.path");
 	if (!path.startsWith("/")) throw new SubscriptionConfigError("webhook.path", "not-absolute-path");
+	if (/[?#]/.test(path)) throw new SubscriptionConfigError("webhook.path", "not-plain-path");
 	const port = options.port ?? 0;
 	if (!Number.isInteger(port) || port < 0 || port > 65_535) {
 		throw new SubscriptionConfigError("webhook.port", "out-of-range", "an integer from 0 to 65535");
@@ -509,6 +510,7 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 				settle({ failure });
 				throw failure;
 			}
+			outcome = undefined;
 			const listener = existing ?? openListener(key, hostname, port);
 			const runtime: { failure?: { readonly error: unknown } } = {};
 			const ended = Promise.withResolvers<void>();

@@ -235,13 +235,15 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		});
 		const delivered: SubscriptionEvent[] = [];
 		let waiting: PromiseWithResolvers<IteratorResult<SubscriptionEvent>> | undefined;
-		let current: { readonly release: (processed: boolean) => void } | undefined;
+		/** The event the source handed over; it counts as processed only once the body has received it. */
+		let current: { readonly release: (processed: boolean) => void; read: boolean } | undefined;
 		let ended = false;
 
 		const settleWaiting = (): void => {
 			if (waiting === undefined) return;
 			const next = delivered.shift();
 			if (next !== undefined) {
+				if (current !== undefined) current.read = true;
 				waiting.resolve({ value: next, done: false });
 				waiting = undefined;
 				return;
@@ -254,7 +256,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		const releaseCurrent = (processed: boolean): void => {
 			const releasing = current;
 			current = undefined;
-			releasing?.release(processed);
+			releasing?.release(processed && releasing.read);
 		};
 
 		const handle = openEventSubscription({
@@ -265,7 +267,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 			alreadyProcessed: (eventId) => subscriptionEventProcessed(runtime.backend, runtime.runId, key, eventId),
 			handle: async (event) => {
 				const released = Promise.withResolvers<boolean>();
-				current = { release: released.resolve };
+				current = { release: released.resolve, read: false };
 				delivered.push(event);
 				settleWaiting();
 				return await released.promise;
@@ -308,7 +310,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 			stats: handle.stats,
 			close: () => closeStream(true),
 			next: () => {
-				releaseCurrent(true);
+				if (current?.read === true) releaseCurrent(true);
 				waiting ??= Promise.withResolvers<IteratorResult<SubscriptionEvent>>();
 				const result = waiting.promise;
 				settleWaiting();
