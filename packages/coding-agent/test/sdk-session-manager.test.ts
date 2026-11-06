@@ -11,10 +11,13 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.js";
 import { StorageUnavailableError } from "../src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { StoreClosedError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
 const testModel = (id: string) => ({
@@ -83,15 +86,22 @@ describe("createAgentSession session manager defaults", () => {
 		if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("uses agentDir for the shared default SQLite database", async () => {
+	it("uses agentDir for the shared default SQLite database (#4441)", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir,
 			model: model!,
+			builtins: NO_BUILTINS,
 		});
+		assert.deepEqual(
+			extensionsResult.extensions
+				.map((extension) => extension.path)
+				.filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
+			[],
+		);
 
 		const location = join(tempDir, "workflows", "journal.sqlite");
 		assert.deepEqual(session.sessionManager.getSessionStore().descriptor, { adapter: "node-sqlite", location });
@@ -132,7 +142,7 @@ describe("createAgentSession session manager defaults", () => {
 				initialContextTransform: () => {
 					throw failure;
 				},
-				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+				builtins: NO_BUILTINS,
 			}),
 			(error: Error) => error === failure,
 		);
@@ -152,6 +162,7 @@ describe("createAgentSession session manager defaults", () => {
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
 				settingsManager: SettingsManager.inMemory({ sessions: { storage: { path: "ignored.sqlite" } } }),
 				sessionStore,
+				builtins: NO_BUILTINS,
 			});
 			if (sessionStore === supplied) assert.equal(session.sessionManager.getSessionStore(), supplied);
 			else {
@@ -177,7 +188,7 @@ describe("createAgentSession session manager defaults", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
 			sessionStore: { kind: "sqlite", path } as const,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: NO_BUILTINS,
 		};
 		const first = (await createAgentSession(options)).session;
 		const second = (await createAgentSession(options)).session;
@@ -211,7 +222,7 @@ describe("createAgentSession session manager defaults", () => {
 				modelRuntime: await createSelectionRuntime(),
 				settingsManager: SettingsManager.inMemory(),
 				sessionStore: { kind: "database", database },
-				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+				builtins: NO_BUILTINS,
 			});
 			await session.dispose();
 			await session.dispose();
@@ -232,6 +243,7 @@ describe("createAgentSession session manager defaults", () => {
 			agentDir,
 			model: model!,
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
@@ -256,6 +268,7 @@ describe("createAgentSession session manager defaults", () => {
 			agentDir,
 			model: model!,
 			sessionManager,
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
@@ -288,6 +301,7 @@ describe("createAgentSession session manager defaults", () => {
 			agentDir,
 			model: model!,
 			thinkingLevel: "high",
+			builtins: NO_BUILTINS,
 		});
 		expect(session.sessionFile).toBeUndefined();
 		expect(session.systemPrompt).toContain(
@@ -318,7 +332,7 @@ describe("createAgentSession session manager defaults", () => {
 	it("enables ask_user_question and todo by default", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
-		const { session } = await createAgentSession({ cwd, agentDir, model: model! });
+		const { session } = await createAgentSession({ cwd, agentDir, model: model!, builtins: NO_BUILTINS });
 
 		expect(session.getActiveToolNames()).toEqual(
 			expect.arrayContaining(["read", "bash", "edit", "write", "ask_user_question", "todo"]),
@@ -336,6 +350,7 @@ describe("createAgentSession session manager defaults", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager: await persistedSession(cwd, "test-ready", restoredModelId),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model?.provider).toBe("test-ready");
@@ -357,6 +372,7 @@ describe("createAgentSession session manager defaults", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager: await persistedSession(cwd, "test-locked", "locked-model"),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model).not.toEqual(locked);
@@ -377,6 +393,7 @@ describe("createAgentSession session manager defaults", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(cwd),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model?.provider).not.toBe("test-ready");
@@ -400,6 +417,7 @@ describe("createAgentSession session manager defaults", () => {
 				defaultModel: "unknown-saved-model",
 			}),
 			sessionManager: SessionManager.inMemory(cwd),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model?.id).not.toBe("unknown-saved-model");
@@ -419,6 +437,7 @@ describe("createAgentSession session manager defaults", () => {
 				defaultModel: "locked-model",
 			}),
 			sessionManager: SessionManager.inMemory(cwd),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model?.provider).not.toBe("test-locked");
@@ -438,6 +457,7 @@ describe("createAgentSession session manager defaults", () => {
 				defaultModel: "unsupported-model",
 			}),
 			sessionManager: await persistedSession(cwd, "absent-session-provider", "absent-session-model"),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model?.provider).toBe("unknown");
@@ -461,6 +481,7 @@ describe("createAgentSession session manager defaults", () => {
 				modelRuntime,
 				settingsManager: SettingsManager.inMemory(savedDefault),
 				sessionManager: await persistedSession(cwd, "absent-session-provider", "absent-session-model"),
+				builtins: NO_BUILTINS,
 			});
 
 			expect(modelFallbackMessage).toContain("Could not restore model absent-session-provider/absent-session-model");
@@ -479,6 +500,7 @@ describe("createAgentSession session manager defaults", () => {
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager: SessionManager.inMemory(cwd),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(modelFallbackMessage).toContain("No models available");
@@ -503,6 +525,7 @@ describe("createAgentSession session manager defaults", () => {
 				workflowStageName: "build",
 				constraints: { disableWorkflowTool: true },
 			},
+			builtins: NO_BUILTINS,
 		});
 
 		expect(sessionManager.getHeader()?.internal).toBe(true);
@@ -539,6 +562,7 @@ describe("createAgentSession session manager defaults", () => {
 				defaultProvider: replacement!.provider,
 				defaultModel: replacement!.id,
 			}),
+			builtins: NO_BUILTINS,
 		});
 
 		expect(session.model).toEqual(replacement);
