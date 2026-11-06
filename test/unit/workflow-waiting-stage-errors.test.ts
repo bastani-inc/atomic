@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
 import type { ReleaseWhenWaiting } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import {
@@ -127,7 +128,7 @@ describe("StageWaitError family: classes (#4309)", () => {
 				{ runId: "run-1", sessionIds: ["s-1", "s-2"], storage: "ATOMIC_SESSIONS_STORAGE" },
 				{ code: "session-not-found" },
 			).message,
-			'Cannot rehydrate the waiting stages of run run-1: sessions s-1, s-2 are not in the session store (session-not-found). Resume the run with the session storage it was started with (ATOMIC_SESSIONS_STORAGE) selected through --storage, ATOMIC_SESSIONS_STORAGE or ATOMIC_STORAGE, the sessions.storage setting, or the SDK sessionStore option. Run "atomic storage status" to see which session storage this process selects.',
+			'Cannot rehydrate the waiting stages of run run-1: sessions s-1, s-2 are not in the session store (session-not-found). Resume the run with the session storage it was started with (ATOMIC_SESSIONS_STORAGE) selected through --storage, ATOMIC_SESSIONS_STORAGE or ATOMIC_STORAGE, the sessions.storage setting, or the SDK sessionStore option. Run "atomic storage status" to see which session storage this process selects. If this machine uses local-only storage and is not joined to shared storage, join it with `atomic team join <url> --token-file <path>`; joining keeps sessions in a local store, so also select the session storage that holds the waiting stage\'s session.',
 		);
 		assert.equal(
 			new StageRehydrationError(
@@ -579,7 +580,9 @@ describe("session-not-found rehydration errors (#4309)", () => {
 		assert.deepEqual(error.fields, { runId: "run-1", sessionIds: ["s-1", "s-2"], storage: "sessions.storage" });
 		assert.match(error.hint, /\(sessions\.storage\)/);
 		assert.match(error.hint, /atomic storage status/);
-		assert.doesNotMatch(error.hint, /team join/);
+		assert.ok(error.hint.includes(`\`${SHARED_STORAGE_JOIN_HINT}\``), error.hint);
+		assert.match(error.hint, /local-only storage and is not joined to shared storage/);
+		assert.match(error.hint, /also select the session storage that holds the waiting stage's session/);
 		// The default code is still the retryable store failure.
 		assert.equal(new StageRehydrationError({}).code, "session-unavailable");
 		assert.equal(new StageRehydrationError({}, { code: "session-unavailable" }).retryable, true);

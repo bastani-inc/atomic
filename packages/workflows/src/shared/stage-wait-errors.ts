@@ -1,3 +1,4 @@
+import { SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
 import type { StageWaitKind, WorkflowSerializableObject } from "./authoring-contract-stage.js";
 
 /** Why a stage waits with its session released. Codes are public API: never rename or reuse one. */
@@ -192,7 +193,7 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 	if (code === "stage-released") return releasedHint(fields);
 	if (code !== "session-not-found") return HINTS[code];
 	const storage = fields.storage === undefined ? "" : ` (${fields.storage})`;
-	return `Resume the run with the session storage it was started with${storage} selected through ${STORAGE_SELECTORS}. Run "atomic storage status" to see which session storage this process selects.`;
+	return `Resume the run with the session storage it was started with${storage} selected through ${STORAGE_SELECTORS}. Run "atomic storage status" to see which session storage this process selects. If this machine uses local-only storage and is not joined to shared storage, join it with \`${SHARED_STORAGE_JOIN_HINT}\`; joining keeps sessions in a local store, so also select the session storage that holds the waiting stage's session.`;
 }
 
 const KEEP_RESIDENT =

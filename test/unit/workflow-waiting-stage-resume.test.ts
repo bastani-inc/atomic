@@ -1,3 +1,4 @@
+import { SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
 import { describe, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -316,6 +317,7 @@ describe("resuming stages that waited between turns (#4309)", () => {
 		assert.deepEqual(failure.fields.sessionIds, [seeded.sessionIds[0], seeded.sessionIds[2]]);
 		assert.equal(failure.fields.storage, "SDK sessionStore option: memory");
 		assert.ok(failure.hint.includes("SDK sessionStore option: memory"));
+		assert.ok(failure.hint.includes(SHARED_STORAGE_JOIN_HINT), failure.hint);
 		// One header read per waiting stage, and nothing else: no write, no lease, no session, no workflow code.
 		assert.equal(reads.mock.calls.length, 3);
 		assert.equal(journalWrites(), 0);
@@ -474,6 +476,7 @@ describe("resuming stages that waited between turns (#4309)", () => {
 		assert.equal(result.ok, false);
 		assert.ok(!result.ok && result.reason === "startup_failed");
 		assert.ok(result.message.includes("(session-not-found)"), result.message);
+		assert.ok(result.message.includes(SHARED_STORAGE_JOIN_HINT), result.message);
 		assert.ok(result.message.includes(seeded.sessionIds[0]!), result.message);
 		assert.equal(reads.mock.calls.length, 2);
 		assert.equal(journalWrites(), 0);
