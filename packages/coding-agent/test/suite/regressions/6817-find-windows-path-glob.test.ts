@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,7 +67,10 @@ describe("issue #6817: Windows find path globs", () => {
 		}
 
 		const args = mockedSpawn.mock.calls[0]?.[1];
-		expect(mocks.ensureTool).toHaveBeenCalledWith("fd");
+		assert.deepEqual(
+			mocks.ensureTool.mock.calls.map(([tool]) => tool),
+			["fd"],
+		);
 		expect(args).toContain("--full-path");
 		expect(args?.at((args?.indexOf("--") ?? -1) + 1)).toBe(String.raw`**[/\\]lib[/\\]*.spec.ts`);
 	});

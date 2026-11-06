@@ -7,6 +7,7 @@ import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -339,9 +340,14 @@ export function createGrepToolDefinition(
 							}
 						}
 
-						const rgPath = await ensureTool("rg");
+						let downloadFailure: ManagedToolError | undefined;
+						const rgPath = await ensureTool("rg", (status) => {
+							downloadFailure = status.error;
+						});
 						if (!rgPath) {
-							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
+							const failure =
+								downloadFailure ?? new Error("ripgrep (rg) is not available and could not be downloaded");
+							settle(() => reject(failure));
 							return;
 						}
 

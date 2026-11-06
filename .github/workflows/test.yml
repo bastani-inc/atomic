@@ -321,14 +321,20 @@ jobs:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.linux-amd64
             timeout_minutes: 10
+            ripgrep_target: x86_64-unknown-linux-musl.tar.gz
+            ripgrep_sha256: 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.windows-amd64
             timeout_minutes: 10
+            ripgrep_target: x86_64-pc-windows-msvc.zip
+            ripgrep_sha256: 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5
       fail-fast: false
     runs-on: ${{ matrix.runner }}
     # Slowest recent job (540 s, about 290 s of it setup with a 207 s checkout) with a third of its suites, plus 50%;
     # see docs/ci.md ("Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      RIPGREP_VERSION: "15.2.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -417,12 +423,55 @@ jobs:
       - name: Build native bindings for package tests
         if: steps.natives.outputs.cache-hit != 'true'
         run: npm run build --workspace=@bastani/atomic-natives
+      # The coding-agent suite's ripgrep tests run this pinned ripgrep, first on PATH, and with
+      # ATOMIC_REQUIRE_PROVISIONED_RIPGREP never download one themselves (#4389). The archive is checked against its
+      # SHA-256 on every run; only a cache miss downloads it, here, with retries.
+      - name: Restore the pinned ripgrep archive
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ripgrep-archive
+          key: atomic-ripgrep-${{ env.RIPGREP_VERSION }}-${{ matrix.binary_platform }}-${{ matrix.ripgrep_sha256 }}
+      - name: Install the pinned ripgrep for the coding-agent suite
+        shell: bash
+        timeout-minutes: 5
+        env:
+          RIPGREP_TARGET: ${{ matrix.ripgrep_target }}
+          RIPGREP_SHA256: ${{ matrix.ripgrep_sha256 }}
+        run: |
+          set -euo pipefail
+          asset="ripgrep-${RIPGREP_VERSION}-${RIPGREP_TARGET}"
+          cd "$RUNNER_TEMP"
+          mkdir -p ripgrep-archive ripgrep-extract ripgrep/bin
+          if [[ ! -f "ripgrep-archive/$asset" ]]; then
+            curl --fail --location --silent --show-error --retry 5 --retry-all-errors --connect-timeout 20 --max-time 120 \
+              --output "ripgrep-archive/$asset" "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${asset}"
+          fi
+          echo "${RIPGREP_SHA256}  ripgrep-archive/${asset}" | sha256sum --check --strict
+          if [[ "$asset" == *.zip ]]; then
+            pwsh -NoProfile -NonInteractive -Command "Expand-Archive -LiteralPath 'ripgrep-archive/${asset}' -DestinationPath ripgrep-extract -Force"
+            exe=rg.exe
+            path_entry="$(cygpath -w "$PWD/ripgrep/bin")"
+          else
+            tar -xzf "ripgrep-archive/${asset}" -C ripgrep-extract
+            exe=rg
+            path_entry="$PWD/ripgrep/bin"
+          fi
+          unpacked="${asset%.zip}"
+          mv "ripgrep-extract/${unpacked%.tar.gz}/${exe}" "ripgrep/bin/${exe}"
+          version="$("ripgrep/bin/${exe}" --version)"
+          if [[ "${version%%$'\n'*}" != "ripgrep ${RIPGREP_VERSION}"* ]]; then
+            echo "Expected ripgrep ${RIPGREP_VERSION}, got: ${version%%$'\n'*}" >&2
+            exit 1
+          fi
+          echo "$path_entry" >> "$GITHUB_PATH"
+          echo "Installed ${version%%$'\n'*} from ${asset} (SHA-256 verified)"
       - name: coding-agent vitest suite
         run: >-
           bun run scripts/run-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 3)"
           -- npm run test --workspace=@bastani/atomic -- --shard=${{ matrix.shard }}/3
         env:
           ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
+          ATOMIC_REQUIRE_PROVISIONED_RIPGREP: "1"
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

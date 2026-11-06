@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -663,13 +664,17 @@ export function createFindToolDefinition(
 							);
 							return;
 						}
-						const fdPath = await ensureTool("fd");
+						let downloadFailure: ManagedToolError | undefined;
+						const fdPath = await ensureTool("fd", (status) => {
+							downloadFailure = status.error;
+						});
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
 							return;
 						}
 						if (!fdPath) {
-							settle(() => reject(new Error("fd is not available and could not be downloaded")));
+							const failure = downloadFailure ?? new Error("fd is not available and could not be downloaded");
+							settle(() => reject(failure));
 							return;
 						}
 						let timedOut = false;

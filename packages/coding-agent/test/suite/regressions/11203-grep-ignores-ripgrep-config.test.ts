@@ -60,7 +60,10 @@ describe("issue #11203: grep ignores ripgrep configuration", () => {
 		await createGrepToolDefinition(tempDir).execute("grep-ripgrep-config", { pattern: "a.b" });
 
 		const args = mockedSpawn.mock.calls[0]?.[1] as string[];
-		assert.deepEqual(mocks.ensureTool.mock.calls, [["rg"]]);
+		assert.deepEqual(
+			mocks.ensureTool.mock.calls.map(([tool]) => tool),
+			["rg"],
+		);
 		assert.ok(args.includes("--no-config"));
 		assert.ok(args.indexOf("--no-config") < args.indexOf("--"));
 	});

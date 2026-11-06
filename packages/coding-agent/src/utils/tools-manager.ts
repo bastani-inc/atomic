@@ -37,6 +37,14 @@ import {
 	type SerializedGitProvisionError,
 } from "./git-errors.ts";
 import { gitInstallCommand, type OsRelease, readOsRelease } from "./git-install-command.ts";
+import {
+	isManagedToolError,
+	ManagedToolDownloadError,
+	type ManagedToolError,
+	type ManagedToolName,
+	type ManagedToolRequestPhase,
+	ManagedToolTimeoutError,
+} from "./managed-tool-errors.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
@@ -125,41 +133,90 @@ export function getToolPath(tool: "fd" | "rg" | "git", options?: ResolveGitOptio
 	return null;
 }
 
-// Resolve the latest release version from the release page redirect, avoiding
-// the anonymous api.github.com quota shared by corporate proxies and CI runners.
-export async function getLatestVersion(repo: string): Promise<string> {
-	const response = await fetchWithRetry(
-		`https://github.com/${repo}/releases/latest`,
-		{ headers: { "User-Agent": getPiUserAgent(VERSION) }, redirect: "manual" },
-		{ timeoutMs: NETWORK_TIMEOUT_MS },
-	);
-	try {
-		await response.body?.cancel();
-	} catch {
-		// Discarding the redirect body is best-effort.
-	}
-	const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
-	if (!location) throw new Error(`Failed to resolve latest ${repo} release: HTTP ${response.status} without redirect`);
-	const tag = new URL(location, "https://github.com").pathname.split("/").pop();
-	if (!tag || !location.includes("/releases/tag/")) {
-		throw new Error(`Failed to resolve latest ${repo} release: unexpected redirect to ${location}`);
-	}
-	return decodeURIComponent(tag).replace(/^v/, "");
+interface ManagedToolRequest {
+	readonly tool: ManagedToolName;
+	readonly phase: ManagedToolRequestPhase;
+	readonly url: string;
+	readonly timeoutMs: number;
+	readonly init: RequestInit;
 }
 
-// Download a file from URL
-async function downloadFile(url: string, dest: string): Promise<void> {
-	const response = await fetchWithRetry(url, undefined, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
-
-	if (!response.ok) {
-		throw new Error(`Download failed with HTTP ${response.status}: ${url}`);
+// A bare "fetch failed" TypeError hides the actionable detail (DNS, TLS, refused) in its cause chain. Depth-capped to
+// guard against circular chains.
+function describeFailure(error: unknown): string {
+	const messages: string[] = [];
+	for (
+		let current: unknown = error, depth = 0;
+		current instanceof Error && depth < 5;
+		current = current.cause, depth++
+	) {
+		if (!messages.includes(current.message)) messages.push(current.message);
 	}
+	return messages.length > 0 ? messages.join(": ") : String(error);
+}
 
-	if (!response.body) {
-		throw new Error("No response body");
+// One release request under its own time limit. Every failure is reported as a typed error that names the request's
+// URL and keeps the underlying failure as its cause.
+async function requestManagedTool<T>(
+	request: ManagedToolRequest,
+	read: (response: Response) => Promise<T>,
+): Promise<T> {
+	const { tool, phase, url, timeoutMs } = request;
+	const startedAt = Date.now();
+	const timeout = AbortSignal.timeout(timeoutMs);
+	try {
+		return await read(await fetchWithRetry(url, { ...request.init, signal: timeout }));
+	} catch (error) {
+		if (isManagedToolError(error)) throw error;
+		if (timeout.aborted)
+			throw new ManagedToolTimeoutError(
+				{ tool, phase, url, timeoutMs, elapsedMs: Date.now() - startedAt },
+				{ cause: error },
+			);
+		throw new ManagedToolDownloadError({ tool, phase, url, detail: describeFailure(error) }, { cause: error });
 	}
+}
 
-	await writeFile(dest, Buffer.from(await response.arrayBuffer()));
+// Resolve the latest release version from the release page redirect, avoiding
+// the anonymous api.github.com quota shared by corporate proxies and CI runners.
+export async function getLatestVersion(tool: ManagedToolName): Promise<string> {
+	const url = `https://github.com/${TOOLS[tool].repo}/releases/latest`;
+	const init: RequestInit = { headers: { "User-Agent": getPiUserAgent(VERSION) }, redirect: "manual" };
+	return requestManagedTool(
+		{ tool, phase: "resolve-version", url, timeoutMs: NETWORK_TIMEOUT_MS, init },
+		async (response) => {
+			try {
+				await response.body?.cancel();
+			} catch {
+				// Discarding the redirect body is best-effort.
+			}
+			const unexpected = (detail: string) =>
+				new ManagedToolDownloadError({ tool, phase: "resolve-version", url, httpStatus: response.status, detail });
+			const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+			if (!location) throw unexpected("no release redirect");
+			const tag = new URL(location, "https://github.com").pathname.split("/").pop();
+			if (!tag || !location.includes("/releases/tag/")) throw unexpected(`redirected to ${location}`);
+			return decodeURIComponent(tag).replace(/^v/, "");
+		},
+	);
+}
+
+async function downloadFile(tool: ManagedToolName, url: string, dest: string): Promise<void> {
+	const archive = await requestManagedTool(
+		{ tool, phase: "download", url, timeoutMs: DOWNLOAD_TIMEOUT_MS, init: {} },
+		async (response) => {
+			if (!response.ok || !response.body)
+				throw new ManagedToolDownloadError({
+					tool,
+					phase: "download",
+					url,
+					httpStatus: response.status,
+					...(response.ok ? { detail: "empty response body" } : {}),
+				});
+			return Buffer.from(await response.arrayBuffer());
+		},
+	);
+	await writeFile(dest, archive);
 }
 
 function findBinaryRecursively(rootDir: string, binaryFileName: string): string | null {
@@ -277,7 +334,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 
 	// fd is pinned on darwin/x64; skip the version lookup there.
 	const version =
-		tool === "fd" && plat === "darwin" && architecture === "x64" ? "10.3.0" : await getLatestVersion(config.repo);
+		tool === "fd" && plat === "darwin" && architecture === "x64" ? "10.3.0" : await getLatestVersion(tool);
 	const assetName = config.getAssetName(version, target);
 
 	// Create tools directory
@@ -289,7 +346,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
 
 	// Download
-	await downloadFile(downloadUrl, archivePath);
+	await downloadFile(tool, downloadUrl, archivePath);
 
 	// Extract into a unique temp directory. fd and rg downloads can run concurrently
 	// during startup, so sharing a fixed directory causes races.
@@ -348,6 +405,8 @@ const TERMUX_PACKAGES: Record<string, string> = {
 export interface ToolStatus {
 	type: "info" | "warning";
 	message: string;
+	/** The typed failure behind a warning about a failed fd or ripgrep download: the request's URL and its cause. */
+	error?: ManagedToolError;
 }
 
 /**
@@ -358,7 +417,8 @@ export interface ToolStatus {
  * write lands in the alternate screen and corrupts the frame. Callers without
  * a status sink stay silent.
  *
- * Returns the tool path, or undefined if unavailable.
+ * Returns the tool path, or undefined if unavailable. When a download fails, the
+ * last warning carries the typed failure as `error`.
  */
 export async function ensureTool(
 	tool: "fd" | "rg" | "git",
@@ -404,22 +464,11 @@ export async function ensureTool(
 		onStatus?.({ type: "info", message: `${config.name} installed to ${path}` });
 		return path;
 	} catch (e) {
-		// Include the error cause chain: fetch failures surface as a bare
-		// "fetch failed" TypeError with the actionable detail (DNS, TLS,
-		// timeout) hidden in the cause. Depth-capped to guard against
-		// circular cause chains.
-		const messages: string[] = [];
-		for (
-			let current: unknown = e, depth = 0;
-			current instanceof Error && depth < 5;
-			current = current.cause, depth++
-		) {
-			if (!messages.includes(current.message)) messages.push(current.message);
-		}
-		onStatus?.({
-			type: "warning",
-			message: `Failed to download ${config.name}: ${messages.length > 0 ? messages.join(": ") : String(e)}`,
-		});
+		onStatus?.(
+			isManagedToolError(e)
+				? { type: "warning", message: e.message, error: e }
+				: { type: "warning", message: `Failed to download ${config.name}: ${describeFailure(e)}` },
+		);
 		return undefined;
 	}
 }
