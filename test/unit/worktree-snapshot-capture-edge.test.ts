@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -176,7 +177,10 @@ describe("the Git runner", () => {
 
 	test("an aborted signal kills a running command and rejects with the signal's reason", async () => {
 		const pidFile = sandbox.path("running.pid");
-		spawns.fault = ({ args }) => (gitCommand(args)[0] === "pause" ? runningCommand(pidFile) : undefined);
+		let exited = false;
+		const spawned = (child: ChildProcess) => child.once("exit", () => (exited = true));
+		spawns.fault = ({ args }) =>
+			gitCommand(args)[0] === "pause" ? { ...runningCommand(pidFile), spawned } : undefined;
 		const controller = new AbortController();
 		const reason = new Error("stop waiting");
 		const running = runGit(["-c", "alias.pause=!sleep 30", "pause"], {
@@ -191,6 +195,9 @@ describe("the Git runner", () => {
 			() => assert.equal(isProcessRunning(pid), false, "the aborted command kept running"),
 			PROCESS_WAIT,
 		);
+		// Windows reports a killed process gone before it has released its working directory, the sandbox; its exit
+		// event comes once it has, so the sandbox can be removed.
+		await vi.waitFor(() => assert.ok(exited, "the aborted command never exited"), PROCESS_WAIT);
 	});
 
 	test("a failing command is a typed Git error with its first output line, credentials removed, and exit codes that are results pass", async () => {

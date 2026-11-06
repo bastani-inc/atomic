@@ -82,7 +82,12 @@ export interface SpawnRequest {
 /** What a test makes of one spawn: a failure Node reports for it, or another command run in its place. */
 export type SpawnFault =
 	| { readonly error: NodeJS.ErrnoException }
-	| { readonly command: string; readonly args: readonly string[] };
+	| {
+			readonly command: string;
+			readonly args: readonly string[];
+			/** Receives the process started in its place, for a test that must see it exit. */
+			readonly spawned?: (child: ChildProcess.ChildProcess) => void;
+	  };
 
 /** The arguments of a Git command after its leading `-c key=value` settings. */
 export function gitCommand(args: readonly string[]): string[] {
@@ -159,7 +164,9 @@ export function withSpawnFaults(
 			detached: options?.detached,
 		});
 		if (chosen !== undefined && "error" in chosen) return failedSpawn(chosen.error);
-		return module.spawn(chosen?.command ?? command, chosen?.args ?? args, options);
+		const child = module.spawn(chosen?.command ?? command, chosen?.args ?? args, options);
+		chosen?.spawned?.(child);
+		return child;
 	};
 	return { ...module, spawn } as typeof ChildProcess;
 }
