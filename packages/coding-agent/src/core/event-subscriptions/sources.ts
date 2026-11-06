@@ -831,7 +831,11 @@ export function githubChecks(options: GitHubPullRequestSourceOptions): EventSour
 	});
 }
 
-/** Emits one `pull_request_review` event per submitted review of a pull request. The id is the review's id. */
+/**
+ * Emits one `pull_request_review` event per submitted review of a pull request. The id is the review's id. A review
+ * still pending is left out: GitHub lists the login's own draft with the id it keeps once submitted, so emitting the
+ * draft would mark that id processed before the review exists for anyone else.
+ */
 export function githubReviews(options: GitHubPullRequestSourceOptions): EventSource {
 	const { repo, pr, intervalMs, gh, dispatcher } = validateGitHubOptions("githubReviews", options);
 	return pollingSource(`github-reviews:${repo}#${pr}`, dispatcher, intervalMs, async (signal) => {
@@ -842,7 +846,7 @@ export function githubReviews(options: GitHubPullRequestSourceOptions): EventSou
 		for (const page of pages) {
 			for (const review of asObjects(page)) {
 				const reviewId = numberField(review, "id");
-				if (reviewId === undefined) continue;
+				if (reviewId === undefined || stringField(review, "state") === "PENDING") continue;
 				events.push(
 					event(`review:${reviewId}`, "pull_request_review", {
 						reviewer: nestedString(review, "user", "login") ?? null,

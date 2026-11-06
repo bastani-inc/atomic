@@ -1796,6 +1796,44 @@ test("githubReviews emits one pull_request_review event per review", async () =>
 	assert.deepEqual(calls[0], ["api", "--paginate", "--slurp", "repos/acme/widgets/pulls/7/reviews?per_page=100"]);
 });
 
+test("githubReviews leaves a pending review out until it is submitted, so its submission is that review's event (#4311)", async () => {
+	const pending = { id: 903, user: { login: "octocat" }, state: "PENDING", body: "draft" };
+	const submitted = {
+		...pending,
+		state: "COMMENTED",
+		body: "looks fine",
+		submitted_at: "2026-01-03T00:00:00Z",
+		html_url: "https://github.com/acme/widgets/pull/7#pullrequestreview-903",
+	};
+	// The author's draft is listed with the id it keeps once submitted.
+	const polls = [[[pending]], [[submitted]]];
+	let poll = 0;
+	const gh: GitHubCommandRunner = async () => JSON.stringify(polls[Math.min(poll++, polls.length - 1)]);
+	const clock = manualDispatcher();
+	const handle = run(
+		githubReviews({ repo: "acme/widgets", pr: 7, intervalMs: POLL_MS, gh, dispatcher: clock.dispatcher }),
+	);
+	await waitFor(() => clock.dispatcher.pending === 1, "the first poll to finish");
+	assert.deepEqual(handle.events, []);
+	await clock.step(POLL_MS);
+	await handle.stop();
+	assertNoLeakedWakes(clock);
+
+	assert.deepEqual(handle.events, [
+		{
+			id: "review:903",
+			type: "pull_request_review",
+			payload: {
+				reviewer: "octocat",
+				state: "COMMENTED",
+				body: "looks fine",
+				submittedAt: "2026-01-03T00:00:00Z",
+				url: "https://github.com/acme/widgets/pull/7#pullrequestreview-903",
+			},
+		},
+	]);
+});
+
 test("github sources reject with a poll failure that keeps the runner error as the cause", async () => {
 	const runnerFailure = new Error("gh exited with code 1");
 	const gh: GitHubCommandRunner = async () => {
