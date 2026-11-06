@@ -955,7 +955,12 @@ function restore(error: Error, members: { readonly [key: string]: unknown }): vo
  * are strings, fields are strings, finite numbers or booleans, and causes are envelopes, at most
  * {@link MAX_CAUSE_DEPTH} deep.
  */
-function readStorageEnvelope(value: unknown, path: string, depth: number): SerializedStorageError {
+function readStorageEnvelope(
+	value: unknown,
+	path: string,
+	depth: number,
+	budget: ReceiveBudget,
+): SerializedStorageError {
 	const envelope = readEnvelope(value, path);
 	for (const [key, field] of Object.entries(envelope.fields))
 		if (
@@ -966,9 +971,9 @@ function readStorageEnvelope(value: unknown, path: string, depth: number): Seria
 			refuse(`${path}.fields.${key}`, "a string, finite number or boolean");
 	const link = (key: "cause" | "rollbackCause" | "cleanupCause") => {
 		const child = (value as { readonly [member: string]: unknown })[key];
-		return child === undefined || depth + 1 >= MAX_CAUSE_DEPTH
-			? {}
-			: { [key]: readStorageEnvelope(child, `${path}.${key}`, depth + 1) };
+		if (child === undefined || depth + 1 >= MAX_CAUSE_DEPTH) return {};
+		if (--budget.remaining < 0) refuse(`${path}.${key}`, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
+		return { [key]: readStorageEnvelope(child, `${path}.${key}`, depth + 1, budget) };
 	};
 	return {
 		name: envelope.name,
@@ -1057,7 +1062,7 @@ interface ReceiveBudget {
 function rehydrateOne(value: unknown, path: string, depth: number, budget: ReceiveBudget): Error {
 	const envelope = readEnvelope(value, path);
 	if (--budget.remaining < 0) refuse(path, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
-	if (envelope.family === "storage") return rehydrateStorageError(readStorageEnvelope(value, path, depth));
+	if (envelope.family === "storage") return rehydrateStorageError(readStorageEnvelope(value, path, depth, budget));
 	const cause =
 		envelope.cause === undefined || depth + 1 >= MAX_CAUSE_DEPTH
 			? undefined

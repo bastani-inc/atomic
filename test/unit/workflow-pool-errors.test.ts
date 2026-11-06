@@ -1104,6 +1104,40 @@ test("every code, source, operation and reason of the shared placement errors cr
 	assert.equal(unknown.retryable, false, "a retryable flag that is not true is not retryable");
 });
 
+test("a received storage envelope's branches share the envelope's budget (#4327)", () => {
+	const leaf = (name: string): SerializedError => ({ name, message: name, fields: {} });
+	const chain = (key: "cause" | "rollbackCause" | "cleanupCause", length: number): SerializedError => {
+		let node = leaf(`${key} ${length - 1}`);
+		for (let index = length - 2; index >= 0; index--) node = { ...leaf(`${key} ${index}`), cause: node };
+		return node;
+	};
+	const storage = (cause: number, rollback: number, cleanup: number): SerializedError => ({
+		name: "StorageRollbackError",
+		message: "storage",
+		family: "storage",
+		fields: {},
+		...(cause === 0 ? {} : { cause: chain("cause", cause) }),
+		...(rollback === 0 ? {} : { rollbackCause: chain("rollbackCause", rollback) }),
+		...(cleanup === 0 ? {} : { cleanupCause: chain("cleanupCause", cleanup) }),
+	});
+	const nodes = (error: Error): number => {
+		const { cause, rollbackCause, cleanupCause } = error as Error & {
+			readonly rollbackCause?: unknown;
+			readonly cleanupCause?: unknown;
+		};
+		let count = 1;
+		for (const next of [cause, rollbackCause, cleanupCause]) if (next instanceof Error) count += nodes(next);
+		return count;
+	};
+	const fits = rehydrateError(storage(7, 1, 7));
+	assert.ok(fits instanceof StorageRollbackError, String(fits));
+	assert.equal(nodes(fits), MAX_SERIALIZED_ERRORS, "an envelope of exactly the budget is rebuilt in full");
+	const refused = rehydrateError(storage(7, 2, 7));
+	assert.ok(isPoolProtocolError(refused), String(refused));
+	assert.equal(refused.expected, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
+	assert.match(refused.field, /^error\.(cause|rollbackCause|cleanupCause)/);
+});
+
 test("a group's members are all sent, and the receiver's budget is exact at its edge (#4327)", () => {
 	const group = (count: number): SerializedError => ({
 		name: "AggregateError",
