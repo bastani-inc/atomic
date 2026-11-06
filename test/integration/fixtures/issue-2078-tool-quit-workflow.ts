@@ -41,6 +41,15 @@ interface Issue2078FixtureState {
 
 const ISSUE_2078_STATE_FILE = "issue-2078-state.json";
 
+/**
+ * Windows refuses to rename over a file that another process has open — the
+ * drivers poll this file while the workflow writes it — and reports EPERM or
+ * EBUSY. The rename is retried after each of these pauses, so one publication
+ * waits at most 630 ms for the reader to let go before giving up.
+ */
+const RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320] as const;
+const TRANSIENT_RENAME_CODES: ReadonlySet<string | undefined> = new Set(["EPERM", "EBUSY"]);
+
 const EMPTY_STATE: Issue2078FixtureState = {
 	siblingExecutions: 0,
 	hangExecutions: 0,
@@ -63,6 +72,24 @@ function readState(): Issue2078FixtureState {
 	return { ...EMPTY_STATE, ...(JSON.parse(readFileSync(path, "utf8")) as Issue2078FixtureState) };
 }
 
+function sleepSync(milliseconds: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** Atomic publication: a reader sees the old file until the complete new one replaces it. */
+function replaceWhenReleased(temporary: string, path: string): void {
+	for (const delayMs of RENAME_RETRY_DELAYS_MS) {
+		try {
+			renameSync(temporary, path);
+			return;
+		} catch (error) {
+			if (!TRANSIENT_RENAME_CODES.has((error as NodeJS.ErrnoException).code)) throw error;
+			sleepSync(delayMs);
+		}
+	}
+	renameSync(temporary, path);
+}
+
 /** Apply one change and publish it; the workflow body is strictly sequential. */
 function update(change: (state: Issue2078FixtureState) => void): Issue2078FixtureState {
 	const state = readState();
@@ -71,7 +98,7 @@ function update(change: (state: Issue2078FixtureState) => void): Issue2078Fixtur
 	const temporary = `${path}.tmp`;
 	// Readers in the driver process must see a complete old or new snapshot.
 	writeFileSync(temporary, JSON.stringify(state), "utf8");
-	renameSync(temporary, path);
+	replaceWhenReleased(temporary, path);
 	return state;
 }
 
@@ -115,10 +142,22 @@ export default workflow({
 			const signal: AbortSignal | undefined = toolContext?.signal;
 			return await new Promise<string>((_resolve, reject) => {
 				const cancel = (): void => {
-					update((current) => {
-						current.hangObservedAbort = true;
-						current.hangRunning = false;
-					});
+					// This runs inside AbortController.abort(): a throw would escape
+					// as an uncaught exception and take the whole CLI down, so a
+					// failed publication settles the call and is reported instead.
+					try {
+						update((current) => {
+							current.hangObservedAbort = true;
+							current.hangRunning = false;
+						});
+					} catch (failure) {
+						const unpublished = new Error("hang-tool observed its abort signal but could not publish it", {
+							cause: failure,
+						});
+						console.error(unpublished);
+						reject(unpublished);
+						return;
+					}
 					reject(new Error("hang-tool observed its abort signal"));
 				};
 				// Pre-fix contract: nothing to listen to, so this parks forever and
