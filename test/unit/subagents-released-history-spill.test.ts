@@ -4,11 +4,13 @@ import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import type { CreateAgentSessionOptions } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import { tempSessionHistoryFiles } from "../../packages/coding-agent/src/core/storage/session/temp-history-files.js";
+import { releasedHistoryFiles } from "../../packages/coding-agent/src/core/storage/session/released-history-files.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { resumeReleasedChild } from "../../packages/subagents/src/runs/foreground/released-child-resume.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import { subagentReleasePolicy } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import {
@@ -32,7 +34,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 const CHILD_TIMEOUT_MS = 120_000;
 const CHILD_TEXT_BYTES = 8_000;
 
-useTemporaryAgentDir();
+const agentDir = useTemporaryAgentDir();
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -155,11 +157,17 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 		await dispatcher.whenIdle();
 		return released.childSessionId as string;
 	};
-	/** Answer the child's call, which wakes it, and wait until its woken run has ended. */
-	const wake = async () => {
-		env.answers[0]?.({ content: [{ type: "text", text: "CI passed" }], details: undefined });
+	/** Answer the child's call, which wakes it. */
+	const answer = () => env.answers[0]?.({ content: [{ type: "text", text: "CI passed" }], details: undefined });
+	/** The child's run, woken or resumed, has ended. */
+	const ended = async () => {
 		await until((record) => record.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS && record.state === "terminal");
 		await dispatcher.whenIdle();
+	};
+	/** Answer the child's call, which wakes it, and wait until its woken run has ended. */
+	const wake = async () => {
+		answer();
+		await ended();
 	};
 	/** The cleanup each of the owner's tasks ended with: `"reaped"` once its session closed cleanly. */
 	const taskCleanups = () => {
@@ -169,13 +177,13 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 		watched.value.dispose();
 		return kinds;
 	};
-	return { owner, launch, wake, latest, close, taskCleanups };
+	return { owner, launch, answer, ended, wake, until, latest, close, taskCleanups, dispatcher, faux: env.faux };
 }
 
 test(
 	"a released in-memory subagent keeps only its header in memory, and its call's result wakes it from its whole history (#4502)",
 	async () => {
-		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const store = new MemorySessionStore(undefined, releasedHistoryFiles(agentDir));
 		const h = await ownerOf(store, () => store.close());
 		const childSessionId = await h.launch();
 
@@ -216,7 +224,7 @@ test(
 test(
 	"a subagent over a store that keeps no history in memory is released and woken as before, and its task closes cleanly (#4502)",
 	async () => {
-		const inner = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const inner = new MemorySessionStore(undefined, releasedHistoryFiles(agentDir));
 		const store: SessionStore = {
 			get descriptor() {
 				return inner.descriptor;
@@ -242,6 +250,67 @@ test(
 		assert.equal(h.latest()?.terminalStatus, "ok");
 		assert.deepEqual(h.taskCleanups(), ["reaped", "reaped"], "releasing the child closed its session cleanly");
 		await h.close();
+	},
+	CHILD_TIMEOUT_MS,
+);
+
+test(
+	"a wake whose read of the child's history fails in a way that passes fails retryably, and the child stays released for a resume (#4502)",
+	async () => {
+		const inner = new MemorySessionStore(undefined, releasedHistoryFiles(agentDir));
+		let failNextLoad: string | undefined;
+		const store: SessionStore = {
+			get descriptor() {
+				return inner.descriptor;
+			},
+			create: (header, entries) => inner.create(header, entries),
+			append: (sessionId, entries, options) => inner.append(sessionId, entries, options),
+			replace: (sessionId, header, entries, options) => inner.replace(sessionId, header, entries, options),
+			load: async (sessionId) => {
+				if (sessionId !== failNextLoad) return inner.load(sessionId);
+				failNextLoad = undefined;
+				// What the store throws when reading the file runs out of file descriptors.
+				throw new SessionSpillError("spill-read-failed", {
+					directory: agentDir,
+					sessionId,
+					bytes: 1,
+					errno: "EMFILE",
+				});
+			},
+			readHeader: (sessionId) => inner.readHeader(sessionId),
+			delete: (sessionId) => inner.delete(sessionId),
+			list: (query) => inner.list(query),
+			findMostRecent: (query) => inner.findMostRecent(query),
+			close: () => inner.close(),
+			releaseSession: (sessionId) => inner.releaseSession(sessionId),
+		};
+		const h = await ownerOf(store, () => inner.close());
+		const childSessionId = await h.launch();
+		const history = (await store.load(childSessionId)).entries;
+		failNextLoad = childSessionId;
+
+		h.answer();
+		const failed = await h.until((record) => record.wakeFailure !== undefined);
+		await h.dispatcher.whenIdle();
+		assert.equal(failed.wakeFailure?.code, "wake-failed", "the failure passes, so the wake can be tried again");
+		assert.match(failed.wakeFailure?.reason ?? "", /spill-read-failed/);
+		assert.match(failed.wakeFailure?.hint ?? "", /resume it/);
+		assert.equal(failed.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS, "the child is not gone");
+		assert.equal(failed.heldToolResults?.length, 1, "its call's result is kept for the resume");
+
+		h.faux.appendResponses([
+			{ role: "assistant", content: [{ type: "text", text: "Continued." }], stopReason: "stop" } as never,
+		]);
+		const resumed = await resumeReleasedChild(h.owner.getSessionId(), "spill:0", { prompt: "continue" });
+		assert.equal(resumed?.kind, "restored");
+		await h.ended();
+		const woken = (await store.load(childSessionId)).entries;
+		assert.deepEqual(woken.slice(0, history.length), history);
+		assert.ok(
+			woken.slice(history.length).some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+			"the resumed child received its call's result",
+		);
+		assert.equal(h.latest()?.terminalStatus, "ok");
 	},
 	CHILD_TIMEOUT_MS,
 );

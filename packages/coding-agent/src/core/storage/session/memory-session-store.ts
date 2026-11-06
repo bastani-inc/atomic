@@ -36,7 +36,7 @@ interface StoredSession {
 	lastSeq: number;
 	/** The directory its file is in, from the first release that wrote one. */
 	directory: SessionHistoryDirectory | undefined;
-	/** Its file's number in `directory`. */
+	/** Its file's number in `directory`; each release that writes gives it a new file. */
 	file: number;
 	/** Bytes of entries its file holds, the history before `entries`. */
 	spilledBytes: number;
@@ -57,11 +57,14 @@ export function isPrivateMemorySessionStore(store: SessionStore): boolean {
 	return store instanceof MemorySessionStore && privateStores.has(store);
 }
 
-/** One store's directory for released sessions' history, with a file per session, numbered from 1. */
+/** One store's directory for released sessions' history, with files numbered from 1. */
 export interface SessionHistoryDirectory {
 	readonly path: string;
-	/** Writes `data` at `position` of the file, creating the file, or emptying it, when `position` is 0. */
-	write(file: number, data: Uint8Array, position: number): Promise<void>;
+	/**
+	 * Writes file `file`: the first `previous.bytes` bytes of file `previous.file`, when given, then `data`. The file has
+	 * its name only once it is complete, so a write that fails or is cut short leaves no part of it under that name.
+	 */
+	write(file: number, data: Uint8Array, previous?: { readonly file: number; readonly bytes: number }): Promise<void>;
 	/** The whole content of the file. */
 	read(file: number): Promise<Uint8Array>;
 	/** Removes the file; a file already gone is not a failure. */
@@ -72,24 +75,31 @@ export interface SessionHistoryDirectory {
 
 /**
  * Where a `MemorySessionStore` moves released sessions' history: a directory per store, with a file per session.
- * `tempSessionHistoryFiles` keeps them under Atomic's temp directory. A store given none keeps all history in memory.
+ * `releasedHistoryFiles(agentDir)` keeps them under the agent directory. A store given none keeps all history in memory.
  */
 export interface SessionHistoryFiles {
 	/** Creates an empty owner-only directory for one store's files, or says why it could not (`"spill-dir-refused"`). */
-	createDirectory(): SessionHistoryDirectory | SessionSpillError;
-	/** Reports a failure the store worked around, once for each code. */
+	createDirectory(): Promise<SessionHistoryDirectory | SessionSpillError>;
+	/** Reports a failure the store worked around: once for each code, and once for each session a listing left out. */
 	report(degradation: SessionSpillError): void;
 }
 
+/** How long a store keeps its history in memory after its directory could not be created, before it tries again. */
+export const SPILL_DIRECTORY_RETRY_MS = 60_000;
+
 /**
  * Where a store, and every handle `reopen()` makes from it, keeps released sessions' history: one directory, created
- * on the first release, with a file per session. It is removed when the last handle closes.
+ * on the first release, with a file per session. It is removed when the last handle closes. A directory that could not
+ * be created is asked for again no more than once every {@link SPILL_DIRECTORY_RETRY_MS}; releases meanwhile keep
+ * their history in memory.
  */
 class SpillDirectory {
-	private current: SessionHistoryDirectory | undefined;
+	private current: Promise<SessionHistoryDirectory | undefined> | undefined;
+	/** When the directory could not be created, while it is not. */
+	private refusedAt: number | undefined;
 	private files = 0;
 	private handles = 1;
-	private readonly degradations = new Map<SessionSpillErrorCode, SessionSpillError>();
+	private readonly degradations = new Map<string, SessionSpillError>();
 
 	private readonly historyFiles: SessionHistoryFiles;
 
@@ -107,16 +117,21 @@ class SpillDirectory {
 		return this.handles === 0;
 	}
 
-	/** The directory, created on first use; undefined, and recorded, when it could not be created. */
-	directory(): SessionHistoryDirectory | undefined {
-		if (this.current !== undefined) return this.current;
-		const created = this.historyFiles.createDirectory();
-		if (created instanceof SessionSpillError) {
-			this.record(created);
-			return undefined;
+	/** The directory, created on first use; undefined, and recorded, while it could not be created. */
+	directory(): Promise<SessionHistoryDirectory | undefined> {
+		if (
+			this.current === undefined ||
+			(this.refusedAt !== undefined && Date.now() - this.refusedAt >= SPILL_DIRECTORY_RETRY_MS)
+		) {
+			this.refusedAt = undefined;
+			this.current = this.historyFiles.createDirectory().then((created) => {
+				if (!(created instanceof SessionSpillError)) return created;
+				this.refusedAt = Date.now();
+				this.record(created.code, created);
+				return undefined;
+			});
 		}
-		this.current = created;
-		return created;
+		return this.current;
 	}
 
 	nextFile(): number {
@@ -126,9 +141,10 @@ class SpillDirectory {
 
 	/** Removes the directory and every file in it, once the last handle has closed. */
 	async remove(): Promise<void> {
-		const current = this.current;
-		if (current === undefined) return;
+		const current = await this.current;
 		this.current = undefined;
+		this.refusedAt = undefined;
+		if (current === undefined) return;
 		await current
 			.remove()
 			.catch((cause: Error) =>
@@ -138,12 +154,17 @@ class SpillDirectory {
 
 	/** Records a failure the store worked around, once per code, and reports it once. */
 	degraded(code: SessionSpillErrorCode, fields: SessionSpillErrorFields, cause: unknown): void {
-		this.record(new SessionSpillError(code, fields, { cause }));
+		this.record(code, new SessionSpillError(code, fields, { cause }));
 	}
 
-	private record(degradation: SessionSpillError): void {
-		if (this.degradations.has(degradation.code)) return;
-		this.degradations.set(degradation.code, degradation);
+	/** Records a session a listing left out because its history could not be read back, once per session. */
+	skipped(failure: SessionSpillError): void {
+		this.record(`${failure.code}:${failure.sessionId}`, failure);
+	}
+
+	private record(key: string, degradation: SessionSpillError): void {
+		if (this.degradations.has(key)) return;
+		this.degradations.set(key, degradation);
 		this.historyFiles.report(degradation);
 	}
 
@@ -160,10 +181,10 @@ class SpillDirectory {
  * (#4403); a load joins them into one.
  *
  * A store given {@link SessionHistoryFiles} keeps a released session's history out of process memory (#4502):
- * `releaseSession()` writes the entries held in memory to the session's own file and keeps only its header. A load
- * reads the file once and adds what was appended since; an append stays in memory until the next release adds it to
- * the file. The files are removed with their sessions and when the store's last handle closes. A store given none,
- * as `SessionManager.inMemory()` creates, keeps everything in memory.
+ * `releaseSession()` writes the session's history to a file of its own and keeps only its header in memory. A load
+ * reads the file once and adds what was appended since; an append stays in memory until the next release writes it
+ * with the history before it. The files are removed with their sessions and when the store's last handle closes. A
+ * store given none, as `SessionManager.inMemory()` creates, keeps everything in memory.
  */
 export class MemorySessionStore implements SessionStore {
 	private records = new Map<string, StoredSession>();
@@ -250,9 +271,10 @@ export class MemorySessionStore implements SessionStore {
 
 	/**
 	 * Moves the session's history out of process memory into its file, keeping only its header in memory; a later
-	 * release adds only what was appended since. Does nothing for a session this store does not hold, on a closed store
-	 * or one without history files, or when nothing was appended since the last release. A write that fails does not
-	 * reject: the history stays in memory and the failure is recorded in {@link spillDegradation}.
+	 * release writes what was appended since after the history its file holds. Does nothing for a session this store
+	 * does not hold, on a closed store or one without history files, or when nothing was appended since the last
+	 * release. A write that fails does not reject: the history stays in memory and the failure is recorded in
+	 * {@link spillDegradation}.
 	 */
 	async releaseSession(sessionId: string): Promise<void> {
 		const spill = this.spill;
@@ -270,9 +292,11 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	/**
-	 * What this store had to work around while keeping released sessions' history on disk, once per code: a spill
+	 * What this store had to work around while keeping released sessions' history on disk: once per code, a spill
 	 * directory it could not use (`"spill-dir-refused"`), a write that failed (`"spill-write-failed"`), whose history it
-	 * kept in memory, or files it could not remove (`"spill-cleanup-failed"`). Empty while nothing went wrong.
+	 * kept in memory, or files it could not remove (`"spill-cleanup-failed"`); and once per session, a session a listing
+	 * left out because its history could not be read back (`"spill-missing"`, `"spill-corrupt"`, or a
+	 * `"spill-read-failed"` that is not retryable). Empty while nothing went wrong.
 	 */
 	spillDegradation(): readonly SessionSpillError[] {
 		return this.spill?.degradation() ?? [];
@@ -318,7 +342,15 @@ export class MemorySessionStore implements SessionStore {
 			const header = decodeHeader(record);
 			if (matchesCwd && !matchesCwd(header.cwd)) continue;
 			if (!query.includeInternal && header.internal) continue;
-			const snapshot = await this.decode(sessionId, record);
+			let snapshot: SessionSnapshot | undefined;
+			try {
+				snapshot = await this.decode(sessionId, record);
+			} catch (error) {
+				// A session whose history is lost is left out of every listing; one that may read next time fails this one.
+				if (!(error instanceof SessionSpillError) || error.retryable) throw error;
+				this.spill?.skipped(error);
+				continue;
+			}
 			if (snapshot !== undefined) yield summarizeSession(snapshot);
 		}
 		this.assertOpen();
@@ -378,47 +410,50 @@ export class MemorySessionStore implements SessionStore {
 	 * not be read because the session was deleted or replaced meanwhile.
 	 */
 	private async decode(sessionId: string, record: StoredSession): Promise<SessionSnapshot | undefined> {
-		while (record.spilling !== undefined) await settled(record.spilling);
-		const header = decodeHeader(record);
-		const lastSeq = record.lastSeq;
-		const held = joinEntries(record);
-		const { directory, file, spilledBytes } = record;
-		if (directory === undefined || spilledBytes === 0) return { header, entries: parseEntries(held), lastSeq };
-		let spilled: Uint8Array;
-		try {
-			spilled = await readSpillFile(directory, file, sessionId, spilledBytes);
-		} catch (error) {
-			this.assertOpen();
-			if (this.records.get(sessionId) !== record) return undefined;
-			throw error;
+		for (;;) {
+			while (record.spilling !== undefined) await settled(record.spilling);
+			const header = decodeHeader(record);
+			const lastSeq = record.lastSeq;
+			const held = joinEntries(record);
+			const { directory, file, spilledBytes } = record;
+			if (directory === undefined) return { header, entries: parseEntries(held), lastSeq };
+			let spilled: Uint8Array;
+			try {
+				spilled = await readSpillFile(directory, file, sessionId, spilledBytes);
+			} catch (error) {
+				this.assertOpen();
+				if (this.records.get(sessionId) !== record) return undefined;
+				// A release wrote the history to the session's next file meanwhile, and removed this one.
+				if (record.file !== file) continue;
+				throw error;
+			}
+			return { header, entries: parseHistory(directory, sessionId, spilled, held), lastSeq };
 		}
-		return {
-			header,
-			entries: parseEntries(held.byteLength === 0 ? spilled : joinChunks([spilled, held])),
-			lastSeq,
-		};
 	}
 
-	/** Writes the entries the session holds in memory after those its file already has. */
+	/**
+	 * Writes the session's history to its next file, the history its file holds followed by the entries held in memory,
+	 * then removes the file before it.
+	 */
 	private async spillEntries(sessionId: string, record: StoredSession, spill: SpillDirectory): Promise<void> {
 		if (this.records.get(sessionId) !== record || record.entries.length === 0) return;
-		const directory = record.directory ?? spill.directory();
-		if (directory === undefined) return;
-		if (record.directory === undefined) {
-			record.directory = directory;
-			record.file = spill.nextFile();
-		}
+		const directory = record.directory ?? (await spill.directory());
+		if (directory === undefined || this.records.get(sessionId) !== record) return;
 		const chunks = record.entries;
 		record.entries = [];
 		const bytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, chunks.length - 1);
+		const previous = record.directory === undefined ? undefined : { file: record.file, bytes: record.spilledBytes };
+		const file = spill.nextFile();
 		try {
 			const data =
-				record.spilledBytes > 0
+				previous !== undefined
 					? joinChunks([NO_ENTRIES, ...chunks])
 					: chunks.length === 1
 						? (chunks[0] as Uint8Array)
 						: joinChunks(chunks);
-			await directory.write(record.file, data, record.spilledBytes);
+			await directory.write(file, data, previous);
+			record.directory = directory;
+			record.file = file;
 			record.spilledBytes += data.byteLength;
 		} catch (cause) {
 			record.entries = [...chunks, ...record.entries];
@@ -427,16 +462,20 @@ export class MemorySessionStore implements SessionStore {
 				{ directory: directory.path, sessionId, bytes, errno: getErrnoCode(cause) },
 				cause,
 			);
+			return;
 		}
+		if (previous !== undefined) await this.removeFile(directory, sessionId, previous.file);
 	}
 
 	/** Removes the file of a session that was deleted or replaced, once a release writing to it has finished. */
 	private async removeSpillFile(sessionId: string, record: StoredSession): Promise<void> {
 		while (record.spilling !== undefined) await settled(record.spilling);
-		const directory = record.directory;
-		if (directory === undefined) return;
+		if (record.directory !== undefined) await this.removeFile(record.directory, sessionId, record.file);
+	}
+
+	private async removeFile(directory: SessionHistoryDirectory, sessionId: string, file: number): Promise<void> {
 		await directory
-			.removeFile(record.file)
+			.removeFile(file)
 			.catch((cause: Error) =>
 				this.spill?.degraded(
 					"spill-cleanup-failed",
@@ -489,7 +528,7 @@ function parseEntries(bytes: Uint8Array): SessionEntry[] {
 	return JSON.parse(`[${utf8Decoder.decode(bytes)}]`) as SessionEntry[];
 }
 
-/** The first `bytes` bytes of a session's file: the history written to it. */
+/** A session's file: the history written to it, which it holds whole, since each file is renamed into place complete. */
 async function readSpillFile(
 	directory: SessionHistoryDirectory,
 	file: number,
@@ -507,14 +546,36 @@ async function readSpillFile(
 			{ cause },
 		);
 	}
-	if (data.byteLength < bytes)
-		throw new SessionSpillError("spill-missing", {
+	if (data.byteLength !== bytes)
+		throw new SessionSpillError(data.byteLength < bytes ? "spill-missing" : "spill-corrupt", {
 			directory: directory.path,
 			sessionId,
 			bytes,
 			foundBytes: data.byteLength,
 		});
-	return data.subarray(0, bytes);
+	return data;
+}
+
+/**
+ * The session's entries: those its file holds, then those held in memory. Content in its file that does not parse was
+ * not written by this store, so its history is lost: `"spill-corrupt"`.
+ */
+function parseHistory(
+	directory: SessionHistoryDirectory,
+	sessionId: string,
+	spilled: Uint8Array,
+	held: Uint8Array,
+): SessionEntry[] {
+	try {
+		return parseEntries(held.byteLength === 0 ? spilled : joinChunks([spilled, held]));
+	} catch (cause) {
+		if (!(cause instanceof SyntaxError)) throw cause;
+		throw new SessionSpillError(
+			"spill-corrupt",
+			{ directory: directory.path, sessionId, bytes: spilled.byteLength },
+			{ cause },
+		);
+	}
 }
 
 /** The chunks as one buffer, with a comma between each two. */

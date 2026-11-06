@@ -25,7 +25,7 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SessionConflictError } from "../src/core/storage/session/errors.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import { tempSessionHistoryFiles } from "../src/core/storage/session/temp-history-files.ts";
+import { releasedHistoryFiles } from "../src/core/storage/session/released-history-files.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
 import { resetSessionTempCleanupScheduleForTesting } from "../src/core/tools/session-temp-cleanup.ts";
 
@@ -39,7 +39,7 @@ const AGENTS_PER_WAVE = 12;
 const TURNS = 3;
 const WAIT_TOOL = "wait_for_ci";
 
-useTemporaryAgentDir();
+const agentDir = useTemporaryAgentDir();
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -196,7 +196,10 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		return fauxAssistantMessage(last?.toolName === WAIT_TOOL ? "ci passed" : "turn done");
 	};
 	const script = (requests: number) => faux.appendResponses(Array.from({ length: requests }, () => respond));
-	const store = countingStore(new MemorySessionStore(undefined, tempSessionHistoryFiles), options.spill ?? true);
+	const store = countingStore(
+		new MemorySessionStore(undefined, releasedHistoryFiles(agentDir)),
+		options.spill ?? true,
+	);
 	const services = await createAgentSessionServices({
 		cwd: tempDir,
 		agentDir: tempDir,

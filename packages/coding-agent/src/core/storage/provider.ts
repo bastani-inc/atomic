@@ -361,7 +361,9 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 			memory: async () =>
 				new (await import("./session/memory-session-store.js")).MemorySessionStore(
 					createSessionCwdMatcher,
-					(await import("./session/temp-history-files.js")).tempSessionHistoryFiles,
+					(await import("./session/released-history-files.js")).releasedHistoryFiles(
+						context.agentDir || (await import("../../config.js")).getAgentDir(),
+					),
 				),
 			jsonl: async (dir) =>
 				(await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir, { exactDirectory: true }),

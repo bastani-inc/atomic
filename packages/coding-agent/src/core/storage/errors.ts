@@ -452,19 +452,22 @@ export const SESSION_SPILL_ERROR_CODES = [
 	"spill-write-failed",
 	"spill-read-failed",
 	"spill-missing",
+	"spill-corrupt",
 	"spill-cleanup-failed",
 ] as const;
 /**
- * How the in-memory session store failed to keep a released session's history in its file on disk.
- * `"spill-dir-refused"`: the directory for those files could not be created or trusted; released sessions keep their
- * history in memory. Recorded, not thrown.
+ * How the in-memory session store failed to keep a released session's history in its file on disk, under the agent
+ * directory's `released-history` directory.
+ * `"spill-dir-refused"`: the directory for those files could not be created; released sessions keep their history in
+ * memory. Recorded, not thrown.
  * `"spill-write-failed"`: a released session's history could not be written to its file; it stays in memory and
  * nothing is lost. Recorded, not thrown.
  * `"spill-read-failed"`: a released session's history could not be read back from its file; `retryable` when the
  * filesystem's failure passes (out of file descriptors, interrupted, busy).
  * `"spill-missing"`: a released session's file is gone or holds less than was written to it; its history is lost.
+ * `"spill-corrupt"`: a released session's file holds something other than what was written to it; its history is lost.
  * `"spill-cleanup-failed"`: the file of a deleted or replaced session, or a closed store's directory, could not be
- * removed; it stays on disk until Atomic's temp sweep removes it. Recorded, not thrown.
+ * removed; it stays on disk until the process's directory is removed. Recorded, not thrown.
  */
 export type SessionSpillErrorCode = (typeof SESSION_SPILL_ERROR_CODES)[number];
 
@@ -475,7 +478,7 @@ export interface SessionSpillErrorFields {
 	readonly sessionId?: string;
 	/** The bytes of history the write held, or that the file should hold. */
 	readonly bytes?: number;
-	/** For `"spill-missing"`: the bytes the file held, when it still exists. */
+	/** For `"spill-missing"` and `"spill-corrupt"`: the bytes the file held, when it still exists. */
 	readonly foundBytes?: number;
 	/** The filesystem's error code, such as `ENOSPC` or `ENOENT`, when the failure has one. */
 	readonly errno?: string;
@@ -492,15 +495,17 @@ const TRANSIENT_SPILL_ERRNOS: ReadonlySet<string | undefined> = new Set([
 
 const SESSION_SPILL_HINTS: Readonly<Record<SessionSpillErrorCode, string>> = {
 	"spill-dir-refused":
-		"Released sessions keep their history in memory; point TMPDIR at a directory this account owns and can write, or keep sessions in a SQLite session store",
+		"Released sessions keep their history in memory; make the agent directory writable by this account, or keep sessions in a SQLite session store",
 	"spill-write-failed":
-		"The session keeps its history in memory and nothing was lost; free space in the system temp directory (TMPDIR) or make it writable, or keep sessions in a SQLite session store",
+		"The session keeps its history in memory and nothing was lost; free space on the agent directory's disk or make it writable, or keep sessions in a SQLite session store",
 	"spill-read-failed":
-		"Check that the system temp directory (TMPDIR) is readable and that the process has file descriptors to spare, then reopen the session",
+		"Check that the agent directory is readable and that the process has file descriptors to spare, then reopen the session",
 	"spill-missing":
-		"Something removed or truncated the store's file in the system temp directory, so the session cannot be reopened; keep temp cleaners away from Atomic's temp directory while the process runs, or keep sessions in a SQLite session store",
+		"Something removed or truncated the session's file while the process ran, so the session cannot be reopened; leave the agent directory's released-history directory alone while Atomic runs, or keep sessions in a SQLite session store",
+	"spill-corrupt":
+		"Something changed the session's file while the process ran, so the session cannot be reopened; leave the agent directory's released-history directory alone while Atomic runs, or keep sessions in a SQLite session store",
 	"spill-cleanup-failed":
-		"The files stay in the system temp directory until Atomic's temp sweep removes them; the store is not affected",
+		"The files stay on disk until the process's directory is removed, when it exits or by the next start's sweep; the store is not affected",
 };
 
 function sessionSpillSubject(code: SessionSpillErrorCode, fields: SessionSpillErrorFields): string {
@@ -514,16 +519,20 @@ function sessionSpillSubject(code: SessionSpillErrorCode, fields: SessionSpillEr
 			return `Could not read a released session's history: ${session}`;
 		case "spill-missing":
 			return `A released session's history is missing: ${session}, ${fields.foundBytes ?? 0} of ${fields.bytes} bytes found`;
+		case "spill-corrupt":
+			return `A released session's history was changed on disk: ${session}`;
 		case "spill-cleanup-failed":
 			return `Could not remove released sessions' history from disk: ${fields.sessionId === undefined ? fields.directory : session}`;
 	}
 }
 
 /**
- * The in-memory session store moves a released session's history to a file of its own in the system temp directory
- * and reads it back when the session is loaded; this error says what went wrong with those files. `"spill-read-failed"`
- * and `"spill-missing"` are thrown by `load` and `list`; the other codes are recorded once each on the store, read with
- * `spillDegradation()`, and emitted once as a process warning, while the store keeps the history in memory.
+ * The in-memory session store moves a released session's history to a file of its own under the agent directory and
+ * reads it back when the session is loaded; this error says what went wrong with those files. `"spill-read-failed"`,
+ * `"spill-missing"` and `"spill-corrupt"` are thrown by `load`, and a retryable `"spill-read-failed"` by a listing too;
+ * a listing leaves out a session whose history it cannot read otherwise and records why once per session. The other
+ * codes are recorded once each on the store. Each record is read with `spillDegradation()` and emitted once as a
+ * process warning, and the store keeps the history in memory.
  */
 export class SessionSpillError extends StorageError {
 	override readonly name = "SessionSpillError" as const;

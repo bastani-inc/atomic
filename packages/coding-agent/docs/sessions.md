@@ -28,6 +28,8 @@ atomic --import <file>       # Import a JSONL export into session storage
 atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
+`--no-session` keeps the session in memory and saves nothing to a session store. While the process runs, a session released while it waits, such as a background subagent's, has its history moved out of memory into an owner-only file under the agent directory, in `released-history/<host>/<pid>-<start>/`, and read back when it wakes. Those files are removed when the process exits, including when Atomic's own SIGTERM or SIGHUP handling ends it. A process that ends without exiting, killed with SIGKILL or by a signal Atomic does not handle, leaves them on disk; the next Atomic start with the same agent directory removes them. See [Releasing idle sessions](/sdk#releasing-idle-sessions).
+
 Use `/session` in interactive mode to see the current session ID, message count, tokens, and cost. A JSONL session also has a file location. You can use it while a run is active; its totals update after each completed message, not each streaming text chunk. Detailed cost and cache-waste breakdowns are shown after the run finishes only when the available session history matches those totals; otherwise, only the total cost is shown.
 
 For UUID-backed sessions, `--session` and `--fork` accept either the full UUID or exactly eight hexadecimal prefix characters. A prefix must be unique within the current project (or, if no local session matches, across the global session store); collisions list the matching UUIDs and require the full value. Exact custom session IDs keep their existing priority. `--session-id` remains an exact project-local ID used to open or create a session, not a prefix selector.

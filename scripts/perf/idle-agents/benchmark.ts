@@ -14,10 +14,11 @@
  *
  * `--mode resident` keeps every agent live instead of releasing it: the behaviour before #4326, for comparison.
  * `--store memory` is the in-memory session store as Atomic opens it for a memory selection (comparable to Infinity's
- * 107 KB), which keeps a released session's history in a temporary file since #4502; `--store sqlite` is the default
- * node:sqlite session store in a temporary file (history on disk). `--workers N` creates the agents on N worker
- * threads of this one process, each with its own store, to reach large counts sooner; every sample adds up the heap,
- * handles and listeners of all threads, and RSS is the whole process. Run under Node: Bun reports no active handles.
+ * 107 KB), which keeps a released session's history in a file under the agent directory since #4502; `--store sqlite`
+ * is the default node:sqlite session store in a temporary file (history on disk). `--workers N` creates the agents on N
+ * worker threads of this one process, each with its own store, to reach large counts sooner; every sample adds up the
+ * heap, handles and listeners of all threads, and RSS is the whole process. Run under Node: Bun reports no active
+ * handles.
  *
  * `--path subagent` runs background subagents instead of SDK sessions: an owner session launches each as a task
  * through the real runner and task host, the child runs its turns, waits on the long tool, is released, and is woken
@@ -28,10 +29,11 @@
  * Handles are counted with `async_hooks`, so an unref'd timer or socket, which `process.getActiveResourcesInfo()`
  * leaves out, is counted too.
  *
- * The run points the system temp directory (`TMPDIR`) at its own temporary directory, so every file Atomic keeps in
- * its temp tree, such as the history the in-memory store moves out of memory for released sessions, is removed with
- * it. The report says how many bytes and files that tree held at the end and the type of filesystem it is on: a
- * tmpfs keeps them in memory that RSS does not show.
+ * The run points the system temp directory (`TMPDIR`) and the agent directory (`ATOMIC_CODING_AGENT_DIR`) at its own
+ * temporary directory, so every file Atomic keeps there, such as the history the in-memory store moves out of memory
+ * for released sessions under the agent directory's `released-history`, is removed with it. The report says how many
+ * bytes and files `released-history` held at the end and the type of filesystem it is on: a tmpfs keeps them in memory
+ * that RSS does not show.
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -277,10 +279,12 @@ async function main(): Promise<void> {
 	const burstElapsedMs = performance.now() - burstStarted;
 	const stored = await Promise.all(hosts.map((host) => host.stored(Math.ceil(500 / hosts.length))));
 	const stats = await Promise.all(hosts.map((host) => host.stats()));
-	const { getTempRootDir } = await import("../../../packages/coding-agent/src/core/tools/session-temp-dir.js");
+	const { releasedHistoryDirectory } = await import(
+		"../../../packages/coding-agent/src/core/storage/session/released-history-files.js"
+	);
 	const filesystem = statfsSync(tempRoot).type;
-	const atomicTemp = {
-		...filesUnder(getTempRootDir()),
+	const releasedHistory = {
+		...filesUnder(releasedHistoryDirectory(process.env.ATOMIC_CODING_AGENT_DIR as string)),
 		filesystem: FILESYSTEMS[filesystem] ?? `0x${filesystem.toString(16)}`,
 	};
 	const sampled = stored.reduce((sum, part) => sum + part.sampled, 0);
@@ -303,7 +307,7 @@ async function main(): Promise<void> {
 		storedBytesPerAgent: sampled === 0 ? 0 : stored.reduce((sum, part) => sum + part.jsonBytes, 0) / sampled,
 		sqliteFileBytesPerAgent: stored.reduce((sum, part) => sum + part.sqliteFileBytes, 0) / agents,
 		ownerEntryBytesPerAgent: stored.reduce((sum, part) => sum + (part.ownerEntryBytes ?? 0), 0) / agents,
-		atomicTemp,
+		releasedHistory,
 		maxRssBytes: process.resourceUsage().maxRSS * 1024,
 		samples,
 		wakeLatencyMs: [...(sequential?.latencyMs ?? [])],
@@ -342,8 +346,8 @@ async function main(): Promise<void> {
 			endRssGiB: (samples.at(-1)?.rssBytes ?? 0) / 2 ** 30,
 			sampledPeakRssGiB: Math.max(0, ...samples.map((sample) => sample.rssBytes)) / 2 ** 30,
 			maxRssGiB: report.maxRssBytes / 2 ** 30,
-			atomicTempKbPerAgent: atomicTemp.bytes / agents / 1024,
-			atomicTemp,
+			releasedHistoryKbPerAgent: releasedHistory.bytes / agents / 1024,
+			releasedHistory,
 			handlesPerAgent: summary.perAgentHandles(samples),
 			listenersPerAgent: summary.perAgentListeners(samples),
 			registriesPerAgent: summary.perAgentRegistries(samples),

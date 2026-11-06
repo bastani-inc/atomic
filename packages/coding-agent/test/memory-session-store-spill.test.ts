@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import * as childProcess from "node:child_process";
+import * as fs from "node:fs";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, it, test, vi } from "vitest";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, it, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import type { CustomEntry } from "../src/core/session-manager-types.js";
+import { resolveSessionStore } from "../src/core/session-storage.js";
 import {
 	isRetryableStorageError,
 	isSessionSpillError,
@@ -17,19 +21,41 @@ import {
 import { StorageProvider } from "../src/core/storage/provider.js";
 import { registerSessionStoreConformance } from "../src/core/storage/session/conformance.js";
 import { SessionInvalidTextError, SessionNotFoundError, StoreClosedError } from "../src/core/storage/session/errors.js";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
-import { tempSessionHistoryFiles } from "../src/core/storage/session/temp-history-files.js";
+import { MemorySessionStore, SPILL_DIRECTORY_RETRY_MS } from "../src/core/storage/session/memory-session-store.js";
+import {
+	releasedHistoryDirectory,
+	releasedHistoryFiles,
+	sweepReleasedHistory,
+} from "../src/core/storage/session/released-history-files.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
-import { getProtectedSessionTempDirs, getTempRootDir } from "../src/core/tools/session-temp-dir.js";
+import { setWindowsDirectorySecurityReaderForTesting } from "../src/core/tools/windows-directory-security.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
-	return { ...actual, open: vi.fn(actual.open), readFile: vi.fn(actual.readFile), rm: vi.fn(actual.rm) };
+	return {
+		...actual,
+		open: vi.fn(actual.open),
+		readFile: vi.fn(actual.readFile),
+		rm: vi.fn(actual.rm),
+		mkdir: vi.fn(actual.mkdir),
+		copyFile: vi.fn(actual.copyFile),
+		rename: vi.fn(actual.rename),
+	};
+});
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, execFile: vi.fn(actual.execFile) };
 });
 
 const open = vi.mocked(fsPromises.open);
 const readFile = vi.mocked(fsPromises.readFile);
 const rm = vi.mocked(fsPromises.rm);
+const mkdir = vi.mocked(fsPromises.mkdir);
+const rename = vi.mocked(fsPromises.rename);
 const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 
 /** Lets `turns` turns of the event loop pass, enough for file operations already started to finish. */
@@ -53,42 +79,21 @@ function holdNextOpen(failure?: Error): () => void {
 
 /**
  * How the in-memory store keeps a released session's history out of process memory (#4502): `release()` moves the
- * entries it holds to the session's file, a load reads that file once and adds what was appended since, and an append
- * writes nothing to disk. Operations are counted, not timed.
+ * entries it holds to the session's file under the agent directory, a load reads that file once and adds what was
+ * appended since, and an append writes nothing to disk. Operations are counted, not timed.
  */
 const agentDir = useTemporaryAgentDir();
-function setTempRoot(path: string): () => void {
-	const keys = ["TMPDIR", "TEMP", "TMP"] as const;
-	const previous = keys.map((key) => process.env[key]);
-	for (const key of keys) process.env[key] = path;
-	return () => {
-		for (const [index, key] of keys.entries()) {
-			const value = previous[index];
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
-	};
-}
-
-let restoreTmpdir: () => void = () => {};
-beforeAll(() => {
-	const tmp = join(agentDir, "tmp");
-	mkdirSync(tmp, { recursive: true });
-	restoreTmpdir = setTempRoot(tmp);
-});
-afterAll(() => restoreTmpdir());
+const files = releasedHistoryFiles(agentDir);
 
 const opened: MemorySessionStore[] = [];
 afterEach(async () => {
 	vi.restoreAllMocks();
-	open.mockClear();
-	readFile.mockClear();
-	rm.mockClear();
+	for (const mock of [open, readFile, rm, mkdir, rename]) mock.mockClear();
 	for (const store of opened.splice(0)) await store.close().catch(() => undefined);
 });
 
 function newStore(): MemorySessionStore {
-	const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+	const store = new MemorySessionStore(undefined, files);
 	opened.push(store);
 	return store;
 }
@@ -118,13 +123,28 @@ const entries = (prefix: string, count: number) =>
 const entryBytes = (list: readonly CustomEntry[]) => Buffer.byteLength(JSON.stringify(list)) - 2;
 const headerBytes = (id: string, cwd?: string) => Buffer.byteLength(JSON.stringify(header(id, cwd)));
 
-/** The store's spill directories under Atomic's temp directory, and the files in each. */
+/** Where released history is kept under an agent directory, spelled out so the tests pin it. */
+const releasedHistoryUnder = (root: string) => join(root, "released-history");
+
+/** The process directories under `root`'s released-history directory: `<host>/<pid>-<start>`, for every host. */
+function processDirectories(root = agentDir): string[] {
+	const released = releasedHistoryUnder(root);
+	if (!existsSync(released)) return [];
+	return readdirSync(released).flatMap((host) =>
+		readdirSync(join(released, host)).map((name) => join(released, host, name)),
+	);
+}
+
+/** The stores' directories in this process's directory under the agent directory, and the files in each. */
 function spillDirectories(): Array<{ path: string; files: string[] }> {
-	const root = getTempRootDir();
-	if (!existsSync(root)) return [];
-	return readdirSync(root)
-		.filter((name) => name.startsWith("memory-sessions-"))
-		.map((name) => ({ path: join(root, name), files: readdirSync(join(root, name)) }));
+	return processDirectories()
+		.filter((directory) => directory.split(/[\\/]/).at(-1)?.startsWith(`${process.pid}-`))
+		.flatMap((directory) =>
+			readdirSync(directory).map((name) => ({
+				path: join(directory, name),
+				files: readdirSync(join(directory, name)),
+			})),
+		);
 }
 
 function spillFileSizes(): number[] {
@@ -157,7 +177,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		assert.equal(readFile.mock.calls.length, 1, "the header is read from memory");
 	});
 
-	test("an append after release writes nothing to disk, and the next release writes only what it added", async () => {
+	test("an append after release writes nothing to disk, and the next release writes it after a copy of the file", async () => {
 		const store = newStore();
 		const first = entries("a", 50);
 		await created(store, "s", first);
@@ -172,14 +192,28 @@ describe("a released session's history leaves process memory (#4502)", () => {
 			onDisk: entryBytes(first),
 		});
 		assert.deepEqual((await store.load("s")).entries, [...first, ...later]);
+		readFile.mockClear();
 
+		const written: number[] = [];
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: (data: Uint8Array, offset: number, length: number, position: number) => {
+					written.push(length);
+					return handle.write(data, offset, length, position);
+				},
+				close: () => handle.close(),
+			} as unknown as fsPromises.FileHandle;
+		});
 		await store.releaseSession("s");
 		assert.equal(open.mock.calls.length, 1);
+		assert.deepEqual(written, [1 + entryBytes(later)], "only what was appended passes through memory");
+		assert.equal(readFile.mock.calls.length, 0, "the history already on disk is copied, not read back");
 		assert.deepEqual(store.historyBytes(), {
 			inMemory: headerBytes("s"),
 			onDisk: entryBytes(first) + 1 + entryBytes(later),
 		});
-		assert.deepEqual(spillFileSizes(), [entryBytes(first) + 1 + entryBytes(later)]);
+		assert.deepEqual(spillFileSizes(), [entryBytes(first) + 1 + entryBytes(later)], "the file before it is removed");
 		assert.deepEqual(await store.load("s"), { header: header("s"), entries: [...first, ...later], lastSeq: 53 });
 	});
 
@@ -191,11 +225,13 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		await store.releaseSession("s");
 		await store.releaseSession("missing");
 		assert.equal(open.mock.calls.length, 0);
+		assert.deepEqual(store.spillDegradation(), []);
 
 		const empty = newStore();
 		await empty.create(header("empty"), []);
 		await empty.releaseSession("empty");
 		assert.equal(open.mock.calls.length, 0, "a session with no entries has nothing to move");
+		assert.deepEqual(empty.spillDegradation(), []);
 
 		const inMemoryOnly = new MemorySessionStore();
 		await created(inMemoryOnly, "p", entries("p", 5));
@@ -239,20 +275,46 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		assert.equal(store.historyBytes().inMemory, headerBytes("s"));
 	});
 
-	test("bytes left past the written history by a failed write are never read, and the next release overwrites them", async () => {
+	test("a write cut short leaves no part of a file under a session's name, and the history before it stays whole", async () => {
 		const store = newStore();
 		const first = entries("a", 10);
 		await created(store, "s", first);
 		await store.releaseSession("s");
-		const [{ path, files }] = spillDirectories();
-		writeFileSync(join(path, files[0] as string), ',{"partial":', { flag: "a" });
-
+		const [{ path }] = spillDirectories();
 		const later = entries("b", 2);
 		await store.append("s", later, { expectSeq: 10 });
+		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		let stop!: () => void;
+		const stopped = new Promise<void>((resolve) => {
+			stop = resolve;
+		});
+		// The write stops after part of its data, as it would where the process is killed in the middle of it.
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: async (data: Uint8Array, offset: number, length: number, position: number) => {
+					await handle.write(data, offset, Math.min(length, 10), position);
+					await stopped;
+					throw Object.assign(new Error("I/O error"), { code: "EIO" });
+				},
+				close: () => handle.close(),
+			} as unknown as fsPromises.FileHandle;
+		});
+		const named = () =>
+			readdirSync(path)
+				.filter((name) => /^[0-9]+$/.test(name))
+				.map((name) => statSync(join(path, name)).size);
+		const releasing = store.releaseSession("s");
+		await vi.waitFor(() => assert.ok(readdirSync(path).some((name) => name.endsWith(".partial"))));
+		assert.deepEqual(named(), [entryBytes(first)], "while it writes, only complete files have a session file's name");
+		stop();
+		await releasing;
+		assert.deepEqual(readdirSync(path).length, 1, "the part written is removed");
+		assert.deepEqual(named(), [entryBytes(first)]);
 		assert.deepEqual((await store.load("s")).entries, [...first, ...later]);
 		await store.releaseSession("s");
-		assert.deepEqual((await store.load("s")).entries, [...first, ...later]);
 		assert.deepEqual(spillFileSizes(), [entryBytes(first) + 1 + entryBytes(later)]);
+		assert.deepEqual((await store.load("s")).entries, [...first, ...later]);
 	});
 
 	test("delete and replace remove the session's file; list and findMostRecent read released sessions", async () => {
@@ -316,16 +378,48 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		await assert.rejects(loading, (error: Error) => error instanceof SessionNotFoundError);
 	});
 
-	test("the directory is owner-only, protected from the temp sweep while open, and removed when the last handle closes", async () => {
-		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+	test("a load whose file a release replaced while it waited to read it reads the new file", async () => {
+		const store = newStore();
+		const first = entries("a", 5);
+		await created(store, "s", first);
+		await store.releaseSession("s");
+		let reading!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			reading = resolve;
+		});
+		readFile.mockImplementationOnce(async (...args: Parameters<typeof actual.readFile>) => {
+			await gate;
+			return actual.readFile(...args);
+		});
+		const loading = store.load("s");
+		await vi.waitFor(() => assert.equal(readFile.mock.calls.length, 1));
+		const later = entries("b", 2);
+		await store.append("s", later, { expectSeq: 5 });
+		await store.releaseSession("s");
+		reading();
+		assert.deepEqual((await loading).entries, [...first, ...later]);
+		assert.equal(readFile.mock.calls.length, 2, "the replaced file, then the new one");
+	});
+
+	test("the history is under the agent directory, in a directory named for this process, owner-only, and removed when the last handle closes", async () => {
+		const store = new MemorySessionStore(undefined, files);
 		await created(store, "s", entries("e", 5));
 		await store.releaseSession("s");
-		const [{ path, files }] = spillDirectories();
+		const [{ path, files: names }] = spillDirectories();
+		const processDirectory = join(path, "..");
+		const [pid, start] = (processDirectory.split(/[\\/]/).at(-1) as string).split("-");
+		assert.equal(join(processDirectory, "..", ".."), releasedHistoryUnder(agentDir));
+		assert.equal(releasedHistoryDirectory(agentDir), releasedHistoryUnder(agentDir));
+		assert.equal(Number(pid), process.pid);
+		if (process.platform === "linux") {
+			const stat = fs.readFileSync("/proc/self/stat", "utf8");
+			assert.equal(start, stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19], "the start time the kernel gives");
+		} else assert.match(start as string, /^[A-Za-z0-9]+$/);
 		if (process.platform !== "win32") {
+			assert.equal(statSync(processDirectory).mode & 0o777, 0o700);
 			assert.equal(statSync(path).mode & 0o777, 0o700);
-			assert.equal(statSync(join(path, files[0] as string)).mode & 0o777, 0o600);
+			assert.equal(statSync(join(path, names[0] as string)).mode & 0o777, 0o600);
 		}
-		assert.ok(getProtectedSessionTempDirs().has(path));
 
 		const reopened = await store.reopen();
 		await store.close();
@@ -335,18 +429,18 @@ describe("a released session's history leaves process memory (#4502)", () => {
 
 		await reopened.close();
 		assert.equal(existsSync(path), false);
-		assert.equal(getProtectedSessionTempDirs().has(path), false);
+		assert.equal(existsSync(processDirectory), false, "the process's directory goes with its last store");
 		assert.deepEqual(reopened.spillDegradation(), []);
 	});
 
 	test("a directory left by a store never closed is removed at exit, by one listener for the whole process", async () => {
 		vi.resetModules();
-		const fresh = await import("../src/core/storage/session/temp-history-files.js");
+		const fresh = await import("../src/core/storage/session/released-history-files.js");
 		const listening = () =>
-			process.listeners("exit").filter((listener) => listener.toString().includes("liveDirectories"));
+			process.listeners("exit").filter((listener) => listener.toString().includes("usedProcessDirectories"));
 		const before = listening();
-		const first = new MemorySessionStore(undefined, fresh.tempSessionHistoryFiles);
-		const second = new MemorySessionStore(undefined, fresh.tempSessionHistoryFiles);
+		const first = new MemorySessionStore(undefined, fresh.releasedHistoryFiles(agentDir));
+		const second = new MemorySessionStore(undefined, fresh.releasedHistoryFiles(agentDir));
 		for (const store of [first, second]) {
 			await store.create(header("s"), entries("e", 5));
 			await store.releaseSession("s");
@@ -364,7 +458,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("closing a store waits for a write in flight, then removes the directory; a store that never wrote removes nothing", async () => {
-		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const store = new MemorySessionStore(undefined, files);
 		await created(store, "s", entries("e", 5));
 		const resume = holdNextOpen();
 		const releasing = store.releaseSession("s");
@@ -378,7 +472,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		assert.deepEqual(spillDirectories(), []);
 		assert.deepEqual(store.spillDegradation(), []);
 
-		const unused = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const unused = new MemorySessionStore(undefined, files);
 		await created(unused, "u", entries("u", 2));
 		await unused.close();
 		assert.deepEqual(unused.spillDegradation(), []);
@@ -386,7 +480,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("a directory something else already removed is not a cleanup failure", async () => {
-		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const store = new MemorySessionStore(undefined, files);
 		await created(store, "s", entries("e", 5));
 		await store.releaseSession("s");
 		const [{ path }] = spillDirectories();
@@ -457,7 +551,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("a load whose file disappears because the store closed fails as a closed store", async () => {
-		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const store = new MemorySessionStore(undefined, files);
 		await created(store, "s", entries("e", 3));
 		await store.releaseSession("s");
 		let reading!: () => void;
@@ -620,6 +714,113 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		assert.deepEqual(await store.readHeader("s"), header("s"), "the session still exists");
 	});
 
+	test("a file whose content was changed fails the load with spill-corrupt, a typed storage error", async () => {
+		const store = newStore();
+		const history = entries("e", 10);
+		await created(store, "s", history);
+		await store.releaseSession("s");
+		const [{ path, files: names }] = spillDirectories();
+		const file = join(path, names[0] as string);
+
+		writeFileSync(file, "}".repeat(entryBytes(history)));
+		const changed = await store.load("s").then(
+			() => assert.fail("the load succeeded"),
+			(error: Error) => error,
+		);
+		assert.ok(isSessionSpillError(changed));
+		assert.equal(isStorageError(changed), true);
+		assert.equal(changed.code, "spill-corrupt");
+		assert.equal(changed.sessionId, "s");
+		assert.equal(changed.directory, path);
+		assert.equal(changed.bytes, entryBytes(history));
+		assert.equal(changed.retryable, false);
+		assert.ok(changed.cause instanceof SyntaxError);
+
+		writeFileSync(file, `${JSON.stringify(history).slice(1, -1)},{}`);
+		await assert.rejects(store.load("s"), (error: Error) => {
+			assert.ok(isSessionSpillError(error));
+			assert.equal(error.code, "spill-corrupt");
+			assert.equal(error.foundBytes, entryBytes(history) + 3);
+			return true;
+		});
+	});
+
+	test("a listing leaves out a session whose history is lost, and records each such session once", async () => {
+		const store = newStore();
+		for (const id of ["missing", "changed", "kept"]) await created(store, id, entries(id, 4));
+		await store.create(header("live"), entries("live", 2));
+		for (const id of ["missing", "changed", "kept"]) await store.releaseSession(id);
+		const [{ path, files: names }] = spillDirectories();
+		const [missing, changed] = names.sort((a, b) => Number(a) - Number(b));
+		rmSync(join(path, missing as string));
+		writeFileSync(join(path, changed as string), "}".repeat(entryBytes(entries("changed", 4))));
+		const warnings: Error[] = [];
+		vi.spyOn(process, "emitWarning").mockImplementation((warning: string | Error) => {
+			warnings.push(warning as Error);
+		});
+
+		const listed = async () => {
+			const ids: string[] = [];
+			for await (const summary of store.list({})) ids.push(summary.id);
+			return ids;
+		};
+		assert.deepEqual(await listed(), ["kept", "live"]);
+		assert.deepEqual(await listed(), ["kept", "live"]);
+		assert.ok(["kept", "live"].includes((await store.findMostRecent({ cwd: "/repo" }))?.id as string));
+		const recorded = store.spillDegradation().map((error) => [error.code, error.sessionId, error.directory]);
+		assert.deepEqual(recorded, [
+			["spill-missing", "missing", path],
+			["spill-corrupt", "changed", path],
+		]);
+		assert.deepEqual(warnings, store.spillDegradation(), "each session is reported once");
+		await assert.rejects(store.load("missing"), (error: Error) => isSessionSpillError(error));
+		await store.delete("missing");
+		assert.equal(store.spillDegradation().length, 2, "deleting a session whose file is gone is not a failure");
+	});
+
+	test("a session deleted while its first release creates the store's directory has nothing written", async () => {
+		const store = newStore();
+		await created(store, "s", entries("e", 3));
+		let resume!: () => void;
+		const held = new Promise<void>((resolve) => {
+			resume = resolve;
+		});
+		mkdir.mockImplementationOnce(async (...args: Parameters<typeof actual.mkdir>) => {
+			await held;
+			return actual.mkdir(...args);
+		});
+		open.mockClear();
+		mkdir.mockClear();
+		const releasing = store.releaseSession("s");
+		await vi.waitFor(() => assert.ok(mkdir.mock.calls.length > 0));
+		const deleting = store.delete("s");
+		resume();
+		await Promise.all([releasing, deleting]);
+		assert.equal(open.mock.calls.length, 0);
+		assert.deepEqual(spillFileSizes(), []);
+		assert.deepEqual(store.spillDegradation(), []);
+	});
+
+	test("a listing that meets a read failure that passes fails with it, so it can be tried again", async () => {
+		const store = newStore();
+		await created(store, "s", entries("e", 3));
+		await store.releaseSession("s");
+		readFile.mockRejectedValueOnce(Object.assign(new Error("EMFILE"), { code: "EMFILE" }));
+		const listed = async () => {
+			const ids: string[] = [];
+			for await (const summary of store.list({})) ids.push(summary.id);
+			return ids;
+		};
+		await assert.rejects(listed(), (error: Error) => {
+			assert.ok(isSessionSpillError(error));
+			assert.equal(error.code, "spill-read-failed");
+			assert.equal(isRetryableStorageError(error), true);
+			return true;
+		});
+		assert.deepEqual(store.spillDegradation(), []);
+		assert.deepEqual(await listed(), ["s"]);
+	});
+
 	test("a read that fails is spill-read-failed, retryable only when the filesystem failure passes", async () => {
 		const store = newStore();
 		await created(store, "s", entries("e", 3));
@@ -765,7 +966,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 	});
 
 	test("a directory that cannot be removed when the store closes is recorded as spill-cleanup-failed for the directory", async () => {
-		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		const store = new MemorySessionStore(undefined, files);
 		await created(store, "s", entries("e", 3));
 		await store.releaseSession("s");
 		const [{ path }] = spillDirectories();
@@ -793,39 +994,241 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		});
 	});
 
-	test("a spill directory that cannot be trusted keeps history in memory and is recorded as spill-dir-refused", async () => {
-		const store = newStore();
-		await created(store, "s", entries("e", 3));
-		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-		const file = join(agentDir, "not-a-directory");
-		writeFileSync(file, "");
-		const restore = setTempRoot(file);
-		try {
-			await store.releaseSession("s");
-		} finally {
-			restore();
-		}
-		const [degradation, ...others] = store.spillDegradation();
-		assert.deepEqual(others, []);
-		assert.equal(degradation?.code, "spill-dir-refused");
-		assert.equal((degradation?.cause as Error | undefined)?.name, "TempDirRefusedError");
-		assert.equal(degradation?.sessionId, undefined);
-		assert.ok(degradation?.directory.startsWith(file));
-		assert.deepEqual(store.historyBytes(), {
-			inMemory: headerBytes("s") + entryBytes(entries("e", 3)),
-			onDisk: 0,
+	test("a location that cannot hold the files keeps history in memory as spill-dir-refused, and is tried again no more than once a minute", async () => {
+		const blocked = join(agentDir, "blocked-agent");
+		writeFileSync(blocked, "");
+		const store = new MemorySessionStore(undefined, releasedHistoryFiles(blocked));
+		opened.push(store);
+		for (let index = 0; index < 4; index++) await created(store, `s${index}`, entries(`e${index}`, 3));
+		const warnings: Error[] = [];
+		vi.spyOn(process, "emitWarning").mockImplementation((warning: string | Error) => {
+			warnings.push(warning as Error);
 		});
-		await store.releaseSession("s");
-		assert.equal(
-			store.historyBytes().inMemory,
-			headerBytes("s"),
-			"a later release, with a usable directory, writes it",
+		let securityChecks = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			securityChecks += 1;
+			return undefined;
+		});
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		mkdir.mockClear();
+		try {
+			for (let round = 0; round < 10; round++)
+				for (let index = 0; index < 4; index++) await store.releaseSession(`s${index}`);
+			assert.equal(mkdir.mock.calls.length, 1, "40 releases within a minute ask for the directory once");
+			const [degradation, ...others] = store.spillDegradation();
+			assert.deepEqual(others, []);
+			assert.equal(degradation?.code, "spill-dir-refused");
+			assert.equal(degradation?.sessionId, undefined);
+			assert.ok(degradation?.directory.startsWith(releasedHistoryUnder(blocked)));
+			assert.ok(typeof degradation?.errno === "string");
+			assert.deepEqual(warnings, [degradation]);
+			assert.equal(store.historyBytes().onDisk, 0, "every history stays in memory");
+
+			clock.mockReturnValue(now + SPILL_DIRECTORY_RETRY_MS - 1);
+			await store.releaseSession("s0");
+			assert.equal(mkdir.mock.calls.length, 1);
+			clock.mockReturnValue(now + SPILL_DIRECTORY_RETRY_MS);
+			await store.releaseSession("s0");
+			await store.releaseSession("s1");
+			assert.equal(mkdir.mock.calls.length, 2, "a minute later, one release asks again");
+
+			rmSync(blocked);
+			clock.mockReturnValue(now + 2 * SPILL_DIRECTORY_RETRY_MS);
+			for (let index = 0; index < 4; index++) await store.releaseSession(`s${index}`);
+			assert.equal(store.historyBytes().inMemory, 4 * headerBytes("s0"), "once it can, a release writes");
+			assert.equal(warnings.length, 1, "the refusal is reported once");
+			assert.equal(securityChecks, 0, "no release runs an ownership check");
+		} finally {
+			setWindowsDirectorySecurityReaderForTesting(undefined);
+		}
+	});
+
+	test("across many stores and releases, the process's start time is read once and its directory created once", async () => {
+		vi.resetModules();
+		const fresh = await import("../src/core/storage/session/released-history-files.js");
+		const freshFs = vi.mocked(await import("node:fs"));
+		const freshChildProcess = vi.mocked(await import("node:child_process"));
+		const freshPromises = vi.mocked(await import("node:fs/promises"));
+		for (const mock of [freshFs.readFileSync, freshChildProcess.execFile, freshPromises.mkdir]) mock.mockClear();
+		let securityChecks = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			securityChecks += 1;
+			return undefined;
+		});
+		const counted = join(agentDir, "counted");
+		const stores = Array.from(
+			{ length: 20 },
+			() => new MemorySessionStore(undefined, fresh.releasedHistoryFiles(counted)),
 		);
+		opened.push(...stores);
+		try {
+			for (const [index, store] of stores.entries())
+				for (let session = 0; session < 5; session++) {
+					await created(store, `s${session}`, entries(`e${index}-${session}`, 2));
+					await store.releaseSession(`s${session}`);
+				}
+			const startTimeLookups =
+				freshFs.readFileSync.mock.calls.filter(([path]) => String(path) === `/proc/${process.pid}/stat`).length +
+				freshChildProcess.execFile.mock.calls.length;
+			assert.equal(startTimeLookups, 1);
+			assert.equal(freshPromises.mkdir.mock.calls.length, 1 + stores.length, "the process's, then one per store");
+			assert.equal(securityChecks, 0);
+			assert.deepEqual(
+				stores.map((store) => store.historyBytes().onDisk > 0),
+				stores.map(() => true),
+			);
+		} finally {
+			setWindowsDirectorySecurityReaderForTesting(undefined);
+		}
 	});
 });
 
+const FIXTURE = fileURLToPath(new URL("./fixtures/released-history-host.ts", import.meta.url));
+const REPOSITORY = fileURLToPath(new URL("../../../", import.meta.url));
+/** Loading the store through jiti in a new process, then a release: structural, not a slow test. */
+const HOST_TIMEOUT_MS = 60_000;
+
+/** Starts a process that releases a session into a store over `root` (see the fixture), once it has printed `ready`. */
+async function startHost(root: string, mode: string, ready: string) {
+	const child = childProcess.spawn(process.execPath, ["--import", "jiti/register", FIXTURE, root, mode], {
+		cwd: REPOSITORY,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+		child.on("exit", (code, signal) => resolve({ code, signal })),
+	);
+	let output = "";
+	let errors = "";
+	child.stderr.on("data", (chunk: Buffer) => {
+		errors += chunk.toString();
+	});
+	await new Promise<void>((resolve, reject) => {
+		child.stdout.on("data", (chunk: Buffer) => {
+			output += chunk.toString();
+			if (output.includes(ready)) resolve();
+		});
+		child.on("exit", () => reject(new Error(`the host ended before it printed ${ready}: ${errors}`)));
+	});
+	return { child, ended };
+}
+
+/** Files at any depth under `directory`. */
+const filesUnder = (directory: string): string[] =>
+	readdirSync(directory, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile())
+		.map((entry) => join(entry.parentPath, entry.name));
+
+describe("released history outlives no process, except one killed, until the next sweep (#4502)", () => {
+	test("a sweep removes what processes that are gone left, and keeps what a process that may run holds", async () => {
+		const root = join(agentDir, "sweep");
+		const store = new MemorySessionStore(undefined, releasedHistoryFiles(root));
+		opened.push(store);
+		await created(store, "s", entries("e", 2));
+		await store.releaseSession("s");
+		const [own] = processDirectories(root) as [string];
+		const host = join(own, "..");
+		const gonePid = childProcess.spawnSync(process.execPath, ["-e", ""]).pid;
+		const plant = (name: string) => {
+			mkdirSync(join(host, name, "store"), { recursive: true });
+			writeFileSync(join(host, name, "store", "1"), "{}");
+			return join(host, name);
+		};
+		const gone = plant(`${gonePid}-1`);
+		const pidReused = plant(`${process.ppid}-1`);
+		const earlierOwnPid = plant(`${process.pid}-1`);
+		const startUnknown = plant(`${process.ppid}-unknown`);
+		const notCreatedHere = [plant("notes"), plant("0-1"), plant(`a${gonePid}-1`), plant(`${gonePid}-1.keep`)];
+		const parentStart = (() => {
+			if (process.platform !== "linux") return [];
+			const stat = fs.readFileSync(`/proc/${process.ppid}/stat`, "utf8");
+			return [plant(`${process.ppid}-${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`)];
+		})();
+
+		await sweepReleasedHistory(root);
+
+		assert.deepEqual(
+			[gone, pidReused, earlierOwnPid].filter((path) => existsSync(path)),
+			[],
+			"no process has that pid, or has it with another start time",
+		);
+		assert.deepEqual(
+			[own, startUnknown, ...parentStart, ...notCreatedHere].filter((path) => existsSync(path)),
+			[own, startUnknown, ...parentStart, ...notCreatedHere],
+		);
+		assert.deepEqual((await store.load("s")).entries, entries("e", 2));
+
+		const opening = join(agentDir, "sweep-on-open");
+		const left = join(releasedHistoryUnder(opening), basename(host), `${gonePid}-1`);
+		mkdirSync(left, { recursive: true });
+		const memory = await new StorageProvider().openSessionStore(
+			{ kind: "memory" },
+			{ agentDir: opening, domain: "sessions" },
+		);
+		await vi.waitFor(() => assert.equal(existsSync(left), false, "opening a store sweeps its agent directory"));
+		await memory.close();
+
+		const resolving = join(agentDir, "sweep-on-resolve");
+		const leftThere = join(releasedHistoryUnder(resolving), basename(host), `${gonePid}-1`);
+		mkdirSync(leftThere, { recursive: true });
+		const sessions = await resolveSessionStore(resolving, {
+			agentDir: resolving,
+			sessionStore: { kind: "jsonl", dir: join(resolving, "sessions") },
+		});
+		await vi.waitFor(() =>
+			assert.equal(existsSync(leftThere), false, "resolving any session store at startup sweeps it too"),
+		);
+		await sessions.close();
+	});
+
+	test(
+		"a process killed with SIGKILL leaves its directory, and the next process to open a store there removes it",
+		async () => {
+			const root = join(agentDir, "killed");
+			const { child, ended } = await startHost(root, "wait", "released");
+			const [left] = processDirectories(root) as [string];
+			assert.equal(filesUnder(left).length, 1);
+			child.kill("SIGKILL");
+			await ended;
+			assert.equal(filesUnder(left).length, 1, "nothing runs in a killed process");
+			assert.ok(filesUnder(left).every((file) => !file.endsWith(".partial")));
+
+			releasedHistoryFiles(root);
+			await vi.waitFor(() => assert.equal(existsSync(left), false));
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a host whose SIGTERM handler ends it with process.exit(), as Atomic's own do, leaves nothing",
+		async () => {
+			const root = join(agentDir, "terminated");
+			const { child, ended } = await startHost(root, "exit-on-sigterm", "released");
+			assert.equal(processDirectories(root).length, 1);
+			child.kill("SIGTERM");
+			assert.equal((await ended).code, 143);
+			assert.deepEqual(processDirectories(root), []);
+		},
+		HOST_TIMEOUT_MS,
+	);
+
+	test(
+		"a worker thread removes its stores' directories when it ends by itself",
+		async () => {
+			const root = join(agentDir, "worker");
+			const { child, ended } = await startHost(root, "worker", "worker exited");
+			assert.deepEqual(processDirectories(root), []);
+			assert.ok(existsSync(releasedHistoryUnder(root)), "the worker did release into it");
+			child.kill("SIGKILL");
+			await ended;
+		},
+		HOST_TIMEOUT_MS,
+	);
+});
+
 describe("SessionSpillError (#4502)", () => {
-	const fields = { directory: "/tmp/atomic-1000/memory-sessions-1-ab", sessionId: "s", bytes: 120, errno: "EMFILE" };
+	const directory = "/home/u/.atomic/agent/released-history/host/1-2/ab";
+	const fields = { directory, sessionId: "s", bytes: 120, errno: "EMFILE" };
 
 	it("is a storage error with a stable code, a hint, and a guard that recognizes copies", () => {
 		const error = new SessionSpillError("spill-read-failed", fields, { cause: new Error("too many open files") });
@@ -833,6 +1236,7 @@ describe("SessionSpillError (#4502)", () => {
 		assert.equal(error.name, "SessionSpillError");
 		assert.equal(isStorageError(error), true);
 		assert.equal(isSessionSpillError({ name: "SessionSpillError", code: "spill-missing" }), true);
+		assert.equal(isSessionSpillError({ name: "SessionSpillError", code: "spill-corrupt" }), true);
 		assert.equal(isSessionSpillError({ name: "SessionSpillError", code: "spill-unknown" }), false);
 		assert.equal(isSessionSpillError({ name: "SessionBlobError", code: "spill-missing" }), false);
 		assert.equal(isSessionSpillError(undefined), false);
@@ -841,11 +1245,12 @@ describe("SessionSpillError (#4502)", () => {
 			"spill-write-failed",
 			"spill-read-failed",
 			"spill-missing",
+			"spill-corrupt",
 			"spill-cleanup-failed",
 		]);
 		assert.equal(
 			error.message,
-			"Could not read a released session's history: session s in /tmp/atomic-1000/memory-sessions-1-ab (spill-read-failed). Check that the system temp directory (TMPDIR) is readable and that the process has file descriptors to spare, then reopen the session",
+			`Could not read a released session's history: session s in ${directory} (spill-read-failed). Check that the agent directory is readable and that the process has file descriptors to spare, then reopen the session`,
 		);
 		assert.ok(error.message.endsWith(error.hint));
 	});
@@ -855,11 +1260,12 @@ describe("SessionSpillError (#4502)", () => {
 			(code) => new SessionSpillError(code, fields).message.split(" (")[0],
 		);
 		assert.deepEqual(subjects, [
-			"Could not use a directory for released sessions' history: /tmp/atomic-1000/memory-sessions-1-ab",
-			"Could not move a released session's history out of memory: session s in /tmp/atomic-1000/memory-sessions-1-ab",
-			"Could not read a released session's history: session s in /tmp/atomic-1000/memory-sessions-1-ab",
-			"A released session's history is missing: session s in /tmp/atomic-1000/memory-sessions-1-ab, 0 of 120 bytes found",
-			"Could not remove released sessions' history from disk: session s in /tmp/atomic-1000/memory-sessions-1-ab",
+			`Could not use a directory for released sessions' history: ${directory}`,
+			`Could not move a released session's history out of memory: session s in ${directory}`,
+			`Could not read a released session's history: session s in ${directory}`,
+			`A released session's history is missing: session s in ${directory}, 0 of 120 bytes found`,
+			`A released session's history was changed on disk: session s in ${directory}`,
+			`Could not remove released sessions' history from disk: session s in ${directory}`,
 		]);
 		assert.equal(
 			new SessionSpillError("spill-cleanup-failed", { directory: "/d" }).message.split(" (")[0],
@@ -867,7 +1273,7 @@ describe("SessionSpillError (#4502)", () => {
 		);
 		assert.deepEqual(
 			SESSION_SPILL_ERROR_CODES.map((code) => new SessionSpillError(code, fields).retryable),
-			[false, false, true, false, false],
+			[false, false, true, false, false, false],
 		);
 	});
 
@@ -876,6 +1282,7 @@ describe("SessionSpillError (#4502)", () => {
 			const error = new SessionSpillError(code, fields);
 			assert.ok(error.hint.length > 40, `${code} has a hint`);
 			assert.ok(error.message.endsWith(`(${code}). ${error.hint}`), code);
+			assert.doesNotMatch(error.hint, /TMPDIR|TEMP|temp directory/, `${code} names no temp directory variable`);
 		}
 		assert.deepEqual(Object.keys(new SessionSpillError("spill-dir-refused", { directory: "/d" })).sort(), [
 			"code",
@@ -995,7 +1402,7 @@ registerSessionStoreConformance(
 	{ describe, it },
 	"MemorySessionStore released after every write (#4502)",
 	async (body) => {
-		let store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
+		let store = new MemorySessionStore(undefined, files);
 		const keeper = await store.reopen();
 		try {
 			await body({
