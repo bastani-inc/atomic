@@ -22,7 +22,7 @@ import {
 import { type StageControlRegistry, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { type Store, store } from "../shared/store.js";
-import { readGraphStoreSnapshot } from "../shared/store-observation.js";
+import { readGraphStoreRun, readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 
 export interface PostMortemResolverDeps {
@@ -57,9 +57,14 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
 		cwd: resolveStageCwd(runId, deps.store ?? store),
 		defaultSessionDir: deps.resolveDefaultStageSessionDir(),
 		pooledSessionStore: async () => {
-			const backend = requireStoreDurableBackend(deps.store ?? store, runId);
+			const runStore = deps.store ?? store;
+			const backend = requireStoreDurableBackend(runStore, runId);
+			// A pooled stage's run is usually a child the backend has no handle for: its pool is the one of the root of its
+			// run tree, found where that root's placement keeps it (#4357).
+			const root =
+				readGraphStoreRun(runStore, runId)?.rootRunId ?? backend.getWorkflow(runId)?.rootWorkflowId ?? runId;
 			const { poolSessionStore } = await import("../workers/pool-session-store.js");
-			return poolSessionStore(backend, backend.getWorkflow(runId)?.rootWorkflowId ?? runId);
+			return poolSessionStore(backend, root, backend.getWorkflow(root)?.resources);
 		},
 	};
 }

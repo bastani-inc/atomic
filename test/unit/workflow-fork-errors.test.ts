@@ -12,6 +12,7 @@ import {
 	type ForkErrorFields,
 	ForkJournalUnavailableError,
 	ForkJournalUnsupportedError,
+	ForkPoolSessionsUnavailableError,
 	ForkSessionClaimError,
 	type ForkSessionClaimReason,
 	ForkSessionNotFoundError,
@@ -30,6 +31,7 @@ import {
 	isForkError,
 	isForkJournalUnavailableError,
 	isForkJournalUnsupportedError,
+	isForkPoolSessionsUnavailableError,
 	isForkSessionClaimError,
 	isForkSessionNotFoundError,
 	isForkSessionUnavailableError,
@@ -525,6 +527,36 @@ test("ForkJournalUnsupportedError and ForkCopyFailedError render stable messages
 	]);
 });
 
+test("ForkPoolSessionsUnavailableError names where each placement keeps the fork's pool tables and how to fork instead (#4357)", () => {
+	const fromStage = `fork it from a stage before its child workflows ran with /workflow fork ${runId} --from <stage>`;
+	const shared = `Nothing was written. No pool of run ${runId} ran on this journal; ${fromStage}.`;
+	const machine = `Nothing was written. Fork run ${runId} on the machine that ran its local workers, or ${fromStage}.`;
+	assertCases([
+		{
+			error: new ForkPoolSessionsUnavailableError({ runId, forkRunId, placement: "shared" }),
+			message: `Fork pool sessions unavailable: fork ${forkRunId} of run ${runId} has no pool session tables in the journal, which keeps the pool of a root with shared placement (pool-sessions-unavailable). ${shared}`,
+			hint: shared,
+			fields: { runId, forkRunId, placement: "shared" },
+		},
+		{
+			error: new ForkPoolSessionsUnavailableError({ runId, forkRunId, placement: "machine" }),
+			message: `Fork pool sessions unavailable: fork ${forkRunId} of run ${runId} has no pool session tables in the pool tables this machine keeps for the journal (pool-sessions-unavailable). ${machine}`,
+			hint: machine,
+			fields: { runId, forkRunId, placement: "machine" },
+		},
+	]);
+	const back = rehydrateForkError(
+		JSON.parse(
+			JSON.stringify(new ForkPoolSessionsUnavailableError({ runId, forkRunId, placement: "machine" })),
+		) as SerializedForkError,
+	);
+	assert.ok(back instanceof ForkPoolSessionsUnavailableError && isForkPoolSessionsUnavailableError(back));
+	assert.deepEqual(
+		[back.runId, back.forkRunId, back.placement, back.retryable, back.hint],
+		[runId, forkRunId, "machine", false, machine],
+	);
+});
+
 test("ForkClaimReleaseError renders how long the source stays claimed and when to retry (#4321)", () => {
 	const cause = new Error("lease lost");
 	assertCases([
@@ -720,6 +752,10 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 			{ cause: Object.assign(new Error("fetch failed"), { name: "StorageUnavailableError" }) },
 		),
 		guard: isForkSessionUnavailableError,
+	},
+	{
+		error: new ForkPoolSessionsUnavailableError({ runId, forkRunId, placement: "shared" }),
+		guard: isForkPoolSessionsUnavailableError,
 	},
 	{ error: new ForkSourceOwnershipError({ runId, reason: "foreign-owner" }), guard: isForkSourceOwnershipError },
 	{ error: claimError("run-mismatch"), guard: isForkSessionClaimError },
@@ -1175,6 +1211,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"ForkCleanupError",
 		"ForkSourceOwnershipError",
 		"ForkSessionClaimError",
+		"ForkPoolSessionsUnavailableError",
 		"isForkError",
 		"isForkTargetNotFoundError",
 		"isForkDefinitionMismatchError",
@@ -1191,6 +1228,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"isForkCleanupError",
 		"isForkSourceOwnershipError",
 		"isForkSessionClaimError",
+		"isForkPoolSessionsUnavailableError",
 		"isRetryableForkError",
 		"findForkError",
 		"serializeForkError",
