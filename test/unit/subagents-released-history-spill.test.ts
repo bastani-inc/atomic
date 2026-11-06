@@ -5,6 +5,7 @@ import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-
 import type { CreateAgentSessionOptions } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { tempSessionHistoryFiles } from "../../packages/coding-agent/src/core/storage/session/temp-history-files.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -174,7 +175,7 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 test(
 	"a released in-memory subagent keeps only its header in memory, and its call's result wakes it from its whole history (#4502)",
 	async () => {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		const h = await ownerOf(store, () => store.close());
 		const childSessionId = await h.launch();
 
@@ -215,7 +216,7 @@ test(
 test(
 	"a subagent over a store that keeps no history in memory is released and woken as before, and its task closes cleanly (#4502)",
 	async () => {
-		const inner = new MemorySessionStore();
+		const inner = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		const store: SessionStore = {
 			get descriptor() {
 				return inner.descriptor;

@@ -41,13 +41,17 @@ import { sessionLifecycleScopes } from "../src/core/session-lifecycle-scope.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
+import { tempSessionHistoryFiles } from "../src/core/storage/session/temp-history-files.ts";
 import type { SessionStore, StorageDescriptor } from "../src/core/storage/session/types.ts";
 import type { OperationId, TaskResult } from "../src/core/tasks/contracts.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS } from "../src/core/tool-detachment-errors.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 /** Delegates to a memory store and counts every operation, so tests prove a failure happened before any work. */
-function countingStore(inner: MemorySessionStore = new MemorySessionStore(), adapter?: StorageDescriptor["adapter"]) {
+function countingStore(
+	inner: MemorySessionStore = new MemorySessionStore(undefined, tempSessionHistoryFiles),
+	adapter?: StorageDescriptor["adapter"],
+) {
 	const counts = new Map<string, number>();
 	const count = (name: string) => counts.set(name, (counts.get(name) ?? 0) + 1);
 	const counted =

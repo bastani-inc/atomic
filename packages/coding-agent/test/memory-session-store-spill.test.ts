@@ -14,9 +14,11 @@ import {
 	SessionSpillError,
 	serializeStorageError,
 } from "../src/core/storage/errors.js";
+import { StorageProvider } from "../src/core/storage/provider.js";
 import { registerSessionStoreConformance } from "../src/core/storage/session/conformance.js";
 import { SessionInvalidTextError, SessionNotFoundError, StoreClosedError } from "../src/core/storage/session/errors.js";
-import { MemorySessionStore, markPrivateMemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { tempSessionHistoryFiles } from "../src/core/storage/session/temp-history-files.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { getProtectedSessionTempDirs, getTempRootDir } from "../src/core/tools/session-temp-dir.js";
 
@@ -78,7 +80,7 @@ afterEach(async () => {
 });
 
 function newStore(): MemorySessionStore {
-	const store = new MemorySessionStore();
+	const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 	opened.push(store);
 	return store;
 }
@@ -187,13 +189,18 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		await empty.releaseSession("empty");
 		assert.equal(open.mock.calls.length, 0, "a session with no entries has nothing to move");
 
-		const privateStore = markPrivateMemorySessionStore(newStore());
-		await created(privateStore, "p", entries("p", 5));
-		await privateStore.releaseSession("p");
-		assert.deepEqual(privateStore.historyBytes(), {
+		const inMemoryOnly = new MemorySessionStore();
+		await created(inMemoryOnly, "p", entries("p", 5));
+		await inMemoryOnly.releaseSession("p");
+		assert.deepEqual(inMemoryOnly.historyBytes(), {
 			inMemory: headerBytes("p") + entryBytes(entries("p", 5)),
 			onDisk: 0,
 		});
+		assert.deepEqual((await inMemoryOnly.load("p")).entries, entries("p", 5));
+		assert.deepEqual(inMemoryOnly.spillDegradation(), []);
+		await inMemoryOnly.delete("p");
+		await (await inMemoryOnly.reopen()).close();
+		await inMemoryOnly.close();
 
 		const closing = newStore();
 		await created(closing, "c", entries("c", 5));
@@ -272,6 +279,17 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		});
 	});
 
+	test("a memory selection opens a store that keeps released history on disk, as SDK hosts and --no-session get it", async () => {
+		const store = await new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir, domain: "sessions" });
+		const history = entries("e", 4);
+		await store.create(header("s"), history);
+		await store.releaseSession?.("s");
+		assert.deepEqual(spillFileSizes(), [entryBytes(history)]);
+		assert.deepEqual((await store.load("s")).entries, history);
+		await store.close();
+		assert.deepEqual(spillDirectories(), []);
+	});
+
 	test("a session deleted while its file is being read loads as not found", async () => {
 		const store = newStore();
 		await created(store, "s", entries("e", 5));
@@ -291,7 +309,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("the directory is owner-only, protected from the temp sweep while open, and removed when the last handle closes", async () => {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		await created(store, "s", entries("e", 5));
 		await store.releaseSession("s");
 		const [{ path, files }] = spillDirectories();
@@ -315,12 +333,12 @@ describe("a released session's history leaves process memory (#4502)", () => {
 
 	test("a directory left by a store never closed is removed at exit, by one listener for the whole process", async () => {
 		vi.resetModules();
-		const fresh = await import("../src/core/storage/session/memory-session-store.js");
+		const fresh = await import("../src/core/storage/session/temp-history-files.js");
 		const listening = () =>
-			process.listeners("exit").filter((listener) => listener.toString().includes("liveSpillDirectories"));
+			process.listeners("exit").filter((listener) => listener.toString().includes("liveDirectories"));
 		const before = listening();
-		const first = new fresh.MemorySessionStore();
-		const second = new fresh.MemorySessionStore();
+		const first = new MemorySessionStore(undefined, fresh.tempSessionHistoryFiles);
+		const second = new MemorySessionStore(undefined, fresh.tempSessionHistoryFiles);
 		for (const store of [first, second]) {
 			await store.create(header("s"), entries("e", 5));
 			await store.releaseSession("s");
@@ -338,7 +356,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("closing a store waits for a write in flight, then removes the directory; a store that never wrote removes nothing", async () => {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		await created(store, "s", entries("e", 5));
 		const resume = holdNextOpen();
 		const releasing = store.releaseSession("s");
@@ -352,7 +370,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		assert.deepEqual(spillDirectories(), []);
 		assert.deepEqual(store.spillDegradation(), []);
 
-		const unused = new MemorySessionStore();
+		const unused = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		await created(unused, "u", entries("u", 2));
 		await unused.close();
 		assert.deepEqual(unused.spillDegradation(), []);
@@ -360,7 +378,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("a directory something else already removed is not a cleanup failure", async () => {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		await created(store, "s", entries("e", 5));
 		await store.releaseSession("s");
 		const [{ path }] = spillDirectories();
@@ -431,7 +449,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 	});
 
 	test("a load whose file disappears because the store closed fails as a closed store", async () => {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		await created(store, "s", entries("e", 3));
 		await store.releaseSession("s");
 		let reading!: () => void;
@@ -725,7 +743,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 	});
 
 	test("a directory that cannot be removed when the store closes is recorded as spill-cleanup-failed for the directory", async () => {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		await created(store, "s", entries("e", 3));
 		await store.releaseSession("s");
 		const [{ path }] = spillDirectories();
@@ -769,6 +787,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		const [degradation, ...others] = store.spillDegradation();
 		assert.deepEqual(others, []);
 		assert.equal(degradation?.code, "spill-dir-refused");
+		assert.equal((degradation?.cause as Error | undefined)?.name, "TempDirRefusedError");
 		assert.equal(degradation?.sessionId, undefined);
 		assert.ok(degradation?.directory.startsWith(file));
 		assert.deepEqual(store.historyBytes(), {
@@ -955,7 +974,7 @@ registerSessionStoreConformance(
 	{ describe, it },
 	"MemorySessionStore released after every write (#4502)",
 	async (body) => {
-		let store = new MemorySessionStore();
+		let store = new MemorySessionStore(undefined, tempSessionHistoryFiles);
 		const keeper = await store.reopen();
 		try {
 			await body({

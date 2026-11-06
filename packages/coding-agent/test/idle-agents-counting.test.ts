@@ -25,6 +25,7 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SessionConflictError } from "../src/core/storage/session/errors.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
+import { tempSessionHistoryFiles } from "../src/core/storage/session/temp-history-files.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
 import { resetSessionTempCleanupScheduleForTesting } from "../src/core/tools/session-temp-cleanup.ts";
 
@@ -47,7 +48,7 @@ afterEach(async () => {
 });
 
 /** Delegates to a memory store and counts its operations; `spill` forwards `release`, so released agents leave memory. */
-function countingStore(inner = new MemorySessionStore(), spill = true) {
+function countingStore(inner: MemorySessionStore, spill: boolean) {
 	const counts = new Map<string, number>();
 	const counted =
 		<T extends unknown[], R>(name: string, operation: (...args: T) => R) =>
@@ -195,7 +196,7 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		return fauxAssistantMessage(last?.toolName === WAIT_TOOL ? "ci passed" : "turn done");
 	};
 	const script = (requests: number) => faux.appendResponses(Array.from({ length: requests }, () => respond));
-	const store = countingStore(new MemorySessionStore(), options.spill ?? true);
+	const store = countingStore(new MemorySessionStore(undefined, tempSessionHistoryFiles), options.spill ?? true);
 	const services = await createAgentSessionServices({
 		cwd: tempDir,
 		agentDir: tempDir,

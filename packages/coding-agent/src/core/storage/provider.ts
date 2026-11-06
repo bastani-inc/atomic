@@ -359,7 +359,10 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 	async openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore> {
 		return this.open<SessionStore>(selection, context, {
 			memory: async () =>
-				new (await import("./session/memory-session-store.js")).MemorySessionStore(createSessionCwdMatcher),
+				new (await import("./session/memory-session-store.js")).MemorySessionStore(
+					createSessionCwdMatcher,
+					(await import("./session/temp-history-files.js")).tempSessionHistoryFiles,
+				),
 			jsonl: async (dir) =>
 				(await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir, { exactDirectory: true }),
 			direct: (adapter, options, storage) => adapter.openSessionStore?.(options, context, storage),
