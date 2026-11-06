@@ -193,7 +193,7 @@ order below; the two SIGKILLs come last, so every other fault runs against an ow
 | `partition` | first sender's node | iptables DROP to the gateway for 30 s | drops counted, rules gone afterwards |
 | `sigstop` | last sender's broker | SIGSTOP for 30 s, then SIGCONT | process state `T`, then running again and the sender progressing |
 | `clock-skew` | first sender's node | chrony stopped, clock stepped +300 s for at least 30 s | offset observed while sends continue; restored within 5 s |
-| `slow-disk` | sqld primary | cgroup write limit on `adt-sqld` (20 IOPS, 1 MB/s) | a synchronous write in sqld's cgroup slows by at least 200 ms, then recovers |
+| `slow-disk` | sqld primary | cgroup write limit on `adt-sqld` (20 IOPS, 1 MB/s) | a synchronous 4 MiB write in sqld's cgroup slows by at least 200 ms, then speeds up again |
 | `disk-full` | sqld primary | the data volume filled with a filler file | a write fails with `No space left on device`; afterwards sqld is active and writes succeed |
 | `sigkill` | the owner node's broker, then the owner unit | `kill -KILL` of the broker; `systemctl kill --signal=SIGKILL` | a new broker took over; the unit restarted and rebound its children; deliveries resumed |
 

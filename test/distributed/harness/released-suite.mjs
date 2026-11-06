@@ -698,7 +698,7 @@ export function releasedRemote(ctx) {
 		},
 		probeDisk: () =>
 			primary.json(
-				`S=$(date +%s%N); if sudo bash -c 'echo $$ > ${sqldCgroup}/cgroup.procs; exec setpriv --reuid=${primary.user} --regid=${primary.user} --init-groups dd if=/dev/zero of=${data}/.adt-probe bs=4k count=8 oflag=direct,dsync' 2>/tmp/adt-probe.err; then R=ok; else R=$(grep -o 'No space left on device\\|Input/output error' /tmp/adt-probe.err | head -1); fi; E=$(date +%s%N); rm -f ${data}/.adt-probe; echo "{\\"result\\":\\"$R\\",\\"ms\\":$(( (E - S) / 1000000 ))}"`,
+				`S=$(date +%s%N); if sudo bash -c 'echo $$ > ${sqldCgroup}/cgroup.procs; exec setpriv --reuid=${primary.user} --regid=${primary.user} --init-groups dd if=/dev/zero of=${data}/.adt-probe bs=256k count=16 oflag=direct,dsync' 2>/tmp/adt-probe.err; then R=ok; else R=$(grep -o 'No space left on device\\|Input/output error' /tmp/adt-probe.err | head -1); fi; E=$(date +%s%N); rm -f ${data}/.adt-probe; echo "{\\"result\\":\\"$R\\",\\"ms\\":$(( (E - S) / 1000000 ))}"`,
 				{ operation: "probe sqld volume", timeoutMs: 120_000 },
 			),
 		sqldActive: async () => (await text(primary, "systemctl is-active adt-sqld || true", "sqld state")) === "active",
