@@ -1131,6 +1131,22 @@ describe("released-asker replies under races and faults (#4386)", () => {
 		assert.deepEqual(handoffsTo(impostor), []);
 	});
 
+	test("an owner whose presence and retained identity expired does not claim a released reply or report a store failure (#4386)", async () => {
+		const { a, b, owner, replier, children } = await releasedScene();
+		const [{ child, questionId }] = children as [{ child: Session; questionId: string }];
+		await a.router.close();
+		vi.spyOn(b.state.knownSessions, "lookup").mockResolvedValue({ status: "found", sessions: [] });
+		const sent = reply(replier, child.info.id, questionId);
+		b.router.routeSend(sent.request);
+		await vi.waitFor(() => assert.deepEqual(sent.notFound, [sent.id]), waitFor);
+		assert.deepEqual(outcomesFor(replier, sent.id), []);
+		assert.deepEqual(handoffsTo(owner), []);
+		assert.deepEqual(await b.state.outbox.read(sent.id), { status: "missing" });
+		const question = await b.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id });
+		assert.equal(question.status === "found" && question.ask.state, "open");
+		assert.deepEqual(vi.mocked(console.error).mock.calls, []);
+	});
+
 	test("a reply waiting on the shared store holds back only its own sender's later replies (#4386)", async () => {
 		const gate = Promise.withResolvers<void>();
 		let blocked: string | undefined;

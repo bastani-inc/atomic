@@ -104,8 +104,7 @@ async function restartOwnerBroker(
 	released: ReleasedAsker,
 	answer: Answer,
 ): Promise<{ owner: TwoBrokerClient; handoffs: ReleasedChildReply[] }> {
-	await harness.requestShutdown("a");
-	await harness.stopBroker("a", "SIGTERM");
+	await harness.shutdownBroker("a");
 	await harness.startBroker("a");
 	const owner = await harness.connect("a", released.owner.name, {
 		returnAddress: released.owner.returnAddress,
