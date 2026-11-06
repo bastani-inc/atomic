@@ -6,7 +6,15 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { type SessionEntry, SessionManager, type SessionStore } from "@bastani/atomic";
+import {
+	assertSessionBlobStore,
+	readToolOutputBlobs,
+	type SessionBlobCopy,
+	type SessionEntry,
+	SessionManager,
+	type SessionStore,
+	storeSessionBlobs,
+} from "@bastani/atomic";
 import { StorageError } from "@bastani/atomic/storage";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
@@ -405,7 +413,7 @@ type SessionContext = { readonly runId: string; readonly stagePath?: string };
 
 async function loadSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	try {
-		return await sessions.store.load(sessionId);
+		return { ...(await sessions.store.load(sessionId)), store: sessions.store };
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		const details = { sessionId, ...context, storage: storageScope(sessions.store.descriptor) };
@@ -426,7 +434,8 @@ async function loadPoolSession(sessions: SourceSessions, sessionId: string, cont
 		sessions.pool ??= {
 			store: await poolSessionStore(sessions.backend, sessions.rootRunId, sessions.resources),
 		};
-		return await sessions.pool.store?.load(sessionId);
+		const store = sessions.pool.store;
+		return store === undefined ? undefined : { ...(await store.load(sessionId)), store };
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		if (failure === "not-found") return undefined;
@@ -1264,8 +1273,30 @@ export async function forkDurableRun<
 
 type SessionSnapshots = Map<
 	string,
-	{ readonly entries: readonly SessionEntry[]; readonly checkpoint: DurableStageCheckpoint }
+	{
+		readonly entries: readonly SessionEntry[];
+		readonly blobs: readonly SessionBlobCopy[];
+		readonly checkpoint: DurableStageCheckpoint;
+	}
 >;
+
+/** The tool-output blobs a source session holds; a store failure is a {@link ForkSessionUnavailableError}. */
+async function readSessionBlobs(
+	store: SessionStore,
+	sessionId: string,
+	entries: readonly SessionEntry[],
+	context: SessionContext,
+): Promise<SessionBlobCopy[]> {
+	try {
+		return await readToolOutputBlobs(store, sessionId, entries);
+	} catch (error) {
+		if (sessionStoreFailure(error) !== "unavailable") throw error;
+		throw new ForkSessionUnavailableError(
+			{ sessionId, ...context, storage: storageScope(store.descriptor) },
+			{ cause: error as Error },
+		);
+	}
+}
 
 async function readSessions(
 	source: ForkSource,
@@ -1285,7 +1316,8 @@ async function readSessions(
 			}
 			claim.throwIfLost();
 			const snapshot = await loadSession(sourceStore, sessionId, { runId: source.runId });
-			snapshots.set(sessionId, { entries: snapshot.entries, checkpoint });
+			const blobs = await readSessionBlobs(snapshot.store, sessionId, snapshot.entries, { runId: source.runId });
+			snapshots.set(sessionId, { entries: snapshot.entries, blobs, checkpoint });
 		}
 		return snapshots;
 	} finally {
@@ -1351,13 +1383,14 @@ async function copySessions(
 	try {
 		// The fork's pool tables are found before anything is copied.
 		if ([...snapshots.values()].some(({ checkpoint }) => pooled(checkpoint))) await destinationFor(true);
-		for (const [sessionId, { entries, checkpoint }] of snapshots) {
+		for (const [sessionId, { entries, blobs, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
 			const stageRun = checkpoint.topology?.run?.runId;
 			const destination = await destinationFor(pooled(checkpoint));
 			const id = randomUUID();
 			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
+			assertSessionBlobStore(destination.store, id, blobs);
 			destination.copies.push({ id, runId });
 			await destination.store.create(
 				{
@@ -1375,6 +1408,7 @@ async function copySessions(
 				},
 				entries,
 			);
+			await storeSessionBlobs(destination.store, id, blobs);
 			const file = (await SessionManager.open(destination.store, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
