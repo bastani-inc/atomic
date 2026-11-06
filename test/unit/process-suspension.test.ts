@@ -55,9 +55,10 @@ test.skipIf(process.platform === "win32")(
 		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 20)"], { stdio: "ignore" });
 		// SIGSTOP stops a process only once it is next scheduled; on a loaded host that can come after `ps` looks.
 		const kill = process.kill.bind(process);
+		let delayedStop: ReturnType<typeof setTimeout> | undefined;
 		const lateStop = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
 			if (signal !== "SIGSTOP") return kill(pid, signal);
-			setTimeout(() => kill(pid, signal), 150);
+			delayedStop = setTimeout(() => kill(pid, signal), 150);
 			return true;
 		});
 		try {
@@ -66,6 +67,8 @@ test.skipIf(process.platform === "win32")(
 			await suspender.suspend(pid);
 			assert.equal(await suspender.isSuspended(pid), true, "a suspended process is reported suspended");
 		} finally {
+			// A failure before the delayed stop landed must not leave it to signal the child after it is gone.
+			clearTimeout(delayedStop);
 			lateStop.mockRestore();
 			const exited = new Promise((resolve) => child.once("exit", resolve));
 			child.kill("SIGKILL");
