@@ -232,6 +232,28 @@ describe("durable stage session resume", () => {
 		assert.equal(observedOptions?.durableAccumulatedDurationMs, 700);
 	});
 
+	test("a task that restarts from its prompt ignores a recorded session (#4311)", async () => {
+		const replayKey = "stage:task:event-child:1";
+		await recordStageSessionCheckpoint(
+			deps(1700),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior-child.jsonl" }),
+		);
+		let observedOptions: { resumeFromSessionId?: string; durableAccumulatedDurationMs?: number } | undefined;
+		const task = createDurableTaskPrimitive({
+			workflowId: WORKFLOW_ID,
+			backend,
+			nextReplayKey: () => replayKey,
+			task: async (_name, options) => {
+				observedOptions = options;
+				return { name: "event-child", stageName: "event-child", text: "seeded again" };
+			},
+		});
+
+		await task("event-child", { prompt: "the seeded event", durableRestartFromPrompt: true });
+		assert.equal(observedOptions?.resumeFromSessionId, undefined);
+		assert.equal(observedOptions?.durableAccumulatedDurationMs, undefined);
+	});
+
 	test("mid-session resume does not eagerly read throwing StageContext getters", async () => {
 		const replayKey = "stage:analyze:1";
 		await recordStageSessionCheckpoint(

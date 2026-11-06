@@ -11,8 +11,16 @@ import type { StageControlHandle } from "../../runs/foreground/stage-control-reg
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowEventSubscriber } from "../../shared/types.js";
 
+/** A workflow stage of this run that subscribed: it takes steering messages and reports its session's events. */
+export interface LiveSubscriberStage {
+	sendUserMessage(content: string, options?: { readonly deliverAs?: "steer" | "followUp" }): Promise<void>;
+	subscribe(listener: (event: { readonly type: string }) => void): () => void;
+}
+
 export interface SubscriberReportDelivery {
 	readonly subscriber: WorkflowEventSubscriber;
+	/** The subscriber's stage context, when the subscriber is a workflow stage of this run. */
+	readonly live: LiveSubscriberStage | undefined;
 	/** The subscriber's stage in this run, when it is a workflow stage. */
 	readonly stage: StageSnapshot | undefined;
 	readonly subscriptionId: string;
@@ -31,7 +39,7 @@ export interface SubscriberReportDelivery {
  */
 export interface SubscriberReports {
 	deliver(delivery: SubscriberReportDelivery): Promise<void>;
-	/** Before the run completes: waits for the turns that reports started, or until `cancel`. */
+	/** Before the run completes: waits for the turns that reports started. The run races it with its cancellation. */
 	settle(): Promise<void>;
 	/** At the end of the run: lets each reopened session go once its turn ends. */
 	release(): Promise<void>;
@@ -60,30 +68,18 @@ function turnEnded(handle: StageControlHandle): Promise<void> {
 /** Sends a report and calls `admitted` once the subscriber has taken it in; resolves when the subscriber's turn ends. */
 type AdmittedSend = (admitted: () => void) => Promise<unknown>;
 
-interface ObservableStage {
-	readonly isStreaming: boolean;
-	subscribe(listener: (event: { readonly type: string }) => void): () => void;
-}
-
-function isObservableStage(
-	subscriber: WorkflowEventSubscriber,
-): subscriber is WorkflowEventSubscriber & ObservableStage {
-	return typeof (subscriber as Partial<ObservableStage>).subscribe === "function";
-}
-
 /**
- * A stage in a turn takes a steering report into that turn, and the send settles once the report is queued. An idle
- * stage starts a turn for the report, which counts as taken in when that turn starts.
+ * An idle stage starts a turn for the report, which counts as taken in when that turn starts. A stage already in a turn
+ * takes the report into that turn, and the send settles once the report is queued.
  */
-function sendToLiveStage(subscriber: WorkflowEventSubscriber & ObservableStage, message: string): AdmittedSend {
+function sendToLiveStage(stage: LiveSubscriberStage, message: string): AdmittedSend {
 	return (admitted) => {
-		if (subscriber.isStreaming) return subscriber.sendUserMessage(message, { deliverAs: "steer" });
-		const stopWatching = subscriber.subscribe((event) => {
+		const stopWatching = stage.subscribe((event) => {
 			if (event.type !== "agent_start") return;
 			stopWatching();
 			admitted();
 		});
-		const turn = subscriber.sendUserMessage(message, { deliverAs: "steer" });
+		const turn = stage.sendUserMessage(message, { deliverAs: "steer" });
 		void turn.then(stopWatching, stopWatching);
 		return turn;
 	};
@@ -106,7 +102,6 @@ export function createSubscriberReports(
 		{ readonly stage: string; readonly acquired: Promise<AcquirePostMortemStageHandleResult> }
 	>();
 	const turns = new Set<Promise<void>>();
-	const cancelled = Promise.withResolvers<void>();
 
 	const untilAdmitted = async (stage: string, send: AdmittedSend): Promise<void> => {
 		let admitted = false;
@@ -143,13 +138,13 @@ export function createSubscriberReports(
 
 	return {
 		async deliver(delivery) {
-			const { stage, subscriber, message } = delivery;
+			const { stage, live, subscriber, message } = delivery;
 			if (stage?.replayed !== true) {
-				if (stage === undefined || !isObservableStage(subscriber)) {
+				if (live === undefined || stage === undefined) {
 					await subscriber.sendUserMessage(message, { deliverAs: "steer" });
 					return;
 				}
-				await untilAdmitted(stage.name, sendToLiveStage(subscriber, message));
+				await untilAdmitted(stage.name, sendToLiveStage(live, message));
 				return;
 			}
 			let owned = reopened.get(stage.id);
@@ -179,16 +174,9 @@ export function createSubscriberReports(
 			);
 		},
 		async settle() {
-			let settling = true;
-			void cancelled.promise.then(() => {
-				settling = false;
-			});
-			while (settling && turns.size > 0) await Promise.race([Promise.all([...turns]), cancelled.promise]);
+			while (turns.size > 0) await Promise.all([...turns]);
 		},
 		release: () => letGo(true),
-		cancel: () => {
-			cancelled.resolve();
-			return letGo(false);
-		},
+		cancel: () => letGo(false),
 	};
 }

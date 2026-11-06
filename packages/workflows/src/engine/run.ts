@@ -1016,7 +1016,10 @@ async function executeRun(
 	ownController.signal.addEventListener("abort", () => rejectionScope.ignore(ownController.signal.reason), {
 		once: true,
 	});
-	const stageIdByContext = new WeakMap<object, () => string | undefined>();
+	const stageByContext = new WeakMap<
+		object,
+		{ readonly id: () => string | undefined; readonly context: StageContext }
+	>();
 	let subscriberTurnFailures = 0;
 	const subscriberReports = createSubscriberReports(
 		runId,
@@ -1054,13 +1057,15 @@ async function executeRun(
 		backend: durableBackend,
 		task: (name, options, scope) => rejectionScope.watch(gatedTask(name, options, scope)),
 		currentParents: () => tracker.currentParents(),
-		subscriberStageId: (subscriber) => stageIdByContext.get(subscriber)?.(),
+		subscriberStageId: (subscriber) => stageByContext.get(subscriber)?.id(),
 		recordReportNotice: (id, message) =>
 			activeStore.recordNotice({ id, runId, level: "info", message, createdAt: Date.now() }),
 		deliverReport: (subscriber, message, subscriptionId) => {
-			const stageId = stageIdByContext.get(subscriber)?.();
+			const subscriberStage = stageByContext.get(subscriber);
+			const stageId = subscriberStage?.id();
 			return subscriberReports.deliver({
 				subscriber,
+				live: subscriberStage?.context,
 				stage: activeStore.run(runId)?.stages.find((stage) => stage.id === stageId),
 				subscriptionId,
 				message,
@@ -1101,7 +1106,7 @@ async function executeRun(
 			if (!scheduler.isRunPaused()) {
 				const created = createdStageId(() => durableStage(name, options));
 				const context = containStageRejections(created.stage, rejectionScope);
-				stageIdByContext.set(context, () => created.id);
+				stageByContext.set(context, { id: () => created.id, context });
 				return context;
 			}
 			// Reserve declaration order now, even if methods are invoked in reverse.
@@ -1121,7 +1126,7 @@ async function executeRun(
 				}),
 				rejectionScope,
 			);
-			stageIdByContext.set(context, () => deferredId);
+			stageByContext.set(context, { id: () => deferredId, context });
 			return context;
 		},
 		task: (...args) => rejectionScope.watch(gatedTask(...args)),

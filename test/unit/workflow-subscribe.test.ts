@@ -2076,6 +2076,9 @@ test("a report returns once the subscriber admits it, without waiting for the su
 			watcherMessages.push(typeof content === "string" ? content : "");
 			if (turnActive && options?.deliverAs === "steer") return;
 			turnActive = true;
+			emit("subscriber_queued");
+			order.push("subscriber-queued");
+			for (let turn = 0; turn < 3; turn++) await nextTurn();
 			emit("agent_start");
 			order.push("subscriber-turn-start");
 			await turnGate.promise;
@@ -2122,6 +2125,7 @@ test("a report returns once the subscriber admits it, without waiting for the su
 	assert.equal(result.status, "completed", result.error);
 	assert.deepEqual(order, [
 		"handler-a-start",
+		"subscriber-queued",
 		"subscriber-turn-start",
 		"handler-a-reported",
 		"handler-b-start",
@@ -2199,4 +2203,138 @@ test("a run settles the turns its reports started before it completes, and cance
 	controller.abort(new Error("operator cancelled"));
 	const result = await running;
 	assert.equal(result.status, "killed");
+});
+
+test("a subscriber turn that fails after taking a report leaves a warning; one that fails before fails the report (#4311)", async () => {
+	const listeners = new Set<Listener>();
+	const emit = (type: string): void => {
+		for (const listener of [...listeners]) listener({ type });
+	};
+	const watcherSession: StageSessionRuntime = {
+		...mockSession(),
+		async prompt() {
+			emit("agent_start");
+			emit("agent_end");
+		},
+		async sendUserMessage(content) {
+			const text = typeof content === "string" ? content : "";
+			if (text.includes("(event refused)")) throw new Error("subscriber refused the report");
+			emit("agent_start");
+			await nextTurn();
+			emit("agent_end");
+			throw new Error(`subscriber model failed on ${/\(event ([^)]*)\)/.exec(text)?.[1]}`);
+		},
+		subscribe(listener) {
+			listeners.add(listener as Listener);
+			return () => listeners.delete(listener as Listener);
+		},
+	};
+	const reported: string[] = [];
+	const failures: unknown[] = [];
+	const runId = "fefefefe-fefe-4efe-8efe-000000004311";
+	const store = createStore();
+	const result = await run(
+		workflow({
+			name: "failing-subscriber-turns",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const watcher = ctx.stage("watcher");
+				await watcher.prompt("watch");
+				await ctx
+					.subscribe(
+						listSource("alerts", [{ id: "a" }, { id: "b" }, { id: "refused" }]),
+						async (event, child) => {
+							await child.report(`${event.id} matters`);
+							reported.push(event.id);
+						},
+						{ subscriber: watcher, maxConcurrent: 1 },
+					)
+					.done.catch((error: unknown) => failures.push(error));
+				return {};
+			},
+		}) as WorkflowDefinition,
+		{},
+		{
+			runId,
+			store,
+			durableBackend: await createMemoryTestBackend(),
+			adapters: { agentSession: { create: async () => watcherSession } },
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(reported, ["a", "b"]);
+	assert.equal(failures.length, 1);
+	assert.equal(isSubscriptionHandlerError(failures[0]), true);
+	assert.equal(((failures[0] as Error).cause as Error).message, "subscriber refused the report");
+	const warnings = store
+		.notices()
+		.filter((notice) => notice.runId === runId && notice.id.startsWith("workflow-subscriber-turn:"))
+		.map((notice) => ({ id: notice.id, level: notice.level, message: notice.message }))
+		.sort((left, right) => left.id.localeCompare(right.id));
+	assert.deepEqual(warnings, [
+		{
+			id: `workflow-subscriber-turn:${runId}:watcher:1`,
+			level: "warning",
+			message: 'Subscriber stage "watcher" failed in the turn a report started: subscriber model failed on a',
+		},
+		{
+			id: `workflow-subscriber-turn:${runId}:watcher:2`,
+			level: "warning",
+			message: 'Subscriber stage "watcher" failed in the turn a report started: subscriber model failed on b',
+		},
+	]);
+});
+
+test("a report reaches a subscriber declared while the run was paused that nothing has used yet (#4311)", async () => {
+	const store = createStore();
+	const runId = "79797979-7979-4979-8979-000000004311";
+	const watcherMessages: string[] = [];
+	const definition = workflow({
+		name: "unused-paused-subscriber",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await pauseRun(runId, { store });
+			const watcher = ctx.stage("watcher");
+			await resumeRun(runId, { store });
+			await ctx.subscribe(
+				listSource("late", [{ id: "l1" }]),
+				async (event, child) => {
+					await child.report(`${event.id} matters`);
+				},
+				{ subscriber: watcher },
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId,
+			store,
+			durableBackend: await createMemoryTestBackend(),
+			adapters: {
+				agentSession: {
+					create: async (_options, meta) => {
+						const session = subscriberSession();
+						if (meta?.stageName !== "watcher") return session;
+						return {
+							...session,
+							async sendUserMessage(content, options) {
+								watcherMessages.push(typeof content === "string" ? content : "");
+								await session.sendUserMessage?.(content, options);
+							},
+						};
+					},
+				},
+			},
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(watcherMessages, ['Report from event child "late#1/l1" (event l1):\n\nl1 matters']);
 });
