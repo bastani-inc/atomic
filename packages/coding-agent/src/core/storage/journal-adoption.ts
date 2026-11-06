@@ -512,6 +512,12 @@ async function heldByResume(database: SqliteDatabase, runId: string): Promise<bo
 	return lease?.holder_id != null && !lease.holder_id.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX);
 }
 
+/** Whether a consolidation, this one or another, fences the lease of a run in a journal. */
+async function fencedByConsolidation(database: SqliteDatabase, runId: string): Promise<boolean> {
+	const lease = await database.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+	return lease?.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX) === true;
+}
+
 /**
  * How long a consolidation's fence goes unrenewed before another consolidation takes it over: the window after which a
  * resume takes over a consolidation's fence too. Consolidations never renew their fences, so a fence this old belongs to
@@ -893,6 +899,9 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
  * of its history under a consolidation's stale fence. That consolidation was abandoning or undoing the move, so
  * `finishInterruptedMoves` has nothing to finish; the moves that follow find the run here again. A fresh fence may
  * belong to a consolidation still undoing the move, and is left to it. A run whose shard cannot be opened is reported.
+ * A run whose named copy lacks events this journal holds and cannot be returned is reported a conflict, and both copies
+ * are kept: the two histories differ, as when resumes wrote to both copies during an interrupted move, or a resume
+ * holds the named copy.
  */
 async function returnStrandedRuns(
 	catalog: JournalCatalog,
@@ -928,19 +937,25 @@ async function returnStrandedRuns(
 		const left = await readRun(source, runId);
 		const there = await readRun(database, runId);
 		if (left === undefined) continue;
-		if (there === undefined)
+		if (there === undefined) {
 			await source.transaction(async (tx) => {
 				const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
 				if (lease?.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX)) return;
 				if ((await readRun(tx, runId)) !== undefined && (await readRun(database, runId)) === undefined)
 					await catalog.moveRun(runId, destination.id, from.id);
 			}, CONSOLIDATION_TRANSACTION);
-		else if (
-			holdsSnapshot(there, left) &&
-			!holdsSnapshot(left, there) &&
-			(await takeOverFence(database, runId, holder))
-		)
-			await returnToSource(catalog, from, destination, source, database, runId, holder);
+			continue;
+		}
+		if (holdsSnapshot(left, there)) continue;
+		if (holdsSnapshot(there, left)) {
+			if (await takeOverFence(database, runId, holder)) {
+				if (await returnToSource(catalog, from, destination, source, database, runId, holder)) continue;
+			} else if (await fencedByConsolidation(database, runId)) continue;
+		}
+		const kept = await readRun(source, runId);
+		const named = await readRun(database, runId);
+		if (kept !== undefined && named !== undefined && !holdsSnapshot(kept, named))
+			skipped.push(conflictRun(catalog, from.id, destination, runId));
 	}
 	return skipped;
 }

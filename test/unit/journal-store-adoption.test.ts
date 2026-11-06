@@ -2099,14 +2099,54 @@ test("recovery leaves alone a run deleted from its source while it looks the run
 	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
 });
 
-test("recovery never returns a run from a copy whose history differs, however stale its fence (#4402)", async () => {
+test("recovery never returns a run from a copy whose history differs, however stale its fence, and reports the conflict (#4402)", async () => {
 	const { destination, events } = await overtakenCleanup("check");
 	raw(destination, "UPDATE wf_events SET payload = '\"other\"' WHERE run_id = 'r'");
 	expireWorkflowLease(destination, "r");
-	assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+	assert.deepEqual(
+		(await consolidateJournalStore(store)).runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
 	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
 	assert.equal(scalar(destination, "SELECT count(*) FROM wf_events WHERE payload = '\"other\"'"), events);
 });
+
+for (const [label, resumeDestination] of [
+	[
+		"wrote to both copies",
+		(destination: string, events: number) => {
+			raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'");
+			raw(destination, APPEND_EVENT, events + 1, "p2-new");
+			raw(destination, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+		},
+	],
+	[
+		"wrote to the source and hold the destination",
+		(destination: string) =>
+			raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'"),
+	],
+] as const)
+	test(`a run whose resumes ${label} during an interrupted move is reported a conflict, and both copies are kept (#4402)`, async () => {
+		const { path, destination, events } = await interrupted("repoint");
+		raw(path, RESUME_TAKES_SOURCE);
+		raw(path, APPEND_EVENT, events + 1, "p1-new");
+		raw(path, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+		resumeDestination(destination, events);
+		const kept = scalar(destination, EVENTS);
+		for (let pass = 0; pass < 2; pass++) {
+			const report = await consolidateJournalStore(store);
+			assert.deepEqual(
+				report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+				[["r", "skipped", "conflict"]],
+			);
+			const error = report.runs[0]?.error;
+			assert.ok(error instanceof JournalCatalogError && error.code === "run-conflict");
+			assert.ok(error.message.includes(destination), error.message);
+			assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+			assert.equal(scalar(path, "SELECT count(*) FROM wf_events WHERE run_id = 'r' AND key = 'p1-new'"), 1);
+			assert.equal(scalar(destination, EVENTS), kept, "the destination's copy is unchanged");
+		}
+	});
 
 test("recovery looks up only the runs the catalog does not list on their journal, and leaves unlisted ones alone (#4402)", async () => {
 	const path = await journal(join(root, "old", "journal.sqlite"), [
