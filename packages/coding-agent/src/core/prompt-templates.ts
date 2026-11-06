@@ -27,18 +27,23 @@ export function parseCommandArgs(argsString: string): string[] {
 	let current = "";
 	let hasToken = false;
 	let inQuote: string | null = null;
+	let quoteStart = 0;
 
 	for (let i = 0; i < argsString.length; i++) {
 		const char = argsString[i];
 
 		if (inQuote) {
-			if (char === inQuote) {
+			if (char === "\\" && argsString[i + 1] === inQuote) {
+				current += inQuote;
+				i++;
+			} else if (char === inQuote) {
 				inQuote = null;
 			} else {
 				current += char;
 			}
-		} else if (char === '"' || char === "'") {
+		} else if ((char === '"' || char === "'") && !hasToken) {
 			inQuote = char;
+			quoteStart = i;
 			hasToken = true;
 		} else if (char === " " || char === "\t") {
 			if (hasToken) {
@@ -49,6 +54,12 @@ export function parseCommandArgs(argsString: string): string[] {
 		} else {
 			current += char;
 			hasToken = true;
+		}
+
+		if (inQuote && i === argsString.length - 1) {
+			inQuote = null;
+			current = argsString[quoteStart];
+			i = quoteStart;
 		}
 	}
 
