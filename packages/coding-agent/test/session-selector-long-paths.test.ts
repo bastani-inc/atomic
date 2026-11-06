@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, describe, test } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SessionInfo } from "../src/core/session-manager.ts";
-import { SessionList } from "../src/modes/interactive/components/session-selector-list.ts";
-import { truncatePathStart } from "../src/modes/interactive/components/session-selector-utils.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import type { SessionInfo } from "../src/core/session-manager.js";
+import { SessionList } from "../src/modes/interactive/components/session-selector-list.js";
+import { truncatePathStart } from "../src/modes/interactive/components/session-selector-utils.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const projectPath = `/tmp/${"t".repeat(62)}/atomic-session-identity-sGgz6v/foreign`;
 const TOGGLE_PATH = "\x10";
