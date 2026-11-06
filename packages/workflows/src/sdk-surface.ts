@@ -253,8 +253,19 @@ export type {
 	StageWaitToolCall,
 	WorkflowDecisionRequest,
 } from "./shared/authoring-contract-stage.js";
-export type { SerializedWorkflowInfrastructureError } from "./shared/error-codec.js";
-export { rehydrateWorkflowInfrastructureError, serializeWorkflowInfrastructureError } from "./shared/error-codec.js";
+export type {
+	ErrorFamily,
+	SerializedError,
+	SerializedErrorField,
+	SerializedErrorFields,
+	SerializedWorkflowInfrastructureError,
+} from "./shared/error-codec.js";
+export {
+	rehydrateError,
+	rehydrateWorkflowInfrastructureError,
+	serializeError,
+	serializeWorkflowInfrastructureError,
+} from "./shared/error-codec.js";
 export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,
@@ -338,7 +349,6 @@ export type {
 	WorkflowNotice,
 	WorkflowOverlayAdapter,
 } from "./shared/store-types.js";
-export type { SerializedTypedError } from "./shared/typed-failure-detail.js";
 export type * from "./shared/types.js";
 export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
 export type {

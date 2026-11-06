@@ -1,3 +1,4 @@
+import type { SerializedError } from "../../shared/error-codec.js";
 import { appendRunBlocked, appendRunEnd } from "../../shared/persistence-session-entries.js";
 import type { Store } from "../../shared/store.js";
 import { isTerminalRunStatus } from "../../shared/store-internal.js";
@@ -12,7 +13,7 @@ import type {
 	WorkflowFailureKind,
 	WorkflowFailureRecoverability,
 } from "../../shared/store-types.js";
-import { type SerializedTypedError, typedFailureDetail } from "../../shared/typed-failure-detail.js";
+import { typedFailureDetail } from "../../shared/typed-failure-detail.js";
 import type { WorkflowOutputValues, WorkflowPersistencePort } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { runFailureClassification } from "../../shared/workflow-failures-classifier.js";
@@ -83,7 +84,7 @@ function failureOf(metadata: Parameters<typeof recordedFailureClassification>[0]
 	return failure === undefined ? {} : { failure };
 }
 
-function failureDetailOf(source: { readonly failureDetail?: SerializedTypedError }): Pick<RunResult, "failureDetail"> {
+function failureDetailOf(source: { readonly failureDetail?: SerializedError }): Pick<RunResult, "failureDetail"> {
 	return source.failureDetail === undefined ? {} : { failureDetail: source.failureDetail };
 }
 
@@ -160,7 +161,7 @@ export interface RunFailureMetadata {
 	readonly result?: WorkflowOutputValues;
 	readonly budgetState?: RunBudgetState;
 	/** The typed error of the selected failure, from its stage or its thrown error (#4309). */
-	readonly failureDetail?: SerializedTypedError;
+	readonly failureDetail?: SerializedError;
 }
 
 /**

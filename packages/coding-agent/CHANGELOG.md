@@ -66,6 +66,7 @@
 - A detachable tool can require a durable handoff before it releases the session with `detachmentRequiresReady: true`; `toolCallNeedsDetachmentHandoff(signal)` and `markToolCallReadyForDetachment(signal)` let it save and signal that handoff before detachment ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
 - `session.subscribe(source, handler, options?)` subscribes an SDK session to an event stream. Each event is handled by `handler(event, child)`: `child.task()` runs a short-lived child session seeded with the event, and `child.report()` delivers a short `event_report` message into the session only when the event matters. Processed event ids are recorded in the session transcript, so a reopened session does not handle them again ([#4311](https://github.com/bastani-inc/atomic/issues/4311))
 - Event sources for `session.subscribe` and the workflow `ctx.subscribe`/`ctx.events`: `githubChecks`, `githubReviews`, `logTail`, `webhook` and `interval`, plus the `EventSource` interface for your own, and `publishEvent(subscriptionId, event)` to bridge a host's own webhooks. Failures are typed: `SubscriptionError` and its subclasses carry a stable `code`, fields and a `hint` ([#4311](https://github.com/bastani-inc/atomic/issues/4311))
+- `redactUrlCredentials(text)` is exported from `@bastani/atomic`: it removes the user info, which can hold a token, from every URL in a text ([#4378](https://github.com/bastani-inc/atomic/issues/4378))
 
 ### Changed
 

@@ -19,6 +19,27 @@ const { createStore } = await load("../../packages/workflows/src/shared/store.ts
 const { createRegistry } = await load("../../packages/workflows/src/workflows/registry.ts");
 const { loadWorkerWorkflow } = await load("../../packages/workflows/src/workers/definitions.ts");
 const { isWorkspaceRestoreUnavailableError } = await load("../../packages/workflows/src/workers/placement-errors.ts");
+const { WorkflowGitRequiredError } = await load("../../packages/workflows/src/shared/workflow-git-required-error.ts");
+const { GitUnavailableError, isGitUnavailableError } = await jiti.import("@bastani/atomic");
+/** The WorkflowGitRequiredError in the failure's cause chain, as the root rebuilt it, described for the test (#4378). */
+const typedFailure = (error) => {
+	let current = error;
+	for (let depth = 0; current && depth < 8 && !(current instanceof WorkflowGitRequiredError); depth++) current = current.cause;
+	if (!(current instanceof WorkflowGitRequiredError)) return null;
+	return {
+		name: current.name,
+		code: current.code,
+		fields: current.fields,
+		hint: current.hint,
+		retryable: current.retryable,
+		cause: {
+			name: current.cause?.name ?? null,
+			code: current.cause?.code ?? null,
+			instance: current.cause instanceof GitUnavailableError,
+			guard: isGitUnavailableError(current.cause),
+		},
+	};
+};
 const placementCode = (error) => {
 	for (let current = error, depth = 0; current && depth < 8; current = current.cause, depth++)
 		if (current.name === "WorkspaceRestoreUnavailableError") return current.code;
@@ -26,7 +47,7 @@ const placementCode = (error) => {
 };
 
 const childPath = fileURLToPath(new URL("./shared-pool-child.ts", import.meta.url));
-const exportName = { bound: "boundChild", distributed: "distributedChild" }[scenario] ?? "sharedChild";
+const exportName = { bound: "boundChild", distributed: "distributedChild", typed: "typedFailureChild" }[scenario] ?? "sharedChild";
 // A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE).
 const secrets =
 	process.env.SHARED_POOL_TOKEN_FILE === undefined ? {} : { secrets: { authToken: { file: process.env.SHARED_POOL_TOKEN_FILE } } };
@@ -54,7 +75,7 @@ const parent = workflow({
 			Array.from({ length: Number(children) }, (_, index) =>
 				ctx.workflow(child, {
 					inputs:
-						scenario === "bound"
+						scenario === "bound" || scenario === "typed"
 							? {}
 							: scenario === "distributed"
 								? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
@@ -72,6 +93,7 @@ const parent = workflow({
 							name: result.reason?.name ?? null,
 							// The placement error the child failed on, found through the cause chain as the guard finds it.
 							code: isWorkspaceRestoreUnavailableError(result.reason) ? placementCode(result.reason) : null,
+							typed: typedFailure(result.reason),
 						},
 			);
 		return {};

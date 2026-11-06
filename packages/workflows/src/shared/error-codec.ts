@@ -1,5 +1,6 @@
 import {
 	isTaskCleanupError,
+	redactUrlCredentials,
 	rehydrateTaskCleanupError,
 	TaskCleanupAdmissionTimeoutError,
 	TaskCleanupError,
@@ -48,6 +49,13 @@ import {
 } from "../workers/placement-errors.js";
 import { MAX_CAUSE_DEPTH } from "./error-cause-chain.js";
 import {
+	isSerializableErrorFamilyName,
+	SERIALIZABLE_ERROR_FAMILIES,
+	type SerializableErrorFamilyName,
+	type SerializableErrorForm,
+	serializableErrorFamilyOf,
+} from "./serializable-error-families.js";
+import {
 	isLocalWorkerPoolError,
 	LOCAL_WORKER_OPTIONS_REASONS,
 	LOCAL_WORKER_OPTIONS_SOURCES,
@@ -81,7 +89,10 @@ import {
 	type WorkflowInfrastructureFault,
 } from "./workflow-infrastructure-error.js";
 
-/** The error family an envelope names, so a receiver without the error's class still rehydrates its family base. */
+/**
+ * The error family an envelope names, so a receiver without the error's class still rehydrates its family base. A
+ * family with its own JSON form (#4378) is rebuilt by that family's own rehydration.
+ */
 export type ErrorFamily =
 	| "worker-pool"
 	| "workflow-infrastructure"
@@ -90,7 +101,8 @@ export type ErrorFamily =
 	| "journal-store"
 	| "fork"
 	| "worker-placement"
-	| "task-cleanup";
+	| "task-cleanup"
+	| SerializableErrorFamilyName;
 
 const FAMILIES: ReadonlySet<string> = new Set<ErrorFamily>([
 	"worker-pool",
@@ -101,6 +113,7 @@ const FAMILIES: ReadonlySet<string> = new Set<ErrorFamily>([
 	"fork",
 	"worker-placement",
 	"task-cleanup",
+	...(Object.keys(SERIALIZABLE_ERROR_FAMILIES) as SerializableErrorFamilyName[]),
 ]);
 
 export type SerializedErrorField =
@@ -131,6 +144,11 @@ export interface SerializedError {
 	readonly errors?: readonly SerializedError[];
 	/** A storage error's failed rollback, carried as the storage layer's own serializer carries it. */
 	readonly rollbackCause?: SerializedError;
+	/**
+	 * The members of a family's own JSON form that the envelope has no member for, such as a workspace error's `reason`
+	 * or a background compaction error's `phase`.
+	 */
+	readonly extra?: SerializedErrorFields;
 }
 
 /** The name an envelope carries for a cause that was not an error object. */
@@ -707,7 +725,8 @@ function infrastructureBase(
 /** Fields a family base rehydrated for an unknown name carries on, so a second hop serializes them again. */
 const preservedFields = new WeakMap<object, SerializedErrorFields>();
 
-function familyOf(error: object): ErrorFamily | undefined {
+/** The family the codec carries `error` as, or undefined for an error of no known family. */
+export function familyOf(error: object): ErrorFamily | undefined {
 	if (isLocalWorkerPoolError(error)) return "worker-pool";
 	if (isWorkflowInfrastructureError(error)) return "workflow-infrastructure";
 	if (error instanceof JournalError) return "journal";
@@ -716,7 +735,7 @@ function familyOf(error: object): ErrorFamily | undefined {
 	if (isJournalStoreError(error)) return "journal-store";
 	if (isStorageError(error) || isStorageUnavailable(error)) return "storage";
 	if (isTaskCleanupError(error)) return "task-cleanup";
-	return undefined;
+	return error instanceof Error ? serializableErrorFamilyOf(error) : undefined;
 }
 
 function codecFor(error: object, name: string): Codec<Error> | undefined {
@@ -734,7 +753,7 @@ function serializeNonError(value: unknown, withheld: boolean): SerializedError {
 	const message =
 		withheld || (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
 			? ""
-			: String(value);
+			: redactUrlCredentials(String(value));
 	return { name: NON_ERROR_CAUSE, message, fields: { type: value === null ? "null" : typeof value } };
 }
 
@@ -775,6 +794,56 @@ function forkEnvelope(error: ForkError, depth: number, budget: Budget, withheld:
 	return {
 		...serialized,
 		family: "fork",
+		...(cause === undefined ? {} : { cause }),
+		...(cleanupCause === undefined ? {} : { cleanupCause }),
+	};
+}
+
+/**
+ * An error of a family with its own JSON form (#4378), as an envelope: the family's own form, as JSON, with the members
+ * the envelope has no place for in `extra`. Its cause and cleanup cause cross as any error's do.
+ */
+function familyEnvelope(
+	error: Error,
+	family: SerializableErrorFamilyName,
+	depth: number,
+	budget: Budget,
+	withheld: boolean,
+): SerializedError {
+	const {
+		name,
+		message,
+		code,
+		hint,
+		retryable,
+		fields,
+		cause: _ownCause,
+		cleanupCause: _ownCleanupCause,
+		...extra
+	} = SERIALIZABLE_ERROR_FAMILIES[family].serialize(error) as SerializableErrorForm & {
+		readonly [member: string]: unknown;
+	};
+	const cause = serializeLinked(error.cause, depth + 1, budget, withheld);
+	const cleanupCause = serializeLinked(
+		(error as { readonly cleanupCause?: unknown }).cleanupCause,
+		depth + 1,
+		budget,
+		withheld,
+	);
+	const own = JSON.parse(
+		JSON.stringify({
+			name,
+			message,
+			code,
+			hint,
+			retryable,
+			family,
+			fields: fields ?? {},
+			...(Object.keys(extra).length === 0 ? {} : { extra }),
+		}),
+	) as SerializedError;
+	return {
+		...own,
 		...(cause === undefined ? {} : { cause }),
 		...(cleanupCause === undefined ? {} : { cleanupCause }),
 	};
@@ -850,6 +919,7 @@ function serializeOne(error: unknown, depth: number, budget: Budget, withheld: b
 		return { ...boundStorage(storageSerialization(error), error, depth, budget, withheld), family: "storage" };
 	if (family === "journal-store") return journalStoreEnvelope(error as JournalStoreError, depth, budget, withheld);
 	if (family === "fork") return forkEnvelope(error as ForkError, depth, budget, withheld);
+	if (isSerializableErrorFamilyName(family)) return familyEnvelope(error as Error, family, depth, budget, withheld);
 	const candidate = error as {
 		readonly name?: unknown;
 		readonly message?: unknown;
@@ -867,7 +937,7 @@ function serializeOne(error: unknown, depth: number, budget: Budget, withheld: b
 	const errors = error instanceof AggregateError ? serializedMembers(error, depth, budget, withheld) : [];
 	return {
 		name,
-		message: !withheld && typeof candidate.message === "string" ? candidate.message : "",
+		message: !withheld && typeof candidate.message === "string" ? redactUrlCredentials(candidate.message) : "",
 		...(typeof candidate.code === "string" ? { code: candidate.code } : {}),
 		...(typeof candidate.hint === "string" ? { hint: candidate.hint } : {}),
 		...(codecFamily !== undefined && typeof candidate.retryable === "boolean"
@@ -894,9 +964,11 @@ function serializedMembers(group: AggregateError, depth: number, budget: Budget,
 /**
  * The one way an error leaves a worker, the coordinator or the root over IPC: a {@link SerializedError} that keeps its
  * class name, code, hint, declared fields and bounded causes. A cause that is not an error object keeps only its type,
- * and its text when it is a string, number or boolean. A storage error crosses as the storage layer's
+ * and its text when it is a string, number or boolean. Text the codec carries as it is, such as a plain error's
+ * message, loses the user info of any URL in it, which can hold a token. A storage error crosses as the storage layer's
  * `serializeStorageError` carries it, so it arrives as its own class; its causes keep their identity but not their
- * text, which a storage driver may fill with a connection string.
+ * text, which a storage driver may fill with a connection string. An error of a family with its own JSON form (#4378)
+ * crosses as that form, and its causes as any error's do.
  */
 export function serializeError(error: unknown): SerializedError {
 	return serializeOne(error, 0, { remaining: MAX_SERIALIZED_ERRORS, seen: new Set() }, false);
@@ -941,6 +1013,8 @@ function readEnvelope(value: unknown, path: string): SerializedError {
 	for (const [key, field] of Object.entries(fields))
 		if (!isField(field))
 			refuse(`${path}.fields.${key}`, "a JSON string, finite number, boolean, null, array or object");
+	if (envelope.extra !== undefined && !(isRecord(envelope.extra) && isField(envelope.extra)))
+		refuse(`${path}.extra`, "an object of JSON strings, finite numbers, booleans, nulls, arrays or objects");
 	return envelope as unknown as SerializedError;
 }
 
@@ -1026,8 +1100,43 @@ function readForkEnvelope(value: unknown, path: string): SerializedForkError {
 	};
 }
 
+/**
+ * The error an envelope of a family with its own JSON form describes, rebuilt by the family's own rehydration from the
+ * form the envelope carries, whose causes are the codec's. An envelope without a code, or one its family refuses or
+ * fails to rebuild, is refused.
+ */
+function familyMember(
+	envelope: SerializedError,
+	family: SerializableErrorFamilyName,
+	path: string,
+	cause: Error | undefined,
+): Error {
+	if (envelope.code === undefined) refuse(`${path}.code`, `a ${family} error code`);
+	const expected = `a ${family} error its family can rebuild`;
+	const form = {
+		...envelope.extra,
+		name: envelope.name,
+		message: envelope.message,
+		code: envelope.code,
+		hint: envelope.hint,
+		retryable: envelope.retryable,
+		fields: envelope.fields,
+		cause: undefined,
+		cleanupCause: undefined,
+	};
+	let error: Error | undefined;
+	try {
+		error = SERIALIZABLE_ERROR_FAMILIES[family].rehydrate(form, cause);
+	} catch (failure) {
+		throw new PoolProtocolError({ field: path, expected }, { cause: failure });
+	}
+	return error ?? refuse(path, expected);
+}
+
 function familyBase(
-	envelope: SerializedError & { readonly family?: Exclude<ErrorFamily, "storage" | "journal-store" | "fork"> },
+	envelope: SerializedError & {
+		readonly family?: Exclude<ErrorFamily, "storage" | "journal-store" | "fork" | SerializableErrorFamilyName>;
+	},
 	options: ErrorOptions,
 ): Error {
 	const hint = envelope.hint ?? "";
@@ -1083,6 +1192,13 @@ function rehydrateOne(value: unknown, path: string, depth: number, budget: Recei
 			Object.defineProperty(error, "cause", { value: cause, writable: true, configurable: true });
 		return error;
 	}
+	if (isSerializableErrorFamilyName(envelope.family)) {
+		const error = familyMember(envelope, envelope.family, path, cause);
+		if (cause !== undefined)
+			Object.defineProperty(error, "cause", { value: cause, writable: true, configurable: true });
+		restore(error, { message: envelope.message, cleanupCause });
+		return error;
+	}
 	const options: ErrorOptions = cause === undefined ? {} : { cause };
 	const known = CODECS.get(envelope.name);
 	if (known !== undefined && known.family === envelope.family) {
@@ -1112,19 +1228,33 @@ function rehydratedMembers(members: readonly unknown[], path: string, depth: num
 	return members.map((member, index) => rehydrateOne(member, `${path}.errors[${index}]`, depth + 1, budget));
 }
 
+/** A received envelope rebuilt, or the protocol violation that kept it from being read. */
+export type SerializedErrorReading =
+	| { readonly ok: true; readonly error: Error }
+	| { readonly ok: false; readonly error: PoolProtocolError };
+
+/**
+ * Reads a received envelope as {@link rehydrateError} does, telling apart an envelope that fails validation, whose
+ * {@link PoolProtocolError} names the bad member, from one that describes a `PoolProtocolError`.
+ */
+export function readSerializedError(value: unknown): SerializedErrorReading {
+	try {
+		return { ok: true, error: rehydrateOne(value, "error", 0, { remaining: MAX_SERIALIZED_ERRORS }) };
+	} catch (error) {
+		if (error instanceof PoolProtocolError) return { ok: false, error };
+		throw error;
+	}
+}
+
 /**
  * The receiving side of {@link serializeError}: the same class with the same fields and causes when the receiver
  * knows it; the family base, keeping the original `name` and `code`, when it does not; a plain `Error` with that name
- * outside the known families. A storage error is rebuilt by the storage layer's `rehydrateStorageError`. An envelope that fails validation yields a {@link PoolProtocolError} naming the bad
- * member, and nothing of it is acted on.
+ * outside the known families. A storage error is rebuilt by the storage layer's `rehydrateStorageError`, and an error
+ * of a family with its own JSON form by that family's own rehydration. An envelope that fails validation yields a
+ * {@link PoolProtocolError} naming the bad member, and nothing of it is acted on.
  */
 export function rehydrateError(value: unknown): Error {
-	try {
-		return rehydrateOne(value, "error", 0, { remaining: MAX_SERIALIZED_ERRORS });
-	} catch (error) {
-		if (error instanceof PoolProtocolError) return error;
-		throw error;
-	}
+	return readSerializedError(value).error;
 }
 
 /** A {@link WorkflowInfrastructureError} as JSON-safe data: the envelope the pool's processes send each other. */

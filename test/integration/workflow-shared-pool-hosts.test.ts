@@ -20,6 +20,8 @@ const SESSIONS = 2;
 const FANOUT_BUDGET = poolTestBudgetMs(3);
 /** The root's pool and two worker hosts. */
 const PLACEMENT_BUDGET = poolTestBudgetMs(3);
+/** The root's pool and one worker host. */
+const TYPED_FAILURE_BUDGET = poolTestBudgetMs(2);
 
 type Row = Record<string, unknown>;
 
@@ -345,4 +347,64 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 	PLACEMENT_BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a child that fails typed on another host reaches the root as its own class, with its typed cause (#4378)",
+	async () => {
+		const s = scenario("shared-pool-typed-failure", TYPED_FAILURE_BUDGET.waitMs);
+		const restored = join(s.directory, "restored");
+		mkdirSync(restored);
+		let hostB: BudgetedProcess | undefined;
+		try {
+			// Only host B can restore the child's binding, so the child runs there and fails there.
+			hostB = startHost(s, "B", 1, { SHARED_POOL_RESTORE: restored });
+			await until("host B", s.deadline, () => existsSync(join(s.directory, "host-ready-B")), [hostB]);
+			const root = spawnWithinBudget(
+				[process.execPath, rootFixture, "start", s.directory, "1", "1", "typed"],
+				{ cwd: s.directory, stdout: "ignore", env: s.env("A", { SHARED_POOL_BINDING: JSON.stringify(BINDING) }) },
+				s.deadline,
+			);
+			await expectExitedCleanly(root);
+			const outcome = await readJson<{
+				children: {
+					status: string;
+					typed: {
+						name: string;
+						code: string;
+						fields: Record<string, unknown>;
+						hint: string;
+						retryable: boolean;
+						cause: { name: string | null; code: string | null; instance: boolean; guard: boolean };
+					} | null;
+				}[];
+			}>(join(s.directory, "outcome-start.json"));
+			assert.equal(outcome.children.length, 1);
+			const [failed] = outcome.children;
+			assert.equal(failed?.status, "rejected", JSON.stringify(outcome));
+			const typed = failed?.typed;
+			assert.ok(typed, `the root's error held no WorkflowGitRequiredError: ${JSON.stringify(failed)}`);
+			assert.deepEqual(
+				[typed.name, typed.code, typed.retryable],
+				["WorkflowGitRequiredError", "git-required", false],
+			);
+			assert.equal(typed.fields.gitWorktreeDir, "/worktrees/B", "the error was made on host B");
+			assert.deepEqual(typed.cause, { name: "GitUnavailableError", code: "offline", instance: true, guard: true });
+			assert.ok(typed.hint.length > 0);
+			const work = await s.query(
+				`SELECT w.worker, r.result FROM ${PREFIX}wf_runs_work w LEFT JOIN ${PREFIX}wf_runs_work_results r ON r.work = w.id WHERE w.root = ?`,
+				s.root,
+			);
+			assert.equal(work.length, 1);
+			assert.ok(String(work[0]?.worker).startsWith("B/"), `the child ran on ${String(work[0]?.worker)}`);
+			const sent = JSON.parse(String(work[0]?.result)) as { failureDetail?: { family?: string } };
+			assert.equal(sent.failureDetail?.family, "git-required", "host B sent the typed detail through the journal");
+			await stopHost(hostB);
+			hostB = undefined;
+		} finally {
+			hostB?.process.kill("SIGKILL");
+			removeTempDirectory(s.directory);
+		}
+	},
+	TYPED_FAILURE_BUDGET.timeoutMs,
 );

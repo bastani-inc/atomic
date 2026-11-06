@@ -432,10 +432,10 @@ export interface StageSnapshot {
 	/** Original unsanitized error text when different from `error`. */
 	failureMessage?: string;
 	/**
-	 * JSON form of the typed error (`StageWaitError` or `ToolDetachmentError` family) this stage failed on, so it
-	 * crosses a worker or child-workflow boundary as that error rather than as `error` text (#4309).
+	 * The typed error this stage failed on, as the pool's IPC envelope, so it crosses a worker or child-workflow
+	 * boundary as that error rather than as `error` text (#4309, #4378).
 	 */
-	failureDetail?: import("./typed-failure-detail.js").SerializedTypedError;
+	failureDetail?: import("./error-codec.js").SerializedError;
 	/** Reason for stages skipped by fail-fast/cascade handling. */
 	skippedReason?: string;
 	/** Stable continuation replay identity, separate from display name. */

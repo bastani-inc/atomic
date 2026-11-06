@@ -201,13 +201,12 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	 * classifies a failed child from it rather than from the child's error text (#4031).
 	 */
 	readonly failure?: RunFailureClassification;
-	/** The workspace error behind a failure, serialized so it crosses worker processes and rehydrates typed. */
-	readonly workspaceError?: import("@bastani/atomic").SerializedWorkspaceError;
 	/**
-	 * JSON form of the typed error the run failed on, when it is of the `StageWaitError` or `ToolDetachmentError`
-	 * family. A parent workflow attaches it, rebuilt, as the cause of the child's failure (#4309).
+	 * The typed error the run failed on, as the pool's IPC envelope, when an error of a known family is in its failure's
+	 * cause chain. `rehydrateError` rebuilds it as its own class, and a parent workflow attaches it, rebuilt, as the
+	 * cause of the child's failure (#4309, #4378).
 	 */
-	readonly failureDetail?: import("../../shared/typed-failure-detail.js").SerializedTypedError;
+	readonly failureDetail?: import("../../shared/error-codec.js").SerializedError;
 	readonly stages: StageSnapshot[];
 	readonly toolNodes: ToolNodeSnapshot[];
 }

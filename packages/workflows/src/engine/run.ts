@@ -1549,7 +1549,6 @@ async function executeRun(
 			metadata,
 			...(rejectedToolFrontier === undefined ? {} : { failedToolNode: rejectedToolFrontier }),
 			onRunEnd: opts.onRunEnd,
-			error: err,
 		});
 		return failed;
 	} finally {

@@ -18,14 +18,12 @@ import { latestStageSessionCheckpoints } from "../../packages/workflows/src/dura
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import {
 	STAGE_WAIT_RETRY_ATTEMPTS,
 	STAGE_WAIT_RETRY_BUDGET_MS,
 } from "../../packages/workflows/src/shared/stage-wait.js";
-import {
-	deserializeStageWaitError,
-	isStageRehydrationError,
-} from "../../packages/workflows/src/shared/stage-wait-errors.js";
+import { isStageRehydrationError } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
@@ -255,8 +253,8 @@ describe("a waiting stage whose session cannot save the result it was woken with
 			assert.equal(source?.resumable, true);
 			const stage = blocked.stages.find((candidate) => candidate.name === "implement");
 			assert.notEqual(stage?.status, "completed");
-			assert.ok(stage?.failureDetail?.family === "StageWaitError");
-			const failure = deserializeStageWaitError(stage.failureDetail);
+			assert.equal(stage?.failureDetail?.family, "stage-wait");
+			const failure = rehydrateError(stage?.failureDetail);
 			assert.ok(isStageRehydrationError(failure));
 			assert.equal(failure.code, "session-unavailable");
 			assert.equal(failure.retryable, true);
@@ -315,8 +313,8 @@ describe("a waiting stage whose session cannot save the result it was woken with
 		assert.equal(source?.resumable, true);
 		const stage = failed.stages.find((candidate) => candidate.name === "implement");
 		assert.equal(stage?.status, "failed");
-		assert.ok(stage?.failureDetail?.family === "StageWaitError");
-		const failure = deserializeStageWaitError(stage.failureDetail);
+		assert.equal(stage?.failureDetail?.family, "stage-wait");
+		const failure = rehydrateError(stage?.failureDetail);
 		assert.ok(isStageRehydrationError(failure));
 		assert.equal(failure.code, "results-not-saved");
 		assert.equal(failure.retryable, false);

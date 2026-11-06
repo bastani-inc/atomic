@@ -1547,7 +1547,7 @@ test("a malformed envelope yields a typed protocol error naming the member and w
 	const valid = serializeError(new StaleWorkLeaseError({ root: "r", workId: "w", generation: 1, reason: "fenced" }));
 	const json = "a JSON string, finite number, boolean, null, array or object";
 	const families =
-		"one of worker-pool, workflow-infrastructure, journal, storage, journal-store, fork, worker-placement, task-cleanup";
+		"one of worker-pool, workflow-infrastructure, journal, storage, journal-store, fork, worker-placement, task-cleanup, stage-wait, tool-detachment, git-provision, git-required, workspace, session-start, decision, task-evicted, agent-rehydrate, background-compaction, github-copilot, debug, edit-tool, write-selector, shell-tool, llama-server, startup-benchmark, subscription";
 	const nested = (depth: number): SerializedErrorField => (depth === 0 ? 1 : [nested(depth - 1)]);
 	const cases: readonly (readonly [unknown, string, string])[] = [
 		["Stale work lease", "error", "a serialized error"],

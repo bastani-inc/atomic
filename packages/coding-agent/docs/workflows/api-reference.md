@@ -2228,11 +2228,38 @@ The errors around waiting stages share the family base `StageWaitError`. Each ha
 | `StageWakeError` | `invalid-wake-kind` | `registerStageWakeKind` was given a kind that is not a non-empty string; nothing was registered | `source: "sdk"`, `field: "kind"`, `value` | Pass the kind's name, declared in `StageWakeKinds` |
 | `StageWakeError` | `invalid-wake-handler` | `registerStageWakeKind` was given a handler that is not a function; nothing was registered | `source: "sdk"`, `field: "handler"`, `kind`, `value` | Pass a function, or no handler to queue messages of the kind for the stage's next wait of it |
 
-When a `StageWaitError` or a `ToolDetachmentError` from `@bastani/atomic` fails a child workflow, in this process or on a pooled worker, the parent's error has the same class in its `cause` chain with its `code` and `fields`, so `findStageWaitError(error)` and `findToolDetachmentError(error)` find it. The failed child's `RunResult` and stage snapshot carry it as `failureDetail`, a JSON-safe `SerializedTypedError`; `error` keeps the text.
-
 `onStageSessionEvent` streams every agent-session event from each stage (for example `message_update`, `tool_execution_start`, and `tool_execution_end`), tagged with the stage's `runId` and `stageId`. `AgentSessionEvent` is exported by `@bastani/atomic`. The stream continues when a fallback model replaces a stage's session. Stages in nested `ctx.workflow(...)` runs report the child run's `runId`. Exceptions thrown by the listener, and rejections from an async listener, are ignored and do not affect the stage.
 
 The public authoring declaration intentionally excludes runtime-only executor fields such as `defaultSessionDir`, `gitWorktreeSetupCache`, `durableBackend`, `durableScope`, and `onStageSession`.
+
+#### Typed failures of child workflows
+
+When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (a workspace error's `reason`, a background compaction error's `phase`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
+
+| `family` | Errors | Guard |
+| --- | --- | --- |
+| `stage-wait` | [`StageWaitError`](#stage-wait-errors) and its subclasses | `isStageWaitError` |
+| `tool-detachment` | `ToolDetachmentError` | `isToolDetachmentError` |
+| `git-provision` | `GitProvisionError`, `GitUnavailableError`, `GitProvisionTimeoutError`, `GitProvisionConfigError` | `isGitProvisionError` |
+| `git-required` | `WorkflowGitRequiredError`, with its git provisioning error as `cause`. When that cause falls beyond the chain's depth bound, an `Error` with its name, code, message, hint, `retryable` and fields | `isWorkflowGitRequiredError` |
+| `workspace` | `WorkspaceError` and its subclasses | `isWorkspaceError` |
+| `session-start` | `SessionStartError`, `SessionStartTimeoutError`, `SessionStartConfigError` | `isSessionStartError` |
+| `decision` | `DecisionError` and its subclasses | `isDecisionError` |
+| `task-evicted` | `TaskEvictedError` | `isTaskEvictedError` |
+| `agent-rehydrate` | `AgentRehydrateError`, `AgentReleaseConfigError` | `isAgentRehydrateError` |
+| `background-compaction` | `BackgroundCompactionError` and its subclasses | `isBackgroundCompactionError` |
+| `github-copilot` | `GitHubCopilotError` and its subclasses | `isGitHubCopilotError` |
+| `debug` | `DebugError`, `DebugLogUnwritableError`, `DebugConfigError` | `isDebugError` |
+| `edit-tool` | `EditToolError` and its subclasses | `isEditToolError` |
+| `write-selector` | `WriteSelectorError` | `isWriteSelectorError` |
+| `shell-tool` | `ShellToolError`, `ShellTimeoutError` | `isShellToolError` |
+| `llama-server` | `LlamaServerError` and its subclasses | `isLlamaServerError` |
+| `startup-benchmark` | `StartupBenchmarkError`, `StartupBenchmarkConfigError` | `isStartupBenchmarkError` |
+| `subscription` | [`SubscriptionError`](#subscription-errors) and its subclasses | `isSubscriptionError` |
+| `worker-pool`, `workflow-infrastructure`, `journal`, `worker-placement`, `task-cleanup` | The [worker pool errors](#worker-pool-errors), journal lease errors, shared placement and setup errors (`WorkerPlacementConfigError`, `SharedPoolSetupError`, `WorkspaceRestoreUnavailableError`, `StaleStageLeaseError`) and `TaskCleanupError` | Each class's guard |
+| `storage`, `journal-store`, `fork` | Storage errors (team profile errors among them), journal store errors and [fork errors](#fork-errors) | Each family's guard |
+
+A class the parent's process does not know arrives as its family's base class with its original `name` and `code`. An object that only carries a family's `name` and `code`, without being an instance of its class, crosses as a plain error with them, which the family's guard still recognizes. A detail the parent cannot read, such as one from a newer version naming a family this one does not have, is reported once as a warning notice on the parent's run (`child-failure-detail-ignored:<run>:<stage>`), and the parent fails on the child's error text. Causes outside these families arrive as plain errors with their name, message and code; URL user info, which can hold a token, is removed from their messages. A cancelled child carries no `failureDetail`.
 
 #### Choosing the durable backend
 
