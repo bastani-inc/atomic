@@ -68,7 +68,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 
 export default defineConfig({
 	test: {
-		// Longest files first, and duration-balanced `--shard` (the CI agent-suite job runs two shards per OS).
+		// Longest files first, and duration-balanced `--shard` (the CI agent-suite job runs three shards per OS).
 		sequence: { sequencer: DurationSequencer },
 		projects: [
 			project("agent", ["test/**/*.test.ts", "test/**/*.spec.ts", "test/**/*.suite.ts"], skippedSuites),

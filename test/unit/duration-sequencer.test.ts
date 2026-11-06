@@ -240,6 +240,29 @@ test("recording durations refuses reports that hold no test file, and averages t
 	);
 });
 
+test("recording durations leaves out a file that failed, whose time is when it died or timed out", () => {
+	const file = (path: string, ms: number, status: string) => ({
+		name: `/runner/work/atomic/atomic/${path}`,
+		startTime: 0,
+		endTime: ms,
+		status,
+	});
+	assert.deepEqual(
+		testFileDurations([
+			{ testResults: [file("test/unit/a.test.ts", 9_000, "passed"), file("test/unit/b.test.ts", 40_000, "failed")] },
+			{
+				testResults: [file("test/unit/a.test.ts", 131_000, "failed"), file("test/unit/b.test.ts", 4_000, "passed")],
+			},
+			{ testResults: [file("test/unit/a.test.ts", 11_000, "passed")] },
+		]),
+		{ "test/unit/a.test.ts": 10_000, "test/unit/b.test.ts": 4_000 },
+	);
+	assert.throws(
+		() => testFileDurations([{ testResults: [file("test/unit/a.test.ts", 9_000, "failed")] }]),
+		/no test file/,
+	);
+});
+
 test("a file whose measured duration strays far from its recorded weight is reported as drift, noise is not", () => {
 	const report = (entries: Record<string, number>) => ({
 		testResults: Object.entries(entries).map(([path, ms]) => ({
