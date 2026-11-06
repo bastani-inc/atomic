@@ -14,6 +14,7 @@
 import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ForkErrorCode } from "../durable/fork-errors.js";
+import type { SharedPoolStats } from "../durable/journal/sql-shared-pool.js";
 import type { WorkflowForkedFrom } from "../durable/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
@@ -35,6 +36,7 @@ import { renderRunDetail } from "../tui/run-detail.js";
 import { renderStatusList } from "../tui/status-list.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
+import { sharedPoolStatusLines } from "../workers/shared-pool-status-lines.js";
 import type { WorkflowControlFailedRun, WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import type { WorkflowRunStatusDigest } from "./workflow-status-digest.js";
@@ -91,6 +93,10 @@ type StatusDetailResult =
 			action: "statusDetail";
 			runId: string;
 			detail: RunDetail;
+			/** A root whose pool runs on a shared journal (#4310): its queue depth, hosts and leases. */
+			sharedPool?: SharedPoolStats;
+			/** Why a shared root's pool stats could not be read. */
+			sharedPoolUnavailable?: { readonly name: string; readonly message: string };
 	  }
 	| {
 			action: "statusDetail";
@@ -434,7 +440,13 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 			const r = result as Extract<StatusDetailResult, { detail: RunDetail }>;
 			const allRuns = opts?.allRuns ?? getWorkflowStatusRenderRuns(r);
 			const statusByRunId = new Map(allRuns?.map((run) => [run.id, run.status]) ?? []);
-			return renderRunDetail(r.detail, {
+			const pool =
+				r.sharedPool !== undefined
+					? { sharedPool: r.sharedPool }
+					: r.sharedPoolUnavailable !== undefined
+						? { sharedPoolUnavailable: r.sharedPoolUnavailable }
+						: undefined;
+			const detail = renderRunDetail(r.detail, {
 				theme: themed ? deriveGraphTheme({}) : undefined,
 				width: opts?.width,
 				now: opts?.now,
@@ -443,6 +455,8 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 					? {}
 					: { resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId) }),
 			});
+			if (pool === undefined) return detail;
+			return `${detail}\n${renderNotice("SHARED POOL", sharedPoolStatusLines(pool).join("\n"), opts, themed)}`;
 		}
 
 		case "inputs": {

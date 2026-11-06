@@ -1,7 +1,7 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -70,6 +70,7 @@ import {
 	type PoolActivityUpdate,
 	type PoolRootProjection,
 	type PoolWorkToken,
+	type SharedPoolCoordination,
 } from "./coordinator-protocol.js";
 import {
 	definitionDigest,
@@ -87,12 +88,14 @@ import {
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
+import { rehydrateWorkerPlacementError, WorkerPlacementConfigError } from "./placement-errors.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import {
 	isLocalPoolJournal,
 	openCoordinationJournal,
 	type PoolDurableJournal,
 	registerPoolJournal,
+	registerSharedPoolRoot,
 } from "./pool-journal.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { endPooledChild, endPooledRun } from "./pooled-run-end.js";
@@ -120,6 +123,7 @@ import type {
 	WatchResult,
 } from "./stage-watch-types.js";
 import { MAX_TIMER_DELAY_MS, resolveWorkerTiming } from "./worker-timing.js";
+import type { WorkspaceBinding } from "./workspace-binding.js";
 
 /** A live view of one pooled stage, shared by everything that holds it. */
 interface StageView {
@@ -155,7 +159,7 @@ interface Coordinator {
 }
 
 /** The shipped worker module; it also runs the pool coordinator. */
-function defaultWorkerEntry(): string {
+export function defaultWorkerEntry(): string {
 	return isBunBinary
 		? INTERNAL_WORKFLOW_WORKER_ARG
 		: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url));
@@ -309,7 +313,7 @@ export class LocalWorkerPool {
 	/** Worker cleanups the pool could not confirm, in order; each is also a warning on the root run. */
 	private readonly healthEvents: string[] = [];
 	/** Children the coordinator failed on their own, without failing the pool. */
-	private readonly workFailures = new Map<string, WorkflowInfrastructureError>();
+	private readonly workFailures = new Map<string, Error>();
 	private changed = Promise.withResolvers<void>();
 	private waiting = 0;
 	private ticker?: NodeJS.Timeout;
@@ -385,12 +389,22 @@ export class LocalWorkerPool {
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
-			/** The SQLite database holding the pool's tables: the root's journal, or its coordination database. */
-			readonly journalPath: string;
+			/**
+			 * The SQLite database holding the pool's tables: the root's journal, or its coordination database. Absent for
+			 * a shared pool, whose tables live in the root's journal.
+			 */
+			readonly journalPath?: string;
 			/** The catalog shard id of `journalPath` when it is the root's shard in the journal store. */
 			readonly journalShard?: number;
 			/** Where the root's durable journal is when it is not the database at `journalPath`. */
 			readonly durable?: PoolDurableJournal;
+			/**
+			 * Set when the pool's tables live in the root's shared journal (`workers.placement: "shared"`, #4310): worker
+			 * hosts on other machines serve the same queue. Requires `durable`.
+			 */
+			readonly shared?: SharedPoolCoordination;
+			/** The repository state the root's pooled children run against, with shared placement (#4310). */
+			readonly workspace?: WorkspaceBinding;
 			readonly rootId?: string;
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
@@ -425,7 +439,18 @@ export class LocalWorkerPool {
 			readonly stageControlRegistry?: StageControlRegistry;
 		},
 	) {
-		configurePooledWatchTrace(options.journalPath, "root");
+		// Where the pool's tables are: a SQLite file by path, or, for a shared pool, the durable journal itself.
+		if (options.shared === undefined ? options.journalPath === undefined : options.durable === undefined)
+			throw new WorkerPlacementConfigError(
+				"sdk",
+				options.shared === undefined ? "journalPath" : "durable",
+				"invalid-option",
+				"a local worker pool needs the database its tables are in",
+			);
+		configurePooledWatchTrace(
+			options.shared === undefined ? options.journalPath! : join(options.shared.stateDirectory, "shared-pool"),
+			"root",
+		);
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
 		if (
 			options.startupTimeoutMs !== undefined &&
@@ -472,11 +497,11 @@ export class LocalWorkerPool {
 		if (this.closed) throw new Error("Local worker pool is closed");
 		// Pool reads open their own read-only connection to the journal file, which fails untyped once the root's shard
 		// is gone: report the missing shard as the coordinator does, before any read.
-		if (this.options.journalShard !== undefined && !existsSync(this.options.journalPath))
+		if (this.options.journalShard !== undefined && !existsSync(this.options.journalPath!))
 			throw new JournalShardUnavailableError({
 				code: "shard-missing",
 				shardId: this.options.journalShard,
-				shardPath: this.options.journalPath,
+				shardPath: this.options.journalPath!,
 				runId: root,
 			});
 		const poolJournal = await this.poolJournal(root);
@@ -494,7 +519,7 @@ export class LocalWorkerPool {
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(
 			poolJournal,
-			this.options.durable === undefined
+			this.options.durable === undefined || this.options.shared !== undefined
 				? undefined
 				: new PoolRemoteJournal(this.backend.journal, sqlPoolStorage(poolJournal)!),
 		);
@@ -517,9 +542,7 @@ export class LocalWorkerPool {
 				root,
 				lease,
 				options: {
-					journalPath: this.options.journalPath,
-					...(this.options.journalShard === undefined ? {} : { journalShard: this.options.journalShard }),
-					...(this.options.durable === undefined ? {} : { durable: this.options.durable }),
+					...this.poolLocation(),
 					workers: this.options.workers,
 					leaseMs: this.leaseMs,
 					heartbeatMs: this.heartbeatMs,
@@ -538,13 +561,34 @@ export class LocalWorkerPool {
 		})();
 		return this.connecting;
 	}
-	/** The journal whose database holds the pool's tables: the root's own (its shard in a journal store), or the coordination database. */
+	/** Where the coordinator finds the pool's tables: a SQLite file by path, or the root's shared journal. */
+	private poolLocation():
+		| { readonly journalPath: string; readonly journalShard?: number; readonly durable?: PoolDurableJournal }
+		| { readonly durable: PoolDurableJournal; readonly shared: SharedPoolCoordination } {
+		const { journalPath, journalShard, durable, shared } = this.options;
+		if (shared !== undefined) return { durable: durable!, shared };
+		return {
+			journalPath: journalPath!,
+			...(journalShard === undefined ? {} : { journalShard }),
+			...(durable === undefined ? {} : { durable }),
+		};
+	}
+	/**
+	 * The journal whose database holds the pool's tables: the root's own (its shard in a journal store), or the
+	 * coordination database.
+	 */
 	private async poolJournal(root: string): Promise<RunJournal> {
+		// A shared pool keeps its tables in the root's own journal, which every host opens (#4310).
+		if (this.options.shared !== undefined) {
+			registerSharedPoolRoot(this.backend.journal, root);
+			return this.backend.journal;
+		}
 		const journal = await rootRunJournal(this.backend.journal, root);
+		const journalPath = this.options.journalPath!;
 		if (this.options.durable === undefined) {
 			if (
 				!(journal instanceof SqlRunJournal) ||
-				resolve(this.options.journalPath) !== resolve(journal.path) ||
+				resolve(journalPath) !== resolve(journal.path) ||
 				sqlPoolStorage(journal)?.tables.runs !== "wf_runs"
 			)
 				throw new Error("Local workers require the same default-prefix SQLite journal");
@@ -554,7 +598,7 @@ export class LocalWorkerPool {
 			throw new Error(
 				"Local workers share a local SQLite journal as it is; a durable journal selection does not apply",
 			);
-		const coordination = await openCoordinationJournal(this.options.journalPath);
+		const coordination = await openCoordinationJournal(journalPath);
 		registerPoolJournal(this.backend.journal, coordination);
 		return coordination;
 	}
@@ -1274,6 +1318,8 @@ export class LocalWorkerPool {
 				worktreeRootMappings: options.worktreeRootMappings,
 				executionMode: options.executionMode,
 				workspace: options.workspace,
+				// A child of a shared pool's bound root runs only where its tree is warm or restored (#4310).
+				...(this.options.workspace === undefined ? {} : { workspaceBinding: this.options.workspace }),
 			}),
 		) as WorkflowSerializableObject;
 		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;
@@ -1489,10 +1535,13 @@ export class LocalWorkerPool {
 			case "work-failure":
 				this.workFailures.set(
 					event.workId,
-					new WorkflowInfrastructureError(
-						workflowInfrastructureFault(event.error) ?? "worker_cleanup_unconfirmed",
-						event.error,
-					),
+					// A placement error crosses the coordinator boundary typed; any other child failure is the pool's.
+					event.placement === undefined
+						? new WorkflowInfrastructureError(
+								workflowInfrastructureFault(event.error) ?? "worker_cleanup_unconfirmed",
+								event.error,
+							)
+						: rehydrateWorkerPlacementError(event.placement),
 				);
 				this.signalChange();
 				return;

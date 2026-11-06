@@ -11,6 +11,7 @@ import {
 	openSqlPoolQueue,
 	type PoolControl,
 	type PoolWork,
+	type PoolWorkDescriptor,
 } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -150,6 +151,8 @@ interface FixtureOptions {
 	readonly control?: PoolControl["state"];
 	/** Whether to start workers and enqueue one child; a prepared-only coordinator runs no recovery. */
 	readonly start?: boolean;
+	/** The execution recorded for the enqueued child. */
+	readonly execution?: PoolWorkDescriptor["execution"];
 }
 
 /** A coordinator in this process over a real journal, its workers {@link FakeWorker}s. */
@@ -208,11 +211,18 @@ async function coordinatorFixture(options: FixtureOptions = {}) {
 		for (const worker of forked.slice(0, options.ready ?? workers)) await worker.request({ kind: "ready" });
 		await starting;
 		const { work, boundary } = poolWorkFixture();
-		const descriptor = { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest };
+		const descriptor = {
+			...work,
+			...(options.execution === undefined ? {} : { execution: options.execution }),
+			definition: `${SOURCE.path}#${SOURCE.exportName}`,
+			digest: SOURCE.digest,
+		};
 		await command({ kind: "enqueue", descriptor, boundary });
 	}
 	const queue = await openSqlPoolQueue(journal);
 	return {
+		database,
+		journal,
 		lease,
 		events,
 		command,
@@ -273,6 +283,15 @@ test("one heartbeat request renews the attempt, records its usage and answers po
 		assert.equal(stats.requests.claim?.count, 2);
 		assert.ok((stats.writes.claim?.count ?? 0) > 0, "claims' writes count as the claims'");
 		assert.ok((stats.writes["root-prepare"]?.count ?? 0) > 0, "the root's commands are counted as root-<kind>");
+		// Recovery reads attempts whose leases hold without a write; an attempt whose lease lapsed is renewed, and that
+		// write counts as recovery's.
+		await delay(1_500);
+		await holder.request({ kind: "heartbeat", reports: [] });
+		stats = await f.nextStats(f.events.length);
+		assert.equal(stats.writes.recovery?.count ?? 0, 0, "recovery passes write nothing while every lease holds");
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE root = 'root' AND state = 'leased'");
+		while ((stats.writes.recovery?.count ?? 0) === 0) stats = await f.nextStats(f.events.length);
+		assert.ok((stats.writes.recovery?.count ?? 0) > 0, "expired-lease recovery's writes count as recovery");
 		assert.equal(
 			(await holder.request({ kind: "activity", runs: [] })).value,
 			undefined,
@@ -480,6 +499,139 @@ test("workers start with the root's debug setting, and a change reaches the work
 		assert.equal(isDebugEnabled(), false);
 	} finally {
 		setDebugSetting(false);
+		await f.close();
+	}
+});
+
+test("a fenced attempt goes back for replay until its child runs out of attempts, then that child fails (#4310)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		const [worker] = f.workers as [FakeWorker];
+		const states: string[] = [];
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
+			assert.ok(claimed, `attempt ${attempt} was claimed`);
+			assert.equal((await worker.request({ kind: "fenced" })).error, undefined);
+			states.push((await f.queue.inspect("root"))[0]!.state);
+		}
+		assert.deepEqual(states, ["ready", "ready", "failed"], "the third fenced attempt fails the child");
+		const failures = f.events.filter((event) => event.kind === "work-failure");
+		assert.equal(failures.length, 1, "the child fails once, at its last attempt");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a worker that dies holding the last attempt of its child fails only that child (#4310)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			const worker = forked.at(-1)!;
+			if (attempt > 1) await worker.request({ kind: "ready" });
+			assert.ok((await worker.request({ kind: "claim" })).value, `attempt ${attempt} was claimed`);
+			worker.kill("SIGKILL");
+			if (attempt < 3) while (forked.length < attempt + 1) await delay(5);
+		}
+		while (!f.events.some((event) => event.kind === "work-failure")) await delay(5);
+		assert.equal((await f.queue.inspect("root"))[0]!.state, "failed");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a root's pool that closes fails the children it left unfinished (#4310)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		const [worker] = f.workers as [FakeWorker];
+		assert.ok((await worker.request({ kind: "claim" })).value);
+		await f.command({ kind: "close" });
+		assert.deepEqual(
+			(await f.queue.inspect("root")).map((work) => work.state),
+			["failed"],
+			"a child a stopped worker still held is no attempt's any more",
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a root's pool that closes after the root quit keeps its children for the root's resume (#4310)", async () => {
+	const f = await coordinatorFixture({ workers: 1, control: "quit" });
+	try {
+		await f.command({ kind: "close" });
+		assert.deepEqual(
+			(await f.queue.inspect("root")).map((work) => work.state),
+			["ready"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a root's pool whose lease moved closes without error and leaves its children to the next incarnation (#4310)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		await f.database.run("UPDATE wf_leases SET renewed_at = 0");
+		const takeover = await f.journal.takeoverExpired("root", "next-incarnation", LEASE_MS);
+		assert.equal(takeover.status, "acquired");
+		await f.command({ kind: "close" });
+		assert.deepEqual(
+			(await f.queue.inspect("root")).map((work) => work.state),
+			["ready"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a pool without shared placement claims a bound child like any other, in its recorded directory (#4310)", async () => {
+	const binding = { remotes: ["https://example.invalid/r.git"], head: "h", tree: "t", envHash: "e" };
+	const execution = { cwd: "/srv/child", workspaceBinding: binding };
+	const f = await coordinatorFixture({ workers: 1, execution });
+	try {
+		const [worker] = f.workers as [FakeWorker];
+		// Recovery passes run meanwhile: no claim window applies where no other host serves the pool.
+		await delay(1_200);
+		const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
+		assert.deepEqual(claimed.execution, execution);
+		const recorded = await worker.request({ kind: "stage-workspace", runId: claimed.childRunId, stageId: "agent" });
+		assert.deepEqual(
+			[recorded.error, recorded.value],
+			[undefined, undefined],
+			"only a shared pool records workspaces",
+		);
+		assert.deepEqual(
+			f.events.filter((event) => event.kind === "failure" || event.kind === "work-failure"),
+			[],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a coordinator that closes before it served any root closes cleanly, and serves none after (#4310)", async () => {
+	const coordinator = new PoolCoordinator({
+		send: () => {},
+		onMessage: () => {},
+		onClose: () => {},
+		close: async () => {},
+	});
+	await coordinator.stopSatellite();
+	await coordinator.shutdown();
+	await assert.rejects(coordinator.attachSatellite({} as never), { message: "Local worker pool is closed" });
+});
+
+test("a root's pool without shared placement keeps its budget block to itself, publishing it nowhere (#4310)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		f.notice({ kind: "budget", blocked: true });
+		f.notice({ kind: "budget", blocked: false });
+		await delay(200);
+		assert.deepEqual(
+			f.events.filter((event) => event.kind === "failure"),
+			[],
+		);
+	} finally {
 		await f.close();
 	}
 });

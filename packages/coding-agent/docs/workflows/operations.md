@@ -924,9 +924,9 @@ Worker definitions are loaded in the SDK with `loadWorkerWorkflow(absolutePath, 
 
 To resume after editing a definition's entry module, accept the edit: `/workflow resume <run-id> --accept-entry-changes`, or `acceptEntryChanges: true` in `RunOpts` or `runtime.resumeDurableWorkflow`. Completed steps still replay from the journal, and the root's unfinished children run the edited module, including children queued before the crash that no worker had started. Whether the edited module still replays what a child recorded is up to you: a child whose replayed calls no longer match its recorded ones fails, as any replay mismatch does. A resume may also run under another execution mode than the launch, for example a headless resume of a run launched in the terminal UI; unfinished children then run under the resume's mode.
 
-Pools work with any journal the worker processes can open by the same selection: the default local SQLite file, a SQLite file with a custom prefix, or a remote database through a [storage adapter](/storage#selecting-an-adapter) such as libSQL or Turso. Select it with `workflows.journal`, shared `storage`, `ATOMIC_WORKFLOWS_JOURNAL` or `--storage`, or `RunOpts.journal` with a `path` or an adapter. A memory journal, and a journal passed to the SDK as an object, cannot host workers. The workers always run on the root's machine. When the journal is not the default local file, the pool keeps its work queue, leases, admission state, pooled stage transcripts and worker logs in a SQLite file under `~/.atomic/workflows/pool/`, while the run's checkpoints stay in the journal. Resume such a root on the machine where it ran, with the journal selected as it was: resuming it on another machine fails with an error naming the original machine, because that machine's pool database holds the queue and leases of its children, and changing the adapter, its options, its prefix or the Atomic home directory selects another pool database and fails with an error naming both. Changing only where a credential is read from, such as the environment variable that holds the token, does not. One limit remains: if a worker is declared lost in the instant its stage takes a queued Intercom message, that message can be recorded as delivered and not offered again to the replacement worker's stage. On the default local SQLite journal this cannot happen. Start a new run to opt in; an existing unpooled run cannot change placement on resume. If new global worker settings prevent an older run from resuming, disable those settings for that resume.
+Pools work with any journal the worker processes can open by the same selection: the default local SQLite file, a SQLite file with a custom prefix, or a remote database through a [storage adapter](/storage#selecting-an-adapter) such as libSQL or Turso. Select it with `workflows.journal`, shared `storage`, `ATOMIC_WORKFLOWS_JOURNAL` or `--storage`, or `RunOpts.journal` with a `path` or an adapter. A memory journal, and a journal passed to the SDK as an object, cannot host workers. The workers run on the root's machine, unless the root uses [shared placement](#workers-on-other-hosts). When the journal is not the default local file and shared placement is off, the pool keeps its work queue, leases, admission state, pooled stage transcripts and worker logs in a SQLite file under `~/.atomic/workflows/pool/`, while the run's checkpoints stay in the journal. Resume such a root on the machine where it ran, with the journal selected as it was: resuming it on another machine fails with an error naming the original machine, because that machine's pool database holds the queue and leases of its children, and changing the adapter, its options, its prefix or the Atomic home directory selects another pool database and fails with an error naming both. Changing only where a credential is read from, such as the environment variable that holds the token, does not. One limit remains: if a worker is declared lost in the instant its stage takes a queued Intercom message, that message can be recorded as delivered and not offered again to the replacement worker's stage. On the default local SQLite journal this cannot happen. Start a new run to opt in; an existing unpooled run cannot change placement on resume. If new global worker settings prevent an older run from resuming, disable those settings for that resume.
 
-The supported placement is multiple local processes on Linux or macOS. Windows and any host without native process identity and boot identity refuse activation with an error. This is a containment requirement: lease expiry does not prove that an old process stopped. Remote hosts and network workers are not supported.
+The supported placement is multiple local processes on Linux or macOS. Windows and any host without native process identity and boot identity refuse activation with an error. This is a containment requirement: lease expiry does not prove that an old process stopped. To run workers on other machines as well, see [Workers on other hosts](#workers-on-other-hosts).
 
 The root's existing `/workflow status`, `/workflow stages`, steering, pause, quit, and resume controls still address one root. A run paused this way can be resumed with `/workflow resume <run>` from a new Atomic process, for example after an upgrade, once the process that paused it has exited; children that an earlier process failed because of a fault of the pool itself run again. `/workflow pause <run>` pauses the stages on local workers even while the root's own steps run; on a busy machine some workers can take a few seconds to confirm, and the pause reports how many stages have not confirmed yet. They pause on their own, so pausing again is not needed. A worker failure can replay an unfinished child from its last committed checkpoint. This is at-least-once recovery. An external effect that happens before its checkpoint can happen again; use stable logical idempotency keys for effects that must not duplicate.
 
@@ -969,6 +969,59 @@ Without any `admission` setting, pooled stages still start one at a time, at mos
 `admission.userLimits` applies the selected session or process limit across runs that use a single canonical local SQLite journal path. Select that file (`workflows.journal.path` or `RunOpts.journal`) and set `userDatabase` to the same path: the default [journal store](/storage#the-workflow-journal-store) keeps each root on its own shard, so a run with `userLimits` on it is refused with a `WorkflowAdmissionConfigError` before it is placed in the journal. For pooled roots on a journal in another database, the limit counts across the pooled roots on this machine that use that journal; omit `userDatabase`. A conflicting journal selection or unsupported storage fails the same way instead of claiming a cross-run limit that cannot be enforced. This is local-user coordination, not a multi-tenant security boundary. Include the admission option on participating non-pooled SDK runs if they should share the user-wide limit.
 
 Pooled SDK runs reject process-bound adapter, UI, persistence and similar runtime overrides before launch. CLI-owned host bindings remain local to the root; workers construct their own stage sessions.
+
+### Workers on other hosts
+
+A root can let workers on other machines run its pooled children when every machine opens the same shared journal, such as a libSQL or Turso database selected through the [libSQL adapter](/storage#selecting-an-adapter). This is opt-in, SDK-only, and changes nothing for roots that do not use it. The default local SQLite journal keeps its workers on its own machine.
+
+Start the root with `workers: { placement: "shared" }` beside `localWorkers`:
+
+```ts
+await run(root, {}, {
+  cwd: process.cwd(),
+  journal: { adapter: "@bastani/atomic-storage-libsql", options: { url: "libsql://pool.example.com" }, secrets: { authToken: { file: "turso-token" } } },
+  localWorkers: { count: 2, definitions: [{ path: `${process.cwd()}/workflows/research.ts`, exportName: "research" }] },
+  workers: { placement: "shared" },
+  admission: { limits: { session: 8 } },
+});
+```
+
+Then start a worker host on each other machine, with the same journal selection:
+
+```ts
+import { startWorkflowWorkerHost } from "@bastani/atomic/workflows";
+
+const host = await startWorkflowWorkerHost({
+  journal: { adapter: "@bastani/atomic-storage-libsql", options: { url: "libsql://pool.example.com" }, secrets: { authToken: { file: "turso-token" } } },
+  maxWorkers: 4,
+  labels: { zone: "east" },
+});
+// host.stats(), then host.drain() to finish running children, or host.stop() to stop now.
+```
+
+Worker hosts run on Linux or macOS, like local workers: on Windows, or where Atomic's native process identity does not load, `startWorkflowWorkerHost` fails with `SharedPoolSetupError` (code `process-containment-unavailable`) before it opens the journal.
+
+A worker host serves every running root on that journal that uses shared placement, up to `maxWorkers` workers in total, split evenly between the roots it serves. When another root starts, roots holding more than their share finish the children their workers hold and then give up the extra workers. When the host has no workers left, a root whose workers have sat idle for a few seconds gives them to a waiting root that has ready work, so a host with one worker still serves a later root. A paused root keeps its host's workers, paused with it. It runs a root's children only if it has the root's worker definitions at the same absolute module paths with the same entry module. Children run in the root's recorded working directory, so each host needs that directory too, unless the root binds its children to a workspace (below). The pool's work queue, leases, admission state and pooled stage transcripts all live in the shared journal, under the journal's prefix; no machine keeps a pool database of its own. A root with shared placement resumes on any machine that opens the journal: if the root's machine dies, `/workflow resume <run>` (or `resumeDurableWorkflow`) on another machine continues it, and its children replay from their last committed checkpoints. Running worker hosts serve the resumed root without being restarted.
+
+`admission.limits` count across every host of the pool. `admission.host` thresholds apply on each host to the workers it runs. While the root's budget blocks further spending, no host starts its children. `admission.userLimits` is not supported with shared placement. Give every machine that runs a shared root or a worker host its own hostname: admission and the cleanup of workers' tool processes tell machines apart by hostname.
+
+To bind children to a repository state, pass `workers.workspace`: a binding with `remotes`, `head`, `tree` and `envHash`, a bound workspace, or a `workspace({ … })` value, which the root resolves when it starts. A bound child runs only on a host that can run it on that tree, never in another host's copy of the root's directory:
+
+- A host whose `placement.prefer(binding)` returns the path of a local worktree whose current tree is `binding.tree` takes that work first and runs it there.
+- A host with a `restore(binding)` function and working git takes bound work it does not have and runs it at the verified path `restore` returns. A failed restore puts the work back for another host.
+- A host with neither never takes bound work, however long it waits. The root's own workers take only unbound work.
+
+If no live host that serves the root and can restore a binding claims a bound child within `workers.claimWindowMs` (default 60000), the child fails with `WorkspaceRestoreUnavailableError`. Start a capable host and resume the root to run it.
+
+A worker host checks its setup once, before it opens anything, and reports every missing piece together in one `SharedPoolSetupError`: a journal that is not selected through a storage adapter, an adapter that does not load, a secret whose environment variable or file is missing, or a `restore` function on a host where git is not installed and Atomic cannot download a portable one (the error's `cause` is the `GitUnavailableError` from `resolveGit()`, and the problem's `hint` says how to install git). The error's `hint` says how to fix each one, for example `atomic team join <url> --token-file <path>` to join a machine to shared storage, or `atomic install npm:@bastani/atomic-storage-libsql`. A host with `restore` uses the git `resolveGit()` from `@bastani/atomic` resolves, downloading a portable git when the machine has none; pass `git: { path, env }` to run another git instead. Starting a root with shared placement fails the same way, in one `SharedPoolSetupError` with operation `shared-placement`, before its journal opens: a journal other machines cannot open, an adapter that does not load, or a missing secret.
+
+`/workflow status <run>` shows a `SHARED POOL` section for such a root: how many children are ready, leased, completed and failed, how many stage inputs wait, each host with its workers, git and whether it restores, and each lease with how long ago it was renewed. `host.stats()` returns the same for the roots a host serves, plus the host's own git source, its last placement failure, why it last stopped serving a root, and the last health warning of its workers.
+
+What differs for a child that runs on another host:
+
+- Its stages show in the root's graph and status, and a `ctx.ui` prompt it raises is answered from the root like any pooled prompt. Answers go to the stage's queue of inputs, which the host running the stage takes one at a time, in order; if that host dies, the next host to run the stage takes them. Opening its stage chat, steering it, and `ask_user_question` forms work only for stages on the root's own machine.
+- Its stages start without the root's Intercom routes: messages queued for them stay queued.
+- Tool processes a dead host started cannot be confirmed gone from another machine. A child whose attempt ran such processes is not replayed until a worker host or root on the dead machine confirms them gone.
 
 ## Settings
 

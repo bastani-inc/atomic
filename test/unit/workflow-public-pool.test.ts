@@ -10,6 +10,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import * as host from "../../packages/workflows/src/workers/admission-host.js";
 import { isLocalWorkerOptionsError } from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
+import { isWorkerPlacementConfigError } from "../../packages/workflows/src/workers/placement-errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -223,6 +224,7 @@ test.skipIf(process.platform === "win32")(
 					);
 					assert.match(error.message, /admission\.userLimits\.session changed from unset to 4/);
 					assert.doesNotMatch(error.message, /localWorkers\.count changed/);
+					assert.equal(isWorkerPlacementConfigError(error), false, "only a workers setting is refused typed");
 					return true;
 				},
 			);

@@ -2,8 +2,9 @@ import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { setDebugSetting } from "@bastani/atomic";
 import { JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
@@ -18,6 +19,12 @@ import {
 	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
+import {
+	type SharedPoolConfig,
+	SqlSharedPool,
+	STAGE_INPUT_PROMPT_ANSWER,
+	type StageInputLease,
+} from "../durable/journal/sql-shared-pool.js";
 import { type Lease, type RunJournal, StaleLeaseError } from "../durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
@@ -53,8 +60,15 @@ import {
 	POOL_SUMMARY_INTERVAL_MS,
 } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { choosePlacement, sharedSettlement } from "./placement-choice.js";
+import {
+	isStaleStageLeaseError,
+	serializeWorkerPlacementError,
+	WorkspaceRestoreUnavailableError,
+	workspaceBindingIdentity,
+} from "./placement-errors.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
-import { openDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
+import { openDurableJournal, type PoolDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import type {
 	DistributiveOmit,
@@ -65,6 +79,7 @@ import type {
 } from "./protocol.js";
 import { RateLimitObservationOutbox, RateLimitObservationSet } from "./rate-limit-sharing.js";
 import {
+	type AdmissionConfiguration,
 	type ProcessPermitScope,
 	reapProcessGroups,
 	SqlResourceAdmission,
@@ -97,7 +112,16 @@ import type {
 	WatchResult,
 } from "./stage-watch-types.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
+import type { WorkerHostGit } from "./worker-host-types.js";
 import { AttemptLeaseExtensions, WORKER_REQUEST_LANES, WorkerRequestLanes } from "./worker-request-lanes.js";
+import { defaultWorkerHeartbeatMs } from "./worker-timing.js";
+import {
+	type WorkspaceBinding,
+	type WorkspaceHookOptions,
+	type WorkspacePreference,
+	type WorkspaceRestore,
+	workspaceAffinityKey,
+} from "./workspace-binding.js";
 
 /** How long a control change waits for its next worker acknowledgement before it stops waiting (see `control`). */
 const CONTROL_ACKNOWLEDGEMENT_STALL_MS = 5_000;
@@ -120,6 +144,20 @@ const WORKER_EXIT_CONFIRMATION_MS = 5_000;
 const WORKER_EXIT_POLL_MS = 50;
 /** Attempts one child may lose in a root incarnation before only that child fails (#3979). */
 const MAX_CHILD_ATTEMPTS = 3;
+/** Ready work a worker host reads at once to choose from by workspace affinity (shared placement). */
+const PLACEMENT_CANDIDATES = 32;
+/** How long a worker host trusts its own answer to whether it has a binding's tree warm. */
+const PREFERENCE_CACHE_MS = 1_000;
+/** Bindings a worker host remembers its warm answer for, before it forgets them all. */
+const PREFERENCE_CACHE_ENTRIES = 256;
+/** How often a shared pool's coordinator relays its activity, takes its stages' inputs and reads relayed activity. */
+const SHARED_POLL_MS = 500;
+/** How long an idle worker of a shared pool waits between asks for work. */
+const SHARED_IDLE_CLAIM_MS = 500;
+/** Stage lease of an input being processed; renewed while it is. */
+const STAGE_INPUT_LEASE_MS = 30_000;
+/** A registered worker host counts as live this long after its last report. */
+export const WORKER_HOST_TTL_MS = 15_000;
 /**
  * Longest a starting stage waits for the broker to hold its run's route before it starts anyway.
  * It covers the route owner's reconnect backoff and its connect and acknowledgement timeouts; past
@@ -155,6 +193,11 @@ function unconfirmedCleanup(groups: readonly number[]): Error {
 
 export function workerLogDirectory(journalPath: string, root: string): string {
 	return join(dirname(resolve(journalPath)), "worker-logs", encodeURIComponent(root).replaceAll(".", "%2E"));
+}
+
+/** The path beside which this host keeps a pool's diagnostics: its pool database, or its shared pool state directory. */
+function traceAnchor(options: PoolCoordinatorOptions): string {
+	return options.shared === undefined ? options.journalPath : join(options.shared.stateDirectory, "shared-pool");
 }
 
 function token(work: PoolWork): PoolWorkToken {
@@ -372,10 +415,21 @@ class PooledRoutes {
 	}
 }
 
+/** Whether a worker holds an attempt, or has a claim in flight that may become one. */
+function holding(slot: WorkerSlot): boolean {
+	return slot.work !== undefined || slot.claiming === true;
+}
+
 interface WorkerSlot {
 	readonly worker: string;
 	readonly child: ChildProcess;
 	work?: PoolWork;
+	/** A claim it asked for is in flight: the child may be claimed already, its workspace still restoring (#4310). */
+	claiming?: boolean;
+	/** The child its claim in flight took, while its workspace is placed: a closing host puts it back (#4310). */
+	claimed?: PoolWork;
+	/** Aborted when the worker exits: its placement in flight is no longer waited for (#4310). */
+	readonly exited: AbortController;
 	readonly deliveries: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
 	/** Runs the current attempt published, so a stage watch can find the worker that runs it. */
 	readonly runs: Set<string>;
@@ -385,6 +439,42 @@ interface WorkerSlot {
 	retire?: () => void;
 	/** The worker said it ends between children to give its memory back: its exit is not a crash (#4197). */
 	recycled?: boolean;
+	/** Where the current attempt runs on this host when placement chose it: a warm or restored worktree (#4310). */
+	worktree?: string;
+}
+
+/**
+ * What a worker host contributes to a satellite coordinator (#4310): its id, how it places bound work, and how it
+ * learns that the satellite stopped serving its root.
+ */
+export interface SatellitePlacement {
+	readonly host: string;
+	/** The host's warm worktrees: the path of one whose current tree is the binding's, or undefined. */
+	readonly prefer?: WorkspacePreference;
+	/** The host's restore port, present only when one is configured and git is available. */
+	readonly restore?: WorkspaceRestore;
+	/** Called once when the satellite stops serving its root: its lease was lost or the satellite failed. */
+	readonly detached: (reason: Error | undefined) => void;
+	/** Called with each failure of `prefer` or `restore`; the work it was for goes back to the queue. */
+	readonly placementFailed?: (error: Error) => void;
+	/** The git the host runs: its workers run it first on their `PATH`, and its hooks are given it. */
+	readonly git?: WorkerHostGit;
+}
+
+/** Everything a satellite coordinator attaches with: the root it serves, as the shared journal holds it. */
+export interface SatelliteAttachment {
+	readonly root: string;
+	readonly lease: Lease;
+	readonly journal: RunJournal;
+	readonly config: SharedPoolConfig;
+	/** The root's definitions this host can run: the same module path and entry digest. */
+	readonly sources: readonly WorkerDefinitionSource[];
+	readonly workers: number;
+	readonly durable: PoolDurableJournal;
+	readonly stateDirectory: string;
+	readonly placement: SatellitePlacement;
+	/** The module forked for each worker: the shipped worker entry, since the host process is not one. */
+	readonly workerEntry: string;
 }
 
 interface StageCommandResult {
@@ -505,6 +595,10 @@ export class PoolCoordinator {
 	/** Serializes enqueues with releases of retained attempts, so an enqueue is never lost between the two. */
 	private retainedTransitions: Promise<void> = Promise.resolve();
 	private closed = false;
+	/** Aborted when the coordinator closes: a restore in flight is no longer waited for (#4310). */
+	private readonly closedSignal = new AbortController();
+	/** Aborted when a satellite drains or closes: it places no more work, so a `prefer` call in flight is not waited for. */
+	private readonly placingSignal = new AbortController();
 	private closing?: Promise<void>;
 	private replacements = 0;
 	/** Whether the pool has said that its workers' memory limit replaces every worker after one child. */
@@ -515,6 +609,32 @@ export class PoolCoordinator {
 	private lateRoot?: Promise<boolean>;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
 	private readonly attemptBase = new Map<string, number>();
+	/** The shared pool's own tables, for a pool whose tables live in the root's shared journal (#4310). */
+	private sharedPool?: SqlSharedPool;
+	/** Set for a worker host's coordinator, which serves a root that runs on another host (#4310). */
+	private satellite?: SatellitePlacement;
+	/** Whether this coordinator closes the journal it uses; a satellite uses its host's. */
+	private ownsJournal = true;
+	private sharedTimer?: NodeJS.Timeout;
+	private sharedPass?: Promise<void>;
+	/** Relayed activity already read, by version (the root's coordinator of a shared pool). */
+	private activityCursor = 0;
+	/** Runs of attempts on other hosts, by run id, as their activity was relayed (the root's coordinator). */
+	private readonly remoteRuns = new Map<string, PoolWorkToken>();
+	/** Work whose result reached the root. */
+	private readonly reportedResults = new Set<string>();
+	/** Since when this coordinator has seen each bound work item ready and unclaimed, by `performance.now()`. */
+	private readonly boundReadySince = new Map<string, number>();
+	/** Activity of this host's attempts not relayed yet (a satellite). */
+	private readonly relayPending = new Map<string, PoolActivityEntry>();
+	/** Stages whose next input this coordinator is processing, by run and stage. */
+	private readonly takingInputs = new Set<string>();
+	/** Warm worktrees by binding identity, as the host last answered, with when it answered. */
+	private readonly preferences = new Map<string, { readonly path: string | undefined; readonly at: number }>();
+	/** Set once a satellite stops taking new work, to finish what it holds and close. */
+	private draining = false;
+	/** Set once a satellite told its host it stopped serving its root. */
+	private detachNoticed = false;
 
 	constructor(private readonly port: CoordinatorPort<CoordinatorEvent, CoordinatorInbound>) {
 		port.onMessage((message) => this.receive(message));
@@ -524,7 +644,10 @@ export class PoolCoordinator {
 
 	/** The pool's journal, with every pool transaction on it counted by the request or task that submits it. */
 	private async openCountedJournal(path: string): Promise<RunJournal> {
-		const journal = await resolveRunJournal({ journal: { path } });
+		return this.countedJournal(await resolveRunJournal({ journal: { path } }));
+	}
+
+	private countedJournal(journal: RunJournal): RunJournal {
 		observeSqlPoolTransactions(journal, () => this.counters.write());
 		return journal;
 	}
@@ -538,7 +661,7 @@ export class PoolCoordinator {
 	async shutdown(): Promise<void> {
 		await this.closing?.catch(() => {});
 		while (this.inflight.size > 0) await Promise.allSettled([...this.inflight]);
-		await this.journal?.close().catch(() => {});
+		if (this.ownsJournal) await this.journal?.close().catch(() => {});
 		await this.durable?.close().catch(() => {});
 	}
 
@@ -625,7 +748,7 @@ export class PoolCoordinator {
 
 	private notice(notice: CoordinatorNotice): void {
 		if (notice.kind === "stage-events-applied") this.stageEventsApplied(notice.watch);
-		else if (notice.kind === "budget") this.budgetBlocked = notice.blocked;
+		else if (notice.kind === "budget") this.noteBudget(notice.blocked);
 		else if (notice.kind === "root") this.routes?.updateRoot(notice.rootRun);
 		else if (notice.kind === "rate-limits") this.observeRateLimits(notice.observations);
 		else if (notice.kind === "debug") setDebugSetting(notice.enabled);
@@ -698,18 +821,23 @@ export class PoolCoordinator {
 		this.root = root;
 		this.options = options;
 		this.desiredControl ??= control;
-		if (options.journalShard !== undefined && !existsSync(options.journalPath))
-			throw new JournalShardUnavailableError({
-				code: "shard-missing",
-				shardId: options.journalShard,
-				shardPath: options.journalPath,
-				runId: root,
-			});
-		configurePooledWatchTrace(options.journalPath, "coordinator");
-		this.journal ??= await this.openCountedJournal(options.journalPath);
-		if (options.durable !== undefined && this.remote === undefined) {
-			this.durable = await openDurableJournal(options.durable);
-			this.remote = new PoolRemoteJournal(this.durable, sqlPoolStorage(this.journal)!);
+		configurePooledWatchTrace(traceAnchor(options), "coordinator");
+		// A shared pool's tables live in the root's own journal, which this process opens by its durable selection.
+		if (options.shared !== undefined)
+			this.journal ??= await this.countedJournal(await openDurableJournal(options.durable));
+		else {
+			if (options.journalShard !== undefined && !existsSync(options.journalPath))
+				throw new JournalShardUnavailableError({
+					code: "shard-missing",
+					shardId: options.journalShard,
+					shardPath: options.journalPath,
+					runId: root,
+				});
+			this.journal ??= await this.openCountedJournal(options.journalPath);
+			if (options.durable !== undefined && this.remote === undefined) {
+				this.durable = await openDurableJournal(options.durable);
+				this.remote = new PoolRemoteJournal(this.durable, sqlPoolStorage(this.journal)!);
+			}
 		}
 		// The queue reads the root's status and lease from the database it shares with them: bring them up to date first.
 		await this.remote?.mirror(lease);
@@ -718,6 +846,7 @@ export class PoolCoordinator {
 		this.lease = lease;
 		const queue = await openSqlPoolQueue(this.journal, this.remote);
 		await this.whileRootLate(queue, () => queue.initialize(lease, COORDINATOR_LEASE_MS));
+		if (options.shared !== undefined) this.sharedPool ??= await SqlSharedPool.open(this.journal, queue);
 		// Events an earlier incarnation of this root accepted and never delivered reach the journal before any attempt runs.
 		await this.whileRootLate(queue, () => queue.drainOutbox(lease));
 		if (this.remote !== undefined) {
@@ -885,9 +1014,42 @@ export class PoolCoordinator {
 				...this.options.admission,
 				root,
 				holder: "coordinator",
+				...(this.options.shared === undefined ? {} : { crossHost: true }),
 			});
-		this.logDirectory = workerLogDirectory(this.options.journalPath, root);
+		this.logDirectory = workerLogDirectory(traceAnchor(this.options), root);
 		await mkdir(this.logDirectory, { recursive: true }).catch(() => undefined);
+		await this.publishSharedConfig(sources);
+		this.startRecovery();
+		const workers = Array.from({ length: this.options.workers }, () => this.spawn());
+		try {
+			await Promise.any(workers);
+		} catch (error) {
+			throw (error as AggregateError).errors[0];
+		}
+	}
+
+	/**
+	 * The root's budget block: its own workers start no child and admit no session or command, and a shared pool's root
+	 * records it in the journal for the hosts that serve it (#4310).
+	 */
+	private noteBudget(blocked: boolean): void {
+		this.budgetBlocked = blocked;
+		const shared = this.sharedPool;
+		if (shared === undefined || this.satellite !== undefined || this.queue === undefined || this.lease === undefined)
+			return;
+		const lease = this.lease;
+		void this.whileRootLate(this.queue, () => shared.publishBudget(lease, blocked)).catch((error: Error) => {
+			if (!isRootLeaseLost(error)) this.fail(error);
+		});
+	}
+
+	/** A worker host's satellite takes up its root's budget block, as the host last read it from the journal (#4310). */
+	followBudget(blocked: boolean): void {
+		this.budgetBlocked = blocked;
+	}
+
+	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
+	private startRecovery(): void {
 		this.recoveryTimer = setInterval(() => {
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
@@ -896,12 +1058,254 @@ export class PoolCoordinator {
 				this.fail(error);
 			});
 		}, RECOVERY_INTERVAL_MS).unref();
-		const workers = Array.from({ length: this.options.workers }, () => this.spawn());
+	}
+
+	/** Publishes a shared pool's configuration for worker hosts, and starts its relay and stage input passes. */
+	private async publishSharedConfig(sources: readonly WorkerDefinitionSource[]): Promise<void> {
+		const options = this.options!;
+		const shared = this.sharedPool;
+		if (options.shared === undefined || shared === undefined) return;
+		const lease = this.lease!;
+		const config: SharedPoolConfig = {
+			definitions: sources.map(({ path, exportName, digest }) => ({ path, exportName, digest })),
+			...(options.admission === undefined ? {} : { admission: options.admission }),
+			leaseMs: options.leaseMs,
+			heartbeatMs: options.heartbeatMs,
+			startupTimeoutMs: options.startupTimeoutMs,
+			...(options.stageStartMaxLoadPerCpu === undefined
+				? {}
+				: { stageStartMaxLoadPerCpu: options.stageStartMaxLoadPerCpu }),
+			...(options.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: options.maxWorkerRssBytes }),
+			claimWindowMs: options.shared.claimWindowMs,
+			...(this.promptNodes ? { promptNodes: true } : {}),
+		};
+		await this.whileRootLate(this.queue!, () => shared.publishConfig(lease, config, this.budgetBlocked));
+		this.startSharedPasses();
+	}
+
+	/**
+	 * Serves a root whose pool runs on the shared journal from another host (#4310): forks this host's workers for it
+	 * and answers them under the root's current lease, as the root's own coordinator does, but does nothing only the root
+	 * does (initializing its pool, enqueueing its children, settling its earlier incarnations, failing a child). It stops
+	 * once that lease is lost or it fails, and tells its host through `placement.detached`; the host then attaches a new
+	 * satellite to the root's next incarnation.
+	 */
+	async attachSatellite(attachment: SatelliteAttachment): Promise<void> {
+		if (this.closed) throw new Error("Local worker pool is closed");
+		const { root, lease, journal, config, placement } = attachment;
+		this.satellite = placement;
+		this.ownsJournal = false;
+		this.root = root;
+		this.lease = lease;
+		this.journal = journal;
+		this.options = {
+			workers: attachment.workers,
+			leaseMs: config.leaseMs,
+			heartbeatMs: config.heartbeatMs,
+			startupTimeoutMs: config.startupTimeoutMs,
+			...(config.admission === undefined ? {} : { admission: config.admission as AdmissionConfiguration }),
+			...(config.stageStartMaxLoadPerCpu === undefined
+				? {}
+				: { stageStartMaxLoadPerCpu: config.stageStartMaxLoadPerCpu }),
+			...(config.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: config.maxWorkerRssBytes }),
+			workerEntry: attachment.workerEntry,
+			durable: attachment.durable,
+			shared: {
+				stateDirectory: attachment.stateDirectory,
+				host: placement.host,
+				claimWindowMs: config.claimWindowMs,
+			},
+		};
+		configurePooledWatchTrace(traceAnchor(this.options), `satellite:${placement.host}`);
+		this.usageLedger = await openSqlPoolUsage(journal);
+		this.usageTotal = await this.usageLedger.total(root);
+		const queue = await openSqlPoolQueue(journal);
+		this.sharedPool = await SqlSharedPool.open(journal, queue);
+		this.queue = queue;
+		this.sources = attachment.sources;
+		this.promptNodes = config.promptNodes === true;
+		if (this.closed) return;
+		if (this.options.admission)
+			this.admission = await SqlResourceAdmission.open(journal, {
+				...this.options.admission,
+				root,
+				holder: "coordinator",
+				// The root saves its own limits; a host that serves it admits against them as saved.
+				rootLimits: "unchanged",
+				crossHost: true,
+			});
+		this.logDirectory = workerLogDirectory(traceAnchor(this.options), root);
+		await mkdir(this.logDirectory, { recursive: true });
+		// A host that stopped while this satellite attached starts nothing for it: its stop does not wait for the attach.
+		if (this.closed) return;
+		this.starting = Promise.resolve();
+		this.startRecovery();
+		this.startSharedPasses();
+		const workers = Array.from({ length: attachment.workers }, () => this.spawn());
 		try {
 			await Promise.any(workers);
 		} catch (error) {
+			// Workers that a stop ended before they were ready are no failed attach.
+			if (this.closed) return;
 			throw (error as AggregateError).errors[0];
 		}
+	}
+
+	/** Whether a satellite stopped serving its root: its lease was lost, or it failed. */
+	get detached(): boolean {
+		return this.detachNoticed;
+	}
+
+	/** How many workers this coordinator runs, and how many of them hold an attempt. */
+	workerCounts(): { readonly workers: number; readonly busy: number } {
+		return { workers: this.slots.size, busy: [...this.slots].filter(holding).length };
+	}
+
+	/** A satellite stops taking work, finishes what its workers hold, then closes. */
+	async drain(): Promise<void> {
+		this.draining = true;
+		this.placingSignal.abort();
+		while (!this.closed && [...this.slots].some(holding)) await delay(RECOVERY_INTERVAL_MS);
+		this.closing ??= this.close();
+		await this.closing;
+	}
+
+	/** Closes a satellite at once: its workers stop, and the work they held goes back to the queue. */
+	stopSatellite(): Promise<void> {
+		this.closing ??= this.close();
+		return this.closing;
+	}
+
+	private detach(reason: Error | undefined): void {
+		const satellite = this.satellite;
+		if (satellite === undefined || this.detachNoticed) return;
+		this.detachNoticed = true;
+		satellite.detached(reason);
+	}
+
+	private startSharedPasses(): void {
+		this.sharedTimer ??= setInterval(() => {
+			if (this.sharedPass !== undefined || this.closed) return;
+			this.sharedPass = this.sharedPassOnce()
+				.catch(async (error: Error) => {
+					if (isRootLeaseLost(error)) {
+						// A late root is waited out; a lost one ends a satellite, and the root's own pool learns it elsewhere.
+						if (this.queue && (await this.rootRenewal(this.queue).catch(() => false))) return;
+						if (this.satellite !== undefined) {
+							this.rootLeaseLost = true;
+							this.detach(error);
+						}
+						return;
+					}
+					this.fail(error);
+				})
+				.finally(() => {
+					this.sharedPass = undefined;
+				});
+		}, SHARED_POLL_MS).unref();
+	}
+
+	/**
+	 * One pass of a shared pool's coordinator: a satellite relays its attempts' activity to the root; the root's
+	 * coordinator reads what other hosts relayed; both take the next input of each stage their workers run.
+	 */
+	private async sharedPassOnce(): Promise<void> {
+		// The passes start once the pool's tables, lease and root are set; they hold off while the root renews late.
+		if (this.lateRoot !== undefined) return;
+		const shared = this.sharedPool!;
+		const lease = this.lease!;
+		const root = this.root!;
+		if (this.satellite !== undefined) await this.relayActivity(shared, lease);
+		else if (this.publishing) {
+			await this.readRelayedActivity(shared, root);
+			await this.readPoolUsage(root);
+		}
+		await this.takeStageInputs(shared, lease, root);
+	}
+
+	/** Relays the latest activity of this host's attempts, at most once per pass. */
+	private async relayActivity(shared: SqlSharedPool, lease: Lease): Promise<void> {
+		if (this.relayPending.size === 0) return;
+		const entries = [...this.relayPending.values()];
+		this.relayPending.clear();
+		await shared.relayActivity(
+			lease,
+			entries.map((entry) => ({ work: entry.work, runs: JSON.stringify(entry.runs) })),
+		);
+	}
+
+	/** Passes activity other hosts relayed to the root, as this coordinator's own workers' activity reaches it. */
+	private async readRelayedActivity(shared: SqlSharedPool, root: string): Promise<void> {
+		const relayed = await shared.activityAfter(root, this.activityCursor);
+		const local = new Set([...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work.id])));
+		for (const entry of relayed) {
+			this.activityCursor = Math.max(this.activityCursor, entry.version);
+			// A work item this host now runs publishes through its own worker.
+			if (local.has(entry.work.id) || !this.attemptBase.has(entry.work.id)) continue;
+			const runs = JSON.parse(entry.runs) as readonly RunSnapshot[];
+			for (const run of runs) this.remoteRuns.set(run.id, entry.work);
+			this.pendingActivity.set(entry.work.id, { work: entry.work, runs });
+		}
+		if (relayed.length > 0) this.scheduleFlush();
+	}
+
+	/** Takes up the pool's usage total, which other hosts' workers add to, so the root's budgets count their spending. */
+	private async readPoolUsage(root: string): Promise<void> {
+		const total = await this.usageLedger!.total(root);
+		if (this.usageTotal === undefined || !isDeepStrictEqual(total, this.usageTotal)) this.noteUsage(total);
+	}
+
+	/**
+	 * Takes and processes the next input of each stage this host's workers run, one input per stage at a time. An
+	 * input the stage cannot take yet stays its next input; a replaced attempt's input goes to its replacement.
+	 */
+	private async takeStageInputs(shared: SqlSharedPool, lease: Lease, root: string): Promise<void> {
+		const held = new Map(
+			[...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [[slot.work.id, slot] as const])),
+		);
+		if (held.size === 0) return;
+		const waiting = await shared.stagesWithInputs(root, [...held.keys()]);
+		for (const { work, runId, stageId } of waiting) {
+			const slot = held.get(work);
+			const key = JSON.stringify([runId, stageId]);
+			if (slot?.work === undefined || this.takingInputs.has(key)) continue;
+			this.takingInputs.add(key);
+			const attempt = slot.work;
+			void this.processStageInput(shared, lease, attempt, { runId, stageId })
+				.catch((error: Error) => {
+					// The attempt was replaced while it held the input: the replacement takes it, and nothing here was written.
+					if (isStaleStageLeaseError(error) || isRootLeaseLost(error)) return;
+					this.fail(error);
+				})
+				.finally(() => this.takingInputs.delete(key));
+		}
+	}
+
+	private async processStageInput(
+		shared: SqlSharedPool,
+		lease: Lease,
+		attempt: PoolWork,
+		stage: { readonly runId: string; readonly stageId: string },
+	): Promise<void> {
+		const taken = await shared.takeStageInput(lease, attempt, stage, STAGE_INPUT_LEASE_MS);
+		if (taken === undefined) return;
+		const outcome = await this.applyStageInput(taken);
+		if (outcome === "retry") await shared.releaseStageInput(lease, taken);
+		else await shared.ackStageInput(lease, taken, JSON.stringify(outcome));
+	}
+
+	/** Gives one stage input to the stage on this host's worker; "retry" leaves it the stage's next input. */
+	private async applyStageInput(taken: StageInputLease): Promise<"retry" | Record<string, string | boolean>> {
+		if (taken.kind !== STAGE_INPUT_PROMPT_ANSWER) return { ok: false, refusal: "UnsupportedInput" };
+		const result = await this.answerOnWorker(
+			taken.runId,
+			taken.stageId,
+			JSON.parse(taken.payload) as PooledPromptAnswer,
+		);
+		if (result.ok) return { ok: true };
+		// The stage has not raised the prompt yet, or its attempt is changing: the answer waits for it.
+		if (result.refusal === "StaleAttempt") return "retry";
+		return { ok: false, refusal: result.refusal };
 	}
 
 	private async enqueue(command: Extract<CoordinatorCommandBody, { kind: "enqueue" }>) {
@@ -971,18 +1375,35 @@ export class PoolCoordinator {
 
 	private fail(error: Error): void {
 		this.failed = true;
+		// A satellite's failure is its own, not its root's pool's: it stops serving, and its host reports why.
+		if (this.satellite !== undefined) {
+			this.detach(error);
+			return;
+		}
 		this.port.send({ kind: "failure", error: error.message });
 	}
 
 	/** Fails one child without failing the pool. */
 	private failWork(work: PoolWork, error: Error): void {
-		this.port.send({ kind: "work-failure", workId: work.id, error: error.message });
+		this.port.send({
+			kind: "work-failure",
+			workId: work.id,
+			error: error.message,
+			...(error instanceof WorkspaceRestoreUnavailableError
+				? { placement: serializeWorkerPlacementError(error) }
+				: {}),
+		});
 	}
 
 	/** Records the latest activity of one attempt; the root receives it with the next summary. */
 	private publish(work: PoolWork, runs: readonly RunSnapshot[]): void {
 		const failure = this.publicationFailures.get(work.id);
 		if (failure?.generation === work.generation) throw new Error(failure.error);
+		// A worker host relays its attempts' activity to the root through the shared journal.
+		if (this.satellite !== undefined) {
+			this.relayPending.set(work.id, { work: token(work), runs });
+			return;
+		}
 		if (!this.publishing) return;
 		this.pendingActivity.set(work.id, { work: token(work), runs });
 		this.scheduleFlush();
@@ -1038,8 +1459,10 @@ export class PoolCoordinator {
 	}
 
 	private async sendResult(workId: string): Promise<boolean> {
+		if (this.satellite !== undefined) return false;
 		const result = await this.queue!.result(this.root!, workId);
 		if (result === undefined) return false;
+		this.reportedResults.add(workId);
 		this.flush();
 		this.sentRuns.forget(workId);
 		this.port.send({
@@ -1146,6 +1569,45 @@ export class PoolCoordinator {
 		};
 	}
 
+	/**
+	 * Answers a prompt of a stage that runs on another host's worker (#4310): the answer becomes that stage's next input,
+	 * which whichever worker holds the stage's attempt takes. Its result is the receipt that worker records, as a local
+	 * worker's reply is: a refused answer comes back refused, so the root holds it for the attempt that asks again. Each
+	 * attempt that asks gets its own input. Undefined when no other host runs the stage's run.
+	 */
+	private async queueRemoteAnswer(
+		runId: string,
+		stageId: string,
+		answer: PooledPromptAnswer,
+	): Promise<PromptResult | undefined> {
+		const work = this.remoteRuns.get(runId);
+		if (work === undefined) return undefined;
+		// Only a shared pool's root reads other hosts' runs, so its tables and lease are set.
+		const shared = this.sharedPool!;
+		const lease = this.lease!;
+		const queue = this.queue!;
+		const seq = await this.whileRootLate(queue, () =>
+			shared.appendStageInput(lease, {
+				work: work.id,
+				runId,
+				stageId,
+				kind: STAGE_INPUT_PROMPT_ANSWER,
+				op: `${answer.kind}:${answer.promptId}:${work.generation}`,
+				payload: JSON.stringify(answer),
+			}),
+		);
+		for (;;) {
+			const input = (await shared.stageInputs(lease.runId, runId, stageId)).find((entry) => entry.seq === seq);
+			if (input?.state === "done") return JSON.parse(input.receipt!) as PromptResult;
+			if (this.closed) return { ok: false, refusal: "StaleAttempt" };
+			// A child that ended has no stage left to take it.
+			const current = (await queue.inspect(lease.runId)).find((entry) => entry.id === work.id);
+			if (current === undefined || current.state === "completed" || current.state === "failed")
+				return { ok: false, refusal: "StageNotLive" };
+			await delay(SHARED_POLL_MS);
+		}
+	}
+
 	/** Reads a stage's brokered question from the worker whose attempt published the stage's run. */
 	private async stageQuestion(runId: string, stageId: string): Promise<PooledStageQuestion | undefined> {
 		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
@@ -1156,6 +1618,16 @@ export class PoolCoordinator {
 
 	/** Answers a prompt through the airlock of the worker whose attempt published the stage's run. */
 	private async stageAnswer(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
+		const held = [...this.slots].some((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (!held) {
+			const queued = await this.queueRemoteAnswer(runId, stageId, answer);
+			if (queued !== undefined) return queued;
+		}
+		return this.answerOnWorker(runId, stageId, answer);
+	}
+
+	/** Answers a prompt of a stage on one of this host's workers. */
+	private async answerOnWorker(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
 		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
 		if (slot?.work === undefined) return { ok: false, refusal: "StaleAttempt" };
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
@@ -1344,7 +1816,9 @@ export class PoolCoordinator {
 			options.workerEntry ?? process.argv[1]!,
 			[
 				JSON.stringify({
-					journalPath: options.journalPath,
+					...(options.shared === undefined
+						? { journalPath: options.journalPath }
+						: { shared: { host: options.shared.host, routes: this.satellite === undefined } }),
 					heartbeatMs: options.heartbeatMs,
 					root,
 					definitions: this.sources,
@@ -1360,15 +1834,24 @@ export class PoolCoordinator {
 				stdio: ["ignore", "ignore", "pipe", "ipc"],
 				execArgv: [],
 				// The durable journal's selection goes through the environment: argv is readable by every process on the host.
-				env: poolWorkerEnvironment(options.durable),
+				env: withHostGit(poolWorkerEnvironment(options.durable), this.satellite?.git),
 			},
 		);
 		const disconnected = new Promise<void>((resolve) => child.once("disconnect", () => resolve()));
 		this.children.add(child);
 		if (child.pid !== undefined) this.port.send({ kind: "spawned", pid: child.pid });
-		const worker = randomUUID();
+		const id = randomUUID();
+		// A shared pool's worker ids name their host, so its leases say where they run.
+		const worker = options.shared === undefined ? id : `${options.shared.host}/${id}`;
 		this.incarnations.set(worker, child);
-		const slot: WorkerSlot = { worker, child, deliveries: new Map(), runs: new Set(), stageCommands: new Map() };
+		const slot: WorkerSlot = {
+			worker,
+			child,
+			deliveries: new Map(),
+			runs: new Set(),
+			stageCommands: new Map(),
+			exited: new AbortController(),
+		};
 		this.slots.add(slot);
 		let ready = false;
 		// The worker's requests run alongside each other, except where their lanes order them (#4315).
@@ -1376,7 +1859,7 @@ export class PoolCoordinator {
 		const extensions = new AttemptLeaseExtensions(slot, (attempt) =>
 			this.queue!.extend(this.lease!, attempt, options.leaseMs),
 		);
-		const logPath = join(this.logDirectory!, `${worker}.log`);
+		const logPath = join(this.logDirectory!, `${id}.log`);
 		this.logs.set(child, logPath);
 		let logFailure: string | undefined;
 		const log = createWriteStream(logPath, { flags: "a" });
@@ -1423,6 +1906,7 @@ export class PoolCoordinator {
 			const retire = () => {
 				if (retired) return;
 				retired = true;
+				slot.exited.abort();
 				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
 					reject(
 						diagnosed(
@@ -1498,8 +1982,10 @@ export class PoolCoordinator {
 						}
 						if (this.closed) return;
 						// The third lost attempt of one child fails only that child: the pool and its other children keep
-						// running. Its work item ends failed in the same transaction, so no worker claims it again.
-						const exhausted = work !== undefined && this.attempts(work) >= MAX_CHILD_ATTEMPTS;
+						// running. Its work item ends failed in the same transaction, so no worker claims it again. A worker
+						// host never fails a child: it releases it, and the root's own pool counts its attempts.
+						const exhausted =
+							this.satellite === undefined && work !== undefined && this.attempts(work) >= MAX_CHILD_ATTEMPTS;
 						const queue = this.queue!;
 						const lease = this.lease!;
 						const attempt = work;
@@ -1520,7 +2006,8 @@ export class PoolCoordinator {
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
 						// attempts, so those replacements are bounded by the children and never count toward this limit. A
 						// worker that ended itself between children for its memory did not crash: it is replaced without
-						// counting.
+						// counting. A draining worker host replaces none.
+						if (this.draining) return;
 						if (work === undefined && slot.recycled === true) await this.spawn();
 						else if (work === undefined && ++this.replacements > 3)
 							this.fail(diagnosed("Local worker retry limit"));
@@ -1604,13 +2091,15 @@ export class PoolCoordinator {
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
 						slot.work = undefined;
+						slot.worktree = undefined;
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
 						// so refusals and faults stay bounded.
 						if (fenced && !(await this.superseded(fenced))) {
 							// Views of the attempt's stages end with it, so they reconnect to its replay.
 							this.fence(fenced);
-							if (this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
+							// A worker host releases the attempt whatever its count: the root's own pool fails a child.
+							if (this.satellite !== undefined || this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
 								await leased(() => queue.releaseExited(lease, fenced));
 							else if (await leased(() => queue.failExited(lease, fenced)))
 								this.failWork(
@@ -1649,21 +2138,34 @@ export class PoolCoordinator {
 					}
 					if (message.kind === "claim") {
 						if (slot.work) throw new Error("Worker already holds an attempt");
-						if (this.budgetBlocked) return;
-						slot.work = await leased(async () => {
-							await this.recoverExpired();
-							slot.runs.clear();
-							return queue.claim(
-								lease,
-								worker,
-								this.sources.map((source) => ({
-									definition: `${source.path}#${source.exportName}`,
-									digest: source.digest,
-								})),
-								options.leaseMs,
-							);
-						});
-						return slot.work;
+						let claimed: { readonly work: PoolWork; readonly worktree?: string } | undefined;
+						if (!this.budgetBlocked && !this.draining) {
+							slot.claiming = true;
+							try {
+								claimed = await leased(async () => {
+									await this.recoverExpired();
+									slot.runs.clear();
+									return this.claimFor(queue, lease, worker, options.leaseMs, slot);
+								});
+							} finally {
+								slot.claiming = false;
+								slot.claimed = undefined;
+							}
+						}
+						// A host that closed while the claim was in flight put its child back with the rest it held.
+						if (this.closed) return undefined;
+						if (claimed === undefined) {
+							// An idle worker of a shared pool asks again only after a pause: the workers of every host ask the
+							// same journal, a network away (#4310).
+							if (options.shared !== undefined) await delay(SHARED_IDLE_CLAIM_MS);
+							return undefined;
+						}
+						slot.work = claimed.work;
+						slot.worktree = claimed.worktree;
+						// A child placed on a warm or restored worktree runs there, not in the root's recorded directory.
+						return claimed.worktree === undefined
+							? claimed.work
+							: { ...claimed.work, execution: { ...claimed.work.execution, cwd: claimed.worktree } };
 					}
 					const held = slot.work;
 					if (!held) throw new Error("Worker has no active attempt");
@@ -1683,6 +2185,22 @@ export class PoolCoordinator {
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
 						return this.publish(work, message.runs);
+					}
+					if (message.kind === "stage-workspace") {
+						const shared = this.sharedPool;
+						const host = options.shared?.host;
+						if (shared === undefined || host === undefined) return;
+						const worktree = slot.worktree ?? String(work.execution.cwd);
+						const binding = (work.execution.workspaceBinding as WorkspaceBinding | undefined) ?? null;
+						return leased(() =>
+							shared.recordStageWorkspace(lease, work, {
+								runId: message.runId,
+								stageId: message.stageId,
+								host,
+								worktree,
+								binding,
+							}),
+						);
 					}
 					if (message.kind === "route") {
 						if (this.routes === undefined) return undefined;
@@ -1747,6 +2265,7 @@ export class PoolCoordinator {
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
 					this.replacements = 0;
 					slot.work = undefined;
+					slot.worktree = undefined;
 					await this.sendResult(work.id);
 				};
 				const handled = this.counters.within(message.kind, () =>
@@ -1786,6 +2305,174 @@ export class PoolCoordinator {
 		});
 	}
 
+	/**
+	 * Claims work for one of this coordinator's workers. The root's own pool takes any ready work, or, when the pool is
+	 * shared, only work without a workspace binding: its host cannot vouch for a tree. A worker host chooses by
+	 * placement (#4310): bound work whose tree it has warm first, then the oldest work without a binding, or bound work
+	 * it can restore. Bound work it can neither find warm nor restore is never its to run, however long it waited. A
+	 * restored child runs at the restore's verified path; a failed restore puts the work back for another host.
+	 */
+	private async claimFor(
+		queue: SqlPoolQueue,
+		lease: Lease,
+		worker: string,
+		leaseMs: number,
+		slot: WorkerSlot,
+	): Promise<{ readonly work: PoolWork; readonly worktree?: string } | undefined> {
+		const definitions = this.sources.map((source) => ({
+			definition: `${source.path}#${source.exportName}`,
+			digest: source.digest,
+		}));
+		const satellite = this.satellite;
+		if (satellite === undefined) {
+			const shared = this.options?.shared !== undefined;
+			const work = await queue.claim(lease, worker, definitions, leaseMs, shared ? { kind: "unbound" } : undefined);
+			return work === undefined ? undefined : { work };
+		}
+		const chosen = await choosePlacement(
+			await queue.readyCandidates(lease, definitions, PLACEMENT_CANDIDATES),
+			(binding) => this.warmWorktree(satellite, binding, slot.exited.signal),
+			satellite.restore !== undefined,
+		);
+		// A host that began draining or closing while it asked its hooks takes no more work.
+		if (chosen === undefined || this.draining || this.closed) return undefined;
+		const { candidate, worktree } = chosen;
+		const work = await queue.claim(lease, worker, definitions, leaseMs, {
+			kind: "work",
+			id: candidate.id,
+			generation: candidate.generation,
+		});
+		if (work === undefined) return undefined;
+		if (this.closed) {
+			await this.releaseHeld(work);
+			return undefined;
+		}
+		slot.claimed = work;
+		const binding = candidate.workspace;
+		const restore = satellite.restore;
+		if (!chosen.restore || binding === undefined || restore === undefined)
+			return worktree === undefined ? { work } : { work, worktree };
+		const restored = await this.whileHolding(
+			queue,
+			lease,
+			work,
+			leaseMs,
+			(signal) => restore(binding, this.hookOptions(satellite, signal)),
+			AbortSignal.any([this.closedSignal.signal, slot.exited.signal]),
+		);
+		// A host that closed put the child back with the rest its workers held; one whose worker exited puts it back here.
+		if (this.closed) return undefined;
+		if ("closed" in restored) {
+			await this.releaseHeld(work);
+			return undefined;
+		}
+		if ("path" in restored) return { work, worktree: restored.path };
+		satellite.placementFailed?.(restored.error);
+		// The work goes back to the queue for a host that can restore it; an attempt replaced meanwhile has nothing to put back.
+		await queue.releaseExited(lease, work);
+		return undefined;
+	}
+
+	/** Where this host has `binding`'s tree warm, as its `prefer` hook answered within {@link PREFERENCE_CACHE_MS}. */
+	private async warmWorktree(
+		satellite: SatellitePlacement,
+		binding: WorkspaceBinding,
+		workerExited: AbortSignal,
+	): Promise<string | undefined> {
+		const prefer = satellite.prefer;
+		if (prefer === undefined) return undefined;
+		const key = workspaceAffinityKey(binding);
+		const now = performance.now();
+		const cached = this.preferences.get(key);
+		if (cached !== undefined && now - cached.at < PREFERENCE_CACHE_MS) return cached.path;
+		let path: string | undefined;
+		try {
+			const answered = await this.untilClosed(
+				(signal) => Promise.resolve(prefer(binding, this.hookOptions(satellite, signal))),
+				AbortSignal.any([this.placingSignal.signal, workerExited]),
+			);
+			// A satellite that drains or closes, or whose asking worker exited, stopped waiting for the hook: nothing is
+			// placed, and nothing is remembered.
+			if ("closed" in answered) return undefined;
+			path = answered.value;
+		} catch (error) {
+			// A host whose hook failed does not have the tree warm, as far as placement can tell; the host reports why.
+			satellite.placementFailed?.(error instanceof Error ? error : new Error(String(error)));
+		}
+		if (this.preferences.size >= PREFERENCE_CACHE_ENTRIES) this.preferences.clear();
+		this.preferences.set(key, { path, at: now });
+		return path;
+	}
+
+	/**
+	 * Runs `action` while renewing `work`'s lease on the worker heartbeat. Its failure is returned, never thrown, and so
+	 * is a renewal that failed meanwhile: the attempt was replaced, or the root's lease moved, and its work is not handed
+	 * out. Once `signal` aborts (by default when the coordinator closes), it stops waiting for `action` and renewing.
+	 */
+	private async whileHolding(
+		queue: SqlPoolQueue,
+		lease: Lease,
+		work: PoolWork,
+		leaseMs: number,
+		action: (signal: AbortSignal) => Promise<string>,
+		signal: AbortSignal = this.closedSignal.signal,
+	): Promise<{ readonly path: string } | { readonly error: Error } | { readonly closed: true }> {
+		let renewal: Promise<void> | undefined;
+		let lost: Error | undefined;
+		const heartbeat = setInterval(() => {
+			if (this.closed) return;
+			renewal ??= queue
+				.extend(lease, work, leaseMs)
+				.then(
+					() => {},
+					(error: Error) => {
+						lost ??= error;
+					},
+				)
+				.finally(() => {
+					renewal = undefined;
+				});
+		}, defaultWorkerHeartbeatMs(leaseMs)).unref();
+		try {
+			// Once `signal` aborts the action is no longer waited for, and its result is not used.
+			const outcome = await this.untilClosed(action, signal);
+			if ("closed" in outcome) return outcome;
+			await renewal;
+			return lost === undefined ? { path: outcome.value } : { error: lost };
+		} catch (error) {
+			return { error: error instanceof Error ? error : new Error(String(error)) };
+		} finally {
+			clearInterval(heartbeat);
+			await renewal;
+		}
+	}
+
+	/** What a worker host's hook is given: the signal that ends the wait for it, and the git the host runs. */
+	private hookOptions(satellite: SatellitePlacement, signal: AbortSignal): WorkspaceHookOptions {
+		return satellite.git === undefined ? { signal } : { signal, git: satellite.git };
+	}
+
+	/**
+	 * Runs a hook of the worker host (`prefer`, `restore`) with `signal`, by default the coordinator's close signal, and
+	 * stops waiting for it once that aborts: stopping a host never waits on a hook that does not settle (#4310).
+	 */
+	private async untilClosed<T>(
+		hook: (signal: AbortSignal) => Promise<T>,
+		signal: AbortSignal = this.closedSignal.signal,
+	): Promise<{ readonly value: T } | { readonly closed: true }> {
+		if (signal.aborted) return { closed: true };
+		let onClose: (() => void) | undefined;
+		const closed = new Promise<{ readonly closed: true }>((resolve) => {
+			onClose = () => resolve({ closed: true });
+			signal.addEventListener("abort", onClose, { once: true });
+		});
+		try {
+			return await Promise.race([hook(signal).then((value) => ({ value })), closed]);
+		} finally {
+			signal.removeEventListener("abort", onClose!);
+		}
+	}
+
 	/** Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979). */
 	private attempts(work: PoolWork): number {
 		return work.generation - (this.attemptBase.get(work.id) ?? 0);
@@ -1820,9 +2507,8 @@ export class PoolCoordinator {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			await this.admission?.reconcile();
 			const expiredBefore = Date.now();
-			const expired = (await queue.inspect(root)).filter(
-				(work) => work.state === "leased" && work.expiresAt < expiredBefore,
-			);
+			const rows = await queue.inspect(root);
+			const expired = rows.filter((work) => work.state === "leased" && work.expiresAt < expiredBefore);
 			// A root that renews late holds back its workers' answers, and so their renewals: nothing is stopped or
 			// expired for that silence. Recovery resumes once the renewal lands.
 			if (expired.length > 0 && (await queue.rootLease(lease, COORDINATOR_LEASE_MS)) === "late") {
@@ -1830,6 +2516,8 @@ export class PoolCoordinator {
 				return;
 			}
 			for (const work of expired) {
+				// A worker host recovers only its own workers' attempts; the root's own pool recovers every other host's.
+				if (this.satellite !== undefined && (work.worker === null || !this.incarnations.has(work.worker))) continue;
 				if (this.held.has(work.id)) {
 					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
 						if (error.message !== STALE_WORK_LEASE) throw error;
@@ -1859,11 +2547,63 @@ export class PoolCoordinator {
 						if (error.message !== STALE_WORK_LEASE) throw error;
 					});
 			}
+			if (this.satellite === undefined && this.sharedPool !== undefined)
+				await this.settleShared(queue, lease, this.sharedPool, rows);
 		})().finally(() => {
 			this.recovering = undefined;
 			this.nextRecoveryAt = performance.now() + RECOVERY_INTERVAL_MS;
 		});
 		return this.recovering;
+	}
+
+	/**
+	 * What the root's own coordinator of a shared pool settles for work other hosts run (#4310): a result another host
+	 * recorded reaches the root; a child other hosts released as often as its attempt limit allows fails, as one this
+	 * host's workers lost would; and bound work that no capable live host claimed within the claim window fails with a
+	 * {@link WorkspaceRestoreUnavailableError}, since no host may run it anywhere but in its binding's tree.
+	 */
+	private async settleShared(
+		queue: SqlPoolQueue,
+		lease: Lease,
+		shared: SqlSharedPool,
+		rows: readonly PoolWork[],
+	): Promise<void> {
+		const local = new Set([...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work.id])));
+		const claimWindowMs = this.options?.shared?.claimWindowMs ?? 0;
+		let capable: boolean | undefined;
+		for (const work of rows) {
+			if (!this.attemptBase.has(work.id)) continue;
+			// Bound work's wait counts from when this coordinator first saw it ready.
+			if (work.state === "ready" && work.execution.workspaceBinding !== undefined)
+				this.boundReadySince.set(work.id, this.boundReadySince.get(work.id) ?? performance.now());
+			else this.boundReadySince.delete(work.id);
+			const settlement = sharedSettlement(work, {
+				reported: this.reportedResults.has(work.id),
+				heldHere: local.has(work.id),
+				epoch: lease.epoch,
+				attempts: this.attempts(work),
+				maxAttempts: MAX_CHILD_ATTEMPTS,
+				readyForMs: performance.now() - (this.boundReadySince.get(work.id) ?? performance.now()),
+				claimWindowMs,
+			});
+			if (settlement === "report-result") await this.sendResult(work.id);
+			else if (settlement === "attempts-exhausted") {
+				if (await queue.failUnclaimed(lease, work))
+					this.failWork(work, new Error(childRetryLimit(work, "lost its worker on another host")));
+			} else if (settlement === "claim-window-passed") {
+				capable ??= await shared.capableHostLive(this.root!, WORKER_HOST_TTL_MS);
+				if (capable || !(await queue.failUnclaimed(lease, work))) continue;
+				this.boundReadySince.delete(work.id);
+				this.failWork(
+					work,
+					new WorkspaceRestoreUnavailableError(
+						"no-capable-host",
+						workspaceBindingIdentity(work.execution.workspaceBinding as unknown as WorkspaceBinding),
+						{ childRunId: work.childRunId, claimWindowMs },
+					),
+				);
+			}
+		}
 	}
 
 	/** Stall accounting for this event loop: a coordinator stall must not count as worker silence. */
@@ -1952,16 +2692,28 @@ export class PoolCoordinator {
 
 	private async close(): Promise<void> {
 		this.closed = true;
+		this.closedSignal.abort();
+		this.placingSignal.abort();
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
 		clearInterval(this.mirrorTimer);
 		clearInterval(this.statsTimer);
+		clearInterval(this.sharedTimer);
 		this.rateLimitOutbox.close();
 		let failure: unknown;
 		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
 		let confirmed: boolean[] = [];
+		// A worker host's attempts go back to the queue for another worker once its workers are stopped.
+		const held =
+			this.satellite === undefined
+				? []
+				: [...this.slots].flatMap((slot) => {
+						const work = slot.work ?? slot.claimed;
+						return work === undefined ? [] : [work];
+					});
 		try {
 			await this.recovering?.catch(() => {});
+			await this.sharedPass;
 			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
 			confirmed = await Promise.all(stopping.map(({ child }) => this.stop(child)));
 			// A worker still running after SIGKILL is retired: the pool closes without it and reports it.
@@ -1978,7 +2730,9 @@ export class PoolCoordinator {
 			if (alive.length > 0) throw unconfirmedCleanup(alive);
 			// Every worker is stopped: work they still held is no attempt's any more, so it does not stay leased
 			// after the root ends (#3996). A quit keeps it leased for the root's resume.
-			if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
+			if (this.satellite !== undefined) {
+				for (const work of held) await this.releaseHeld(work);
+			} else if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
 				// A root that no longer holds its lease has handed its work to its next incarnation.
 				await this.queue.releaseClosed(this.lease).catch((error: Error) => {
 					if (!(error instanceof StaleLeaseError)) throw error;
@@ -2009,6 +2763,32 @@ export class PoolCoordinator {
 		this.requests.clear();
 		if (failure !== undefined) throw failure;
 	}
+
+	/**
+	 * Puts a stopped worker host's attempt back in the queue. A root whose lease was lost, or an attempt another one
+	 * replaced, has nothing to put back: the root's next incarnation, or the attempt's new owner, has the work.
+	 */
+	private async releaseHeld(work: PoolWork): Promise<void> {
+		try {
+			await this.queue!.releaseExited(this.lease!, work);
+		} catch (error) {
+			if (!(error instanceof StaleLeaseError)) throw error;
+		}
+	}
+}
+
+/**
+ * A worker's environment with the host's git (#4310): its variables set, and an absolute path's directory first on
+ * `PATH`, so the git commands the worker runs resolve to it.
+ */
+function withHostGit(env: NodeJS.ProcessEnv, git: WorkerHostGit | undefined): NodeJS.ProcessEnv {
+	if (git === undefined) return env;
+	const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+	return {
+		...env,
+		...git.env,
+		...(isAbsolute(git.path) ? { [pathKey]: [dirname(git.path), env[pathKey]].filter(Boolean).join(delimiter) } : {}),
+	};
 }
 
 /** The retry limit message of one child, naming it by its child run and definition export. */

@@ -398,6 +398,7 @@ export {
 } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
 export * from "./durable/fork-errors.js";
+export type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./durable/journal/shared-pool-types.js";
 export {
 	READINESS_DECISION_THRESHOLDS,
 	type ReadinessDecisionThresholds,
@@ -440,7 +441,54 @@ export {
 	LocalWorkerOptionsError,
 	LocalWorkerPoolError,
 } from "./workers/local-worker-pool-errors.js";
-export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
+export type {
+	SerializedWorkerPlacementError,
+	SharedPoolOperation,
+	SharedPoolSetupErrorCode,
+	SharedPoolSetupProblem,
+	StaleStageLeaseReason,
+	WorkerPlacementConfigErrorCode,
+	WorkerPlacementConfigSource,
+	WorkerPlacementErrorCode,
+	WorkspaceBindingIdentity,
+	WorkspaceRestoreUnavailableReason,
+} from "./workers/placement-errors.js";
+export {
+	isSharedPoolSetupError,
+	isStaleStageLeaseError,
+	isWorkerPlacementConfigError,
+	isWorkerPlacementError,
+	isWorkspaceRestoreUnavailableError,
+	rehydrateWorkerPlacementError,
+	SharedPoolSetupError,
+	StaleStageLeaseError,
+	serializeWorkerPlacementError,
+	WorkerPlacementConfigError,
+	WorkerPlacementError,
+	WorkspaceRestoreUnavailableError,
+} from "./workers/placement-errors.js";
+export type {
+	LocalWorkerOptions,
+	WorkflowAdmissionOptions,
+	WorkflowWorkerPlacementOptions,
+} from "./workers/public-options.js";
+export declare const DEFAULT_PLACEMENT_CLAIM_WINDOW_MS: number;
+export type {
+	SharedJournalSelection,
+	WorkerHostFailure,
+	WorkerHostGit,
+	WorkflowWorkerHost,
+	WorkflowWorkerHostOptions,
+	WorkflowWorkerHostStats,
+} from "./workers/worker-host-types.js";
+/**
+ * Joins this host to the shared pools of every root whose pool runs on `options.journal` (#4310): roots started with
+ * `workers: { placement: "shared" }` on a journal every host opens through a storage adapter.
+ */
+export declare function startWorkflowWorkerHost(
+	options: import("./workers/worker-host-types.js").WorkflowWorkerHostOptions,
+): Promise<import("./workers/worker-host-types.js").WorkflowWorkerHost>;
+export type { WorkspaceHookOptions, WorkspacePreference, WorkspaceRestore } from "./workers/workspace-binding.js";
 
 /** Which Intercom messages and prompt answers a fork carries: those before the fork point (default) or all. */
 export type ForkCarryMessages = "before" | "all";

@@ -56,6 +56,7 @@ export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, Worker
 	recycle: "barrier",
 	complete: "barrier",
 	commit: "commits",
+	"stage-workspace": "commits",
 	heartbeat: "heartbeats",
 	control: "heartbeats",
 	controlled: "acknowledgements",

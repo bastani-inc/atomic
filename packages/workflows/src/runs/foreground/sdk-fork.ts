@@ -131,6 +131,7 @@ function refuseChangedWorkerResources(
 			userDatabase: () => forkUserDatabase(backend),
 			digestOf: (path) => digests.get(path) ?? "",
 			coordinator: saved.coordinator,
+			...(saved.workers === undefined ? {} : { workers: saved.workers }),
 		},
 	);
 	const refused = refusedResourceChanges(saved, requested, options.acceptEntryChanges);

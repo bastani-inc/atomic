@@ -2,9 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
 
-export function makeLibsqlDirectory(): string {
+export function makeLibsqlDirectory(prefix = "atomic-libsql-"): string {
 	const root = process.env.ATOMIC_TEST_LIBSQL_ROOT;
-	return root === undefined ? makeTempDirectory("atomic-libsql-") : mkdtempSync(join(root, "atomic-libsql-"));
+	return root === undefined ? makeTempDirectory(prefix) : mkdtempSync(join(root, prefix));
 }
 
 /** libsql 0.5.29 retains native connections until its discarded statements are collected. */

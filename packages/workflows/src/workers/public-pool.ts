@@ -1,16 +1,26 @@
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { isWorkspace, resolveWorkspace } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
-import type { RunJournalSettings } from "../durable/journal/resolution.js";
+import { type RunJournalSettings, runJournalOrigin } from "../durable/journal/resolution.js";
 import { isShardedRunJournal, rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { WorkflowAdmissionConfigError } from "./admission-errors.js";
 import { admissionBootIdentity } from "./admission-host.js";
+import type { SharedPoolCoordination } from "./coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { LocalWorkerPool } from "./local-pool.js";
+import {
+	SharedPoolSetupError,
+	type SharedPoolSetupProblem,
+	selectionLocation,
+	sharedPoolProblems,
+	WorkerPlacementConfigError,
+} from "./placement-errors.js";
 import {
 	coordinationDatabase,
 	coordinationPath,
@@ -19,10 +29,19 @@ import {
 	type PoolDurableJournal,
 	poolDurableJournal,
 	poolHostId,
+	poolStateDirectory,
 	registerPoolJournal,
+	registerSharedPoolRoot,
 } from "./pool-journal.js";
-import { DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU, type WorkflowExecutionResources } from "./public-options.js";
+import {
+	DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+	DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
+	type RecordedWorkerPlacement,
+	type WorkflowExecutionResources,
+	type WorkflowWorkerPlacementOptions,
+} from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
+import { bindingIdentity, isWorkspaceBinding, type WorkspaceBinding } from "./workspace-binding.js";
 
 /**
  * Saved settings a resumed root may run with other values of: they size and pace its pool and bound its own sessions
@@ -36,6 +55,7 @@ const RESUMABLE_SETTINGS: ReadonlySet<string> = new Set([
 	"admission.limits.process",
 	"admission.host.maxLoadPerCpu",
 	"admission.host.minFreeMemoryBytes",
+	"workers.claimWindowMs",
 ]);
 
 function shown(value: unknown): string {
@@ -47,10 +67,12 @@ function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown
 }
 
 export interface ResourceChange {
+	/** The settings path that changed, for a setting. */
+	readonly path?: string;
 	readonly description: string;
 	readonly resumable: boolean;
 	/** The option that sets the changed setting: a coordinator is recorded for local workers. */
-	readonly option: "localWorkers" | "admission";
+	readonly option: "localWorkers" | "admission" | "workers";
 	/** An edited entry module of a worker definition, which a resume that accepts entry changes applies (#4200). */
 	readonly entry?: true;
 }
@@ -64,9 +86,10 @@ function settingChanges(path: string, saved: unknown, current: unknown, changes:
 		return;
 	}
 	changes.push({
+		path,
 		description: `${path} changed from ${shown(saved)} to ${shown(current)}`,
 		resumable: RESUMABLE_SETTINGS.has(path),
-		option: path.startsWith("admission") ? "admission" : "localWorkers",
+		option: path.startsWith("admission") ? "admission" : path.startsWith("workers") ? "workers" : "localWorkers",
 	});
 }
 
@@ -115,6 +138,7 @@ function resourceChanges(saved: WorkflowExecutionResources, current: WorkflowExe
 		if (!before.has(name))
 			changes.push({ description: `worker definition ${name} was added`, resumable: false, option: "localWorkers" });
 	settingChanges("admission", saved.admission, current.admission, changes);
+	settingChanges("workers", saved.workers, current.workers, changes);
 	settingChanges("coordinator", saved.coordinator, current.coordinator, changes);
 	return changes;
 }
@@ -144,6 +168,8 @@ export function workerResources(
 		readonly userDatabase: () => string | undefined;
 		readonly digestOf: (path: string) => string;
 		readonly coordinator: WorkflowExecutionResources["coordinator"];
+		/** The root's shared placement, which it records as it ran with it (#4310). */
+		readonly workers?: WorkflowExecutionResources["workers"];
 	},
 ): WorkflowExecutionResources {
 	const cwd = options.cwd ?? process.cwd();
@@ -175,6 +201,7 @@ export function workerResources(
 				: {}),
 			...(admission ? { admission: userDatabase === undefined ? admission : { ...admission, userDatabase } } : {}),
 			...(localWorkers && context.coordinator ? { coordinator: context.coordinator } : {}),
+			...(context.workers === undefined ? {} : { workers: context.workers }),
 		}),
 	) as WorkflowExecutionResources;
 }
@@ -203,10 +230,22 @@ export async function restoreWorkerOptions(backend: DurableWorkflowBackend, opti
 	if (source !== undefined) await backend.hydrateWorkflow(source);
 	const original = source === undefined ? undefined : backend.getWorkflow(source);
 	const saved = original?.resources;
-	if (original && !saved && (options.localWorkers || options.admission)) {
-		const set = [options.localWorkers && "localWorkers", options.admission && "admission"]
+	if (original && !saved && (options.localWorkers || options.admission || options.workers)) {
+		const set = [
+			options.localWorkers && "localWorkers",
+			options.admission && "admission",
+			options.workers && "workers",
+		]
 			.filter(Boolean)
 			.join(" and ");
+		// Shared placement is a workers setting: its refusal is typed (#4310).
+		if (options.workers)
+			throw new WorkerPlacementConfigError(
+				"sdk",
+				"workers",
+				"changed-on-resume",
+				`root ${source} started without local workers or resource admission, and this resume sets ${set}`,
+			);
 		throw new Error(
 			`Root ${source} started without local workers or resource admission, and this resume sets ${set}: immutable resource configuration cannot change on an existing root. Resume it without them, or start a new run.`,
 		);
@@ -215,8 +254,21 @@ export async function restoreWorkerOptions(backend: DurableWorkflowBackend, opti
 		...options,
 		localWorkers: options.localWorkers ?? saved?.localWorkers,
 		admission: options.admission ?? saved?.admission,
+		workers: options.workers ?? saved?.workers,
 		effectiveResources: saved,
 	};
+}
+
+/**
+ * Whether pooled workers on this host can contain the processes their tools start: Linux or macOS, with Atomic's native
+ * process identity and this machine's boot identity.
+ */
+export async function processContainmentAvailable(): Promise<boolean> {
+	return (
+		(process.platform === "linux" || process.platform === "darwin") &&
+		(await hasNativeProcessIdentity()) &&
+		Boolean(await admissionBootIdentity())
+	);
 }
 
 async function hasNativeProcessIdentity(): Promise<boolean> {
@@ -231,11 +283,114 @@ async function hasNativeProcessIdentity(): Promise<boolean> {
 	}
 }
 
+/**
+ * The root's shared placement, checked before anything starts (#4310): its own fields, and that the root pools its
+ * children (`localWorkers`) and sets no user limits, which count only on one machine's journal file.
+ */
+function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | undefined {
+	const workers = options.workers;
+	if (workers === undefined) return undefined;
+	if (workers.placement !== "shared")
+		throw new WorkerPlacementConfigError(
+			"sdk",
+			"workers.placement",
+			"invalid-option",
+			'the only placement is "shared"',
+		);
+	if (workers.workspace !== undefined && !isWorkspace(workers.workspace) && !isWorkspaceBinding(workers.workspace))
+		throw new WorkerPlacementConfigError(
+			"sdk",
+			"workers.workspace",
+			"invalid-option",
+			"a binding with string remotes, head, tree and envHash, or a workspace({ … }) value",
+		);
+	if (
+		workers.claimWindowMs !== undefined &&
+		(!Number.isSafeInteger(workers.claimWindowMs) || workers.claimWindowMs < 1)
+	)
+		throw new WorkerPlacementConfigError(
+			"sdk",
+			"workers.claimWindowMs",
+			"invalid-option",
+			"must be a positive integer of milliseconds",
+		);
+	if (!options.localWorkers) throw new WorkerPlacementConfigError("sdk", "localWorkers", "requires-local-workers");
+	if (options.admission?.userLimits !== undefined)
+		throw new WorkerPlacementConfigError(
+			"sdk",
+			"admission.userLimits",
+			"unsupported-option",
+			"user limits count only on one machine's journal file",
+		);
+	return workers;
+}
+
+/**
+ * `placement` as the root records it (#4310): a `workspace({ … })` value resolved through `resolveWorkspace`, and a
+ * binding, or a bound workspace, reduced to its identity fields.
+ */
+export async function recordedPlacement(
+	placement: WorkflowWorkerPlacementOptions,
+	signal?: AbortSignal,
+): Promise<RecordedWorkerPlacement> {
+	const workspace = placement.workspace;
+	if (workspace === undefined) return { ...placement, workspace: undefined };
+	const binding = isWorkspace(workspace)
+		? await resolveWorkspace(workspace, signal === undefined ? {} : { signal })
+		: workspace;
+	return { ...placement, workspace: bindingIdentity(binding) };
+}
+
+/** How a root's pool runs with shared placement on this host: its local state, host id, claim window and binding. */
+export function sharedPoolPlacement(
+	shared: PoolDurableJournal,
+	placement: RecordedWorkerPlacement,
+): { readonly shared: SharedPoolCoordination; readonly workspace?: WorkspaceBinding } {
+	return {
+		shared: {
+			stateDirectory: poolStateDirectory(shared.agentDir),
+			host: poolHostId(shared.agentDir),
+			claimWindowMs: placement.claimWindowMs ?? DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+		},
+		...(placement.workspace === undefined ? {} : { workspace: placement.workspace }),
+	};
+}
+
+/**
+ * The root's journal as shared placement needs it: a SQL journal every host opens through a storage adapter, on a
+ * host that can contain its workers' processes. Every missing piece is reported in one typed error, before anything
+ * opens.
+ */
+async function sharedJournal(journal: RunJournal | undefined): Promise<PoolDurableJournal> {
+	const problems: SharedPoolSetupProblem[] = [];
+	const origin = journal === undefined ? undefined : runJournalOrigin(journal);
+	if (journal === undefined || origin?.selection.kind !== "adapter" || sqlPoolStorage(journal) === undefined) {
+		const selection = origin?.selection;
+		problems.push(
+			sharedPoolProblems.sharedJournalRequired(
+				journal === undefined
+					? "a durable backend without a journal"
+					: selection === undefined
+						? "a journal object"
+						: selection.kind === "adapter"
+							? "an adapter journal that is not SQL"
+							: `a ${selection.kind} journal`,
+				selection === undefined ? undefined : selectionLocation(selection),
+			),
+		);
+	}
+	if (!(await processContainmentAvailable())) problems.push(sharedPoolProblems.processContainmentUnavailable());
+	const [first, ...rest] = problems;
+	if (first !== undefined) throw new SharedPoolSetupError("shared-placement", [first, ...rest]);
+	return poolDurableJournal(journal!);
+}
+
 export async function activatePublicPool(
 	backend: DurableWorkflowBackend,
 	options: RunOpts,
 ): Promise<LocalWorkerPool | undefined> {
-	if (!options.localWorkers && !options.admission) return;
+	if (!options.localWorkers && !options.admission && !options.workers) return;
+	const placement = sharedPlacement(options);
 	const admissionSource = options[hostWorkerBindings] ? "settings" : "sdk";
 	// User limits count across the runs of one file, and each root of the journal store has a shard of its own. This
 	// is refused before the root is placed on a shard, so nothing is written for it.
@@ -245,26 +400,28 @@ export async function activatePublicPool(
 		isShardedRunJournal(backend.journal)
 	)
 		throw new WorkflowAdmissionConfigError({ code: "user-limits-need-one-journal", source: admissionSource });
-	if (process.platform === "win32")
-		throw new Error("Local worker containment is unavailable on Windows; pooled tool processes cannot be enabled");
-	if (
-		(process.platform !== "linux" && process.platform !== "darwin") ||
-		!(await hasNativeProcessIdentity()) ||
-		!(await admissionBootIdentity())
-	)
-		throw new Error("Local worker containment requires native process identity support");
+	// Shared placement needs a journal every host opens; that is checked before anything else starts.
+	const shared =
+		placement === undefined
+			? undefined
+			: await sharedJournal(backend instanceof JournalDurableBackend ? backend.journal : undefined);
+	if (!(await processContainmentAvailable()))
+		throw new SharedPoolSetupError("local-pool", [sharedPoolProblems.localContainmentUnavailable()]);
 	if (!(backend instanceof JournalDurableBackend)) throw new Error("Local workers require a journal backend");
+	const recorded = placement === undefined ? undefined : await recordedPlacement(placement, options.signal);
 	// A journal that is a default-prefix SQLite file is shared with the pool as it is; in the journal store that is the
 	// root's own shard, so the pool's processes open only that file. Any other journal, such as a libSQL database or
 	// another storage adapter, stays the root's durable record, and the pool keeps its queue, leases, usage, admission
-	// and pooled-stage sessions in a SQLite database on this machine.
+	// and pooled-stage sessions in a SQLite database on this machine. With shared placement (#4310) the pool keeps all
+	// of them in the root's journal itself, which every host opens.
 	const rootJournal = await rootRunJournal(backend.journal, options.runId!);
 	const local = isLocalPoolJournal(rootJournal);
 	const journalShard = isShardedRunJournal(backend.journal) ? backend.journal.shardOf(options.runId!)?.id : undefined;
-	let durable: PoolDurableJournal | undefined;
+	let durable: PoolDurableJournal | undefined = shared;
 	let poolJournal: RunJournal = rootJournal;
 	let poolPath = local ? rootJournal.path : "";
-	if (!local) {
+	if (shared !== undefined) registerSharedPoolRoot(backend.journal, options.runId!);
+	else if (!local) {
 		durable = poolDurableJournal(backend.journal);
 		poolPath = coordinationPath(durable);
 		poolJournal = await openCoordinationJournal(poolPath);
@@ -291,16 +448,17 @@ export async function activatePublicPool(
 		userDatabase: () => (durable === undefined ? undefined : resolve(poolPath)),
 		digestOf: (path) => digests.get(path)!,
 		coordinator:
-			durable === undefined || !options.localWorkers
+			shared !== undefined || durable === undefined || !options.localWorkers
 				? undefined
 				: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) },
+		...(recorded === undefined ? {} : { workers: recorded }),
 	});
 	const localWorkers = resources.localWorkers;
 	const saved = options.effectiveResources?.coordinator;
 	if (saved !== undefined && resources.coordinator !== undefined && saved.host !== resources.coordinator.host)
-		throw new Error(
-			`This root's local workers ran on another machine (${saved.host}). Their work queue and leases are in that machine's pool database, which this machine cannot see, and its workers may still be running children. Resume the root on that machine.`,
-		);
+		throw new SharedPoolSetupError("resume", [
+			sharedPoolProblems.poolOnAnotherHost(saved.host, resources.coordinator.host, options.runId!),
+		]);
 	// The queue and leases are in the pool database the root started with. A selection that now names another one,
 	// because the adapter, its options, its prefix or the agent directory changed, would find it empty and run the
 	// root's children again beside whatever the old one still holds.
@@ -319,6 +477,15 @@ export async function activatePublicPool(
 		options.effectiveResources === undefined
 			? []
 			: refusedResourceChanges(options.effectiveResources, resources, options.acceptEntryChanges);
+	// A workers setting that cannot change is refused typed, with every other refused change in its detail (#4310).
+	const workersChange = refused.find((change) => change.path?.startsWith("workers.") === true);
+	if (workersChange !== undefined)
+		throw new WorkerPlacementConfigError(
+			"sdk",
+			workersChange.path!,
+			"changed-on-resume",
+			refused.map((change) => change.description).join("; "),
+		);
 	if (refused.length > 0)
 		throw new Error(
 			`Since root ${options.runId} started, ${refused.map((change) => change.description).join("; ")}. Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes.${
@@ -351,6 +518,7 @@ export async function activatePublicPool(
 		journalPath: poolPath,
 		...(journalShard === undefined ? {} : { journalShard }),
 		...(durable === undefined ? {} : { durable }),
+		...(shared === undefined || recorded === undefined ? {} : sharedPoolPlacement(shared, recorded)),
 		workers: localWorkers.count,
 		definitions,
 		admission: resources.admission ?? {},

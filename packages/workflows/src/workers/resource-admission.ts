@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
 import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
+import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import { WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
@@ -34,6 +35,12 @@ export const RELEASED_PERMIT_RETENTION = 256;
 /** Most released permits one reconcile prunes, so catching up on a legacy history never holds the write lock long. */
 export const RELEASED_PERMIT_PRUNE_BATCH = 1000;
 const EXPIRED_REASON = "owner expired; cleanup unconfirmed";
+/**
+ * A session permit of a shared pool's admission whose owner, on another host, stopped renewing and whose attempt another
+ * attempt replaced: its holder is fenced, so the session it counted for can write nothing more (#4310).
+ */
+const REPLACED_ON_ANOTHER_HOST_REASON = "owner on another host expired; attempt replaced";
+const ROOT_MOVED_REASON = "owner on another host expired; root resumed elsewhere";
 const UNCONFIRMED_REASON = "cleanup unconfirmed";
 /**
  * A process permit whose group survived the bounded reap: it stays granted, holding its capacity, until the group is
@@ -132,6 +139,18 @@ export interface AdmissionOptions extends AdmissionConfiguration {
 	readonly rootLimits?: "check" | "replace" | "unchanged";
 	/** Where the admission settings came from, for the error naming a refused `userLimits`; `"sdk"` when omitted. */
 	readonly source?: WorkflowAdmissionSource;
+	/**
+	 * The admission state is shared by the hosts of a shared pool (#4310): a session permit whose owner on another host
+	 * stopped renewing, and whose attempt was replaced, is released, since this host cannot confirm the owner's death
+	 * and its fenced attempt can write nothing more. Process permits on other hosts stay held: their groups may still run.
+	 */
+	readonly crossHost?: boolean;
+	/**
+	 * The epoch of the root's lease while this admission's root holds it, for a shared pool's root (#4310). Its session
+	 * permits carry it: once the root resumes under a newer epoch, a cross-host admission releases those of its earlier
+	 * incarnation whose owner on another host stopped renewing.
+	 */
+	readonly rootEpoch?: number;
 }
 type PermitRow = SqliteRow & {
 	operation: string;
@@ -156,6 +175,11 @@ type LivePermitRow = SqliteRow & {
 	boot: string | null;
 	pid: number | null;
 	expired: number | null;
+	/** 1 while the permit's attempt still holds its work; read only for cross-host admission. */
+	attempt_current: number | null;
+	/** 1 once the root resumed under a newer epoch than the permit's; read only for cross-host admission. */
+	root_moved: number | null;
+	attempt: string | null;
 };
 
 function processGroupStopped(encoded: string): boolean {
@@ -209,6 +233,9 @@ export class SqlResourceAdmission {
 				if (!Number.isSafeInteger(value) || value < 1) throw new Error("Invalid resource limit");
 		for (const value of [...Object.values(options.host ?? {}), options.stageStartMaxLoadPerCpu ?? 0])
 			if (!Number.isFinite(value) || value < 0) throw new Error("Invalid host admission threshold");
+		// Cross-host reconciliation reads the pool's work and lease tables, which a root opening admission on a brand-new
+		// journal has not created yet (#4310).
+		if (options.crossHost === true) await openSqlPoolQueue(journal);
 		const admission = new SqlResourceAdmission(storage, {
 			...structuredClone({ ...options, sampleHost: undefined }),
 			sampleHost: options.sampleHost,
@@ -224,6 +251,8 @@ export class SqlResourceAdmission {
 			for (const column of ["owner", "attempt", "process_identity"])
 				if (!columns.some((entry) => entry.name === column))
 					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
+			if (!columns.some((entry) => entry.name === "root_epoch"))
+				await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN root_epoch INTEGER`);
 			if (!columns.some((entry) => entry.name === "granted_at"))
 				await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN granted_at INTEGER`);
 			// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
@@ -401,7 +430,7 @@ export class SqlResourceAdmission {
 				this.owner,
 			);
 			await tx.run(
-				`INSERT INTO ${this.permits}(operation, root, holder, kind, state, owner, attempt) VALUES (?, ?, ?, ?, 'waiting', ?, ?)`,
+				`INSERT INTO ${this.permits}(operation, root, holder, kind, state, owner, attempt, root_epoch) VALUES (?, ?, ?, ?, 'waiting', ?, ?, ?)`,
 				operation,
 				this.options.root,
 				this.options.holder,
@@ -414,6 +443,7 @@ export class SqlResourceAdmission {
 							epoch: this.options.attempt.epoch,
 						})
 					: null,
+				this.options.rootEpoch ?? null,
 			);
 		});
 		// Since when this admission has been blocked only by capacity that quarantined permits hold.
@@ -571,9 +601,9 @@ export class SqlResourceAdmission {
 		};
 		const pending = await this.storage.read(async (db) => {
 			const live = await db.all<LivePermitRow>(
-				`SELECT p.operation, p.owner, p.kind, p.state, p.reason, p.process_identity, o.host, o.boot, o.pid,
-				o.expires_at < ${NOW_MS} AS expired FROM ${this.permits} p LEFT JOIN ${this.owners} o ON o.id = p.owner
-				WHERE p.state IN ('waiting', 'granted')`,
+				`SELECT p.operation, p.owner, p.kind, p.state, p.reason, p.process_identity, p.attempt, o.host, o.boot, o.pid,
+				o.expires_at < ${NOW_MS} AS expired, ${this.attemptCurrent} AS attempt_current, ${this.rootMoved} AS root_moved
+				FROM ${this.permits} p LEFT JOIN ${this.owners} o ON o.id = p.owner WHERE p.state IN ('waiting', 'granted')`,
 			);
 			if (live.some((permit) => this.needsFencing(permit, fence))) return true;
 			return !!(await db.get(
@@ -617,6 +647,21 @@ export class SqlResourceAdmission {
 						QUARANTINED_REASON,
 					);
 				} else {
+					if (this.options.crossHost === true && owner.host !== admissionHost) {
+						await tx.run(
+							`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND kind = 'session' AND state = 'granted' AND attempt IS NOT NULL AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}) AND NOT ${this.attemptCurrentOf(this.permits)}`,
+							REPLACED_ON_ANOTHER_HOST_REASON,
+							owner.id,
+							owner.id,
+						);
+						// A root's own sessions carry no attempt: its earlier incarnation's are released once it resumed elsewhere.
+						await tx.run(
+							`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND kind = 'session' AND state = 'granted' AND attempt IS NULL AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}) AND ${this.rootMovedOf(this.permits)}`,
+							ROOT_MOVED_REASON,
+							owner.id,
+							owner.id,
+						);
+					}
 					await tx.run(
 						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND state = 'granted' AND reason IS NOT ? AND reason IS NOT ? AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS})`,
 						EXPIRED_REASON,
@@ -659,6 +704,25 @@ export class SqlResourceAdmission {
 			);
 		});
 	}
+	/**
+	 * Whether a permit's attempt still holds its work, as SQL over the permits table aliased `p`: 1 when it does, or for
+	 * an admission that is not cross-host, which never asks.
+	 */
+	private get attemptCurrent(): string {
+		return this.options.crossHost === true ? `(CASE WHEN ${this.attemptCurrentOf("p")} THEN 1 ELSE 0 END)` : "1";
+	}
+	/** Whether a permit's root resumed under a newer epoch, as SQL over alias `p`: 0 for an admission not cross-host. */
+	private get rootMoved(): string {
+		return this.options.crossHost === true ? `(CASE WHEN ${this.rootMovedOf("p")} THEN 1 ELSE 0 END)` : "0";
+	}
+	/** Whether the root of the permit row `alias` holds its lease under a newer epoch than the permit's. */
+	private rootMovedOf(alias: string): string {
+		return `(${alias}.root_epoch IS NOT NULL AND ${alias}.root_epoch < (SELECT l.epoch FROM ${this.storage.tables.leases} l WHERE l.run_id = ${alias}.root))`;
+	}
+	/** Whether the attempt of the permit row `alias` still holds its work, as a SQL condition. */
+	private attemptCurrentOf(alias: string): string {
+		return `EXISTS (SELECT 1 FROM ${this.storage.tables.runs}_work w WHERE w.id = json_extract(${alias}.attempt, '$.id') AND w.generation = json_extract(${alias}.attempt, '$.generation') AND w.epoch = json_extract(${alias}.attempt, '$.epoch') AND w.state = 'leased')`;
+	}
 	/** The newest released ticket beyond the retained history, or NULL while there is nothing to prune. */
 	private get prunableBefore(): string {
 		return `(SELECT ticket FROM ${this.permits} WHERE state = 'released' ORDER BY ticket DESC LIMIT 1 OFFSET ?)`;
@@ -688,6 +752,15 @@ export class SqlResourceAdmission {
 		const quarantined = permit.reason === QUARANTINED_REASON;
 		if (stopped && (permit.kind === "session" || (permit.reason !== UNCONFIRMED_REASON && !quarantined))) return true;
 		if (!stopped && permit.expired && permit.reason !== EXPIRED_REASON && !quarantined) return true;
+		if (
+			this.options.crossHost === true &&
+			permit.host !== admissionHost &&
+			permit.expired &&
+			permit.kind === "session" &&
+			permit.state === "granted" &&
+			(permit.attempt === null ? Number(permit.root_moved) === 1 : Number(permit.attempt_current) === 0)
+		)
+			return true;
 		return (
 			permit.kind === "process" &&
 			permit.host === admissionHost &&

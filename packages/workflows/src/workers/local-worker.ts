@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	applyProviderRateLimitObservation,
@@ -6,14 +7,17 @@ import {
 	type ResourceAdmission,
 	withResourceAdmission,
 } from "@bastani/atomic";
-import { StorageProvider } from "@bastani/atomic/storage";
+import { type SessionStore, StorageProvider } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { type CheckpointSelection, JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
+import type { RunJournal } from "../durable/journal/types.js";
 import { PromptReservationState, type PromptReservationToken } from "../durable/prompt-reservation-state.js";
+import { WorkerPlacementConfigError } from "./placement-errors.js";
 import { openDurableJournal, POOL_DURABLE_JOURNAL_ENV, type PoolDurableJournal } from "./pool-journal.js";
+import { openPoolSessions } from "./pool-session-store.js";
 import "../durable/journal/workflows-host-module.js";
 import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
@@ -233,6 +237,40 @@ function releasableAdmission(admission: ResourceAdmission): {
 	};
 }
 
+/**
+ * The journals a worker opens: `journal`, where the root's checkpoints are; `poolJournal`, the database holding the
+ * pool's tables (the root's journal itself, the coordination database beside it, or, for a shared pool, the durable
+ * journal every host opens, #4310); and the pooled-stage session store in it. `durableSelection` is the root's durable
+ * journal selection as the pool passed it, when the pool's database is not that journal.
+ */
+export async function openWorkerJournals(
+	start: Pick<WorkerStart, "journalPath">,
+	durableSelection: string | undefined,
+): Promise<{ readonly journal: RunJournal; readonly poolJournal: RunJournal; readonly sessions: SessionStore }> {
+	const durable =
+		durableSelection === undefined
+			? undefined
+			: await openDurableJournal(JSON.parse(durableSelection) as PoolDurableJournal);
+	const poolJournal =
+		start.journalPath === undefined ? durable : await resolveRunJournal({ journal: { path: start.journalPath } });
+	if (poolJournal === undefined)
+		throw new WorkerPlacementConfigError(
+			"env",
+			POOL_DURABLE_JOURNAL_ENV,
+			"invalid-option",
+			"a shared pool's worker needs it",
+		);
+	const storage = sqlPoolStorage(poolJournal)!;
+	const sessions =
+		start.journalPath === undefined
+			? await openPoolSessions(storage)
+			: await new StorageProvider().openSessionStore(
+					{ kind: "sqlite", path: start.journalPath, prefix: `${storage.tables.runs}_pool_` },
+					{ agentDir: "", domain: "sessions" },
+				);
+	return { journal: durable ?? poolJournal, poolJournal, sessions };
+}
+
 /** Entry of every local worker process; the same module also runs a pool's coordinator. */
 export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart): Promise<void> {
 	if ("role" in start && start.role === POOL_COORDINATOR_ROLE) {
@@ -315,15 +353,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			});
 		});
 	const definitions = await Promise.all(start.definitions.map(loadWorkerDefinition));
-	// The database holding the pool's tables: the root's journal itself, or the coordination database beside it.
-	const poolJournal = await resolveRunJournal({ journal: { path: start.journalPath } });
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
 	// Read once and removed, so the tools this worker starts do not inherit it.
 	delete process.env[POOL_DURABLE_JOURNAL_ENV];
-	const journal =
-		durableSelection === undefined
-			? poolJournal
-			: await openDurableJournal(JSON.parse(durableSelection) as PoolDurableJournal);
+	const { journal, poolJournal, sessions } = await openWorkerJournals(start, durableSelection);
 	const journalReads = new Set(["descriptor", "getRun", "listRuns", "read", "readKey", "leaseState", "close"]);
 	const readOnlyJournal = new Proxy(journal, {
 		get(target, key) {
@@ -344,11 +377,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const reader = await JournalDurableBackend.open(readOnlyJournal, { runs: [] });
 	// The root holds the checkpoints of every child of the pool; the worker keeps only those of the child it runs.
 	await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
-	configurePooledWatchTrace(start.journalPath, `worker:${process.pid}`);
-	const sessions = await new StorageProvider().openSessionStore(
-		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(poolJournal)!.tables.runs}_pool_` },
-		{ agentDir: "", domain: "sessions" },
-	);
+	configurePooledWatchTrace(start.journalPath ?? join(process.cwd(), "shared-pool"), `worker:${process.pid}`);
 	const commit = poolWorkerCommit({
 		send: async (mutation) =>
 			(await request({ kind: "commit", operation: randomUUID(), mutation })) as unknown as PoolCommitReceipt,
@@ -534,6 +563,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						root: start.root,
 						holder: work.worker!,
 						attempt: work,
+						...(start.shared === undefined ? {} : { crossHost: true }),
 						...(start.stageStartMaxLoadPerCpu === undefined
 							? {}
 							: { stageStartMaxLoadPerCpu: start.stageStartMaxLoadPerCpu }),
@@ -544,7 +574,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const adapter: AgentSessionAdapter = {
 				async create(options, meta) {
 					if (!meta) throw new Error("Worker stage identity is required");
+					// A shared pool records where each stage runs, and on what binding, before its session starts (#4310).
+					if (start.shared !== undefined)
+						await request({ kind: "stage-workspace", runId: meta.runId, stageId: meta.stageId });
 					if (!options.orchestrationContext?.pendingStageDelivery) return baseAdapter.create(options, meta);
+					// The root's Intercom routes are announced only on the root's host: a stage on another host starts
+					// without them, and messages queued for it stay queued for the root.
+					if (start.shared?.routes === false) {
+						const { pendingStageDelivery: _routes, ...context } = options.orchestrationContext;
+						return baseAdapter.create({ ...options, orchestrationContext: context }, meta);
+					}
 					if (options.sessionManager)
 						store.recordStageSession(meta.runId, meta.stageId, {
 							sessionId: options.sessionManager.getSessionId(),

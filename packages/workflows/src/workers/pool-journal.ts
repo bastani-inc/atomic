@@ -193,6 +193,23 @@ export function poolJournalFor(journal: RunJournal): RunJournal {
 	return coordinations.get(journal) ?? journal;
 }
 
+const sharedRoots = new WeakMap<RunJournal, Set<string>>();
+
+/**
+ * Records that `root`'s pool keeps its tables in `journal` itself, as a root with shared placement does (#4310). Kept
+ * per root: roots without shared placement on the same journal keep theirs where {@link poolJournalFor} says.
+ */
+export function registerSharedPoolRoot(journal: RunJournal, root: string): void {
+	const roots = sharedRoots.get(journal) ?? new Set<string>();
+	roots.add(root);
+	sharedRoots.set(journal, roots);
+}
+
+/** The journal holding `root`'s pool tables: `journal` itself for a root with shared placement, else {@link poolJournalFor}. */
+export function poolJournalForRoot(journal: RunJournal, root: string): RunJournal {
+	return sharedRoots.get(journal)?.has(root) === true ? journal : poolJournalFor(journal);
+}
+
 /**
  * This machine's identity for pool state: a random id kept in the pool state directory. A root records it when it
  * first runs a pool against a journal in another database, so a resume elsewhere can say its pool state is not here.

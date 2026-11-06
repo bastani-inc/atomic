@@ -7,6 +7,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { isSharedPoolSetupError } from "../../packages/workflows/src/workers/placement-errors.js";
 import {
 	closeCoordinationJournals,
 	coordinationDatabase,
@@ -78,7 +79,12 @@ test.skipIf(process.platform === "win32")(
 						localWorkers: workers,
 						effectiveResources: elsewhere,
 					}),
-					/local workers ran on another machine \(another-machine\)[\s\S]*Resume the root on that machine/,
+					(error: Error) =>
+						isSharedPoolSetupError(error) &&
+						error.code === "pool-on-another-host" &&
+						error.operation === "resume" &&
+						error.problems[0]?.fields.recordedHost === "another-machine" &&
+						error.problems[0]?.fields.thisHost === host,
 				);
 			} finally {
 				await pool.close();
