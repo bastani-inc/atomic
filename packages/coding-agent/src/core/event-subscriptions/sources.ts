@@ -10,6 +10,7 @@ import type { AddressInfo } from "node:net";
 import { delimiter, join, resolve as resolvePath } from "node:path";
 import { requireTimerMs } from "./admission.js";
 import {
+	CONTINUE_AFTER_FAILURE,
 	EventSourceError,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
@@ -27,9 +28,8 @@ const DEFAULT_WEBHOOK_MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_GITHUB_INTERVAL_MS = 30_000;
 const GH_MAX_OUTPUT_BYTES = 16 * 1_048_576;
 const GH_MAX_STDERR_CHARS = 1_000;
-const LOG_READ_HINT = "Check that the log file and its directory are readable by this process, then subscribe again.";
-const GITHUB_POLL_HINT =
-	"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.";
+const LOG_READ_HINT = `Check that the log file and its directory are readable by this process, then ${CONTINUE_AFTER_FAILURE}.`;
+const GITHUB_POLL_HINT = `Check access to the repository with \`gh auth status\` and that GitHub is reachable, then ${CONTINUE_AFTER_FAILURE}.`;
 const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
 
 function requireNonEmptyString(value: string, field: string): void {

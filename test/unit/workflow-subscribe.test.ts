@@ -2470,3 +2470,28 @@ test("overlapping reads of an inline stream get successive events (#4311)", asyn
 	assert.equal(result.status, "completed", result.error);
 	assert.deepEqual(seen, ["o1", "o2"]);
 });
+
+test("after a handler failure, a resume skips processed events while subscribing again in the same run handles them again (#4311)", async () => {
+	const handled: string[] = [];
+	let failOnB = true;
+	const events = ["a", "b", "c"].map((id) => ({ id }));
+	const body = async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
+		const handler = async (event: SubscriptionEvent) => {
+			handled.push(event.id);
+			if (event.id === "b" && failOnB) {
+				failOnB = false;
+				throw new Error("b failed");
+			}
+		};
+		const first = ctx.subscribe(listSource("retry", events), handler, { maxConcurrent: 1 });
+		const failure = await first.done.then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.equal(isSubscriptionHandlerError(failure), true);
+		await ctx.subscribe(listSource("retry", events), handler, { maxConcurrent: 1 }).done;
+	};
+	const { result } = await runWorkflow(body, undefined, "a3a3a3a3-a3a3-4a3a-8a3a-000000004311");
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(handled, ["a", "b", "a", "b", "c"]);
+});

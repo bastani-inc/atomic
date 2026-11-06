@@ -189,8 +189,8 @@ test("rendered messages state what failed, the subject, the code and what to do"
 			"Subscription is closed: run-1/ci#1 (subscription-closed). Use the id of an open subscription; a closed subscription accepts no events or reports.",
 			"Invalid subscription option: options.maxConcurrent (invalid-option). Pass a positive integer for options.maxConcurrent.",
 			"Invalid subscription event: run-1/ci#1 (invalid-event). Emit objects shaped { id: string, type?: string, payload?: JSON value }; the id drives deduplication.",
-			"Event source failed during poll (gh exited with code 1): github-checks:o/r#1 (source-failed). Check the source's configuration and access, then subscribe again.",
-			"Event handler failed for event evt-3: run-1/ci#1 (handler-failed). Inspect the cause, fix the handler, then subscribe again; events already handled are not repeated.",
+			"Event source failed during poll (gh exited with code 1): github-checks:o/r#1 (source-failed). Check the source's configuration and access, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
+			"Event handler failed for event evt-3: run-1/ci#1 (handler-failed). Inspect the cause and fix the handler, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 			"Event child session unavailable: sess-1/list#1 (child-unavailable). Create the session with createAgentSession() so it can start child sessions, or report directly.",
 			"Subscription setup is missing: the GitHub CLI (gh) that githubChecks and githubReviews run (setup-missing). Install the GitHub CLI from https://cli.github.com (for example `brew install gh` or `winget install GitHub.cli`), then run `gh auth login`.",
 			'Subscriber stage "watcher" cannot take reports (invalid-session): run-1/ci#1 (subscriber-unavailable). The subscriber\'s retained session could not be reopened from the session store; make the store that ran the stage available, or start the run again instead of resuming it.',
@@ -201,7 +201,7 @@ test("rendered messages state what failed, the subject, the code and what to do"
 	);
 	assert.equal(
 		new EventSourceError("webhook:/hooks", "listen").message,
-		"Event source failed during listen: webhook:/hooks (source-failed). Choose a free port or hostname for the webhook source, then subscribe again.",
+		"Event source failed during listen: webhook:/hooks (source-failed). Choose a free port or hostname for the webhook source, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 	);
 	const reasons = [
 		"duplicate-id",
@@ -247,10 +247,10 @@ test("rendered messages state what failed, the subject, the code and what to do"
 		(phase) => new EventSourceError("s", phase).hint,
 	);
 	assert.deepEqual(sourceHints, [
-		"Check the source's configuration and access, then subscribe again.",
-		"Choose a free port or hostname for the webhook source, then subscribe again.",
-		"Check the source's configuration and access, then subscribe again.",
-		"Check the source's configuration and access, then subscribe again.",
+		"Check the source's configuration and access, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
+		"Choose a free port or hostname for the webhook source, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
+		"Check the source's configuration and access, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
+		"Check the source's configuration and access, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 		"Inspect the cause; the sender can send the delivery again.",
 	]);
 	assert.equal(new EventSourceError("s", "poll", { hint: "Run the fix." }).hint, "Run the fix.");
@@ -605,4 +605,46 @@ test("a timeout error carries its phase, limit and elapsed time, and a guard fin
 		fields: { phase: "gh-auth-check" },
 	}) as SubscriptionTimeoutError;
 	assert.deepEqual([unreadable.timeoutMs, unreadable.elapsedMs], [0, 0]);
+});
+
+test("a serialized error with a value this version does not know comes back as the family base with its own text (#4311)", () => {
+	const unknownValues = [
+		{
+			name: "SubscriptionClosedError",
+			code: "subscription-closed",
+			fields: { subscriptionId: "s", operation: "drain" },
+		},
+		{ name: "SubscriptionConfigError", code: "invalid-option", fields: { field: "f", reason: "too-shiny" } },
+		{ name: "SubscriptionEventError", code: "invalid-event", fields: { subscriptionId: "s", reason: "too-big" } },
+		{ name: "EventSourceError", code: "source-failed", fields: { sourceId: "s", phase: "handshake", detail: null } },
+		{ name: "SubscriptionSetupError", code: "setup-missing", fields: { missing: "gh-scope" } },
+		{
+			name: "SubscriptionRecordError",
+			code: "record-failed",
+			fields: { subscriptionId: "s", record: "inbox", eventId: null },
+		},
+		{ name: "SubscriptionTimeoutError", code: "timeout", fields: { phase: "gh-api", timeoutMs: 1, elapsedMs: 2 } },
+		{
+			name: "SubscriptionSubscriberUnavailableError",
+			code: "subscriber-unavailable",
+			fields: { subscriptionId: "s", subscriber: "w", reason: "moved" },
+		},
+	] as const;
+	for (const value of unknownValues) {
+		const message = `${value.name} from a newer version (${value.code}). Do the newer thing.`;
+		const rebuilt = deserializeSubscriptionError({
+			...value,
+			message,
+			hint: "Do the newer thing.",
+			retryable: true,
+			cause: { name: "Error", message: "underlying" },
+		} as never);
+		assert.equal(Object.getPrototypeOf(rebuilt), SubscriptionError.prototype, value.name);
+		assert.deepEqual(
+			[rebuilt.name, rebuilt.code, rebuilt.message, rebuilt.hint, rebuilt.retryable],
+			[value.name, value.code, message, "Do the newer thing.", true],
+		);
+		assert.equal(guards[value.name](rebuilt), true, value.name);
+		assert.equal((rebuilt.cause as Error).message, "underlying");
+	}
 });

@@ -606,7 +606,7 @@ test("logTail rejects a read failure other than ENOENT with the errno code as de
 	assert.ok(error.cause !== undefined);
 	assert.equal(
 		error.hint,
-		"Check that the log file and its directory are readable by this process, then subscribe again.",
+		"Check that the log file and its directory are readable by this process, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 	);
 });
 
@@ -816,7 +816,7 @@ test("logTail rejects a read failure in the middle of a run with the errno code 
 	assert.ok(error.cause !== undefined);
 	assert.equal(
 		error.hint,
-		"Check that the log file and its directory are readable by this process, then subscribe again.",
+		"Check that the log file and its directory are readable by this process, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 	);
 });
 
@@ -1836,7 +1836,7 @@ test("a failed poll renders one credential-free message that names the phase and
 	assert.equal(
 		error.message,
 		"Event source failed during poll (gh failed): github-checks:acme/widgets#7 (source-failed). " +
-			"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.",
+			"Check access to the repository with `gh auth status` and that GitHub is reachable, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 	);
 });
 
@@ -2210,7 +2210,7 @@ test.runIf(process.platform !== "win32")(
 		assert.equal(isSubscriptionSetupError(failure), false);
 		assert.equal(
 			failure.hint,
-			"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.",
+			"Check access to the repository with `gh auth status` and that GitHub is reachable, then resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again.",
 		);
 	},
 );
@@ -2447,4 +2447,29 @@ test("webhook paths with a query string or fragment are refused before listening
 			"Pass a path without a query string or fragment, for example /hooks/ci for webhook.path.",
 		);
 	}
+});
+
+test("a webhook answers 202 once a delivery is queued in memory, and deliveries still queued when the subscription is cancelled are not handled (#4311)", async () => {
+	const source = webhook({ path: "/hooks/queued" });
+	const handled: string[] = [];
+	const subscription = openEventSubscription({
+		id: "webhook-queued-test",
+		source,
+		admission: { maxConcurrent: 1, maxRate: { events: 1, intervalMs: 3_600_000 } },
+		handle: async (event) => {
+			handled.push(event.id);
+		},
+	});
+	const url = await source.listening();
+	for (const id of ["d1", "d2", "d3"]) {
+		const response = await fetch(url, { method: "POST", headers: { "x-request-id": id }, body: "x" });
+		assert.equal(response.status, 202);
+	}
+	assert.deepEqual(handled, ["d1"]);
+	assert.equal(subscription.stats().queued, 2);
+	const reason = new DOMException("owner closed", "AbortError");
+	subscription.cancel(reason);
+	await assert.rejects(subscription.done, (error) => error === reason);
+	assert.deepEqual(handled, ["d1"]);
+	assert.equal(subscription.stats().queued, 0);
 });

@@ -186,11 +186,18 @@ export class SubscriptionEventError extends SubscriptionError {
 
 export type EventSourcePhase = "start" | "listen" | "poll" | "read" | "request";
 
+/**
+ * How to continue after a subscription stopped. Dedupe follows the durable record of one subscription, which a resume
+ * or a reopened session finds again; a new subscription in the same run or session starts with no processed events.
+ */
+export const CONTINUE_AFTER_FAILURE =
+	"resume the run or reopen the session, which skips events already recorded as processed; subscribing again in the same run or session handles every event again";
+
 const DEFAULT_SOURCE_HINT: Readonly<Record<EventSourcePhase, string>> = {
-	start: "Check the source's configuration and access, then subscribe again.",
-	listen: "Choose a free port or hostname for the webhook source, then subscribe again.",
-	poll: "Check the source's configuration and access, then subscribe again.",
-	read: "Check the source's configuration and access, then subscribe again.",
+	start: `Check the source's configuration and access, then ${CONTINUE_AFTER_FAILURE}.`,
+	listen: `Choose a free port or hostname for the webhook source, then ${CONTINUE_AFTER_FAILURE}.`,
+	poll: `Check the source's configuration and access, then ${CONTINUE_AFTER_FAILURE}.`,
+	read: `Check the source's configuration and access, then ${CONTINUE_AFTER_FAILURE}.`,
 	request: "Inspect the cause; the sender can send the delivery again.",
 };
 
@@ -248,7 +255,7 @@ export class SubscriptionHandlerError extends SubscriptionError {
 	readonly eventId: string;
 
 	constructor(subscriptionId: string, eventId: string, cause: unknown) {
-		const hint = "Inspect the cause, fix the handler, then subscribe again; events already handled are not repeated.";
+		const hint = `Inspect the cause and fix the handler, then ${CONTINUE_AFTER_FAILURE}.`;
 		super(
 			"handler-failed",
 			failureMessage(`Event handler failed for event ${eventId}`, subscriptionId, "handler-failed", hint),
@@ -341,8 +348,6 @@ const SUBSCRIBER_UNAVAILABLE_HINT: Readonly<Record<SubscriberUnavailableReason, 
 	"no-message-admission":
 		"The subscriber's stage chat cannot take messages; close whatever holds that chat, or subscribe from a stage that runs in this run.",
 };
-
-const SUBSCRIBER_UNAVAILABLE_REASONS: ReadonlySet<string> = new Set(Object.keys(SUBSCRIBER_UNAVAILABLE_HINT));
 
 /** A report could not reach its subscriber stage, because that stage was replayed from a checkpoint after a resume. */
 export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
@@ -593,6 +598,25 @@ function stringField(fields: SubscriptionErrorFields, key: string): string {
 	return typeof value === "string" ? value : "";
 }
 
+/** The field's value when it is one this version knows, as listed by the keys of `known`. */
+function knownField<T extends string>(
+	fields: SubscriptionErrorFields,
+	key: string,
+	known: Readonly<Record<T, unknown>>,
+): T | undefined {
+	const value = fields[key];
+	return typeof value === "string" && Object.hasOwn(known, value) ? (value as T) : undefined;
+}
+
+const CLOSED_OPERATIONS: Readonly<Record<SubscriptionClosedOperation, true>> = {
+	publish: true,
+	emit: true,
+	report: true,
+	subscribe: true,
+};
+
+const EVENT_REASONS: Readonly<Record<SubscriptionEventReason, true>> = { "not-object": true, "missing-id": true };
+
 function numberField(fields: SubscriptionErrorFields, key: string): number {
 	const value = fields[key];
 	return typeof value === "number" ? value : 0;
@@ -615,34 +639,35 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 	const fields = serialized.fields;
 	const rebuilt = ((): SubscriptionError => {
 		switch (serialized.name) {
-			case "SubscriptionClosedError":
-				return new SubscriptionClosedError(
-					stringField(fields, "subscriptionId"),
-					stringField(fields, "operation") as SubscriptionClosedOperation,
-				);
-			case "SubscriptionConfigError":
+			case "SubscriptionClosedError": {
+				const operation = knownField(fields, "operation", CLOSED_OPERATIONS);
+				if (operation === undefined) return familyBase(serialized, cause);
+				return new SubscriptionClosedError(stringField(fields, "subscriptionId"), operation);
+			}
+			case "SubscriptionConfigError": {
+				const reason = knownField(fields, "reason", EXPECTED_BY_REASON);
+				if (reason === undefined) return familyBase(serialized, cause);
 				return new SubscriptionConfigError(
 					stringField(fields, "field"),
-					stringField(fields, "reason") as SubscriptionConfigReason,
+					reason,
 					stringField(fields, "expected") || undefined,
 				);
-			case "SubscriptionEventError":
-				return new SubscriptionEventError(
-					stringField(fields, "subscriptionId"),
-					stringField(fields, "reason") as SubscriptionEventReason,
-				);
+			}
+			case "SubscriptionEventError": {
+				const reason = knownField(fields, "reason", EVENT_REASONS);
+				if (reason === undefined) return familyBase(serialized, cause);
+				return new SubscriptionEventError(stringField(fields, "subscriptionId"), reason);
+			}
 			case "EventSourceError": {
+				const phase = knownField(fields, "phase", DEFAULT_SOURCE_HINT);
+				if (phase === undefined) return familyBase(serialized, cause);
 				const detail = fields.detail;
-				return new EventSourceError(
-					stringField(fields, "sourceId"),
-					stringField(fields, "phase") as EventSourcePhase,
-					{
-						cause,
-						retryable: serialized.retryable,
-						hint: serialized.hint,
-						...(typeof detail === "string" ? { detail } : {}),
-					},
-				);
+				return new EventSourceError(stringField(fields, "sourceId"), phase, {
+					cause,
+					retryable: serialized.retryable,
+					hint: serialized.hint,
+					...(typeof detail === "string" ? { detail } : {}),
+				});
 			}
 			case "SubscriptionHandlerError":
 				return new SubscriptionHandlerError(
@@ -655,30 +680,39 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 					stringField(fields, "subscriptionId"),
 					stringField(fields, "sessionId"),
 				);
-			case "SubscriptionSetupError":
-				return new SubscriptionSetupError(stringField(fields, "missing") as SubscriptionSetupMissing);
+			case "SubscriptionSetupError": {
+				const missing = knownField(fields, "missing", SETUP_HINT);
+				if (missing === undefined) return familyBase(serialized, cause);
+				return new SubscriptionSetupError(missing);
+			}
 			case "SubscriptionSubscriberUnavailableError": {
-				const reason = stringField(fields, "reason");
-				if (!SUBSCRIBER_UNAVAILABLE_REASONS.has(reason)) return familyBase(serialized, cause);
+				const reason = knownField(fields, "reason", SUBSCRIBER_UNAVAILABLE_HINT);
+				if (reason === undefined) return familyBase(serialized, cause);
 				return new SubscriptionSubscriberUnavailableError(
 					stringField(fields, "subscriptionId"),
 					stringField(fields, "subscriber"),
-					reason as SubscriberUnavailableReason,
+					reason,
 				);
 			}
-			case "SubscriptionRecordError":
+			case "SubscriptionRecordError": {
+				const record = knownField(fields, "record", RECORD_HINT);
+				if (record === undefined) return familyBase(serialized, cause);
 				return new SubscriptionRecordError(
 					stringField(fields, "subscriptionId"),
-					stringField(fields, "record") as SubscriptionRecordKind,
+					record,
 					typeof fields.eventId === "string" ? fields.eventId : null,
 					{ retryable: serialized.retryable },
 				);
-			case "SubscriptionTimeoutError":
+			}
+			case "SubscriptionTimeoutError": {
+				const phase = knownField(fields, "phase", TIMEOUT_HINT);
+				if (phase === undefined) return familyBase(serialized, cause);
 				return new SubscriptionTimeoutError(
-					stringField(fields, "phase") as SubscriptionTimeoutPhase,
+					phase,
 					numberField(fields, "timeoutMs"),
 					numberField(fields, "elapsedMs"),
 				);
+			}
 			default:
 				return familyBase(serialized, cause);
 		}
