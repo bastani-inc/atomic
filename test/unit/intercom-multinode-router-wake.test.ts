@@ -8,8 +8,12 @@ import {
 	type ReservationOptions,
 } from "../../packages/intercom/broker/multinode-router.js";
 import {
+	BROKER_LEASE_STALE_AFTER_MS,
 	type HeldSendRequest,
 	type IntercomBrokerStateStore,
+	KNOWN_SESSION_RETENTION_MS,
+	OUTBOX_BACKUP_POLL_INTERVAL_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
 	reservationKeyFor,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
@@ -18,7 +22,11 @@ import {
 	RESTORING_RECIPIENT_HOLD_MS,
 	restoringRecipientRetryReason,
 } from "../../packages/intercom/broker/restoring-recipients.js";
-import type { BrokerConnectedSession, RemoteSendRequest } from "../../packages/intercom/broker/send-handler.js";
+import {
+	type BrokerConnectedSession,
+	deliveryTargetIdentity,
+	type RemoteSendRequest,
+} from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerOutboundFrame } from "../../packages/intercom/broker/socket-writes.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { WakeUpBus, WakeUpHint } from "../../packages/intercom/broker/wake-up-bus.js";
@@ -34,6 +42,9 @@ import {
 	openMemorySentMessageFixture,
 	openMemoryWakeUpBusFixture,
 } from "../helpers/intercom-multinode-memory-reference.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[] };
 
@@ -83,6 +94,7 @@ interface Cluster {
 interface Spied {
 	readonly requestWakeCalls: string[];
 	readonly takeWakeCalls: string[];
+	heldListCalls: number;
 }
 
 interface Node {
@@ -134,12 +146,37 @@ async function cluster(): Promise<Cluster> {
 
 async function startNode(
 	shared: Cluster,
-	options: { readonly requestWakeStatus?: "not-wakeable"; readonly takeInvalid?: boolean } = {},
+	options: {
+		readonly requestWakeStatus?: "not-wakeable";
+		readonly takeInvalid?: boolean;
+		/** Reservation renewals are lost on the way to the database: the broker keeps its mirrors, the rows age. */
+		readonly loseReservationRenewals?: boolean;
+		/** Held-send listings wait until this settles. */
+		readonly heldListGate?: Promise<void>;
+		readonly heldListInvalid?: boolean;
+		readonly undeliveredListInvalid?: boolean;
+	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
-	const spied: Spied = { requestWakeCalls: [], takeWakeCalls: [] };
+	const spied: Spied = { requestWakeCalls: [], takeWakeCalls: [], heldListCalls: 0 };
 	const state: IntercomBrokerStateStore = {
 		...inner,
+		heldSends: {
+			...inner.heldSends,
+			list: async (key) => {
+				spied.heldListCalls++;
+				await options.heldListGate;
+				if (options.heldListInvalid === true) return { status: "invalid", reason: "empty-reservation-key" };
+				return inner.heldSends.list(key);
+			},
+		},
+		outbox: {
+			...inner.outbox,
+			listUndelivered: async (identity) =>
+				options.undeliveredListInvalid === true
+					? { status: "invalid", reason: "empty-target-identity" }
+					: inner.outbox.listUndelivered(identity),
+		},
 		reservations: {
 			...inner.reservations,
 			requestWake: async (key) => {
@@ -152,6 +189,8 @@ async function startNode(
 				if (options.takeInvalid === true) return { status: "invalid", reason: "empty-broker-id" };
 				return inner.reservations.takeWakeRequests(brokerId);
 			},
+			renew: async (lease) =>
+				options.loseReservationRenewals === true ? { status: "renewed" } : inner.reservations.renew(lease),
 		},
 	};
 	const innerBus = await shared.connectBus();
@@ -691,5 +730,535 @@ describe("router wake delivery edge cases (#4326)", () => {
 		await hint(shared, node);
 		assert.deepEqual(wakeFramesOf(owner), [{ type: "restoring_recipient_wake", childName: "child" }]);
 		assert.equal(vi.mocked(console.error).mock.calls.length, 0);
+	});
+});
+
+describe("released child sends queued across faults (#4401)", () => {
+	const CHILD = "child";
+	const WAKE = { type: "restoring_recipient_wake", childName: CHILD };
+
+	function useFakeClock(): void {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+	}
+
+	async function register(node: Node, target: BrokerConnectedSession): Promise<void> {
+		node.sessions.set(target.info.id, target);
+		await node.router.sessionRegistered(target);
+		await flush();
+	}
+
+	function leave(node: Node, target: BrokerConnectedSession): void {
+		node.sessions.delete(target.info.id);
+		node.router.sessionLeft(target);
+	}
+
+	/** A subagent that registered on `node` and was released: it left, and stays known. */
+	async function releasedChild(node: Node, name = CHILD): Promise<BrokerConnectedSession> {
+		const child = session(name);
+		await register(node, child);
+		leave(node, child);
+		await flush();
+		return child;
+	}
+
+	/** The ids Subagents reserves for a released child besides its name. */
+	const aliasesOf = (child: BrokerConnectedSession): string[] => [
+		child.registrationReturnAddress ?? "",
+		child.info.id,
+	];
+
+	function reserveReleased(
+		node: Node,
+		owner: BrokerConnectedSession,
+		child: BrokerConnectedSession,
+		options: { readonly wake?: boolean; readonly aliases?: readonly string[] } = {},
+	): void {
+		node.router.restoringReserved(
+			releasedReservationKey(CHILD),
+			owner.info.id,
+			CHILD,
+			CREW,
+			options.aliases ?? aliasesOf(child),
+			true,
+			{ wake: options.wake ?? true, replaceAliases: true },
+		);
+	}
+
+	/** The same session reconnecting through a new socket: a restarted owner, or a woken child. */
+	const reconnected = (target: BrokerConnectedSession): BrokerConnectedSession => ({
+		...target,
+		socket: fakeSocket(),
+	});
+
+	async function wakeAndRegister(
+		node: Node,
+		owner: BrokerConnectedSession,
+		child: BrokerConnectedSession,
+	): Promise<BrokerConnectedSession> {
+		const back = reconnected(child);
+		node.sessions.set(back.info.id, back);
+		await node.router.sessionRegistered(back, {
+			childName: CHILD,
+			groups: new Set([CREW]),
+			authorizedBy: owner.info.id,
+		});
+		await flush();
+		return back;
+	}
+
+	const messageIdsOf = (target: BrokerConnectedSession): string[] =>
+		framesOf(target).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : []));
+
+	/** Sends from `sender` that its broker reports as queued for the offline child. */
+	async function queueSends(senderNode: Node, sender: BrokerConnectedSession, count: number): Promise<string[]> {
+		const ids: string[] = [];
+		for (let index = 0; index < count; index++) {
+			const send = remoteSend(sender, CHILD, true);
+			senderNode.router.routeSend(send.request);
+			await flush();
+			ids.push(send.id);
+		}
+		assert.deepEqual(
+			framesOf(sender)
+				.slice(-count)
+				.map((frame) => (frame.type === "queued" ? [frame.messageId, frame.target] : frame.type)),
+			ids.map((id) => [id, "offline session"]),
+		);
+		return ids;
+	}
+
+	/** Rows another node's broker queued for `target` in the shared outbox. */
+	async function enqueueFor(node: Node, target: BrokerConnectedSession, count = 1): Promise<string[]> {
+		const from = session("remote-sender").info;
+		const ids: string[] = [];
+		for (let index = 0; index < count; index++) {
+			const id = randomUUID();
+			const enqueued = await node.state.outbox.enqueue({
+				targetIdentity: deliveryTargetIdentity(target),
+				originBrokerId: "other-origin",
+				digest: id,
+				frame: { type: "message", from, message: { id, timestamp: 1, content: { text: "queued" } } },
+			});
+			assert.equal(enqueued.status, "inserted");
+			ids.push(id);
+		}
+		return ids;
+	}
+
+	async function receiveAll(node: Node, child: BrokerConnectedSession, ids: readonly string[]): Promise<void> {
+		for (const id of ids) assert.equal(node.router.received(child, id), true);
+		await flush();
+	}
+
+	async function rowStates(node: Node, ids: readonly string[]): Promise<string[]> {
+		return Promise.all(
+			ids.map(async (id) => {
+				const read = await node.state.outbox.read(id);
+				return read.status === "found" ? read.row.state : read.status;
+			}),
+		);
+	}
+
+	async function ownerSenderAndChild(shared: Cluster, ownerNode: Node) {
+		const senderNode = await startNode(shared);
+		const owner = session("owner");
+		const sender = session("sender");
+		await register(ownerNode, owner);
+		await register(senderNode, sender);
+		const child = await releasedChild(ownerNode);
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		return { senderNode, owner, sender, child };
+	}
+
+	test("sends queued while the owner's broker is down wake the child once the owner reserves it through a restarted broker, and arrive once each, in order (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		await ownerNode.router.close();
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 1_000);
+		const ids = await queueSends(senderNode, sender, 3);
+
+		const restarted = await startNode(shared);
+		const reconnectedOwner = reconnected(owner);
+		restarted.sessions.set(owner.info.id, reconnectedOwner);
+		reserveReleased(restarted, reconnectedOwner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(reconnectedOwner), [WAKE]);
+
+		const back = await wakeAndRegister(restarted, reconnectedOwner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+		await receiveAll(restarted, back, ids);
+		assert.deepEqual(await rowStates(restarted, ids), ["delivered", "delivered", "delivered"]);
+		await vi.advanceTimersByTimeAsync(OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(messageIdsOf(back), ids, "nothing is delivered again");
+		assert.equal(wakeFramesOf(reconnectedOwner).length, 1);
+	});
+
+	test("sends queued for a released child still wake it and arrive once each, in order, when its owner returns after the brokers forgot the child (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		await ownerNode.router.close();
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 1_000);
+		const ids = await queueSends(senderNode, sender, 3);
+		// The owner stays away past the known-session retention; the sender's broker prunes the child's record meanwhile.
+		vi.setSystemTime(Date.now() + KNOWN_SESSION_RETENTION_MS);
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		const forgotten = await senderNode.state.knownSessions.lookup(child.info.id, Number.MAX_SAFE_INTEGER);
+		assert.deepEqual(forgotten, { status: "found", sessions: [] });
+
+		const restarted = await startNode(shared);
+		const reconnectedOwner = reconnected(owner);
+		restarted.sessions.set(owner.info.id, reconnectedOwner);
+		reserveReleased(restarted, reconnectedOwner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(reconnectedOwner), [WAKE]);
+
+		const back = await wakeAndRegister(restarted, reconnectedOwner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+		await receiveAll(restarted, back, ids);
+		assert.deepEqual(await rowStates(restarted, ids), ["delivered", "delivered", "delivered"]);
+		await vi.advanceTimersByTimeAsync(OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(messageIdsOf(back), ids, "nothing is delivered again");
+		assert.equal(wakeFramesOf(reconnectedOwner).length, 1);
+	});
+
+	test("sends still queued when the owner's process is killed, before and after it woke the child, reach the child once each, in order, through the next owner process (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		leave(ownerNode, owner);
+		await flush();
+		const ids = await queueSends(senderNode, sender, 3);
+
+		const secondOwner = reconnected(owner);
+		await register(ownerNode, secondOwner);
+		reserveReleased(ownerNode, secondOwner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(secondOwner), [WAKE]);
+		assert.deepEqual(await rowStates(ownerNode, ids), ["queued", "queued", "queued"]);
+		leave(ownerNode, secondOwner);
+		await flush();
+
+		const thirdOwner = reconnected(owner);
+		await register(ownerNode, thirdOwner);
+		reserveReleased(ownerNode, thirdOwner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(thirdOwner), [WAKE]);
+		assert.deepEqual(wakeFramesOf(owner), []);
+
+		const back = await wakeAndRegister(ownerNode, thirdOwner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+		await receiveAll(ownerNode, back, ids);
+		assert.deepEqual(await rowStates(ownerNode, ids), ["delivered", "delivered", "delivered"]);
+		await vi.advanceTimersByTimeAsync(OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(messageIdsOf(back), ids, "nothing is delivered again");
+		assert.equal(wakeFramesOf(secondOwner).length, 1);
+		assert.equal(wakeFramesOf(thirdOwner).length, 1);
+	});
+
+	test("sends queued while the owner's broker cannot renew its reservation wake the child at that broker's next backup poll, once (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared, { loseReservationRenewals: true });
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 1_000);
+		const ids = await queueSends(senderNode, sender, 2);
+		assert.deepEqual(wakeFramesOf(owner), []);
+
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.equal(wakeFramesOf(owner).length, 1, "the backup poll wakes a reservation once");
+
+		const back = await wakeAndRegister(ownerNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+	});
+
+	test("a released child that a broker still hosts is not woken for the sends being delivered to it (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const owner = session("owner");
+		const child = session(CHILD);
+		await register(node, owner);
+		await register(node, child);
+		await enqueueFor(node, child);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(node.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+	});
+
+	test("a released child whose broker crashed is woken once the presence lease it left behind is stale (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const owner = session("owner");
+		await register(node, owner);
+		const child = await releasedChild(node);
+		const crashed = await shared.connectState();
+		const presence = {
+			kind: "presence" as const,
+			targetIdentity: deliveryTargetIdentity(child),
+			session: child.info,
+		};
+		const acquired = await crashed.leases.acquire(presence, "crashed-broker", BROKER_LEASE_STALE_AFTER_MS);
+		assert.equal(acquired.status, "acquired");
+		const ids = await enqueueFor(node, child, 2);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [], "hosted while its presence lease is live");
+
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		await vi.advanceTimersByTimeAsync(1);
+		const back = await wakeAndRegister(node, owner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+	});
+
+	test("reserving a woken child again neither wakes it again nor reads the store for it (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const owner = session("owner");
+		await register(node, owner);
+		const child = await releasedChild(node);
+		await enqueueFor(node, child);
+		reserveReleased(node, owner, child);
+		await flush();
+		const readsAfterWake = node.spied.heldListCalls;
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		assert.deepEqual(node.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		assert.equal(node.spied.heldListCalls, readsAfterWake);
+	});
+
+	test("a woken child that was parked and released again is woken again for the sends still waiting (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const owner = session("owner");
+		await register(node, owner);
+		const child = await releasedChild(node);
+		await enqueueFor(node, child);
+		reserveReleased(node, owner, child);
+		await flush();
+		reserveReleased(node, owner, child, { wake: false });
+		await flush();
+		assert.equal(wakeFramesOf(owner).length, 1);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE, WAKE]);
+	});
+
+	test("a child that registered through another broker and was released again is woken again by its owner's broker (#4401)", async () => {
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const otherNode = await startNode(shared);
+		const owner = session("owner");
+		await register(ownerNode, owner);
+		const child = await releasedChild(ownerNode);
+		const ids = await enqueueFor(ownerNode, child);
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		assert.equal(wakeFramesOf(owner).length, 1);
+
+		const back = await wakeAndRegister(otherNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), ids);
+		leave(otherNode, back);
+		await flush();
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE, WAKE], "the earlier wake belonged to the reservation it ended");
+	});
+
+	test("sends queued for another session that shares the child's name do not wake the child (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const owner = session("owner");
+		await register(node, owner);
+		const namesake = await releasedChild(node);
+		const child = await releasedChild(node);
+		await enqueueFor(node, namesake);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(node.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+	});
+
+	for (const [alias, aliasesOf] of [
+		["Intercom session id", (child: BrokerConnectedSession) => [child.info.id]],
+		["Atomic session id", (child: BrokerConnectedSession) => [child.registrationReturnAddress ?? ""]],
+	] as const) {
+		test(`a released child reserved under its ${alias} alone is woken for its queued sends (#4401)`, async () => {
+			const node = await startNode(await cluster());
+			const owner = session("owner");
+			await register(node, owner);
+			const child = await releasedChild(node);
+			await enqueueFor(node, child);
+			reserveReleased(node, owner, child, { aliases: aliasesOf(child) });
+			await flush();
+			assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		});
+	}
+
+	test("a released child whose queued sends were all delivered is not woken (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const owner = session("owner");
+		await register(node, owner);
+		const child = await releasedChild(node);
+		const ids = await enqueueFor(node, child, 2);
+		const back = await wakeAndRegister(node, owner, child);
+		await receiveAll(node, back, ids);
+		leave(node, back);
+		await flush();
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(node.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+	});
+
+	test("a wake the owner's broker delivered for a held send is not repeated by its backup poll for the child's queued sends (#4401)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared);
+		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
+		senderNode.router.routeSend(remoteSend(sender, CHILD, true).request);
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "send_held");
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		await enqueueFor(ownerNode, child);
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	function closedGate(): { readonly gate: Promise<void>; open(): void } {
+		const { promise, resolve } = Promise.withResolvers<void>();
+		return { gate: promise, open: () => resolve() };
+	}
+
+	async function ownerAndChildWithQueuedSends(node: Node) {
+		const owner = session("owner");
+		await register(node, owner);
+		const child = await releasedChild(node);
+		await enqueueFor(node, child);
+		return { owner, child };
+	}
+
+	test("a backup poll waits behind a reserve of the same child that is still checking, so the owner is asked once (#4401)", async () => {
+		useFakeClock();
+		const listing = closedGate();
+		const node = await startNode(await cluster(), { heldListGate: listing.gate });
+		const { owner, child } = await ownerAndChildWithQueuedSends(node);
+		reserveReleased(node, owner, child);
+		await flush();
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		listing.open();
+		await flush();
+		assert.deepEqual(node.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	test("a backup poll queued behind a reserve whose owner left meanwhile asks for nothing and reports no error (#4401)", async () => {
+		useFakeClock();
+		const listing = closedGate();
+		const node = await startNode(await cluster(), { heldListGate: listing.gate });
+		const { owner, child } = await ownerAndChildWithQueuedSends(node);
+		reserveReleased(node, owner, child);
+		await flush();
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		leave(node, owner);
+		await flush();
+		listing.open();
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), []);
+		assert.equal(vi.mocked(console.error).mock.calls.length, 0);
+	});
+
+	test("a held-send listing the store cannot read still lets queued sends wake the child (#4401)", async () => {
+		const node = await startNode(await cluster(), { heldListInvalid: true });
+		const { owner, child } = await ownerAndChildWithQueuedSends(node);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	test("an outbox listing the store cannot read wakes nothing and reports no error (#4401)", async () => {
+		const node = await startNode(await cluster(), { undeliveredListInvalid: true });
+		const { owner, child } = await ownerAndChildWithQueuedSends(node);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(node.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+		assert.equal(vi.mocked(console.error).mock.calls.length, 0);
+	});
+
+	test("an empty alias is skipped and the child's other ids still wake it (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const { owner, child } = await ownerAndChildWithQueuedSends(node);
+		reserveReleased(node, owner, child, { aliases: ["", child.info.id] });
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	test("sends queued for a session named after the child's id do not wake the child (#4401)", async () => {
+		const node = await startNode(await cluster());
+		const owner = session("owner");
+		await register(node, owner);
+		const child = await releasedChild(node);
+		const impostor = await releasedChild(node, child.info.id);
+		await enqueueFor(node, impostor);
+		reserveReleased(node, owner, child);
+		await flush();
+		assert.deepEqual(node.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+	});
+
+	test("a wake the hold path delivered while the reserve's own check was reading is not asked for again (#4401)", async () => {
+		const listing = closedGate();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared, { heldListGate: listing.gate });
+		const { senderNode, owner, sender } = await ownerSenderAndChild(shared, ownerNode);
+		senderNode.router.routeSend(remoteSend(sender, CHILD, true).request);
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "send_held");
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		listing.open();
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		assert.deepEqual(ownerNode.spied.requestWakeCalls, []);
+	});
+
+	test("a store stalled across backup polls gets one wake check per reservation, not one per poll (#4401)", async () => {
+		useFakeClock();
+		const listing = closedGate();
+		const node = await startNode(await cluster(), { heldListGate: listing.gate });
+		const owner = session("owner");
+		await register(node, owner);
+		const children = ["first", "second", "third"];
+		for (const name of children) {
+			node.router.restoringReserved(releasedReservationKey(name), owner.info.id, name, CREW, [], true, {
+				wake: true,
+			});
+		}
+		await flush();
+		assert.equal(node.spied.heldListCalls, children.length, "each reserve's check is stalled in the store");
+
+		const stalledPolls = 4;
+		await vi.advanceTimersByTimeAsync(stalledPolls * OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		listing.open();
+		await flush();
+		assert.equal(node.spied.heldListCalls, 2 * children.length, "one queued poll check per reservation");
+
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.equal(node.spied.heldListCalls, 3 * children.length, "the next poll checks each reservation again");
 	});
 });
