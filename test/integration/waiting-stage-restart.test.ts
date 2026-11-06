@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
 	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	removeTempDirectory,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -93,7 +93,7 @@ async function killThenResume(
 		await child.exited;
 		await stdout;
 		await stderr;
-		removeTempDirectory(directory);
+		await removeTempRootReleasingBroker(directory);
 	}
 }
 

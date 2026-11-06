@@ -5,15 +5,8 @@ import { BACKGROUND_COMPACTION_RESULT_TYPE } from "../../packages/coding-agent/s
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { createHarnessWithExtensions } from "../../packages/coding-agent/test/test-harness.js";
-import {
-	fileExists,
-	makeTempDirectory,
-	moduleDir,
-	readText,
-	removeTempDirectory,
-	sleep,
-	spawnProcess,
-} from "../helpers/runtime.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { fileExists, makeTempDirectory, moduleDir, readText, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/background-compaction-sigkill.ts");
@@ -98,7 +91,7 @@ test(
 				harness.cleanup();
 			}
 		} finally {
-			removeTempDirectory(directory);
+			await removeTempRootReleasingBroker(directory);
 		}
 	},
 	SIGKILL_RESTART_TIMEOUT_MS,
@@ -124,7 +117,7 @@ test(
 				harness.cleanup();
 			}
 		} finally {
-			removeTempDirectory(directory);
+			await removeTempRootReleasingBroker(directory);
 		}
 	},
 	SIGKILL_RESTART_TIMEOUT_MS,

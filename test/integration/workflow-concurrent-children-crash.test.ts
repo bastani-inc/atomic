@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	removeTempDirectory,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -70,7 +70,7 @@ test(
 			await child.exited;
 			await stdout;
 			await stderr;
-			removeTempDirectory(directory);
+			await removeTempRootReleasingBroker(directory);
 		}
 	},
 	PROCESS_RESTART_TIMEOUT_MS,
