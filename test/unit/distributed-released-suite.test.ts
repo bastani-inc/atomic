@@ -155,6 +155,7 @@ class FakeRemote {
 		this.ownerRecords.push(
 			{ event: "owner-start", reopened: true, children: 2, at: 2 },
 			{ event: "owner-rebound", children: 2, released: 2, running: 0, other: 0, at: 3 },
+			{ event: "owner-recovery", children: 2, released: 2, running: 0, other: 0, at: 4 },
 		);
 	};
 	brokerPid = async (target: { name: string }) => this.brokers.get(target.name);

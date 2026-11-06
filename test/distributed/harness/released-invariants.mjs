@@ -283,6 +283,7 @@ export function checkReleasedInvariants(evidence) {
 	});
 	const starts = ownerRecords.filter((record) => record.event === "owner-start");
 	const rebinds = ownerRecords.filter((record) => record.event === "owner-rebound");
+	const recoveries = ownerRecords.filter((record) => record.event === "owner-recovery");
 	const restarts = starts.slice(1);
 	const stoppedAt = ownerRecords.findIndex((record) => record.event === "final-status");
 	const running = stoppedAt === -1 ? ownerRecords : ownerRecords.slice(0, stoppedAt);
@@ -300,14 +301,22 @@ export function checkReleasedInvariants(evidence) {
 			restarts.every((record) => record.reopened === true) &&
 			rebinds.length === ownerKills &&
 			rebinds.every((record) => record.children === children.length) &&
+			recoveries.length === ownerKills &&
 			crashes.length === 0 &&
 			(ownerKills === 0 || deliveredAfter > 0),
-		expected: { starts: 1 + ownerKills, rebound: ownerKills, children: children.length, crashes: 0 },
+		expected: {
+			starts: 1 + ownerKills,
+			rebound: ownerKills,
+			recovered: ownerKills,
+			children: children.length,
+			crashes: 0,
+		},
 		actual: {
 			starts: starts.length,
 			reopened: restarts.filter((record) => record.reopened === true).length,
 			rebound: rebinds.length,
 			reboundChildren: rebinds.map((record) => record.children ?? null),
+			recovered: recoveries.length,
 			crashes: crashes.map((record) => record.error?.name ?? record.event),
 			shutdownCrashes: shutdownCrashes.map((record) => record.error?.name ?? record.event),
 			deliveredAfterLastStart: deliveredAfter,

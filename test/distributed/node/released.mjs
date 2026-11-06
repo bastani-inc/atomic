@@ -9,7 +9,8 @@
  *   owner --ref-dir D --dir W --children N <storage>
  *       Launches N background subagents through the subagent tool. Each starts a long shell task in the background and
  *       waits on it, so it is released. Writes `W/children.json` once every child is released, then keeps the owner
- *       session open and logs child status every few seconds. Restarted after a crash, it reopens the same session.
+ *       session open and logs child status every few seconds. Restarted after a crash, it reopens the same session and
+ *       runs its recovery, which restores the children the killed process left running.
  *       SIGTERM logs the final status and exits.
  *   sender --ref-dir D --dir W --name S --children-file F [--workers K] [--pace-ms P] <storage>
  *       Sends numbered messages `ADT <S> <child> <k>` to every child through this node's own broker until `W/stop`
@@ -320,6 +321,15 @@ async function owner() {
 		record("owner", { event: "launched", children });
 	} else {
 		record("owner", { event: "owner-rebound", ...statusOf(records, current()) });
+		// What an interactive session does when it reopens: restore the children the killed process left running.
+		const recovery = await session.startPendingRecovery("resume");
+		record("owner", {
+			event: "owner-recovery",
+			replayed: recovery.replayed,
+			completions: recovery.completions,
+			notices: recovery.notices.length,
+			...statusOf(records, current()),
+		});
 	}
 	const allReleased = () => {
 		const status = statusOf(records, current());
