@@ -952,6 +952,87 @@ test("a shared placement error whose code, reason or fields are malformed is ref
 	}
 });
 
+test("a group of errors crosses with its members in order, each with its own class, within the envelope's budget (#4327)", () => {
+	const lost = new WorkerLostError({ phase: "delivery" });
+	const group = new AggregateError([new RangeError("first"), lost, "not an error"], "three failed", {
+		cause: new Error("why"),
+	});
+	const received = hop(group);
+	assert.ok(received instanceof AggregateError, String(received));
+	assert.equal(received.message, "three failed");
+	assert.equal((received.cause as Error).message, "why");
+	const [first, second, third] = received.errors as Error[];
+	assert.deepEqual([first?.name, first?.message], ["RangeError", "first"]);
+	assert.ok(second instanceof WorkerLostError);
+	assert.equal(second.phase, "delivery");
+	assert.deepEqual([third?.name, third?.message], [NON_ERROR_CAUSE, "not an error"]);
+
+	const busy = new ForkSourceBusyError({ runId: "source", reason: "foreign-lease" })
+		.withCleanupCause(new Error("copy removal failed"))
+		.withCleanupCause(new Error("session removal failed"));
+	const crossed = hop(new WorkflowInfrastructureError("storage_unavailable", { cause: busy })).cause;
+	assert.ok(crossed instanceof ForkSourceBusyError, String(crossed));
+	const cleanup = crossed.cleanupCause;
+	assert.ok(cleanup instanceof AggregateError, "several cleanup failures stay a group");
+	assert.deepEqual(
+		cleanup.errors.map((failure: Error) => failure.message),
+		["copy removal failed", "session removal failed"],
+	);
+
+	const members = Array.from({ length: 4 * MAX_SERIALIZED_ERRORS }, (_, index) => new Error(`member ${index}`));
+	let count = 0;
+	const visit = (node: SerializedError | undefined): void => {
+		if (node === undefined) return;
+		count++;
+		visit(node.cause);
+		visit(node.cleanupCause);
+		for (const member of node.errors ?? []) visit(member);
+	};
+	visit(serializeError(new AggregateError(members, "many", { cause: new Error("cause") })));
+	assert.equal(count, MAX_SERIALIZED_ERRORS, "members share the budget with causes");
+	const deepest = (depth: number): Error =>
+		depth === 0 ? new Error("leaf") : new AggregateError([deepest(depth - 1)]);
+	let levels = 0;
+	for (
+		let node: SerializedError | undefined = serializeError(deepest(3 * MAX_CAUSE_DEPTH));
+		node !== undefined;
+		node = node.errors?.[0]
+	)
+		levels++;
+	assert.equal(levels, MAX_CAUSE_DEPTH, "nested groups stop at the depth bound");
+});
+
+test("a group whose members are malformed or too many is refused, naming the member (#4327)", () => {
+	const sent = serializeError(new AggregateError([new Error("a"), new Error("b")], "two failed"));
+	assert.equal(sent.errors?.length, 2);
+	for (const [envelope, field, expected] of [
+		[{ ...sent, errors: "none" }, "error.errors", "an array of serialized errors"],
+		[
+			{ ...sent, errors: Array.from({ length: MAX_SERIALIZED_ERRORS + 1 }, () => sent.errors![0]!) },
+			"error.errors",
+			`at most ${MAX_SERIALIZED_ERRORS} serialized errors`,
+		],
+		[{ ...sent, errors: [sent.errors![0], { name: "Error" }] }, "error.errors[1].message", "a string"],
+	] as const) {
+		const refused = rehydrateError(envelope);
+		assert.ok(isPoolProtocolError(refused), `${field}: ${refused}`);
+		assert.deepEqual([refused.field, refused.expected], [field, expected]);
+	}
+	const budget = rehydrateError({
+		name: "Error",
+		message: "outer",
+		fields: {},
+		errors: Array.from({ length: MAX_SERIALIZED_ERRORS }, () => ({
+			name: "AggregateError",
+			message: "inner",
+			fields: {},
+			errors: [sent.errors![0]],
+		})),
+	});
+	assert.ok(isPoolProtocolError(budget), "the members of one envelope share one budget");
+	assert.equal(budget.expected, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
+});
+
 test("errors keep class and fields over two hops, worker to coordinator to root (#4327)", () => {
 	for (const kase of CASES) {
 		const atCoordinator = hop(kase.error);

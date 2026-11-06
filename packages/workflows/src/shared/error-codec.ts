@@ -127,6 +127,8 @@ export interface SerializedError {
 	readonly fields: SerializedErrorFields;
 	readonly cause?: SerializedError;
 	readonly cleanupCause?: SerializedError;
+	/** The members of an `AggregateError`, in order. */
+	readonly errors?: readonly SerializedError[];
 	/** A storage error's failed rollback, carried as the storage layer's own serializer carries it. */
 	readonly rollbackCause?: SerializedError;
 }
@@ -862,6 +864,7 @@ function serializeOne(error: unknown, depth: number, budget: Budget, withheld: b
 	const codecFamily = known?.family ?? family;
 	const cause = serializeLinked(candidate.cause, depth + 1, budget, withheld);
 	const cleanupCause = serializeLinked(candidate.cleanupCause, depth + 1, budget, withheld);
+	const errors = error instanceof AggregateError ? serializedMembers(error, depth, budget, withheld) : [];
 	return {
 		name,
 		message: !withheld && typeof candidate.message === "string" ? candidate.message : "",
@@ -874,7 +877,18 @@ function serializeOne(error: unknown, depth: number, budget: Budget, withheld: b
 		fields: known?.fields(error as Error) ?? preservedFields.get(error) ?? {},
 		...(cause === undefined ? {} : { cause }),
 		...(cleanupCause === undefined ? {} : { cleanupCause }),
+		...(errors.length === 0 ? {} : { errors }),
 	};
+}
+
+/** The members of a group of errors that fit what is left of the envelope's depth and budget, in order. */
+function serializedMembers(group: AggregateError, depth: number, budget: Budget, withheld: boolean): SerializedError[] {
+	const members: SerializedError[] = [];
+	for (const member of group.errors as unknown[]) {
+		const serialized = serializeLinked(member, depth + 1, budget, withheld);
+		if (serialized !== undefined) members.push(serialized);
+	}
+	return members;
 }
 
 /**
@@ -917,6 +931,11 @@ function readEnvelope(value: unknown, path: string): SerializedError {
 		refuse(`${path}.retryable`, "a boolean");
 	if (envelope.family !== undefined && !(typeof envelope.family === "string" && FAMILIES.has(envelope.family)))
 		refuse(`${path}.family`, `one of ${[...FAMILIES].join(", ")}`);
+	if (envelope.errors !== undefined) {
+		if (!Array.isArray(envelope.errors)) refuse(`${path}.errors`, "an array of serialized errors");
+		if (envelope.errors.length > MAX_SERIALIZED_ERRORS)
+			refuse(`${path}.errors`, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
+	}
 	const fields = envelope.fields;
 	if (typeof fields !== "object" || fields === null || Array.isArray(fields)) refuse(`${path}.fields`, "an object");
 	for (const [key, field] of Object.entries(fields))
@@ -1030,17 +1049,23 @@ function familyBase(
 	}
 }
 
-function rehydrateOne(value: unknown, path: string, depth: number): Error {
+/** What is left of the errors one received envelope may describe, causes, cleanup causes and group members together. */
+interface ReceiveBudget {
+	remaining: number;
+}
+
+function rehydrateOne(value: unknown, path: string, depth: number, budget: ReceiveBudget): Error {
 	const envelope = readEnvelope(value, path);
+	if (--budget.remaining < 0) refuse(path, `at most ${MAX_SERIALIZED_ERRORS} serialized errors`);
 	if (envelope.family === "storage") return rehydrateStorageError(readStorageEnvelope(value, path, depth));
 	const cause =
 		envelope.cause === undefined || depth + 1 >= MAX_CAUSE_DEPTH
 			? undefined
-			: rehydrateOne(envelope.cause, `${path}.cause`, depth + 1);
+			: rehydrateOne(envelope.cause, `${path}.cause`, depth + 1, budget);
 	const cleanupCause =
 		envelope.cleanupCause === undefined || depth + 1 >= MAX_CAUSE_DEPTH
 			? undefined
-			: rehydrateOne(envelope.cleanupCause, `${path}.cleanupCause`, depth + 1);
+			: rehydrateOne(envelope.cleanupCause, `${path}.cleanupCause`, depth + 1, budget);
 	if (envelope.family === "fork") {
 		const error = rehydrateForkError(readForkEnvelope(value, path));
 		if (cause !== undefined)
@@ -1062,7 +1087,10 @@ function rehydrateOne(value: unknown, path: string, depth: number): Error {
 		restore(error, { message: envelope.message, cleanupCause });
 		return error;
 	}
-	const error = familyBase({ ...envelope, family: envelope.family }, options);
+	const error =
+		envelope.family === undefined && envelope.errors !== undefined
+			? new AggregateError(rehydratedMembers(envelope.errors, path, depth, budget), envelope.message, options)
+			: familyBase({ ...envelope, family: envelope.family }, options);
 	preservedFields.set(error, envelope.fields);
 	restore(error, {
 		name: envelope.name,
@@ -1074,6 +1102,11 @@ function rehydrateOne(value: unknown, path: string, depth: number): Error {
 	return error;
 }
 
+function rehydratedMembers(members: readonly unknown[], path: string, depth: number, budget: ReceiveBudget): Error[] {
+	if (depth + 1 >= MAX_CAUSE_DEPTH) return [];
+	return members.map((member, index) => rehydrateOne(member, `${path}.errors[${index}]`, depth + 1, budget));
+}
+
 /**
  * The receiving side of {@link serializeError}: the same class with the same fields and causes when the receiver
  * knows it; the family base, keeping the original `name` and `code`, when it does not; a plain `Error` with that name
@@ -1082,7 +1115,7 @@ function rehydrateOne(value: unknown, path: string, depth: number): Error {
  */
 export function rehydrateError(value: unknown): Error {
 	try {
-		return rehydrateOne(value, "error", 0);
+		return rehydrateOne(value, "error", 0, { remaining: MAX_SERIALIZED_ERRORS });
 	} catch (error) {
 		if (error instanceof PoolProtocolError) return error;
 		throw error;
