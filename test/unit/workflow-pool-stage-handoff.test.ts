@@ -37,6 +37,7 @@ import {
 	WorkerLostError,
 } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { StageInputRefusedError } from "../../packages/workflows/src/workers/placement-errors.js";
+import type { StageReceipts } from "../../packages/workflows/src/workers/protocol.js";
 import { isRunChanges, type RunChanges, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
 import {
 	failedInSession,
@@ -160,12 +161,12 @@ async function fixture() {
 		handoff,
 		first,
 		replacement,
-		async queueDirect(stageKey: string, id: string) {
+		async queueDirect(stageKey: string, id: string, runId = descriptor.childRunId) {
 			const result = await store.queueStageMessage(
-				{ runId: descriptor.childRunId, stageKey, from, message: message(id), queuedAt: new Date().toISOString() },
+				{ runId, stageKey, from, message: message(id), queuedAt: new Date().toISOString() },
 				GROUP,
 				GROUP,
-				durableBackendForRun(backend, store, descriptor.childRunId)!,
+				durableBackendForRun(backend, store, runId)!,
 			);
 			assert.equal(result?.ok, true);
 		},
@@ -2002,6 +2003,206 @@ test("a child the root never held a run of has no receipts to record as it compl
 		assert.equal(f.store.run(descriptor.childRunId), undefined);
 		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
 	} finally {
+		await f.close();
+	}
+});
+
+const NESTED = "nested-run";
+
+/** The child's stage that runs its nested workflow run {@link NESTED}. */
+function nestedHost(overrides: Partial<StageSnapshot> = {}): StageSnapshot {
+	return stage("nested", { workflowChildRun: { alias: "n", workflow: "n", runId: NESTED }, ...overrides });
+}
+
+/** The child's nested workflow run, as the attempt published it. */
+function nestedRun(stages: StageSnapshot[]): RunSnapshot {
+	return snapshot(NESTED, { parentRunId: descriptor.childRunId, parentStageId: "nested", rootRunId: ROOT, stages });
+}
+
+/** The journal's record that the nested run completed, from which the child's completion settles it (#4318). */
+function nestedTerminal(): DurableStageCheckpoint {
+	return {
+		kind: "stage",
+		workflowId: ROOT,
+		checkpointId: "terminal:nested",
+		name: "nested",
+		replayKey: `${descriptor.scope}:nested`,
+		startedAt: 0,
+		completedAt: 0,
+		output: { workflow: "n", runId: NESTED, status: "completed", exited: false, outputs: {} },
+		topology: {
+			version: 1,
+			stageId: "nested",
+			parentIds: [],
+			sourceOrder: 0,
+			status: "completed",
+			run: { runId: descriptor.childRunId, runName: descriptor.childRunId },
+			boundary: {
+				version: 1,
+				event: "terminal",
+				status: "completed",
+				replayScope: `${descriptor.scope}:nested`,
+				alias: "n",
+				workflow: "n",
+				invocationFingerprint: "fingerprint",
+				child: {
+					runId: NESTED,
+					runName: "n",
+					parentRunId: descriptor.childRunId,
+					parentStageId: "nested",
+					rootRunId: ROOT,
+				},
+			},
+		},
+	};
+}
+
+/** What a nested stage's session `session-n` took at startup, as the child's result reports it. */
+function nestedReceipts(runId: string, stageId: string, messageIds: string[]): StageReceipts {
+	return { runId, stageId, stageName: stageId, sessionId: "session-n", messageIds };
+}
+
+/** Completes the child's attempt with a result reporting `receipts` for stages of its nested runs. */
+async function completeWithNestedReceipts(
+	f: Awaited<ReturnType<typeof fixture>>,
+	receipts: readonly StageReceipts[],
+): Promise<void> {
+	await f.queue.complete(f.lease, f.first, {
+		runId: descriptor.childRunId,
+		status: "completed",
+		stages: [nestedHost({ status: "completed" })],
+		toolNodes: [],
+		nestedStageReceipts: receipts,
+	} as never);
+}
+
+test("a nested run's stage whose ending publication never reached the root keeps the messages it took at startup delivered once as its child completes (#4513)", async () => {
+	const f = await fixture();
+	try {
+		const finished = holdFinishedRuns(f.store, 5_000);
+		await f.handoff.publish(f.first, [
+			childRun([nestedHost()]),
+			nestedRun([stage("agent", { sessionId: "session-n" })]),
+		]);
+		await f.queueDirect("agent", "nested-1", NESTED);
+		await f.queueDirect("agent", "nested-2", NESTED);
+		await f.queueBroadcast("broadcast-1");
+		await f.backend.commitCheckpoint(nestedTerminal());
+		// The nested stage took two of them at startup; the publication that showed it ended never reached the root.
+		await completeWithNestedReceipts(f, [nestedReceipts(NESTED, "agent", ["nested-1", "broadcast-1"])]);
+		finished.reads = 0;
+		await f.handoff.complete(f.first);
+		assert.equal(finished.reads, 0, `completing one child read finished runs ${finished.reads} times`);
+		assert.equal(f.store.run(NESTED)?.status, "completed");
+		assert.deepEqual(
+			["nested-1", "nested-2"].map((id) => queuedEntry(f, NESTED, id)?.status),
+			["delivered", "queued"],
+		);
+		const broadcast = queuedEntry(f, ROOT, "broadcast-1");
+		assert.deepEqual(
+			[
+				broadcast?.deliveryCount,
+				broadcast?.deliveries?.map(({ runId, stageId, sessionId, admission }) => ({
+					runId,
+					stageId,
+					sessionId,
+					admission,
+				})),
+			],
+			[1, [{ runId: NESTED, stageId: "agent", sessionId: "session-n", admission: "context" }]],
+			"the broadcast is receipted once, to the nested stage's session",
+		);
+		const notified: string[] = [];
+		await settleQueued(f, notified);
+		assert.deepEqual(notified, ["nested-2"], "only the message no session took is reported");
+		assert.equal(queuedEntry(f, NESTED, "nested-1")?.status, "delivered");
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a nested stage's receipts the root recorded from its publication are not written again as its child completes, even by a restarted root (#4513)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([nestedHost()]),
+			nestedRun([stage("agent", { sessionId: "session-n" })]),
+		]);
+		await f.queueDirect("agent", "nested-1", NESTED);
+		await f.queueBroadcast("broadcast-1");
+		const receipts = nestedReceipts(NESTED, "agent", ["nested-1", "broadcast-1"]);
+		const ended = stage("agent", {
+			sessionId: "session-n",
+			status: "completed",
+			endedAt: 1,
+			intercomReceipts: { sessionId: receipts.sessionId, messageIds: receipts.messageIds },
+		});
+		await f.handoff.publish(f.first, [childRun([nestedHost()]), nestedRun([ended])]);
+		await f.handoff.recordReceipts(f.first, NESTED, "agent", "agent", {
+			sessionId: receipts.sessionId,
+			receivedMessageIds: receipts.messageIds,
+		});
+		const broadcast = () => queuedEntry(f, ROOT, "broadcast-1");
+		assert.deepEqual([queuedEntry(f, NESTED, "nested-1")?.status, broadcast()?.deliveryCount], ["delivered", 1]);
+		const delivered = vi.spyOn(f.store, "markPendingStageMessageDelivered");
+		const deliveries = vi.spyOn(f.store, "recordPendingStageMessageDeliveries");
+		await completeWithNestedReceipts(f, [receipts]);
+		await f.handoff.complete(f.first);
+		assert.deepEqual([delivered.mock.calls.length, deliveries.mock.calls.length], [0, 0]);
+		// A root that restarted holds no attempt of the work: what it records again finds the messages delivered.
+		await new PoolStageHandoff(f.backend, f.store, f.queue, f.lease).complete(f.first);
+		assert.deepEqual([queuedEntry(f, NESTED, "nested-1")?.status, broadcast()?.deliveryCount], ["delivered", 1]);
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined);
+	} finally {
+		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
+test("a completing child's receipts for a run outside it are refused and reported, those for a run the root never held are skipped, and neither stops the next (#4513)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([nestedHost()]),
+			nestedRun([stage("agent", { sessionId: "session-n" })]),
+		]);
+		await f.queueDirect("agent", "nested-1", NESTED);
+		await f.queueDirect(descriptor.boundaryId, "root-1", ROOT);
+		// Runs whose parent links lead back to each other, or to a run the store does not hold, hang from no run of the
+		// child.
+		f.store.recordRunStart(snapshot("loop-a", { parentRunId: "loop-b", parentStageId: "b", rootRunId: ROOT }));
+		f.store.recordRunStart(snapshot("loop-b", { parentRunId: "loop-a", parentStageId: "a", rootRunId: ROOT }));
+		f.store.recordRunStart(snapshot("orphan", { parentRunId: "gone", parentStageId: "g", rootRunId: ROOT }));
+		await completeWithNestedReceipts(f, [
+			nestedReceipts(ROOT, descriptor.boundaryId, ["root-1"]),
+			nestedReceipts("never-held", "agent", ["never-held-1"]),
+			nestedReceipts("loop-a", "agent", ["loop-1"]),
+			nestedReceipts("orphan", "agent", ["orphan-1"]),
+			nestedReceipts(NESTED, "agent", ["nested-1"]),
+		]);
+		// The root restarted, so only the store's parent links say which runs are the child's.
+		const restarted = new PoolStageHandoff(f.backend, f.store, f.queue, f.lease);
+		const reported = vi.spyOn(
+			restarted as unknown as { recordDeliveryIssue(error: Error): void },
+			"recordDeliveryIssue",
+		);
+		await restarted.complete(f.first);
+		const refused = reported.mock.calls.map(([error]) => error);
+		assert.equal(refused.length, 3);
+		for (const [index, runId] of [ROOT, "loop-a", "orphan"].entries())
+			publicationRejected({
+				root: ROOT,
+				workId: f.first.id,
+				generation: f.first.generation,
+				reason: "outside-subtree",
+				runId,
+			})(refused[index]);
+		assert.equal(queuedEntry(f, ROOT, "root-1")?.status, "queued", "the root's message is not the child's to take");
+		assert.equal(queuedEntry(f, NESTED, "nested-1")?.status, "delivered");
+		assert.match(f.store.run(ROOT)?.intercomDeliveryIssue ?? "", /^3 stage drains on local workers failed/);
+	} finally {
+		vi.restoreAllMocks();
 		await f.close();
 	}
 });

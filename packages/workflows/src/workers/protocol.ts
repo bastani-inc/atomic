@@ -43,6 +43,23 @@ export type WorkerStageDelivery = NonNullable<
 >;
 export type WorkerDeliver = Parameters<WorkerStageDelivery["deliverPending"]>[0];
 export type WorkerRecipient = Parameters<WorkerStageDelivery["deliverPending"]>[1];
+
+/** The messages a stage's session `sessionId` took before its first turn, which the root records as delivered. */
+export interface StageReceipts {
+	readonly runId: string;
+	readonly stageId: string;
+	readonly stageName: string;
+	readonly sessionId: string;
+	readonly messageIds: readonly string[];
+}
+
+/**
+ * The result a worker completes its attempt with: the child's run result and, when any of them took messages, the
+ * receipts of the stages of the child's nested workflow runs; the child's own stages carry theirs. The pool stores it
+ * whole, so a restarted root still reads them, and the root records them all before the child settles (#4513).
+ */
+export type PooledRunResult = RunResult & { readonly nestedStageReceipts?: readonly StageReceipts[] };
+
 export interface WorkerStart {
 	/** The SQLite database holding the pool's tables; absent for a shared pool, opened by its durable selection. */
 	readonly journalPath?: string;
@@ -114,7 +131,7 @@ export type WorkerRequest = { readonly id: number } & (
 	  }
 	| { readonly kind: "delivery-ack"; readonly deliveryId: string; readonly error?: SerializedError }
 	| { readonly kind: "commit"; readonly operation: string; readonly mutation: PoolMutation }
-	| { readonly kind: "complete"; readonly result: RunResult }
+	| { readonly kind: "complete"; readonly result: PooledRunResult }
 	// One-way stage watch traffic (#3996); the coordinator does not reply to these.
 	| {
 			readonly kind: "stage-command-result";

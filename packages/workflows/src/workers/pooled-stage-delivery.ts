@@ -1,6 +1,7 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
+import type { RunResult } from "../runs/foreground/executor-types.js";
 import { stickyEntryTargetsStage, toPendingStageSender } from "../runs/foreground/pending-stage-delivery.js";
 import type {
 	AgentSessionAdapter,
@@ -15,6 +16,8 @@ import type { PendingStageMessage, RunSnapshot } from "../shared/store-types.js"
 import { type RunsById, runsByIdOf } from "../shared/workflow-run-ownership.js";
 import type {
 	DistributiveOmit,
+	PooledRunResult,
+	StageReceipts,
 	WorkerDeliver,
 	WorkerRecipient,
 	WorkerRequest,
@@ -236,6 +239,33 @@ function recordStageReceipts(
 		snapshot.intercomReceipts = { sessionId: recipient.sessionId, messageIds };
 		return { stageIds: [stage.stageId] };
 	});
+}
+
+/**
+ * The result an attempt completes with (#4513): `result`, and the receipts the stages of the child's nested workflow runs
+ * recorded in `store`, the attempt's own, in store order. A nested stage's publication that showed them may never have
+ * reached the root, which records them as the child settles. An attempt whose nested stages took nothing completes with
+ * `result` itself.
+ */
+export function completedAttemptResult(result: RunResult, store: Pick<Store, "runs">): PooledRunResult {
+	const nestedStageReceipts = store.runs().flatMap((run) =>
+		run.id === result.runId
+			? []
+			: run.stages.flatMap(({ id, name, intercomReceipts }): StageReceipts[] =>
+					intercomReceipts === undefined
+						? []
+						: [
+								{
+									runId: run.id,
+									stageId: id,
+									stageName: name,
+									sessionId: intercomReceipts.sessionId,
+									messageIds: intercomReceipts.messageIds,
+								},
+							],
+				),
+	);
+	return nestedStageReceipts.length === 0 ? result : { ...result, nestedStageReceipts };
 }
 
 /**
