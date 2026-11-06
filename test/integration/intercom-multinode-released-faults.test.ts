@@ -30,7 +30,8 @@ const DELIVERY_WAIT_MS = 15_000;
 const RECOVERY_MARGIN_MS = 60_000;
 /** The reservation must be stale before the other node queues sends instead of holding them. */
 const BROKER_KILL_TEST_TIMEOUT_MS = BROKER_LEASE_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS + RECOVERY_MARGIN_MS;
-const OWNER_KILL_TEST_TIMEOUT_MS = 2 * OWNER_PROCESS_READY_MS + RECOVERY_MARGIN_MS;
+/** Three owner processes start one after another. */
+const OWNER_KILL_TEST_TIMEOUT_MS = 3 * OWNER_PROCESS_READY_MS + RECOVERY_MARGIN_MS;
 const SENDS = 3;
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -207,14 +208,11 @@ async function killOwnerProcess(owner: OwnerProcess): Promise<void> {
 
 test(
 	"sends queued while the owner's broker and the sender's broker were killed reach the released child once each, in order, after both restart (#4401)",
-	async ({ annotate }) => {
+	async () => {
 		const ownerToken = randomUUID();
 		const owner = await harness.connect("b", unique("released-owner"), { supervisorOwnerToken: ownerToken });
 		const sender = await harness.connect("a", unique("released-sender"));
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: a released child is reserved on one broker only");
-			return;
-		}
+		assert.equal(harness.multiNodeRouting, true, "the two brokers route across nodes");
 		const ownerSessionId = owner.sessionId;
 		const senderSessionId = sender.sessionId;
 		const child = await releasedChild();
@@ -277,13 +275,10 @@ test(
 );
 
 test(
-	"sends queued after the owner's process was killed reach the released child once each, in order, once a new owner process reserves it (#4401)",
-	async ({ annotate }) => {
+	"sends still queued when the owner's process is killed, before and after it woke the released child, reach the child once each, in order, through the next owner process (#4401)",
+	async () => {
 		const sender = await harness.connect("a", unique("released-sender"));
-		if (!harness.multiNodeRouting) {
-			await annotate("multi-node routing not advertised: a released child is reserved on one broker only");
-			return;
-		}
+		assert.equal(harness.multiNodeRouting, true, "the two brokers route across nodes");
 		const child = await releasedChild();
 		const owner: OwnerIdentity = {
 			name: unique("released-owner"),
@@ -306,10 +301,23 @@ test(
 			timeout: DELIVERY_WAIT_MS,
 			interval: 25,
 		});
-		const woken = await reconnectChild(child, second.supervisor);
+		assert.deepEqual(await outboxStates(ids), ["queued", "queued", "queued"]);
+		await killOwnerProcess(second);
+		await vi.waitFor(async () => assert.equal(await reservationEnded(child.name), true), {
+			timeout: DELIVERY_WAIT_MS,
+			interval: 25,
+		});
+
+		const third = await startOwnerProcess(owner, child);
+		await vi.waitFor(() => assert.deepEqual(third.wakes, [{ childName: child.name }]), {
+			timeout: DELIVERY_WAIT_MS,
+			interval: 25,
+		});
+		const woken = await reconnectChild(child, third.supervisor);
 		await assertDeliveredOnceInOrder(woken, ids);
 		assert.equal(second.wakes.length, 1);
-		await killOwnerProcess(second);
+		assert.equal(third.wakes.length, 1);
+		await killOwnerProcess(third);
 	},
 	OWNER_KILL_TEST_TIMEOUT_MS,
 );

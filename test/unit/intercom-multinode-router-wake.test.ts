@@ -93,6 +93,7 @@ interface Cluster {
 interface Spied {
 	readonly requestWakeCalls: string[];
 	readonly takeWakeCalls: string[];
+	heldListCalls: number;
 }
 
 interface Node {
@@ -156,12 +157,13 @@ async function startNode(
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
-	const spied: Spied = { requestWakeCalls: [], takeWakeCalls: [] };
+	const spied: Spied = { requestWakeCalls: [], takeWakeCalls: [], heldListCalls: 0 };
 	const state: IntercomBrokerStateStore = {
 		...inner,
 		heldSends: {
 			...inner.heldSends,
 			list: async (key) => {
+				spied.heldListCalls++;
 				await options.heldListGate;
 				if (options.heldListInvalid === true) return { status: "invalid", reason: "empty-reservation-key" };
 				return inner.heldSends.list(key);
@@ -894,7 +896,8 @@ describe("released child sends queued across faults (#4401)", () => {
 		assert.equal(wakeFramesOf(reconnectedOwner).length, 1);
 	});
 
-	test("sends queued after the owner's process died wake the child once a new owner process reserves it, and arrive once each, in order (#4401)", async () => {
+	test("sends still queued when the owner's process is killed, before and after it woke the child, reach the child once each, in order, through the next owner process (#4401)", async () => {
+		useFakeClock();
 		const shared = await cluster();
 		const ownerNode = await startNode(shared);
 		const { senderNode, owner, sender, child } = await ownerSenderAndChild(shared, ownerNode);
@@ -902,18 +905,31 @@ describe("released child sends queued across faults (#4401)", () => {
 		await flush();
 		const ids = await queueSends(senderNode, sender, 3);
 
-		const newOwner = reconnected(owner);
-		await register(ownerNode, newOwner);
-		reserveReleased(ownerNode, newOwner, child);
+		const secondOwner = reconnected(owner);
+		await register(ownerNode, secondOwner);
+		reserveReleased(ownerNode, secondOwner, child);
 		await flush();
-		assert.deepEqual(wakeFramesOf(newOwner), [WAKE]);
+		assert.deepEqual(wakeFramesOf(secondOwner), [WAKE]);
+		assert.deepEqual(await rowStates(ownerNode, ids), ["queued", "queued", "queued"]);
+		leave(ownerNode, secondOwner);
+		await flush();
+
+		const thirdOwner = reconnected(owner);
+		await register(ownerNode, thirdOwner);
+		reserveReleased(ownerNode, thirdOwner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(thirdOwner), [WAKE]);
 		assert.deepEqual(wakeFramesOf(owner), []);
 
-		const back = await wakeAndRegister(ownerNode, newOwner, child);
+		const back = await wakeAndRegister(ownerNode, thirdOwner, child);
 		assert.deepEqual(messageIdsOf(back), ids);
 		await receiveAll(ownerNode, back, ids);
 		assert.deepEqual(await rowStates(ownerNode, ids), ["delivered", "delivered", "delivered"]);
-		assert.equal(wakeFramesOf(newOwner).length, 1);
+		await vi.advanceTimersByTimeAsync(OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(messageIdsOf(back), ids, "nothing is delivered again");
+		assert.equal(wakeFramesOf(secondOwner).length, 1);
+		assert.equal(wakeFramesOf(thirdOwner).length, 1);
 	});
 
 	test("sends queued while the owner's broker cannot renew its reservation wake the child at that broker's next backup poll, once (#4401)", async () => {
@@ -977,7 +993,7 @@ describe("released child sends queued across faults (#4401)", () => {
 		assert.deepEqual(messageIdsOf(back), ids);
 	});
 
-	test("reserving a woken child again does not wake it again (#4401)", async () => {
+	test("reserving a woken child again neither wakes it again nor reads the store for it (#4401)", async () => {
 		const node = await startNode(await cluster());
 		const owner = session("owner");
 		await register(node, owner);
@@ -985,10 +1001,12 @@ describe("released child sends queued across faults (#4401)", () => {
 		await enqueueFor(node, child);
 		reserveReleased(node, owner, child);
 		await flush();
+		const readsAfterWake = node.spied.heldListCalls;
 		reserveReleased(node, owner, child);
 		await flush();
 		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
 		assert.deepEqual(node.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		assert.equal(node.spied.heldListCalls, readsAfterWake);
 	});
 
 	test("a woken child that was parked and released again is woken again for the sends still waiting (#4401)", async () => {
@@ -1168,5 +1186,46 @@ describe("released child sends queued across faults (#4401)", () => {
 		await flush();
 		assert.deepEqual(node.spied.requestWakeCalls, []);
 		assert.deepEqual(wakeFramesOf(owner), []);
+	});
+
+	test("a wake the hold path delivered while the reserve's own check was reading is not asked for again (#4401)", async () => {
+		const listing = closedGate();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared, { heldListGate: listing.gate });
+		const { senderNode, owner, sender } = await ownerSenderAndChild(shared, ownerNode);
+		senderNode.router.routeSend(remoteSend(sender, CHILD, true).request);
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "send_held");
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		listing.open();
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		assert.deepEqual(ownerNode.spied.requestWakeCalls, []);
+	});
+
+	test("a store stalled across backup polls gets one wake check per reservation, not one per poll (#4401)", async () => {
+		useFakeClock();
+		const listing = closedGate();
+		const node = await startNode(await cluster(), { heldListGate: listing.gate });
+		const owner = session("owner");
+		await register(node, owner);
+		const children = ["first", "second", "third"];
+		for (const name of children) {
+			node.router.restoringReserved(releasedReservationKey(name), owner.info.id, name, CREW, [], true, {
+				wake: true,
+			});
+		}
+		await flush();
+		assert.equal(node.spied.heldListCalls, children.length, "each reserve's check is stalled in the store");
+
+		const stalledPolls = 4;
+		await vi.advanceTimersByTimeAsync(stalledPolls * OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		listing.open();
+		await flush();
+		assert.equal(node.spied.heldListCalls, 2 * children.length, "one queued poll check per reservation");
+
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.equal(node.spied.heldListCalls, 3 * children.length, "the next poll checks each reservation again");
 	});
 });

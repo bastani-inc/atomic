@@ -303,6 +303,8 @@ export class MultiNodeRouter {
 	private readonly waiters = new Map<string, Waiter>();
 	private readonly holds = new Map<string, TrackedHold>();
 	private readonly mirrored = new Map<string, MirroredReservation>();
+	/** Reservations with a backup-poll wake check queued or running: one each while the store stalls, not a backlog. */
+	private readonly pendingWakeChecks = new Set<string>();
 	private readonly heldIdentities = new Set<string>();
 	private readonly scanning = new Map<string, { rescan: boolean }>();
 	private readonly serials = new Map<string, Promise<void>>();
@@ -620,7 +622,8 @@ export class MultiNodeRouter {
 	private async wakeWaitingChild(reservationKey: string): Promise<void> {
 		const mirror = this.mirrored.get(reservationKey);
 		if (mirror?.wake !== true || mirror.woken === true) return;
-		if (await this.sendsWaitFor(reservationKey, mirror.aliases)) await this.requestWake(reservationKey, this.brokerId);
+		if (!(await this.sendsWaitFor(reservationKey, mirror.aliases)) || mirror.woken === true) return;
+		await this.requestWake(reservationKey, this.brokerId);
 	}
 
 	/**
@@ -1694,7 +1697,11 @@ export class MultiNodeRouter {
 		await this.checkOutcomes();
 		await this.checkHolds();
 		for (const reservationKey of this.mirrored.keys()) {
-			this.serial(`reservation:${reservationKey}`, () => this.wakeWaitingChild(reservationKey));
+			if (this.pendingWakeChecks.has(reservationKey)) continue;
+			this.pendingWakeChecks.add(reservationKey);
+			this.serial(`reservation:${reservationKey}`, () =>
+				this.wakeWaitingChild(reservationKey).finally(() => this.pendingWakeChecks.delete(reservationKey)),
+			);
 		}
 		await this.state.outbox.prune(DELIVERED_MESSAGE_TTL_MS);
 		await this.state.sentMessages.prune(DELIVERED_MESSAGE_TTL_MS);
