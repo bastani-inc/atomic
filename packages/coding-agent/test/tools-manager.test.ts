@@ -5,9 +5,9 @@ import { join } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.ts";
-import { isManagedToolDownloadError, isManagedToolTimeoutError } from "../src/utils/managed-tool-errors.ts";
+import { isManagedToolDownloadError, isManagedToolTimeoutError } from "../src/utils/managed-tool-errors.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.ts";
-import type { ToolStatus } from "../src/utils/tools-manager.ts";
+import type { ToolStatus } from "../src/utils/tools-manager.js";
 
 const mocks = vi.hoisted(() => ({
 	arch: vi.fn<typeof import("node:os").arch>(),

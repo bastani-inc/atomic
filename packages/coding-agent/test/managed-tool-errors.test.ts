@@ -9,7 +9,7 @@ import {
 	type ManagedToolDownloadFields,
 	ManagedToolError,
 	ManagedToolTimeoutError,
-} from "../src/utils/managed-tool-errors.ts";
+} from "../src/utils/managed-tool-errors.js";
 
 const RELEASE_URL = "https://github.com/BurntSushi/ripgrep/releases/latest";
 const ARCHIVE_URL =

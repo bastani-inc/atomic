@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { ENV_AGENT_DIR, ENV_OFFLINE } from "../src/config.ts";
-import { isManagedToolDownloadError, isManagedToolError } from "../src/utils/managed-tool-errors.ts";
+import { ENV_AGENT_DIR, ENV_OFFLINE } from "../src/config.js";
+import { isManagedToolDownloadError, isManagedToolError } from "../src/utils/managed-tool-errors.js";
 
 const mocks = vi.hoisted(() => ({
 	spawnSync: vi.fn<(command: string, args?: readonly string[]) => SpawnSyncReturns<Buffer>>(),
@@ -16,8 +16,8 @@ vi.mock("child_process", async () => {
 	const actual = await vi.importActual<typeof import("child_process")>("child_process");
 	return { ...actual, spawnSync: mocks.spawnSync };
 });
-vi.mock("../src/core/tools/search-native.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../src/core/tools/search-native.ts")>()),
+vi.mock("../src/core/tools/search-native.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/core/tools/search-native.js")>()),
 	loadNativeSearchBinding: () => null,
 }));
 
@@ -25,8 +25,8 @@ vi.mock("../src/core/tools/search-native.ts", async (importOriginal) => ({
 describe("search tools when their managed tool cannot be downloaded (#4389)", () => {
 	let tempDir: string;
 	let workDir: string;
-	let grep: ReturnType<typeof import("../src/core/tools/grep.ts").createGrepTool>;
-	let find: ReturnType<typeof import("../src/core/tools/find.ts").createFindTool>;
+	let grep: ReturnType<typeof import("../src/core/tools/grep.js").createGrepTool>;
+	let find: ReturnType<typeof import("../src/core/tools/find.js").createFindTool>;
 	const lookupFailure = new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND github.com") });
 
 	beforeEach(async () => {
@@ -41,8 +41,8 @@ describe("search tools when their managed tool cannot be downloaded (#4389)", ()
 		vi.resetModules();
 		mkdirSync(workDir);
 		writeFileSync(join(workDir, "notes.txt"), "needle\n");
-		grep = (await import("../src/core/tools/grep.ts")).createGrepTool(workDir);
-		find = (await import("../src/core/tools/find.ts")).createFindTool(workDir);
+		grep = (await import("../src/core/tools/grep.js")).createGrepTool(workDir);
+		find = (await import("../src/core/tools/find.js")).createFindTool(workDir);
 	});
 
 	afterEach(() => {

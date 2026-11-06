@@ -3,11 +3,11 @@ import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_OFFLINE } from "../src/config.ts";
+import { ENV_OFFLINE } from "../src/config.js";
 import { createBashTool } from "../src/core/tools/bash.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
-import { getToolPath } from "../src/utils/tools-manager.ts";
+import { getToolPath } from "../src/utils/tools-manager.js";
 
 // CI installs a pinned ripgrep before the suite and sets this; the ripgrep cases then never download one (#4389).
 const requireProvisionedRipgrep = process.env.ATOMIC_REQUIRE_PROVISIONED_RIPGREP === "1";
