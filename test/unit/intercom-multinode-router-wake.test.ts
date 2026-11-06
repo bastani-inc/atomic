@@ -158,12 +158,21 @@ async function startNode(
 		readonly heldListGate?: Promise<void>;
 		readonly heldListInvalid?: boolean;
 		readonly undeliveredListInvalid?: boolean;
+		/** Presence lease acquisitions wait until this settles, as when the database is slow to answer. */
+		readonly presenceAcquireGate?: Promise<void>;
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
 	const spied: Spied = { requestWakeCalls: [], takeWakeCalls: [], heldListCalls: 0 };
 	const state: IntercomBrokerStateStore = {
 		...inner,
+		leases: {
+			...inner.leases,
+			acquire: async (subject, holderId, staleAfterMs) => {
+				if (subject.kind === "presence") await options.presenceAcquireGate;
+				return inner.leases.acquire(subject, holderId, staleAfterMs);
+			},
+		},
 		heldSends: {
 			...inner.heldSends,
 			list: async (key) => {
@@ -660,6 +669,40 @@ describe("router reservation consumption (#4326)", () => {
 		await node.router.sessionRegistered(session("child"), { capability, groups: new Set([CREW]) });
 		assert.equal(await statusOf(node, ownKey), "consumed");
 		assert.equal(await statusOf(node, siblingKey), "active");
+	});
+
+	test("a child that leaves while its registration still takes its presence over leaves the released reservation its owner made after it left, and ends its own (#4488)", async () => {
+		let answer!: () => void;
+		const node = await startNode(await cluster(), {
+			presenceAcquireGate: new Promise<void>((resolve) => {
+				answer = resolve;
+			}),
+		});
+		const capability = `${randomUUID()}.capability`;
+		const ownKey = reservationKeyFor(capability);
+		const releasedKey = releasedReservationKey("child");
+		await reserveRaw(node, ownKey, false);
+		const child = session("child");
+		const registered = node.router.sessionRegistered(child, {
+			capability,
+			childName: "child",
+			groups: new Set([CREW]),
+			authorizedBy: "the-owner",
+		});
+		await flush();
+		// The child is released while its broker is still taking its presence over: it leaves, and its owner reserves
+		// it as released, before the registration gets to the reservations it consumes.
+		node.router.sessionLeft(child);
+		await reserveRaw(node, releasedKey, true, { owner: "the-owner" });
+		answer();
+		await registered;
+		await flush();
+		assert.equal(
+			await statusOf(node, releasedKey),
+			"active",
+			"the released child stays reserved, so a send wakes it",
+		);
+		assert.equal(await statusOf(node, ownKey), "consumed");
 	});
 
 	test("a registration naming neither a capability nor a child consumes nothing and reports no error (#4326)", async () => {

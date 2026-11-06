@@ -405,7 +405,14 @@ export class MultiNodeRouter {
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
 					}
 					if (consumed !== undefined) {
-						await this.consumeReservation(consumed);
+						// #4488: a session that left while its presence was being taken over no longer stands for the child.
+						// Its owner may have reserved the child as released since, and consuming by the child's name would end
+						// that reservation and leave the released child unreachable; only the capability's own one ends.
+						const ownOnly: ConsumedReservation = {
+							groups: consumed.groups,
+							...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
+						};
+						await this.consumeReservation(this.presence.get(session) === entry ? consumed : ownOnly);
 						const { childName, authorizedBy } = consumed;
 						if (childName !== undefined && authorizedBy !== undefined) {
 							const registration = { childName, authorizedBy };

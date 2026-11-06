@@ -120,7 +120,9 @@ class OwnerProcess {
 			const timer = setTimeout(() => {
 				this.listeners.delete(check);
 				rejectWhen(
-					new Error(`${label}: ${JSON.stringify({ records: this.records, runs: this.runs })}\n${this.stderr}`),
+					new Error(
+						`${label}: ${JSON.stringify({ records: this.records, runs: this.runs, received: this.received, read: this.read })}\n${this.stderr}`,
+					),
 				);
 			}, timeoutMs);
 			const check = () => {
