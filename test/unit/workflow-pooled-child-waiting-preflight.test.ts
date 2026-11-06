@@ -21,6 +21,7 @@ import { createCheckpointIdGenerator } from "../../packages/workflows/src/durabl
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { refusedAtChildStart } from "../../packages/workflows/src/engine/run-resume-preflight.js";
 import type { StageWaitKind } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import type { StageWaitToolResult } from "../../packages/workflows/src/shared/stage-wait.js";
 import {
 	isStageRehydrationError,
@@ -28,7 +29,7 @@ import {
 } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { rehydrateTypedFailure, typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
+import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import {
 	failedOnPoolFault,
 	isRetryableWorkflowError,
@@ -267,7 +268,7 @@ describe("a pooled child checks the sessions of its waiting stages before it run
 				assert.equal(attempt.result.status, "failed", JSON.stringify(attempt.result));
 				assert.equal(failedOnPoolFault(attempt.result), false);
 				const detail = attempt.result.failureDetail;
-				assert.ok(detail?.family === "StageWaitError", JSON.stringify(detail));
+				assert.ok(detail?.family === "stage-wait", JSON.stringify(detail));
 				assert.equal(detail.name, "StageRehydrationError");
 				assert.equal(detail.code, "session-not-found");
 				assert.equal(detail.retryable, false);
@@ -374,9 +375,7 @@ describe("a pooled child checks the sessions of its waiting stages before it run
 
 		// The worker sends its result through the pool's journal as JSON; the root rebuilds the typed error from it.
 		const crossed = JSON.parse(JSON.stringify(attempt.result)) as typeof attempt.result;
-		const reading = rehydrateTypedFailure(crossed.failureDetail);
-		assert.ok(reading.ok, reading.ok ? "" : reading.reason);
-		const error = reading.error;
+		const error = rehydrateError(crossed.failureDetail);
 		assert.ok(error instanceof StageRehydrationError);
 		assert.ok(isStageRehydrationError(error));
 		assert.equal(error.code, "session-not-found");
