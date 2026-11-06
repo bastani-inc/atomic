@@ -212,6 +212,9 @@ function assertReleased(directory: string): void {
 	removePathSync(directory, { recursive: true });
 }
 
+/** The full collections one close of a file database runs, each followed by the turn in which finalizers run. */
+const COLLECTIONS_PER_CLOSE = 2;
+
 /** Observes the full collections the runtime reports as forced, until `count` is awaited. */
 function observeForcedFullCollections(): { count(): Promise<number> } {
 	const entries: object[] = [];
@@ -257,8 +260,8 @@ test("closing a file database releases its files before close resolves (#4433)",
 		const collections = observeForcedFullCollections();
 		await database.close();
 		assertReleased(directory);
-		// The close forced a full collection, with V8's gc taken without leaving it exposed to code that runs later.
-		assert.ok((await collections.count()) > 0);
+		// The close forced its full collections, with V8's gc taken without leaving it exposed to code that runs later.
+		assert.equal(await collections.count(), COLLECTIONS_PER_CLOSE);
 		assert.equal(runInNewContext("typeof gc"), "undefined");
 	} finally {
 		removeTempDirectory(directory);
@@ -295,7 +298,7 @@ test("a file database closed on a Bun host collects with Bun.gc(true) (#4433)", 
 		} finally {
 			delete host.Bun;
 		}
-		assert.deepEqual(forced, [true]);
+		assert.deepEqual(forced, Array(COLLECTIONS_PER_CLOSE).fill(true));
 		assertReleased(directory);
 	} finally {
 		removeTempDirectory(directory);
@@ -346,11 +349,11 @@ async function withOpenedFileDatabases(
 	}
 }
 
-test("file databases closed together share one collection (#4433)", async () => {
+test("file databases closed together share their collections (#4433)", async () => {
 	await withCountedCollections(async (collections) => {
 		await withOpenedFileDatabases(3, async (opened) => {
 			await Promise.all(opened.map(({ database }) => database.close()));
-			assert.equal(collections.count, 1);
+			assert.equal(collections.count, COLLECTIONS_PER_CLOSE);
 			for (const { directory } of opened) assertReleased(directory);
 		});
 	});
@@ -366,7 +369,7 @@ test("a file database closed while a collection runs waits for the next collecti
 			};
 			await first!.database.close();
 			await closingSecond;
-			assert.equal(collections.count, 2);
+			assert.equal(collections.count, 2 * COLLECTIONS_PER_CLOSE);
 			assertReleased(first!.directory);
 			assertReleased(second!.directory);
 		});
@@ -386,7 +389,8 @@ test("a failed collection fails only the close that waited for it (#4433)", asyn
 				return true;
 			});
 			await second!.database.close();
-			assert.equal(collections.count, 2);
+			// The failure ended the first close's collections at their first pass; the second close ran its own.
+			assert.equal(collections.count, 1 + COLLECTIONS_PER_CLOSE);
 			assertReleased(first!.directory);
 			assertReleased(second!.directory);
 		});
@@ -411,7 +415,7 @@ test("a failed open keeps its error and attaches a failure to close it (#4433)",
 				assert.equal(error.cleanupCause, undefined);
 				return true;
 			});
-			assert.equal(collections.count, 2);
+			assert.equal(collections.count, 2 * COLLECTIONS_PER_CLOSE);
 			const failure = new Error("fixture collection failure");
 			collections.beforeNext = () => {
 				throw failure;
@@ -424,7 +428,7 @@ test("a failed open keeps its error and attaches a failure to close it (#4433)",
 				assert.equal(Object.getOwnPropertyDescriptor(error, "cleanupCause")?.configurable, true);
 				return true;
 			});
-			assert.equal(collections.count, 3);
+			assert.equal(collections.count, 2 * COLLECTIONS_PER_CLOSE + 1);
 		});
 	} finally {
 		// The failed collection left the last open's driver for a later collection to release.

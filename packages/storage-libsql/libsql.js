@@ -120,6 +120,13 @@ function collectGarbage() {
 	else exposeGc()();
 }
 
+/**
+ * Consecutive full collections one close runs. One forced collection occasionally leaves a statement uncollected, about
+ * once in several thousand closes in a loop that opens, uses and closes a file database, and a further event-loop turn
+ * does not collect it; a second collection does.
+ */
+const COLLECTION_PASSES = 2;
+
 /** @type {Promise<void>} */
 let collection = Promise.resolve();
 /** @type {Promise<void> | undefined} */
@@ -128,8 +135,9 @@ let pendingCollection;
 /**
  * libsql 0.5 finalizes a statement only when the statement is garbage-collected, and a connection stays open until
  * its last statement is finalized, so the client's `close()` leaves a `file:` database's files open and Windows
- * refuses to delete them. This resolves after a full collection that started after the call, and the event-loop
- * turn in which the runtime runs the native finalizers it queued. Calls made before that collection starts share it.
+ * refuses to delete them. This resolves after `COLLECTION_PASSES` full collections that started after the call, each
+ * followed by the event-loop turn in which the runtime runs the native finalizers it queued. Calls made before those
+ * collections start share them.
  * @returns {Promise<void>}
  */
 function releaseClosedConnections() {
@@ -142,8 +150,10 @@ function releaseClosedConnections() {
 
 async function collectAndFinalize() {
 	pendingCollection = undefined;
-	collectGarbage();
-	await new Promise((resolve) => setImmediate(resolve));
+	for (let pass = 0; pass < COLLECTION_PASSES; pass++) {
+		collectGarbage();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
 }
 
 /**
