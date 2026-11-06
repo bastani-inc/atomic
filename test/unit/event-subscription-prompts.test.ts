@@ -6,6 +6,7 @@ import {
 	seedEventPrompt,
 } from "@bastani/atomic";
 import { test } from "vitest";
+import { toolsWithReport } from "../../packages/coding-agent/src/core/event-subscriptions/prompts.js";
 
 test("an event child's seed carries the instructions, the event and when to report", () => {
 	assert.equal(
@@ -71,4 +72,13 @@ test("the report tool tells the model what it is for and passes the text through
 	});
 	assert.deepEqual(reports, ["deploy failed"]);
 	assert.match(createSubscriberReportTool(async () => {}, "session").description, /to the session that subscribed/);
+});
+
+test("an explicit tool allowlist keeps report_to_subscriber; a modifier-only list needs no entry (#4311)", () => {
+	assert.deepEqual(toolsWithReport(["read"]), ["read", SUBSCRIPTION_REPORT_TOOL_NAME]);
+	assert.deepEqual(toolsWithReport([]), [SUBSCRIPTION_REPORT_TOOL_NAME]);
+	assert.deepEqual(toolsWithReport(["read", SUBSCRIPTION_REPORT_TOOL_NAME]), ["read", SUBSCRIPTION_REPORT_TOOL_NAME]);
+	assert.deepEqual(toolsWithReport(["+read", "-bash"]), ["+read", "-bash"]);
+	const input = ["read"];
+	assert.notEqual(toolsWithReport(input), input);
 });

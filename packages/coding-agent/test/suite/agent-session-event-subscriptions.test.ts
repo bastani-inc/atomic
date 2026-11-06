@@ -213,6 +213,26 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		]);
 	});
 
+	it("a child limited to an explicit tool list can still call report_to_subscriber (#4311)", async () => {
+		const harness = await createHarness({ childSessions: true });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall(SUBSCRIPTION_REPORT_TOOL_NAME, { text: "deploy failed" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+			fauxAssistantMessage("done"),
+		]);
+		const stats = await harness.session.subscribe(listSource([{ id: "deploy-8" }]), async (_event, child) => {
+			await child.task({ prompt: "Report failed deployments.", tools: ["read"] });
+		}).done;
+		assert.equal(stats.reports, 1);
+		assert.deepEqual(
+			reportsIn(harness).map((details) => details.eventId),
+			["deploy-8"],
+		);
+	});
+
 	it("child.task fails with SubscriptionChildUnavailableError when the session cannot start child sessions (#4311)", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

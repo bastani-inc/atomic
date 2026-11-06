@@ -1942,3 +1942,56 @@ test("a run whose only tracked work is a subscription or an inline stream comple
 	assert.equal(result.status, "failed");
 	assert.match(result.error ?? "", /without creating any workflow stages or durable tool nodes/);
 });
+
+test("an event child limited to an explicit tool list keeps report_to_subscriber in it (#4311)", async () => {
+	const toolLists: Array<readonly string[] | undefined> = [];
+	const definition = workflow({
+		name: "restricted-children",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await ctx.subscribe(
+				listSource("limited", [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }]),
+				async (event, child) => {
+					const lists: Record<string, string[]> = {
+						a: ["read"],
+						b: ["+read", "-bash"],
+						d: [],
+						e: ["read", SUBSCRIPTION_REPORT_TOOL_NAME],
+					};
+					const tools = lists[event.id];
+					await child.task(tools === undefined ? { prompt: "look" } : { prompt: "look", tools });
+				},
+				{ maxConcurrent: 1 },
+			).done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId: "dededede-dede-4ede-8ede-000000004311",
+			store: createStore(),
+			durableBackend: await createMemoryTestBackend(),
+			adapters: {
+				agentSession: {
+					create: async (options, meta) => {
+						if (meta?.stageName.startsWith("limited#1/") === true) toolLists.push(options.tools);
+						return subscriberSession();
+					},
+				},
+			},
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(toolLists, [
+		["read", SUBSCRIPTION_REPORT_TOOL_NAME],
+		["+read", "-bash"],
+		undefined,
+		[SUBSCRIPTION_REPORT_TOOL_NAME],
+		["read", SUBSCRIPTION_REPORT_TOOL_NAME],
+	]);
+});

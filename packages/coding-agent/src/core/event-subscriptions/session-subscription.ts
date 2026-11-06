@@ -9,7 +9,7 @@ import {
 	validateSubscriptionAdmission,
 } from "./admission.js";
 import { SubscriptionChildUnavailableError, SubscriptionClosedError, SubscriptionConfigError } from "./errors.js";
-import { createSubscriberReportTool, formatEventReport, seedEventPrompt } from "./prompts.js";
+import { createSubscriberReportTool, formatEventReport, seedEventPrompt, toolsWithReport } from "./prompts.js";
 import type { EventSource, Subscription, SubscriptionAdmission, SubscriptionEvent } from "./types.js";
 
 /** Custom message type of a report delivered into the subscribing session. */
@@ -208,6 +208,7 @@ export function subscribeSession(
 					return await runChildSession(
 						resolve({
 							...childOptions,
+							...(childOptions.tools === undefined ? {} : { tools: toolsWithReport(childOptions.tools) }),
 							sessionManager: SessionManager.inMemory(session._cwd),
 							customTools: [createSubscriberReportTool(report, "session")],
 						}),

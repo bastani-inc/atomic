@@ -8,6 +8,7 @@ import {
 	formatEventReport,
 	isSubscriptionError,
 	openEventSubscription,
+	SUBSCRIPTION_REPORT_TOOL_NAME,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
 	type SubscriptionEvent,
@@ -73,6 +74,16 @@ export interface WorkflowEventPrimitiveSet extends WorkflowEventPrimitives {
 	cancel(reason: unknown): void;
 	/** Stops every open source and drops queued events without waiting, when the run fails. */
 	stopIntake(reason: unknown): void;
+}
+
+/**
+ * An explicit tool allowlist keeps `report_to_subscriber` available. A list of only `+name`/`-name` modifiers changes
+ * the defaults and leaves custom tools enabled, so it needs no entry.
+ */
+function toolsWithReport(tools: readonly string[]): string[] {
+	const modifiersOnly = tools.length > 0 && tools.every((entry) => /^[+-]/.test(entry));
+	if (modifiersOnly || tools.includes(SUBSCRIPTION_REPORT_TOOL_NAME)) return [...tools];
+	return [...tools, SUBSCRIPTION_REPORT_TOOL_NAME];
 }
 
 function validateName(name: string | undefined, field: string): void {
@@ -185,6 +196,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 								...rest,
 								prompt: seedEventPrompt(rest.prompt ?? instructions ?? "", name, event),
 								customTools: [...(rest.customTools ?? []), createSubscriberReportTool(report, "stage")],
+								...(rest.tools === undefined ? {} : { tools: toolsWithReport(rest.tools) }),
 							},
 							{
 								failed: false,

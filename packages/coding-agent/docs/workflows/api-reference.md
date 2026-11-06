@@ -538,7 +538,7 @@ interface SubscriptionStats {
 
 Subscribes a long-lived stage to an event stream without putting every event into that stage's context. `ctx.subscribe` returns at once and handles each event with `handler(event, child)`:
 
-- `child.task(options)` runs the event's own short-lived, tracked child stage. It takes the same options as `ctx.task`. The prompt is your handling instructions followed by the event's id, type and payload. The child stage also gets a `report_to_subscriber` tool, so its model decides whether the event matters.
+- `child.task(options)` runs the event's own short-lived, tracked child stage. It takes the same options as `ctx.task`. The prompt is your handling instructions followed by the event's id, type and payload. The child stage also gets a `report_to_subscriber` tool, so its model decides whether the event matters. An explicit `tools` allowlist keeps that tool; with `noTools: "all"`, or with the tool in `excludedTools`, the child cannot report, so call `child.report()` from the handler instead.
 - `child.report(text)` sends a short report to the subscriber. The `report_to_subscriber` tool calls it too.
 
 The subscriber's context grows only by reports. Each report arrives as one steering message in the `subscriber` stage: `Report from event child "<name>" (event <id>):` followed by your text. After a resume, a subscriber stage replayed from the journal takes its reports in its retained session, which reopens as a stage chat does after a run. If that session cannot be reopened, the report fails with `SubscriptionSubscriberUnavailableError`. A subscription without a `subscriber` records its reports as run notices instead.
@@ -587,7 +587,7 @@ interface WorkflowEventStream extends AsyncIterableIterator<SubscriptionEvent> {
 }
 ```
 
-Inline mode, for streams where every event belongs in the subscriber's own history, such as the output of a command a stage started. Each event is yielded once, in arrival order, with no child. Deduplication, `maxRate` and the journal records work as for `ctx.subscribe`. An event is marked processed when the loop asks for the next event or leaves the loop.
+Inline mode, for streams where every event belongs in the subscriber's own history, such as the output of a command a stage started. Each event is yielded once, in arrival order, with no child. Deduplication, `maxRate` and the journal records work as for `ctx.subscribe`. An event is marked processed when the loop asks for the next event or leaves the loop. Give durable work inside the loop an event-specific name, for example ``ctx.task(`triage/${event.id}`, …)``: after a resume, events already handled are skipped, so a name shared by every iteration would replay another event's result.
 
 ```typescript
 const builder = ctx.stage("builder");

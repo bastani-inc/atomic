@@ -24,6 +24,16 @@ export function seedEventPrompt(instructions: string, subscription: string, even
 	].join("\n");
 }
 
+/**
+ * An explicit tool allowlist keeps `report_to_subscriber` available. A list of only `+name`/`-name` modifiers changes
+ * the defaults and leaves custom tools enabled, so it needs no entry.
+ */
+export function toolsWithReport(tools: readonly string[]): string[] {
+	const modifiersOnly = tools.length > 0 && tools.every((entry) => /^[+-]/.test(entry));
+	if (modifiersOnly || tools.includes(SUBSCRIPTION_REPORT_TOOL_NAME)) return [...tools];
+	return [...tools, SUBSCRIPTION_REPORT_TOOL_NAME];
+}
+
 /** The message a subscriber receives for one report. */
 export function formatEventReport(childName: string, eventId: string, text: string): string {
 	return `Report from event child "${childName}" (event ${eventId}):\n\n${text}`;
