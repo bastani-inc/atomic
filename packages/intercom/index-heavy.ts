@@ -105,6 +105,7 @@ import {
   reconnectDelayMs,
 } from "./reconnect-backoff.js";
 import { IntercomClientDisconnectedError, isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
+import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
 import { isOwnerMissingRefusal, LIVE_ROUTE_OWNER_WAIT_MS, liveRouteOwnerRetryDelayMs } from "./live-route-refusal.js";
 import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
@@ -1138,8 +1139,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (connection.client?.isConnected()) return Promise.resolve(connection.client);
     if (connection.promise !== null) return connection.promise;
     const owner = connection;
-    const promise = routeClientConnectGate
+    const promise = registerWithBrokerSuccessor(() => routeClientConnectGate
       .run(async () => {
+        if (pendingStageRouteConnections.get(key) !== owner) throw new IntercomClientDisconnectedError();
         await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
         if (pendingStageRouteConnections.get(key) !== owner) throw new IntercomClientDisconnectedError();
         const routeReturnAddress = `${currentSessionId}:pending-stage-route:${key}`;
@@ -1162,7 +1164,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           throw error;
         }
         return nextClient;
-      })
+      }))
       .finally(() => {
         if (owner.promise === promise) owner.promise = null;
       });

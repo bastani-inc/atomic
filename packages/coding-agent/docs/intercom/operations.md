@@ -66,6 +66,14 @@ Before a workflow stage's session starts, the stage waits for the broker to ackn
 
 The class is not exported. Recognize it by `code === "pending_stage_route_timeout"`.
 
+A broker retires after five seconds without sessions, or when it is restarted or replaced. A workflow run that registers its routes at that moment, such as a run resumed right after its previous process was killed, starts the replacement broker and registers with it, retrying for up to 10 seconds. If no broker takes over in that time, the route registration fails with `IntercomBrokerSuccessorTimeoutError`, and so does the stage waiting for it:
+
+| Class | `code` | When it happens | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `IntercomBrokerSuccessorTimeoutError` | `broker-successor-timeout` | A broker retired while a workflow run's route connection registered with it, and no replacement broker accepted the registration within 10 seconds. | `phase` (`"registration"`), `timeoutMs`, `elapsedMs`, `attempts`, `hint`, `retryable: true`; `cause` is the last attempt's failure | Run `atomic intercom restart` to replace the broker, then resume the run. |
+
+It is exported from `@bastani/atomic` with `isIntercomBrokerSuccessorTimeoutError()`, `serializeIntercomBrokerSuccessorTimeoutError()` and `rehydrateIntercomBrokerSuccessorTimeoutError()`.
+
 ## How It Works
 
 The local broker starts on first use and exits after five seconds without registered sessions. Clients reconnect automatically using delays of 1, 2, 5, 10, then 30 seconds. Explicit connection failures remain visible while background recovery continues.
