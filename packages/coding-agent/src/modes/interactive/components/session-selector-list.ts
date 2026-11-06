@@ -13,7 +13,7 @@ import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
-import { formatSessionDate, getSessionPathKey, shortenPath } from "./session-selector-utils.ts";
+import { formatSessionDate, getSessionPathKey, shortenPath, truncatePathStart } from "./session-selector-utils.ts";
 
 /**
  * Custom session list component with multi-line items and search
@@ -216,22 +216,28 @@ export class SessionList implements Component, Focusable {
 			// Right side: message count and age
 			const age = formatSessionDate(session.modified);
 			const msgCount = String(session.messageCount);
-			let rightPart = `${msgCount} ${age}`;
-			if (this.showCwd && session.cwd) {
-				rightPart = `${shortenPath(session.cwd)} ${rightPart}`;
-			}
-			if (this.showPath) {
-				rightPart = `${shortenPath(session.path)} ${rightPart}`;
-			}
+			const stats = `${msgCount} ${age}`;
+			const locations: string[] = [];
+			if (this.showPath) locations.push(shortenPath(session.path));
+			if (this.showCwd && session.cwd) locations.push(shortenPath(session.cwd));
 
 			// Cursor
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
 
 			// Calculate available width, split between the identity column and the summary column
 			const prefixWidth = visibleWidth(prefix);
+			const summaryGutter = 2;
+			const identityWidth =
+				Math.max(10, visibleWidth(normalizedMessage)) +
+				(showSummaryColumn ? summaryGutter + Math.max(10, visibleWidth(summaryText)) : 0);
+			const identityAndLocationWidth = width - 2 - prefixWidth - (visibleWidth(stats) + 2) - 1;
+			const location = truncatePathStart(
+				locations.join(" "),
+				Math.max(Math.floor(identityAndLocationWidth / 2), identityAndLocationWidth - identityWidth),
+			);
+			const rightPart = location ? `${location} ${stats}` : stats;
 			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
 			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
-			const summaryGutter = 2;
 			const defaultMsgColWidth = Math.max(10, Math.floor(availableForMsg * 0.45));
 			const msgColWidth = showSummaryColumn
 				? Math.max(defaultMsgColWidth, availableForMsg - summaryGutter - Math.max(10, visibleWidth(summaryText)))
