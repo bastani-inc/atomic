@@ -32,7 +32,8 @@ delete process.env.PI_CODING_AGENT_DIR;
 
 // `broker/spawn.ts` snapshots the intercom paths at module load, so every import that can
 // reach it has to happen after ATOMIC_CODING_AGENT_DIR points at this test's agent dir.
-const { getBrokerPidPath } = await import("../../packages/intercom/broker/paths.js");
+const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { isSocketAnswering } = await import("../../packages/intercom/broker/socket-liveness.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
@@ -266,7 +267,13 @@ function replacesBroker(current: BrokerIdentity, previous: BrokerIdentity): bool
 	return current.pid !== previous.pid || current.pidFileWrittenAtMs > previous.pidFileWrittenAtMs;
 }
 
-/** The live broker that replaced `previous`, or the first live broker when omitted. */
+/**
+ * The live broker that replaced `previous`, or the first live broker when omitted, once it answers on its socket.
+ *
+ * A broker writes its pid file before it listens (#4409), so a new pid file alone does not mean a client can connect
+ * yet: on Windows the killed broker's pipe is gone at once, and a client that connects before the replacement listens
+ * fails with `connect ENOENT`.
+ */
 async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity> {
 	const deadline = Date.now() + RECOVERY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
@@ -274,14 +281,15 @@ async function waitForBroker(previous?: BrokerIdentity): Promise<BrokerIdentity>
 		if (
 			current !== undefined &&
 			(previous === undefined || replacesBroker(current, previous)) &&
-			processIsAlive(current.pid)
+			processIsAlive(current.pid) &&
+			(await isSocketAnswering(getBrokerSocketPath(process.platform, agentDir)))
 		) {
 			return current;
 		}
 		await sleep(RECOVERY_POLL_MS);
 	}
 	throw new Error(
-		`No new broker replaced pid ${String(previous?.pid)} within ${RECOVERY_TIMEOUT_MS}ms (pid file now: ${JSON.stringify(readBrokerIdentity())})`,
+		`No new broker replaced pid ${String(previous?.pid)} and answered on its socket within ${RECOVERY_TIMEOUT_MS}ms (pid file now: ${JSON.stringify(readBrokerIdentity())})`,
 	);
 }
 
@@ -548,7 +556,7 @@ test("an ordinary host controls a second invocation after joining the first and 
 });
 
 test.each(["", "/worker"])(
-	"a workflow stage in invocation subgroup '%s' cannot gain control by joining and reconnecting",
+	"a workflow stage in invocation subgroup '%s' cannot gain control by joining and reconnecting (#4434)",
 	async (suffix) => {
 		const runA = "82a2d5fd-56a5-4bc9-93ef-27c5e857c74d";
 		const homeGroup = `workflow:${runA}${suffix}`;
@@ -898,7 +906,7 @@ test("a reconnect that fails after the broker accepted it leaves no second regis
 		armed = true;
 		killBroker(firstBroker);
 		// The failing attempt spawns the replacement broker and registers on it before `restore`
-		// rejects, so a new pid appearing is the signal that the orphan window has opened.
+		// rejects, so a new broker answering is the signal that the orphan window has opened.
 		const recoveredBroker = await waitForBroker(firstBroker);
 		assert.equal(processIsAlive(recoveredBroker.pid), true);
 
