@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import {
@@ -210,17 +210,57 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		);
 	});
 
-	test("an export leaves out an output its store no longer holds, keeping the reference (#4379)", async () => {
+	test("an export leaves out an output its store no longer holds, keeping the reference, and says so once (#4379)", async () => {
+		const store = new MemorySessionStore();
+		const { manager, hash } = await sessionWithOutput(store);
+		await spillReleased(manager, "call-2", "another output ".repeat(5000));
+		const entries = manager.getBranch();
+		const withoutBlobs = Object.assign(Object.create(store) as MemorySessionStore, {
+			getBlob: async () => undefined,
+		});
+		const reported: unknown[] = [];
+
+		const exported = await inlineToolOutput(entries, withoutBlobs, manager.getSessionId(), {
+			onMissingBlob: (error) => reported.push(error),
+		});
+
+		assert.deepEqual(exported, entries);
+		assert.equal(reported.length, 1, "once for the whole export, not once per blob");
+		const [error] = reported;
+		assert.ok(isSessionBlobError(error));
+		assert.equal(error.code, "blob-missing");
+		assert.equal(error.sessionId, manager.getSessionId());
+		assert.equal(error.hash, hash);
+		assert.equal(error.missing, 2);
+		assert.match(error.message, new RegExp(`${hash} and 1 more in session`));
+		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { getBlob: undefined });
+		assert.deepEqual(await inlineToolOutput(entries, blobless, manager.getSessionId()), entries);
+	});
+
+	test("with no listener a missing blob is a process warning, and a listener that throws changes nothing (#4379)", async () => {
 		const store = new MemorySessionStore();
 		const { manager } = await sessionWithOutput(store);
 		const entries = manager.getBranch();
 		const withoutBlobs = Object.assign(Object.create(store) as MemorySessionStore, {
 			getBlob: async () => undefined,
 		});
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			await inlineToolOutput(entries, withoutBlobs, manager.getSessionId());
+			const listener = new Error("listener failed");
+			const exported = await inlineToolOutput(entries, withoutBlobs, manager.getSessionId(), {
+				onMissingBlob: () => {
+					throw listener;
+				},
+			});
 
-		assert.deepEqual(await inlineToolOutput(entries, withoutBlobs, manager.getSessionId()), entries);
-		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { getBlob: undefined });
-		assert.deepEqual(await inlineToolOutput(entries, blobless, manager.getSessionId()), entries);
+			assert.deepEqual(exported, entries);
+			assert.equal(warnings.mock.calls.length, 2);
+			assert.ok(isSessionBlobError(warnings.mock.calls[0]![0]));
+			assert.equal(warnings.mock.calls[1]![0], listener);
+		} finally {
+			warnings.mockRestore();
+		}
 	});
 });
 describe("tool-output entries and blob copies (#4379)", () => {
@@ -272,7 +312,19 @@ describe("tool-output entries and blob copies (#4379)", () => {
 			return blob;
 		};
 
-		await copySessionBlobs(source, "source", target, "copy", [first.hash, "0".repeat(64), second.hash]);
+		const reported: unknown[] = [];
+
+		await copySessionBlobs(source, "source", target, "copy", [first.hash, "0".repeat(64), second.hash], {
+			onMissingBlob: (error) => reported.push(error),
+		});
+
+		assert.equal(reported.length, 1);
+		const [error] = reported;
+		assert.ok(isSessionBlobError(error));
+		assert.deepEqual(
+			[error.code, error.sessionId, error.hash, error.missing],
+			["blob-missing", "source", "0".repeat(64), 1],
+		);
 
 		assert.deepEqual(calls, [
 			`get ${first.hash}`,
@@ -281,6 +333,13 @@ describe("tool-output entries and blob copies (#4379)", () => {
 			`get ${second.hash}`,
 			`put ${second.hash}`,
 		]);
+		reported.length = 0;
+
+		await copySessionBlobs(source, "source", target, "copy", [first.hash, second.hash], {
+			onMissingBlob: (reportedError) => reported.push(reportedError),
+		});
+
+		assert.deepEqual(reported, [], "nothing is reported when every blob was there");
 		assert.equal(Buffer.from((await target.getBlob("copy", second.hash))!).toString(), "second");
 	});
 

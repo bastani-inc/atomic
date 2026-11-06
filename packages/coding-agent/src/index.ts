@@ -35,7 +35,9 @@ export type { UsageEntry } from "./core/session-manager.ts";
 export { resolveSessionStore } from "./core/session-storage.js";
 export {
 	assertSessionBlobStore,
+	type BlobCopyOptions,
 	copySessionBlobs,
+	type MissingBlobReporter,
 	sessionBlobHashes,
 	TOOL_OUTPUT_ENTRY_TYPE,
 	type ToolOutputReference,

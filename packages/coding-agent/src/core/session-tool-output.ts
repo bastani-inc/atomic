@@ -114,11 +114,33 @@ export function storeSessionBlobs(
 	});
 }
 
+/** Told once per copy or export when blobs its entries reference were not in the source; see {@link BlobCopyOptions}. */
+export type MissingBlobReporter = (error: SessionBlobError) => void;
+
+export interface BlobCopyOptions {
+	/**
+	 * Called once, with a `blob-missing` error naming the first missing hash and how many were missing, when the source
+	 * no longer holds blobs its entries reference. The copy or export goes on without them. Default:
+	 * `process.emitWarning`. A listener that throws does not change the outcome; its own error becomes a process warning.
+	 */
+	readonly onMissingBlob?: MissingBlobReporter;
+}
+
+function reportMissingBlobs(options: BlobCopyOptions, sessionId: string, missing: readonly string[]): void {
+	if (missing.length === 0) return;
+	const error = new SessionBlobError("blob-missing", { sessionId, hash: missing[0], missing: missing.length });
+	try {
+		(options.onMissingBlob ?? ((reported) => process.emitWarning(reported)))(error);
+	} catch (listenerError) {
+		process.emitWarning(listenerError instanceof Error ? listenerError : new Error(String(listenerError)));
+	}
+}
+
 /**
  * Copies the blobs `hashes` names from a session in `source` to a session just created in `target`, one at a time, so
- * a copy never holds more than one blob in memory. A blob the source no longer holds is skipped. When the target
- * cannot hold blobs or one cannot be copied, the target session is deleted again and the failure thrown, with a
- * failure to delete attached as its `cleanupCause`.
+ * a copy never holds more than one blob in memory. A blob the source no longer holds is skipped and reported once
+ * through `onMissingBlob`. When the target cannot hold blobs or one cannot be copied, the target session is deleted
+ * again and the failure thrown, with a failure to delete attached as its `cleanupCause`.
  */
 export function copySessionBlobs(
 	source: SessionStore,
@@ -126,41 +148,51 @@ export function copySessionBlobs(
 	target: SessionStore,
 	targetSessionId: string,
 	hashes: readonly string[],
+	options: BlobCopyOptions = {},
 ): Promise<void> {
 	return writeOrDelete(target, targetSessionId, async () => {
 		assertSessionBlobStore(target, targetSessionId, hashes.length);
+		const missing: string[] = [];
 		for (const hash of hashes) {
 			const data = await source.getBlob?.(sourceSessionId, hash);
-			if (data !== undefined) await target.putBlob!(targetSessionId, data);
+			if (data === undefined) missing.push(hash);
+			else await target.putBlob!(targetSessionId, data);
 		}
+		reportMissingBlobs(options, sourceSessionId, missing);
 	});
 }
 
 /**
  * `entries` with the bytes of each tool output `store` holds for the session carried inline, each once, so an
- * exported file restores without the storage. An output the store no longer holds keeps only its reference.
+ * exported file restores without the storage. An output the store no longer holds keeps only its reference, and is
+ * reported once through `onMissingBlob`.
  */
 export async function inlineToolOutput(
 	entries: readonly SessionEntry[],
 	store: SessionStore,
 	sessionId: string,
+	options: BlobCopyOptions = {},
 ): Promise<SessionEntry[]> {
-	const carried = new Set<string>();
+	if (store.getBlob === undefined) return [...entries];
+	const seen = new Set<string>();
+	const missing: string[] = [];
 	const inlined: SessionEntry[] = [];
 	for (const entry of entries) {
 		const reference = referenceOf(entry);
-		if (reference === undefined || carried.has(reference.hash)) {
+		if (reference === undefined || seen.has(reference.hash)) {
 			inlined.push(entry);
 			continue;
 		}
-		const data = await store.getBlob?.(sessionId, reference.hash);
+		seen.add(reference.hash);
+		const data = await store.getBlob(sessionId, reference.hash);
 		if (data === undefined) {
+			missing.push(reference.hash);
 			inlined.push(entry);
 			continue;
 		}
-		carried.add(reference.hash);
 		inlined.push({ ...entry, data: { ...reference, base64: Buffer.from(data).toString("base64") } } as SessionEntry);
 	}
+	reportMissingBlobs(options, sessionId, missing);
 	return inlined;
 }
 
