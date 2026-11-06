@@ -49,9 +49,7 @@ const examples = (): readonly SubscriptionError[] => [
 	new SubscriptionHandlerError("run-1/ci#1", "evt-3", new TypeError("bad payload")),
 	new SubscriptionChildUnavailableError("sess-1/list#1", "sess-1"),
 	new SubscriptionSetupError("gh-cli", { cause: new Error("spawn gh ENOENT") }),
-	new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "invalid_session", {
-		cause: new Error("session not found"),
-	}),
+	new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "invalid_session"),
 ];
 
 test("each subscription error has its family, literal name, stable code, fields and hint", () => {
@@ -420,6 +418,9 @@ test("a custom source hint and a custom expected value survive the wire (#4311)"
 });
 
 test("setup and subscriber errors are found through a wrapping source failure (#4311)", () => {
+	const spawnFailure = new Error("spawn gh ENOENT");
+	assert.equal(new SubscriptionSetupError("gh-cli", { cause: spawnFailure }).cause, spawnFailure);
+	assert.equal(Object.hasOwn(new SubscriptionSetupError("gh-cli"), "cause"), false);
 	const setup = new SubscriptionSetupError("gh-auth");
 	const wrapped = new EventSourceError("github-checks:o/r#1", "poll", { cause: setup, hint: setup.hint });
 	assert.equal(isSubscriptionSetupError(wrapped), true);

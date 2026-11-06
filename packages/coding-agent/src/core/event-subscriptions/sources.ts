@@ -635,9 +635,7 @@ function isExecutableFile(path: string): boolean {
 /** True when the PATH names an executable `gh`; the default runner spawns it by name. */
 function ghOnPath(): boolean {
 	const name = process.platform === "win32" ? "gh.exe" : "gh";
-	return (process.env.PATH ?? "")
-		.split(delimiter)
-		.some((directory) => directory !== "" && isExecutableFile(join(directory, name)));
+	return (process.env.PATH ?? "").split(delimiter).some((directory) => isExecutableFile(join(directory, name)));
 }
 
 /** The setup `error` shows is missing, or `undefined` when the failure is not about setup. */

@@ -104,7 +104,7 @@ import { createChainPrimitive } from "./primitives/chain.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createParallelPrimitive } from "./primitives/parallel.js";
 import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
-import { deliverSubscriberReport } from "./primitives/subscriber-report.js";
+import { createSubscriberReports } from "./primitives/subscriber-report.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
@@ -1017,6 +1017,27 @@ async function executeRun(
 		once: true,
 	});
 	const stageIdByContext = new WeakMap<object, () => string | undefined>();
+	const subscriberReports = createSubscriberReports(
+		runId,
+		{
+			registry: stageRegistry,
+			adapters: opts.adapters,
+			cwd: workflowInvocationCwd,
+			defaultSessionDir: opts.defaultSessionDir,
+			pooledSessionStore: async () => {
+				const { poolSessionStore } = await import("../workers/pool-session-store.js");
+				return poolSessionStore(durableBackend);
+			},
+		},
+		(stage, error) =>
+			activeStore.recordNotice({
+				id: `workflow-subscriber-release:${runId}:${stage}`,
+				runId,
+				level: "warning",
+				message: `The reopened session of subscriber stage "${stage}" could not be released: ${error instanceof Error ? error.message : String(error)}`,
+				createdAt: Date.now(),
+			}),
+	);
 	const eventPrimitives = createWorkflowEventPrimitives({
 		runId,
 		backend: durableBackend,
@@ -1027,18 +1048,11 @@ async function executeRun(
 			activeStore.recordNotice({ id, runId, level: "info", message, createdAt: Date.now() }),
 		deliverReport: (subscriber, message, subscriptionId) => {
 			const stageId = stageIdByContext.get(subscriber)?.();
-			return deliverSubscriberReport({
-				runId,
+			return subscriberReports.deliver({
 				subscriber,
 				stage: activeStore.run(runId)?.stages.find((stage) => stage.id === stageId),
 				subscriptionId,
 				message,
-				postMortem: {
-					registry: stageRegistry,
-					adapters: opts.adapters,
-					cwd: workflowInvocationCwd,
-					defaultSessionDir: opts.defaultSessionDir,
-				},
 			});
 		},
 		watch: (promise) => rejectionScope.watch(promise),
@@ -1050,7 +1064,10 @@ async function executeRun(
 		const stage = create();
 		return { stage, id: activeStore.run(runId)?.stages[before]?.id };
 	};
-	ownController.signal.addEventListener("abort", () => eventPrimitives.cancel(ownController.signal.reason));
+	ownController.signal.addEventListener("abort", () => {
+		eventPrimitives.cancel(ownController.signal.reason);
+		void subscriberReports.cancel();
+	});
 	const ctx: WorkflowRunContext = {
 		inputs: resolvedInputs,
 		runId,
@@ -1556,6 +1573,7 @@ async function executeRun(
 					disposeStageIdleReleaser(runtime.wakeDispatcher);
 					runtime.wakeDispatcher.dispose();
 					terminalEvents.dispose();
+					await subscriberReports.release();
 					// Standalone terminal runs have no host to own retained SDK sessions.
 					// Preserve caller-owned registries and handles needed for continuation.
 					if (

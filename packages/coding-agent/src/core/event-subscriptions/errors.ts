@@ -321,7 +321,7 @@ export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
 	/** Why the subscriber's retained session could not take the report. */
 	readonly reason: string;
 
-	constructor(subscriptionId: string, subscriber: string, reason: string, options?: { readonly cause?: unknown }) {
+	constructor(subscriptionId: string, subscriber: string, reason: string) {
 		const hint =
 			"The subscriber stage was replayed after a resume and its retained session could not be reopened; subscribe from a stage that runs in this run, or start the run again instead of resuming it.";
 		super(
@@ -332,7 +332,7 @@ export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
 				"subscriber-unavailable",
 				hint,
 			),
-			{ hint, ...(options?.cause === undefined ? {} : { cause: options.cause }) },
+			{ hint },
 		);
 		this.subscriptionId = subscriptionId;
 		this.subscriber = subscriber;
@@ -495,7 +495,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 					{
 						cause,
 						retryable: serialized.retryable,
-						...(serialized.hint === undefined ? {} : { hint: serialized.hint }),
+						hint: serialized.hint,
 						...(typeof detail === "string" ? { detail } : {}),
 					},
 				);

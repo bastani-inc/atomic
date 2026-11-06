@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,12 +10,13 @@ import {
 	isSubscriptionHandlerError,
 	isSubscriptionSubscriberUnavailableError,
 	publishEvent,
+	type SessionStore,
 	SUBSCRIPTION_REPORT_TOOL_NAME,
 	type SubscriptionEvent,
 	type SubscriptionStats,
 	type ToolDefinition,
 } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
@@ -43,6 +44,11 @@ import {
 	type MemoryJournalBackend,
 } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
+
+const poolProbe = vi.hoisted(() => ({ open: undefined as (() => Promise<SessionStore>) | undefined }));
+vi.mock("../../packages/workflows/src/workers/pool-session-store.js", () => ({
+	poolSessionStore: async () => poolProbe.open?.(),
+}));
 
 afterEach(closeMemoryTestBackends);
 
@@ -1432,53 +1438,112 @@ test("a subscriber declared and prompted while the run is paused parents childre
 
 interface ReplayedSubscriberCase {
 	readonly runId: string;
-	readonly retained: boolean;
+	/** Where the subscriber's retained session can be found when the resumed run reopens it. */
+	readonly retainedIn: "host" | "pool" | "nowhere";
 	readonly registry?: StageControlRegistry;
 	readonly beforeResume?: (watcherStageId: string) => void;
+	/** The reopened session never finishes taking the report; the resumed run is cancelled once it started. */
+	readonly cancelDuringReport?: boolean;
+	/** The reopened session's turn ends a few event-loop turns after it took the report. */
+	readonly turnEndsLater?: boolean;
+	/** Disposing the reopened session fails. */
+	readonly disposeFails?: boolean;
+	/** A second relevant event arrives after the first, so the reopened session takes two reports. */
+	readonly secondReport?: boolean;
+}
+
+function writeRetainedSession(directory: string, sessionId: string): string {
+	const sessionFile = join(directory, "watcher.jsonl");
+	writeFileSync(
+		sessionFile,
+		`${[
+			JSON.stringify({
+				type: "session",
+				version: 4,
+				id: sessionId,
+				createdAt: new Date(0).toISOString(),
+				cwd: directory,
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "watcher-message",
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				message: { role: "user", content: "watch", timestamp: 0 },
+			}),
+		].join("\n")}\n`,
+	);
+	return sessionFile;
 }
 
 /** Runs a subscriber whose first event fails before reporting, then resumes so the subscriber is replayed. */
 async function runReplayedSubscriber(scenario: ReplayedSubscriberCase) {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-subscriber-replay-"));
+	const poolDirectory = join(directory, "pool");
+	mkdirSync(poolDirectory);
 	const sessionStore = await JsonlSessionStore.open(directory, { exactDirectory: true });
 	const sessionId = "watcher-session";
-	const sessionFile = join(directory, "watcher.jsonl");
-	if (scenario.retained) {
-		writeFileSync(
-			sessionFile,
-			`${[
-				JSON.stringify({
-					type: "session",
-					version: 4,
-					id: sessionId,
-					createdAt: new Date(0).toISOString(),
-					cwd: directory,
-				}),
-				JSON.stringify({
-					type: "message",
-					id: "watcher-message",
-					parentId: null,
-					timestamp: new Date(0).toISOString(),
-					message: { role: "user", content: "watch", timestamp: 0 },
-				}),
-			].join("\n")}\n`,
-		);
-	}
+	const sessionFile =
+		scenario.retainedIn === "nowhere"
+			? join(directory, "watcher.jsonl")
+			: writeRetainedSession(scenario.retainedIn === "host" ? directory : poolDirectory, sessionId);
+	poolProbe.open = () => JsonlSessionStore.open(poolDirectory, { exactDirectory: true });
 	const deliveries: Array<{ readonly session: string; readonly text: string; readonly deliverAs?: string }> = [];
+	const disposed: string[] = [];
+	const timeline: string[] = [];
+	const delivering = Promise.withResolvers<void>();
 	let watcherSessions = 0;
 	const watcherSession = (): StageSessionRuntime => {
 		watcherSessions += 1;
 		const label = watcherSessions === 1 ? "live" : "reopened";
+		const listeners = new Set<Listener>();
+		let streaming = false;
+		let subscribedWhileStreaming = 0;
+		const emit = (type: string): void => {
+			for (const listener of [...listeners]) listener({ type });
+		};
 		return {
 			...mockSession(),
 			sessionId,
 			sessionFile,
+			get isStreaming() {
+				return streaming;
+			},
+			subscribe(listener) {
+				listeners.add(listener as Listener);
+				if (streaming) subscribedWhileStreaming += 1;
+				return () => listeners.delete(listener as Listener);
+			},
 			async sendUserMessage(content, options) {
 				deliveries.push({
 					session: label,
 					text: typeof content === "string" ? content : "",
 					...(options?.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }),
 				});
+				if (label === "reopened" && scenario.cancelDuringReport === true) {
+					streaming = true;
+					delivering.resolve();
+					await new Promise<void>(() => {});
+				}
+				if (label === "reopened" && scenario.turnEndsLater === true) {
+					streaming = true;
+					void (async () => {
+						let updatesSeen = 0;
+						for (let turn = 0; turn < EVENT_LOOP_TURNS && updatesSeen < 3; turn++) {
+							await nextTurn();
+							emit("message_update");
+							if (subscribedWhileStreaming > 0) updatesSeen += 1;
+						}
+						streaming = false;
+						timeline.push("turn ended");
+						emit("agent_end");
+					})();
+				}
+			},
+			dispose() {
+				disposed.push(label);
+				timeline.push(`disposed ${label}`);
+				if (label === "reopened" && scenario.disposeFails === true) throw new Error("dispose failed");
 			},
 		};
 	};
@@ -1494,15 +1559,15 @@ async function runReplayedSubscriber(scenario: ReplayedSubscriberCase) {
 			await watcher.prompt("watch");
 			await ctx
 				.subscribe(
-					listSource("ci", [{ id: "e1" }]),
-					async (_event, child) => {
+					listSource("ci", scenario.secondReport === true ? [{ id: "e1" }, { id: "e2" }] : [{ id: "e1" }]),
+					async (event, child) => {
 						if (failFirst) {
 							failFirst = false;
 							throw new Error("crashed before reporting");
 						}
-						await child.report("e1 failed");
+						await child.report(`${event.id} failed`);
 					},
-					{ subscriber: watcher },
+					{ subscriber: watcher, maxConcurrent: 1 },
 				)
 				.done.catch((error: unknown) => failures.push(error));
 			return {};
@@ -1524,34 +1589,84 @@ async function runReplayedSubscriber(scenario: ReplayedSubscriberCase) {
 	try {
 		const first = await run(definition, {}, { ...options, store: createStore() });
 		assert.equal(first.status, "completed", first.error);
-		scenario.beforeResume?.(first.stages.find((stage) => stage.name === "watcher")!.id);
-		const resumed = await run(definition, {}, { ...options, store: createStore() });
-		return { resumed, deliveries, failures: failures.slice(1) };
+		const watcherStageId = first.stages.find((stage) => stage.name === "watcher")!.id;
+		scenario.beforeResume?.(watcherStageId);
+		const controller = new AbortController();
+		if (scenario.cancelDuringReport === true) {
+			void delivering.promise.then(() => controller.abort(new Error("operator cancelled")));
+		}
+		const resumedStore = createStore();
+		const resumed = await run(definition, {}, { ...options, store: resumedStore, signal: controller.signal });
+		return { resumed, resumedStore, deliveries, disposed, timeline, failures: failures.slice(1), watcherStageId };
 	} finally {
+		poolProbe.open = undefined;
 		await sessionStore.close();
 		rmSync(directory, { recursive: true, force: true });
 	}
 }
 
-test("a subscriber replayed after a resume takes reports in its retained session (#4311)", async () => {
-	const { resumed, deliveries, failures } = await runReplayedSubscriber({
-		runId: "abababab-abab-4bab-8bab-000000004311",
-		retained: true,
+test("a subscriber replayed after a resume takes reports in its retained session, which the run lets go at its end (#4311)", async () => {
+	const registry = createStageControlRegistry();
+	const runId = "abababab-abab-4bab-8bab-000000004311";
+	const { resumed, deliveries, disposed, failures, watcherStageId } = await runReplayedSubscriber({
+		runId,
+		retainedIn: "host",
+		registry,
 	});
 	assert.equal(resumed.status, "completed", resumed.error);
 	assert.deepEqual(failures, []);
 	assert.deepEqual(deliveries, [
 		{ session: "reopened", text: 'Report from event child "ci/e1" (event e1):\n\ne1 failed', deliverAs: "steer" },
 	]);
+	assert.deepEqual(
+		disposed.filter((label) => label === "reopened"),
+		["reopened"],
+	);
+	assert.equal(registry.get(runId, watcherStageId), undefined);
+});
+
+test("a replayed subscriber whose session ran on a local worker is reopened from the pool's session store (#4311)", async () => {
+	const { resumed, deliveries, failures } = await runReplayedSubscriber({
+		runId: "aeaeaeae-aeae-4eae-8eae-000000004311",
+		retainedIn: "pool",
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(failures, []);
+	assert.deepEqual(
+		deliveries.map((delivery) => delivery.session),
+		["reopened"],
+	);
+});
+
+test("cancelling a resumed run lets a reopened subscriber session go without waiting for its turn (#4311)", async () => {
+	const registry = createStageControlRegistry();
+	const runId = "afafafaf-afaf-4faf-8faf-000000004311";
+	const { resumed, deliveries, disposed, watcherStageId } = await runReplayedSubscriber({
+		runId,
+		retainedIn: "host",
+		registry,
+		cancelDuringReport: true,
+	});
+	assert.equal(resumed.status, "killed");
+	assert.deepEqual(
+		deliveries.map((delivery) => delivery.session),
+		["reopened"],
+	);
+	await turnsUntil(() => disposed.includes("reopened"));
+	assert.equal(registry.get(runId, watcherStageId), undefined);
 });
 
 test("a replayed subscriber whose session cannot be reopened fails the report with a typed error (#4311)", async () => {
-	const { resumed, deliveries, failures } = await runReplayedSubscriber({
+	const { resumed, resumedStore, deliveries, failures } = await runReplayedSubscriber({
 		runId: "acacacac-acac-4cac-8cac-000000004311",
-		retained: false,
+		retainedIn: "nowhere",
 	});
 	assert.equal(resumed.status, "completed", resumed.error);
 	assert.deepEqual(deliveries, []);
+	assert.deepEqual(
+		resumedStore.notices().filter((notice) => notice.id.startsWith("workflow-subscriber-release:")),
+		[],
+	);
 	assert.equal(failures.length, 1);
 	assert.equal(isSubscriptionHandlerError(failures[0]), true);
 	const cause = (failures[0] as { cause?: unknown }).cause;
@@ -1573,7 +1688,7 @@ test("a replayed subscriber whose chat handle cannot admit messages fails the re
 	const runId = "adadadad-adad-4dad-8dad-000000004311";
 	const { resumed, deliveries, failures } = await runReplayedSubscriber({
 		runId,
-		retained: true,
+		retainedIn: "host",
 		registry,
 		beforeResume: (watcherStageId) => {
 			registry.getOrCreateDetached(
@@ -1588,4 +1703,84 @@ test("a replayed subscriber whose chat handle cannot admit messages fails the re
 	const cause = (failures[0] as { cause?: unknown }).cause;
 	assert.equal(isSubscriptionSubscriberUnavailableError(cause), true);
 	assert.equal((cause as { reason: string }).reason, "no_message_admission");
+});
+
+test("a resumed run waits for a reopened subscriber's turn before letting its session go (#4311)", async () => {
+	const { resumed, timeline } = await runReplayedSubscriber({
+		runId: "a1a1a1a1-a1a1-4a1a-8a1a-000000004311",
+		retainedIn: "host",
+		registry: createStageControlRegistry(),
+		turnEndsLater: true,
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(
+		timeline.filter((entry) => entry !== "disposed live"),
+		["turn ended", "disposed reopened"],
+	);
+});
+
+test("a reopened subscriber session that fails to close leaves a run warning instead of failing the run (#4311)", async () => {
+	const runId = "a2a2a2a2-a2a2-4a2a-8a2a-000000004311";
+	const { resumed, resumedStore } = await runReplayedSubscriber({
+		runId,
+		retainedIn: "host",
+		registry: createStageControlRegistry(),
+		disposeFails: true,
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	const warnings = resumedStore
+		.notices()
+		.filter((notice) => notice.id === `workflow-subscriber-release:${runId}:watcher`);
+	assert.deepEqual(
+		warnings.map((notice) => notice.level),
+		["warning"],
+	);
+	assert.match(warnings[0]!.message, /subscriber stage "watcher" could not be released: dispose failed/);
+});
+
+test("one reopened subscriber session takes every report of a resumed run and is let go once (#4311)", async () => {
+	const registry = createStageControlRegistry();
+	const runId = "a3a3a3a3-a3a3-4a3a-8a3a-000000004311";
+	const { resumed, deliveries, disposed, watcherStageId } = await runReplayedSubscriber({
+		runId,
+		retainedIn: "host",
+		registry,
+		secondReport: true,
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(
+		deliveries.map((delivery) => `${delivery.session}:${delivery.text.split("\n").at(-1)}`),
+		["reopened:e1 failed", "reopened:e2 failed"],
+	);
+	assert.deepEqual(
+		disposed.filter((label) => label === "reopened"),
+		["reopened"],
+	);
+	assert.equal(registry.get(runId, watcherStageId), undefined);
+});
+
+test("after a resume, reports to a subscriber first created in the resumed run reach its live session (#4311)", async () => {
+	let pass = 0;
+	let received: string[] = [];
+	const body = async (ctx: Parameters<WorkflowDefinition["run"]>[0]) => {
+		pass += 1;
+		await ctx.stage("anchor").prompt("start");
+		if (pass === 1) return;
+		const late = ctx.stage("late-watcher");
+		await late.prompt("watch");
+		await ctx.subscribe(
+			listSource("late", [{ id: "l1" }]),
+			async (_event, child) => {
+				await child.report("l1 matters");
+			},
+			{ subscriber: late },
+		).done;
+		received = late.messages.map(messageText).filter((text) => text.startsWith("Report from event child"));
+	};
+	const first = await runWorkflow(body);
+	assert.equal(first.result.status, "completed", first.result.error);
+	const second = await runWorkflow(body, first.backend, first.runId);
+	assert.equal(second.result.status, "completed", second.result.error);
+	assert.equal(second.result.stages.find((stage) => stage.name === "anchor")?.replayed, true);
+	assert.deepEqual(received, ['Report from event child "late/l1" (event l1):\n\nl1 matters']);
 });

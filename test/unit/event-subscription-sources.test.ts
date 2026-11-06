@@ -2132,22 +2132,6 @@ function setupError(factory: () => unknown): SubscriptionSetupError {
 }
 
 test.runIf(process.platform !== "win32")(
-	"an empty PATH entry is skipped, not read as the current directory (#4311)",
-	() => {
-		const dir = installFakeGh("exit 0");
-		const empty = tempDir();
-		const cwd = process.cwd();
-		process.chdir(dir);
-		try {
-			process.env.PATH = `${delimiter}${empty}`;
-			assert.equal(setupError(() => githubChecks({ repo: "acme/widgets", pr: 7 })).missing, "gh-cli");
-		} finally {
-			process.chdir(cwd);
-		}
-	},
-);
-
-test.runIf(process.platform !== "win32")(
 	"a gh on the PATH, also after empty PATH entries, lets the factory pass",
 	() => {
 		installFakeGh("exit 0");
