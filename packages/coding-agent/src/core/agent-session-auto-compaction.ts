@@ -214,7 +214,7 @@ export async function _checkCompaction(
 			this._compactionAbortController === undefined &&
 			this._manualCompactionPromise === undefined
 		) {
-			this._resumeAfterLengthTruncation();
+			await this._resumeAfterLengthTruncation();
 			return;
 		}
 		if (contextOverflow) this._overflowRecoveryAttempted = false;
@@ -287,7 +287,7 @@ export async function _checkCompaction(
 		this._compactionAbortController === undefined &&
 		this._manualCompactionPromise === undefined
 	) {
-		this._resumeAfterLengthTruncation();
+		await this._resumeAfterLengthTruncation();
 	}
 }
 
@@ -487,13 +487,13 @@ export async function _resumeAfterAutoCompaction(this: AgentSession): Promise<vo
  * stops at that cap can still terminate.
  */
 
-export function _resumeAfterLengthTruncation(this: AgentSession): void {
+export async function _resumeAfterLengthTruncation(this: AgentSession): Promise<void> {
 	if (this._lengthContinuationAttempts >= MAX_LENGTH_CONTINUATION_ATTEMPTS) return;
 	this._lengthContinuationAttempts += 1;
 	// agent.continue() rejects an assistant tail; drop the incomplete
 	// length-stopped message so the preceding user/tool-result anchors the
 	// continuation. It remains persisted in session history.
-	this._dropTrailingAutoCompactionRetryAssistantIfPresent();
+	await this._dropTrailingAutoCompactionRetryAssistantIfPresent();
 	this._schedulePostAutoCompactionContinuationProbe("threshold", true);
 }
 

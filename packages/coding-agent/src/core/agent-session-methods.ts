@@ -352,11 +352,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abortSessionSummary(): void;
 	_maybeGenerateSessionSummary(): Promise<void>;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
-	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
+	_dropTrailingAutoCompactionRetryAssistantIfPresent(): Promise<void>;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
 	_awaitPendingPostCompactionContinuation(): Promise<void>;
 	_resumeAfterAutoCompaction(): Promise<void>;
-	_resumeAfterLengthTruncation(): void;
+	_resumeAfterLengthTruncation(): Promise<void>;
 	_runAutoCompaction(
 		reason: "overflow" | "threshold",
 		willRetry: boolean,
