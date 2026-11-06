@@ -2826,7 +2826,8 @@ class IntercomBroker {
     }
     const childName = departed.registrationName;
     const releasedOwner = childName === undefined ? undefined : this.restoringRecipients.releasedOwner(childName);
-    if (childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId) {
+    const parked = childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId;
+    if (parked) {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else {
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
@@ -2870,7 +2871,7 @@ class IntercomBroker {
 	}
 	this.workflowInvocationClaims.delete(sessionId);
 	this.sessions.delete(sessionId);
-	this.multiNode?.sessionLeft(departed);
+	this.multiNode?.sessionLeft(departed, parked ? { ownerSessionId: releasedOwner, childName } : undefined);
 	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	for (const send of unreserved) this.dispatchSend(send.socket, send.clientMessage, send.senderId);

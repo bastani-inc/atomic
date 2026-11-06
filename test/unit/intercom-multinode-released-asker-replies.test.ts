@@ -12,6 +12,7 @@ const { SupervisorChannelCache } = await import("../../packages/intercom/broker/
 const { releasedReservationKey } = await import("../../packages/intercom/broker/released-children.js");
 const { deliveryTargetIdentity } = await import("../../packages/intercom/broker/send-handler.js");
 const { UNCERTAIN_RECEIPT_REASON } = await import("../../packages/intercom/broker/recipient-receipts.js");
+const { OUTBOX_CLAIM_STALE_AFTER_MS } = await import("../../packages/intercom/broker/multinode-state-store.js");
 const { normalizeGroup } = await import("../../packages/intercom/group.js");
 const { addressesReleasedAsker, isReleasedReplyCandidate, releasedAskerReplyRefusal, releasedReplyAckOutcome } =
 	await import("../../packages/intercom/broker/released-asker-remote-replies.js");
@@ -1064,6 +1065,516 @@ describe("released-asker replies under races and faults (#4386)", () => {
 				waitFor,
 			);
 		}
+	});
+});
+
+describe("a released asker's question is never held by a reply that cannot settle it (#4386)", () => {
+	const waitFor = { timeout: 2_000, interval: 5 };
+
+	async function deliveredOnce(scene: ReleasedScene, child: Session, questionId: string): Promise<void> {
+		const next = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(next.request);
+		await vi.waitFor(() => assert.equal(handoffsTo(scene.owner).length, 1), waitFor);
+		const handoff = only(handoffsTo(scene.owner), "the one handoff");
+		assert.equal(handoff.message.id, next.id);
+		scene.a.router.releasedReplyAcknowledged(scene.owner, next.id, handoff.handoffId, true);
+		assert.equal((await settled(scene.replier, next.id)).type, "delivered");
+	}
+
+	test("a reply whose row could not be written gives its question back to the next reply (#4386)", async () => {
+		const failures: Array<"throw" | "invalid"> = ["throw", "invalid"];
+		const scene = await releasedScene({
+			childNames: ["worker-1", "worker-2"],
+			wrapB: (state) => ({
+				...state,
+				outbox: {
+					...state.outbox,
+					enqueue: async (request) => {
+						const failure = failures.shift();
+						if (failure === "throw") throw new Error("database is locked");
+						if (failure === "invalid") return { status: "invalid", reason: "empty-message-id" };
+						return state.outbox.enqueue(request);
+					},
+				},
+			}),
+		});
+		const [thrown, refused] = scene.children as [
+			{ child: Session; questionId: string },
+			{ child: Session; questionId: string },
+		];
+		const first = reply(scene.replier, thrown.child.info.id, thrown.questionId);
+		scene.b.router.routeSend(first.request);
+		const unavailable = await settled(scene.replier, first.id);
+		assert.ok(unavailable.type === "delivery_failed");
+		assert.equal(unavailable.reasonCode, "session_not_found");
+		const second = reply(scene.replier, refused.child.info.id, refused.questionId);
+		scene.b.router.routeSend(second.request);
+		const invalid = await settled(scene.replier, second.id);
+		assert.ok(invalid.type === "delivery_failed");
+		assert.equal(invalid.reason, "Session not found");
+		for (const { questionId } of scene.children) {
+			const ask = await scene.b.state.releasedAsks.lookup({ questionId, replierSessionId: scene.replier.info.id });
+			assert.equal(ask.status === "found" && ask.ask.state, "open");
+		}
+		const reported = vi.mocked(console.error).mock.calls.map(([line]) => String(line));
+		assert.ok(reported.some((line) => line.includes("database is locked")));
+		assert.ok(
+			!reported.some((line) => line.includes("reopening its question failed")),
+			"the question was given back",
+		);
+		await deliveredOnce(scene, thrown.child, thrown.questionId);
+	});
+
+	test("while one reply is being handed over, another is refused as in flight even after the owner dropped the asker (#4386)", async () => {
+		const scene = await releasedScene();
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const first = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(first.request);
+		await vi.waitFor(() => assert.equal(handoffsTo(scene.owner).length, 1), waitFor);
+		scene.a.router.restoringReleased(releasedReservationKey("worker"), scene.owner.info.id);
+		await flush();
+		const second = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(second.request);
+		const refused = await settled(scene.replier, second.id);
+		assert.ok(refused.type === "delivery_failed");
+		assert.equal(refused.reasonCode, "released_reply_in_flight");
+	});
+
+	test("a reply whose question is gone by its handoff is refused there, and its sender is told at once (#4386)", async () => {
+		const scene = await releasedScene();
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		await scene.a.router.close();
+		const stranded = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(stranded.request);
+		assert.equal((await settled(scene.replier, stranded.id)).type, "queued");
+		const key = { questionId, replierSessionId: scene.replier.info.id };
+		await scene.b.state.releasedAsks.supersede({
+			...key,
+			replyMessageId: "the-other-reply",
+			staleReplyMessageId: stranded.id,
+			staleAfterMs: -1,
+		});
+		await scene.b.state.releasedAsks.answer({ ...key, replyMessageId: "the-other-reply" });
+		const orphan = randomUUID();
+		await scene.b.state.outbox.enqueue({
+			targetIdentity: deliveryTargetIdentity(scene.owner),
+			originBrokerId: "b-broker",
+			digest: "orphan",
+			frame: {
+				type: "released_child_reply",
+				childName: "worker",
+				replyTo: randomUUID(),
+				from: scene.replier.info,
+				message: { id: orphan, timestamp: 1, replyTo: "x", content: { text: "no question" } },
+			},
+		});
+		const restarted = await startNode(scene.shared);
+		const returned = reconnected(scene.owner);
+		await register(restarted, returned);
+		const refused = await vi.waitFor(
+			() => {
+				const frame = outcomesFor(scene.replier, stranded.id).find(
+					(candidate) => candidate.type === "delivery_failed",
+				);
+				assert.ok(frame?.type === "delivery_failed");
+				return frame;
+			},
+			{ timeout: 1_500, interval: 5 },
+		);
+		assert.match(refused.reason, /released_reply_answered/);
+		const row = await restarted.state.outbox.read(orphan);
+		assert.ok(row.status === "found" && row.row.state === "failed");
+		assert.equal(row.row.failureReason, releasedAskerReplyRefusal("worker"));
+		assert.deepEqual(handoffsTo(returned), []);
+	});
+
+	test("a reply that cannot give its question back fails with both failures (#4386)", async () => {
+		const scene = await releasedScene({
+			wrapB: (state) => ({
+				...state,
+				outbox: {
+					...state.outbox,
+					enqueue: async () => {
+						throw new Error("database is locked");
+					},
+				},
+				releasedAsks: {
+					...state.releasedAsks,
+					reopen: async () => {
+						throw new Error("database went away");
+					},
+				},
+			}),
+		});
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const sent = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(sent.request);
+		assert.equal((await settled(scene.replier, sent.id)).type, "delivery_failed");
+		assert.ok(
+			vi
+				.mocked(console.error)
+				.mock.calls.some(([line]) =>
+					String(line).includes("database is locked; reopening its question failed too: database went away"),
+				),
+		);
+	});
+
+	test("a retry of a reply its owner refused is answered from its row and leaves the question open (#4386)", async () => {
+		const scene = await releasedScene();
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const refused = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(refused.request);
+		await vi.waitFor(() => assert.equal(handoffsTo(scene.owner).length, 1), waitFor);
+		scene.a.router.releasedReplyAcknowledged(
+			scene.owner,
+			refused.id,
+			only(handoffsTo(scene.owner), "first").handoffId,
+			false,
+		);
+		await settled(scene.replier, refused.id);
+		const retry = reply(scene.replier, child.info.id, questionId, { id: refused.id });
+		scene.b.router.routeSend(retry.request);
+		const again = await settled(scene.replier, refused.id, 2);
+		assert.ok(again.type === "delivery_failed");
+		assert.equal(again.reason, releasedAskerReplyRefusal("worker"));
+		const ask = await scene.b.state.releasedAsks.lookup({ questionId, replierSessionId: scene.replier.info.id });
+		assert.equal(ask.status === "found" && ask.ask.state, "open");
+		const next = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(next.request);
+		await vi.waitFor(() => assert.equal(handoffsTo(scene.owner).length, 2), waitFor);
+		assert.equal(handoffsTo(scene.owner)[1]?.message.id, next.id);
+	});
+
+	test("a reply whose id another send already used is a conflict and claims nothing (#4386)", async () => {
+		const scene = await releasedScene();
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const taken = randomUUID();
+		const other = session("someone");
+		await register(scene.a, other);
+		await scene.b.state.outbox.enqueue({
+			targetIdentity: deliveryTargetIdentity(other),
+			originBrokerId: "a-broker",
+			digest: "another send",
+			frame: {
+				type: "message",
+				from: scene.replier.info,
+				message: { id: taken, timestamp: 1, content: { text: "hi" } },
+			},
+		});
+		const colliding = reply(scene.replier, child.info.id, questionId, { id: taken });
+		scene.b.router.routeSend(colliding.request);
+		const conflict = await vi.waitFor(() => {
+			const frame = outcomesFor(scene.replier, taken).find((candidate) => candidate.type === "delivery_failed");
+			assert.ok(frame?.type === "delivery_failed");
+			return frame;
+		}, waitFor);
+		assert.equal(conflict.reasonCode, "message_id_conflict");
+		await deliveredOnce(scene, child, questionId);
+	});
+
+	test("a claim abandoned before its row was written is taken over once it is as old as a stale outbox claim (#4386)", async () => {
+		const scene = await releasedScene();
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const key = { questionId, replierSessionId: scene.replier.info.id };
+		vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - OUTBOX_CLAIM_STALE_AFTER_MS - 1_000 });
+		await scene.b.state.releasedAsks.claim({ ...key, replyMessageId: "abandoned" });
+		vi.useRealTimers();
+		await deliveredOnce(scene, child, questionId);
+		const fresh = await releasedScene();
+		const [{ child: freshChild, questionId: freshQuestion }] = fresh.children as [
+			{ child: Session; questionId: string },
+		];
+		await fresh.b.state.releasedAsks.claim({
+			questionId: freshQuestion,
+			replierSessionId: fresh.replier.info.id,
+			replyMessageId: "recent",
+		});
+		const early = reply(fresh.replier, freshChild.info.id, freshQuestion);
+		fresh.b.router.routeSend(early.request);
+		const refused = await settled(fresh.replier, early.id);
+		assert.ok(refused.type === "delivery_failed");
+		assert.equal(refused.reasonCode, "released_reply_in_flight");
+		assert.deepEqual(handoffsTo(fresh.owner), []);
+	});
+
+	test("an accepted reply whose answer was never recorded is recorded by the next reply, which is refused (#4386)", async () => {
+		let recordAnswers = false;
+		const scene = await releasedScene({
+			wrapA: (state) => ({
+				...state,
+				releasedAsks: {
+					...state.releasedAsks,
+					answer: async (claim) => (recordAnswers ? state.releasedAsks.answer(claim) : { status: "settled" }),
+				},
+			}),
+		});
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		await deliveredOnce(scene, child, questionId);
+		recordAnswers = true;
+		const late = reply(scene.replier, child.info.id, questionId);
+		scene.b.router.routeSend(late.request);
+		const refused = await settled(scene.replier, late.id);
+		assert.ok(refused.type === "delivery_failed");
+		assert.equal(refused.reasonCode, "released_reply_answered");
+		const ask = await scene.b.state.releasedAsks.lookup({ questionId, replierSessionId: scene.replier.info.id });
+		assert.equal(ask.status === "found" && ask.ask.state, "answered");
+		assert.equal(handoffsTo(scene.owner).length, 1);
+	});
+
+	test("a reply whose failed row still holds its question is taken over at once, and a late row of a superseded reply never reaches the owner (#4386)", async () => {
+		const scene = await releasedScene();
+		const [{ child, questionId }] = scene.children as [{ child: Session; questionId: string }];
+		const key = { questionId, replierSessionId: scene.replier.info.id };
+		const superseded = randomUUID();
+		await scene.b.state.releasedAsks.claim({ ...key, replyMessageId: superseded });
+		const frame = {
+			type: "released_child_reply" as const,
+			childName: "worker",
+			replyTo: questionId,
+			from: scene.replier.info,
+			message: { id: superseded, timestamp: 1, replyTo: questionId, content: { text: "late" } },
+		};
+		const failedRow = await scene.b.state.outbox.enqueue({
+			targetIdentity: "nobody-claims-this",
+			originBrokerId: "b-broker",
+			digest: "late",
+			frame,
+		});
+		assert.equal(failedRow.status, "inserted");
+		const held = await scene.b.state.outbox.claim({
+			claimantId: "a-broker",
+			targetIdentity: "nobody-claims-this",
+			staleAfterMs: 30_000,
+		});
+		assert.ok(held.status === "claimed" && held.rows[0] !== undefined);
+		await scene.b.state.outbox.markFailed(held.rows[0].claim, "the owner's broker stopped before reopening it");
+		await deliveredOnce(scene, child, questionId);
+		const late = await scene.b.state.outbox.enqueue({
+			targetIdentity: deliveryTargetIdentity(scene.owner),
+			originBrokerId: "b-broker",
+			digest: "late-again",
+			frame: { ...frame, message: { ...frame.message, id: randomUUID() } },
+		});
+		assert.equal(late.status, "inserted");
+		const returned = reconnected(scene.owner);
+		await register(scene.a, returned);
+		await vi.waitFor(async () => {
+			const row = late.status === "inserted" ? await scene.a.state.outbox.read(late.row.messageId) : undefined;
+			assert.ok(row?.status === "found" && row.row.state === "failed");
+			assert.equal(row.row.failureReason?.includes("released_reply_answered"), true);
+		}, waitFor);
+		assert.deepEqual(handoffsTo(returned), [], "the owner never sees the superseded reply");
+	});
+
+	test("a released asker's question is kept before its presence ends, so no reply finds it offline with only its pending ask (#4386)", async () => {
+		const seen: string[] = [];
+		let watched: { identity: string; questionId: string; replier: string } | undefined;
+		const shared = await cluster();
+		const a = await startNode(shared, (state) => ({
+			...state,
+			leases: {
+				...state.leases,
+				release: async (lease) => {
+					if (
+						watched !== undefined &&
+						lease.key.kind === "presence" &&
+						lease.key.targetIdentity === watched.identity
+					) {
+						const kept = await state.releasedAsks.lookup({
+							questionId: watched.questionId,
+							replierSessionId: watched.replier,
+						});
+						seen.push(kept.status);
+					}
+					return state.leases.release(lease);
+				},
+			},
+		}));
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		const child = session("worker", { supervisorId: owner.info.id });
+		await register(a, child);
+		const questionId = randomUUID();
+		await a.state.pendingAsks.record({
+			senderSessionId: child.info.id,
+			targetSessionId: replier.info.id,
+			messageId: questionId,
+		});
+		watched = { identity: deliveryTargetIdentity(child), questionId, replier: replier.info.id };
+		await leave(a, child);
+		assert.deepEqual(seen, ["found"]);
+	});
+});
+
+describe("an ask to a subagent that is then released keeps waiting for it across nodes (#4386)", () => {
+	const waitFor = { timeout: 2_000, interval: 5 };
+
+	interface ParkedScene {
+		readonly a: Node;
+		readonly b: Node;
+		readonly c: Node;
+		readonly owner: Session;
+		readonly child: Session;
+		readonly remoteAsker: Session;
+		readonly localAsker: Session;
+		readonly questions: { readonly remote: string; readonly local: string };
+	}
+
+	/** The child and its owner on B; one asker on A and one on C asked the child, and the owner released it. */
+	async function parkedScene(): Promise<ParkedScene> {
+		const shared = await cluster();
+		const [a, b, c] = [await startNode(shared), await startNode(shared), await startNode(shared)];
+		const owner = session("owner");
+		await register(b, owner);
+		const child = session("worker", { supervisorId: owner.info.id });
+		await register(b, child);
+		const remoteAsker = session("remote-asker");
+		await register(a, remoteAsker);
+		const localAsker = session("local-asker");
+		await register(c, localAsker);
+		const questions = { remote: randomUUID(), local: randomUUID() };
+		for (const [asker, messageId] of [
+			[remoteAsker, questions.remote],
+			[localAsker, questions.local],
+		] as const) {
+			await b.state.pendingAsks.record({
+				senderSessionId: asker.info.id,
+				targetSessionId: child.info.id,
+				messageId,
+			});
+		}
+		b.sessions.delete(child.info.id);
+		b.router.sessionLeft(child, { ownerSessionId: owner.info.id, childName: "worker" });
+		await flush();
+		return { a, b, c, owner, child, remoteAsker, localAsker, questions };
+	}
+
+	function answer(from: Session, asker: Session, questionId: string) {
+		return reply(from, asker.info.id, questionId, { expectedRecipientId: asker.info.id });
+	}
+
+	async function registerWoken(node: Node, woken: Session, owner: Session): Promise<void> {
+		node.sessions.set(woken.info.id, woken);
+		await node.router.sessionRegistered(woken, {
+			childName: "worker",
+			groups: new Set([CREW]),
+			authorizedBy: owner.info.id,
+		});
+		await flush();
+	}
+
+	test("the woken subagent answers through any node, under its own id, exactly once (#4386)", async () => {
+		const scene = await parkedScene();
+		const woken = reconnected(scene.child);
+		await registerWoken(scene.c, woken, scene.owner);
+		const sent = answer(woken, scene.remoteAsker, scene.questions.remote);
+		scene.c.router.routeSend(sent.request);
+		await vi.waitFor(
+			() =>
+				assert.ok(
+					framesOf(scene.remoteAsker).some((frame) => frame.type === "message" && frame.message.id === sent.id),
+				),
+			waitFor,
+		);
+		assert.deepEqual(
+			framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+			[],
+		);
+	});
+
+	test("a subagent woken under another id takes its asks along, and an asker on its node is told (#4386)", async () => {
+		const scene = await parkedScene();
+		const woken = reconnected(scene.child, randomUUID());
+		await registerWoken(scene.c, woken, scene.owner);
+		assert.deepEqual(
+			framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+			[
+				{
+					type: "peer_rebound",
+					replyTo: scene.questions.local,
+					previousSessionId: scene.child.info.id,
+					sessionId: woken.info.id,
+				},
+			],
+		);
+		const sent = answer(woken, scene.remoteAsker, scene.questions.remote);
+		scene.c.router.routeSend(sent.request);
+		await vi.waitFor(
+			() =>
+				assert.ok(
+					framesOf(scene.remoteAsker).some((frame) => frame.type === "message" && frame.message.id === sent.id),
+				),
+			waitFor,
+		);
+		assert.deepEqual(
+			framesOf(scene.remoteAsker).filter((frame) => frame.type === "peer_rebound"),
+			[],
+		);
+	});
+
+	test("asks to a subagent its owner dropped, or whose owner left, end, and a later answer is refused (#4386)", async () => {
+		for (const ending of ["dropped", "owner-left"] as const) {
+			const scene = await parkedScene();
+			if (ending === "dropped")
+				scene.b.router.restoringReleased(releasedReservationKey("worker"), scene.owner.info.id);
+			else await leave(scene.b, scene.owner);
+			await flush();
+			const woken = reconnected(scene.child);
+			await registerWoken(scene.c, woken, scene.owner);
+			const sent = answer(woken, scene.remoteAsker, scene.questions.remote);
+			scene.c.router.routeSend(sent.request);
+			const refused = await settled(woken, sent.id);
+			assert.ok(refused.type === "delivery_failed", ending);
+			assert.equal(refused.reason, PENDING_REPLY_REFUSAL, ending);
+		}
+	});
+
+	test("only the subagent its owner authorized takes its parked asks, without errors for any other registration (#4386)", async () => {
+		const scene = await parkedScene();
+		for (const consumed of [
+			{ childName: "worker", groups: new Set([CREW]) },
+			{ groups: new Set([CREW]), authorizedBy: scene.owner.info.id },
+		]) {
+			const impostor = session("worker");
+			scene.c.sessions.set(impostor.info.id, impostor);
+			await scene.c.router.sessionRegistered(impostor, consumed);
+			await flush();
+			assert.deepEqual(
+				await scene.c.state.pendingAsks.matchesReply({
+					replySenderSessionId: impostor.info.id,
+					replyTargetSessionId: scene.remoteAsker.info.id,
+					replyTo: scene.questions.remote,
+				}),
+				{ status: "no-match" },
+			);
+		}
+		assert.deepEqual(vi.mocked(console.error).mock.calls, []);
+		assert.deepEqual(framesOf(scene.localAsker), []);
+	});
+
+	test("asks to a subagent that simply left end with it, as before (#4386)", async () => {
+		const shared = await cluster();
+		const [a, b] = [await startNode(shared), await startNode(shared)];
+		const asker = session("asker");
+		await register(a, asker);
+		const child = session("worker");
+		await register(b, child);
+		const questionId = randomUUID();
+		await b.state.pendingAsks.record({
+			senderSessionId: asker.info.id,
+			targetSessionId: child.info.id,
+			messageId: questionId,
+		});
+		await leave(b, child);
+		assert.deepEqual(
+			await a.state.pendingAsks.matchesReply({
+				replySenderSessionId: child.info.id,
+				replyTargetSessionId: asker.info.id,
+				replyTo: questionId,
+			}),
+			{ status: "no-match" },
+		);
 	});
 });
 

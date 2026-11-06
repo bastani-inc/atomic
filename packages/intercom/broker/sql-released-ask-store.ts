@@ -8,6 +8,7 @@ import type {
 	ReleasedAskRecord,
 	ReleasedAskState,
 	ReleasedAskStore,
+	ReleasedAskSupersede,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 
@@ -22,6 +23,8 @@ interface ReleasedAskRow extends SqliteRow {
 	readonly reply_message_id: string | null;
 	/** 1 when the ask is open past its deadline. */
 	readonly lapsed: SqliteValue;
+	/** Store-clock milliseconds since the ask was last claimed; null before its first claim. */
+	readonly claim_age: SqliteValue;
 }
 
 const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ status: "invalid", reason });
@@ -39,6 +42,10 @@ export function invalidReleasedAskKey(key: ReleasedAskKey): InvalidStateInput | 
 
 export function invalidReleasedAskClaim(claim: ReleasedAskClaim): InvalidStateInput | undefined {
 	return invalidReleasedAskKey(claim) ?? (claim.replyMessageId.length === 0 ? invalid("empty-message-id") : undefined);
+}
+
+export function invalidReleasedAskSupersede(claim: ReleasedAskSupersede): InvalidStateInput | undefined {
+	return invalidReleasedAskClaim(claim) ?? (claim.staleReplyMessageId.length === 0 ? invalid("empty-message-id") : undefined);
 }
 
 function toRecord(row: ReleasedAskRow): ReleasedAskRecord {
@@ -65,6 +72,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 				child_name TEXT NOT NULL,
 				state TEXT NOT NULL CHECK (state IN ('open', 'claimed', 'answered')),
 				reply_message_id TEXT,
+				claimed_at INTEGER,
 				expires_at INTEGER NOT NULL,
 				UNIQUE(question_id, replier_session_id)
 			);
@@ -73,7 +81,8 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 	const select = (executor: SqliteExecutor, key: ReleasedAskKey) =>
 		executor.get<ReleasedAskRow>(
 			`SELECT question_id, replier_session_id, asker_session_id, child_name, state, reply_message_id,
-				(state = 'open' AND expires_at <= ${STORE_NOW}) AS lapsed
+				(state = 'open' AND expires_at <= ${STORE_NOW}) AS lapsed,
+				CASE WHEN claimed_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - claimed_at) END AS claim_age
 			 FROM ${table} WHERE question_id = ? AND replier_session_id = ?`,
 			key.questionId,
 			key.replierSessionId,
@@ -120,16 +129,23 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 				if (row.state !== "open") {
 					return { status: row.reply_message_id === claim.replyMessageId ? "claimed" : "taken", ask: toRecord(row) } as const;
 				}
-				await tx.run(
-					`UPDATE ${table} SET state = 'claimed', reply_message_id = ? WHERE question_id = ? AND replier_session_id = ?`,
-					claim.replyMessageId,
-					claim.questionId,
-					claim.replierSessionId,
-				);
-				return {
-					status: "claimed",
-					ask: toRecord({ ...row, state: "claimed", reply_message_id: claim.replyMessageId }),
-				} as const;
+				return claimFor(tx, claim, row);
+			});
+		},
+		async supersede(claim) {
+			const bad = invalidReleasedAskSupersede(claim);
+			if (bad !== undefined) return bad;
+			return database.transaction(async (tx) => {
+				const row = live(await select(tx, claim));
+				if (row === undefined) return { status: "missing" } as const;
+				const stale =
+					row.state === "claimed" &&
+					row.reply_message_id === claim.staleReplyMessageId &&
+					Number(row.claim_age) > claim.staleAfterMs;
+				if (!stale) {
+					return { status: row.reply_message_id === claim.replyMessageId ? "claimed" : "taken", ask: toRecord(row) } as const;
+				}
+				return claimFor(tx, claim, row);
 			});
 		},
 		async answer(claim) {
@@ -147,6 +163,21 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 			return changes;
 		},
 	};
+
+	/** Hand the ask to this reply now. */
+	async function claimFor(tx: SqliteExecutor, claim: ReleasedAskClaim, row: ReleasedAskRow) {
+		await tx.run(
+			`UPDATE ${table} SET state = 'claimed', reply_message_id = ?, claimed_at = ${STORE_NOW}
+			 WHERE question_id = ? AND replier_session_id = ?`,
+			claim.replyMessageId,
+			claim.questionId,
+			claim.replierSessionId,
+		);
+		return {
+			status: "claimed",
+			ask: toRecord({ ...row, state: "claimed", reply_message_id: claim.replyMessageId }),
+		} as const;
+	}
 
 	/** Move an ask this reply holds in one of `from` to `to`; an open ask forgets its reply. */
 	function settle(claim: ReleasedAskClaim, to: ReleasedAskState, from: readonly ReleasedAskState[]) {

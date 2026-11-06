@@ -10,6 +10,7 @@ const { isReleasedReplyAnsweredError } = await import("../../packages/intercom/b
 
 type Harness = import("../helpers/intercom-two-broker-harness.js").TwoBrokerHarness;
 type TwoBrokerClient = import("../helpers/intercom-two-broker-harness.js").TwoBrokerClient;
+type ReceivedFrame = import("../helpers/intercom-two-broker-harness.js").ReceivedFrame;
 type ReleasedChildReply = import("../../packages/intercom/broker/client.js").ReleasedChildReply;
 
 /** Spawning two real broker processes, and restarting one, is the structural cost of this suite. */
@@ -221,4 +222,130 @@ test(
 		assert.equal(handoffs.length, 1, "accepted exactly once");
 	},
 	RESTART_REDELIVERY_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an ask from another node to a subagent that is then released is answered once it wakes (#4386)",
+	async ({ annotate }) => {
+		if (!harness.multiNodeRouting) {
+			await annotate("multi-node routing not advertised: nothing crosses brokers");
+			return;
+		}
+		const ownerToken = randomUUID();
+		const owner = await harness.connect("b", unique("owner"), { supervisorOwnerToken: ownerToken });
+		const childName = unique("subagent-asked");
+		const first = await owner.client.authorizeSupervisorChild(childName);
+		const child = await harness.connect("b", childName, {
+			supervisor: { capability: first.capability, supervisorSessionId: first.supervisorSessionId },
+		});
+		const asker = await harness.connect("a", unique("asker"));
+		const questionId = randomUUID();
+		const asked = await asker.client.send(child.sessionId, {
+			messageId: questionId,
+			text: "Which file holds the config?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, JSON.stringify(asked));
+		await vi.waitFor(() => assert.equal(child.messagesWithId(questionId).length, 1), WAIT);
+		await owner.client.reserveReleasedChildren([{ childName, wake: true }]);
+		const childSessionId = child.sessionId;
+		await harness.disconnect(child);
+
+		const second = await owner.client.authorizeSupervisorChild(childName);
+		const woken = await harness.connect("b", childName, {
+			supervisor: { capability: second.capability, supervisorSessionId: second.supervisorSessionId },
+			returnAddress: child.returnAddress,
+			preferredSessionId: childSessionId,
+		});
+		const answered = await woken.client.send(asker.sessionId, {
+			text: "config.ts",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: asker.sessionId,
+		});
+		assert.equal(answered.delivered, true, JSON.stringify(answered));
+		await vi.waitFor(() => assert.equal(asker.messagesWithId(answered.id).length, 1), WAIT);
+		const [frame] = asker.messagesWithId(answered.id) as [ReceivedFrame];
+		assert.equal(frame.message.replyTo, questionId);
+		assert.equal(frame.message.content.text, "config.ts");
+	},
+	REAL_BROKERS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an ask from another node follows a released subagent that wakes under a new session id (#4386)",
+	async ({ annotate }) => {
+		if (!harness.multiNodeRouting) {
+			await annotate("multi-node routing not advertised: nothing crosses brokers");
+			return;
+		}
+		const owner = await harness.connect("b", unique("owner"), { supervisorOwnerToken: randomUUID() });
+		const childName = unique("subagent-renamed");
+		const first = await owner.client.authorizeSupervisorChild(childName);
+		const child = await harness.connect("b", childName, {
+			supervisor: { capability: first.capability, supervisorSessionId: first.supervisorSessionId },
+		});
+		const asker = await harness.connect("a", unique("asker"));
+		const questionId = randomUUID();
+		const asked = await asker.client.send(child.sessionId, {
+			messageId: questionId,
+			text: "Ready?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, JSON.stringify(asked));
+		await vi.waitFor(() => assert.equal(child.messagesWithId(questionId).length, 1), WAIT);
+		await owner.client.reserveReleasedChildren([{ childName, wake: true }]);
+		const previousSessionId = child.sessionId;
+		await harness.disconnect(child);
+		const second = await owner.client.authorizeSupervisorChild(childName);
+		const woken = await harness.connect("b", childName, {
+			supervisor: { capability: second.capability, supervisorSessionId: second.supervisorSessionId },
+		});
+		assert.notEqual(woken.sessionId, previousSessionId);
+		const answered = await woken.client.send(asker.sessionId, {
+			text: "ready",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: asker.sessionId,
+		});
+		assert.equal(answered.delivered, true, JSON.stringify(answered));
+		await vi.waitFor(() => assert.equal(asker.messagesWithId(answered.id).length, 1), WAIT);
+	},
+	REAL_BROKERS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an ask from another node to a session that leaves without being released ends with it, as before (#4386)",
+	async ({ annotate }) => {
+		if (!harness.multiNodeRouting) {
+			await annotate("multi-node routing not advertised: nothing crosses brokers");
+			return;
+		}
+		const target = await harness.connect("b", unique("plain-target"));
+		const asker = await harness.connect("a", unique("asker"));
+		const questionId = randomUUID();
+		const asked = await asker.client.send(target.sessionId, {
+			messageId: questionId,
+			text: "Ready?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, JSON.stringify(asked));
+		await vi.waitFor(() => assert.equal(target.messagesWithId(questionId).length, 1), WAIT);
+		const targetSessionId = target.sessionId;
+		await harness.disconnect(target);
+		const back = await harness.connect("b", target.name, {
+			returnAddress: target.returnAddress,
+			preferredSessionId: targetSessionId,
+		});
+		assert.equal(back.sessionId, targetSessionId);
+		const late = await back.client.send(asker.sessionId, {
+			text: "ready",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: asker.sessionId,
+		});
+		assert.equal(late.delivered, false);
+		assert.equal(late.reason, "Pending question route does not authorize this public reply");
+	},
+	REAL_BROKERS_TEST_TIMEOUT_MS,
 );

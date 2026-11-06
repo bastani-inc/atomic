@@ -486,6 +486,21 @@ export type PendingAskPruneResult = { readonly status: "pruned"; readonly remove
 export type PendingAskListResult = { readonly status: "listed"; readonly asks: PendingAsk[] } | InvalidStateInput;
 export type PendingAskTakeResult = { readonly status: "taken"; readonly asks: PendingAsk[] } | InvalidStateInput;
 
+/** #4386: who keeps a released subagent's asks while it holds no session: its owner, under its released reservation. */
+export interface PendingAskPark {
+	readonly ownerSessionId: string;
+	/** `releasedReservationKey(childName)`. */
+	readonly reservationKey: string;
+}
+
+/** A parked ask moved to the session its subagent registered again with. */
+export interface ReboundPendingAsk extends PendingAsk {
+	readonly previousTargetSessionId: string;
+}
+
+export type PendingAskParkResult = { readonly status: "parked"; readonly parked: number } | InvalidStateInput;
+export type PendingAskRebindResult = { readonly status: "rebound"; readonly asks: ReboundPendingAsk[] } | InvalidStateInput;
+
 /**
  * S3: shared pending-ask routes, recorded by the recipient's broker when the recipient acknowledges the ask and
  * before its outbox row is marked delivered. A broker that stops between the two leaves the row claimed, so the next
@@ -501,6 +516,15 @@ export interface PendingAskStore {
 	listForSender(senderSessionId: string): Promise<PendingAskListResult>;
 	/** Remove and return the asks addressed to this target, in insertion order. */
 	takeForTarget(targetSessionId: string): Promise<PendingAskTakeResult>;
+	/**
+	 * #4386: the target is a subagent its owner released: keep its asks, still matching replies from it, for its
+	 * owner instead of removing them.
+	 */
+	parkForTarget(targetSessionId: string, park: PendingAskPark): Promise<PendingAskParkResult>;
+	/** The parked subagent registered again: its parked asks now target this session, in insertion order. */
+	rebindParked(park: PendingAskPark, targetSessionId: string): Promise<PendingAskRebindResult>;
+	/** Remove and return the owner's parked asks, of every subagent or only of the one reserved under `reservationKey`. */
+	takeParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskTakeResult>;
 }
 
 /**
@@ -531,6 +555,11 @@ export interface ReleasedAskKey {
 
 export interface ReleasedAskClaim extends ReleasedAskKey {
 	readonly replyMessageId: string;
+}
+
+export interface ReleasedAskSupersede extends ReleasedAskClaim {
+	readonly staleReplyMessageId: string;
+	readonly staleAfterMs: number;
 }
 
 export type ReleasedAskKeepResult = { readonly status: "kept"; readonly kept: number } | InvalidStateInput;
@@ -565,8 +594,14 @@ export interface ReleasedAskStore {
 	claim(claim: ReleasedAskClaim): Promise<ReleasedAskClaimResult>;
 	/** The owner accepted the claiming reply. Answering again for the same reply is `settled`. */
 	answer(claim: ReleasedAskClaim): Promise<ReleasedAskSettleResult>;
-	/** The owner refused the claiming reply on its first handoff: the ask is open to another reply. */
+	/** The claiming reply could not be handed over: the ask is open to another reply. */
 	reopen(claim: ReleasedAskClaim): Promise<ReleasedAskSettleResult>;
+	/**
+	 * Take a claim over from a reply whose handoff can no longer settle it: claimed by `staleReplyMessageId` more than
+	 * `staleAfterMs` of store time ago (any age when negative). Otherwise `taken`, or `claimed` when this reply already
+	 * holds it.
+	 */
+	supersede(claim: ReleasedAskSupersede): Promise<ReleasedAskClaimResult>;
 	/** Delete asks whose deadline passed more than `olderThanMs` ago; returns the count. */
 	prune(olderThanMs: number): Promise<number>;
 }

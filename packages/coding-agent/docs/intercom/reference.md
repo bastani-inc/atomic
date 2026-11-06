@@ -136,7 +136,7 @@ With multi-node routing on, a reply to a question kept in the shared database is
 | Class | `code` | When | `retryable` | What to do |
 | --- | --- | --- | --- | --- |
 | `ReleasedReplyAnsweredError` | `released_reply_answered` | The launching session already took another reply to the question, or was handed one again after a lost confirmation and refused it. | `false` | Do not send this reply again. Send a new message if the subagent needs more. |
-| `ReleasedReplyInFlightError` | `released_reply_in_flight` | Another reply to the question is still being handed to the launching session. | `true` | Retry with the same message ID once the other reply settles; if that reply is accepted, the retry is refused with `released_reply_answered`. |
+| `ReleasedReplyInFlightError` | `released_reply_in_flight` | Another reply to the question is still being handed to the launching session. | `true` | Wait, then reply again if the subagent still waits for an answer. If the other reply is accepted, a new reply is refused with `released_reply_answered`; if it cannot be handed over, the question takes a new reply. |
 
 A refused request changes nothing: when one child in a request is refused, no child in it is reserved or dropped. Requests to reserve, drop or acknowledge a released child are refused with these typed errors. Each carries `code`, `childName` when one child caused it, a `hint`, and `retryable: false`. Check `isIntercomReleasedChildError` or the class, never the message.
 

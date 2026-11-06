@@ -1248,6 +1248,79 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await a.listForSender("nobody"), { status: "listed", asks: [] });
 		assert.deepEqual(await b.matchesReply(reply("target", "asker", "q-first-target")), { status: "match" });
 	});
+
+	check(
+		"parks a released target's asks for its owner, still matching its replies, and rebinds them once (#4386)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const park = { ownerSessionId: "owner", reservationKey: "released:worker" };
+			await a.record(ask("asker", "child", "q1"));
+			await b.record(ask("asker-2", "child", "q2"));
+			await a.record(ask("asker", "someone-else", "q3"));
+			assert.deepEqual(await b.parkForTarget("child", park), { status: "parked", parked: 2 });
+			assert.deepEqual(await a.parkForTarget("nobody", park), { status: "parked", parked: 0 });
+			assert.deepEqual(await a.matchesReply(reply("child", "asker", "q1")), { status: "match" });
+			assert.deepEqual(await a.rebindParked({ ...park, reservationKey: "released:other" }, "child-again"), {
+				status: "rebound",
+				asks: [],
+			});
+			assert.deepEqual(await b.rebindParked({ ...park, ownerSessionId: "another-owner" }, "child-again"), {
+				status: "rebound",
+				asks: [],
+			});
+			assert.deepEqual(await a.rebindParked(park, "child-again"), {
+				status: "rebound",
+				asks: [
+					{ ...ask("asker", "child-again", "q1"), previousTargetSessionId: "child" },
+					{ ...ask("asker-2", "child-again", "q2"), previousTargetSessionId: "child" },
+				],
+			});
+			assert.deepEqual(await b.rebindParked(park, "child-again"), { status: "rebound", asks: [] }, "rebound once");
+			assert.deepEqual(await b.matchesReply(reply("child-again", "asker", "q1")), { status: "match" });
+			assert.deepEqual(await b.matchesReply(reply("child", "asker", "q1")), { status: "no-match" });
+			assert.deepEqual(
+				await a.takeParked("owner"),
+				{ status: "taken", asks: [] },
+				"a rebound ask is no longer parked",
+			);
+			assert.deepEqual(await a.takeForTarget("child-again"), {
+				status: "taken",
+				asks: [ask("asker", "child-again", "q1"), ask("asker-2", "child-again", "q2")],
+			});
+		},
+	);
+
+	check("hands a dropped subagent's or a departed owner's parked asks over once (#4386)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(ask("asker", "child-1", "q1"));
+		await a.record(ask("asker", "child-2", "q2"));
+		await a.record(ask("asker", "child-3", "q3"));
+		await a.parkForTarget("child-1", { ownerSessionId: "owner", reservationKey: "released:one" });
+		await a.parkForTarget("child-2", { ownerSessionId: "owner", reservationKey: "released:two" });
+		await a.parkForTarget("child-3", { ownerSessionId: "other-owner", reservationKey: "released:three" });
+		assert.deepEqual(await b.takeParked("owner", "released:one"), {
+			status: "taken",
+			asks: [ask("asker", "child-1", "q1")],
+		});
+		assert.deepEqual(await b.takeParked("owner", "released:one"), { status: "taken", asks: [] });
+		assert.deepEqual(await a.takeParked("owner"), { status: "taken", asks: [ask("asker", "child-2", "q2")] });
+		assert.deepEqual(await b.matchesReply(reply("child-3", "asker", "q3")), { status: "match" });
+		assert.deepEqual(await b.matchesReply(reply("child-2", "asker", "q2")), { status: "no-match" });
+		const empty = (reason: string) => ({ status: "invalid", reason });
+		const park = { ownerSessionId: "owner", reservationKey: "released:one" };
+		assert.deepEqual(await a.parkForTarget("", park), empty("empty-session-id"));
+		assert.deepEqual(await a.parkForTarget("child-3", { ...park, ownerSessionId: "" }), empty("empty-session-id"));
+		assert.deepEqual(
+			await a.parkForTarget("child-3", { ...park, reservationKey: "" }),
+			empty("empty-reservation-key"),
+		);
+		assert.deepEqual(await a.rebindParked(park, ""), empty("empty-session-id"));
+		assert.deepEqual(await a.rebindParked({ ...park, ownerSessionId: "" }, "x"), empty("empty-session-id"));
+		assert.deepEqual(await a.rebindParked({ ...park, reservationKey: "" }, "x"), empty("empty-reservation-key"));
+		assert.deepEqual(await a.takeParked(""), empty("empty-session-id"));
+		assert.deepEqual(await a.takeParked("owner", ""), empty("empty-reservation-key"));
+		assert.deepEqual(await a.takeParked("other-owner"), { status: "taken", asks: [ask("asker", "child-3", "q3")] });
+	});
 }
 
 export function registerReleasedAskStoreConformance(
@@ -1348,6 +1421,78 @@ export function registerReleasedAskStoreConformance(
 		assert.equal(await b.prune(0), 2);
 		assert.deepEqual(await a.claim(by("claimed-then-lapsed", "reply-1")), { status: "missing" });
 		assert.deepEqual((await a.lookup({ questionId: "open-in-time", replierSessionId: "replier" })).status, "found");
+	});
+
+	check(
+		"lets a reply take over only a claim its holder abandoned, and only from that holder (#4386)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await a.keep([asked("q1"), asked("q2")], KEEP_MS);
+			await a.claim(by("q1", "abandoned"));
+			const over = (replyMessageId: string, staleReplyMessageId: string, staleAfterMs: number) => ({
+				...by("q1", replyMessageId),
+				staleReplyMessageId,
+				staleAfterMs,
+			});
+			const heldBy = (replyMessageId: string) => ({ ...asked("q1"), state: "claimed", replyMessageId });
+			assert.deepEqual(await b.supersede(over("new", "abandoned", LIVE_MS)), {
+				status: "taken",
+				ask: heldBy("abandoned"),
+			});
+			assert.deepEqual(await b.supersede(over("new", "someone-else", EXPIRED_MS)), {
+				status: "taken",
+				ask: heldBy("abandoned"),
+			});
+			assert.deepEqual(await b.supersede(over("abandoned", "someone-else", EXPIRED_MS)), {
+				status: "claimed",
+				ask: heldBy("abandoned"),
+			});
+			await sleep(RENEWAL_GAP_MS);
+			assert.deepEqual(await b.supersede(over("new", "abandoned", RENEWAL_GAP_MS / 2)), {
+				status: "claimed",
+				ask: heldBy("new"),
+			});
+			assert.deepEqual(await a.supersede(over("newer", "abandoned", EXPIRED_MS)), {
+				status: "taken",
+				ask: heldBy("new"),
+			});
+			assert.deepEqual(await a.supersede(over("newer", "new", RENEWAL_GAP_MS / 2)), {
+				status: "taken",
+				ask: heldBy("new"),
+			});
+			assert.deepEqual(await a.answer(by("q1", "new")), { status: "settled" });
+			assert.deepEqual(await a.supersede(over("newer", "new", EXPIRED_MS)), {
+				status: "taken",
+				ask: { ...heldBy("new"), state: "answered" },
+			});
+			assert.deepEqual(await b.supersede({ ...over("x", "y", EXPIRED_MS), questionId: "q2" }), {
+				status: "taken",
+				ask: { ...asked("q2"), state: "open" },
+			});
+			assert.deepEqual(await b.supersede({ ...over("x", "y", EXPIRED_MS), questionId: "missing" }), {
+				status: "missing",
+			});
+			const empty = (reason: string) => ({ status: "invalid", reason });
+			assert.deepEqual(await b.supersede(over("x", "", EXPIRED_MS)), empty("empty-message-id"));
+			assert.deepEqual(await b.supersede(over("", "y", EXPIRED_MS)), empty("empty-message-id"));
+			assert.deepEqual(
+				await b.supersede({ ...over("x", "y", EXPIRED_MS), replierSessionId: "" }),
+				empty("empty-session-id"),
+			);
+		},
+	);
+
+	check("a new claim of a reopened ask starts its age afresh (#4386)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.keep([asked("q1")], KEEP_MS);
+		await a.claim(by("q1", "first"));
+		await sleep(RENEWAL_GAP_MS);
+		assert.deepEqual(await b.reopen(by("q1", "first")), { status: "settled" });
+		await b.claim(by("q1", "second"));
+		assert.deepEqual(
+			await a.supersede({ ...by("q1", "third"), staleReplyMessageId: "second", staleAfterMs: RENEWAL_GAP_MS / 2 }),
+			{ status: "taken", ask: { ...asked("q1"), state: "claimed", replyMessageId: "second" } },
+		);
 	});
 
 	check("rejects empty identifiers before writing anything", async (connect) => {

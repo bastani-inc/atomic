@@ -38,7 +38,7 @@ test("each released-reply refusal code has its class, retry semantics and hint (
 	assert.equal(inFlight.name, "ReleasedReplyInFlightError");
 	assert.equal(inFlight.code, "released_reply_in_flight");
 	assert.equal(inFlight.retryable, true);
-	assert.match(inFlight.hint, /retry with the same message id/);
+	assert.match(inFlight.hint, /reply again if the subagent still waits/);
 	assert.ok(answered instanceof IntercomReleasedReplyError && inFlight instanceof IntercomReleasedReplyError);
 	assert.deepEqual([...RELEASED_REPLY_ERROR_CODES], ["released_reply_answered", "released_reply_in_flight"]);
 	for (const code of RELEASED_REPLY_ERROR_CODES) {

@@ -4,8 +4,11 @@ import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	type IntercomBrokerStateStore,
 	KNOWN_SESSION_RETENTION_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type RecipientPresenceSubject,
+	type ReboundPendingAsk,
 	type ReleasedAsk,
+	type ReleasedAskClaim,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
 } from "./multinode-state-store.js";
@@ -61,19 +64,28 @@ export interface ReleasedReplyOwner {
 export type ReleasedReplyDecision =
 	| { readonly kind: "refused"; readonly error: IntercomReleasedReplyError }
 	/** This reply holds the question: send `frame` to the owner, or answer a retry from the row already sent. */
-	| { readonly kind: "deliver"; readonly owner: ReleasedReplyOwner; readonly frame: ReleasedAskerReplyFrame };
+	| {
+			readonly kind: "deliver";
+			readonly owner: ReleasedReplyOwner;
+			readonly frame: ReleasedAskerReplyFrame;
+			/** The claim this decision took; a reply answered from its row took none. */
+			readonly claim?: ReleasedAskClaim;
+	  };
+
+export type ReleasedReplyDelivery = Extract<ReleasedReplyDecision, { readonly kind: "deliver" }>;
 
 export type ReleasedReplyState = Pick<
 	IntercomBrokerStateStore,
 	"releasedAsks" | "reservations" | "leases" | "knownSessions" | "outbox"
 >;
 
-function refusalFor(ask: ReleasedAskRecord, messageId: string): ReleasedReplyDecision {
+function refusalOf(ask: ReleasedAskRecord, messageId: string): IntercomReleasedReplyError {
 	const fields = { messageId, questionId: ask.questionId, childName: ask.childName };
-	return {
-		kind: "refused",
-		error: ask.state === "answered" ? new ReleasedReplyAnsweredError(fields) : new ReleasedReplyInFlightError(fields),
-	};
+	return ask.state === "answered" ? new ReleasedReplyAnsweredError(fields) : new ReleasedReplyInFlightError(fields);
+}
+
+function refusalFor(ask: ReleasedAskRecord, messageId: string): ReleasedReplyDecision {
+	return { kind: "refused", error: refusalOf(ask, messageId) };
 }
 
 /** The first live presence that matches, with the broker hosting it. */
@@ -115,10 +127,30 @@ async function ownerOfRow(state: ReleasedReplyState, messageId: string): Promise
 	return (await liveSession(state, (subject) => subject.targetIdentity === identity)) ?? { identity, sessionId: "" };
 }
 
+/** How another reply's hold on the ask stands: still in force, or abandoned and takeable after `staleAfterMs`. */
+type OtherReplyHold =
+	| { readonly kind: "holds"; readonly ask: ReleasedAskRecord }
+	| { readonly kind: "abandoned"; readonly other: string; readonly staleAfterMs: number };
+
 /**
- * Decide whether a reply answers a released asker's question, and claim the question for it. A question another reply
- * holds refuses this one with a typed error. Anything that is not such a reply is `undefined`: route it as any other
- * send.
+ * How the reply holding the ask stands. A claim whose reply's row failed is abandoned at once; one whose reply has no
+ * row once it is as old as a stale outbox claim (this reply's own claim from before a crash is then simply kept). A
+ * delivered row whose answer was never recorded is recorded now.
+ */
+async function otherReplyHold(state: ReleasedReplyState, ask: ReleasedAskRecord, other: string): Promise<OtherReplyHold> {
+	const row = await state.outbox.read(other);
+	if (row.status !== "found") return { kind: "abandoned", other, staleAfterMs: OUTBOX_CLAIM_STALE_AFTER_MS };
+	if (row.row.state === "failed") return { kind: "abandoned", other, staleAfterMs: Number.NEGATIVE_INFINITY };
+	if (row.row.state !== "delivered") return { kind: "holds", ask };
+	await state.releasedAsks.answer({ questionId: ask.questionId, replierSessionId: ask.replierSessionId, replyMessageId: other });
+	return { kind: "holds", ask: { ...ask, state: "answered" } };
+}
+
+/**
+ * Decide whether a reply answers a released asker's question, and claim the question for it. A reply already sent is
+ * answered from its row and never claims again; a question another reply holds refuses this one with a typed error,
+ * unless that reply's claim can no longer settle. Anything that is not such a reply is `undefined`: route it as any
+ * other send.
  */
 export async function decideReleasedAskerReply(
 	state: ReleasedReplyState,
@@ -133,17 +165,47 @@ export async function decideReleasedAskerReply(
 	}
 	const { ask } = found;
 	const messageId = request.message.id;
-	if (ask.state !== "open" && ask.replyMessageId !== messageId) return refusalFor(ask, messageId);
-	const owner = (await ownerOfRow(state, messageId)) ?? (await ownerOfAsker(state, ask));
+	const frame: ReleasedAskerReplyFrame = {
+		type: "released_child_reply",
+		childName: ask.childName,
+		replyTo,
+		from: request.from.info,
+		message: request.message,
+	};
+	const sent = await ownerOfRow(state, messageId);
+	if (sent !== undefined) return { kind: "deliver", owner: sent, frame };
+	const holder = ask.replyMessageId;
+	const hold = holder === undefined ? undefined : await otherReplyHold(state, ask, holder);
+	if (hold?.kind === "holds") return refusalFor(hold.ask, messageId);
+	const owner = await ownerOfAsker(state, ask);
 	if (owner === undefined) return undefined;
-	const claimed = await state.releasedAsks.claim({ ...key, replyMessageId: messageId });
+	const claim = { ...key, replyMessageId: messageId };
+	const claimed =
+		hold?.kind === "abandoned"
+			? await state.releasedAsks.supersede({ ...claim, staleReplyMessageId: hold.other, staleAfterMs: hold.staleAfterMs })
+			: await state.releasedAsks.claim(claim);
 	if (claimed.status === "taken") return refusalFor(claimed.ask, messageId);
 	if (claimed.status !== "claimed") return undefined;
-	return {
-		kind: "deliver",
-		owner,
-		frame: { type: "released_child_reply", childName: ask.childName, replyTo, from: request.from.info, message: request.message },
-	};
+	return { kind: "deliver", owner, frame, claim };
+}
+
+/**
+ * The owner's broker hands a reply over only while the reply holds its question, so the late row of a reply whose
+ * claim another reply took over is refused instead of reaching the owner as a second answer. The refusal, if any.
+ */
+export async function releasedReplyHandoffRefusal(
+	state: Pick<IntercomBrokerStateStore, "releasedAsks">,
+	frame: ReleasedAskerReplyFrame,
+): Promise<string | undefined> {
+	const claimed = await state.releasedAsks.claim({
+		questionId: frame.replyTo,
+		replierSessionId: frame.from.id,
+		replyMessageId: frame.message.id,
+	});
+	if (claimed.status === "claimed") return undefined;
+	return claimed.status === "taken"
+		? refusalOf(claimed.ask, frame.message.id).message
+		: releasedAskerReplyRefusal(frame.childName);
 }
 
 /**
@@ -167,6 +229,48 @@ export async function keepReleasedAsks(
 		})),
 		ASK_REPLY_TIMEOUT_MS,
 	);
+}
+
+/** The subagent a departing session's owner released, as broker.ts knows it when the session leaves. */
+export interface ReleasedTarget {
+	readonly ownerSessionId: string;
+	readonly childName: string;
+}
+
+/**
+ * #4386: asks addressed to a departing session end with it, unless its owner released it: those are parked for the
+ * owner, still answerable by the subagent, until it registers again on any node. A departing owner's parked asks end
+ * with it, as its local parked questions do.
+ */
+export async function settleAsksToDeparted(
+	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
+	sessionId: string,
+	released: ReleasedTarget | undefined,
+): Promise<void> {
+	if (released === undefined) await state.pendingAsks.takeForTarget(sessionId);
+	else {
+		await state.pendingAsks.parkForTarget(sessionId, {
+			ownerSessionId: released.ownerSessionId,
+			reservationKey: releasedReservationKey(released.childName),
+		});
+	}
+	await state.pendingAsks.takeParked(sessionId);
+}
+
+/**
+ * The released subagent registered again, on any node, under the capability its owner issued: its parked asks follow
+ * it to this session. Returns the asks whose target changed, whose askers must be told (`peer_rebound`).
+ */
+export async function rebindParkedAsks(
+	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
+	registered: { readonly childName: string; readonly authorizedBy: string },
+	sessionId: string,
+): Promise<ReboundPendingAsk[]> {
+	const rebound = await state.pendingAsks.rebindParked(
+		{ ownerSessionId: registered.authorizedBy, reservationKey: releasedReservationKey(registered.childName) },
+		sessionId,
+	);
+	return rebound.status === "rebound" ? rebound.asks.filter((ask) => ask.previousTargetSessionId !== sessionId) : [];
 }
 
 export type ReleasedReplyAckOutcome =

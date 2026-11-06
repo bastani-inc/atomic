@@ -26,7 +26,7 @@ const HINTS: Readonly<Record<IntercomReleasedReplyErrorCode, string>> = {
 	released_reply_answered:
 		"The subagent's owner already took another reply to this question; do not send this one again, and send a new message if the subagent needs more.",
 	released_reply_in_flight:
-		"Another reply to this question is still being handed to the subagent's owner; retry with the same message id once it settles.",
+		"Another reply to this question is still being handed to the subagent's owner; wait, then reply again if the subagent still waits for an answer.",
 };
 
 const RETRYABLE: Readonly<Record<IntercomReleasedReplyErrorCode, boolean>> = {
