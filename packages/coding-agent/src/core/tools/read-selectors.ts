@@ -272,26 +272,38 @@ export function splitReadLineSelector(pathValue: string): ReadLineSelector {
 		: { path: value, raw: state.raw, conflicts: state.conflicts };
 }
 
-export function selectExactReadRanges(
-	allLines: string[],
-	ranges: ReadLineRange[] | undefined,
-): ReturnType<typeof selectReadRanges> {
-	if (!ranges || ranges.length === 0) return undefined;
-	const selectedLines: string[] = [],
-		lineNumbers: number[] = [],
-		merged: ReadLineRange[] = [];
+/**
+ * Sorted, merged ranges of the lines a selector picks from a file of `totalLines` lines; `totalLines` may be
+ * `Infinity` when the length is not known yet. Formatted reads widen each bounded range to one line before and three
+ * after it. A range that starts past the last line selects nothing, not even its widened first line.
+ */
+export function mergeReadRanges(
+	ranges: readonly ReadLineRange[],
+	totalLines: number,
+	widen: boolean,
+): Required<ReadLineRange>[] {
+	const merged: Required<ReadLineRange>[] = [];
 	for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
-		if (range.start > allLines.length) continue;
-		const end = Math.min(range.end ?? allLines.length, allLines.length);
+		if (range.start > totalLines) continue;
+		const widened = widen && range.end !== undefined;
+		const start = Math.max(1, range.start - (widened ? 1 : 0));
+		const end = Math.min(totalLines, (range.end ?? totalLines) + (widened ? 3 : 0));
 		const previous = merged.at(-1);
-		if (previous && range.start <= (previous.end ?? 0) + 1) previous.end = Math.max(previous.end ?? 0, end);
-		else merged.push({ start: range.start, end });
+		if (previous && start <= previous.end + 1) previous.end = Math.max(previous.end, end);
+		else merged.push({ start, end });
 	}
-	for (const range of merged)
-		for (let line = range.start; line <= (range.end ?? allLines.length); line++) {
+	return merged;
+}
+
+function selectMergedRanges(allLines: string[], merged: readonly Required<ReadLineRange>[]) {
+	const selectedLines: string[] = [];
+	const lineNumbers: number[] = [];
+	for (const range of merged) {
+		for (let line = range.start; line <= range.end; line++) {
 			selectedLines.push(allLines[line - 1] ?? "");
 			lineNumbers.push(line);
 		}
+	}
 	return {
 		selectedLines,
 		selectedContent: selectedLines.join("\n"),
@@ -299,6 +311,14 @@ export function selectExactReadRanges(
 		lineNumbers,
 		userLimitedLines: selectedLines.length,
 	};
+}
+
+export function selectExactReadRanges(
+	allLines: string[],
+	ranges: ReadLineRange[] | undefined,
+): ReturnType<typeof selectReadRanges> {
+	if (!ranges || ranges.length === 0) return undefined;
+	return selectMergedRanges(allLines, mergeReadRanges(ranges, allLines.length, false));
 }
 
 export function selectReadRanges(
@@ -314,34 +334,7 @@ export function selectReadRanges(
 	  }
 	| undefined {
 	if (!ranges || ranges.length === 0) return undefined;
-	const selectedLines: string[] = [];
-	const lineNumbers: number[] = [];
-	const merged: ReadLineRange[] = [];
-	for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
-		const bounded = range.end !== undefined;
-		if (range.start > allLines.length) continue;
-		const requestedEnd = Math.min(range.end ?? allLines.length, allLines.length);
-		if (requestedEnd < range.start) continue;
-		const start = Math.max(1, range.start - (bounded ? 1 : 0));
-		const end = Math.min(allLines.length, requestedEnd + (bounded ? 3 : 0));
-		const previous = merged.at(-1);
-		if (previous && start <= (previous.end ?? 0) + 1) previous.end = Math.max(previous.end ?? 0, end);
-		else merged.push({ start, end });
-	}
-	for (const range of merged) {
-		const end = Math.min(range.end ?? allLines.length, allLines.length);
-		for (let line = range.start; line <= end; line++) {
-			selectedLines.push(allLines[line - 1] ?? "");
-			lineNumbers.push(line);
-		}
-	}
-	return {
-		selectedLines,
-		selectedContent: selectedLines.join("\n"),
-		firstLine: lineNumbers[0] ?? 1,
-		lineNumbers,
-		userLimitedLines: selectedLines.length,
-	};
+	return selectMergedRanges(allLines, mergeReadRanges(ranges, allLines.length, true));
 }
 
 /**
