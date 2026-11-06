@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
+
+/** The `git lfs` commands a restore starts once a test calls {@link fakeLfs}, each answered with that exit status. */
+const lfs = vi.hoisted(() => ({ status: undefined as number | undefined, commands: [] as SpawnRequest[] }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const { failingCommand, gitCommand, withSpawnFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withSpawnFaults(await importOriginal(), (request) => {
+		if (lfs.status === undefined || gitCommand(request.args)[0] !== "lfs") return undefined;
+		lfs.commands.push(request);
+		return failingCommand(lfs.status);
+	});
+});
+
 import {
 	captureWorktreeSnapshot,
 	isGitUnavailableError,
@@ -20,12 +34,17 @@ import {
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
 import { GitSandbox, gitConfigPath, lfsPointer, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
+import { gitCommand } from "../helpers/worktree-snapshot-faults.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(() => {
+	lfs.status = undefined;
+	lfs.commands.length = 0;
+	sandbox.dispose();
+});
 
 function snapshotOf(result: WorktreeSnapshotCapture): WorktreeSnapshot {
 	assert.equal(result.status, "captured");
@@ -47,19 +66,15 @@ function appendGlobalConfig(text: string): void {
 	writeFileSync(sandbox.globalConfig, `${readFileSync(sandbox.globalConfig, "utf8")}${text}`);
 }
 
-/** A `git-lfs` on PATH that records its arguments and working directory, then exits with `status`. */
-function fakeLfs(status: number): { log: string } {
-	const bin = mkdtempSync(join(sandbox.root, "bin-"));
-	const log = join(sandbox.root, "lfs.log");
-	const script = join(bin, "git-lfs");
-	writeFileSync(script, `#!/bin/sh\nprintf '%s|%s\\n' "$*" "$PWD" >> '${log}'\nexit ${status}\n`);
-	chmodSync(script, 0o755);
-	setWorktreeSnapshotGit(async () => ({
-		path: "git",
-		env: { ...sandbox.executable.env, PATH: `${bin}:${process.env.PATH}` },
-	}));
-	return { log };
+/** Answers every `git lfs` command from here on with `status`, recording its arguments and working directory. */
+function fakeLfs(status: number): void {
+	lfs.status = status;
+	lfs.commands.length = 0;
 }
+
+/** The `git lfs` commands since {@link fakeLfs}, each as its arguments and working directory. */
+const lfsCalls = (): string[] =>
+	lfs.commands.map((request) => `${gitCommand(request.args).slice(1).join(" ")}|${request.cwd}`);
 
 describe("restore input validation", () => {
 	test("a target without the four binding fields is rejected before any Git work", async () => {
@@ -384,7 +399,7 @@ describe("materializing under the host's configuration", () => {
 	});
 });
 
-describe.skipIf(process.platform === "win32")("Git LFS content on restore", () => {
+describe("Git LFS content on restore", () => {
 	async function lfsSnapshot() {
 		const { clone } = await sandbox.remoteWithClone("repo", {
 			".gitattributes": "*.bin filter=lfs -text\n",
@@ -402,7 +417,7 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 
 	test("objects that cannot be fetched are reported with the pointer files, before the other notices", async () => {
 		const { blobs, snapshot } = await lfsSnapshot();
-		const { log } = fakeLfs(1);
+		fakeLfs(1);
 		const warnings: WorktreeRestoreWarning[] = [];
 		const restored = await restoreWorktree(snapshot, {
 			blobs,
@@ -414,7 +429,7 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 			{ code: "filters", filters: { autocrlf: null, eol: null, drivers: ["lfs"] } },
 		]);
 		assert.deepEqual(restored.warnings, warnings);
-		assert.match(readFileSync(log, "utf8").trim(), /^pull -- file:\/\/\S+\|[^\n]+$/);
+		assert.match(lfsCalls().join("\n"), /^pull -- file:\/\/\S+\|[^\n]+$/);
 	});
 
 	test("a snapshot whose repository never used LFS never runs it", async () => {
@@ -422,9 +437,9 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 		sandbox.write(join(clone, "extra.txt"), "x\n");
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = await capture(clone, blobs);
-		const { log } = fakeLfs(1);
+		fakeLfs(1);
 		await restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") });
-		assert.equal(existsSync(log), false);
+		assert.deepEqual(lfsCalls(), []);
 	});
 });
 

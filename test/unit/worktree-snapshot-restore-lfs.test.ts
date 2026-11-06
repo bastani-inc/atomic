@@ -1,29 +1,40 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import {
-	chmodSync,
-	cpSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	readlinkSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
-import { delimiter, join } from "node:path";
+import { cpSync, mkdirSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
+
+/**
+ * The `git lfs pull` commands a restore starts once a test calls {@link fakeLfs}, and the remotes whose pull fails;
+ * every other pull, and every other command, runs the real Git and Git LFS.
+ */
+const lfs = vi.hoisted(() => ({
+	pulls: [] as SpawnRequest[],
+	failing: undefined as readonly string[] | undefined,
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const { failingCommand, gitCommand, withSpawnFaults } = await import("../helpers/worktree-snapshot-faults.js");
+	return withSpawnFaults(await importOriginal(), (request) => {
+		const command = gitCommand(request.args);
+		if (lfs.failing === undefined || command[0] !== "lfs" || command[1] !== "pull") return undefined;
+		lfs.pulls.push(request);
+		return lfs.failing.includes(command.at(-1)!) ? failingCommand(1) : undefined;
+	});
+});
+
 import {
 	captureWorktreeSnapshot,
 	MemorySnapshotBlobStore,
 	restoreWorktree,
-	setWorktreeSnapshotGit,
 	verifyWorktree,
 	type WorktreeRestoreWarning,
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { gitCommand } from "../helpers/worktree-snapshot-faults.js";
 
 const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
 
@@ -33,7 +44,11 @@ let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(() => {
+	lfs.failing = undefined;
+	lfs.pulls.length = 0;
+	sandbox.dispose();
+});
 
 async function capture(dir: string, blobs: MemorySnapshotBlobStore): Promise<WorktreeSnapshot> {
 	const result = await captureWorktreeSnapshot(dir, { blobs });
@@ -42,41 +57,16 @@ async function capture(dir: string, blobs: MemorySnapshotBlobStore): Promise<Wor
 	return result.snapshot;
 }
 
-const realLfs = (process.env.PATH ?? "")
-	.split(delimiter)
-	.map((directory) => join(directory, "git-lfs"))
-	.find((candidate) => existsSync(candidate));
-
-/**
- * A `git-lfs` on PATH that logs the remote it is asked to pull from, fails for every remote in `failing`, and hands
- * every other pull, and every other command, to the real Git LFS.
- */
-function fakeLfs(failing: readonly string[]): { log: string } {
-	const bin = mkdtempSync(join(sandbox.root, "bin-"));
-	const log = join(sandbox.root, "lfs.log");
-	const script = join(bin, "git-lfs");
-	writeFileSync(
-		script,
-		`#!/bin/sh\n[ "$1" = pull ] || exec '${realLfs}' "$@"\nfor last; do :; done\nprintf '%s|%s|%s\\n' "$*" "$GIT_TERMINAL_PROMPT" "$GIT_SSH_COMMAND" >> '${log}'\ncase ",$FAKE_LFS_FAIL," in *",$last,"*) exit 1 ;; esac\nexec '${realLfs}' "$@"\n`,
-	);
-	chmodSync(script, 0o755);
-	setWorktreeSnapshotGit(async () => ({
-		path: "git",
-		env: { ...sandbox.executable.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LFS_FAIL: failing.join(",") },
-	}));
-	return { log };
+/** Records every `git lfs pull` from here on and fails the pull from each remote in `failing`, the way Git LFS exits. */
+function fakeLfs(failing: readonly string[]): void {
+	lfs.failing = failing;
+	lfs.pulls.length = 0;
 }
 
 /** What Git LFS is asked for when the recorded remote is a local path: its `file://` URL. */
 const asUrl = (path: string): string => pathToFileURL(path).href;
 
-const pulls = (log: string): string[] =>
-	existsSync(log)
-		? readFileSync(log, "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => line.split("|")[0]!)
-		: [];
+const pulls = (): string[] => lfs.pulls.map((request) => gitCommand(request.args).slice(1).join(" "));
 
 /** Two remotes that both hold the repository and the LFS object of `data.bin`, and a snapshot that names them in this order. */
 async function lfsSnapshotWithTwoRemotes() {
@@ -106,12 +96,12 @@ async function restoreCollectingWarnings(snapshot: WorktreeSnapshot, blobs: Memo
 	return { restored, warnings };
 }
 
-describe.skipIf(process.platform === "win32")("which remotes an LFS restore pulls from (#4245)", () => {
+describe("which remotes an LFS restore pulls from (#4245)", () => {
 	test("the first recorded remote that has the objects ends the search, and the pull names it after `--`", async () => {
 		const { blobs, snapshot, remote } = await lfsSnapshotWithTwoRemotes();
-		const { log } = fakeLfs([]);
+		fakeLfs([]);
 		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
-		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`]);
+		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`]);
 		assert.deepEqual(
 			warnings.map((warning) => warning.code),
 			["filters"],
@@ -120,9 +110,9 @@ describe.skipIf(process.platform === "win32")("which remotes an LFS restore pull
 
 	test("a remote that fails is followed by the next one, in the recorded order, with no warning when it succeeds", async () => {
 		const { blobs, snapshot, remote, mirror } = await lfsSnapshotWithTwoRemotes();
-		const { log } = fakeLfs([asUrl(remote)]);
+		fakeLfs([asUrl(remote)]);
 		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
-		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
+		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
 		assert.deepEqual(
 			warnings.map((warning) => warning.code),
 			["filters"],
@@ -131,9 +121,9 @@ describe.skipIf(process.platform === "win32")("which remotes an LFS restore pull
 
 	test("when every remote fails the pointer files are reported once, after each remote was tried", async () => {
 		const { blobs, snapshot, remote, mirror } = await lfsSnapshotWithTwoRemotes();
-		const { log } = fakeLfs([asUrl(remote), asUrl(mirror)]);
+		fakeLfs([asUrl(remote), asUrl(mirror)]);
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
-		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
+		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
 		assert.deepEqual(warnings, [
 			{ code: "lfs-objects-unavailable", paths: ["data.bin"] },
 			{ code: "filters", filters: { autocrlf: null, eol: null, drivers: ["lfs"] } },
@@ -144,18 +134,18 @@ describe.skipIf(process.platform === "win32")("which remotes an LFS restore pull
 	test("a remote that is a URL, not a path, is handed to Git LFS exactly as recorded", async () => {
 		const { blobs, snapshot, remote } = await lfsSnapshotWithTwoRemotes();
 		const url = "https://example.invalid/team/repo.git";
-		const { log } = fakeLfs([asUrl(remote)]);
+		fakeLfs([asUrl(remote)]);
 		await restoreCollectingWarnings({ ...snapshot, remotes: [remote, url] }, blobs);
-		assert.deepEqual(pulls(log), [`pull -- ${asUrl(remote)}`, `pull -- ${url}`]);
+		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`, `pull -- ${url}`]);
 	});
 
 	test("the download can never wait for a person: no terminal prompt, and ssh runs in batch mode", async () => {
 		const { blobs, snapshot } = await lfsSnapshotWithTwoRemotes();
-		const { log } = fakeLfs([]);
+		fakeLfs([]);
 		await restoreCollectingWarnings(snapshot, blobs);
-		const [, prompt, ssh] = readFileSync(log, "utf8").trim().split("|");
-		assert.equal(prompt, "0");
-		assert.match(ssh ?? "", /BatchMode=yes/);
+		const [pull] = lfs.pulls;
+		assert.equal(pull?.env.GIT_TERMINAL_PROMPT, "0");
+		assert.match(pull?.env.GIT_SSH_COMMAND ?? "", /BatchMode=yes/);
 	});
 
 	test("a repository with no recorded remote has nothing to pull from, so it warns without running git-lfs", async () => {
@@ -169,14 +159,14 @@ describe.skipIf(process.platform === "win32")("which remotes an LFS restore pull
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = await capture(repository, blobs);
 		assert.deepEqual(snapshot.remotes, []);
-		const { log } = fakeLfs([]);
+		fakeLfs([]);
 		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
-		assert.deepEqual(pulls(log), []);
+		assert.deepEqual(pulls(), []);
 		assert.deepEqual(warnings[0], { code: "lfs-objects-unavailable", paths: ["data.bin"] });
 	});
 });
 
-describe.skipIf(process.platform === "win32")("restoring real Git LFS content (#4245)", () => {
+describe("restoring real Git LFS content (#4245)", () => {
 	test("a file stored in LFS on the remote is restored with its content, with no warning, and the tree verifies", async () => {
 		const version = await sandbox.git(sandbox.root, "lfs", "version").catch((error: unknown) => {
 			throw new Error(
@@ -232,7 +222,7 @@ async function lfsEditedSnapshot(
 	return { blobs, snapshot: await capture(clone, blobs) };
 }
 
-describe.skipIf(process.platform === "win32")("restoring LFS files that changed since HEAD (#4245)", () => {
+describe("restoring LFS files that changed since HEAD (#4245)", () => {
 	test("an edited LFS file whose new object is on the remote is restored with its content and no LFS warning", async () => {
 		const { blobs, snapshot } = await lfsEditedSnapshot();
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
@@ -249,19 +239,22 @@ describe.skipIf(process.platform === "win32")("restoring LFS files that changed 
 		);
 	});
 
-	test("fetched content that only starts like a pointer is content, and a link named like an LFS file is left alone", async () => {
-		const lookalike = `${LFS_POINTER_PREFIX}\n`.padEnd(1024, "x");
-		const { blobs, snapshot } = await lfsEditedSnapshot({ "lookalike.bin": lookalike }, [lookalike], (clone) =>
-			symlinkSync("missing-target", join(clone, "link.bin")),
-		);
-		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
-		assert.equal(readFileSync(join(restored.path, "lookalike.bin"), "utf8"), lookalike);
-		assert.equal(readlinkSync(join(restored.path, "link.bin")), "missing-target");
-		assert.deepEqual(
-			warnings.map((warning) => warning.code),
-			["filters"],
-		);
-	});
+	test.skipIf(process.platform === "win32")(
+		"fetched content that only starts like a pointer is content, and a link named like an LFS file is left alone (symbolic links need a privilege on Windows)",
+		async () => {
+			const lookalike = `${LFS_POINTER_PREFIX}\n`.padEnd(1024, "x");
+			const { blobs, snapshot } = await lfsEditedSnapshot({ "lookalike.bin": lookalike }, [lookalike], (clone) =>
+				symlinkSync("missing-target", join(clone, "link.bin")),
+			);
+			const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
+			assert.equal(readFileSync(join(restored.path, "lookalike.bin"), "utf8"), lookalike);
+			assert.equal(readlinkSync(join(restored.path, "link.bin")), "missing-target");
+			assert.deepEqual(
+				warnings.map((warning) => warning.code),
+				["filters"],
+			);
+		},
+	);
 
 	test("a new LFS file whose object was never pushed stays a pointer, and only it is reported", async () => {
 		const { blobs, snapshot } = await lfsEditedSnapshot({ "fresh.bin": "NEVER-PUSHED\n" });
