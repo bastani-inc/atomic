@@ -2,7 +2,7 @@ import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
-import { workflow } from "@bastani/atomic/workflows";
+import { GitUnavailableError, WorkflowGitRequiredError, workflow } from "@bastani/atomic/workflows";
 import { poolStageOptions } from "./pool-stage-options.js";
 import { processIdentity } from "./process-instance.js";
 
@@ -106,5 +106,31 @@ export const distributedChild = workflow({
 			finalHost: final.host,
 			finalInstance: final.instance,
 		};
+	},
+});
+
+/**
+ * A bound child that fails where it runs because that host has no git: a WorkflowGitRequiredError whose worktree names
+ * the host, with its GitUnavailableError cause, so the root can tell the typed failure crossed from that host (#4378).
+ */
+export const typedFailureChild = workflow({
+	name: "shared-pool-typed-failure-child",
+	description: "A pooled child that fails typed on the host that runs it",
+	inputs: {},
+	outputs: {},
+	async run(ctx) {
+		await ctx.tool("worktree", {}, async () => {
+			throw new WorkflowGitRequiredError(
+				{
+					workflow: "shared-pool-typed-failure-child",
+					runId: "typed-child",
+					source: "input",
+					field: "worktree",
+					gitWorktreeDir: `/worktrees/${host()}`,
+				},
+				new GitUnavailableError({ code: "offline", offlineVariable: "ATOMIC_OFFLINE", platform: "linux", arch: "x64" }),
+			);
+		});
+		return {};
 	},
 });
