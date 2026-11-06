@@ -3,7 +3,6 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, vi } from "vitest";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import {
 	collectSnapshotGarbage,
 	isWorkspaceRestoreError,
@@ -16,18 +15,22 @@ import {
 } from "../../packages/coding-agent/src/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { openSqlPoolQueue, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
+import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import {
 	isWorkspaceRestoreUnavailableError,
 	type WorkspaceRestoreUnavailableError,
 } from "../../packages/workflows/src/workers/placement-errors.js";
+import { closeCoordinationJournals, poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { recordedPlacement } from "../../packages/workflows/src/workers/public-pool.js";
 import type { startWorkflowWorkerHost } from "../../packages/workflows/src/workers/worker-host.js";
 import { sleep } from "../helpers/runtime.js";
+import { syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	COORDINATOR_TEST_TIMEOUT_MS,
@@ -102,8 +105,23 @@ function rootBlobs(f: Fixture): SqlSnapshotBlobStore {
 	return blobs;
 }
 
+/** The journal's record of the root's snapshot, which its pool keeps from `prepare()` until it closes (#4503). */
+async function recordedRootSnapshots(f: Fixture): Promise<string[]> {
+	const table = `${PREFIX}wf_runs_pool_root_snapshot`;
+	return sqlPoolStorage(f.hostJournal)!.read(async (executor) => {
+		if ((await executor.all("SELECT name FROM sqlite_schema WHERE name = ?", table)).length === 0) return [];
+		return (await executor.all<{ root: string }>(`SELECT root FROM ${table}`)).map((row) => row.root);
+	});
+}
+
+/** The hashes of `hashes` that a collection protecting no unreferenced blob by age deletes from the root's journal. */
+async function collectedAtZeroGrace(f: Fixture, hashes: readonly string[]): Promise<string[]> {
+	const { deleted } = await collectSnapshotGarbage(rootBlobs(f), { graceSeconds: 0 });
+	return deleted.filter((hash) => hashes.includes(hash));
+}
+
 test.skipIf(process.platform === "win32")(
-	"a child bound with ctx.workflow(child, { workspace }) to a worktree with uncommitted, untracked and unpushed content no checkpoint captured runs on a cold host that restores it (#4492)",
+	"a child bound with ctx.workflow(child, { workspace }) to a worktree with uncommitted, untracked and unpushed content no checkpoint captured runs on a cold host that restores it, after a collection at graceSeconds 0 (#4492, #4503)",
 	async () => {
 		const dirs = workspaceSandbox("shared-dispatch-snapshot-child-");
 		const sandbox = new GitSandbox();
@@ -143,6 +161,11 @@ test.skipIf(process.platform === "win32")(
 			const [snapshot] = await carriedSnapshots(f, 1);
 			assert.ok(snapshot, "the child carries the snapshot its root captured as it dispatched it");
 			assert.deepEqual([snapshot.root, snapshot.head], [worktree, unpushed]);
+			assert.deepEqual(
+				await collectedAtZeroGrace(f, snapshotBlobHashes(snapshot)),
+				[],
+				"the queued work row keeps the blobs of the snapshot it carries",
+			);
 			cold = await coldHost(f);
 			const result = await execution;
 			assert.equal(result.status, "completed", JSON.stringify(result));
@@ -185,7 +208,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a root bound to a dirty worktree captures it once as it starts, and its unbound children restore it on a cold host after its blobs outlived their grace window (#4492)",
+	"a root bound to a dirty worktree captures it once as it starts, and its waiting unbound children restore it on a cold host after a collection at graceSeconds 0; its blobs go once the work and the pool are gone (#4492, #4503)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
@@ -198,12 +221,10 @@ test.skipIf(process.platform === "win32")(
 		assert.equal(placed.worktree, clone, "the root's binding has a worktree on this host");
 		const binding = placed.placement.workspace!;
 		const captures = vi.spyOn(DispatchSnapshots.prototype, "capture");
-		const refreshes = vi.spyOn(SqlSnapshotBlobStore.prototype, "refreshBlobs");
 		const lookups = vi.spyOn(SqlSharedPool.prototype, "recordedSnapshots");
 		const f = await fixture("shared-dispatch-snapshot-root", {
 			workspace: binding,
 			workspaceWorktree: placed.worktree,
-			snapshotRefreshMs: 0,
 		});
 		const { parent, outcomes } = await fanOut(3)((await boundChild()) as never);
 		const execution = run(
@@ -224,26 +245,14 @@ test.skipIf(process.platform === "win32")(
 				[clone],
 				"captured once, when the root started, and not again per child",
 			);
-			// The blobs outlive a grace window while the children wait, as a backlog of children can.
+			// The children wait for a host while a collection that protects nothing by age runs.
 			const hashes = snapshotBlobHashes(snapshot!);
 			assert.ok(hashes.length > 0);
-			const blobs = rootBlobs(f);
-			const { database } = blobs as unknown as { readonly database: SqliteDatabase };
-			await database.run(`UPDATE ${blobs.table} SET created_at = created_at - 7200`);
-			const before = refreshes.mock.calls.length;
-			while (
-				!refreshes.mock.calls.slice(before).some(([refreshed]) => hashes.every((hash) => refreshed.includes(hash)))
-			)
-				await sleep(25);
-			const { deleted } = await collectSnapshotGarbage(blobs, { graceSeconds: 3600 });
 			assert.deepEqual(
-				deleted.filter((hash) => hashes.includes(hash)),
+				await collectedAtZeroGrace(f, hashes),
 				[],
-				"the root kept the carried snapshot's blobs from collection",
+				"the waiting children's work rows keep the carried snapshot's blobs",
 			);
-			refreshes.mockRejectedValueOnce(new Error("storage unavailable"));
-			const failed = "keeping the worktree snapshots of waiting children failed: storage unavailable";
-			while (!f.pool.health.includes(failed)) await sleep(25);
 			cold = await coldHost(f);
 			const result = await execution;
 			assert.equal(result.status, "completed", JSON.stringify(result));
@@ -263,9 +272,21 @@ test.skipIf(process.platform === "win32")(
 				records.map((record) => [record.host, record.binding]),
 				claims.map(() => ["host-c", binding]),
 			);
+
+			assert.deepEqual(await recordedRootSnapshots(f), ["root"], "the prepared pool records its root's snapshot");
+			await f.pool.close();
+			assert.deepEqual(await recordedRootSnapshots(f), [], "and lets it go when it closes");
+			assert.deepEqual(await collectedAtZeroGrace(f, hashes), [], "the children's work rows still carry it");
+			await cold.host.stop();
+			cold = undefined;
+			await f.hostJournal.deleteRun("root");
+			assert.deepEqual(
+				(await collectedAtZeroGrace(f, hashes)).sort(),
+				[...hashes].sort(),
+				"with the run's work and pool gone, nothing keeps them",
+			);
 		} finally {
 			captures.mockRestore();
-			refreshes.mockRestore();
 			lookups.mockRestore();
 			await cold?.host.stop();
 			await execution.catch(() => {});
@@ -277,7 +298,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a root that works past the grace window before its first child keeps its snapshot's blobs, and the child restores it on a cold host (#4492)",
+	"a root that works before its first child keeps its snapshot's blobs through a collection at graceSeconds 0, and the child restores it on a cold host (#4492, #4503)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
@@ -288,11 +309,9 @@ test.skipIf(process.platform === "win32")(
 		});
 		const binding = placed.placement.workspace!;
 		const captures = vi.spyOn(DispatchSnapshots.prototype, "capture");
-		const refreshes = vi.spyOn(SqlSnapshotBlobStore.prototype, "refreshBlobs");
 		const f = await fixture("shared-dispatch-snapshot-idle-root", {
 			workspace: binding,
 			workspaceWorktree: placed.worktree,
-			snapshotRefreshMs: 0,
 		});
 		const child = await boundChild();
 		const working = Promise.withResolvers<void>();
@@ -319,21 +338,11 @@ test.skipIf(process.platform === "win32")(
 			while (captures.mock.results.length === 0) await sleep(25);
 			const snapshot = (await captures.mock.results[0]!.value) as WorktreeSnapshot | undefined;
 			assert.ok(snapshot !== undefined, "the root captured its binding as it started");
-			// No child waits yet; the snapshot's blobs outlive a grace window meanwhile.
-			const hashes = snapshotBlobHashes(snapshot);
-			const blobs = rootBlobs(f);
-			const { database } = blobs as unknown as { readonly database: SqliteDatabase };
-			await database.run(`UPDATE ${blobs.table} SET created_at = created_at - 7200`);
-			const before = refreshes.mock.calls.length;
+			// No child is queued; the pool records the root's snapshot once it is prepared.
 			const deadline = Date.now() + 10_000;
-			while (
-				Date.now() < deadline &&
-				!refreshes.mock.calls.slice(before).some(([refreshed]) => hashes.every((hash) => refreshed.includes(hash)))
-			)
-				await sleep(25);
-			const { deleted } = await collectSnapshotGarbage(blobs, { graceSeconds: 3600 });
+			while (Date.now() < deadline && (await recordedRootSnapshots(f)).length === 0) await sleep(25);
 			assert.deepEqual(
-				deleted.filter((hash) => hashes.includes(hash)),
+				await collectedAtZeroGrace(f, snapshotBlobHashes(snapshot)),
 				[],
 				"the root kept its snapshot's blobs from collection before any child carried it",
 			);
@@ -345,10 +354,23 @@ test.skipIf(process.platform === "win32")(
 			const [[claimer, , cwd]] = f.claims() as [[string, unknown, string | undefined]];
 			assert.equal(claimer, "host-c");
 			assert.equal(readFileSync(join(cwd!, "a.txt"), "utf8"), "uncommitted\n", "uncommitted content restored");
+
+			const releases = vi
+				.spyOn(SqlPoolQueue.prototype, "releaseRootSnapshot")
+				.mockRejectedValueOnce(new Error("storage unavailable"));
+			try {
+				await f.pool.close();
+			} finally {
+				releases.mockRestore();
+			}
+			assert.ok(
+				f.pool.health.includes("releasing the worktree snapshot of the root's binding failed: storage unavailable"),
+				JSON.stringify(f.pool.health),
+			);
+			assert.deepEqual(await recordedRootSnapshots(f), ["root"], "a release that failed leaves the record");
 		} finally {
 			working.resolve();
 			captures.mockRestore();
-			refreshes.mockRestore();
 			await cold?.host.stop();
 			await execution.catch(() => {});
 			await f.close();
@@ -359,7 +381,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a pool closed while its root's binding is still being captured keeps nothing from collection afterwards (#4492)",
+	"a pool closed while its root's binding is still being captured records nothing for collection to keep (#4492, #4503)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
@@ -368,12 +390,11 @@ test.skipIf(process.platform === "win32")(
 			workspace: workspace({ repo: clone, branch: "main", base: "main", worktree: clone }),
 		});
 		const captured = Promise.withResolvers<WorktreeSnapshot | undefined>();
+		const holds = vi.spyOn(SqlPoolQueue.prototype, "holdRootSnapshot");
 		const captures = vi.spyOn(DispatchSnapshots.prototype, "capture").mockReturnValue(captured.promise);
-		const carries = vi.spyOn(DispatchSnapshots.prototype, "carry");
 		const f = await fixture("shared-dispatch-snapshot-closed-root", {
 			workspace: placed.placement.workspace!,
 			workspaceWorktree: placed.worktree,
-			snapshotRefreshMs: 0,
 		});
 		const { parent } = await fanOut(1)((await boundChild()) as never);
 		const execution = run(
@@ -387,15 +408,12 @@ test.skipIf(process.platform === "win32")(
 			captured.resolve(carried("closed-root", ["p-closed"], "b-closed"));
 			await execution.catch(() => {});
 			await sleep(500);
-			assert.deepEqual(
-				carries.mock.calls.filter(([snapshot]) => snapshot?.id === "closed-root"),
-				[],
-				"the closed pool does not carry the late snapshot, so nothing refreshes it",
-			);
+			assert.deepEqual(holds.mock.calls, [], "the closed pool does not record the late snapshot");
+			assert.deepEqual(await recordedRootSnapshots(f), []);
 		} finally {
 			captured.resolve(undefined);
 			captures.mockRestore();
-			carries.mockRestore();
+			holds.mockRestore();
 			await execution.catch(() => {});
 			await f.close();
 			sandbox.dispose();
@@ -403,6 +421,81 @@ test.skipIf(process.platform === "win32")(
 	},
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
+
+test.each([
+	{ name: "no bound worktree", options: {} },
+	{ name: "snapshots disabled", options: { workspaceWorktree: "/unused", snapshots: { enabled: false } } },
+])("a root resumed with $name releases its crashed incarnation's snapshot hold (#4503)", async ({ options }) => {
+	const f = await fixture("shared-dispatch-snapshot-resumed", options);
+	const releases = vi.spyOn(SqlPoolQueue.prototype, "releaseRootSnapshot");
+	try {
+		await f.hostJournal.createRun({
+			runId: "root",
+			name: "resumed",
+			cwd: f.directory,
+			createdAt: 1,
+			status: "running",
+		});
+		const old = await f.hostJournal.acquire("root", "crashed-holder");
+		assert.ok(old.status === "acquired");
+		const blob = textBlob("crashed root binding");
+		await rootBlobs(f).putBlobs([blob]);
+		const queue = await openSqlPoolQueue(f.hostJournal);
+		await queue.holdRootSnapshot(old.lease, syntheticSnapshot("crashed-root", [blob.hash]));
+		await f.hostJournal.release(old.lease);
+		const resumed = await f.hostJournal.acquire("root", f.backend.holderId);
+		assert.ok(resumed.status === "acquired");
+		assert.ok(resumed.lease.epoch > old.lease.epoch);
+		assert.deepEqual(await collectedAtZeroGrace(f, [blob.hash]), []);
+
+		await f.pool.prepare("root");
+
+		assert.deepEqual(await recordedRootSnapshots(f), []);
+		assert.deepEqual(await collectedAtZeroGrace(f, [blob.hash]), [blob.hash]);
+		await f.pool.close();
+		assert.deepEqual(await recordedRootSnapshots(f), []);
+		assert.equal(releases.mock.calls.length, 0, "without a held snapshot, closing makes no release write");
+	} finally {
+		releases.mockRestore();
+		await f.close();
+	}
+});
+
+test("a non-shared pool on a remote journal prepares without a mirrored lease or a carried snapshot write (#4503)", async () => {
+	const f = await fixture("local-dispatch-snapshot-remote", {});
+	await f.pool.close();
+	const pool = new LocalWorkerPool(f.backend, {
+		rootId: "root",
+		journalPath: join(f.directory, "coordination.sqlite"),
+		durable: poolDurableJournal(f.backend.journal),
+		workers: 1,
+		definitions: [],
+		workerEntry: stubWorker,
+		coordinator: "in-process",
+	});
+	try {
+		await f.hostJournal.createRun({
+			runId: "root",
+			name: "non-shared",
+			cwd: f.directory,
+			createdAt: 1,
+			status: "running",
+		});
+		const acquired = await f.hostJournal.acquire("root", f.backend.holderId);
+		assert.ok(acquired.status === "acquired");
+
+		await pool.prepare("root");
+		await pool.close();
+
+		assert.deepEqual(pool.health, []);
+		assert.deepEqual(await recordedRootSnapshots(f), []);
+	} finally {
+		await pool.close();
+		// The pool opened its coordination database, which this process keeps open until it closes its pools' databases.
+		await closeCoordinationJournals();
+		await f.close();
+	}
+});
 
 /** A snapshot record carrying only an id and the blob hashes of its chain and bundle. */
 function carried(id: string, patches: readonly string[], bundle: string): WorktreeSnapshot {

@@ -396,6 +396,7 @@ test("the index tables are named under the storage prefix, and under none by def
 		sessionRefs: "snapshot_session_refs",
 		sessionLinks: "snapshot_session_links",
 		sessionRecords: "snapshot_session_records",
+		carriedRefs: "snapshot_carried_refs",
 		collection: "snapshot_collection",
 		sources: "snapshot_index_sources",
 	});

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { WorktreeSnapshot } from "@bastani/atomic";
 import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow, StorageError } from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
@@ -214,6 +215,8 @@ export class SqlPoolQueue {
 	private readonly operations: string;
 	/** Checkpoint events a commit accepted that the durable journal has not recorded yet (remote journals only). */
 	private readonly outbox: string;
+	/** The snapshot each root's binding carries to its unbound children, while its pool is prepared (#4503). */
+	private readonly rootSnapshots: string;
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
 	private readonly checkpoints = new PoolCheckpointIndex();
@@ -235,6 +238,7 @@ export class SqlPoolQueue {
 		this.work = `${journal.runs}_work`;
 		this.operations = `${journal.runs}_pool_operations`;
 		this.outbox = `${journal.runs}_pool_outbox`;
+		this.rootSnapshots = `${journal.runs}_pool_root_snapshot`;
 	}
 	/**
 	 * `remote` is the root's durable journal when it lives in another database than `storage`, whose run and lease rows
@@ -283,6 +287,11 @@ export class SqlPoolQueue {
 				state TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0
 			)`);
 			await tx.exec(poolUsageSchema(journal.runs));
+			// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
+			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
+				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
+				epoch INTEGER NOT NULL, snapshot TEXT NOT NULL
+			)`);
 			if (remote)
 				await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.outbox}(
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
@@ -382,6 +391,39 @@ export class SqlPoolQueue {
 			(await this.storage.read((executor) =>
 				executor.get(`SELECT 1 AS held FROM ${this.roots} WHERE root = ?`, root),
 			)) !== undefined
+		);
+	}
+	/**
+	 * Records `snapshot` as the one the root's binding carries to its unbound children (#4503), in place of any an earlier
+	 * incarnation of the root recorded. The snapshot reference index keeps its blobs from collection, at any grace
+	 * window, until {@link releaseRootSnapshot} or the run's deletion. Without a snapshot, as for a root resumed without
+	 * a bound worktree or with snapshots disabled, it only lets go of the one an earlier incarnation recorded. A root that
+	 * has queued nothing yet records it too, so only the root's lease is checked: one another holder or epoch took is a
+	 * {@link StaleLeaseError}.
+	 */
+	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot | undefined): Promise<void> {
+		lease = snapshotLease(lease);
+		await this.transaction(async (tx) => {
+			const row = await this.leaseRow(tx, lease);
+			if (row?.epoch !== lease.epoch || row.holder_id !== lease.holderId)
+				throw new StaleLeaseError(lease.runId, lease.epoch, Number(row?.epoch ?? 0));
+			if (snapshot === undefined) {
+				await tx.run(`DELETE FROM ${this.rootSnapshots} WHERE root = ? AND epoch < ?`, lease.runId, lease.epoch);
+				return;
+			}
+			await tx.run(
+				`INSERT INTO ${this.rootSnapshots}(root, epoch, snapshot) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET epoch = excluded.epoch, snapshot = excluded.snapshot`,
+				lease.runId,
+				lease.epoch,
+				JSON.stringify(snapshot),
+			);
+		});
+	}
+	/** Lets go of the snapshot `lease`'s incarnation of the root recorded; one a later incarnation recorded stays. */
+	async releaseRootSnapshot(lease: Lease): Promise<void> {
+		lease = snapshotLease(lease);
+		await this.transaction((tx) =>
+			tx.run(`DELETE FROM ${this.rootSnapshots} WHERE root = ? AND epoch = ?`, lease.runId, lease.epoch),
 		);
 	}
 	/**

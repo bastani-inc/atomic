@@ -95,7 +95,7 @@ import {
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
-import { carriedSnapshot, childPlacement } from "./placement-choice.js";
+import { childPlacement } from "./placement-choice.js";
 import { WorkerPlacementConfigError } from "./placement-errors.js";
 import { PoolCoordinator, projectRootRun, traceAnchor, workerLogDirectory } from "./pool-coordinator.js";
 import {
@@ -413,10 +413,11 @@ export class LocalWorkerPool {
 	private readonly dispatchSnapshots: DispatchSnapshots;
 	/** The snapshot of the root's binding, captured when the root starts, for its unbound children to carry (#4492). */
 	private rootSnapshot?: Promise<WorktreeSnapshot | undefined>;
-	/** Lets go of the root's snapshot, which the pool keeps from collection from `prepare()` until it closes. */
-	private releaseRootSnapshot?: () => void;
-	/** Keeps the blobs of every carried snapshot from collection, as often as the grace window needs (#4492). */
-	private snapshotKeeper?: ReturnType<typeof setInterval>;
+	/**
+	 * The root's snapshot as the pool's tables record it from `prepare()` until the pool closes, which keeps its blobs
+	 * from collection at any grace window (#4503); resolves with what lets it go, or undefined when the root has none.
+	 */
+	private rootSnapshotHeld?: Promise<(() => Promise<void>) | undefined>;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -443,11 +444,6 @@ export class LocalWorkerPool {
 			readonly workspaceWorktree?: string;
 			/** The root's worktree snapshot settings, which the capture of `workspaceWorktree` follows. */
 			readonly snapshots?: WorktreeSnapshotSettingsInput;
-			/**
-			 * Internal, tests only: how often the blobs of the snapshots waiting children carry are kept from collection.
-			 * Public options never set it.
-			 */
-			readonly snapshotRefreshMs?: number;
 			readonly rootId?: string;
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
@@ -517,8 +513,6 @@ export class LocalWorkerPool {
 		this.dispatchSnapshots = new DispatchSnapshots({
 			blobs: backend.snapshotJournal.snapshotBlobs,
 			unavailable: (reason) => this.snapshotUnavailable(reason),
-			graceSeconds: options.snapshots?.graceSeconds,
-			refreshMs: options.snapshotRefreshMs,
 		});
 	}
 	/** Health events of the pool: worker cleanups it could not confirm. None of them failed a child. */
@@ -571,13 +565,6 @@ export class LocalWorkerPool {
 				? Promise.resolve(undefined)
 				: this.dispatchSnapshots.capture(worktree, this.options.snapshots);
 		const rootSnapshot = await this.rootSnapshot;
-		// The root's snapshot is kept from collection for as long as the pool serves the root, children waiting or not:
-		// a child dispatched after a long stretch of the root's own work still carries it (#4492). A pool closed while
-		// the capture ran keeps nothing.
-		if (!this.closed) {
-			this.releaseRootSnapshot ??= this.dispatchSnapshots.carry(rootSnapshot);
-			this.snapshotKeeper ??= setInterval(() => this.keepCarriedSnapshots(), POOL_SUMMARY_INTERVAL_MS).unref();
-		}
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(
@@ -586,6 +573,18 @@ export class LocalWorkerPool {
 				? undefined
 				: new PoolRemoteJournal(this.backend.journal, sqlPoolStorage(poolJournal)!),
 		);
+		// The pool records the root's snapshot, which keeps it from collection for as long as the pool serves the root,
+		// children waiting or not: a child dispatched after a long stretch of the root's own work still carries it (#4492,
+		// #4503). A shared pool whose root has no snapshot, as one resumed without a bound worktree or with snapshots
+		// disabled, lets go of the one an earlier incarnation recorded instead, so its blobs don't stay until the run is
+		// deleted. A pool closed while the capture ran records nothing.
+		const queue = this.queue;
+		const lease = this.lease;
+		if (!this.closed && (rootSnapshot !== undefined || this.options.shared !== undefined))
+			this.rootSnapshotHeld ??= queue
+				.holdRootSnapshot(lease, rootSnapshot)
+				.then(() => (rootSnapshot === undefined ? undefined : () => queue.releaseRootSnapshot(lease)));
+		await this.rootSnapshotHeld;
 		// A pool that already ran for this root, as for a resumed root, is recovered now: its earlier attempts, their
 		// process groups and their undelivered events. Any other root starts its coordinator with its first pooled child,
 		// so a root that never runs one starts no process.
@@ -1403,7 +1402,6 @@ export class LocalWorkerPool {
 			this.evaluateBudget();
 			this.signalChange();
 		}, POOL_SUMMARY_INTERVAL_MS).unref();
-		const releaseSnapshot = this.dispatchSnapshots.carry(carriedSnapshot(work.execution));
 		try {
 			for (;;) {
 				options.signal?.throwIfAborted();
@@ -1445,7 +1443,6 @@ export class LocalWorkerPool {
 				await this.nextChange(options.signal);
 			}
 		} finally {
-			releaseSnapshot();
 			if (--this.waiting === 0) {
 				clearInterval(this.ticker);
 				this.ticker = undefined;
@@ -1453,15 +1450,18 @@ export class LocalWorkerPool {
 		}
 	}
 	/**
-	 * Keeps the blobs of the root's snapshot and of those waiting children carry from collection, as often as the grace
-	 * window needs (#4492).
-	 * A refresh that fails is a health warning: the child still runs if its host restores before the blobs are gone.
+	 * Lets go of the root's snapshot the pool recorded as it was prepared (#4503). A record that failed failed
+	 * `prepare()`, which reported it, and a root without a snapshot recorded none, so there is nothing to let go; a release
+	 * that fails is a health warning, since it only keeps the snapshot's blobs until the root's next incarnation is
+	 * prepared or the run is deleted.
 	 */
-	private keepCarriedSnapshots(): void {
-		this.dispatchSnapshots
-			.refresh(Date.now())
+	private async releaseRootSnapshot(): Promise<void> {
+		const [held] = await Promise.allSettled([this.rootSnapshotHeld]);
+		if (held.status === "rejected" || held.value === undefined) return;
+		await held
+			.value()
 			.catch((error: Error) =>
-				this.recordHealth(`keeping the worktree snapshots of waiting children failed: ${error.message}`),
+				this.recordHealth(`releasing the worktree snapshot of the root's binding failed: ${error.message}`),
 			);
 	}
 	/** The first typed reason a worktree its children are bound to could not be captured, on the root run (#4492). */
@@ -1788,9 +1788,7 @@ export class LocalWorkerPool {
 		this.stopSharingDebugSetting?.();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
-		clearInterval(this.snapshotKeeper);
-		this.snapshotKeeper = undefined;
-		this.releaseRootSnapshot?.();
+		const rootSnapshotReleased = this.releaseRootSnapshot();
 		this.releaseStageSource?.();
 		// A pool that failed takes its unfinished children with it: show them failed rather than
 		// running forever (#3996). A graceful quit leaves them resumable.
@@ -1846,6 +1844,7 @@ export class LocalWorkerPool {
 		} catch (error) {
 			failure ??= error;
 		}
+		await rootSnapshotReleased;
 		if (failure !== undefined) throw failure;
 	}
 }

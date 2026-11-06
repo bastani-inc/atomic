@@ -15,15 +15,12 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.js";
-import {
-	CARRIED_SNAPSHOT_REFRESH_MS,
-	DispatchSnapshots,
-} from "../../packages/workflows/src/workers/dispatch-snapshot.js";
+import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
 import { sleep } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
-/** What the root captures of a bound worktree as it dispatches its work, and keeps from collection while it waits (#4492). */
+/** What the root captures of a bound worktree as it dispatches its work (#4492). */
 useTemporaryAgentDir();
 
 let sandbox: GitSandbox;
@@ -41,32 +38,13 @@ function snapshots(
 	return { dispatch, reasons };
 }
 
-/** A snapshot record carrying only what blob refreshes read: its id and the blob hashes of its chain and bundle. */
+/** A snapshot record carrying only an id and the blob hashes of its chain and bundle. */
 function carried(id: string, patches: readonly (string | null)[], bundle?: string): WorktreeSnapshot {
 	return {
 		id,
 		chain: patches.map((patch) => ({ tree: "t", patch, bytes: 0 })),
 		bundle: bundle === undefined ? null : { blob: bundle, bytes: 0, commits: [] },
 	} as unknown as WorktreeSnapshot;
-}
-
-/** A blob store whose refreshes are recorded. */
-function refreshing(): SnapshotBlobStore & { readonly refreshed: string[][] } {
-	const refreshed: string[][] = [];
-	return {
-		refreshed,
-		async putBlobs() {},
-		async getBlob() {
-			return undefined;
-		},
-		async refreshBlobs(hashes) {
-			refreshed.push([...hashes].sort());
-			return true;
-		},
-		async listBlobHashes() {
-			return [];
-		},
-	};
 }
 
 test("a dirty worktree is captured with its blobs stored, and captured again unchanged reuses its snapshot (#4492)", async () => {
@@ -247,67 +225,4 @@ test("a cancelled capture rejects with its signal's reason, never a degrade reas
 	await assert.rejects(dispatch.capture("/w", undefined, controller.signal), (error) => error === cancelled);
 	assert.equal(captures, 1, "a capture whose signal had aborted already never started");
 	assert.deepEqual(reasons, []);
-});
-
-test("the blobs of carried snapshots are refreshed once per interval while their work waits, and no longer once it is done (#4492)", async () => {
-	const blobs = refreshing();
-	const { dispatch } = snapshots(blobs, { refreshMs: 1_000 });
-	const start = Date.now();
-	await dispatch.refresh(start + 5_000);
-	assert.deepEqual(blobs.refreshed, [], "nothing is carried");
-	const first = dispatch.carry(carried("s1", ["p1", null, "p2"], "b1"));
-	const second = dispatch.carry(carried("s2", ["p2"], "b2"));
-	const again = dispatch.carry(carried("s1", ["p1", null, "p2"], "b1"));
-	const none = dispatch.carry(undefined);
-	await dispatch.refresh(start + 5_999);
-	assert.deepEqual(blobs.refreshed, [], "the interval has not passed since the last refresh");
-	await dispatch.refresh(start + 6_000);
-	assert.deepEqual(blobs.refreshed, [["b1", "b2", "p1", "p2"]], "every blob a carried snapshot references, once");
-	await dispatch.refresh(start + 6_999);
-	assert.equal(blobs.refreshed.length, 1);
-	second();
-	none();
-	await dispatch.refresh(start + 7_000);
-	assert.deepEqual(blobs.refreshed.at(-1), ["b1", "p1", "p2"], "a finished child's snapshot is let go");
-	first();
-	await dispatch.refresh(start + 8_000);
-	assert.deepEqual(blobs.refreshed.at(-1), ["b1", "p1", "p2"], "until every child that carries it is done");
-	assert.equal(blobs.refreshed.length, 3);
-	again();
-	await dispatch.refresh(start + 9_000);
-	assert.equal(blobs.refreshed.length, 3, "nothing is carried any more");
-	const clean = dispatch.carry(carried("s3", [null]));
-	await dispatch.refresh(start + 10_000);
-	assert.equal(blobs.refreshed.length, 3, "a snapshot of a clean checkout references no blob");
-	clean();
-	const bare = snapshots(undefined, { refreshMs: 0 }).dispatch;
-	bare.carry(carried("s4", ["p4"]));
-	await bare.refresh(start + 10_000);
-	assert.equal(blobs.refreshed.length, 3, "a journal without snapshot blobs has nothing to refresh");
-});
-
-test("carried snapshots are refreshed every third of a grace window shorter than five minutes (#4492)", async () => {
-	const blobs = refreshing();
-	const { dispatch } = snapshots(blobs, { graceSeconds: 60 });
-	dispatch.carry(carried("s1", ["p1"], "b1"));
-	const first = Date.now() + 20_000;
-	await dispatch.refresh(first);
-	assert.deepEqual(blobs.refreshed, [["b1", "p1"]], "a third of the 60 s grace window after the last refresh");
-	await dispatch.refresh(first + 19_999);
-	assert.equal(blobs.refreshed.length, 1);
-	await dispatch.refresh(first + 20_000);
-	assert.equal(blobs.refreshed.length, 2, "again within the grace window, never past it");
-});
-
-test("carried snapshots are refreshed every five minutes by default (#4492)", async () => {
-	assert.equal(CARRIED_SNAPSHOT_REFRESH_MS, 300_000);
-	const blobs = refreshing();
-	const { dispatch } = snapshots(blobs);
-	const start = Date.now();
-	const release = dispatch.carry(carried("s1", ["p1"]));
-	await dispatch.refresh(start + CARRIED_SNAPSHOT_REFRESH_MS - 1_000);
-	assert.deepEqual(blobs.refreshed, []);
-	await dispatch.refresh(start + CARRIED_SNAPSHOT_REFRESH_MS + 1_000);
-	assert.deepEqual(blobs.refreshed, [["p1"]]);
-	release();
 });
