@@ -24,6 +24,7 @@ import {
 	rehydrateShellToolError,
 	rehydrateStartupBenchmarkError,
 	rehydrateTaskEvictedError,
+	rehydrateTaskToolError,
 	rehydrateWorkspaceError,
 	rehydrateWriteSelectorError,
 	type SerializedAgentRehydrateError,
@@ -35,6 +36,7 @@ import {
 	type SerializedGitProvisionError,
 	type SerializedSessionStartError,
 	type SerializedSubscriptionError,
+	type SerializedTaskToolError,
 	type SerializedToolDetachmentError,
 	type SerializedTypedError,
 	type SerializedWorkspaceError,
@@ -52,6 +54,7 @@ import {
 	serializeSubscriptionError,
 	serializeWorkspaceError,
 	TaskEvictedError,
+	TaskToolError,
 	ToolDetachmentError,
 	WorkspaceError,
 	WriteSelectorError,
@@ -258,6 +261,11 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		is: instanceOf(SubscriptionError),
 		serialize: serializeSubscriptionError,
 		rehydrate: (form) => deserializeSubscriptionError(form),
+	}),
+	"task-tool": family<TaskToolError, SerializedTaskToolError>({
+		is: instanceOf(TaskToolError),
+		serialize: (error) => error.toJSON(),
+		rehydrate: rehydrateTaskToolError,
 	}),
 } as const satisfies Readonly<Record<string, SerializableErrorFamily>>;
 

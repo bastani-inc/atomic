@@ -21,6 +21,7 @@ import {
 	isShellTimeoutError,
 	isStartupBenchmarkConfigError,
 	isTaskEvictedError,
+	isTaskToolError,
 	isToolDetachmentError,
 	isWorkspaceBindingError,
 	isWriteSelectorError,
@@ -38,6 +39,7 @@ import {
 	serializeSubscriptionError,
 	serializeWorkspaceError,
 	TaskEvictedError,
+	TaskToolError,
 	ToolDetachmentError,
 	WorkspaceBindingError,
 	WriteSelectorError,
@@ -311,6 +313,13 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: EventSourceError,
 		guard: isEventSourceError,
 		facts: ownFacts(serializeSubscriptionError),
+	},
+	{
+		family: "task-tool",
+		make: () => new TaskToolError({ code: "TaskEvicted", message: "task-1 was evicted" }, "task-1"),
+		type: TaskToolError,
+		guard: isTaskToolError,
+		facts: ownFacts(toJSON),
 	},
 ];
 

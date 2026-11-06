@@ -5,7 +5,7 @@
  * transcript renders the same facts as a single status line. Structured data stays in the result `details`.
  */
 
-import { hasErrorIdentity, type SerializedTypedError, serializeErrorCause } from "../error-contract.js";
+import { hasErrorIdentity, type SerializedTypedError, serializeErrorCause } from "../error-contract.ts";
 import type {
 	CancelCause,
 	CancelError,
