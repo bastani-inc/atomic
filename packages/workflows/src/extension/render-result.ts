@@ -137,6 +137,7 @@ type StageListItem = {
 	id: string;
 	name: string;
 	status: StageStatus;
+	wait?: StageSnapshot["wait"];
 	sessionId?: string;
 	sessionFile?: string;
 	transcriptPath?: string;

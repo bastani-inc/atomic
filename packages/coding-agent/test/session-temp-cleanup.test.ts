@@ -4,6 +4,7 @@
  * symlink is never followed out of the target.
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -42,6 +43,11 @@ import {
 } from "../src/core/tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, SESSION_TEMP_FILE_MODE } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
+
+/** The file a persisted result with this text is saved as: it is named by the SHA-256 of its content. */
+function persistedResultName(text: string): string {
+	return `${createHash("sha256").update(text, "utf8").digest("hex")}.txt`;
+}
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Anchored to the real clock: the marker's freshness is read from its mtime, so a
@@ -597,18 +603,19 @@ describe("runSessionTempCleanup", () => {
 		const toolResults = join(project, TOOL_RESULTS_SUBDIR);
 		mkdirSync(toolResults, { recursive: true });
 		const transcript = join(project, "2026-01-01-session.jsonl");
-		const replayed = join(toolResults, "call-live.txt");
+		const output = "q".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1);
+		const replayed = join(toolResults, persistedResultName(output));
 		writeFileSync(transcript, "{}\n");
 		writeFileSync(replayed, "persisted on an earlier turn");
 		for (const path of [transcript, replayed, toolResults, project]) stampAge(path, 60);
 
 		const lease = acquireProtectedPaths([toolResults]);
 		try {
-			// The documented EEXIST replay path: same call id, existing file reused.
+			// The documented EEXIST replay path: same content, existing file reused.
 			const replacement = await redirectOversizedToolResult({
 				toolName: "bash",
 				toolCallId: "call-live",
-				result: { content: [{ type: "text", text: "q".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }], details: {} },
+				result: { content: [{ type: "text", text: output }], details: {} },
 				isError: false,
 				sessionId: "live-session",
 				sessionDir: project,
@@ -666,7 +673,8 @@ describe("oversized result replay safety", () => {
 		const outsideContent = "outside content must remain untouched";
 		writeFileSync(outside, outsideContent);
 		chmodSync(outside, 0o644);
-		const replayPath = join(toolResults, "call-symlink.txt");
+		const output = "r".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1);
+		const replayPath = join(toolResults, persistedResultName(output));
 		symlinkSync(outside, replayPath);
 		const outsideMode = statSync(outside).mode & 0o777;
 
@@ -674,7 +682,7 @@ describe("oversized result replay safety", () => {
 			toolName: "bash",
 			toolCallId: "call-symlink",
 			result: {
-				content: [{ type: "text", text: "r".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }],
+				content: [{ type: "text", text: output }],
 				details: {},
 			},
 			isError: false,

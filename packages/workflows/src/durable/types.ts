@@ -194,6 +194,7 @@ export type DurableStageLifecycleStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
+	| "waiting"
 	| "completed"
 	| "failed"
 	| "skipped";
@@ -274,6 +275,8 @@ export interface DurableStageCheckpoint {
 	/** Resumable Atomic/Pi session metadata for in-progress LM stages. */
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
+	/** `"stage"` when the session is in the store the stage's own `sessionStore` option supplied, not the run's. */
+	readonly sessionStorage?: "stage";
 	readonly completedAt: number;
 	/** Repository states captured after this live stage or task completed. */
 	readonly worktreeSnapshots?: readonly WorktreeSnapshot[];
@@ -298,6 +301,31 @@ export interface DurableStageCheckpoint {
 	readonly artifacts?: readonly WorkflowArtifact[];
 	/** Model-fallback warnings recorded for the completed stage/task. */
 	readonly warnings?: readonly string[];
+	/** What a `waiting` stage waits on; absent once the stage is woken. */
+	readonly wait?: import("../shared/authoring-contract-stage.js").StageWaitSnapshot;
+	/**
+	 * The results a stage's detached calls delivered, recorded before its session reopened and kept until its transcript
+	 * holds them: a resume continues the stage's turn from them instead of running the calls again.
+	 */
+	readonly waitResults?: readonly import("../shared/stage-wait.js").StageWaitToolResult[];
+}
+
+/**
+ * How a durably resumed stage starts when its previous process stopped while it waited between turns (a `release`
+ * or `idle` wait): released, with its first `promptsCompleted` calls answered from the run's record instead of the
+ * model. The first call past them reopens `sessionId` from the session store and runs live.
+ */
+export interface DurableReleasedStageResume {
+	readonly wait: import("../shared/authoring-contract-stage.js").StageWaitSnapshot;
+	readonly sessionId: string;
+	/** Calls of the stage that finished before the wait: `prompt()`/`complete()`, then `sendUserMessage()`. */
+	readonly promptsCompleted: number;
+	/** The stage's recorded result, answering its replayed first call; present when `promptsCompleted > 0`. */
+	readonly recorded?: {
+		readonly output: WorkflowSerializableValue;
+		readonly result?: string;
+		readonly structured?: WorkflowSerializableValue;
+	};
 }
 
 export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";

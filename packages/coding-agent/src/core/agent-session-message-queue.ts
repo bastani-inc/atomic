@@ -48,6 +48,18 @@ function serializeInterruptMutation(owner: AgentSession, operation: () => Promis
 	return delivery;
 }
 
+const laneImages = new WeakMap<AgentMessage, ImageContent[] | undefined>();
+
+function rememberLaneMessage(message: AgentMessage, images: ImageContent[] | undefined): void {
+	laneImages.set(message, images?.length ? [...images] : undefined);
+}
+
+function queuedTextImages(texts: readonly string[], removed: readonly AgentMessage[]): (ImageContent[] | undefined)[] {
+	const images = removed.flatMap((message) => (laneImages.has(message) ? [laneImages.get(message)] : []));
+	const firstQueuedIndex = images.length - texts.length;
+	return texts.map((_, index) => images[firstQueuedIndex + index]);
+}
+
 /**
  * Queue a steering message (already expanded, no extension command check). `typed` is the text that was submitted,
  * when an `input` hook or an expansion may have changed it; `clearQueue()` gives it back.
@@ -70,6 +82,7 @@ export async function _queueSteer(
 	}
 	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
 	if (images?.length) markQueuedMessageImages(message);
+	rememberLaneMessage(message, images);
 	this._queueAgentMessage(message, "steer");
 }
 
@@ -94,6 +107,7 @@ export async function _queueFollowUp(
 	}
 	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
 	if (images?.length) markQueuedMessageImages(message);
+	rememberLaneMessage(message, images);
 	this._queueAgentMessage(message, "followUp");
 }
 
@@ -478,6 +492,8 @@ export function clearQueue(this: AgentSession, options?: ClearQueueOptions): Cle
 		typed.steering.some((text, index) => text !== steering[index]) ||
 		typed.followUp.some((text, index) => text !== followUp[index]);
 	forgetAllTypedQueuedTexts(this);
+	const queuedSteering = this._steeringMessages;
+	const queuedFollowUp = this._followUpMessages;
 	this._steeringMessages = [];
 	this._followUpMessages = [];
 	const removed = this._drainQueuedAgentMessages();
@@ -487,6 +503,11 @@ export function clearQueue(this: AgentSession, options?: ClearQueueOptions): Cle
 		removed.followUp.push(...hold.followUp.splice(0));
 		priorityHoldCounts.delete(hold);
 	}
+	const images = {
+		steering: [...queuedTextImages(queuedSteering, removed.steering), ...held.images.steering],
+		followUp: [...queuedTextImages(queuedFollowUp, removed.followUp), ...held.images.followUp],
+	};
+	const withImages = [...images.steering, ...images.followUp].some((entry) => entry !== undefined);
 	restoreProtectedStreamingCustomMessages(this, removed);
 	if (options?.preserveUnprotectedCustomMessages && hold !== undefined) {
 		const restoreUnprotectedCustomMessages = (
@@ -520,7 +541,12 @@ export function clearQueue(this: AgentSession, options?: ClearQueueOptions): Cle
 		this._activeInterruptQueueHold = undefined;
 	}
 	this._emitQueueUpdate();
-	return retyped ? { steering, followUp, typed } : { steering, followUp };
+	return {
+		steering,
+		followUp,
+		...(retyped ? { typed } : {}),
+		...(withImages ? { images } : {}),
+	};
 }
 
 /** Number of pending messages (includes both steering and follow-up) */

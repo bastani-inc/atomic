@@ -9,7 +9,8 @@ import {
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
-import type { AgentSessionConsumer } from "./stage-runner-types.js";
+import { agentSessionAdapterDefaultCwd } from "./stage-runner-session-options.js";
+import type { AgentSessionConsumer, StageAdapters } from "./stage-runner-types.js";
 
 function workflowSessionOptions(meta: StageExecutionMeta) {
 	return {
@@ -138,6 +139,70 @@ export async function stripWorkflowOnlyOptions(
 		...(fallbackModels?.length === 0 ? { fallbackModels: [] } : {}),
 		orchestrationContext,
 	} as CreateAgentSessionOptions;
+}
+
+/**
+ * The messages of the stage session `sessionId`, read from the store the stage would reopen it from, as the session
+ * starts with them. Opens no session, and closes the store when this read opened it: a caller's `sessionStore` or
+ * `sessionManager` stays open (#4309).
+ */
+export async function readStoredStageMessages(
+	options: StageOptions,
+	defaultSessionDir: string | undefined,
+	sessionId: string,
+): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	const store = await stageSessionStore(options, defaultSessionDir);
+	const owned = options.sessionStore === undefined && options.sessionManager === undefined;
+	let messages: ReturnType<SessionManager["buildSessionContext"]>["messages"];
+	try {
+		messages = (await SessionManager.open(store, sessionId, options.cwd)).buildSessionContext().messages;
+	} catch (error) {
+		if (owned) await closeAfterFailure(store, error);
+		throw error;
+	}
+	if (owned) await store.close();
+	return messages;
+}
+
+/**
+ * The stored messages of session `sessionId` of a stage a resumed run replays, from the store the stage would open with
+ * `options`: its own `sessionStore`, `sessionManager` or `sessionDir`, else the run's `adapters.sessionStore`, else
+ * `defaultSessionDir` or the default store. A store this read opens is closed; the caller's stores stay open (#4309).
+ */
+export function readReplayedStageMessages(
+	options: StageOptions,
+	run: {
+		readonly adapters?: Partial<Pick<StageAdapters, "sessionStore" | "agentSession">>;
+		readonly defaultSessionDir?: string;
+		readonly defaultCwd: string;
+	},
+	sessionId: string,
+): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	const ownStore =
+		options.sessionStore !== undefined || options.sessionDir !== undefined || options.sessionManager !== undefined;
+	const runStore = run.adapters?.sessionStore;
+	return readStoredStageMessages(
+		{
+			...(ownStore || runStore === undefined ? options : { ...options, sessionStore: runStore }),
+			cwd:
+				options.cwd ??
+				options.sessionManager?.getCwd() ??
+				agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
+				run.defaultCwd,
+		},
+		run.defaultSessionDir,
+		sessionId,
+	);
+}
+
+/** Close `store` after `primary` failed: a failure to close is attached to `primary` as `cleanupCause`, never thrown. */
+async function closeAfterFailure(store: SessionStore, primary: unknown): Promise<void> {
+	try {
+		await store.close();
+	} catch (cleanupCause) {
+		if (primary instanceof Error)
+			Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, configurable: true });
+	}
 }
 
 export function missingAdapter(consumer: AgentSessionConsumer): never {

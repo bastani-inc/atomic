@@ -260,6 +260,7 @@ The workflow tool exposes lifecycle controls for non-interactive use:
 workflow({ action: "status" })                                  // list every session run, in-flight first
 workflow({ action: "status", statusFilter: "running" })         // filter the run listing by status
 workflow({ action: "status", statusFilter: "awaiting_input" })  // runs with a pending human prompt
+workflow({ action: "status", statusFilter: "waiting" })         // runs with a stage waiting with its session released
 workflow({ action: "status", format: "json" })                  // structured listing for programmatic use
 workflow({ action: "status", runId: "<full-run-uuid>" })         // full detail for one run
 workflow({ action: "status", runId: "<full-run-uuid>", summary: true })  // status, outputs and blockers only
@@ -298,9 +299,9 @@ Control behavior:
 
 - `runId` accepts the full UUID or a unique 8-character hexadecimal prefix for lifecycle and inspection actions, including `status`. Status lists and run pickers show top-level user-launched workflows; nested child runs remain part of the expanded parent graph.
 - `status`, `stages`, `stage`, and `transcript` with a full `runId` use the session store, then read the journal if the run is absent locally. Inspection never claims ownership or executes workflow code. A running root with an expired lease appears as `crashed`; a live foreign lease remains protected.
-- `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `answer`, `pause`, `resume`, and `quit` accept, so an orchestrating agent can list runs and act on them directly.
+- `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt), and `waitingCount`, the number of stages waiting with their session released. In-flight runs are listed first. The summaries carry the exact identifiers that `answer`, `pause`, `resume`, and `quit` accept, so an orchestrating agent can list runs and act on them directly.
 - `status` with a `runId` includes the run's final outputs as `detail.result`, also when another session started the run and Atomic reads it back from the journal. The detail lists every stage and can be large for a run with many stages. Add `summary: true` for a compact `summary` object instead of `detail`: `runId`, `name`, `status`, timing, `result`, `error`, `resumable`, `resumeGuidance`, and `blockers`. Each blocker names a failed or blocked stage or `ctx.tool` node, or a stage awaiting input (with its `promptId` and prompt text), and is empty for a run that completed, was cancelled, or was killed. The summary omits the stage and tool history; `summary` has no effect on the `status` listing without a `runId`.
-- `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything.
+- `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, `waiting` selects runs with at least one stage waiting with its session released, and `all` (the default) includes everything. On `stages`, `waiting` selects stages that wait with their session released (see [Waiting stages](#waiting-stages)).
 - `format: "json"` on data-bearing inspection actions (`status`, `stages`, `stage`, `transcript`) returns the full structured result; the default text output for `status` is the concise per-run summary list.
 - `status` / `status <runId>` show terminal `ctx.exit(...)` statuses (`completed`, `skipped`, `cancelled`, or `blocked`) and the optional exit reason when one was supplied.
 - `stages` lists stage summaries, including flattened stages from nested `ctx.workflow(...)` imports and `sessionFile`/`transcriptPath` when a stage has a persisted session. A stage whose session has started [background compaction](/compaction#background-compaction) also carries `compaction`, the same `{ state, upToEntryId, startedAt, error }` state RPC `get_state` reports; `stage` returns it too. After the stage finishes it shows the state its session ended in, and a session that already holds a saved result shows `ready` as soon as the stage attaches it. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
@@ -327,6 +328,24 @@ Control behavior:
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
 Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, tell the user instead of polling silently.
+
+### Waiting stages
+
+A stage whose model called a long-running tool that supports it (a CI wait, a deployment) does not keep its session while it waits. Once the call has run longer than the stage's `releaseWhenWaiting` threshold (60 seconds by default), Atomic saves the stage's conversation and its pending call, closes the session, and frees the stage's slot for other stages. `status` and `stages` show the stage as `waiting` and say what it waits on (`waiting (tool: wait_ci)` for the tool calls, `waiting (released)` after `stage.release()`, `waiting (idle)` for a stage the workflow holds unused), and the JSON `stages` result carries its `wait`; a stage waiting for a human answer reads `awaiting_input (released)`. A stage still released when its run ends leaves `waiting`; `statusFilter: "waiting"` lists the runs that have such a stage. When the results arrive, Atomic reopens the same session from the session store and the stage continues the same turn. Short calls, and tools that do not support it, run inline as before.
+
+The same threshold releases a stage whose readiness question waits on you (the stage stays `awaiting_input` and reopens with your answer), and a finished stage the workflow keeps without using it, for example while it waits for a child workflow (the stage is `waiting` until it is messaged or rehydrated). See [`releaseWhenWaiting`](/workflows/api-reference#releasewhenwaiting).
+
+Controls work on a waiting stage:
+
+- Messages and steering to a stage waiting on a tool call are held, and reach the stage in order when it reopens. They are held in memory, so they are lost if Atomic stops before the stage wakes; Intercom sends wait in the run's queue and survive a restart. A message to a stage waiting between turns reopens it.
+- `pause` holds the stage: results that arrive meanwhile wait until you resume it.
+- `quit`, or a crash of the Atomic process, stops the wait. `/workflow resume` reopens the stage and starts the pending tool call again with the same call id and arguments, then continues the turn; a call whose result was saved before the stop is not started again, and the turn continues from that result. It does not send the stage's prompt again, also for a stage that waited between turns. A tool call can therefore run more than once across a restart.
+- If the session store the run resumes with does not hold a waiting stage's session, `/workflow resume` fails with `StageRehydrationError` (`session-not-found`) before changing anything, for a run that stopped with Atomic and for one that failed or is blocked alike. Resume with the session storage the run was started with; `atomic storage status` shows which one this process selects.
+- If the session store is unreachable when the results arrive, Atomic saves the results with the stage's wait and tries to reopen the session, and to save the results into it, three times over a few seconds. When the store is still unreachable, the run is blocked, not failed, with `StageRehydrationError` (`session-unavailable`). Make the store reachable, then run `/workflow resume`: the stage continues its turn from the saved results and the tool does not run again.
+- If the reopened session returns from the turn without saving the results, the stage fails with `StageRehydrationError` (`results-not-saved`) instead of completing, and the results stay saved with its wait. `/workflow resume` continues the turn from them.
+- If Atomic cannot save a record of a stage's wait to the run's journal after three attempts, the stage carries on and the run logs the reason once; the stage's `waitRecordFailure` shows it (`StageWaitRecordError`, `wait-record-unavailable`). Until its next record is saved, a resume after a crash starts the stage from its previous record, which can run a finished tool call again.
+
+To keep a stage resident for its whole wait, set `releaseWhenWaiting: false` on the stage or the run.
 
 ### Diagnosing a stage with an empty history
 
@@ -404,6 +423,7 @@ The workflows extension publishes activity for its owning session, folding neste
 | --- | --- |
 | A stage or `ctx.tool` is executing | `working` |
 | One branch waits for human input while another executes | `working`, with `needsAttention: true` |
+| No stage executes, and at least one waits with its session released for a result it will continue with | `working / waiting`; a pending human prompt beside it adds `needsAttention: true` |
 | Only human input can advance the workflow | `blocked / awaiting_input` |
 | An active failure requires intervention, or a budget stop requires approval | `blocked / manual_intervention` |
 | Paused with no execution draining | `idle / paused` |

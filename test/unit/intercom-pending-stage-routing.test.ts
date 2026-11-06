@@ -316,6 +316,42 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		dispose();
 	});
 
+	test("a send to a waiting stage queues for it, even though the stage has a session to reopen, and the roster lists it (#4309)", async () => {
+		const { store, emitted, request, dispose } = await harness();
+		const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		store.recordRunStart({
+			...run,
+			stages: [
+				{
+					...run.stages[0]!,
+					status: "waiting",
+					sessionId: "released-session",
+					wait: { kind: "tool", since: 1, toolCalls: [{ toolCallId: "call-1", toolName: "wait_for_ci" }] },
+				},
+			],
+		});
+		dispose.refresh();
+
+		const { payload, result } = await request("1", GROUP, "reviewer-id");
+
+		assert.equal(payload.handled, true);
+		assert.deepEqual(result, { outcome: "queued", position: 1 });
+		assert.deepEqual(
+			store.pendingStageMessagesFor(RUN_ID, "reviewer-id").map((entry) => entry.message.id),
+			["1"],
+		);
+		const roster = emitted.findLast(({ event }) => event === "atomic:workflow-pending-stage-route");
+		const stages = roster?.payload.stages as readonly {
+			readonly lifecycle: string;
+			readonly routeEligible: boolean;
+		}[];
+		assert.deepEqual(
+			stages.map(({ lifecycle, routeEligible }) => ({ lifecycle, routeEligible })),
+			[{ lifecycle: "pending", routeEligible: true }],
+		);
+		dispose();
+	});
+
 	test("a session-less stage the route roster advertises as reachable is exactly the one a direct send queues for", async () => {
 		const statuses: Record<StageStatus, true> = {
 			pending: true,
@@ -323,6 +359,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			awaiting_input: true,
 			paused: true,
 			blocked: true,
+			waiting: true,
 			completed: true,
 			failed: true,
 			skipped: true,

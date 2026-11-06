@@ -5,6 +5,7 @@ import {
 	taskPrevious,
 	taskWithSharedDefaults,
 } from "../../runs/foreground/executor-task-prompts.js";
+import { validateStepsReleaseWhenWaiting } from "../../shared/stage-wait.js";
 import type { WorkflowChainOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
@@ -18,6 +19,7 @@ export function createChainPrimitive(input: {
 		options: WorkflowChainOptions = {},
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
+		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
 		const results: WorkflowTaskResult[] = [];
 		for (let index = 0; index < steps.length; index += 1) {
 			input.runtime.exit.throwIfWorkflowExitSelected();

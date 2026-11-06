@@ -4,6 +4,7 @@ import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
 
+import { assertWaitingStageSessionsExist, type ResumeSessionStorage } from "../engine/run-resume-preflight.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
@@ -27,6 +28,7 @@ import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
+import { durableWaitingStages } from "./stage-primitive.js";
 import { requireStoreDurableBackend } from "./store-backend.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { DurableWorkflowHandle, ResumableWorkflowEntry } from "./types.js";
@@ -315,6 +317,12 @@ async function resumeDurableWorkflowClaimed(
 		};
 	}
 	deps.signal?.throwIfAborted();
+	// Before the claim writes anything: every stage the previous process left waiting must be able to reopen (#4309).
+	const unreopenable = await refuseUnreopenableWaitingStages(backend, resolved.workflowId, {
+		...deps.baseRunOpts,
+		...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
+	});
+	if (unreopenable !== undefined) return unreopenable;
 	const sourceFailure = {
 		error: handle.error,
 		exited: handle.exited,
@@ -541,6 +549,29 @@ async function resumeIntoFork(
 	return result.ok
 		? { ...result, message: `Forked workflow ${handle.workflowId} into the current directory. ${result.message}` }
 		: result;
+}
+
+/**
+ * The resume's preflight of its waiting stages, run before it claims the run: a session one of them cannot reopen
+ * fails the resume at startup, its message carrying the typed reason, with nothing written to the run's journal.
+ */
+async function refuseUnreopenableWaitingStages(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	storage: ResumeSessionStorage,
+): Promise<ResumeDurableResult | undefined> {
+	const waiting = durableWaitingStages(backend, workflowId);
+	if (waiting.length === 0) return undefined;
+	try {
+		await assertWaitingStageSessionsExist(waiting, workflowId, storage);
+		return undefined;
+	} catch (error) {
+		return {
+			ok: false,
+			reason: "startup_failed",
+			message: `Failed to resume durable workflow ${workflowId}: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
 }
 
 function foreignRunningResult(name: string, workflowId: string): ResumeDurableResult {

@@ -44,6 +44,9 @@ export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 			return "○";
 		case "awaiting_input":
 			return "？";
+		case "waiting":
+			// The same glyph as the graph header's waiting badge: a stage with its session released is not pending.
+			return "◷";
 		case "blocked":
 			return "↑";
 		case "skipped":

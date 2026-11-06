@@ -255,6 +255,7 @@ export type {
 import type { RunJournalOption } from "./durable/journal/resolution.js";
 import type * as AuthoringContract from "./shared/authoring-contract.js";
 import type { WorkflowForkedFrom } from "./shared/fork-lineage.js";
+import type { StageWake, StageWakeDelivery } from "./shared/stage-wake.js";
 import type {
 	AuthoredWorkflowSpec as SharedAuthoredWorkflowSpec,
 	WorkflowInputsFromSchemas,
@@ -355,6 +356,13 @@ export declare function run<
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
 export type {
+	ReleaseWhenWaiting,
+	StageLifecycleEvent,
+	StageWaitKind,
+	StageWaitSnapshot,
+	StageWaitToolCall,
+} from "./shared/authoring-contract-stage.js";
+export type {
 	PossibleStagePredictionErrorCode,
 	PossibleStagePredictionPhase,
 	StageDecisionAnswerErrorReason,
@@ -383,6 +391,57 @@ export {
 	rehydrateWorkflowGitRequiredError,
 	WorkflowGitRequiredError,
 } from "./shared/workflow-git-required-error.js";
+/** Milliseconds a stage waits on a tool call inline before it releases its session, unless configured otherwise. */
+export declare const DEFAULT_RELEASE_WHEN_WAITING_AFTER_MS: 60000;
+/** The largest `releaseWhenWaiting.afterMs`, 2³¹−1 ms (about 24.8 days): the longest delay a timer honours. */
+export declare const MAX_RELEASE_WHEN_WAITING_AFTER_MS: 2147483647;
+export type {
+	SerializedErrorCause,
+	SerializedStageWaitError,
+	StageRehydrationErrorCode,
+	StageReleasedErrorCode,
+	StageReleasedProperty,
+	StageWaitConfigSource,
+	StageWaitErrorCode,
+	StageWaitErrorFields,
+	StageWaitPhase,
+	StageWaitRecordPhase,
+	StageWakeErrorCode,
+	StageWakeRegistrationErrorCode,
+} from "./shared/stage-wait-errors.js";
+export {
+	deserializeStageWaitError,
+	findStageWaitError,
+	isStageRehydrationError,
+	isStageReleasedError,
+	isStageReleaseError,
+	isStageWaitConfigError,
+	isStageWaitError,
+	isStageWaitRecordError,
+	isStageWakeError,
+	StageRehydrationError,
+	StageReleasedError,
+	StageReleaseError,
+	StageWaitConfigError,
+	StageWaitError,
+	StageWaitRecordError,
+	StageWakeError,
+} from "./shared/stage-wait-errors.js";
+export type {
+	BuiltinStageWakeKind,
+	StageWake,
+	StageWakeDelivery,
+	StageWakeHandler,
+	StageWakeHandlerContext,
+	StageWakeKinds,
+} from "./shared/stage-wake.js";
+export { registerStageWakeKind } from "./shared/stage-wake.js";
+export type { SerializedTypedError } from "./shared/typed-failure-detail.js";
+/**
+ * Send a message to a stage of a live run in this process. Throws `StageWakeError` (`unknown-wake-kind`) when no
+ * module registered the message's kind; otherwise returns what became of it.
+ */
+export declare function deliverStageWake(runId: string, stageId: string, wake: StageWake): StageWakeDelivery;
 export type {
 	ProcessCleanupResource,
 	SerializedWorkflowInfrastructureError,

@@ -22,6 +22,7 @@ export type StageStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
+	| "waiting"
 	| "completed"
 	| "failed"
 	| "skipped";
@@ -430,6 +431,11 @@ export interface StageSnapshot {
 	retryAfterMs?: number;
 	/** Original unsanitized error text when different from `error`. */
 	failureMessage?: string;
+	/**
+	 * JSON form of the typed error (`StageWaitError` or `ToolDetachmentError` family) this stage failed on, so it
+	 * crosses a worker or child-workflow boundary as that error rather than as `error` text (#4309).
+	 */
+	failureDetail?: import("./typed-failure-detail.js").SerializedTypedError;
 	/** Reason for stages skipped by fail-fast/cascade handling. */
 	skippedReason?: string;
 	/** Stable continuation replay identity, separate from display name. */
@@ -451,6 +457,20 @@ export interface StageSnapshot {
 	/** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
 	workflowChild?: WorkflowChildReplaySnapshot;
 	readonly toolEvents: ToolEvent[];
+	/** Present while the stage is `waiting` with its session released: what it waits on. */
+	wait?: import("./authoring-contract-stage.js").StageWaitSnapshot;
+	/**
+	 * The results the stage's detached calls delivered, recorded with its wait before its session reopens and kept
+	 * until the reopened session has them in its transcript. A resume continues the stage's turn from them instead of
+	 * running the calls again. Not shown in summaries.
+	 */
+	waitResults?: readonly import("./stage-wait.js").StageWaitToolResult[];
+	/**
+	 * Set when a durable record of the stage's wait could not be written after every attempt: the `StageWaitRecordError`
+	 * (`wait-record-unavailable`) in JSON form. The stage carried on; a resume after a restart may start it from an
+	 * earlier record.
+	 */
+	waitRecordFailure?: import("./stage-wait-errors.js").SerializedStageWaitError;
 	/** True while an in-stage ask_user_question tool is waiting on the user. */
 	awaitingInputSince?: number;
 	/** Pending human-in-the-loop prompt owned by this workflow stage/node. */
@@ -479,6 +499,11 @@ export interface StageSnapshot {
 	sessionId?: string;
 	/** Optional transcript location for display, not a session identity. */
 	sessionFile?: string;
+	/**
+	 * `"stage"` when the stage keeps its session in the store its own `sessionStore` option supplied rather than the
+	 * run's: a resume checks that session when the workflow calls the stage again, with the store it passes.
+	 */
+	readonly sessionStorage?: "stage";
 	/** Live startup phase/age. Historical snapshots do not prove an active owner. */
 	startup?: import("./stage-startup.js").StageStartupSnapshot;
 	/** Effective model id selected for this stage after fallback resolution. */

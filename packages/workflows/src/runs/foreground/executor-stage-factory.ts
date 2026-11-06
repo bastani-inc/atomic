@@ -1,19 +1,31 @@
 import { type QuestionParams, runCallback, runSynchronousCallback } from "@bastani/atomic";
+import type { DurableReleasedStageResume } from "../../durable/types.js";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
 import { setStageWorkingDirectory } from "../../engine/stage-workspace.js";
+import type { StageLifecycleEvent, StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
 import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
 import { workflowPendingStageRouteReady } from "../../shared/pending-stage-route-readiness.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { provideStageQuestion } from "../../shared/stage-question-form.js";
 import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
+import {
+	parseReleaseWhenWaiting,
+	recordStageWaitToolResults,
+	resolveStageReleasePolicy,
+	STAGE_WAIT_RETRY_ATTEMPTS,
+	STAGE_WAIT_RETRY_BUDGET_MS,
+	stageWaitRetryDelayMs,
+} from "../../shared/stage-wait.js";
+import { StageWaitRecordError, type StageWaitRecordPhase } from "../../shared/stage-wait-errors.js";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
-import { elapsedStageMs, stageTimingFields } from "../../shared/timing.js";
+import { elapsedStageMs, rebasedStageStartedAt, stageTimingFields } from "../../shared/timing.js";
 import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
+import { sleepOrAbort } from "../shared/retry.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
 import {
@@ -39,15 +51,20 @@ import type {
 } from "./executor-stage-types.js";
 import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
+import { StageAbortListeners } from "./stage-abort-listeners.js";
 import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
+import { type IdleStage, stageIdleReleaser } from "./stage-idle-release.js";
 import {
 	createStageContext as createInnerStageContext,
 	type InternalStageContext,
 	type StageAdapters,
 } from "./stage-runner.js";
+import { readReplayedStageMessages } from "./stage-runner-options.js";
 import { stageError } from "./stage-runner-session.js";
+import type { StageWaitHooks } from "./stage-runner-types.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
+import { type StageWakeDispatcher, stageWakeKey } from "./stage-wake-dispatcher.js";
 
 export function agentStageReplayKey(name: string, options: StageOptions | undefined): string {
 	return options?.durableReplayKey ?? `stage:${name}`;
@@ -75,15 +92,24 @@ export function createWorkflowStageFactory(input: {
 	readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
 	readonly takeTerminalArtifacts?: (replayKey: string) => readonly WorkflowArtifact[] | undefined;
 	readonly assertLiveWorkAllowed?: () => void;
+	readonly wakeDispatcher: StageWakeDispatcher;
 }): (
 	name: string,
 	options?: StageOptions,
 	stageFailFastScope?: ParallelFailFastScope,
 	prepareLiveOptions?: () => StageOptions | undefined,
 ) => StageContextWithMeta {
+	const runReleasePolicy = parseReleaseWhenWaiting(input.opts.releaseWhenWaiting);
+	const wakeDispatcher = input.wakeDispatcher;
+	let residentReported = false;
+	// One idle scan for the whole run: no stage owns a timer.
+	const idleReleaser = stageIdleReleaser(wakeDispatcher, (stageId, error) => {
+		console.warn(`atomic-workflows: run ${input.runId} could not release idle stage ${stageId}`, error);
+	});
 	return (name, options, stageFailFastScope, prepareLiveOptions): StageContextWithMeta => {
 		input.exit.throwIfWorkflowExitSelected();
 		options = stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults);
+		const releasePolicy = resolveStageReleasePolicy(options?.releaseWhenWaiting, runReleasePolicy, name);
 		const stageId = options?.durableStageId ?? crypto.randomUUID();
 		const provisionalParentIds = input.tracker.onSpawn(stageId, name);
 		const scopedParentIds =
@@ -145,6 +171,9 @@ export function createWorkflowStageFactory(input: {
 			parentIds: Object.freeze(parentIds),
 			toolEvents: [],
 			pendingStageDeliveryAvailable,
+			...(options?.sessionStore === undefined && options?.sessionManager === undefined
+				? {}
+				: { sessionStorage: "stage" as const }),
 			...(shouldReplay
 				? {
 						...stageTimingFields(replaySource),
@@ -177,8 +206,25 @@ export function createWorkflowStageFactory(input: {
 				registerWorkflowExitCleanup: input.exit.registerWorkflowExitCleanup,
 				workflowExitSkippedReason: input.exit.workflowExitSkippedReason,
 				throwIfWorkflowExitSelected: input.exit.throwIfWorkflowExitSelected,
+				readStoredMessages: (sessionId) =>
+					readReplayedStageMessages(
+						options ?? {},
+						{
+							adapters: input.adapters,
+							defaultSessionDir: input.opts.defaultSessionDir,
+							defaultCwd: input.workflowInvocationCwd,
+						},
+						sessionId,
+					),
 			}) as StageContextWithMeta;
 		}
+		// A resumed stage keeps the results its previous process recorded in every record it writes, until the turn that
+		// consumes them is saved: a process that stops before then leaves them for the next resume (#4309).
+		const keptResults =
+			options?.durableReplayKey === undefined
+				? undefined
+				: wakeDispatcher.resultsKeptForResume(options.durableReplayKey);
+		if (keptResults !== undefined) stageSnapshot.waitResults = recordStageWaitToolResults(keptResults);
 
 		const applyModelFallbackMeta = (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>): void => {
 			if (meta.model !== undefined) stageSnapshot.model = meta.model;
@@ -195,6 +241,181 @@ export function createWorkflowStageFactory(input: {
 		};
 
 		let runtime!: LiveStageRuntime;
+		const emitLifecycleEvent = (event: StageLifecycleEvent): void => {
+			const listener = input.opts.onStageLifecycleEvent;
+			if (listener === undefined) return;
+			const reportFailure = (error: Error | string | object): void => {
+				console.error(`atomic-workflows: onStageLifecycleEvent listener failed on ${event.type}`, error);
+			};
+			try {
+				void Promise.resolve(listener(input.runId, event)).catch(reportFailure);
+			} catch (error) {
+				reportFailure(error as Error);
+			}
+		};
+		let statusBeforeRelease: StageSnapshot["status"] | undefined;
+		/** The wait the stage shows, with the calls it had finished when it released. */
+		let shownWait: StageWaitSnapshot | undefined;
+		const showWait = (wait: StageWaitSnapshot): void => {
+			shownWait = wait;
+			stageSnapshot.wait = wait;
+			// A stage waiting on a human keeps showing that it awaits input; its `wait` marks the released session.
+			if (wait.kind === "prompt") return;
+			// A stage released between turns goes back to how it was when it is rehydrated, or when the workflow ends.
+			statusBeforeRelease =
+				wait.kind !== "tool" || stageSnapshot.status === "completed" || stageSnapshot.status === "failed"
+					? stageSnapshot.status
+					: undefined;
+			if (stageSnapshot.status !== "paused") stageSnapshot.status = "waiting";
+			if (wait.kind !== "tool") idleReleaser.trackReleased(stageId, settleReleased);
+		};
+		const settleReleased = (): void => {
+			shownWait = undefined;
+			delete stageSnapshot.wait;
+			if (stageSnapshot.status === "waiting") stageSnapshot.status = statusBeforeRelease ?? "completed";
+			input.activeStore.recordStageStart(input.runId, stageSnapshot);
+		};
+		const wakeKey = stageWakeKey(input.runId, stageId);
+		wakeDispatcher.open({ runId: input.runId, stageId, wakeKey });
+		const giveBackSlot = (): void => {
+			if (state.limiterSlot !== "held") return;
+			state.limiterSlot = "released";
+			input.limiter.release();
+		};
+		let waitRecordFailureReported = false;
+		/** A wait record that failed every attempt: the stage carries on, and shows why its record may be behind. */
+		const degradeWaitRecord = (failure: StageWaitRecordError): void => {
+			stageSnapshot.waitRecordFailure = failure.toJSON();
+			input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			if (waitRecordFailureReported) return;
+			waitRecordFailureReported = true;
+			console.warn(`atomic-workflows: run ${input.runId}: ${failure.message}`);
+		};
+		/**
+		 * Write one of the stage's wait records durably, tried again as a reopening is. A record that still fails does
+		 * not stop the stage; only the run's abort does, with its reason.
+		 */
+		const recordWait = async (phase: StageWaitRecordPhase): Promise<void> => {
+			const startedAt = Date.now();
+			for (let attempt = 1; ; attempt++) {
+				try {
+					await runtime.captureStageSessionMeta({ forceDurable: true });
+					return;
+				} catch (error) {
+					if (input.signal.aborted) throw input.signal.reason;
+					if (attempt >= STAGE_WAIT_RETRY_ATTEMPTS) {
+						degradeWaitRecord(
+							new StageWaitRecordError(
+								{
+									runId: input.runId,
+									stageId,
+									stageName: name,
+									...(stageSnapshot.sessionId === undefined ? {} : { sessionId: stageSnapshot.sessionId }),
+									phase,
+									attempts: attempt,
+									elapsedMs: Date.now() - startedAt,
+									timeoutMs: STAGE_WAIT_RETRY_BUDGET_MS,
+								},
+								{ cause: error },
+							),
+						);
+						return;
+					}
+				}
+				await sleepOrAbort(stageWaitRetryDelayMs(attempt), input.signal);
+			}
+		};
+		const waiting: StageWaitHooks = {
+			policy: releasePolicy,
+			dispatcher: wakeDispatcher,
+			wakeKey,
+			async enter(wait) {
+				idleReleaser.unwatch(stageId);
+				stageSessionHeartbeat.stop();
+				runtime.abortListeners.detach();
+				giveBackSlot();
+				const recorded: StageWaitSnapshot = { ...wait, promptsCompleted: state.promptsCompleted };
+				showWait(recorded);
+				input.activeStore.recordStageStart(input.runId, stageSnapshot);
+				await recordWait("wait-start");
+				emitLifecycleEvent({ type: "stage_waiting", stageId, stageName: name, wait: recorded });
+			},
+			async recordResults(_wait, results) {
+				stageSnapshot.waitResults = recordStageWaitToolResults(results);
+				await recordWait("wait-results");
+			},
+			resultsInTranscript() {
+				delete stageSnapshot.waitResults;
+			},
+			async leave() {
+				idleReleaser.forgetReleased(stageId);
+				if (state.limiterSlot === "released") {
+					await input.limiter.acquire(input.signal);
+					state.limiterSlot = "held";
+				}
+				runtime.abortListeners.attach();
+				delete stageSnapshot.wait;
+				if (stageSnapshot.status === "waiting") stageSnapshot.status = statusBeforeRelease ?? "running";
+				statusBeforeRelease = undefined;
+				input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			},
+			async reopenFailed(wait) {
+				runtime.abortListeners.detach();
+				giveBackSlot();
+				showWait(shownWait ?? wait);
+				input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			},
+			resident(reason) {
+				if (residentReported) return;
+				residentReported = true;
+				console.warn(`atomic-workflows: run ${input.runId} keeps waiting stages resident: ${reason.message}`);
+			},
+			async rehydrated(wait) {
+				const ended = shownWait ?? wait;
+				shownWait = undefined;
+				if (stageSnapshot.status === "running" || (wait.kind === "prompt" && state.callsInFlight > 0))
+					stageSessionHeartbeat.start();
+				// The record that ends the durable wait lands before the stage goes on, so a resume from any later point
+				// never treats the stage as still waiting.
+				await recordWait("wait-end");
+				watchIdle();
+				emitLifecycleEvent({
+					type: "stage_rehydrated",
+					stageId,
+					stageName: name,
+					wait: ended,
+					waitedMs: Math.max(0, Date.now() - ended.since),
+				});
+			},
+		};
+		/** The run's idle scan releases this stage once the workflow has held it unused for its threshold. */
+		const idleStage: IdleStage | undefined =
+			releasePolicy === undefined
+				? undefined
+				: {
+						afterMs: releasePolicy.afterMs,
+						idleSince: () =>
+							state.callsInFlight > 0 || handle.releaseGate?.idle() !== true
+								? undefined
+								: innerCtx.__idleSince(),
+						release: async () => {
+							if ((await innerCtx.__releaseIdle()) !== true) watchIdle();
+						},
+					};
+		const watchIdle = (): void => {
+			if (
+				idleStage === undefined ||
+				state.liveHandleReleased ||
+				state.contextUnreachable ||
+				innerCtx.__isReleased() === true
+			)
+				return;
+			idleReleaser.watch(stageId, idleStage);
+		};
+		const stopIdleWatch = (): void => {
+			state.contextUnreachable = true;
+			idleReleaser.unwatch(stageId);
+		};
 		const stageSessionHeartbeat = createStageSessionHeartbeat(async () => {
 			try {
 				await runtime.captureStageSessionMeta({ awaitDurable: true });
@@ -226,6 +447,7 @@ export function createWorkflowStageFactory(input: {
 			executionMode: input.opts.executionMode,
 			defaultSessionDir: input.opts.defaultSessionDir,
 			defaultCwd: input.workflowInvocationCwd,
+			waiting,
 			onStartupChange(startup) {
 				// Never add a retired stage to a replacement run with the same identity.
 				const current = input.activeStore.run(input.runId);
@@ -238,6 +460,7 @@ export function createWorkflowStageFactory(input: {
 				if (stageSnapshot.status === "running") input.activeStore.recordStageStart(input.runId, stageSnapshot);
 			},
 			async onSessionReady() {
+				watchIdle();
 				if (stageSnapshot.status !== "running") return;
 				await runtime.captureStageSessionMeta({ awaitDurable: true });
 				runtime.startStageSessionHeartbeat();
@@ -265,6 +488,9 @@ export function createWorkflowStageFactory(input: {
 			skippedForParallelFailFast: false,
 			stageControlDropped: false,
 			contextUnreachable: false,
+			limiterSlot: "none",
+			promptsCompleted: 0,
+			callsInFlight: 0,
 		};
 		const activeAskUserQuestionCalls = new Set<string>();
 		const hasActiveAskUserQuestion = (): boolean =>
@@ -313,6 +539,7 @@ export function createWorkflowStageFactory(input: {
 		);
 
 		const disposeInnerContext = async (): Promise<void> => {
+			idleReleaser.unwatch(stageId);
 			unsubscribeAskUserQuestionWatcher();
 			unsubscribeQueuedUserMessageWatcher();
 			activeAskUserQuestionCalls.clear();
@@ -320,8 +547,12 @@ export function createWorkflowStageFactory(input: {
 			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 			input.stageUiBroker.clearStagePrompt(input.runId, stageId);
 			const session = innerCtx.__agentSession();
-			await innerCtx.__dispose();
-			// Disposal settles a background task after every stage listener is gone, so record where it ended.
+			try {
+				await innerCtx.__dispose();
+			} finally {
+				// The stage's mailbox lives as long as the stage.
+				wakeDispatcher.close(wakeKey);
+			}
 			recordStageSessionCompaction(input.activeStore, input.runId, stageId, session);
 		};
 
@@ -461,6 +692,81 @@ export function createWorkflowStageFactory(input: {
 		const parallelFailFastError = (): unknown =>
 			stageFailFastScope?.firstFailure ?? new Error("atomic-workflows: skipped after parallel fail-fast");
 
+		/** The calls a durable resume answers from the run's record, set only for a stage resumed released. */
+		let replay: { remaining: number; readonly recorded: DurableReleasedStageResume["recorded"] } | undefined;
+		/** Complete the stage's replayed first call as its previous process did, from the recorded result. */
+		const completeFromRecord = async (
+			recorded: DurableReleasedStageResume["recorded"],
+		): Promise<DurableReleasedStageResume["recorded"]> => {
+			stageSnapshot.startedAt ??= rebasedStageStartedAt(options?.durableAccumulatedDurationMs, Date.now());
+			stageSnapshot.status = "completed";
+			const text = recorded?.result ?? (typeof recorded?.output === "string" ? recorded.output : undefined);
+			if (text !== undefined) stageSnapshot.result = text;
+			if (recorded?.structured !== undefined) stageSnapshot.structured = recorded.structured;
+			// The wait stays on the record written now, so a second restart still finds the stage waiting.
+			await appendStageStartOnce();
+			await finalizeStageSnapshot();
+			state.sessionCheckpointed = true;
+			await dropStageControlForCompletion();
+			if (shownWait !== undefined) {
+				statusBeforeRelease = "completed";
+				stageSnapshot.status = "waiting";
+				input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			}
+			return recorded;
+		};
+		const replayRecordedCall = (): Promise<DurableReleasedStageResume["recorded"]> | undefined => {
+			const plan = replay;
+			if (plan === undefined) return undefined;
+			plan.remaining -= 1;
+			if (plan.remaining <= 0) replay = undefined;
+			state.promptsCompleted += 1;
+			return state.stageFinalized ? Promise.resolve(undefined) : completeFromRecord(plan.recorded);
+		};
+		const resumeReleased = (resume: DurableReleasedStageResume): void => {
+			if (innerCtx.__isReleased() === true || state.callsInFlight > 0 || state.stageFinalized) return;
+			innerCtx.__startReleased(resume.wait, resume.sessionId);
+			if (innerCtx.__isReleased() !== true) return;
+			if (resume.promptsCompleted > 0) replay = { remaining: resume.promptsCompleted, recorded: resume.recorded };
+			stageSnapshot.sessionId = resume.sessionId;
+			runtime.abortListeners.detach();
+			showWait(resume.wait);
+			input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			emitLifecycleEvent({ type: "stage_waiting", stageId, stageName: name, wait: resume.wait });
+		};
+		/**
+		 * Wait for the answer to the stage's readiness question. The run's idle scan releases the session once the
+		 * question has waited for the stage's threshold; the session is reopened when the answer arrives.
+		 */
+		const awaitPromptAnswer = async <T>(answer: Promise<T>): Promise<T> => {
+			if (releasePolicy === undefined) return answer;
+			const askedAt = Date.now();
+			/** Settles with whether the stage gave its session up for the question, however its release ended. */
+			const gate: { released?: Promise<boolean> } = {};
+			idleReleaser.watch(stageId, {
+				afterMs: releasePolicy.afterMs,
+				idleSince: () => askedAt,
+				release: () => {
+					const releasing = innerCtx.__releaseForPrompt();
+					// A release that failed is reported once, by the idle scan this returns to; what counts is whether
+					// the session went before it failed.
+					gate.released = releasing.then(
+						(released) => released,
+						() => innerCtx.__isReleased() === true,
+					);
+					return releasing.then(() => undefined);
+				},
+			});
+			try {
+				return await answer;
+			} finally {
+				idleReleaser.unwatch(stageId);
+				const released = gate.released !== undefined && (await gate.released);
+				if (released && !input.signal.aborted) await innerCtx.rehydrate();
+				else watchIdle();
+			}
+		};
+
 		runtime = {
 			runId: input.runId,
 			stageId,
@@ -479,6 +785,7 @@ export function createWorkflowStageFactory(input: {
 			mcpScope: input.createMcpScope(stageId, options),
 			...(stageFailFastScope !== undefined ? { stageFailFastScope } : {}),
 			state,
+			abortListeners: new StageAbortListeners(input.signal),
 			unregisterStageHandle: () => {},
 			dropStageControlHandle: () => {},
 			unregisterWorkflowExitCleanup: () => {},
@@ -494,6 +801,11 @@ export function createWorkflowStageFactory(input: {
 			markSkippedForParallelFailFast,
 			parallelFailFastError,
 			throwIfStageMutationBlocked,
+			replayRecordedCall,
+			resumeReleased,
+			awaitPromptAnswer,
+			watchIdle,
+			stopIdleWatch,
 		};
 
 		const handle = createStageControlHandle(runtime);

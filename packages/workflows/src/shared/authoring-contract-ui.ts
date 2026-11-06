@@ -5,10 +5,13 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import type { TSchema } from "typebox";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import type {
+	ReleaseWhenWaiting,
 	RunStatus,
 	StageAdapters,
 	StageContext,
+	StageLifecycleEvent,
 	StageOptions,
+	StageWaitSnapshot,
 	WorkflowAction,
 	WorkflowActor,
 	WorkflowArtifact,
@@ -350,6 +353,13 @@ export interface RunOpts {
 	 * workflow stages, which report their child run id. Listener exceptions and rejections are ignored.
 	 */
 	readonly onStageSessionEvent?: (runId: string, stageId: string, event: AgentSessionEvent) => void;
+	/**
+	 * Receives `stage_waiting` when a stage releases its session to wait, and `stage_rehydrated` when it reopens.
+	 * Listener exceptions and rejections are ignored.
+	 */
+	readonly onStageLifecycleEvent?: (runId: string, event: StageLifecycleEvent) => void;
+	/** Default `releaseWhenWaiting` for every stage of the run. Defaults to `true`. */
+	readonly releaseWhenWaiting?: ReleaseWhenWaiting;
 	readonly onRunEnd?: (
 		runId: string,
 		status: RunStatus,
@@ -405,13 +415,17 @@ export interface StageWorktreeSnapshot extends WorkflowSerializableObject {
 	readonly warnings: readonly string[];
 }
 
-export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked";
+export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked" | "waiting";
 
 export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly id: string;
 	readonly name: string;
 	readonly status: StageStatus;
 	readonly snapshot?: StageWorktreeSnapshot;
+	/** Present while the stage is `waiting`: what it waits on. Its session is released meanwhile. */
+	readonly wait?: StageWaitSnapshot;
+	/** Set when a record of the stage's wait could not be saved after retries; the stage carried on without it. */
+	readonly waitRecordFailure?: import("./stage-wait-errors.js").SerializedStageWaitError;
 	/** Parent stage ids. Do not cache this array across store updates; the runtime may replace it before a stage starts. */
 	readonly parentIds: readonly string[];
 	/** Shared admission order with tool nodes in this run. */

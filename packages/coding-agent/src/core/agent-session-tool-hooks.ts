@@ -1,7 +1,14 @@
 import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
-import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
+import type { ToolCall } from "@bastani/pi-ai/compat";
+import type {
+	AfterToolCallResult,
+	AgentLoopTurnUpdate,
+	AgentToolResult,
+	PrepareNextTurnContext,
+} from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import { committedContextMessages } from "./agent-session-background-compaction.ts";
+import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
@@ -9,7 +16,18 @@ import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
+import { getReleasedStageBlobDir } from "./tools/tool-output-blobs.ts";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
+
+/**
+ * Where a released stage's oversized result is spilled when its session is kept in a persistent store: a per-session
+ * directory of the agent directory's blobs, which outlives the sweeper and is removed with the session. Every other
+ * result uses the location the sweeper reaps.
+ */
+function releasedStageBlobDir(session: AgentSession): string | undefined {
+	if (session._storageAgentDir === undefined || !session.sessionManager.isPersisted()) return undefined;
+	return getReleasedStageBlobDir(session._storageAgentDir, session.sessionManager.getSessionId());
+}
 
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args }) => {
@@ -51,69 +69,98 @@ export function _installAgentToolHooks(this: AgentSession): void {
 	};
 
 	this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
-		const runner = this._extensionRunner;
-		const hookResult = runner.hasHandlers("tool_result")
-			? await runner.emitToolResult(
-					{
-						type: "tool_result",
-						toolName: toolCall.name,
-						toolCallId: toolCall.id,
-						parentToolCallId: getParentToolCallId(),
-						input: args as Record<string, unknown>,
-						content: result.content,
-						details: result.details,
-						structuredContent: result.structuredContent,
-						usage: result.usage,
-						isError,
-					},
-					true,
-				)
-			: undefined;
-
-		const hookContent = hookResult?.content ?? result.content;
-		// Run after extension hooks so extension-injected images enter history at provider-safe sizes.
-		const resizeOptions = this.model?.inputLimits?.images?.resize;
-		const normalizedContent = await normalizeToolResultImages(hookContent, {
-			autoResizeImages: this.settingsManager.getImageAutoResize(),
-			...(resizeOptions ? { resizeOptions } : {}),
-		});
-		const resultReplacement =
-			hookResult || normalizedContent !== hookContent
-				? {
-						content: normalizedContent,
-						details: hookResult?.details,
-						isError: hookResult?.isError ?? isError,
-						structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
-						usage: hookResult?.usage ?? result.usage,
-					}
-				: undefined;
-		const finalResult = {
-			content: normalizedContent,
-			// Preserve original details when an extension hook rewrites only content;
-			// the redirect check only replaces model-visible content blocks.
-			details: hookResult?.details ?? result.details,
-			structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
-			usage: hookResult?.usage ?? result.usage,
-		};
-		const finalIsError = hookResult?.isError ?? isError;
-		// Nested output is script-visible, not model-visible. The orchestrating tool applies its final output cap.
-		if (getParentToolCallId()) return resultReplacement;
-		const redirectReplacement = await redirectOversizedToolResult({
-			toolName: toolCall.name,
-			toolCallId: toolCall.id,
-			result: finalResult,
-			isError: finalIsError,
-			sessionId: this.sessionManager.getSessionId(),
-			sessionDir: this.sessionManager.getSessionDir() || undefined,
-			maxResultSizeChars: this.getToolDefinition(toolCall.name)?.maxResultSizeChars,
-		});
-
+		// A detached call's placeholder is no result: resumeDetachedTurn finalizes its real result when it arrives.
+		if (isDetachedToolCall(this, toolCall.id)) return undefined;
+		const parentToolCallId = getParentToolCallId();
+		const replacement = await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId });
+		if (parentToolCallId) return replacement;
 		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
 		else this._terminatingToolCallIds.delete(toolCall.id);
-		return redirectReplacement
-			? { ...redirectReplacement, structuredContent: finalResult.structuredContent, usage: finalResult.usage }
-			: resultReplacement;
+		return replacement;
 	};
+}
+
+/** A finished tool call's result as its tool reported it, before the session finalizes it for history. */
+export interface ToolResultToFinalize {
+	readonly toolCall: Pick<ToolCall, "id" | "name">;
+	readonly args: unknown;
+	readonly result: AgentToolResult<unknown>;
+	readonly isError: boolean;
+	/** The tool call this one is nested in, when a tool called it; its output then stays uncapped. */
+	readonly parentToolCallId: string | undefined;
+	/** The result arrived after the stage was released, so its spill is kept as long as the session. */
+	readonly releasedStage?: boolean;
+}
+
+/**
+ * What a tool result becomes before it enters history, whether its call ran inline or detached: extension
+ * `tool_result` handlers, image normalization, then the oversized-output spill. Returns the replacement for the
+ * result, or `undefined` when it enters history as reported.
+ */
+export async function finalizeToolResult(
+	session: AgentSession,
+	{ toolCall, args, result, isError, parentToolCallId, releasedStage }: ToolResultToFinalize,
+): Promise<AfterToolCallResult | undefined> {
+	const runner = session._extensionRunner;
+	const hookResult = runner.hasHandlers("tool_result")
+		? await runner.emitToolResult(
+				{
+					type: "tool_result",
+					toolName: toolCall.name,
+					toolCallId: toolCall.id,
+					parentToolCallId,
+					input: args as Record<string, unknown>,
+					content: result.content,
+					details: result.details,
+					structuredContent: result.structuredContent,
+					usage: result.usage,
+					isError,
+				},
+				true,
+			)
+		: undefined;
+
+	const hookContent = hookResult?.content ?? result.content;
+	// Run after extension hooks so extension-injected images enter history at provider-safe sizes.
+	const resizeOptions = session.model?.inputLimits?.images?.resize;
+	const normalizedContent = await normalizeToolResultImages(hookContent, {
+		autoResizeImages: session.settingsManager.getImageAutoResize(),
+		...(resizeOptions ? { resizeOptions } : {}),
+	});
+	const resultReplacement =
+		hookResult || normalizedContent !== hookContent
+			? {
+					content: normalizedContent,
+					details: hookResult?.details,
+					isError: hookResult?.isError ?? isError,
+					structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
+					usage: hookResult?.usage ?? result.usage,
+				}
+			: undefined;
+	const finalResult = {
+		content: normalizedContent,
+		// Preserve original details when an extension hook rewrites only content;
+		// the redirect check only replaces model-visible content blocks.
+		details: hookResult?.details ?? result.details,
+		structuredContent: hookResult ? hookResult.structuredContent : result.structuredContent,
+		usage: hookResult?.usage ?? result.usage,
+	};
+	const finalIsError = hookResult?.isError ?? isError;
+	// Nested output is script-visible, not model-visible. The orchestrating tool applies its final output cap.
+	if (parentToolCallId) return resultReplacement;
+	const redirectReplacement = await redirectOversizedToolResult({
+		toolName: toolCall.name,
+		toolCallId: toolCall.id,
+		result: finalResult,
+		isError: finalIsError,
+		sessionId: session.sessionManager.getSessionId(),
+		sessionDir: session.sessionManager.getSessionDir() || undefined,
+		blobDir: releasedStage === true ? releasedStageBlobDir(session) : undefined,
+		maxResultSizeChars: session.getToolDefinition(toolCall.name)?.maxResultSizeChars,
+	});
+	return redirectReplacement
+		? { ...redirectReplacement, structuredContent: finalResult.structuredContent, usage: finalResult.usage }
+		: resultReplacement;
 }
 
 /**
@@ -138,12 +185,14 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		const terminatingBatch =
 			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
 		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
+		// A turn waiting on a detached call ends the run: nothing may continue past a call that has no result yet.
+		const detachedTurn = toolCallIds.some((id) => isDetachedToolCall(this, id));
 
 		const previousDecision = (await previousFinishTurn?.(turn, signal)) ?? undefined;
-		this._stopAfterTurnBlockedContinuation = previousDecision?.action === "end";
-		await settleFallbackAfterTurn(this, turn, terminatingBatch);
+		this._stopAfterTurnBlockedContinuation = previousDecision?.action === "end" || detachedTurn;
+		await settleFallbackAfterTurn(this, turn, terminatingBatch || detachedTurn);
 		if (this._subagentMessageAdmission) await this._subagentMessageAdmission.waitForPendingDeliveries();
-		return previousDecision;
+		return detachedTurn ? { action: "end" } : previousDecision;
 	};
 
 	const previousTransformContext = this.agent.transformContext;

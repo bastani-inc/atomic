@@ -1,15 +1,20 @@
-import { isStaleExtensionContextError } from "@bastani/atomic";
+import { isStaleExtensionContextError, isToolDetachmentError } from "@bastani/atomic";
 
 const MAX_CAUSE_DEPTH = 8;
 
 function reportsClosedSession(error: Error): boolean {
-	return ("code" in error && error.code === "SessionClosed") || isStaleExtensionContextError(error);
+	return (
+		("code" in error && error.code === "SessionClosed") ||
+		(isToolDetachmentError(error) && error.code === "session-closed") ||
+		isStaleExtensionContextError(error)
+	);
 }
 
 /**
  * True when an error, or anything in its cause chain, reports that the host
- * session that owns the run was closed (`SessionClosed`, or an extension
- * context that went stale on disposal). Depth-bounded so a self-referential
+ * session that owns the run was closed (`SessionClosed`, a `ToolDetachmentError`
+ * with code `session-closed`, or an extension context that went stale on
+ * disposal). Depth-bounded so a self-referential
  * cause cannot spin, and every property read is guarded so a throwing accessor
  * on a foreign error never escapes into run finalization.
  */

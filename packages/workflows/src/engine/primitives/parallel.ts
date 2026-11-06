@@ -10,6 +10,7 @@ import {
 } from "../../runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope, ParallelFailFastStage } from "../../runs/foreground/executor-types.js";
 import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
+import { validateStepsReleaseWhenWaiting } from "../../shared/stage-wait.js";
 import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
@@ -24,6 +25,7 @@ export function createParallelPrimitive(input: {
 		options: WorkflowParallelOptions = {},
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
+		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
 		// Normalize both authored and agent-serialized sentinels before deciding
 		// whether this invocation needs one shared auto-group UUID.
 		const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>

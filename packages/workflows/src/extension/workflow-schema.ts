@@ -102,6 +102,7 @@ export const WorkflowParametersSchema = Type.Object(
 					Type.Literal("awaiting_input"),
 					Type.Literal("paused"),
 					Type.Literal("blocked"),
+					Type.Literal("waiting"),
 					Type.Literal("completed"),
 					Type.Literal("failed"),
 					Type.Literal("skipped"),

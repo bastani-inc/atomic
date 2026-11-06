@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -624,6 +624,122 @@ describe("AgentSession actionable boundaries", () => {
 			assert.deepEqual(saved.unsavedRoles(), ["assistant"]);
 			assert.equal(executed, 0);
 			assert.equal(saved.harness.faux.state.callCount, 1);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
+	/** The store refuses the next assistant message once, as a busy shared database does, then accepts writes again. */
+	function refuseNextAssistantMessageOnce(manager: SessionManager): void {
+		const append = manager.appendMessage.bind(manager);
+		let refused = false;
+		manager.appendMessage = async (message) => {
+			if (!refused && message.role === "assistant") {
+				refused = true;
+				throw new Error("SQLITE_BUSY: database is locked");
+			}
+			return append(message);
+		};
+	}
+
+	const savedRoles = (manager: SessionManager): string[] =>
+		manager
+			.buildSessionProjection()
+			.messages.filter((message) => message.role !== "system")
+			.map((message) => message.role);
+
+	it("does not save the result of a call whose message could not be saved, so no result comes before its call (#4309)", async () => {
+		let executed = 0;
+		const saved = await createSavedSession({
+			tools: [
+				noopTool(async () => {
+					executed++;
+				}),
+			],
+		});
+		try {
+			refuseNextAssistantMessageOnce(saved.harness.sessionManager);
+			saved.harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await settlesWithin(saved.harness.session.prompt("start"));
+
+			assert.equal(executed, 0);
+			assert.deepEqual(savedRoles(saved.harness.sessionManager), ["user"]);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
+	it("saves none of the blocked results of a turn with several calls and some text when its message could not be saved (#4309)", async () => {
+		const saved = await createSavedSession({ tools: [noopTool()] });
+		try {
+			refuseNextAssistantMessageOnce(saved.harness.sessionManager);
+			saved.harness.setResponses([
+				fauxAssistantMessage(
+					[
+						fauxText("running both checks"),
+						fauxToolCall("noop", {}, { id: "a" }),
+						fauxToolCall("noop", {}, { id: "b" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await settlesWithin(saved.harness.session.prompt("start"));
+
+			assert.deepEqual(savedRoles(saved.harness.sessionManager), ["user"]);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
+	it("saves the results of a call whose message was saved, even after another message of the session could not be (#4309)", async () => {
+		const saved = await createSavedSession({ tools: [noopTool()] });
+		try {
+			refuseNextAssistantMessageOnce(saved.harness.sessionManager);
+			saved.harness.setResponses([
+				fauxAssistantMessage("a reply that is lost"),
+				fauxAssistantMessage("what comes next"),
+			]);
+			await settlesWithin(saved.harness.session.prompt("first"));
+
+			saved.harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("noop", {}, { id: "later" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			]);
+			await settlesWithin(saved.harness.session.prompt("second"));
+
+			assert.deepEqual(savedRoles(saved.harness.sessionManager), [
+				"user",
+				"user",
+				"assistant",
+				"toolResult",
+				"assistant",
+			]);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
+	it("a run the session did not start through prompt() begins clean after a message could not be saved (#4226)", async () => {
+		const saved = await createSavedSession();
+		try {
+			refuseNextAssistantMessageOnce(saved.harness.sessionManager);
+			saved.harness.setResponses([
+				fauxAssistantMessage("a reply that is lost"),
+				fauxAssistantMessage("a reply that is kept"),
+			]);
+			await settlesWithin(saved.harness.session.prompt("first"));
+			assert.deepEqual(savedRoles(saved.harness.sessionManager), ["user"]);
+
+			await settlesWithin(saved.harness.session.agent.prompt("second"));
+
+			assert.deepEqual(savedRoles(saved.harness.sessionManager), ["user", "user", "assistant"]);
+			assert.equal(getMessageText(saved.harness.session.messages.at(-1)), "a reply that is kept");
 		} finally {
 			await saved.cleanup();
 		}

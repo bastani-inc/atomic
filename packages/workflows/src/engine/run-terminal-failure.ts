@@ -10,9 +10,13 @@ import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../shared/types.js";
 
-function failureOf(metadata: SelectedRunFailureMetadata): Pick<RunResult, "failure"> {
+function failureOf(metadata: SelectedRunFailureMetadata): Pick<RunResult, "failure" | "failureDetail"> {
 	const failure = recordedFailureClassification(metadata);
-	return failure === undefined ? {} : { failure };
+	return {
+		...(failure === undefined ? {} : { failure }),
+		// The store's run record has no field for the typed error, so a failure no stage holds keeps it from here (#4309).
+		...(metadata.failureDetail === undefined ? {} : { failureDetail: metadata.failureDetail }),
+	};
 }
 
 /** Record, persist, and return one ordinary terminal workflow failure. */

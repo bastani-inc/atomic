@@ -291,7 +291,7 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				deleteSession:
 					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
 						? undefined
-						: (id) => this.sessionManager.getSessionStore().delete(id),
+						: (id) => this.sessionManager.deleteSession(id),
 				renameSession: async (selected, nextName) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;

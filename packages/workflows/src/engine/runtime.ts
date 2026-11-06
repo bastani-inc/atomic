@@ -15,6 +15,7 @@ import type { LiveStageRuntime, StageContextWithMeta, StageMcpScope } from "../r
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { StageWakeDispatcher } from "../runs/foreground/stage-wake-dispatcher.js";
 import type { ConcurrencyLimiter } from "../runs/shared/concurrency.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -101,6 +102,8 @@ export class EngineRuntime {
 	readonly worktreeSymlinkDirectories?: readonly string[];
 	readonly assertLiveWorkAllowed?: () => void;
 	private readonly replayIndex: ContinuationReplayIndex;
+	/** The run's one owner of waiting stages. */
+	readonly wakeDispatcher: StageWakeDispatcher;
 	private readonly terminalArtifactCollectors = new Map<string, () => readonly WorkflowArtifact[]>();
 	private readonly spawnAgentStage: (
 		name: string,
@@ -134,6 +137,7 @@ export class EngineRuntime {
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
 		this.assertLiveWorkAllowed = input.assertLiveWorkAllowed;
 		this.replayIndex = input.replayIndex;
+		this.wakeDispatcher = new StageWakeDispatcher(input.runId, input.signal);
 
 		// The runtime only wires host-injected ports; stage sessions are still
 		// created lazily by the stage runner through input.adapters.agentSession.
@@ -159,6 +163,7 @@ export class EngineRuntime {
 			assertLiveWorkAllowed: input.assertLiveWorkAllowed,
 			createMcpScope: (stageId, options) => this.createMcpScope(stageId, options),
 			takeTerminalArtifacts: (replayKey) => this.takeTerminalArtifacts(replayKey),
+			wakeDispatcher: this.wakeDispatcher,
 		});
 		this.spawnWorkflowBoundary = createWorkflowBoundaryFactory({
 			runId: input.runId,

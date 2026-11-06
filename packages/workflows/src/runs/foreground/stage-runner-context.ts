@@ -24,9 +24,9 @@ import {
 	stringifyStructuredOutputValue,
 	WorkflowStructuredOutputContractError,
 } from "./stage-runner-structured-output.js";
-import type { InternalStageContext, StageRunnerOpts } from "./stage-runner-types.js";
+import type { InternalStageContext, LiveInternalStageContext, StageRunnerOpts } from "./stage-runner-types.js";
 
-export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
+export function createStageContext(opts: StageRunnerOpts): LiveInternalStageContext {
 	const { stageId, stageName, adapters, runId, workflowIntercomGroup, signal, stageOptions, executionMode } = opts;
 	const stageCwd =
 		stageOptions?.cwd ??
@@ -114,7 +114,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				);
 			}
 			if (!continuing) {
-				controller.beginOutputGeneration();
+				controller.beginOutputGeneration(hasOutputArtifact && !structuredOutputCapture && !adapters.prompt);
 				artifactOptions = undefined;
 				artifactClosed = false;
 				artifactText = undefined;
@@ -274,16 +274,19 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		async steer(text) {
+			if (controller.holdWhileReleased(text, "steer")) return;
 			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
 			await (await controller.ensureSession()).steer(text);
 		},
 
 		async followUp(text) {
+			if (controller.holdWhileReleased(text, "followUp")) return;
 			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
 			await (await controller.ensureSession()).followUp(text);
 		},
 
 		async __queueUserText(text, kind, options) {
+			if (controller.holdWhileReleased(text, kind, options)) return;
 			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
 			const session = await controller.ensureSession();
 			if (kind === "steer") await session.steer(text, undefined, options);
@@ -303,7 +306,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		get sessionId() {
-			return controller.requireSession("sessionId").sessionId;
+			return controller.releasedSessionId() ?? controller.requireSession("sessionId").sessionId;
 		},
 
 		async setModel(model) {
@@ -323,18 +326,36 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		get agent() {
+			controller.throwIfReleased("agent");
 			return controller.requireSession("agent").agent;
 		},
 
 		get model() {
-			return controller.currentSession?.model;
+			const released = controller.releasedModelSettings();
+			if (released === undefined) return controller.currentSession?.model;
+			// A stage a resumed run starts released never saw its session's values: it says so instead of undefined.
+			if (released.model === undefined) controller.throwIfReleased("model");
+			return released.model;
 		},
 
 		get thinkingLevel() {
-			return controller.requireSession("thinkingLevel").thinkingLevel;
+			const released = controller.releasedModelSettings();
+			if (released === undefined) return controller.requireSession("thinkingLevel").thinkingLevel;
+			if (released.thinkingLevel === undefined) controller.throwIfReleased("thinkingLevel");
+			return released.thinkingLevel as InternalStageContext["thinkingLevel"];
 		},
 
 		get messages() {
+			controller.throwIfReleased("messages");
+			return controller.currentSession?.messages ?? adapterMessages;
+		},
+
+		async readMessages() {
+			if (controller.sessionReleased()) return controller.readReleasedMessages();
+			return controller.currentSession?.messages ?? adapterMessages;
+		},
+
+		__residentMessages() {
 			return controller.currentSession?.messages ?? adapterMessages;
 		},
 
@@ -358,6 +379,14 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			await controller.abort();
 		},
 
+		async release() {
+			await controller.release();
+		},
+
+		async rehydrate() {
+			await controller.rehydrate();
+		},
+
 		async __dispose() {
 			await controller.disposeAll();
 		},
@@ -371,7 +400,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		async __ensureSession() {
-			if (controller.awaitingAutoPrompt) return;
+			if (controller.awaitingAutoPrompt || controller.isReleased()) return;
 			await controller.ensureSession();
 		},
 
@@ -447,6 +476,30 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
 		__structuredOutputFinalized() {
 			return structuredOutputCapture?.called === true;
+		},
+
+		__isReleased() {
+			return controller.isReleased();
+		},
+
+		__holdsInput() {
+			return controller.holdsInput();
+		},
+
+		__releaseIdle() {
+			return controller.releaseIdle();
+		},
+
+		__releaseForPrompt() {
+			return controller.releaseForPrompt();
+		},
+
+		__idleSince() {
+			return controller.idleSince();
+		},
+
+		__startReleased(wait, sessionId) {
+			controller.resumeReleased(wait, sessionId);
 		},
 	};
 }

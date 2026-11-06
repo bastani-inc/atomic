@@ -525,6 +525,24 @@ You may reuse the same adapter object when explicitly rebinding a child, even af
 
 The inherited `isFallbackModelAllowed` predicate also applies when a workflow replaces its stage session to try a fallback. A rejected candidate is not executed. This predicate restricts fallback choices, not an explicitly selected primary model.
 
+### Waiting workflow stages
+
+A workflow stage that only waits on a long tool call does not keep its session in memory. Give the tool `detachable: true` (see [Detachable tool calls](/sdk/reference#detachable-tool-calls)); once a call of it outlasts the stage's `releaseWhenWaiting` threshold, the stage closes its session, frees its admission slot, and reopens the same session from the session store when the result arrives:
+
+```typescript
+import { run } from "@bastani/atomic/workflows";
+
+const result = await run(reviewLoop, inputs, {
+  releaseWhenWaiting: { afterMs: 30_000 },
+  onStageLifecycleEvent: (runId, event) => {
+    if (event.type === "stage_waiting") console.log(`${event.stageName} waits on`, event.wait.toolCalls);
+    else console.log(`${event.stageName} resumed after ${event.waitedMs} ms`);
+  },
+});
+```
+
+The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. While a stage's session is released, including a stage the workflow held idle past its threshold, `stage.messages` and `stage.agent` throw `StageReleasedError` (`stage-released`): read the transcript with `await stage.readMessages()`, which leaves the session released, or call `await stage.rehydrate()` first. See the [workflow API reference](/workflows/api-reference#releasewhenwaiting) for the details and error codes.
+
 ### AgentSession
 
 The session manages agent lifecycle, message history, model state, compaction, and event streaming.
@@ -796,6 +814,8 @@ await session.followUp("After you're done, also do this");
 If the session is idle and already has messages when either is called, it starts a turn to deliver the message instead of leaving it queued. On a session with no messages yet, or after a run was stopped with `abort()`, the message stays queued until the next `prompt()`. A `prompt()` call made while that turn runs must pass `streamingBehavior`, or it fails with "Agent is already processing". Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
 
 `clearQueue()` removes the queued steering and follow-up messages and returns them. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` holds the same messages, in the same order, as they were submitted: give the user those to send again, so the hooks and expansions run once more and not twice. `typed` is left out when every message was queued as submitted.
+
+`images` holds each message's images at the same index as its text, with `undefined` for a message sent without images, so a caller that queues the messages again can give each one its own images back. It is left out when no cleared message had images. A workflow stage that gives up its session while it waits uses it, so messages queued at that moment reach the reopened session with their images.
 
 `pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
 

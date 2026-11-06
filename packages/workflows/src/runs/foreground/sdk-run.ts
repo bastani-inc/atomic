@@ -5,6 +5,7 @@ import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
+import { parseReleaseWhenWaiting } from "../../shared/stage-wait.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { currentWorkflowStore } from "../../shared/store-factory.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
@@ -31,6 +32,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 ): Promise<RunResult> {
 	// The caller's local worker timing is checked before anything is opened or written for the run.
 	if (callerOpts.localWorkers !== undefined) resolveWorkerTiming(callerOpts.localWorkers, "sdk");
+	parseReleaseWhenWaiting(callerOpts.releaseWhenWaiting);
 	resolveWorktreeSnapshotSettings(callerOpts.snapshots, "sdk", "snapshots");
 	const inheritedSnapshots = SettingsManager.create(callerOpts.cwd ?? process.cwd()).getWorktreeSnapshotSettings();
 	let opts: RunOpts = {

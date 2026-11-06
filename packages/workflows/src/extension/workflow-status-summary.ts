@@ -19,6 +19,7 @@ import {
 	IMPOSSIBLE_ROOT_LIVENESS_MESSAGE,
 	isImpossibleRootLiveness,
 } from "../engine/run-liveness.js";
+import type { StageWaitSnapshot } from "../shared/authoring-contract-stage.js";
 import type { ExpandedWorkflowStage } from "../shared/expanded-workflow-graph.js";
 import type {
 	PendingWorkflowRunStatusResolver,
@@ -49,7 +50,8 @@ import { elapsedRunMs } from "../shared/timing.js";
  * Status filter accepted by the `status` run listing (and the `stages`
  * action). Run-level statuses match runs directly; `awaiting_input` selects
  * runs with at least one stage awaiting input or pending human prompt;
- * `all` (the default) includes everything.
+ * `waiting` selects runs with at least one stage waiting with its session
+ * released; `all` (the default) includes everything.
  */
 export type WorkflowRunStatusFilter = StageStatus | RunStatus | "all";
 
@@ -60,6 +62,14 @@ export interface WorkflowStatusActiveStage {
 	readonly name: string;
 	readonly status: StageStatus;
 	readonly rateLimits?: StageSnapshot["rateLimits"];
+}
+
+/** A stage waiting with its session released, and what it waits on. */
+export interface WorkflowStatusWaitingStage {
+	/** Expanded-graph stage id; valid for stage-scoped inspection and control. */
+	readonly stageId: string;
+	readonly name: string;
+	readonly wait?: StageWaitSnapshot;
 }
 
 /** One stage (or run-level) pending human-input descriptor. */
@@ -117,6 +127,10 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly tools: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
 	readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
+	/** Stages of the run that wait with their session released (status `waiting`). */
+	readonly waitingCount: number;
+	/** The waiting stages, with the calls or reason each waits on. */
+	readonly waitingStages: readonly WorkflowStatusWaitingStage[];
 	readonly budget?: RunBudgetSnapshot;
 	readonly budgetState?: RunBudgetState;
 	/** The run's local worker pool, for a root that runs one: its coordinator's traffic by kind. */
@@ -230,6 +244,13 @@ export function summarizeRunSnapshot(
 	options?: WorkflowStatusSummaryOptions,
 ): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
+	const waitingStages = run.stages
+		.filter((stage) => stage.status === "waiting")
+		.map((stage) => ({
+			stageId: stage.id,
+			name: stage.name,
+			...(stage.wait === undefined ? {} : { wait: stage.wait }),
+		}));
 	const elapsedMs = elapsedRunMs(run, now);
 	const duration =
 		run.budget === undefined
@@ -319,6 +340,8 @@ export function summarizeRunSnapshot(
 		}),
 		awaitingInputCount: awaitingInput.length,
 		awaitingInput,
+		waitingCount: waitingStages.length,
+		waitingStages,
 		exitReason: run.exitReason,
 		error: run.error ?? (strandedRoot ? IMPOSSIBLE_ROOT_LIVENESS_MESSAGE : undefined),
 		...(strandedRoot ? { strandedRoot: true as const } : {}),
@@ -329,6 +352,7 @@ export function summarizeRunSnapshot(
 export function runMatchesStatusFilter(summary: WorkflowRunStatusSummary, filter: WorkflowRunStatusFilter): boolean {
 	if (filter === "all") return true;
 	if (filter === "awaiting_input") return summary.awaitingInputCount > 0;
+	if (filter === "waiting") return summary.waitingCount > 0;
 	return summary.status === filter;
 }
 

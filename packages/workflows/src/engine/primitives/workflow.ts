@@ -24,6 +24,7 @@ import { recordedFailureClassification } from "../../runs/foreground/executor-li
 import { selectWorkflowOutputs } from "../../runs/foreground/executor-outputs.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../../runs/foreground/executor-types.js";
 import type { WorkflowChildRunRef } from "../../shared/store-types.js";
+import { rehydrateTypedFailure } from "../../shared/typed-failure-detail.js";
 import type {
 	WorkflowChildResult,
 	WorkflowDefinition,
@@ -202,13 +203,28 @@ export function createChildWorkflowRunner(input: {
 			) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				const message = childWorkflowFailureMessage(childName, child.name, childRun.status, childRun.error);
+				// #4309: a typed error the child failed on crosses back as itself, so guards such as findStageWaitError
+				// match the parent's failure. A pooled child's detail is another process's input: one that cannot be read
+				// is reported once and left out.
+				const typed =
+					childRun.failureDetail === undefined ? undefined : rehydrateTypedFailure(childRun.failureDetail);
+				if (typed?.ok === false)
+					runtime.activeStore.recordNotice({
+						id: `child-failure-detail-ignored:${runtime.runId}:${boundary.id}`,
+						runId: runtime.runId,
+						stageId: boundary.id,
+						level: "warning",
+						message: `Child workflow "${childName}" reported a typed failure that could not be read (${typed.reason}); its failure is kept as text only.`,
+						createdAt: Date.now(),
+					});
 				const cause = {
 					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
 					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
-					// A workspace error stays typed across the child boundary, including from a pooled worker.
-					...(childRun.workspaceError !== undefined
-						? { cause: rehydrateWorkspaceError(childRun.workspaceError) }
-						: {}),
+					...(typed?.ok === true
+						? { cause: typed.error }
+						: childRun.workspaceError !== undefined
+							? { cause: rehydrateWorkspaceError(childRun.workspaceError) }
+							: {}),
 				};
 				// #4031: the parent's failure is the child's own failure: the classification the child recorded, else its
 				// failed stage's, else its error text without the wrapper prefixes that name workflows. This message,

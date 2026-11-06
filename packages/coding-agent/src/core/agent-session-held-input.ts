@@ -1,12 +1,15 @@
+import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { QueuedImages, QueuedTexts } from "./agent-session-types.js";
 
 /**
  * User input that reached the session while it compacts (#4251). It is registered when `prompt()` is entered, so
  * held input keeps its arrival order across every sender. It shows in the session's queue view while it waits,
- * and `clearQueue()` cancels it and returns its text.
+ * and `clearQueue()` cancels it and returns its text and images.
  */
 export interface HeldInput {
 	readonly text: string;
+	readonly images: ImageContent[] | undefined;
 	readonly lane: "steer" | "followUp";
 	/**
 	 * Waits for earlier held input. Input sent from inside an input hook does not: the hook may await it, and it
@@ -41,11 +44,13 @@ export function hasHeldInput(session: AgentSession): boolean {
 export function registerHeldInput(
 	session: AgentSession,
 	text: string,
+	images: ImageContent[] | undefined,
 	lane: "steer" | "followUp",
 	ordered: boolean,
 ): HeldInput {
 	const entry: HeldInput = {
 		text,
+		images,
 		lane,
 		ordered,
 		waiting: true,
@@ -96,14 +101,21 @@ export function heldInputView(session: AgentSession): { steering: string[]; foll
 	return { steering, followUp };
 }
 
-/** Cancel every waiting held input and return its text; the caller publishes the queue update. */
-export function cancelHeldInput(session: AgentSession): { steering: string[]; followUp: string[] } {
-	const cancelled = heldInputView(session);
+/** Cancel every waiting held input and return its text and images; the caller publishes the queue update. */
+export function cancelHeldInput(session: AgentSession): QueuedTexts & { images: QueuedImages } {
+	const cancelled: QueuedTexts & { images: QueuedImages } = {
+		steering: [],
+		followUp: [],
+		images: { steering: [], followUp: [] },
+	};
 	for (const entry of heldInputs.get(session) ?? []) {
 		if (!entry.waiting) continue;
 		entry.waiting = false;
 		entry.cancelled = true;
 		entry.cancellation.resolve();
+		const lane = entry.lane === "followUp" ? "followUp" : "steering";
+		cancelled[lane].push(entry.text);
+		cancelled.images[lane].push(entry.images);
 	}
 	return cancelled;
 }

@@ -1,7 +1,8 @@
-import type { AssistantMessage, Message, TextContent } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Message, TextContent, ToolResultMessage } from "@bastani/pi-ai/compat";
 import { cleanupSessionResources } from "@bastani/pi-ai/compat";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { abortBash } from "./agent-session-bash.ts";
+import { withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
@@ -109,10 +110,12 @@ function consumePersistenceStopReply(session: AgentSession, event: AgentEvent): 
 
 /** Internal handler for agent events - shared by subscribe and reconnect */
 
-export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> | void {
+export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Promise<void> | void {
 	// #4226: a session that could not save a message stops the run that hit it; the next run tries again.
-	if (event.type === "agent_start") this._persistenceFailure = undefined;
-	if (consumePersistenceStopReply(this, event)) return;
+	if (received.type === "agent_start") this._persistenceFailure = undefined;
+	if (consumePersistenceStopReply(this, received)) return;
+	let event = withoutDetachedPlaceholders(this, received);
+	if (event === undefined) return;
 	if (event.type === "agent_end" && event.messages.some((message) => persistenceStopReplies.has(message))) {
 		event = { ...event, messages: event.messages.filter((message) => !persistenceStopReplies.has(message)) };
 	}
@@ -224,6 +227,22 @@ export function _findLastAssistantInMessages(
 	return undefined;
 }
 
+/**
+ * Whether `result` answers a call whose assistant message could not be saved (#4226). Saved, it would answer a call
+ * the session does not hold, a result ahead of its call; the run stops on that turn, and the next run asks again.
+ */
+function answersUnsavedCall(session: AgentSession, result: ToolResultMessage): boolean {
+	if (session._persistenceFailure === undefined) return false;
+	const messages = session.agent.state.messages;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		if (!message.content.some((part) => part.type === "toolCall" && part.id === result.toolCallId)) continue;
+		return session._messagesWithFailedPersistence.has(message);
+	}
+	return false;
+}
+
 export async function _processAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> {
 	const protectedMessage =
 		event.type === "message_end" &&
@@ -294,7 +313,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 				event.message.role === "system" ||
 				event.message.role === "user" ||
 				event.message.role === "assistant" ||
-				event.message.role === "toolResult"
+				(event.message.role === "toolResult" && !answersUnsavedCall(this, event.message))
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
 				entryId = await this.sessionManager.appendMessage(event.message);

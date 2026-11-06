@@ -148,6 +148,15 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 */
 	concurrency?: ToolConcurrency<Static<TParams>>;
 
+	/**
+	 * The call's work does not need the session once it has started, and running it again with the same call id and
+	 * arguments after a restart is safe. When the host sets a detachment policy (`AgentSession.setToolDetachment`), a
+	 * call still running after the policy's `afterMs` goes on without the run, which ends so the host can release the
+	 * session and hand the result back later. Without a policy the call runs inline like any other. Once a call
+	 * detaches, the progress it reports through `onUpdate` is dropped and its `ctx` answers only `cwd`.
+	 */
+	detachable?: boolean;
+
 	/** Execute the tool. */
 	execute(
 		toolCallId: string,

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * Age-based sweeper for tool-output storage.
  *
@@ -670,6 +671,9 @@ let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
 const scheduledSessionsRoots = new Set<string>();
 const scheduledSessionDirs = new Set<string>();
 
+/** Runs a callback in the async context of this module's load, outside every session. */
+const outsideAnySession = AsyncLocalStorage.snapshot();
+
 /** Arm one deferred sweep for the roots currently pending. */
 function armSessionTempCleanup(options: SessionTempCleanupOptions): void {
 	cleanupScheduled = true;
@@ -715,7 +719,8 @@ export function scheduleSessionTempCleanup(options: SessionTempCleanupOptions = 
 	if (cleanupScheduled) {
 		return;
 	}
-	armSessionTempCleanup(options);
+	// The sweep is process-wide: armed inside a session's async context, its timer would keep that session reachable.
+	outsideAnySession(armSessionTempCleanup, options);
 }
 
 /** Test seam: cancel pending work and forget scheduler state. */

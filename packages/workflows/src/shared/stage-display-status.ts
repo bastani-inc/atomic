@@ -1,3 +1,4 @@
+import type { StageWaitSnapshot } from "./authoring-contract-stage.js";
 import type { StageStartupPhase } from "./stage-startup.js";
 import type { StageSnapshot, StageStatus } from "./store-types.js";
 
@@ -57,4 +58,27 @@ export function pooledStageStartingText(stage: StageStartupView | undefined, now
 	if (step === undefined || stage?.startup === undefined) return undefined;
 	const seconds = Math.max(0, Math.floor((now - stage.startup.startedAt) / 1000));
 	return `${step} ${seconds}s`;
+}
+
+/**
+ * What a stage with its session released waits on, for status text: `tool: wait_ci` for a detached tool call,
+ * `released` after `stage.release()` or while it awaits a human answer, `idle` for a stage the workflow holds unused.
+ */
+export function stageWaitLabel(wait: StageWaitSnapshot): string {
+	switch (wait.kind) {
+		case "tool": {
+			const names = [...new Set((wait.toolCalls ?? []).map((call) => call.toolName))];
+			return names.length === 0 ? "tool" : `tool: ${names.join(", ")}`;
+		}
+		case "idle":
+			return "idle";
+		case "release":
+		case "prompt":
+			return "released";
+	}
+}
+
+/** `waiting (tool: wait_ci)`, `awaiting_input (released)`; the plain status for a stage with no released session. */
+export function stageStatusWithWait(status: string, wait: StageWaitSnapshot | undefined): string {
+	return wait === undefined ? status : `${status} (${stageWaitLabel(wait)})`;
 }

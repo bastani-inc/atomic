@@ -408,6 +408,7 @@ function controllableHandles(
 					handle.status === "running" ||
 					handle.status === "pending" ||
 					handle.status === "awaiting_input" ||
+					handle.status === "waiting" ||
 					handle.status === "paused",
 			)
 			.map((handle) => ({ controlRunId, handle })),

@@ -1,7 +1,9 @@
 import { formatModelLabel } from "@bastani/atomic";
+import type { DurableReleasedStageResume } from "../../durable/types.js";
+import { isStageReleasedError } from "../../shared/stage-wait-errors.js";
 import type { TrackedStageCaller } from "./executor-stage-call.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageNoticeInput } from "./executor-stage-types.js";
-import type { InternalStageContext } from "./stage-runner.js";
+import type { InternalStageContext, LiveInternalStageContext } from "./stage-runner.js";
 
 function noticeValue(value: unknown): string {
 	if (typeof value === "string") return value;
@@ -34,6 +36,12 @@ function compactionMeta(result: unknown): string | undefined {
 	return `${(before / 1000).toFixed(1)}k → ${(kept / 1000).toFixed(1)}k`;
 }
 
+function recordedText(recorded: DurableReleasedStageResume["recorded"]): string {
+	if (recorded === undefined) return "";
+	if (recorded.result !== undefined) return recorded.result;
+	return typeof recorded.output === "string" ? recorded.output : JSON.stringify(recorded.output);
+}
+
 export function createStageContext(input: {
 	readonly runtime: LiveStageRuntime;
 	readonly runTrackedStageCall: TrackedStageCaller;
@@ -47,7 +55,15 @@ export function createStageContext(input: {
 		});
 	};
 
-	const innerCtx: InternalStageContext = runtime.innerCtx;
+	const innerCtx: LiveInternalStageContext = runtime.innerCtx;
+	const knownThinkingLevel = (): string | undefined => {
+		try {
+			return noticeValue(innerCtx.thinkingLevel);
+		} catch (error) {
+			if (isStageReleasedError(error) && error.fields?.property === "thinkingLevel") return undefined;
+			throw error;
+		}
+	};
 	const sendStreamingUserMessage: InternalStageContext["sendUserMessage"] = async (text, options) => {
 		runtime.mcpScope.apply();
 		try {
@@ -65,15 +81,24 @@ export function createStageContext(input: {
 		name: innerCtx.name,
 		prompt: (text, promptOptions) => {
 			runtime.throwIfStageMutationBlocked();
+			// A call the previous process already finished is answered from the run's record, never the model.
+			const replayed = runtime.replayRecordedCall();
+			if (replayed !== undefined) return replayed.then((recorded) => recorded?.output as never);
 			return input.runTrackedStageCall(() => innerCtx.prompt(text, promptOptions), true);
 		},
 		complete: (text, completeOptions) => {
 			runtime.throwIfStageMutationBlocked();
+			const replayed = runtime.replayRecordedCall();
+			if (replayed !== undefined) return replayed.then((recorded) => recordedText(recorded));
 			return input.runTrackedStageCall(() => innerCtx.complete(text, completeOptions));
 		},
 		sendUserMessage: (text, options) => {
 			runtime.throwIfStageMutationBlocked();
-			if (innerCtx.isStreaming) return sendStreamingUserMessage(text, options);
+			const replayed = runtime.replayRecordedCall();
+			if (replayed !== undefined) return replayed.then(() => undefined);
+			// A stage released on a tool wait holds the message for the turn its results continue, as a streaming stage
+			// takes it into its running turn; neither is a call of its own that would finish the stage (#4309).
+			if (innerCtx.isStreaming || innerCtx.__holdsInput() === true) return sendStreamingUserMessage(text, options);
 			return input.runTrackedStageCall(() => innerCtx.sendUserMessage(text, options), { allowFinalized: true });
 		},
 		steer: (text) => {
@@ -100,9 +125,9 @@ export function createStageContext(input: {
 		},
 		setThinkingLevel: async (level) => {
 			runtime.throwIfStageMutationBlocked();
-			const from = noticeValue(innerCtx.thinkingLevel);
+			const from = knownThinkingLevel();
 			await innerCtx.setThinkingLevel(level);
-			recordStageNotice({ kind: "thinking", from, to: noticeValue(level) });
+			recordStageNotice({ kind: "thinking", ...(from === undefined ? {} : { from }), to: noticeValue(level) });
 		},
 		cycleModel: async () => {
 			runtime.throwIfStageMutationBlocked();
@@ -130,6 +155,7 @@ export function createStageContext(input: {
 		get messages() {
 			return innerCtx.messages;
 		},
+		readMessages: () => innerCtx.readMessages(),
 		get isStreaming() {
 			return innerCtx.isStreaming;
 		},
@@ -153,7 +179,20 @@ export function createStageContext(input: {
 			recordStageNotice({ kind: "abort", to: "interrupted" });
 			await innerCtx.abort();
 		},
+		release: async () => {
+			runtime.throwIfStageMutationBlocked();
+			await innerCtx.release();
+		},
+		rehydrate: async () => {
+			runtime.throwIfStageMutationBlocked();
+			await innerCtx.rehydrate();
+		},
 		__modelFallbackMeta: () => innerCtx.__modelFallbackMeta(),
-		__releaseIfIdle: () => runtime.stageRegistry.releaseIdle(runtime.runId, runtime.stageId),
+		__releaseIfIdle: () => {
+			// The caller keeps no further use of the stage: it is released for good, never held idle.
+			runtime.stopIdleWatch();
+			return runtime.stageRegistry.releaseIdle(runtime.runId, runtime.stageId);
+		},
+		__resumeReleased: (resume) => runtime.resumeReleased(resume),
 	};
 }

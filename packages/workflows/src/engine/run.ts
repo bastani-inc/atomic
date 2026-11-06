@@ -18,6 +18,8 @@ import {
 	createDurableStagePrimitive,
 	createDurableTaskPrimitive,
 	createStageReplayKeyGenerator,
+	durableRecordedToolResults,
+	durableWaitingStages,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
@@ -65,6 +67,8 @@ import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
+import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
 import { raceAbort } from "../shared/abort.js";
@@ -73,6 +77,7 @@ import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { coercePossibleStages } from "../shared/possible-stages.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
+import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
@@ -114,6 +119,7 @@ import {
 } from "./run-durable-topology.js";
 import { deferStageUntilRunRelease } from "./run-paused-stage.js";
 import { containStageRejections, containUiRejections, openRunRejectionScope } from "./run-rejection-boundary.js";
+import { assertWaitingStageSessionsExist } from "./run-resume-preflight.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
@@ -175,6 +181,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	if (preset === undefined && opts.parentRun === undefined && opts.workers?.placement === "shared")
 		await checkSharedPlacementSetup(opts.journal, opts.cwd === undefined ? {} : { cwd: opts.cwd });
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+	const waitingStages = opts.parentRun === undefined ? durableWaitingStages(backend, runId) : [];
+	if (waitingStages.length > 0) await assertWaitingStageSessionsExist(waitingStages, runId, opts);
 	const execute = async () => {
 		const previous = opts.parentRun === undefined ? backend.getWorkflow(runId) : undefined;
 		const journal = backend.snapshotJournal;
@@ -616,6 +624,8 @@ async function executeRun(
 		onStageEnd: durableOnStageEnd,
 		onStageSession: durableOnStageSession,
 		onStageSessionEvent: opts.onStageSessionEvent,
+		onStageLifecycleEvent: opts.onStageLifecycleEvent,
+		releaseWhenWaiting: opts.releaseWhenWaiting,
 		confirmStageReadiness: opts.confirmStageReadiness,
 		usePromptNodesForUi: opts.usePromptNodesForUi,
 	};
@@ -653,6 +663,8 @@ async function executeRun(
 		onStageEnd: opts.onStageEnd,
 		onStageSession: opts.onStageSession,
 		onStageSessionEvent: opts.onStageSessionEvent,
+		onStageLifecycleEvent: opts.onStageLifecycleEvent,
+		releaseWhenWaiting: opts.releaseWhenWaiting,
 		rootBudget,
 		durableBackend,
 		durableRootBackend: rootBackend,
@@ -686,6 +698,10 @@ async function executeRun(
 		rootBudget,
 		budget,
 	});
+	// A stage whose previous process recorded the results its detached calls delivered continues its turn from them
+	// on resume, instead of running the calls again (#4309).
+	for (const [replayKey, results] of durableRecordedToolResults(durableBackend, runId))
+		runtime.wakeDispatcher.keepResultsForResume(replayKey, stageWaitToolResults(results));
 	const workflowBoundaryReplayCounts = new Map<string, number>();
 	const nextWorkflowBoundaryReplayKey = (name: string): string => {
 		const durableScopePrefix = pendingChildDurableInvocation?.scope.scopePrefix;
@@ -935,6 +951,16 @@ async function executeRun(
 		beforeCall: beforeLiveCall,
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
+		readStoredMessages: (options, sessionId) =>
+			readReplayedStageMessages(
+				mapStageOptions(options),
+				{
+					adapters: opts.adapters,
+					defaultSessionDir: opts.defaultSessionDir,
+					defaultCwd: workflowInvocationCwd,
+				},
+				sessionId,
+			),
 		stage: (name, options, replayKey) => {
 			const stage = runtime.stage(name, mapStageOptions(options));
 			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;
@@ -1227,6 +1253,8 @@ async function executeRun(
 			ownController.signal,
 		);
 		await drainCachedStagePersistence();
+		// The workflow is done with its stages: one still released between turns shows its own status again.
+		settleReleasedStages(runtime.wakeDispatcher);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		await admittedTools.closeAndDrain();
 		while (scheduler.isRunPaused()) await waitForRunRelease();
@@ -1327,6 +1355,8 @@ async function executeRun(
 		if (selectedTerminalEvent.kind === "failure" && pendingChildWorkflows.size > 0 && !ownController.signal.aborted) {
 			ownController.abort(err);
 		}
+		// The run ends here: a stage still released between turns can never reopen, so it leaves `waiting` (#4309).
+		settleReleasedStages(runtime.wakeDispatcher);
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and
 		// its boundary checkpoint publication on cancellation.
@@ -1450,6 +1480,8 @@ async function executeRun(
 				try {
 					unregisterToolAdmission();
 				} finally {
+					disposeStageIdleReleaser(runtime.wakeDispatcher);
+					runtime.wakeDispatcher.dispose();
 					terminalEvents.dispose();
 					// Standalone terminal runs have no host to own retained SDK sessions.
 					// Preserve caller-owned registries and handles needed for continuation.

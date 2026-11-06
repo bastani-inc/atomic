@@ -11,13 +11,22 @@ export class StageArtifactCapture {
 	private receivesMessageEvents = false;
 	private closed = false;
 
-	reset(): void {
+	/** `capturesAnswers` false: the generation writes no output artifact, so nothing is kept for one. */
+	reset(capturesAnswers = true): void {
 		this.session = undefined;
 		this.seen = new WeakSet();
 		this.accepted = [];
 		this.provisional = undefined;
 		this.receivesMessageEvents = false;
-		this.closed = false;
+		this.closed = !capturesAnswers;
+	}
+
+	/** The session was released: keep the answers captured so far, and nothing of the session itself. */
+	releaseSession(): void {
+		this.scan();
+		this.session = undefined;
+		this.seen = new WeakSet();
+		this.receivesMessageEvents = false;
 	}
 
 	beginAttempt(session: StageSessionRuntime): void {

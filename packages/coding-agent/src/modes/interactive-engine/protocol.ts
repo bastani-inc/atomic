@@ -240,6 +240,7 @@ const WORKFLOW_ACTIVITY_REASONS: readonly string[] = [
 	"automatic_continuation",
 	"retrying",
 	"stopping",
+	"waiting",
 	"awaiting_input",
 	"manual_intervention",
 	"paused",

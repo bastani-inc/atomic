@@ -1,7 +1,12 @@
 /** Durable `ctx.stage` / `ctx.task` replay and checkpoint helpers. */
 
+import type { SessionStore } from "@bastani/atomic";
+import { assertStageOwnedSessionExists, type StageOwnedSession } from "../engine/run-resume-preflight.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
+import { readStoredStageMessages } from "../runs/foreground/stage-runner-options.js";
 import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
+import type { StageWaitToolResult } from "../shared/stage-wait.js";
+import { StageRehydrationError, StageReleasedError, type StageReleasedProperty } from "../shared/stage-wait-errors.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs, stageTimingFields } from "../shared/timing.js";
 import type {
@@ -12,12 +17,13 @@ import type {
 	WorkflowSerializableValue,
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
+	WorkflowThinkingLevel,
 } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
 import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
-import type { DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
+import type { DurableReleasedStageResume, DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
 import { parseWorkflowChildResult } from "./workflow-child-result.js";
 import { stageWorktreeSnapshot } from "./worktree-snapshots.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
@@ -102,7 +108,12 @@ export async function recordStageSessionCheckpoint(
 	const checkpoint: DurableStageCheckpoint = {
 		kind: "stage",
 		workflowId: deps.workflowId,
-		checkpointId: stageSessionCheckpointId(replayKey, stage, durationMs),
+		checkpointId: stageSessionCheckpointId(
+			replayKey,
+			stage,
+			durationMs,
+			options?.force === true ? checkpointNow : undefined,
+		),
 		name: stage.name,
 		replayKey,
 		...durableStageCheckpointMetadata(stage, deps.runTopology, deps.sourceOrderForStage?.(stage)),
@@ -133,6 +144,106 @@ function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: b
 	return stage;
 }
 
+/**
+ * The latest resumable session record of each stage and task replay key, as the run's journal holds it. A record
+ * carrying `wait` means the stage was waiting with its session released when it was written.
+ */
+export function latestStageSessionCheckpoints(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+): Map<string, DurableStageCheckpoint> {
+	const latest = new Map<string, DurableStageCheckpoint>();
+	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+		if (checkpoint.kind !== "stage" || checkpoint.sessionId === undefined) continue;
+		const previous = latest.get(checkpoint.replayKey);
+		if (previous === undefined || checkpoint.completedAt >= previous.completedAt)
+			latest.set(checkpoint.replayKey, checkpoint);
+	}
+	return latest;
+}
+
+/** A stage the run's previous process left waiting with its session released. */
+export interface DurableWaitingStage {
+	readonly replayKey: string;
+	readonly stageName: string;
+	readonly stageId?: string;
+	readonly sessionId: string;
+	/** Where a file-backed store kept the transcript, when the stage recorded it. */
+	readonly sessionFile?: string;
+	/** `"stage"`: the session is in the store the stage's own `sessionStore` option supplied, not the run's. */
+	readonly sessionStorage?: "stage";
+	readonly wait: import("../shared/authoring-contract-stage.js").StageWaitSnapshot;
+}
+
+/**
+ * Every stage of the run that its previous process left waiting, from one pass over the run's checkpoints. Only the
+ * run's own stages: a pooled root's journal also holds the checkpoints of its pool's children, whose sessions live in
+ * the pool's stores, and a child run reopens its own stages (#4318).
+ */
+export function durableWaitingStages(backend: DurableWorkflowBackend, workflowId: string): DurableWaitingStage[] {
+	const waiting: DurableWaitingStage[] = [];
+	for (const checkpoint of latestStageSessionCheckpoints(backend, workflowId).values()) {
+		if (checkpoint.wait === undefined || checkpoint.sessionId === undefined) continue;
+		const ownerRunId = checkpoint.topology?.run?.runId;
+		if (ownerRunId !== undefined && ownerRunId !== workflowId) continue;
+		waiting.push({
+			replayKey: checkpoint.replayKey,
+			stageName: checkpoint.name,
+			...(checkpoint.topology?.stageId === undefined ? {} : { stageId: checkpoint.topology.stageId }),
+			sessionId: checkpoint.sessionId,
+			...(checkpoint.sessionFile === undefined ? {} : { sessionFile: checkpoint.sessionFile }),
+			...(checkpoint.sessionStorage === "stage" ? { sessionStorage: "stage" as const } : {}),
+			wait: checkpoint.wait,
+		});
+	}
+	return waiting;
+}
+
+/**
+ * The results each stage's detached calls delivered that the run's previous process recorded before the stage's
+ * transcript held them, by the stage's replay key. A resumed stage continues its turn from them instead of running
+ * the calls again (#4309).
+ */
+export function durableRecordedToolResults(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+): Map<string, readonly StageWaitToolResult[]> {
+	const recorded = new Map<string, readonly StageWaitToolResult[]>();
+	for (const checkpoint of latestStageSessionCheckpoints(backend, workflowId).values())
+		if (checkpoint.waitResults !== undefined && checkpoint.waitResults.length > 0)
+			recorded.set(checkpoint.replayKey, checkpoint.waitResults);
+	return recorded;
+}
+
+/**
+ * A stage whose previous process stopped while it waited between turns (`release` or `idle`) resumes released and
+ * replays its finished calls from the record, instead of being prompted to continue. Undefined for every other stage,
+ * and for a record that cannot answer the calls it says finished.
+ */
+function releasedStageResume(
+	checkpoint: DurableStageCheckpoint | undefined,
+	cached: DurableCompletedStageCheckpoint | undefined,
+): DurableReleasedStageResume | undefined {
+	const wait = checkpoint?.wait;
+	const sessionId = checkpoint?.sessionId;
+	if (wait === undefined || sessionId === undefined || (wait.kind !== "release" && wait.kind !== "idle"))
+		return undefined;
+	const promptsCompleted = wait.promptsCompleted ?? 0;
+	// A stage that completed answers at least its first call from the record; a record without that count predates it.
+	if (cached === undefined) return promptsCompleted === 0 ? { wait, sessionId, promptsCompleted } : undefined;
+	if (promptsCompleted === 0) return undefined;
+	return {
+		wait,
+		sessionId,
+		promptsCompleted,
+		recorded: {
+			output: cached.output,
+			...(cached.result === undefined ? {} : { result: cached.result }),
+			...(cached.structured === undefined ? {} : { structured: cached.structured }),
+		},
+	};
+}
+
 function pendingStageIdForReplay(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
@@ -155,7 +266,11 @@ export function createDurableStagePrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextReplayKey: (stageName: string) => string;
-	readonly stage: (name: string, options: StageOptions, replayKey: string) => StageContext;
+	readonly stage: (
+		name: string,
+		options: StageOptions,
+		replayKey: string,
+	) => StageContext & { readonly __resumeReleased?: (resume: DurableReleasedStageResume) => void };
 	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
 	readonly beforeCall?: () => void | Promise<void>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
@@ -164,19 +279,51 @@ export function createDurableStagePrimitive(input: {
 		replayKey: string,
 		checkpoint: DurableCompletedStageCheckpoint,
 	) => void | Promise<void>;
+	/**
+	 * Read the stored messages of a replayed stage's session, from the store the stage would reopen it from with
+	 * `options`. Defaults to the stage's own `sessionStore`, `sessionManager` or `sessionDir`, then the default store.
+	 */
+	readonly readStoredMessages?: (options: StageOptions, sessionId: string) => Promise<readonly object[]>;
 }): (name: string, options?: StageOptions, reservedReplayKey?: string) => StageContext {
+	// The session records the previous process left, read once: a stage writes its own records only after it starts.
+	let priorSessions: Map<string, DurableStageCheckpoint> | undefined;
 	return (name: string, options?: StageOptions, reservedReplayKey?: string): StageContext => {
 		const replayKey = reservedReplayKey ?? input.nextReplayKey(name);
+		priorSessions ??= latestStageSessionCheckpoints(input.backend, input.workflowId);
+		const priorSession = priorSessions.get(replayKey);
+		priorSessions.delete(replayKey);
 		const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey);
-		if (cached !== undefined) {
+		// A stage held across a wait between turns stays live after it completed: its later calls may still run.
+		const released = releasedStageResume(priorSession, cached);
+		if (cached !== undefined && released === undefined) {
 			const recorded = input.recordCachedStage?.(name, replayKey, cached);
+			// A transcript the stage kept in its own store is read only from the store the workflow passes it now.
+			const ownedStore = (cached.sessionStorage ?? priorSession?.sessionStorage) === "stage";
+			const readStoredMessages = (sessionId: string): Promise<readonly object[]> =>
+				(input.readStoredMessages ?? readStoredStageMessagesWithOwnStore)(options ?? {}, sessionId);
 			return withStageWriteBarrier(
-				createCachedStageContext(name, cached.output, cached.result, recorded),
+				createCachedStageContext({
+					name,
+					runId: input.workflowId,
+					checkpoint: cached,
+					recorded,
+					readStoredMessages: ownedStore
+						? async (sessionId) => {
+								await assertStageOwnedSessionExists(stageOwnedStore(options), {
+									runId: input.workflowId,
+									stageName: name,
+									...(cached.topology?.stageId === undefined ? {} : { stageId: cached.topology.stageId }),
+									sessionId,
+								});
+								return readStoredMessages(sessionId);
+							}
+						: readStoredMessages,
+				}),
 				input.beforeCall,
 			);
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
-		const isMidSessionResume = session?.sessionId !== undefined;
+		const resumeSessionId = released?.sessionId ?? session?.sessionId;
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
@@ -187,17 +334,34 @@ export function createDurableStagePrimitive(input: {
 			...(durableStageId !== undefined ? { durableStageId } : {}),
 			...(topology !== undefined ? { durableParentIds: [...topology.parentIds] } : {}),
 			...(durableIntercomGroup !== undefined ? { durableIntercomGroup } : {}),
-			...(isMidSessionResume
+			...(resumeSessionId !== undefined
 				? {
-						resumeFromSessionId: session.sessionId,
-						...(session.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
-						routerSelection: session.routerSelection,
-						durableAccumulatedDurationMs: session.durationMs ?? 0,
+						resumeFromSessionId: resumeSessionId,
+						...(session?.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
+						routerSelection: session?.routerSelection,
+						durableAccumulatedDurationMs: session?.durationMs ?? 0,
 					}
 				: {}),
 		};
+		const stage = input.stage(name, liveOptions, replayKey);
+		// Stopped between turns: replay the finished calls from the record and send the next one as written. Stopped
+		// inside a turn: continue that turn.
+		if (released !== undefined) stage.__resumeReleased?.(released);
+		// A session the stage kept in its own store is checked in the store the workflow passes the stage now, before
+		// any call of the stage that opens or reads a session: the run's preflight could not know that store.
+		const checked =
+			priorSession?.sessionStorage === "stage" &&
+			resumeSessionId !== undefined &&
+			resumeSessionId === priorSession.sessionId
+				? withStageOwnedSessionCheck(stage, stageOwnedStore(options), {
+						runId: input.workflowId,
+						stageName: name,
+						...(durableStageId === undefined ? {} : { stageId: durableStageId }),
+						sessionId: resumeSessionId,
+					})
+				: stage;
 		const live = withStageWriteBarrier(
-			withMidSessionResumePrompt(input.stage(name, liveOptions, replayKey), isMidSessionResume),
+			withMidSessionResumePrompt(checked, resumeSessionId !== undefined && released === undefined),
 			input.beforeCall,
 		);
 		if (options?.schema === undefined) return live;
@@ -210,6 +374,65 @@ export function createDurableStagePrimitive(input: {
 			name,
 		});
 	};
+}
+
+/** The calls of a stage that open, reopen or read its session, or change what it runs on. */
+const SESSION_CALLS = [
+	"prompt",
+	"complete",
+	"sendUserMessage",
+	"steer",
+	"followUp",
+	"setModel",
+	"setThinkingLevel",
+	"cycleModel",
+	"cycleThinkingLevel",
+	"readMessages",
+	"navigateTree",
+	"compact",
+	"rehydrate",
+] as const satisfies readonly (keyof StageContext)[];
+
+type SessionCall = (typeof SESSION_CALLS)[number];
+
+/** The store a stage's own options name for its session: its `sessionStore`, or its `sessionManager`'s store. */
+function stageOwnedStore(options: StageOptions | undefined): SessionStore | undefined {
+	return options?.sessionStore ?? options?.sessionManager?.getSessionStore();
+}
+
+/**
+ * `stage`, whose session is in its own store, with a check of the store the workflow passes it now before the first
+ * of its {@link SESSION_CALLS}: a store without the session, or none, fails such calls typed. Once the check passes,
+ * only that it passed is kept; concurrent first calls share the one check in flight.
+ */
+function withStageOwnedSessionCheck(
+	stage: StageContext,
+	store: SessionStore | undefined,
+	owned: StageOwnedSession,
+): StageContext {
+	let verified = false;
+	let inFlight: Promise<void> | undefined;
+	const verify = async (): Promise<void> => {
+		if (verified) return;
+		inFlight ??= assertStageOwnedSessionExists(store, owned).finally(() => {
+			inFlight = undefined;
+		});
+		await inFlight;
+		verified = true;
+	};
+	const wrapped = Object.create(stage) as StageContext;
+	for (const method of SESSION_CALLS) {
+		const call = stage[method] as (...args: never[]) => ReturnType<StageContext[SessionCall]>;
+		Object.defineProperty(wrapped, method, {
+			value: async (...args: never[]) => {
+				await verify();
+				return call.apply(stage, args);
+			},
+			writable: true,
+			configurable: true,
+		});
+	}
+	return wrapped;
 }
 
 function withStageWriteBarrier(stage: StageContext, beforeCall?: () => void | Promise<void>): StageContext {
@@ -515,13 +738,23 @@ function wrapSchemaStageForDurability(input: {
 	return wrapped;
 }
 
-function createCachedStageContext(
-	name: string,
-	output: WorkflowSerializableValue,
-	result?: string,
-	recorded?: void | Promise<void>,
-): StageContext {
-	const persistence = Promise.resolve(recorded);
+/**
+ * The context of a stage a resumed run replays from its durable checkpoint. The stage completed before the restart and
+ * runs no session: like a released stage, `messages` and `agent` throw `StageReleasedError`, `readMessages()` reads the
+ * transcript from the session store, and `model` and `thinkingLevel` return the values its checkpoint recorded.
+ * `release()` has nothing to give up; `rehydrate()` has no live session to reopen and throws `StageRehydrationError`
+ * (`replayed-stage`).
+ */
+function createCachedStageContext(input: {
+	readonly name: string;
+	readonly runId: string;
+	readonly checkpoint: DurableCompletedStageCheckpoint;
+	readonly recorded?: void | Promise<void>;
+	readonly readStoredMessages: (sessionId: string) => Promise<readonly object[]>;
+}): StageContext {
+	const { name, checkpoint } = input;
+	const { output, result } = checkpoint;
+	const persistence = Promise.resolve(input.recorded);
 	void persistence.catch(() => {});
 	const text = result ?? (typeof output === "string" ? output : JSON.stringify(output));
 	const unsupported = async (): Promise<never> => {
@@ -529,6 +762,16 @@ function createCachedStageContext(
 			`Stage "${name}" was replayed from a durable checkpoint; live session operations are unavailable.`,
 		);
 	};
+	const fields = {
+		runId: input.runId,
+		stageName: name,
+		...(checkpoint.sessionId === undefined ? {} : { sessionId: checkpoint.sessionId }),
+		replayed: true,
+	};
+	const released = (property: StageReleasedProperty): never => {
+		throw new StageReleasedError({ ...fields, property });
+	};
+	let requestedThinkingLevel: WorkflowThinkingLevel | undefined;
 	const cached = {
 		name,
 		async prompt() {
@@ -548,22 +791,48 @@ function createCachedStageContext(
 		sessionFile: undefined,
 		sessionId: `durable-replay:${name}`,
 		setModel: unsupported,
-		setThinkingLevel() {},
+		setThinkingLevel(level: WorkflowThinkingLevel) {
+			requestedThinkingLevel = level;
+		},
 		cycleModel: unsupported,
 		cycleThinkingLevel() {
 			return undefined;
 		},
-		agent: undefined,
-		model: undefined,
-		thinkingLevel: undefined,
-		messages: [],
+		get agent(): object {
+			return released("agent");
+		},
+		get model(): string {
+			return checkpoint.model ?? released("model");
+		},
+		get thinkingLevel(): WorkflowThinkingLevel {
+			return (
+				requestedThinkingLevel ??
+				(checkpoint.thinkingLevel as WorkflowThinkingLevel | undefined) ??
+				released("thinkingLevel")
+			);
+		},
+		get messages(): readonly object[] {
+			return released("messages");
+		},
+		async readMessages(): Promise<readonly object[]> {
+			return checkpoint.sessionId === undefined ? [] : input.readStoredMessages(checkpoint.sessionId);
+		},
 		isStreaming: false,
 		navigateTree: unsupported,
 		compact: unsupported,
 		abortCompaction() {},
 		abort: async () => {},
+		async release() {},
+		async rehydrate(): Promise<never> {
+			throw new StageRehydrationError(fields, { code: "replayed-stage" });
+		},
 	};
 	return cached as never as StageContext;
+}
+
+/** A replayed stage's stored messages, from the store its own options select; a store this read opens is closed. */
+function readStoredStageMessagesWithOwnStore(options: StageOptions, sessionId: string): Promise<readonly object[]> {
+	return readStoredStageMessages(options, undefined, sessionId);
 }
 
 function stageOutput(stage: StageSnapshot): WorkflowSerializableValue {
@@ -622,7 +891,7 @@ function mergeCheckpointHydrationMetadata(
 	if (checkpoints.length === 0 || replayValueCheckpoint.topology?.boundary?.event === "terminal") {
 		return replayValueCheckpoint;
 	}
-	return {
+	const merged: DurableCompletedStageCheckpoint = {
 		...replayValueCheckpoint,
 		...preferredHydrationTopology(replayValueCheckpoint, checkpoints),
 		...(replayValueCheckpoint.startedAt === undefined ? metadataValue(checkpoints, "startedAt") : {}),
@@ -641,6 +910,10 @@ function mergeCheckpointHydrationMetadata(
 		...(replayValueCheckpoint.artifacts === undefined ? metadataValue(checkpoints, "artifacts") : {}),
 		...(replayValueCheckpoint.warnings === undefined ? metadataValue(checkpoints, "warnings") : {}),
 	};
+	// Any record of the stage that says its session is in its own store says so for the stage.
+	return merged.sessionStorage === undefined && checkpoints.some((checkpoint) => checkpoint.sessionStorage === "stage")
+		? { ...merged, sessionStorage: "stage" }
+		: merged;
 }
 
 function preferredHydrationTopology(
@@ -682,11 +955,24 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
 	return `${kind}:${replayKey}`;
 }
 
-function stageSessionCheckpointId(replayKey: string, stage: StageSnapshot, durationMs: number): string {
+/**
+ * `forcedAt` makes a forced record differ from an equal one written at another time, such as a stage's ended wait. The
+ * wait and the results a waiting stage was woken with are part of the record's identity, so a change to either in the
+ * same millisecond is a new record; the same record written again in that millisecond is one record (#4309).
+ */
+function stageSessionCheckpointId(
+	replayKey: string,
+	stage: StageSnapshot,
+	durationMs: number,
+	forcedAt: number | undefined,
+): string {
 	return `${stableCheckpointId("stage-session", replayKey)}:${durableHash({
 		sessionId: stage.sessionId ?? "",
 		startedAt: stage.startedAt ?? 0,
 		durationMs,
+		...(stage.wait === undefined ? {} : { wait: stage.wait }),
+		...(stage.waitResults === undefined ? {} : { waitResults: stage.waitResults }),
+		...(forcedAt === undefined ? {} : { forcedAt }),
 	})}`;
 }
 

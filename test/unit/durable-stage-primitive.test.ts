@@ -10,6 +10,7 @@ import {
 	recordStageCheckpoint,
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
+import { isStageReleasedError } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { createStore, assert as exAssert, test as exTest, run, Type, workflow } from "./executor-shared.js";
@@ -212,6 +213,39 @@ describe("recordStageCheckpoint", () => {
 			/live session operations are unavailable/,
 		);
 		assert.deepEqual(recorded, [{ name: "analyze", replayKey, output: "cached output" }]);
+	});
+
+	test("a stage replayed from a checkpoint that recorded no session reads no messages, and its messages getter throws StageReleasedError (#4309)", async () => {
+		const replayKey = "stage:analyze:1";
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: WORKFLOW_ID,
+			checkpointId: `stage:${replayKey}`,
+			name: "analyze",
+			replayKey,
+			output: "cached output",
+			completedAt: Date.now(),
+		});
+		const stage = createDurableStagePrimitive({
+			workflowId: WORKFLOW_ID,
+			backend,
+			nextReplayKey: () => replayKey,
+			stage: () => {
+				throw new Error("live stage should not run");
+			},
+		});
+
+		const ctx = stage("analyze");
+		assert.deepEqual(await ctx.readMessages(), []);
+		assert.throws(
+			() => ctx.messages,
+			(error: unknown) =>
+				isStageReleasedError(error) &&
+				error.code === "stage-released" &&
+				error.fields.replayed === true &&
+				error.fields.property === "messages" &&
+				error.fields.sessionId === undefined,
+		);
 	});
 
 	test("replayed task invokes recordCachedTask for graph/store visibility", async () => {

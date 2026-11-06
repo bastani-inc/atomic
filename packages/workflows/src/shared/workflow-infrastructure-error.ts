@@ -7,6 +7,7 @@ import {
 	type TaskCleanupError,
 	type TaskCleanupPhase,
 } from "@bastani/atomic";
+import { isStageWaitError } from "./stage-wait-errors.js";
 
 export type WorkflowInfrastructureFault =
 	| "worker_lost"
@@ -190,11 +191,20 @@ export function rehydrateWorkflowInfrastructureError(
 		: new WorkflowInfrastructureError("process_cleanup_unconfirmed", value.message);
 }
 
+function isRetryableStageWaitError(value: object): boolean {
+	return isStageWaitError(value) && (value as { readonly retryable?: unknown }).retryable === true;
+}
+
+/**
+ * True when an error, or anything in its cause chain (at most eight levels), is retryable: a
+ * {@link WorkflowInfrastructureError}, or a `StageWaitError` that says so (for example a `StageRehydrationError` with
+ * code `session-unavailable`). Structural copies from another process count too.
+ */
 export function isRetryableWorkflowError(error: unknown): boolean {
 	let current = error;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
-		if (isInfrastructureError(current)) return true;
-		current = current instanceof Error ? current.cause : undefined;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		if (isInfrastructureError(current) || isRetryableStageWaitError(current)) return true;
+		current = (current as { readonly cause?: unknown }).cause;
 	}
 	return false;
 }

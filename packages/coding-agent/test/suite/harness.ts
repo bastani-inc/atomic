@@ -17,7 +17,12 @@ import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import type { ExtensionRunner, OrchestrationContext, SubagentChildPolicy } from "../../src/core/extensions/index.ts";
+import type {
+	ExtensionRunner,
+	OrchestrationContext,
+	SubagentChildPolicy,
+	ToolDefinition,
+} from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../../src/core/models-store.ts";
@@ -70,6 +75,7 @@ export interface HarnessOptions {
 	settings?: Partial<Settings>;
 	systemPrompt?: string;
 	tools?: AgentTool[];
+	customTools?: ToolDefinition[];
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
@@ -79,6 +85,8 @@ export interface HarnessOptions {
 	subagentPolicy?: SubagentChildPolicy;
 	orchestrationContext?: OrchestrationContext;
 	finishTurn?: Agent["finishTurn"];
+	/** The agent directory a session kept in a store spills oversized tool results into. */
+	storageAgentDir?: string;
 }
 
 export interface Harness {
@@ -198,6 +206,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		modelRuntime,
 		resourceLoader,
 		baseToolsOverride: toolMap,
+		customTools: options.customTools,
 		initialActiveToolNames: options.initialActiveToolNames,
 		usesDefaultTools: options.initialActiveToolNames === undefined,
 		allowedToolNames: options.allowedToolNames,
@@ -205,6 +214,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		extensionRunnerRef,
 		subagentPolicy: options.subagentPolicy,
 		orchestrationContext: options.orchestrationContext,
+		storageAgentDir: options.storageAgentDir,
 	});
 
 	const events: AgentSessionEvent[] = [];

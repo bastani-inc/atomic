@@ -45,6 +45,8 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			}
 			if (stage.status === "running" && context.observation.liveRunIds.has(runId)) {
 				context.observation.executingStageIds.add(workflowActivityNodeKey(runId, stage.id));
+			} else if (stage.status === "waiting") {
+				context.observation.executingStageIds.delete(workflowActivityNodeKey(runId, stage.id));
 			}
 			context.bumpAndNotify({ runId, stageId: stage.id });
 		},
@@ -125,6 +127,8 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			existing.failureDisposition = stage.failureDisposition;
 			existing.retryAfterMs = stage.retryAfterMs;
 			existing.failureMessage = stage.failureMessage;
+			if (stage.failureDetail === undefined) delete existing.failureDetail;
+			else existing.failureDetail = stage.failureDetail;
 			existing.skippedReason = stage.skippedReason;
 			if (stage.replayKey !== undefined) existing.replayKey = stage.replayKey;
 			if (stage.promptAnswerState !== undefined) existing.promptAnswerState = stage.promptAnswerState;
@@ -326,9 +330,10 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				return false;
 			}
 			const resumedTs = nextControlTimestamp(resumedAt, stage.pausedAt);
-			if (context.observation.liveRunIds.has(runId))
+			// A stage paused while it waited released goes back to waiting; it runs again only once it is woken.
+			if (context.observation.liveRunIds.has(runId) && stage.wait === undefined)
 				context.observation.executingStageIds.add(workflowActivityNodeKey(runId, stageId));
-			stage.status = "running";
+			stage.status = stage.wait === undefined ? "running" : "waiting";
 			if (stage.startedAt !== undefined) {
 				stage.pausedDurationMs = accumulatePausedDurationMs(stage.pausedDurationMs, stage.pausedAt, resumedTs);
 			}

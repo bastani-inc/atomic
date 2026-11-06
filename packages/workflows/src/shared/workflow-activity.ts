@@ -78,6 +78,7 @@ function projectRoot(
 	ownership: WorkflowActivityOwnership,
 ): WorkflowRootActivity {
 	let activeExecutionCount = 0;
+	let waitingStages = 0;
 	let humanWaits = 0;
 	let manualWaits = 0;
 	let runPromptKind: PendingPrompt["kind"] | undefined;
@@ -139,6 +140,8 @@ function projectRoot(
 		}
 		for (const stage of run.stages) {
 			if (run.status === "running" && stage.status === "paused") paused = true;
+			// A waiting stage of a live run holds no session but resumes on its own when what it waits on arrives.
+			if (live && run.status === "running" && !runStopping && stage.status === "waiting") waitingStages++;
 			if (stage.status === "awaiting_input" || stage.pendingPrompt) {
 				if (acceptsAttention && stage.status !== "paused") {
 					humanWaits++;
@@ -216,6 +219,9 @@ function projectRoot(
 					: activeExecutionCount > 0
 						? "executing"
 						: "automatic_continuation";
+	} else if (waitingStages > 0) {
+		state = "working";
+		reason = "waiting";
 	} else if (actionableBlockCount > 0) {
 		state = "blocked";
 		reason = humanWaits > 0 ? "awaiting_input" : "manual_intervention";
