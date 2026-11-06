@@ -15,6 +15,7 @@ import {
 import { SUBSCRIPTION_REPORT_TOOL_NAME } from "../../src/core/event-subscriptions/prompts.ts";
 import {
 	cancelSessionSubscriptions,
+	EVENT_SUBSCRIPTION_CHILD_ENTRY_TYPE,
 	type EventReportDetails,
 	runThenDispose,
 	type SessionEventChild,
@@ -211,6 +212,38 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		assert.deepEqual(reportsIn(harness), [
 			{ subscriptionId: `${harness.session.sessionId}/list#1`, eventId: "deploy-7", child: "list#1/deploy-7" },
 		]);
+	});
+
+	it("each finished child session leaves one transcript entry with its session, reports and answer (#4311)", async () => {
+		const harness = await createHarness({ childSessions: true });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall(SUBSCRIPTION_REPORT_TOOL_NAME, { text: "deploy failed" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(`rolled back ${"x".repeat(600)}`),
+			fauxAssistantMessage(`rolled back ${"x".repeat(600)}`),
+		]);
+		let childSessionId = "";
+		await harness.session.subscribe(listSource([{ id: "deploy-8" }]), async (_event, child) => {
+			childSessionId = (await child.task({ prompt: "Report failed deployments." })).sessionId;
+		}).done;
+		const childEntries = harness.session.sessionManager
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === EVENT_SUBSCRIPTION_CHILD_ENTRY_TYPE ? [entry.data] : [],
+			);
+		assert.deepEqual(childEntries, [
+			{
+				subscription: "list#1",
+				child: "list#1/deploy-8",
+				eventId: "deploy-8",
+				sessionId: childSessionId,
+				reports: 1,
+				answer: `rolled back ${"x".repeat(488)}`,
+			},
+		]);
+		assert.equal(EVENT_SUBSCRIPTION_CHILD_ENTRY_TYPE, "event_subscription_child");
 	});
 
 	it("a child limited to an explicit tool list can still call report_to_subscriber (#4311)", async () => {

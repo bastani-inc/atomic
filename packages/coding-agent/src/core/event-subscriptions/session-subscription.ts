@@ -18,6 +18,10 @@ export const EVENT_REPORT_MESSAGE_TYPE = "event_report";
 export const EVENT_SUBSCRIPTION_ENTRY_TYPE = "event_subscription";
 /** Session entry recording one processed event id; it never enters model context. */
 export const EVENT_SUBSCRIPTION_PROCESSED_ENTRY_TYPE = "event_subscription_processed";
+/** Session entry recording one finished child session; it never enters model context. */
+export const EVENT_SUBSCRIPTION_CHILD_ENTRY_TYPE = "event_subscription_child";
+/** How much of a child's final answer its transcript entry keeps. */
+const CHILD_ANSWER_CHARS = 500;
 
 export interface SessionEventTaskOptions
 	extends Pick<CreateAgentSessionOptions, "model" | "thinkingLevel" | "tools" | "noTools" | "excludedTools"> {
@@ -194,6 +198,7 @@ export function subscribeSession(
 		alreadyProcessed: (eventId) => processed.has(eventId),
 		handle: async (event, signal) => {
 			const childName = `${key}/${encodeURIComponent(event.id)}`;
+			let eventReports = 0;
 			const report = async (text: string): Promise<void> => {
 				if (typeof text !== "string") throw new SubscriptionConfigError("report.text", "not-string");
 				if (closed) throw new SubscriptionClosedError(id, "report");
@@ -208,6 +213,7 @@ export function subscribeSession(
 					{ triggerTurn: true, deliverAs: "steer" },
 				);
 				handle.recordReport();
+				eventReports += 1;
 			};
 			const child: SessionEventChild = {
 				name: childName,
@@ -218,7 +224,7 @@ export function subscribeSession(
 					if (resolve === undefined) throw new SubscriptionChildUnavailableError(id, session.sessionId);
 					const { SessionManager } = await import("../session-manager.ts");
 					const { prompt, ...childOptions } = taskOptions;
-					return await runChildSession(
+					const result = await runChildSession(
 						resolve({
 							...childOptions,
 							...(childOptions.tools === undefined ? {} : { tools: toolsWithReport(childOptions.tools) }),
@@ -228,6 +234,15 @@ export function subscribeSession(
 						seedEventPrompt(prompt, name, event),
 						signal,
 					);
+					await session.sessionManager.appendCustomEntry(EVENT_SUBSCRIPTION_CHILD_ENTRY_TYPE, {
+						subscription: key,
+						child: childName,
+						eventId: event.id,
+						sessionId: result.sessionId,
+						reports: eventReports,
+						answer: result.text.slice(0, CHILD_ANSWER_CHARS),
+					});
+					return result;
 				},
 				report,
 			};
