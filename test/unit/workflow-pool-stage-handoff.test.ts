@@ -23,6 +23,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { PENDING_STAGE_SETTLED_MESSAGE_LIMIT } from "../../packages/workflows/src/shared/pending-stage-retention.js";
 import { workflowPendingStageRouteCapability } from "../../packages/workflows/src/shared/pending-stage-route-capability.js";
 import { registerWorkflowPendingStageRouteReadiness } from "../../packages/workflows/src/shared/pending-stage-route-readiness.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -1833,6 +1834,140 @@ test("a receipt record whose message was settled otherwise meanwhile still fails
 		gated.release();
 		await assert.rejects(recording, /pending-stage message direct-1 changed during delivery/);
 		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1")?.status, "undeliverable");
+	} finally {
+		gated.release();
+		await f.close();
+	}
+});
+
+/** Settles `count` later messages of the child's stage `other` as delivered, past which retention archives older ones. */
+async function settleLaterMessages(f: Awaited<ReturnType<typeof fixture>>, count: number): Promise<void> {
+	const backend = durableBackendForRun(f.backend, f.store, descriptor.childRunId)!;
+	for (let index = 0; index < count; index++) {
+		await f.queueDirect("other", `later-${index}`);
+		const deliveredAt = new Date().toISOString();
+		assert.equal(
+			await f.store.markPendingStageMessageDelivered(
+				descriptor.childRunId,
+				"other",
+				`later-${index}`,
+				deliveredAt,
+				backend,
+			),
+			true,
+		);
+	}
+}
+
+test("a receipt record whose message was delivered and then archived while it waited finds it delivered, and reports no failed drain (#4513)", async () => {
+	const f = await fixture();
+	const gated = gatedHandoff(f);
+	try {
+		await gated.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const receipts = { sessionId: "session-a", messageIds: ["direct-1"] };
+		const ended = stage("stage", {
+			sessionId: "session-a",
+			status: "completed",
+			endedAt: 1,
+			intercomReceipts: receipts,
+		});
+		await gated.handoff.publish(f.first, [childRun([ended], { status: "completed", endedAt: 2 })]);
+		const recording = gated.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: receipts.messageIds,
+		});
+		await gated.appending;
+		// While the record waits at its append, settlement delivers the message and enough later messages of the run
+		// settle that retention moves it from the run's queue to its durable owner's archive.
+		const notified: string[] = [];
+		await settleQueued(f, notified);
+		await settleLaterMessages(f, PENDING_STAGE_SETTLED_MESSAGE_LIMIT);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1"), undefined);
+		const backend = durableBackendForRun(f.backend, f.store, descriptor.childRunId)!;
+		assert.equal(
+			(await backend.readSettledPendingStageMessage?.(descriptor.childRunId, "direct-1"))?.status,
+			"delivered",
+		);
+		gated.release();
+		await recording;
+		assert.deepEqual(notified, [], "the message was delivered once, and its sender hears nothing");
+		assert.equal(f.store.run(ROOT)?.intercomDeliveryIssue, undefined, "no drain failed");
+	} finally {
+		gated.release();
+		await f.close();
+	}
+});
+
+test("a receipt record whose message left the run's queue with no archive record still fails as changed during delivery (#4513)", async () => {
+	const f = await fixture();
+	const gated = gatedHandoff(f);
+	try {
+		await gated.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const recording = gated.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: ["direct-1"],
+		});
+		await gated.appending;
+		const backend = durableBackendForRun(f.backend, f.store, descriptor.childRunId)!;
+		const deliveredAt = new Date().toISOString();
+		assert.equal(
+			await f.store.markPendingStageMessageDelivered(
+				descriptor.childRunId,
+				"stage",
+				"direct-1",
+				deliveredAt,
+				backend,
+			),
+			true,
+		);
+		await settleLaterMessages(f, PENDING_STAGE_SETTLED_MESSAGE_LIMIT);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1"), undefined);
+		// The durable owner has no record of the message any more: nothing shows it delivered.
+		vi.spyOn(f.backend, "readSettledPendingStageMessage").mockResolvedValue(undefined);
+		gated.release();
+		await assert.rejects(recording, /pending-stage message direct-1 changed during delivery/);
+	} finally {
+		gated.release();
+		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
+test("a receipt record whose message was settled undeliverable, told to its sender and archived while it waited still fails as changed during delivery (#4513)", async () => {
+	const f = await fixture();
+	const gated = gatedHandoff(f);
+	try {
+		await gated.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const backend = durableBackendForRun(f.backend, f.store, descriptor.childRunId)!;
+		const recording = gated.handoff.recordReceipts(f.first, descriptor.childRunId, "stage", "stage", {
+			sessionId: "session-a",
+			receivedMessageIds: ["direct-1"],
+		});
+		await gated.appending;
+		assert.equal(
+			await f.store.markPendingStageMessageUndeliverable(
+				descriptor.childRunId,
+				"stage",
+				"direct-1",
+				"the stage ended without it",
+				backend,
+			),
+			true,
+		);
+		const notified: string[] = [];
+		await settleQueued(f, notified);
+		assert.deepEqual(notified, ["direct-1"]);
+		await settleLaterMessages(f, PENDING_STAGE_SETTLED_MESSAGE_LIMIT);
+		assert.equal(queuedEntry(f, descriptor.childRunId, "direct-1"), undefined);
+		const archived = () => backend.readSettledPendingStageMessage?.(descriptor.childRunId, "direct-1");
+		assert.equal((await archived())?.status, "undeliverable");
+		gated.release();
+		await assert.rejects(recording, /pending-stage message direct-1 changed during delivery/);
+		assert.equal((await archived())?.status, "undeliverable", "the record delivered nothing");
+		assert.deepEqual(notified, ["direct-1"]);
 	} finally {
 		gated.release();
 		await f.close();
