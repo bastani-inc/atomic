@@ -505,7 +505,7 @@ interface SubscriptionEvent {
 }
 
 interface WorkflowEventChild {
-  readonly name: string;            // "<subscription name>/<event id>"
+  readonly name: string;            // "<subscription name>/<event id>"; a later same-name subscription in the run uses "<name>#<n>/<event id>"
   readonly subscriptionId: string;
   readonly event: SubscriptionEvent;
   task(options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
@@ -616,9 +616,9 @@ Built-in sources, exported from `@bastani/atomic` and `@bastani/atomic/workflows
 
 | Source | Events |
 |--------|--------|
-| `githubChecks({ repo, pr, intervalMs? })` | One `check_run` event per check-run state of the pull request's head commit, polled with the `gh` CLI every `intervalMs` (default 30 s). The id changes with each status and conclusion. |
-| `githubReviews({ repo, pr, intervalMs? })` | One `pull_request_review` event per submitted review, polled with `gh`. |
-| `logTail(path, { pollMs? })` | One `line` event per line appended after the subscription starts. The id is the line's byte offset, so a resumed run skips lines it already handled. |
+| `githubChecks({ repo, pr, intervalMs? })` | One `check_run` event per check-run state of the pull request's head commit, polled with the `gh` CLI every `intervalMs` (default 30 s). Every page of check runs is read. The id changes with each status and conclusion. |
+| `githubReviews({ repo, pr, intervalMs? })` | One `pull_request_review` event per submitted review, polled with `gh`. Every page of reviews is read. |
+| `logTail(path, { pollMs? })` | One `line` event per line appended after the subscription starts. The id carries the follow's start time, a file generation and the line's byte offset. The generation advances when the file is truncated or recreated, so the first lines of a rotated file are delivered, not mistaken for lines already handled. A follow that starts later begins at the end of the file and gets new ids. |
 | `webhook({ path, port?, hostname?, maxBodyBytes? })` | One event per `POST` to `path`. The id comes from `X-GitHub-Delivery`, `X-Request-Id`, `Idempotency-Key` or the body's `id`. `listening()` resolves the URL to give the sender. Sources on the same fixed port share one server. |
 | `interval(ms)` | A `tick` event every `ms` milliseconds. |
 

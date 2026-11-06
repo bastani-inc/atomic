@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, it, vi } from "vitest";
+import { AgentSession } from "../../src/core/agent-session.ts";
 import {
 	isSubscriptionChildUnavailableError,
 	isSubscriptionClosedError,
@@ -11,6 +12,7 @@ import {
 } from "../../src/core/event-subscriptions/errors.ts";
 import { SUBSCRIPTION_REPORT_TOOL_NAME } from "../../src/core/event-subscriptions/prompts.ts";
 import {
+	cancelSessionSubscriptions,
 	type EventReportDetails,
 	runThenDispose,
 	type SessionEventChild,
@@ -345,6 +347,205 @@ describe("AgentSession.subscribe(source, handler)", () => {
 		assert.equal(new Set(results.map((result) => result.sessionId)).size, 2);
 		assert.equal(flushed.length, 2);
 		assert.match(childTool?.description ?? "", /to the session that subscribed to it/);
+	});
+
+	it("disposing the session aborts and disposes a running child session and rejects child.task with the cancellation reason (#4311)", async () => {
+		const flushed: string[] = [];
+		const childSettings = SettingsManager.inMemory();
+		const flush = childSettings.flush.bind(childSettings);
+		childSettings.flush = async () => {
+			flushed.push("child settings flushed");
+			await flush();
+		};
+		const harness = await createHarness({ childSessions: { settingsManager: childSettings } });
+		const modelSignals: Array<AbortSignal | undefined> = [];
+		const modelStarted = Promise.withResolvers<void>();
+		harness.setResponses([
+			(_context, options) => {
+				modelSignals.push(options?.signal);
+				modelStarted.resolve();
+				return new Promise((resolve) => {
+					options?.signal?.addEventListener(
+						"abort",
+						() => resolve(fauxAssistantMessage("", { stopReason: "aborted" })),
+						{
+							once: true,
+						},
+					);
+				});
+			},
+		]);
+		const taskOutcome = Promise.withResolvers<unknown>();
+		const subscription = harness.session.subscribe(listSource([{ id: "slow" }]), async (_event, child) => {
+			await child.task({ prompt: "Take your time." }).then(
+				() => taskOutcome.resolve(undefined),
+				(error: unknown) => taskOutcome.resolve(error),
+			);
+		});
+		void subscription.done.catch(() => undefined);
+		await modelStarted.promise;
+		assert.equal(modelSignals[0]?.aborted, false);
+		assert.equal(flushed.length, 0);
+		await harness.cleanup();
+		const outcome = await taskOutcome.promise;
+		assert.equal(modelSignals[0]?.aborted, true);
+		assert.equal(flushed.length, 1);
+		assert.equal((outcome as DOMException).name, "AbortError");
+		assert.equal((outcome as DOMException).message, "The subscribing session closed");
+		assert.equal(isSubscriptionHandlerError(outcome), false);
+	});
+
+	it("child.task after the session closed creates no child session and rejects with the cancellation reason (#4311)", async () => {
+		const flushed: string[] = [];
+		const childSettings = SettingsManager.inMemory();
+		const flush = childSettings.flush.bind(childSettings);
+		childSettings.flush = async () => {
+			flushed.push("child settings flushed");
+			await flush();
+		};
+		const harness = await createHarness({ childSessions: { settingsManager: childSettings } });
+		let modelCalls = 0;
+		harness.setResponses([
+			() => {
+				modelCalls += 1;
+				return fauxAssistantMessage("never asked");
+			},
+		]);
+		const inHandler = Promise.withResolvers<SessionEventChild>();
+		const proceed = Promise.withResolvers<void>();
+		const taskOutcome = Promise.withResolvers<unknown>();
+		const subscription = harness.session.subscribe(listSource([{ id: "late" }]), async (_event, child) => {
+			inHandler.resolve(child);
+			await proceed.promise;
+			await child.task({ prompt: "Too late." }).then(
+				() => taskOutcome.resolve(undefined),
+				(error: unknown) => taskOutcome.resolve(error),
+			);
+		});
+		void subscription.done.catch(() => undefined);
+		await inHandler.promise;
+		await harness.cleanup();
+		proceed.resolve();
+		const outcome = await taskOutcome.promise;
+		assert.equal((outcome as DOMException).name, "AbortError");
+		assert.equal((outcome as DOMException).message, "The subscribing session closed");
+		assert.equal(modelCalls, 0);
+		assert.equal(flushed.length, 0);
+	});
+
+	it("a session closed while its child session is still being created never prompts that child (#4311)", async () => {
+		const flushed: string[] = [];
+		const childSettings = SettingsManager.inMemory();
+		const flush = childSettings.flush.bind(childSettings);
+		childSettings.flush = async () => {
+			flushed.push("child settings flushed");
+			await flush();
+		};
+		const harness = await createHarness({ childSessions: { settingsManager: childSettings } });
+		const getSteeringMode = childSettings.getSteeringMode.bind(childSettings);
+		childSettings.getSteeringMode = () => {
+			cancelSessionSubscriptions(harness.session);
+			return getSteeringMode();
+		};
+		let modelCalls = 0;
+		harness.setResponses([
+			() => {
+				modelCalls += 1;
+				return fauxAssistantMessage("never asked");
+			},
+		]);
+		const taskOutcome = Promise.withResolvers<unknown>();
+		harness.session
+			.subscribe(listSource([{ id: "racing" }]), async (_event, child) => {
+				await child.task({ prompt: "Racing the close." }).then(
+					() => taskOutcome.resolve(undefined),
+					(error: unknown) => taskOutcome.resolve(error),
+				);
+			})
+			.done.catch(() => undefined);
+		const outcome = await taskOutcome.promise;
+		assert.equal((outcome as DOMException).name, "AbortError");
+		assert.equal(modelCalls, 0);
+		assert.equal(flushed.length, 1);
+		await harness.cleanup();
+	});
+
+	it("a failing child abort is attached to the cancellation reason and the child is still disposed (#4311)", async () => {
+		const flushed: string[] = [];
+		const childSettings = SettingsManager.inMemory();
+		const flush = childSettings.flush.bind(childSettings);
+		childSettings.flush = async () => {
+			flushed.push("child settings flushed");
+			await flush();
+		};
+		const harness = await createHarness({ childSessions: { settingsManager: childSettings } });
+		const abort = AgentSession.prototype.abort;
+		const abortSpy = vi.spyOn(AgentSession.prototype, "abort").mockImplementation(async function (
+			this: AgentSession,
+		) {
+			await abort.call(this);
+			if (this === harness.session) return;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			throw new Error("child abort failed");
+		});
+		try {
+			const modelStarted = Promise.withResolvers<void>();
+			harness.setResponses([
+				(_context, options) => {
+					modelStarted.resolve();
+					return new Promise((resolve) => {
+						options?.signal?.addEventListener(
+							"abort",
+							() => resolve(fauxAssistantMessage("", { stopReason: "aborted" })),
+							{ once: true },
+						);
+					});
+				},
+			]);
+			const taskOutcome = Promise.withResolvers<unknown>();
+			harness.session
+				.subscribe(listSource([{ id: "stuck" }]), async (_event, child) => {
+					await child.task({ prompt: "Hang." }).then(
+						() => taskOutcome.resolve(undefined),
+						(error: unknown) => taskOutcome.resolve(error),
+					);
+				})
+				.done.catch(() => undefined);
+			await modelStarted.promise;
+			await harness.cleanup();
+			const outcome = (await taskOutcome.promise) as DOMException & { cleanupCause?: Error };
+			assert.equal(outcome.name, "AbortError");
+			assert.equal(outcome.cleanupCause?.message, "child abort failed");
+			assert.equal(flushed.length, 1);
+		} finally {
+			abortSpy.mockRestore();
+		}
+	});
+
+	it("a finished child is no longer aborted when its session closes later (#4311)", async () => {
+		const harness = await createHarness({ childSessions: true });
+		const abortedSessions: AgentSession[] = [];
+		const abort = AgentSession.prototype.abort;
+		const abortSpy = vi.spyOn(AgentSession.prototype, "abort").mockImplementation(async function (
+			this: AgentSession,
+		) {
+			if (this !== harness.session) abortedSessions.push(this);
+			await abort.call(this);
+		});
+		try {
+			harness.setResponses([fauxAssistantMessage("fine")]);
+			const finished = Promise.withResolvers<void>();
+			const subscription = harness.session.subscribe(listSource([{ id: "quick" }]), async (_event, child) => {
+				await child.task({ prompt: "Quick." });
+				finished.resolve();
+			});
+			void subscription.done.catch(() => undefined);
+			await finished.promise;
+			await harness.cleanup();
+			assert.equal(abortedSessions.length, 0);
+		} finally {
+			abortSpy.mockRestore();
+		}
 	});
 
 	it("disposing the session cancels every open subscription (#4311)", async () => {

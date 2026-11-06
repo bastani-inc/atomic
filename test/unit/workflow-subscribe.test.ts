@@ -1312,3 +1312,110 @@ test("ctx.events yields events no faster than maxRate (#4311)", async () => {
 	assert.deepEqual({ handled: observed?.handled, queued: observed?.queued }, { handled: 1, queued: 1 });
 	assert.deepEqual(tail, { value: undefined, done: true });
 });
+
+test("a second same-name subscription gets its own child identity, so a resume never replays the first one's answer (#4311)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = "eeeeeeee-eeee-4eee-8eee-000000004311";
+	const answers: Record<string, string[]> = { first: [], second: [] };
+	let interruptSecond = true;
+	const definition = workflow({
+		name: "same-name-subscriptions",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await ctx.subscribe(
+				listSource("dup", [{ id: "e1" }]),
+				async (_event, child) => {
+					answers.first!.push((await child.task({ prompt: "first instructions" })).text);
+				},
+				{ name: "dup" },
+			).done;
+			await ctx
+				.subscribe(
+					listSource("dup", [{ id: "e1" }]),
+					async (_event, child) => {
+						answers.second!.push((await child.task({ prompt: "second instructions" })).text);
+						if (interruptSecond) {
+							interruptSecond = false;
+							throw new Error("interrupted after the child finished");
+						}
+					},
+					{ name: "dup" },
+				)
+				.done.catch(() => undefined);
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const answeringSession = (): StageSessionRuntime => {
+		let instructions = "";
+		return {
+			...mockSession(),
+			async prompt(text: string) {
+				instructions = text.split("\n")[0]!;
+			},
+			getLastAssistantText() {
+				return `answer to ${instructions}`;
+			},
+		};
+	};
+	const options = {
+		runId,
+		durableBackend: backend,
+		adapters: { agentSession: { create: async () => answeringSession() } },
+	};
+	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
+	const resumed = await run(definition, {}, { ...options, store: createStore() });
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(answers, {
+		first: ["answer to first instructions"],
+		second: ["answer to second instructions", "answer to second instructions"],
+	});
+	assert.deepEqual(
+		resumed.stages.map((stage) => stage.name).filter((name) => name.endsWith("/e1")),
+		["dup#2/e1"],
+	);
+});
+
+test("a subscriber declared and prompted while the run is paused parents children whose tasks waited for the resume (#4311)", async () => {
+	const store = createStore();
+	const runId = "ffffffff-ffff-4fff-8fff-000000004311";
+	const definition = workflow({
+		name: "paused-prompted-subscriber",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("anchor").prompt("start");
+			await pauseRun(runId, { store });
+			const watcher = ctx.stage("watcher");
+			const watching = watcher.prompt("watch");
+			const subscription = ctx.subscribe(
+				listSource("early", [{ id: "x1" }]),
+				async (_event, child) => {
+					await child.task({ prompt: "look" });
+				},
+				{ subscriber: watcher },
+			);
+			await turnsUntil(() => subscription.stats().active === 1);
+			await resumeRun(runId, { store });
+			await watching;
+			await subscription.done;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const result = await run(
+		definition,
+		{},
+		{
+			runId,
+			store,
+			durableBackend: await createMemoryTestBackend(),
+			adapters: { agentSession: { create: async () => subscriberSession() } },
+		},
+	);
+	assert.equal(result.status, "completed", result.error);
+	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
+	assert.deepEqual(result.stages.find((stage) => stage.name === "early/x1")!.parentIds, [watcher.id]);
+});

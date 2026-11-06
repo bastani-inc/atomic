@@ -105,15 +105,35 @@ export async function runThenDispose<T>(work: () => Promise<T>, dispose: () => P
 	return result;
 }
 
-async function runChildSession(options: CreateAgentSessionOptions, prompt: string): Promise<SessionEventTaskResult> {
+async function runChildSession(
+	options: CreateAgentSessionOptions,
+	prompt: string,
+	signal: AbortSignal,
+): Promise<SessionEventTaskResult> {
+	signal.throwIfAborted();
 	const { createAgentSession } = await import("../sdk.ts");
 	const { session: child } = await createAgentSession(options);
+	let aborting: Promise<void> = Promise.resolve();
+	let abortFailure: { readonly error: unknown } | undefined;
+	const abortChild = (): void => {
+		aborting = child.abort().then(undefined, (error: unknown) => {
+			abortFailure = { error };
+		});
+	};
+	signal.addEventListener("abort", abortChild, { once: true });
 	return await runThenDispose(
 		async () => {
+			signal.throwIfAborted();
 			await child.prompt(prompt);
+			signal.throwIfAborted();
 			return { text: child.getLastAssistantText() ?? "", sessionId: child.sessionId };
 		},
-		() => child.dispose(),
+		async () => {
+			signal.removeEventListener("abort", abortChild);
+			await aborting;
+			await child.dispose();
+			if (abortFailure !== undefined) throw abortFailure.error;
+		},
 	);
 }
 
@@ -159,7 +179,7 @@ export function subscribeSession(
 		admission: options,
 		ready,
 		alreadyProcessed: (eventId) => processed.has(eventId),
-		handle: async (event) => {
+		handle: async (event, signal) => {
 			const childName = `${name}/${event.id}`;
 			const report = async (text: string): Promise<void> => {
 				if (typeof text !== "string") throw new SubscriptionConfigError("report.text", "not-string");
@@ -192,6 +212,7 @@ export function subscribeSession(
 							customTools: [createSubscriberReportTool(report, "session")],
 						}),
 						seedEventPrompt(prompt, name, event),
+						signal,
 					);
 				},
 				report,

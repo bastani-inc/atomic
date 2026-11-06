@@ -5,6 +5,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { openEventSubscription } from "../../packages/coding-agent/src/core/event-subscriptions/admission.js";
 import {
 	EventSourceError,
 	isEventSourceError,
@@ -167,6 +168,11 @@ function runWithEmit(source: EventSource, emit: (event: SubscriptionEvent) => vo
 	return handle;
 }
 
+/** The id of the line at `offset` in `generation` of a follow that `manualDispatcher()` started at its default time. */
+function logId(file: string, generation: number, offset: number): string {
+	return `${file}:${MANUAL_START_MS}:${generation}:${offset}`;
+}
+
 function eventIds(handle: RunningSource): string[] {
 	return handle.events.map((event) => event.id);
 }
@@ -210,8 +216,10 @@ interface ManualTimer {
 	readonly callback: () => void;
 }
 
+const MANUAL_START_MS = 1_000;
+
 /** A dispatcher whose clock only moves when the test advances it. */
-function manualDispatcher(start = 1_000) {
+function manualDispatcher(start = MANUAL_START_MS) {
 	let time = start;
 	const timers = new Set<ManualTimer>();
 	const dispatcher = createWakeDispatcher({
@@ -413,8 +421,8 @@ test("logTail emits only lines appended after it starts, with byte-offset ids", 
 	await appendFile(file, "first\r\nsecond\n");
 	await clock.step(POLL_MS);
 	assert.deepEqual(handle.events, [
-		{ id: `${file}:9`, type: "line", payload: { path: file, line: "first", offset: 9 } },
-		{ id: `${file}:16`, type: "line", payload: { path: file, line: "second", offset: 16 } },
+		{ id: logId(file, 0, 9), type: "line", payload: { path: file, line: "first", offset: 9 } },
+		{ id: logId(file, 0, 16), type: "line", payload: { path: file, line: "second", offset: 16 } },
 	]);
 
 	await handle.stop();
@@ -435,14 +443,14 @@ test("logTail holds a partial line until its newline arrives", async () => {
 	await appendFile(file, "ne\nnext");
 	await clock.step(POLL_MS);
 	assert.deepEqual(handle.events, [
-		{ id: `${file}:0`, type: "line", payload: { path: file, line: "half a line", offset: 0 } },
+		{ id: logId(file, 0, 0), type: "line", payload: { path: file, line: "half a line", offset: 0 } },
 	]);
 	await clock.step(POLL_MS);
 	assert.equal(handle.events.length, 1);
 
 	await appendFile(file, "\n");
 	await clock.step(POLL_MS);
-	assert.equal(eventIds(handle)[1], `${file}:12`);
+	assert.equal(eventIds(handle)[1], logId(file, 0, 12));
 });
 
 test("logTail waits for a missing file and reads it from the start", async () => {
@@ -454,7 +462,7 @@ test("logTail waits for a missing file and reads it from the start", async () =>
 	assert.deepEqual(handle.events, []);
 	await writeFile(file, "created\n");
 	await clock.step(POLL_MS);
-	assert.equal(eventIds(handle)[0], `${file}:0`);
+	assert.equal(eventIds(handle)[0], logId(file, 0, 0));
 });
 
 test("logTail restarts from the beginning when the file is truncated", async () => {
@@ -472,7 +480,63 @@ test("logTail restarts from the beginning when the file is truncated", async () 
 	await clock.step(POLL_MS);
 	await appendFile(file, "c\n");
 	await clock.step(POLL_MS);
-	assert.deepEqual(handle.events[2], { id: `${file}:0`, type: "line", payload: { path: file, line: "c", offset: 0 } });
+	assert.deepEqual(handle.events[2], {
+		id: logId(file, 1, 0),
+		type: "line",
+		payload: { path: file, line: "c", offset: 0 },
+	});
+});
+
+test("a subscription receives the first line of a rotated file instead of counting it a duplicate (#4311)", async () => {
+	const file = join(tempDir(), "rotated.log");
+	await writeFile(file, "");
+	const clock = manualDispatcher();
+	const lines: string[] = [];
+	const subscription = openEventSubscription({
+		id: "rotation-subscription",
+		source: logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }),
+		handle: async (event) => {
+			lines.push(String((event.payload as { line: string }).line));
+		},
+	});
+	await clock.step(POLL_MS);
+	await appendFile(file, "first\nsecond\n");
+	await clock.step(POLL_MS);
+	await waitFor(() => lines.length === 2, "the lines before the rotation");
+
+	await truncate(file, 0);
+	await clock.step(POLL_MS);
+	await appendFile(file, "after truncation\n");
+	await clock.step(POLL_MS);
+	await waitFor(() => lines.length === 3, "the line after the truncation");
+
+	await unlink(file);
+	await clock.step(POLL_MS);
+	await writeFile(file, "after recreation\n");
+	await clock.step(POLL_MS);
+	await waitFor(() => lines.length === 4, "the line after the file was recreated");
+
+	assert.deepEqual(lines, ["first", "second", "after truncation", "after recreation"]);
+	assert.equal(subscription.stats().duplicates, 0);
+	await subscription.close();
+	assertNoLeakedWakes(clock);
+});
+
+test("logTail ids differ between follows that start at different times", async () => {
+	const file = join(tempDir(), "restarted.log");
+	await writeFile(file, "");
+	const ids: string[] = [];
+	for (const start of [1_000, 2_000]) {
+		const clock = manualDispatcher(start);
+		const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
+		await clock.step(POLL_MS);
+		await appendFile(file, "line\n");
+		await clock.step(POLL_MS);
+		ids.push(...eventIds(handle));
+		await handle.stop();
+		await truncate(file, 0);
+	}
+	assert.deepEqual(ids, [`${file}:1000:0:0`, `${file}:2000:0:0`]);
 });
 
 test("logTail resolves on abort and emits nothing afterwards", async () => {
@@ -528,7 +592,9 @@ test("logTail follows a file with the default options", async () => {
 	await waitFor(() => fsProbe.statCalls >= 2, "the first poll");
 	await appendFile(file, "hello\n");
 	await waitFor(() => handle.events.length === 1, "the appended line");
-	assert.equal(handle.events[0]?.id, `${file}:0`);
+	const id = handle.events[0]?.id ?? "";
+	assert.ok(id.startsWith(`${file}:`), id);
+	assert.match(id.slice(file.length + 1), /^\d+:0:0$/u);
 });
 
 test("logTail costs one stat per poll and opens the file only when bytes arrived", async () => {
@@ -568,12 +634,12 @@ test("logTail reads an append larger than one read in steps and joins a line tha
 
 	assert.deepEqual(fsProbe.readLengths, [LOG_READ_LIMIT_BYTES, 16]);
 	assert.equal(handle.events.length, 2);
-	assert.equal(handle.events[0]?.id, `${file}:0`);
+	assert.equal(handle.events[0]?.id, logId(file, 0, 0));
 	const first = handle.events[0]?.payload;
 	assert.ok(typeof first === "object" && first !== null && "line" in first);
 	assert.ok(first.line === longLine, "the long line is delivered whole");
 	assert.deepEqual(handle.events[1], {
-		id: `${file}:${LOG_READ_LIMIT_BYTES + 11}`,
+		id: logId(file, 0, LOG_READ_LIMIT_BYTES + 11),
 		type: "line",
 		payload: { path: file, line: "tail", offset: LOG_READ_LIMIT_BYTES + 11 },
 	});
@@ -618,7 +684,7 @@ test("logTail waits for the next poll when a file reports bytes it cannot return
 
 	fsProbe.readEof = false;
 	await clock.step(POLL_MS);
-	assert.equal(handle.events[0]?.id, `${file}:0`);
+	assert.equal(handle.events[0]?.id, logId(file, 0, 0));
 });
 
 test("logTail restarts from the start when the file is truncated below a held partial line", async () => {
@@ -635,7 +701,7 @@ test("logTail restarts from the start when the file is truncated below a held pa
 	await appendFile(file, "\n");
 	await clock.step(POLL_MS);
 	assert.deepEqual(handle.events, [
-		{ id: `${file}:0`, type: "line", payload: { path: file, line: "abc", offset: 0 } },
+		{ id: logId(file, 1, 0), type: "line", payload: { path: file, line: "abc", offset: 0 } },
 	]);
 });
 
@@ -653,7 +719,7 @@ test("logTail starts over when the file is deleted and created again", async () 
 	await writeFile(file, "defg\n");
 	await clock.step(POLL_MS);
 	assert.deepEqual(handle.events, [
-		{ id: `${file}:0`, type: "line", payload: { path: file, line: "defg", offset: 0 } },
+		{ id: logId(file, 1, 0), type: "line", payload: { path: file, line: "defg", offset: 0 } },
 	]);
 });
 
@@ -689,7 +755,7 @@ test("logTail stops delivering a batch of lines once its signal aborts", async (
 	await appendFile(file, "a\nb\n");
 	clock.advance(POLL_MS);
 	await handle.finished;
-	assert.deepEqual(eventIds(handle), [`${file}:0`]);
+	assert.deepEqual(eventIds(handle), [logId(file, 0, 0)]);
 });
 
 test("logTail rejects a read failure in the middle of a run with the errno code as detail", async () => {
@@ -1408,20 +1474,22 @@ function fakeGh(responses: Readonly<Record<string, string>>): RecordingRunner {
 test("githubChecks emits one check_run event per check run of the head commit", async () => {
 	const { gh, calls } = fakeGh({
 		"api repos/acme/widgets/pulls/7": JSON.stringify({ head: { sha: "abc123" } }),
-		"api repos/acme/widgets/commits/abc123/check-runs?per_page=100": JSON.stringify({
-			check_runs: [
-				{
-					id: 11,
-					name: "build",
-					status: "completed",
-					conclusion: "success",
-					html_url: "https://github.com/acme/widgets/runs/11",
-					started_at: "2026-01-01T00:00:00Z",
-					completed_at: "2026-01-01T00:05:00Z",
-				},
-				{ id: 12, name: "lint", status: "in_progress", conclusion: null, html_url: null },
-			],
-		}),
+		"api --paginate --slurp repos/acme/widgets/commits/abc123/check-runs?per_page=100": JSON.stringify([
+			{
+				check_runs: [
+					{
+						id: 11,
+						name: "build",
+						status: "completed",
+						conclusion: "success",
+						html_url: "https://github.com/acme/widgets/runs/11",
+						started_at: "2026-01-01T00:00:00Z",
+						completed_at: "2026-01-01T00:05:00Z",
+					},
+					{ id: 12, name: "lint", status: "in_progress", conclusion: null, html_url: null },
+				],
+			},
+		]),
 	});
 	const clock = manualDispatcher();
 	const source = githubChecks({ repo: "acme/widgets", pr: 7, intervalMs: POLL_MS, gh, dispatcher: clock.dispatcher });
@@ -1463,22 +1531,24 @@ test("githubChecks emits one check_run event per check run of the head commit", 
 	assert.deepEqual(handle.events.slice(2, 4), handle.events.slice(0, 2));
 	assert.deepEqual(calls.slice(0, 2), [
 		["api", "repos/acme/widgets/pulls/7"],
-		["api", "repos/acme/widgets/commits/abc123/check-runs?per_page=100"],
+		["api", "--paginate", "--slurp", "repos/acme/widgets/commits/abc123/check-runs?per_page=100"],
 	]);
 });
 
 test("githubReviews emits one pull_request_review event per review", async () => {
 	const { gh, calls } = fakeGh({
-		"api repos/acme/widgets/pulls/7/reviews?per_page=100": JSON.stringify([
-			{
-				id: 901,
-				user: { login: "octocat" },
-				state: "APPROVED",
-				body: "ship it",
-				submitted_at: "2026-01-02T00:00:00Z",
-				html_url: "https://github.com/acme/widgets/pull/7#pullrequestreview-901",
-			},
-			{ id: 902, user: null, state: "COMMENTED", body: null },
+		"api --paginate --slurp repos/acme/widgets/pulls/7/reviews?per_page=100": JSON.stringify([
+			[
+				{
+					id: 901,
+					user: { login: "octocat" },
+					state: "APPROVED",
+					body: "ship it",
+					submitted_at: "2026-01-02T00:00:00Z",
+					html_url: "https://github.com/acme/widgets/pull/7#pullrequestreview-901",
+				},
+				{ id: 902, user: null, state: "COMMENTED", body: null },
+			],
 		]),
 	});
 	const clock = manualDispatcher();
@@ -1508,7 +1578,7 @@ test("githubReviews emits one pull_request_review event per review", async () =>
 			payload: { reviewer: null, state: "COMMENTED", body: "", submittedAt: null, url: null },
 		},
 	]);
-	assert.deepEqual(calls[0], ["api", "repos/acme/widgets/pulls/7/reviews?per_page=100"]);
+	assert.deepEqual(calls[0], ["api", "--paginate", "--slurp", "repos/acme/widgets/pulls/7/reviews?per_page=100"]);
 });
 
 test("github sources reject with a poll failure that keeps the runner error as the cause", async () => {
@@ -1574,7 +1644,7 @@ test("aborting while a poll is in flight resolves instead of failing", async () 
 });
 
 test("aborting between polls resolves without leaving a timer or emitting again", async () => {
-	const { gh, calls } = fakeGh({ "api repos/acme/widgets/pulls/7/reviews?per_page=100": "[]" });
+	const { gh, calls } = fakeGh({ "api --paginate --slurp repos/acme/widgets/pulls/7/reviews?per_page=100": "[[]]" });
 	const clock = manualDispatcher();
 	const handle = run(
 		githubReviews({ repo: "acme/widgets", pr: 7, intervalMs: 1_000_000, gh, dispatcher: clock.dispatcher }),
@@ -1588,8 +1658,8 @@ test("aborting between polls resolves without leaving a timer or emitting again"
 });
 
 const PULL = "api repos/acme/widgets/pulls/7";
-const RUNS = "api repos/acme/widgets/commits/abc123/check-runs?per_page=100";
-const REVIEWS = "api repos/acme/widgets/pulls/7/reviews?per_page=100";
+const RUNS = "api --paginate --slurp repos/acme/widgets/commits/abc123/check-runs?per_page=100";
+const REVIEWS = "api --paginate --slurp repos/acme/widgets/pulls/7/reviews?per_page=100";
 const PULL_WITH_HEAD = JSON.stringify({ head: { sha: "abc123" } });
 
 type GitHubSourceFactory = typeof githubChecks;
@@ -1618,13 +1688,38 @@ async function pollFailure(
 	return error;
 }
 
+test("githubChecks emits the check runs of every page gh returns", async () => {
+	const events = await firstPoll(githubChecks, {
+		[PULL]: PULL_WITH_HEAD,
+		[RUNS]: JSON.stringify([
+			{ total_count: 3, check_runs: [{ id: 21, status: "completed", conclusion: "success" }] },
+			{ total_count: 3, check_runs: [{ id: 22, status: "queued" }] },
+			{ total_count: 3, check_runs: [{ id: 23, status: "in_progress" }] },
+		]),
+	});
+	assert.deepEqual(
+		events.map((event) => event.id),
+		["check-run:21:completed:success", "check-run:22:queued:none", "check-run:23:in_progress:none"],
+	);
+});
+
+test("githubReviews emits the reviews of every page gh returns", async () => {
+	const events = await firstPoll(githubReviews, {
+		[REVIEWS]: JSON.stringify([[{ id: 31 }, { id: 32 }], [{ id: 33 }], []]),
+	});
+	assert.deepEqual(
+		events.map((event) => event.id),
+		["review:31", "review:32", "review:33"],
+	);
+});
+
 test("githubChecks skips check runs without a numeric id and a status, and fills in what is missing", async () => {
 	const events = await firstPoll(githubChecks, {
 		[PULL]: PULL_WITH_HEAD,
 		[RUNS]:
-			'{"check_runs":[null,7,"text",[],{"id":"11","status":"completed"},{"id":12},{"id":13,"status":5},' +
+			'[{"check_runs":[null,7,"text",[],{"id":"11","status":"completed"},{"id":12},{"id":13,"status":5},' +
 			'{"id":1e999,"status":"queued"},{"id":14,"status":"queued","conclusion":5,"html_url":5,"name":5,' +
-			'"started_at":5,"completed_at":5}]}',
+			'"started_at":5,"completed_at":5}]}]',
 	});
 	assert.deepEqual(events, [
 		{
@@ -1646,8 +1741,8 @@ test("githubChecks skips check runs without a numeric id and a status, and fills
 test("githubReviews skips reviews without a numeric id, and fills in what is missing", async () => {
 	const events = await firstPoll(githubReviews, {
 		[REVIEWS]:
-			'[null,3,"text",[],{"id":"1"},{"state":"APPROVED"},{"id":1e999},' +
-			'{"id":5,"user":"octocat","state":7,"body":8,"submitted_at":9,"html_url":10}]',
+			'[[null,3,"text",[],{"id":"1"},{"state":"APPROVED"},{"id":1e999},' +
+			'{"id":5,"user":"octocat","state":7,"body":8,"submitted_at":9,"html_url":10}]]',
 	});
 	assert.deepEqual(events, [
 		{
@@ -1667,6 +1762,8 @@ test("github sources fail a poll with the reason the response was unusable", asy
 		{ factory: githubReviews, responses: { [REVIEWS]: "not json" }, reason: "not-json" },
 		{ factory: githubReviews, responses: { [REVIEWS]: "{}" }, reason: "not-array" },
 		{ factory: githubReviews, responses: { [REVIEWS]: "null" }, reason: "not-array" },
+		{ factory: githubReviews, responses: { [REVIEWS]: "[{}]" }, reason: "not-array" },
+		{ factory: githubReviews, responses: { [REVIEWS]: "[null]" }, reason: "not-array" },
 		{ factory: githubChecks, responses: { [PULL]: "nope" }, reason: "not-json" },
 		{ factory: githubChecks, responses: { [PULL]: "[]" }, reason: "not-object" },
 		{ factory: githubChecks, responses: { [PULL]: "{}" }, reason: "no-head-sha" },
@@ -1674,11 +1771,14 @@ test("github sources fail a poll with the reason the response was unusable", asy
 		{ factory: githubChecks, responses: { [PULL]: '{"head":null}' }, reason: "no-head-sha" },
 		{ factory: githubChecks, responses: { [PULL]: '{"head":{"sha":7}}' }, reason: "no-head-sha" },
 		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "oops" }, reason: "not-json" },
-		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "7" }, reason: "not-object" },
+		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "7" }, reason: "not-array" },
 		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "{}" }, reason: "not-array" },
+		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "[7]" }, reason: "not-object" },
+		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "[[]]" }, reason: "not-object" },
+		{ factory: githubChecks, responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: "[{}]" }, reason: "not-array" },
 		{
 			factory: githubChecks,
-			responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: '{"check_runs":{}}' },
+			responses: { [PULL]: PULL_WITH_HEAD, [RUNS]: '[{"check_runs":{}}]' },
 			reason: "not-array",
 		},
 	];
@@ -1713,7 +1813,7 @@ test("a failed poll names the errno code of the runner's failure, and nothing el
 });
 
 test("github sources stop delivering a batch of events once their signal aborts", async () => {
-	const { gh } = fakeGh({ [REVIEWS]: JSON.stringify([{ id: 1 }, { id: 2 }]) });
+	const { gh } = fakeGh({ [REVIEWS]: JSON.stringify([[{ id: 1 }, { id: 2 }]]) });
 	const clock = manualDispatcher();
 	const handle = run(
 		githubReviews({ repo: "acme/widgets", pr: 7, gh, dispatcher: clock.dispatcher }),
@@ -1744,13 +1844,16 @@ test.runIf(process.platform !== "win32")(
 	"the default runner passes its arguments to gh and returns its output",
 	async () => {
 		const dir = installFakeGh(
-			[`printf '%s\\n' "$@" > "$(dirname "$0")/args"`, `printf '[{"id":5,"state":"APPROVED"}]'`].join("\n"),
+			[`printf '%s\\n' "$@" > "$(dirname "$0")/args"`, `printf '[[{"id":5,"state":"APPROVED"}]]'`].join("\n"),
 		);
 		const clock = manualDispatcher();
 		const handle = run(githubReviews({ repo: "acme/widgets", pr: 7, dispatcher: clock.dispatcher }));
 		await waitFor(() => handle.events.length === 1, "the review");
 		assert.equal(handle.events[0]?.id, "review:5");
-		assert.equal(await readText(join(dir, "args")), "api\nrepos/acme/widgets/pulls/7/reviews?per_page=100\n");
+		assert.equal(
+			await readText(join(dir, "args")),
+			"api\n--paginate\n--slurp\nrepos/acme/widgets/pulls/7/reviews?per_page=100\n",
+		);
 	},
 );
 

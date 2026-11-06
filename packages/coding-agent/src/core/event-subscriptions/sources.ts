@@ -159,7 +159,9 @@ async function readRange(path: string, start: number, length: number): Promise<B
 
 /**
  * Follows a file like `tail -f`: emits each line appended after the subscription starts. A missing file is awaited
- * from offset 0. Event ids carry the byte offset of the line, so they are stable across restarts.
+ * from offset 0. Event ids carry the start time of the follow, the file generation (it advances whenever the file is
+ * truncated or recreated and offsets restart at 0) and the byte offset of the line, so a rotated file's new lines are
+ * never taken for lines already handled.
  */
 export function logTail(path: string, options?: LogTailOptions): EventSource {
 	requireNonEmptyString(path, "logTail.path");
@@ -171,6 +173,8 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 	return {
 		id,
 		async start(signal, emit) {
+			const epoch = dispatcher.now();
+			let generation = 0;
 			let consumed = 0;
 			let pending: Buffer = Buffer.alloc(0);
 
@@ -178,6 +182,7 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 				try {
 					const { size } = await stat(absolutePath);
 					if (size < consumed + pending.length) {
+						generation += 1;
 						consumed = 0;
 						pending = Buffer.alloc(0);
 					}
@@ -199,6 +204,7 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 					return { lines, more: readFrom + chunk.length < size };
 				} catch (error) {
 					if (errnoCode(error) !== "ENOENT") throw error;
+					if (consumed + pending.length > 0) generation += 1;
 					consumed = 0;
 					pending = Buffer.alloc(0);
 					return { lines: [], more: false };
@@ -223,7 +229,11 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 				}
 				for (const { offset, line } of chunk.lines) {
 					if (signal.aborted) return;
-					emit({ id: `${absolutePath}:${offset}`, type: "line", payload: { path: absolutePath, line, offset } });
+					emit({
+						id: `${absolutePath}:${epoch}:${generation}:${offset}`,
+						type: "line",
+						payload: { path: absolutePath, line, offset },
+					});
 				}
 				if (!chunk.more && !(await wait(dispatcher, pollMs, signal))) return;
 			}
@@ -324,7 +334,7 @@ function openListener(key: string, hostname: string, port: number): WebhookListe
 	const routes = new Map<string, RouteHandler>();
 	const server = createServer((req, res) => {
 		const route = routes.get(requestPath(req));
-		if (route === undefined) {
+		if (typeof route !== "function") {
 			respondJson(res, 404, { error: "not-found" });
 			return;
 		}
@@ -587,6 +597,12 @@ function asObject(value: SubscriptionEventPayload): JsonObject {
 	return value;
 }
 
+/** The pages of a `gh api --paginate --slurp` response. */
+function slurpedPages(value: SubscriptionEventPayload): readonly SubscriptionEventPayload[] {
+	if (!Array.isArray(value)) throw new GitHubResponseError("not-array");
+	return value as readonly SubscriptionEventPayload[];
+}
+
 /** The object elements of a JSON array; anything else in the array is skipped. */
 function asObjects(value: SubscriptionEventPayload | undefined): readonly JsonObject[] {
 	if (!Array.isArray(value)) throw new GitHubResponseError("not-array");
@@ -655,26 +671,32 @@ export function githubChecks(options: GitHubPullRequestSourceOptions): EventSour
 		const pull = asObject(await ghJson(gh, ["api", `repos/${repo}/pulls/${pr}`], signal));
 		const headSha = nestedString(pull, "head", "sha");
 		if (headSha === undefined) throw new GitHubResponseError("no-head-sha");
-		const checks = asObject(
-			await ghJson(gh, ["api", `repos/${repo}/commits/${headSha}/check-runs?per_page=100`], signal),
+		const pages = slurpedPages(
+			await ghJson(
+				gh,
+				["api", "--paginate", "--slurp", `repos/${repo}/commits/${headSha}/check-runs?per_page=100`],
+				signal,
+			),
 		);
 		const events: SubscriptionEvent[] = [];
-		for (const run of asObjects(checks.check_runs)) {
-			const runId = numberField(run, "id");
-			const status = stringField(run, "status");
-			if (runId === undefined || status === undefined) continue;
-			const conclusion = stringField(run, "conclusion") ?? null;
-			events.push(
-				event(`check-run:${runId}:${status}:${conclusion ?? "none"}`, "check_run", {
-					name: stringField(run, "name") ?? "",
-					status,
-					conclusion,
-					url: stringField(run, "html_url") ?? null,
-					headSha,
-					startedAt: stringField(run, "started_at") ?? null,
-					completedAt: stringField(run, "completed_at") ?? null,
-				}),
-			);
+		for (const page of pages) {
+			for (const run of asObjects(asObject(page).check_runs)) {
+				const runId = numberField(run, "id");
+				const status = stringField(run, "status");
+				if (runId === undefined || status === undefined) continue;
+				const conclusion = stringField(run, "conclusion") ?? null;
+				events.push(
+					event(`check-run:${runId}:${status}:${conclusion ?? "none"}`, "check_run", {
+						name: stringField(run, "name") ?? "",
+						status,
+						conclusion,
+						url: stringField(run, "html_url") ?? null,
+						headSha,
+						startedAt: stringField(run, "started_at") ?? null,
+						completedAt: stringField(run, "completed_at") ?? null,
+					}),
+				);
+			}
 		}
 		return events;
 	});
@@ -684,20 +706,24 @@ export function githubChecks(options: GitHubPullRequestSourceOptions): EventSour
 export function githubReviews(options: GitHubPullRequestSourceOptions): EventSource {
 	const { repo, pr, intervalMs, gh, dispatcher } = validateGitHubOptions("githubReviews", options);
 	return pollingSource(`github-reviews:${repo}#${pr}`, dispatcher, intervalMs, async (signal) => {
-		const reviews = await ghJson(gh, ["api", `repos/${repo}/pulls/${pr}/reviews?per_page=100`], signal);
+		const pages = slurpedPages(
+			await ghJson(gh, ["api", "--paginate", "--slurp", `repos/${repo}/pulls/${pr}/reviews?per_page=100`], signal),
+		);
 		const events: SubscriptionEvent[] = [];
-		for (const review of asObjects(reviews)) {
-			const reviewId = numberField(review, "id");
-			if (reviewId === undefined) continue;
-			events.push(
-				event(`review:${reviewId}`, "pull_request_review", {
-					reviewer: nestedString(review, "user", "login") ?? null,
-					state: stringField(review, "state") ?? "",
-					body: stringField(review, "body") ?? "",
-					submittedAt: stringField(review, "submitted_at") ?? null,
-					url: stringField(review, "html_url") ?? null,
-				}),
-			);
+		for (const page of pages) {
+			for (const review of asObjects(page)) {
+				const reviewId = numberField(review, "id");
+				if (reviewId === undefined) continue;
+				events.push(
+					event(`review:${reviewId}`, "pull_request_review", {
+						reviewer: nestedString(review, "user", "login") ?? null,
+						state: stringField(review, "state") ?? "",
+						body: stringField(review, "body") ?? "",
+						submittedAt: stringField(review, "submitted_at") ?? null,
+						url: stringField(review, "html_url") ?? null,
+					}),
+				);
+			}
 		}
 		return events;
 	});

@@ -85,10 +85,10 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 	}
 	const open = new Set<OpenSubscription>();
 
-	const nextKey = (name: string): string => {
+	const nextOrdinal = (name: string): number => {
 		const ordinal = (ordinals.get(name) ?? 0) + 1;
 		ordinals.set(name, ordinal);
-		return `${name}#${ordinal}`;
+		return ordinal;
 	};
 
 	const track = (entry: OpenSubscription, done: Promise<SubscriptionStats>): void => {
@@ -110,11 +110,16 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		validateSubscriptionAdmission(options, "options");
 		validateSubscriber(options.subscriber);
 		const name = options.name ?? source.id;
-		const key = nextKey(name);
+		const ordinal = nextOrdinal(name);
+		const key = `${name}#${ordinal}`;
+		const childPrefix = ordinal === 1 ? name : key;
 		const id = `${runtime.runId}/${key}`;
 		const subscriber = options.subscriber;
-		const subscriberId = subscriber === undefined ? undefined : runtime.subscriberStageId(subscriber);
-		const parentIds = Object.freeze(subscriberId === undefined ? [...runtime.currentParents()] : [subscriberId]);
+		const frontier = Object.freeze([...runtime.currentParents()]);
+		const childParents = (): readonly string[] => {
+			const subscriberId = subscriber === undefined ? undefined : runtime.subscriberStageId(subscriber);
+			return subscriberId === undefined ? frontier : [subscriberId];
+		};
 		const maxConcurrent = options.maxConcurrent ?? DEFAULT_SUBSCRIPTION_MAX_CONCURRENT;
 		const ready = recordSubscription(runtime.backend, runtime.runId, {
 			subscription: key,
@@ -132,7 +137,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 			ready,
 			alreadyProcessed: (eventId) => subscriptionEventProcessed(runtime.backend, runtime.runId, key, eventId),
 			handle: async (event) => {
-				const childName = `${name}/${event.id}`;
+				const childName = `${childPrefix}/${event.id}`;
 				const report = async (text: string): Promise<void> => {
 					if (typeof text !== "string") throw new SubscriptionConfigError("report.text", "not-string");
 					if (closed) throw new SubscriptionClosedError(id, "report");
@@ -158,7 +163,14 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 								prompt: seedEventPrompt(rest.prompt ?? instructions ?? "", name, event),
 								customTools: [...(rest.customTools ?? []), createSubscriberReportTool(report, "stage")],
 							},
-							{ failed: false, activeStages: new Map(), parentIds, detached: true },
+							{
+								failed: false,
+								activeStages: new Map(),
+								detached: true,
+								get parentIds() {
+									return childParents();
+								},
+							},
 						);
 					},
 					report,
@@ -185,7 +197,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 		validateName(options.name, "options.name");
 		validateSubscriptionAdmission({ maxRate: options.maxRate }, "options");
 		const name = options.name ?? source.id;
-		const key = nextKey(name);
+		const key = `${name}#${nextOrdinal(name)}`;
 		const id = `${runtime.runId}/${key}`;
 		const ready = recordSubscription(runtime.backend, runtime.runId, {
 			subscription: key,
