@@ -82,8 +82,8 @@ const SQLITE_BUSY = 5;
 /** Bound on SIGSTOP retries: the owner holds the write lock for milliseconds between handler completions. */
 const STOP_ATTEMPTS = 200;
 
-function journalWriteLockFree(directory: string): boolean {
-	const database = new DatabaseSync(join(directory, "journal.sqlite"));
+function writeLockFree(path: string): boolean {
+	const database = new DatabaseSync(path);
 	try {
 		database.exec("PRAGMA busy_timeout=0");
 		database.exec("BEGIN IMMEDIATE");
@@ -97,18 +97,27 @@ function journalWriteLockFree(directory: string): boolean {
 	}
 }
 
+/** The run journal and the store the scripted event children keep their sessions in. */
+async function storageWriteLocksFree(directory: string): Promise<boolean> {
+	for (const path of [join(directory, "journal.sqlite"), join(directory, "workflows", "journal.sqlite")]) {
+		if ((await fileExists(path)) && !writeLockFree(path)) return false;
+	}
+	return true;
+}
+
 /**
- * Stops `owner` at a moment it does not hold the journal's write lock. A journal transaction waits out a stopped
- * lock holder for minutes by design, so stopping the owner mid-transaction would only test SQLite's lock wait.
+ * Stops `owner` at a moment it holds no write lock on the journal or the session store. A journal transaction waits
+ * out a stopped lock holder for minutes by design, so stopping the owner mid-transaction would only test SQLite's lock
+ * wait.
  */
 async function stopOutsideTransaction(owner: SpawnedProcess, directory: string): Promise<void> {
 	for (let attempt = 0; attempt < STOP_ATTEMPTS; attempt++) {
 		owner.kill("SIGSTOP");
-		if (journalWriteLockFree(directory)) return;
+		if (await storageWriteLocksFree(directory)) return;
 		owner.kill("SIGCONT");
 		await sleep(5);
 	}
-	assert.fail(`the owner held the journal's write lock at each of ${STOP_ATTEMPTS} stops`);
+	assert.fail(`the owner held a storage write lock at each of ${STOP_ATTEMPTS} stops`);
 }
 
 test(

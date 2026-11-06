@@ -119,25 +119,18 @@ const definition = workflow({
 }) as WorkflowDefinition;
 
 /**
- * An event child's model: it answers `answer:<subscription>:<event id>` from the event seeded into its conversation. It
- * keeps the conversation in the selected session store (the shared server in a distributed run, a store under the test
- * directory otherwise), so a child interrupted by a crash resumes in the same session, on any node.
+ * An event child's model: it answers `answer:<subscription>:<event id>`, read from its own stage name
+ * (`<subscription>#<n>/<URI-encoded event id>`), so a child resumed after a crash answers for itself even when the
+ * resumed conversation no longer shows the seeded event. It keeps its conversation in the selected session store (the
+ * shared server in a distributed run, a store under the test directory otherwise), so it resumes on any node.
  */
-function scriptedChildSession(manager: SessionManager): StageSessionRuntime {
-	let answer = "";
-	const seededText = (): string => {
-		for (const entry of manager.getEntries()) {
-			if (entry.type !== "message" || entry.message.role !== "user") continue;
-			const content = entry.message.content;
-			if (typeof content === "string" && /^Subscription: /m.test(content)) return content;
-		}
-		return "";
-	};
+function scriptedChildSession(manager: SessionManager, stageName: string): StageSessionRuntime {
+	const keyEnd = stageName.lastIndexOf("#");
+	const subscription = stageName.slice(0, keyEnd);
+	const eventId = decodeURIComponent(stageName.slice(stageName.indexOf("/", keyEnd) + 1));
 	return {
 		async prompt(text: string) {
 			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-			const seed = /^Subscription: /m.test(text) ? text : seededText();
-			answer = `answer:${/^Subscription: (.*)$/m.exec(seed)?.[1]}:${/^Event id: (.*)$/m.exec(seed)?.[1]}`;
 		},
 		async steer() {},
 		async followUp() {},
@@ -161,7 +154,7 @@ function scriptedChildSession(manager: SessionManager): StageSessionRuntime {
 		async abort() {},
 		dispose() {},
 		getLastAssistantText() {
-			return answer;
+			return `answer:${subscription}:${eventId}`;
 		},
 	};
 }
@@ -174,8 +167,8 @@ const adapters = {
 		},
 	},
 	agentSession: {
-		create: async (options: { readonly sessionManager?: SessionManager }) =>
-			scriptedChildSession(options.sessionManager ?? (await SessionManager.create(directory))),
+		create: async (options: { readonly sessionManager?: SessionManager }, meta?: { readonly stageName: string }) =>
+			scriptedChildSession(options.sessionManager ?? (await SessionManager.create(directory)), meta?.stageName ?? ""),
 	},
 };
 const store = createStore();
