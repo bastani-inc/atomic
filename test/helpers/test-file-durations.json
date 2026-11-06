@@ -1184,6 +1184,8 @@
 		"test/integration/workflow-pool-task-heartbeat.test.ts": 78172,
 		"test/integration/workflow-pool-typed-failure.test.ts": 1945,
 		"test/integration/workflow-pool-usage-crash.test.ts": 6189,
+		"test/integration/workflow-pool-waiting-question.test.ts": 14582,
+		"test/integration/workflow-pool-waiting-workers.test.ts": 14059,
 		"test/integration/workflow-pool-workflow-heartbeat.test.ts": 24362,
 		"test/integration/workflow-process-cleanup.test.ts": 579,
 		"test/integration/workflow-prompt-tool-resume.test.ts": 707,
