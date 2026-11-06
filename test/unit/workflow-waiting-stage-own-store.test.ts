@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { JsonlSessionStore } from "@bastani/atomic";
 import { describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -9,9 +10,17 @@ import {
 	durableWaitingStages,
 	recordStageCheckpoint,
 	recordStageSessionCheckpoint,
+	stageCheckpointWithOutput,
 } from "../../packages/workflows/src/durable/stage-primitive.js";
-import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
-import { assertWaitingStageSessionsExist } from "../../packages/workflows/src/engine/run-resume-preflight.js";
+import {
+	createCheckpointIdGenerator,
+	recordCheckpointDurably,
+} from "../../packages/workflows/src/durable/tool-primitive.js";
+import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import {
+	assertStageOwnedSessionExists,
+	assertWaitingStageSessionsExist,
+} from "../../packages/workflows/src/engine/run-resume-preflight.js";
 import {
 	isStageRehydrationError,
 	type StageRehydrationError,
@@ -24,7 +33,6 @@ import { counters, detachingAdapters, FakeCiService } from "./waiting-stage-help
 
 const WORKFLOW_NAME = "resume-stage-owned-store";
 
-/** A stage's session as its previous process left it: one prompt answered. */
 async function savedSession(store: MemorySessionStore): Promise<string> {
 	const manager = await SessionManager.create(store, "/");
 	await manager.appendMessage({ role: "user", content: "plan alpha", timestamp: 1 });
@@ -48,10 +56,6 @@ async function savedSession(store: MemorySessionStore): Promise<string> {
 	return manager.getSessionId();
 }
 
-/**
- * The journal a process leaves when it stops while stage `alpha`, which kept its session `sessionId` in the store its
- * own `sessionStore` option supplied, waited released after its first prompt.
- */
 async function seedStoppedRun(sessionId: string, waiting = true) {
 	const runId = crypto.randomUUID();
 	const backend = await JournalDurableBackend.open(new MemoryRunJournal());
@@ -93,10 +97,6 @@ async function seedStoppedRun(sessionId: string, waiting = true) {
 	return { runId, backend };
 }
 
-/**
- * Resume the seeded run: `alpha` is called again with `ownStore` (none when undefined) and sent its next message. The
- * run's own session store is `runStore`.
- */
 async function resumeWith(
 	seeded: { runId: string; backend: JournalDurableBackend },
 	ownStore?: MemorySessionStore,
@@ -141,7 +141,6 @@ function rehydrationFailure(failure: Error | undefined): StageRehydrationError {
 	return failure;
 }
 
-/** Each call of a stage that opens, reopens or reads its session, as a workflow may make it first. */
 const SESSION_CALLS: readonly [string, (stage: StageContext) => Promise<unknown>][] = [
 	["rehydrate", (stage) => stage.rehydrate()],
 	["sendUserMessage", (stage) => stage.sendUserMessage("report alpha")],
@@ -158,10 +157,6 @@ const SESSION_CALLS: readonly [string, (stage: StageContext) => Promise<unknown>
 	["prompt", (stage) => stage.prompt("plan alpha")],
 ];
 
-/**
- * Resume the seeded run, calling `alpha` again without its own store and making each of `calls` on it, with
- * `runStore`, which holds the same session, as the run's store. Returns what each call threw.
- */
 async function callWithoutOwnStore(
 	seeded: { runId: string; backend: JournalDurableBackend },
 	runStore: MemorySessionStore,
@@ -207,12 +202,14 @@ async function callWithoutOwnStore(
 }
 
 describe("waiting stages that keep their session in their own sessionStore (#4309)", () => {
-	test("a stage released with its own sessionStore records that its session is in that store (#4309)", async () => {
+	test("a stage released with its own sessionStore or sessionManager records that its session is in that store (#4309)", async () => {
 		const backend = await JournalDurableBackend.open(new MemoryRunJournal());
 		const runId = crypto.randomUUID();
-		const ownStore = new MemorySessionStore();
 		let recorded: ReturnType<typeof durableWaitingStages> = [];
 		const service = new FakeCiService();
+		const ownStore = new MemorySessionStore();
+		const managedStore = new MemorySessionStore();
+		const manager = await SessionManager.create(managedStore, "/");
 		const result = await run(
 			workflow({
 				name: WORKFLOW_NAME,
@@ -224,8 +221,11 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 					await own.prompt("plan own");
 					const shared = ctx.stage("shared");
 					await shared.prompt("plan shared");
+					const managed = ctx.stage("managed", { sessionManager: manager });
+					await managed.prompt("plan managed");
 					await own.release();
 					await shared.release();
+					await managed.release();
 					recorded = durableWaitingStages(backend, runId);
 					return {};
 				},
@@ -246,11 +246,13 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 			[
 				["own", "stage"],
 				["shared", undefined],
+				["managed", "stage"],
 			],
 		);
-		// The own store holds the stage's session; nothing about the store itself is recorded.
 		const own = recorded.find((stage) => stage.stageName === "own");
 		assert.ok(own !== undefined && (await ownStore.readHeader(own.sessionId)) !== undefined);
+		const managed = recorded.find((stage) => stage.stageName === "managed");
+		assert.ok(managed !== undefined && (await managedStore.readHeader(managed.sessionId)) !== undefined);
 		await backend.close();
 	});
 
@@ -263,7 +265,6 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 
 		assert.equal(resumed.result.status, "completed", resumed.result.error);
 		assert.equal(resumed.failure, undefined);
-		// The finished prompt is answered from the record; only the next message reaches the reopened session.
 		assert.deepEqual(resumed.answers, ["planned alpha"]);
 		assert.deepEqual(Object.fromEntries(resumed.seen.userPrompts), { alpha: 1 });
 		assert.equal(resumed.seen.created, 1);
@@ -297,7 +298,6 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 			failure.message,
 			`Cannot rehydrate stage "alpha": session ${sessionId} is not in the session store (session-not-found). ${failure.hint}`,
 		);
-		// One header read, and no answer, session, prompt or tool call: the stage never started over.
 		assert.equal(reads.mock.calls.length, 1);
 		assert.deepEqual(resumed.answers, []);
 		assert.equal(resumed.seen.created, 0);
@@ -308,7 +308,6 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 	});
 
 	test("a stage called again without its own store fails typed, and never falls back to the run store that holds the same session (#4309)", async () => {
-		// The run's store holds the session too, so a fallback to it would succeed silently.
 		const runStore = new MemorySessionStore();
 		const sessionId = await savedSession(runStore);
 		const seeded = await seedStoppedRun(sessionId);
@@ -396,6 +395,14 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 			{ adapters: { sessionStore: runStore } },
 		);
 		assert.equal(reads.mock.calls.length, 0);
+		const opens = vi.spyOn(JsonlSessionStore, "open");
+		await assertWaitingStageSessionsExist(
+			[{ replayKey: "stage:own:1", stageName: "own", sessionId: "elsewhere", sessionStorage: "stage", wait }],
+			"run-own",
+			{ defaultSessionDir: "/never-opened" },
+		);
+		assert.equal(opens.mock.calls.length, 0);
+		opens.mockRestore();
 
 		const failure = await assertWaitingStageSessionsExist(
 			[
@@ -414,5 +421,111 @@ describe("waiting stages that keep their session in their own sessionStore (#430
 			reads.mock.calls.map((call) => call[0]),
 			[present, "gone"],
 		);
+	});
+
+	test("a resumed stage reads its own store's header once across all its calls (#4309)", async () => {
+		const ownStore = new MemorySessionStore();
+		const sessionId = await savedSession(ownStore);
+		const seeded = await seedStoppedRun(sessionId);
+		const reads = vi.spyOn(ownStore, "readHeader");
+
+		const resumed = await resumeWith(seeded, ownStore);
+
+		assert.equal(resumed.result.status, "completed", resumed.result.error);
+		assert.equal(resumed.failure, undefined);
+		assert.equal(reads.mock.calls.filter((call) => call[0] === sessionId).length, 1);
+		await seeded.backend.close();
+	});
+
+	test("a failed check is made again on the next call, which goes on once the store holds the session (#4309)", async () => {
+		const ownStore = new MemorySessionStore();
+		const sessionId = await savedSession(ownStore);
+		const seeded = await seedStoppedRun(sessionId);
+		const reads = vi.spyOn(ownStore, "readHeader").mockResolvedValueOnce(undefined);
+		let first: Error | undefined;
+		let second: string | undefined;
+		const result = await run(
+			workflow({
+				name: WORKFLOW_NAME,
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					const alpha = ctx.stage("alpha", { sessionStore: ownStore });
+					first = await alpha.prompt("plan alpha").then(
+						() => undefined,
+						(error: Error) => error,
+					);
+					second = await alpha.prompt("plan alpha");
+					return {};
+				},
+			}),
+			{},
+			{
+				runId: seeded.runId,
+				store: createStore(),
+				durableBackend: seeded.backend,
+				adapters: { ...detachingAdapters(new FakeCiService(), counters(), { detach: false }) },
+				releaseWhenWaiting: { afterMs: 600_000 },
+			},
+		);
+
+		assert.equal(result.status, "completed", result.error);
+		assert.equal(rehydrationFailure(first).code, "session-not-found");
+		assert.equal(rehydrationFailure(first).fields.stageId, "stage-alpha");
+		assert.equal(second, "planned alpha");
+		assert.equal(reads.mock.calls.filter((call) => call[0] === sessionId).length, 2);
+		await seeded.backend.close();
+	});
+
+	test("the check of a stage without a stage id names no stage id (#4309)", async () => {
+		const failure = await assertStageOwnedSessionExists(undefined, {
+			runId: "run-own",
+			stageName: "alpha",
+			sessionId: "s-1",
+		}).then(
+			() => undefined,
+			(error: Error) => error,
+		);
+		assert.deepEqual(rehydrationFailure(failure).fields, {
+			runId: "run-own",
+			stageName: "alpha",
+			sessionIds: ["s-1"],
+			storage: "stage sessionStore option: not passed to the resumed stage",
+		});
+	});
+
+	test("a stage's completed record keeps the own-store marker of its other records (#4309)", async () => {
+		const backend = await JournalDurableBackend.open(new MemoryRunJournal());
+		const runId = crypto.randomUUID();
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: WORKFLOW_NAME,
+			inputs: {},
+			createdAt: 1_000,
+			status: "running",
+		});
+		const record = (checkpointId: string, replayKey: string, fields: Partial<DurableStageCheckpoint>) =>
+			recordCheckpointDurably(backend, {
+				kind: "stage",
+				workflowId: runId,
+				checkpointId,
+				name: replayKey,
+				replayKey,
+				completedAt: 1_000,
+				...fields,
+			});
+		// The session record says the session is in the stage's own store; the output record, as a schema stage
+		// writes it, carries the output alone.
+		await record("own-session", "stage:own:1", { sessionId: "s-own", sessionStorage: "stage" });
+		await record("own-output", "stage:own:1", { output: "done", completedAt: 2_000 });
+		await record("shared-session", "stage:shared:1", { sessionId: "s-shared" });
+		await record("shared-output", "stage:shared:1", { output: "done", completedAt: 2_000 });
+
+		assert.equal(stageCheckpointWithOutput(backend, runId, "stage:own:1")?.sessionStorage, "stage");
+		const shared = stageCheckpointWithOutput(backend, runId, "stage:shared:1");
+		assert.ok(shared !== undefined);
+		assert.equal("sessionStorage" in shared, false);
+		await backend.close();
 	});
 });
