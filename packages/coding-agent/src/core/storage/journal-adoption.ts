@@ -716,21 +716,42 @@ function conflictRun(catalog: JournalCatalog, from: number, destination: Journal
 }
 
 /**
- * Moves a run's catalog entry from `destination` back to `from`, whose copy holds more of the run, and deletes the
- * destination's copy while `holder` still fences it. When a resume took that fence meanwhile, the run belongs on the
- * destination again and the catalog goes back there; when another consolidation took it over, the catalog stays on the
- * source, which holds every event, and that consolidation removes the copy. Whether the catalog stays on the source.
+ * Moves a run's catalog entry from `destination` back to `from`, whose copy holds more of the run, then settles the
+ * destination's copy in one transaction on it. A copy holding events the source lacks, or that a resume holds, is where
+ * the run belongs, and the catalog goes back there. Otherwise the catalog stays on the source, which holds every event:
+ * the copy is deleted while `holder` fences it or nobody holds it, unless another consolidation fences it or the source
+ * and may still select it. Whether the catalog stays on the source.
  */
 async function returnToSource(
 	catalog: JournalCatalog,
 	from: JournalShardRecord,
 	destination: JournalShardRecord,
+	source: SqliteDatabase,
 	database: SqliteDatabase,
 	runId: string,
 	holder: string,
 ): Promise<boolean> {
 	await catalog.moveRun(runId, destination.id, from.id);
-	if ((await removeRun(database, runId, holder)) || !(await heldByResume(database, runId))) return true;
+	const stays = await database.transaction(async (tx) => {
+		const there = await readRun(tx, runId);
+		if (there === undefined) return true;
+		const left = await readRun(source, runId);
+		if (left === undefined || !holdsSnapshot(there, left)) return false;
+		const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		if (lease?.holder_id != null && lease.holder_id !== holder)
+			return lease.holder_id.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX);
+		const kept = await source.get<SqliteRow & { holder_id: string | null }>(
+			`SELECT leases.holder_id FROM ${TABLES.runs} AS runs LEFT JOIN ${TABLES.leases} AS leases ON leases.run_id = runs.run_id WHERE runs.run_id = ?`,
+			runId,
+		);
+		if (kept === undefined) return false;
+		if (kept.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX) && kept.holder_id !== holder) return true;
+		await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
+		await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
+		await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		return true;
+	}, CONSOLIDATION_TRANSACTION);
+	if (stays) return true;
 	await catalog.moveRun(runId, from.id, destination.id);
 	return false;
 }
@@ -770,7 +791,7 @@ async function settleMove(
 		const there = await readRun(database, runId);
 		const ahead = left !== undefined && there !== undefined && there.events.length > left.events.length;
 		if (ahead || !(await takeOverFence(database, runId, holder))) return keptOnDestination();
-		if (await returnToSource(catalog, from, destination, database, runId, holder))
+		if (await returnToSource(catalog, from, destination, source, database, runId, holder))
 			return { runId, from: from.id, outcome: "skipped", reason: "leased" };
 		return keptOnDestination();
 	};
@@ -907,13 +928,19 @@ async function returnStrandedRuns(
 		const left = await readRun(source, runId);
 		const there = await readRun(database, runId);
 		if (left === undefined) continue;
-		if (there === undefined) await catalog.moveRun(runId, destination.id, from.id);
+		if (there === undefined)
+			await source.transaction(async (tx) => {
+				const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+				if (lease?.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX)) return;
+				if ((await readRun(tx, runId)) !== undefined && (await readRun(database, runId)) === undefined)
+					await catalog.moveRun(runId, destination.id, from.id);
+			}, CONSOLIDATION_TRANSACTION);
 		else if (
 			holdsSnapshot(there, left) &&
 			!holdsSnapshot(left, there) &&
 			(await takeOverFence(database, runId, holder))
 		)
-			await returnToSource(catalog, from, destination, database, runId, holder);
+			await returnToSource(catalog, from, destination, source, database, runId, holder);
 	}
 	return skipped;
 }

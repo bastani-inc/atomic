@@ -5,9 +5,9 @@
  *
  * `consolidate <store> <barrier directory> <point>=<pause|kill>...` stops at named points of a move instead: `copied`
  * (its first copy of a run committed), `checked` (the catalog check of a move it abandons returned), `deleted` (a
- * deletion of a run's copy committed), `recopied` (its second copy committed) and `repointing` (before it repoints the
- * catalog). At `pause` it writes `<point>.reached` into the barrier directory and blocks until `<point>.go` exists; at
- * `kill` it SIGKILLs itself. Each point acts once.
+ * deletion of a run's copy committed), `recopied` (its second copy committed), `repointing` (before it repoints the
+ * catalog) and `undoing` (before it moves the catalog a second time). At `pause` it writes `<point>.reached` into the
+ * barrier directory and blocks until `<point>.go` exists; at `kill` it SIGKILLs itself. Each point acts once.
  *
  * `read <store> <stop file> <events> <run>...` reads every given run through the store over and over until the stop
  * file exists, and prints how many reads were complete, how many ended in the retryable `run-moved`, and how many were
@@ -101,8 +101,9 @@ if (mode === "consolidate") {
 			return found;
 		});
 		const moveRun = catalog.moveRun.bind(catalog);
+		let moves = 0;
 		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
-			reach("repointing");
+			reach(++moves === 1 ? "repointing" : "undoing");
 			return moveRun(runId, from, to);
 		});
 	}

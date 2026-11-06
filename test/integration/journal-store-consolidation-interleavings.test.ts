@@ -6,7 +6,7 @@
  * run, no consolidation fence is left, and every file passes `PRAGMA integrity_check`.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -311,3 +311,76 @@ for (const point of ["checked", "deleted", "recopied"] as const)
 		},
 		INTERLEAVING_TIMEOUT_MS,
 	);
+
+function waitsForWriteLock(path: string): boolean {
+	return existsSync(`${path}-writers`) && readdirSync(`${path}-writers`).length > 0;
+}
+
+test(
+	"a run returned to its source while another consolidator moves it out again and deletes the source loses no checkpoint (#4402)",
+	async () => {
+		const destination = await seed();
+		const cleaning = consolidator("cleaning", ["copied=pause", "checked=pause", "deleted=kill"]);
+		await reached(cleaning, "copied");
+		const repointing = consolidator("repointing", ["repointing=pause"]);
+		await reached(repointing, "repointing");
+		const resumed = await resume("p1");
+		release(cleaning, "copied");
+		await reached(cleaning, "checked");
+		release(repointing, "repointing");
+		await finished(repointing);
+		release(cleaning, "checked");
+		await killed(cleaning);
+		const onSource = await openSqlRunJournal(source);
+		try {
+			await onSource.release(resumed.lease);
+		} finally {
+			await onSource.close();
+		}
+		assert.equal(await named(), destination);
+		assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0, "the catalog names a shard without the run");
+		const returning = consolidator("returning", ["repointing=pause"]);
+		await reached(returning, "repointing");
+		const moving = consolidator("moving");
+		while (moving.child.exitCode === null && !waitsForWriteLock(source)) await sleep(10);
+		release(returning, "repointing");
+		await finished(moving);
+		await finished(returning);
+		await assertNothingLost(EVENTS + 1, "p1");
+		await consolidate();
+		assert.equal(await assertNothingLost(EVENTS + 1, "p1"), destination);
+		assert.equal(scalar(source, "SELECT count(*) FROM wf_runs"), 0);
+		await assertSettled();
+	},
+	INTERLEAVING_TIMEOUT_MS,
+);
+
+test(
+	"an undo whose destination a resume takes over, writes to and releases before the undo's delete keeps that checkpoint selected (#4402)",
+	async () => {
+		const destination = await seed();
+		const undoing = consolidator("undoing", ["repointing=pause", "undoing=pause"]);
+		await reached(undoing, "repointing");
+		const onSource = await openSqlRunJournal(source);
+		try {
+			const held = await onSource.takeoverExpired("r", "p1", -1);
+			assert.equal(held.status, "acquired", JSON.stringify(held));
+			if (held.status !== "acquired") throw new Error("unreachable");
+			release(undoing, "repointing");
+			await reached(undoing, "undoing");
+			assert.equal(await named(), destination);
+			const resumed = await resume("p2");
+			await resumed.journal.release(resumed.lease);
+			release(undoing, "undoing");
+			assert.deepEqual(await finished(undoing), { moved: 0, skipped: 1 });
+			assert.equal(await assertNothingLost(EVENTS + 1, "p2"), destination);
+			await onSource.release(held.lease);
+		} finally {
+			await onSource.close();
+		}
+		await consolidate();
+		assert.equal(await assertNothingLost(EVENTS + 1, "p2"), destination);
+		await assertSettled();
+	},
+	INTERLEAVING_TIMEOUT_MS,
+);

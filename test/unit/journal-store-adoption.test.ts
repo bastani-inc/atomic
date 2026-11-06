@@ -8,6 +8,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -2134,3 +2135,315 @@ test("recovery looks up only the runs the catalog does not list on their journal
 	});
 	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs WHERE run_id = 'unlisted'"), 1);
 });
+
+function writeLocked(path: string): boolean {
+	const database = new DatabaseSync(path);
+	try {
+		database.exec("PRAGMA busy_timeout=0");
+		database.exec("BEGIN IMMEDIATE");
+		database.exec("ROLLBACK");
+		return false;
+	} catch (error) {
+		const code = Number((error as { errcode?: unknown }).errcode) & 0xff;
+		if (code === 5 || code === 6) return true;
+		throw error;
+	} finally {
+		database.close();
+	}
+}
+
+test("a run returned to its source while another consolidation moves it out again is never left on the deleted copy (#4402)", async () => {
+	const { source, events } = await overtakenCleanup("delete");
+	raw(source, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+	let other: Promise<unknown> | undefined;
+	await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (...args: Parameters<JournalCatalog["moveRun"]>) => {
+			if (other === undefined) {
+				const waits = writeLocked(source);
+				other = consolidateJournalStore(store);
+				if (!waits) await other;
+			}
+			return moveRun(...args);
+		});
+		await consolidateJournalStore(catalog);
+	});
+	assert.ok(other !== undefined, "the run was returned to its source");
+	await other;
+	await assertEveryEventSelected(events + 1, "p1-new");
+	assert.equal((await consolidateJournalStore(store)).skipped, 0);
+	await assertEveryEventSelected(events + 1, "p1-new");
+});
+
+test("an undo whose destination a resume wrote to and released before the delete returns the catalog there, a conflict (#4402)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source }) => raw(source, APPEND_EVENT, Number(scalar(source, EVENTS)) + 1, "p1-new"),
+			2: ({ destination }) => {
+				raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'");
+				raw(destination, APPEND_EVENT, Number(scalar(destination, EVENTS)) + 1, "p2-new");
+				raw(destination, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+			},
+		},
+	});
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	const error = result.report.runs[0]?.error;
+	assert.ok(error instanceof JournalCatalogError && error.code === "run-conflict");
+	assert.equal(result.named, result.destination, "the catalog names the copy holding the resume's checkpoint");
+	assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_events WHERE key = 'p2-new'"), 1);
+	assert.equal(scalar(result.source, "SELECT count(*) FROM wf_events WHERE key = 'p1-new'"), 1);
+	assert.equal(result.moveRuns, 3);
+});
+
+test("an undo never deletes a destination copy that another consolidation fencing the source goes on to select (#4402)", async () => {
+	const result = await consolidateWithInterference({
+		after: { 1: ({ source }) => raw(source, RESUME_TAKES_SOURCE) },
+		before: {
+			2: ({ source }) =>
+				raw(
+					source,
+					"UPDATE wf_leases SET holder_id = ?, epoch = epoch + 1 WHERE run_id = 'r'",
+					`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}other`,
+				),
+		},
+	});
+	assert.equal(result.moveRuns, 2);
+	assert.equal(result.named, result.source);
+	assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_runs"), 1, "the copy is kept");
+	const events = Number(scalar(result.source, EVENTS));
+	const lastKey = String(scalar(result.source, "SELECT key FROM wf_events WHERE run_id = 'r' ORDER BY seq DESC"));
+	await withCatalog(async (catalog) => {
+		const from = (await catalog.locate("r"))!.shard.id;
+		assert.equal(await catalog.moveRun("r", from, (await catalog.homeShard("r")).id), true);
+	});
+	for (const table of ["wf_events", "wf_leases", "wf_runs"])
+		raw(result.source, `DELETE FROM ${table} WHERE run_id = 'r'`);
+	assert.equal(await assertEveryEventSelected(events, lastKey), result.destination);
+});
+
+test("an undo whose destination a resume took and released without writing removes that copy and returns to the source (#4402)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source }) => raw(source, APPEND_EVENT, Number(scalar(source, EVENTS)) + 1, "p1-new"),
+			2: ({ destination }) => {
+				raw(destination, "UPDATE wf_leases SET holder_id = 'p2', epoch = epoch + 1 WHERE run_id = 'r'");
+				raw(destination, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+			},
+		},
+	});
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(result.named, result.source);
+	assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_runs"), 0, "no copy is left behind");
+	const events = Number(scalar(result.source, EVENTS));
+	assert.deepEqual(
+		(await consolidateJournalStore(store)).runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+	);
+	assert.equal(await assertEveryEventSelected(events, "p1-new"), result.destination);
+});
+
+for (const [label, change] of [
+	[
+		"destination copy is gone",
+		(destination: string) => {
+			for (const table of ["wf_events", "wf_leases", "wf_runs"])
+				raw(destination, `DELETE FROM ${table} WHERE run_id = 'r'`);
+		},
+	],
+	[
+		"destination lease row is gone",
+		(destination: string) => raw(destination, "DELETE FROM wf_leases WHERE run_id = 'r'"),
+	],
+	["source lease is released", (_: string, source: string) => raw(source, "UPDATE wf_leases SET holder_id = NULL")],
+	["source lease row is gone", (_: string, source: string) => raw(source, "DELETE FROM wf_leases WHERE run_id = 'r'")],
+] as const)
+	test(`an undo whose ${label} before its delete stays on the source and leaves no copy behind (#4402)`, async () => {
+		const result = await consolidateWithInterference({
+			before: {
+				1: ({ source }) => raw(source, APPEND_EVENT, Number(scalar(source, EVENTS)) + 1, "p1-new"),
+				2: ({ source, destination }) => change(destination, source),
+			},
+		});
+		assert.deepEqual(
+			result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["r", "skipped", "leased"]],
+		);
+		assert.equal(result.named, result.source);
+		assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_runs"), 0);
+		assert.equal(await assertEveryEventSelected(Number(scalar(result.source, EVENTS)), "p1-new"), result.source);
+	});
+
+test("an undo whose source copy is deleted once the catalog returns to it goes back to the destination's copy (#4402)", async () => {
+	const result = await consolidateWithInterference({
+		before: { 1: ({ source }) => raw(source, APPEND_EVENT, Number(scalar(source, EVENTS)) + 1, "p1-new") },
+		after: {
+			2: ({ source }) => {
+				for (const table of ["wf_events", "wf_leases", "wf_runs"])
+					raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
+			},
+		},
+	});
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(result.named, result.destination);
+	assert.equal(result.moveRuns, 3);
+	assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_runs"), 1);
+});
+
+async function strandedRun() {
+	const stranded = await overtakenCleanup("delete");
+	raw(stranded.source, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+	return stranded;
+}
+
+async function consolidateAfterLookup(change: () => void) {
+	return withCatalog(async (catalog) => {
+		const locate = catalog.locate.bind(catalog);
+		let changed = false;
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			if (!changed) {
+				changed = true;
+				change();
+			}
+			return locate(runId);
+		});
+		return consolidateJournalStore(catalog);
+	});
+}
+
+test("recovery leaves a run to the consolidation that fences it in its source after the lookup (#4402)", async () => {
+	const { source, destination, events } = await strandedRun();
+	const report = await consolidateAfterLookup(() =>
+		raw(
+			source,
+			"UPDATE wf_leases SET holder_id = ?, epoch = epoch + 1 WHERE run_id = 'r'",
+			`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}other`,
+		),
+	);
+	assert.deepEqual(report.runs, []);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+	assert.equal(scalar(source, "SELECT count(*) FROM wf_runs"), 1);
+	await consolidateJournalStore(store);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), destination);
+	assert.equal(scalar(source, "SELECT count(*) FROM wf_runs"), 0);
+});
+
+test("recovery returns a run whose source lease row is gone (#4402)", async () => {
+	const { source, destination, events } = await strandedRun();
+	const report = await consolidateAfterLookup(() => raw(source, "DELETE FROM wf_leases WHERE run_id = 'r'"));
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+	);
+	assert.equal(await assertEveryEventSelected(events + 1, "p1-new"), destination);
+});
+
+test("recovery leaves alone a run deleted from its source while it looks it up, when the destination holds part of it (#4402)", async () => {
+	const { source, destination } = await overtakenCleanup("check");
+	expireWorkflowLease(destination, "r");
+	const report = await consolidateAfterLookup(() => {
+		for (const table of ["wf_events", "wf_leases", "wf_runs"]) raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
+	});
+	assert.deepEqual(report.runs, []);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+});
+
+async function consolidateInterferingBeforeTransaction(path: string, interfere: () => void) {
+	const target = realpathSync(path);
+	const exec = DatabaseSync.prototype.exec;
+	let interfered = false;
+	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
+		const location = this.location();
+		if (!interfered && sql === "BEGIN IMMEDIATE" && location !== null && realpathSync(location) === target) {
+			interfered = true;
+			interfere();
+		}
+		exec.call(this, sql);
+	} as typeof exec;
+	try {
+		return await consolidateJournalStore(store);
+	} finally {
+		DatabaseSync.prototype.exec = exec;
+	}
+}
+
+test("recovery never returns a run to a source that lost it after it looked (#4402)", async () => {
+	const { source, destination } = await strandedRun();
+	const report = await consolidateInterferingBeforeTransaction(source, () => {
+		for (const table of ["wf_events", "wf_leases", "wf_runs"]) raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
+	});
+	assert.deepEqual(report.runs, []);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, destination);
+});
+
+test("recovery never moves the catalog off a destination that gained the run after it looked (#4402)", async () => {
+	const { source, destination, events } = await strandedRun();
+	const report = await consolidateInterferingBeforeTransaction(source, () => {
+		const database = new DatabaseSync(destination);
+		try {
+			database.exec(`ATTACH DATABASE '${source}' AS old`);
+			for (const table of ["wf_runs", "wf_events"])
+				database.exec(`INSERT INTO ${table} SELECT * FROM old.${table} WHERE run_id = 'r'`);
+			database.exec("DETACH DATABASE old");
+		} finally {
+			database.close();
+		}
+		raw(destination, APPEND_EVENT, events + 2, "p2-new");
+	});
+	assert.deepEqual(report.runs, []);
+	assert.equal(scalar(source, "SELECT count(*) FROM wf_runs"), 1);
+	assert.equal(await assertEveryEventSelected(events + 2, "p2-new"), destination);
+});
+
+for (const repointed of [true, false])
+	test(`an undo never deletes a destination copy whose source was deleted after it read the source, ${repointed ? "by a consolidation that moved it" : "with the catalog still on it"} (#4402)`, async () => {
+		const prepare = DatabaseSync.prototype.prepare;
+		try {
+			const result = await consolidateWithInterference({
+				after: {
+					1: ({ source }) => raw(source, RESUME_TAKES_SOURCE),
+					2: ({ source }) => {
+						const target = realpathSync(source);
+						let readEvents = false;
+						let moved = false;
+						DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+							const location = this.location();
+							if (!moved && location !== null && realpathSync(location) === target) {
+								if (readEvents) {
+									moved = true;
+									if (repointed)
+										raw(
+											join(store, "catalog.sqlite"),
+											"UPDATE catalog_runs SET shard = (SELECT id FROM catalog_shards WHERE kind = 'native') WHERE run_id = 'r'",
+										);
+									for (const table of ["wf_events", "wf_leases", "wf_runs"])
+										raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
+								} else readEvents = sql.startsWith("SELECT * FROM wf_events");
+							}
+							return prepare.call(this, sql);
+						} as typeof prepare;
+					},
+				},
+			});
+			assert.equal(result.named, result.destination);
+			assert.equal(
+				scalar(result.destination, "SELECT count(*) FROM wf_runs"),
+				1,
+				"the copy the catalog names is kept",
+			);
+			const lastKey = String(
+				scalar(result.destination, "SELECT key FROM wf_events WHERE run_id = 'r' ORDER BY seq DESC"),
+			);
+			await assertEveryEventSelected(Number(scalar(result.destination, EVENTS)), lastKey);
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
