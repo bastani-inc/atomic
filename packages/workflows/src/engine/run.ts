@@ -1414,7 +1414,8 @@ async function executeRun(
 				selectRunFailureDisposition({
 					outerFailure: failure,
 					thrownError: err,
-					stages: runSnapshot.stages,
+					// A stage whose call failed while a peer call still runs counts as failed (#4450).
+					stages: scheduler.stagesAsTheyWillEnd(),
 					classifyFailure: classifyExecutorFailure,
 				}),
 				runSnapshot.stages.length,
@@ -1464,6 +1465,9 @@ async function executeRun(
 		});
 		return failed;
 	} finally {
+		// The run keeps its stages until each one whose failure it published has ended: a resume or quit must not
+		// reach a stage whose last overlapping call still runs (#4450).
+		await scheduler.pendingStageFailuresSettled();
 		rejectionScope.close();
 		callerSignal?.removeEventListener("abort", onCallerAbort);
 		await quitCleanup?.catch(() => {});
