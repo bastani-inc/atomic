@@ -11,6 +11,8 @@ import {
 	isSubscriptionError,
 	isSubscriptionEventError,
 	isSubscriptionHandlerError,
+	isSubscriptionSetupError,
+	isSubscriptionSubscriberUnavailableError,
 	type SerializedSubscriptionError,
 	SubscriptionChildUnavailableError,
 	SubscriptionClosedError,
@@ -18,6 +20,8 @@ import {
 	SubscriptionError,
 	SubscriptionEventError,
 	SubscriptionHandlerError,
+	SubscriptionSetupError,
+	SubscriptionSubscriberUnavailableError,
 	serializeSubscriptionError,
 } from "@bastani/atomic";
 import { test } from "vitest";
@@ -29,6 +33,8 @@ const guards = {
 	EventSourceError: isEventSourceError,
 	SubscriptionHandlerError: isSubscriptionHandlerError,
 	SubscriptionChildUnavailableError: isSubscriptionChildUnavailableError,
+	SubscriptionSetupError: isSubscriptionSetupError,
+	SubscriptionSubscriberUnavailableError: isSubscriptionSubscriberUnavailableError,
 } as const;
 
 const examples = (): readonly SubscriptionError[] => [
@@ -42,6 +48,10 @@ const examples = (): readonly SubscriptionError[] => [
 	}),
 	new SubscriptionHandlerError("run-1/ci#1", "evt-3", new TypeError("bad payload")),
 	new SubscriptionChildUnavailableError("sess-1/list#1", "sess-1"),
+	new SubscriptionSetupError("gh-cli", { cause: new Error("spawn gh ENOENT") }),
+	new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "invalid_session", {
+		cause: new Error("session not found"),
+	}),
 ];
 
 test("each subscription error has its family, literal name, stable code, fields and hint", () => {
@@ -67,7 +77,12 @@ test("each subscription error has its family, literal name, stable code, fields 
 			name: "SubscriptionConfigError",
 			code: "invalid-option",
 			retryable: false,
-			fields: { source: "sdk", field: "options.maxConcurrent", reason: "not-positive-integer" },
+			fields: {
+				source: "sdk",
+				field: "options.maxConcurrent",
+				reason: "not-positive-integer",
+				expected: "a positive integer",
+			},
 			hasHint: true,
 		},
 		{
@@ -102,6 +117,22 @@ test("each subscription error has its family, literal name, stable code, fields 
 			fields: { subscriptionId: "sess-1/list#1", sessionId: "sess-1" },
 			hasHint: true,
 		},
+		{
+			family: true,
+			name: "SubscriptionSetupError",
+			code: "setup-missing",
+			retryable: false,
+			fields: { missing: "gh-cli" },
+			hasHint: true,
+		},
+		{
+			family: true,
+			name: "SubscriptionSubscriberUnavailableError",
+			code: "subscriber-unavailable",
+			retryable: false,
+			fields: { subscriptionId: "run-1/ci#1", subscriber: "watcher", reason: "invalid_session" },
+			hasHint: true,
+		},
 	]);
 	assert.deepEqual(new SubscriptionError("invalid-event", "x").fields(), {});
 	assert.equal(new SubscriptionError("invalid-event", "x").name, "SubscriptionError");
@@ -117,25 +148,69 @@ test("rendered messages state what failed, the subject, the code and what to do"
 			"Subscription is closed: run-1/ci#1 (subscription-closed). Use the id of an open subscription; a closed subscription accepts no events or reports.",
 			"Invalid subscription option: options.maxConcurrent (invalid-option). Pass a positive integer for options.maxConcurrent.",
 			"Invalid subscription event: run-1/ci#1 (invalid-event). Emit objects shaped { id: string, type?: string, payload?: JSON value }; the id drives deduplication.",
-			"Event source failed during poll (gh exited with code 1): github-checks:o/r#1 (source-failed). Check the source's configuration and access (for GitHub sources, `gh auth status`), then subscribe again.",
+			"Event source failed during poll (gh exited with code 1): github-checks:o/r#1 (source-failed). Check the source's configuration and access, then subscribe again.",
 			"Event handler failed for event evt-3: run-1/ci#1 (handler-failed). Inspect the cause, fix the handler, then subscribe again; events already handled are not repeated.",
 			"Event child session unavailable: sess-1/list#1 (child-unavailable). Create the session with createAgentSession() so it can start child sessions, or report directly.",
+			"Subscription setup is missing: the GitHub CLI (gh) that githubChecks and githubReviews run (setup-missing). Install the GitHub CLI from https://cli.github.com (for example `brew install gh` or `winget install GitHub.cli`), then run `gh auth login`.",
+			'Subscriber stage "watcher" cannot take reports (invalid_session): run-1/ci#1 (subscriber-unavailable). The subscriber stage was replayed after a resume and its retained session could not be reopened; subscribe from a stage that runs in this run, or start the run again instead of resuming it.',
 		],
 	);
 	assert.equal(
 		new EventSourceError("webhook:/hooks", "listen").message,
 		"Event source failed during listen: webhook:/hooks (source-failed). Choose a free port or hostname for the webhook source, then subscribe again.",
 	);
-	const reasons = ["duplicate-id", "not-event-source", "not-function", "not-stage", "not-string"] as const;
+	const reasons = [
+		"duplicate-id",
+		"duplicate-path",
+		"not-absolute-path",
+		"not-event-source",
+		"not-function",
+		"not-owner-repo",
+		"not-positive-integer",
+		"not-stage",
+		"not-string",
+		"out-of-range",
+	] as const;
 	assert.deepEqual(
 		reasons.map((reason) => new SubscriptionConfigError("f", reason).hint),
 		[
 			"Pass a value that no other open subscription in this process uses for f.",
+			"Pass a path that no other open webhook source on this host and port uses for f.",
+			"Pass a path that starts with /, for example /hooks/ci for f.",
 			"Pass an EventSource with a string id and a start(signal, emit) function for f.",
 			"Pass a function for f.",
+			"Pass a repository as owner/name, for example acme/widgets for f.",
+			"Pass a positive integer for f.",
 			"Pass a stage returned by ctx.stage() for f.",
 			"Pass a non-empty string for f.",
+			"Pass a value inside the allowed range for f.",
 		],
+	);
+	const ranged = new SubscriptionConfigError("webhook.port", "out-of-range", "an integer from 0 to 65535");
+	assert.equal(ranged.expected, "an integer from 0 to 65535");
+	assert.equal(ranged.hint, "Pass an integer from 0 to 65535 for webhook.port.");
+	assert.equal(
+		new SubscriptionClosedError("sess-1/ci", "subscribe").hint,
+		"Subscribe while the session is open; a closed session accepts no subscriptions.",
+	);
+	assert.equal(
+		new SubscriptionClosedError("run-1/ci#1", "emit").hint,
+		"Use the id of an open subscription; a closed subscription accepts no events or reports.",
+	);
+	const sourceHints = (["start", "listen", "poll", "read", "request"] as const).map(
+		(phase) => new EventSourceError("s", phase).hint,
+	);
+	assert.deepEqual(sourceHints, [
+		"Check the source's configuration and access, then subscribe again.",
+		"Choose a free port or hostname for the webhook source, then subscribe again.",
+		"Check the source's configuration and access, then subscribe again.",
+		"Check the source's configuration and access, then subscribe again.",
+		"Inspect the cause; the sender can send the delivery again.",
+	]);
+	assert.equal(new EventSourceError("s", "poll", { hint: "Run the fix." }).hint, "Run the fix.");
+	assert.equal(
+		new SubscriptionSetupError("gh-auth").message,
+		"Subscription setup is missing: a GitHub login for gh (setup-missing). Run `gh auth login`, then subscribe again.",
 	);
 });
 
@@ -316,4 +391,54 @@ test("guards require both the name and the code, and serialization skips null ca
 	assert.equal(numeric.cause !== undefined && "code" in numeric.cause, false);
 	const plain = deserializeSubscriptionError(serializeSubscriptionError(new SubscriptionClosedError("s", "emit")));
 	assert.equal("cause" in plain, false);
+});
+
+test("a custom source hint and a custom expected value survive the wire (#4311)", () => {
+	const source = new EventSourceError("log:/var/log/app.log", "read", {
+		hint: "Check the log file.",
+		detail: "EACCES",
+	});
+	const rebuiltSource = deserializeSubscriptionError(
+		JSON.parse(JSON.stringify(serializeSubscriptionError(source))),
+	) as EventSourceError;
+	assert.equal(rebuiltSource.hint, "Check the log file.");
+	assert.equal(rebuiltSource.message, source.message);
+	const config = new SubscriptionConfigError("webhook.port", "out-of-range", "an integer from 0 to 65535");
+	const rebuiltConfig = deserializeSubscriptionError(
+		JSON.parse(JSON.stringify(serializeSubscriptionError(config))),
+	) as SubscriptionConfigError;
+	assert.equal(rebuiltConfig.expected, "an integer from 0 to 65535");
+	assert.equal(rebuiltConfig.message, config.message);
+	const withoutExpected = deserializeSubscriptionError({
+		name: "SubscriptionConfigError",
+		code: "invalid-option",
+		message: "m",
+		retryable: false,
+		fields: { field: "f", reason: "not-function" },
+	}) as SubscriptionConfigError;
+	assert.equal(withoutExpected.expected, "a function");
+});
+
+test("setup and subscriber errors are found through a wrapping source failure (#4311)", () => {
+	const setup = new SubscriptionSetupError("gh-auth");
+	const wrapped = new EventSourceError("github-checks:o/r#1", "poll", { cause: setup, hint: setup.hint });
+	assert.equal(isSubscriptionSetupError(wrapped), true);
+	assert.equal(isEventSourceError(wrapped), true);
+	assert.equal(isRetryableSubscriptionError(wrapped), false);
+	const unavailable = new SubscriptionSubscriberUnavailableError("run-1/ci#1", "watcher", "no_session");
+	assert.equal(isSubscriptionSubscriberUnavailableError(new SubscriptionHandlerError("s", "e", unavailable)), true);
+	assert.equal(isSubscriptionSetupError({ name: "SubscriptionSetupError", code: "setup-missing" }), true);
+	assert.equal(isSubscriptionSetupError({ name: "SubscriptionSetupError", code: "invalid-option" }), false);
+	assert.equal(
+		isSubscriptionSubscriberUnavailableError({
+			name: "SubscriptionSubscriberUnavailableError",
+			code: "subscriber-unavailable",
+		}),
+		true,
+	);
+	const rebuilt = deserializeSubscriptionError(serializeSubscriptionError(unavailable));
+	assert.equal(rebuilt instanceof SubscriptionSubscriberUnavailableError, true);
+	assert.equal((rebuilt as SubscriptionSubscriberUnavailableError).reason, "no_session");
+	const rebuiltSetup = deserializeSubscriptionError(serializeSubscriptionError(setup)) as SubscriptionSetupError;
+	assert.equal(rebuiltSetup.missing, "gh-auth");
 });

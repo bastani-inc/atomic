@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
+import { mkdirSync } from "node:fs";
 import { appendFile, truncate, unlink, writeFile } from "node:fs/promises";
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -9,9 +10,12 @@ import { openEventSubscription } from "../../packages/coding-agent/src/core/even
 import {
 	EventSourceError,
 	isEventSourceError,
+	isRetryableSubscriptionError,
 	isSubscriptionConfigError,
+	isSubscriptionSetupError,
 	SubscriptionClosedError,
 	SubscriptionConfigError,
+	SubscriptionSetupError,
 } from "../../packages/coding-agent/src/core/event-subscriptions/errors.js";
 import {
 	type GitHubCommandRunner,
@@ -24,6 +28,7 @@ import {
 import type { EventSource, SubscriptionEvent } from "../../packages/coding-agent/src/core/event-subscriptions/types.js";
 import {
 	createWakeDispatcher,
+	sharedWakeDispatcher,
 	type WakeDispatcher,
 } from "../../packages/coding-agent/src/core/event-subscriptions/wake-dispatcher.js";
 import {
@@ -52,7 +57,11 @@ const fsProbe = vi.hoisted(() => ({
 	readFailure: undefined as Error | undefined,
 	closeFailure: undefined as Error | undefined,
 }));
-const httpProbe = vi.hoisted(() => ({ servers: [] as Server[] }));
+const httpProbe = vi.hoisted(() => ({
+	servers: [] as Server[],
+	/** Runs on every request before the server's own handler sees it, for faults a real client cannot cause. */
+	beforeRequest: undefined as ((req: IncomingMessage, res: ServerResponse) => void) | undefined,
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -97,7 +106,14 @@ vi.mock("node:http", async (importOriginal) => {
 	return {
 		...actual,
 		createServer: (...args: Parameters<typeof actual.createServer>) => {
-			const server = actual.createServer(...args);
+			const listener = args.find((arg): arg is RequestListener => typeof arg === "function");
+			const server =
+				listener === undefined
+					? actual.createServer(...args)
+					: actual.createServer((req, res) => {
+							httpProbe.beforeRequest?.(req, res);
+							listener(req, res);
+						});
 			httpProbe.servers.push(server);
 			return server;
 		},
@@ -299,6 +315,7 @@ beforeEach(() => {
 	fsProbe.readEof = false;
 	fsProbe.readFailure = undefined;
 	fsProbe.closeFailure = undefined;
+	httpProbe.beforeRequest = undefined;
 });
 
 afterEach(async () => {
@@ -398,11 +415,28 @@ test("interval resolves immediately when the signal is already aborted", async (
 });
 
 test("interval rejects a non-positive-integer period before returning a source", () => {
-	for (const ms of [0, -5, 1.5, Number.NaN, 2 ** 31]) {
+	for (const ms of [0, -5, 1.5, Number.NaN]) {
 		const error = configError(() => interval(ms));
 		assert.equal(error.code, "invalid-option");
 		assert.equal(error.field, "interval.ms");
 		assert.equal(error.reason, "not-positive-integer");
+	}
+});
+
+test("interval and the polling sources name the allowed range when a period is too long (#4311)", () => {
+	const tooLong = LONGEST_TIMER_MS + 1;
+	const expected = `an integer from 1 to ${LONGEST_TIMER_MS} milliseconds`;
+	for (const [field, build] of [
+		["interval.ms", () => interval(tooLong)],
+		["logTail.pollMs", () => logTail("/tmp/x.log", { pollMs: tooLong })],
+		[
+			"githubChecks.intervalMs",
+			() => githubChecks({ repo: "acme/widgets", pr: 1, intervalMs: tooLong, gh: fakeGh({}).gh }),
+		],
+	] as const) {
+		const error = configError(build);
+		assert.deepEqual([error.field, error.reason, error.expected], [field, "out-of-range", expected]);
+		assert.equal(error.hint, `Pass ${expected} for ${field}.`);
 	}
 });
 
@@ -566,6 +600,10 @@ test("logTail rejects a read failure other than ENOENT with the errno code as de
 	assert.equal(error.detail, "ENOTDIR");
 	assert.equal(error.retryable, false);
 	assert.ok(error.cause !== undefined);
+	assert.equal(
+		error.hint,
+		"Check that the log file and its directory are readable by this process, then subscribe again.",
+	);
 });
 
 test("logTail rejects invalid options before touching the file system", () => {
@@ -772,6 +810,10 @@ test("logTail rejects a read failure in the middle of a run with the errno code 
 	assert.equal(error.detail, "ENOTDIR");
 	assert.equal(error.sourceId, `log:${file}`);
 	assert.ok(error.cause !== undefined);
+	assert.equal(
+		error.hint,
+		"Check that the log file and its directory are readable by this process, then subscribe again.",
+	);
 });
 
 test("logTail does not replay the file when its first stat fails for a reason other than a missing file", async () => {
@@ -1042,29 +1084,108 @@ test("webhook rejects a second source registering the same path on a shared port
 	assert.ok(error instanceof SubscriptionConfigError);
 	assert.equal(error.code, "invalid-option");
 	assert.equal(error.field, "webhook.path");
-	assert.equal(error.reason, "duplicate-id");
+	assert.equal(error.reason, "duplicate-path");
 	assert.equal(await rejection(second.listening()), error);
 	assert.equal((await fetch(first.url, { method: "POST", body: "x" })).status, 202);
 });
 
-test("webhook sources on the ephemeral port each get their own server", async () => {
+test("webhook sources on the ephemeral port share one server and route by path (#4311)", async () => {
+	const serversBefore = httpProbe.servers.length;
+	const ci = await startWebhook({ path: "/hooks/ci" });
+	const deploy = await startWebhook({ path: "/hooks/deploy" });
+	assert.equal(httpProbe.servers.length - serversBefore, 1);
+	assert.equal(portOf(ci.url), portOf(deploy.url));
+	await fetch(ci.url, { method: "POST", headers: { "x-request-id": "ci-1" }, body: "a" });
+	await fetch(deploy.url, { method: "POST", headers: { "x-request-id": "deploy-1" }, body: "b" });
+	assert.deepEqual(eventIds(ci.handle), ["ci-1"]);
+	assert.deepEqual(eventIds(deploy.handle), ["deploy-1"]);
+	await ci.handle.stop();
+	assert.equal((await fetch(ci.url, { method: "POST", body: "x" })).status, 404);
+	assert.equal((await fetch(deploy.url, { method: "POST", body: "x" })).status, 202);
+});
+
+test("a second ephemeral webhook on the same path is refused instead of getting a socket of its own (#4311)", async () => {
 	const first = await startWebhook({ path: "/hooks/ci" });
-	const second = await startWebhook({ path: "/hooks/ci" });
-	assert.notEqual(new URL(first.url).port, new URL(second.url).port);
-	await first.handle.stop();
-	assert.equal((await fetch(second.url, { method: "POST", body: "x" })).status, 202);
+	const serversBefore = httpProbe.servers.length;
+	const second = webhook({ path: "/hooks/ci" });
+	const error = await rejection(Promise.resolve(second.start(new AbortController().signal, () => undefined)));
+	assert.ok(error instanceof SubscriptionConfigError);
+	assert.deepEqual([error.field, error.reason], ["webhook.path", "duplicate-path"]);
+	assert.equal(httpProbe.servers.length, serversBefore);
+	assert.equal((await fetch(first.url, { method: "POST", body: "x" })).status, 202);
+});
+
+/** How many open handles of each kind this process holds, as Node reports them. */
+function activeResources(kind: string): number {
+	return process.getActiveResourcesInfo().filter((resource) => resource === kind).length;
+}
+
+/** Counts the long host timers (the polling sources wait an hour) that were set and not cleared. */
+function longTimers() {
+	const longWait = 3_000_000;
+	const set = vi.spyOn(globalThis, "setTimeout");
+	const cleared = vi.spyOn(globalThis, "clearTimeout");
+	return {
+		live: () => {
+			const gone = new Set<unknown>(cleared.mock.calls.map((call) => call[0]));
+			return set.mock.calls.flatMap((call, index) =>
+				(call[1] ?? 0) >= longWait && !gone.has(set.mock.results[index]?.value) ? [index] : [],
+			).length;
+		},
+		restore: () => {
+			set.mockRestore();
+			cleared.mockRestore();
+		},
+	};
+}
+
+test("any number of webhook subscriptions hold one server socket, and polling sources hold one timer (#4311)", async () => {
+	// Let the previous test's closing handles leave Node's list before counting.
+	for (let turn = 0; turn < 3; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+	const sockets = activeResources("TCPServerWrap");
+	const timers = longTimers();
+	const handles: RunningSource[] = [];
+	const idle = tempDir();
+	const SOURCES_PER_KIND = 4;
+	try {
+		for (let index = 0; index < SOURCES_PER_KIND; index++) {
+			const source = webhook({ path: `/hooks/${index}` });
+			handles.push(run(source));
+			await source.listening();
+		}
+		assert.equal(activeResources("TCPServerWrap") - sockets, 1);
+		const { gh } = fakeGh({ [REVIEWS]: "[[]]" });
+		for (let index = 0; index < SOURCES_PER_KIND; index++) {
+			handles.push(run(interval(3_600_000 + index)));
+			handles.push(run(logTail(join(idle, `${index}.log`), { pollMs: 3_600_000 })));
+			handles.push(run(githubReviews({ repo: "acme/widgets", pr: 7, intervalMs: 3_600_000, gh })));
+		}
+		await waitFor(() => sharedWakeDispatcher.pending === 3 * SOURCES_PER_KIND, "every polling source to sleep");
+		assert.equal(timers.live(), 1);
+		assert.equal(activeResources("TCPServerWrap") - sockets, 1);
+		for (const handle of handles) await handle.stop();
+		await waitFor(() => activeResources("TCPServerWrap") === sockets, "the shared server's socket to close");
+		assert.equal(sharedWakeDispatcher.pending, 0);
+		assert.equal(timers.live(), 0);
+	} finally {
+		timers.restore();
+	}
 });
 
 test("webhook rejects invalid options before listening", () => {
-	for (const options of [undefined, {}, { path: 42 }, { path: null }, { path: "" }, { path: "hooks" }]) {
+	for (const options of [undefined, {}, { path: 42 }, { path: null }, { path: "" }]) {
 		const path = configError(() => webhook(options as never));
 		assert.equal(path.field, "webhook.path");
 		assert.equal(path.reason, "not-string");
 	}
+	const relative = configError(() => webhook({ path: "hooks" }));
+	assert.deepEqual([relative.field, relative.reason], ["webhook.path", "not-absolute-path"]);
+	assert.equal(relative.hint, "Pass a path that starts with /, for example /hooks/ci for webhook.path.");
 	for (const port of [70_000, 65_536, -1, 1.5, Number.NaN]) {
 		const error = configError(() => webhook({ path: "/h", port }));
 		assert.equal(error.field, "webhook.port");
-		assert.equal(error.reason, "not-positive-integer");
+		assert.equal(error.reason, "out-of-range");
+		assert.equal(error.expected, "an integer from 0 to 65535");
 	}
 	for (const hostname of ["", 42 as never]) {
 		const error = configError(() => webhook({ path: "/h", hostname }));
@@ -1283,6 +1404,80 @@ test("webhook answers 500, not 202, when the subscription fails to take an event
 	assert.deepEqual(await response.json(), { error: "internal-error" });
 });
 
+test("a delivery the source failed to take is recorded once as a typed request failure, and answered once (#4311)", async () => {
+	const failure = new Error("journal unavailable");
+	const source = webhook({ path: "/hooks/ci" });
+	runWithEmit(source, () => {
+		throw failure;
+	});
+	assert.deepEqual(source.requestFailures(), { count: 0, last: undefined });
+	const response = await fetch(await source.listening(), { method: "POST", body: "x" });
+	assert.equal(response.status, 500);
+	const { count, last } = source.requestFailures();
+	assert.equal(count, 1);
+	assert.ok(isEventSourceError(last));
+	assert.ok(last instanceof EventSourceError);
+	assert.deepEqual(
+		[last.code, last.phase, last.sourceId, last.retryable],
+		["source-failed", "request", "webhook:/hooks/ci", true],
+	);
+	assert.equal(last.cause, failure);
+	assert.equal(last.detail, undefined);
+	assert.equal(last.hint, "Inspect the cause; the sender can send the delivery again.");
+	await fetch(await source.listening(), { method: "POST", body: "y" });
+	assert.equal(source.requestFailures().count, 2);
+	assert.notEqual(source.requestFailures().last, last);
+});
+
+test("a request stream that breaks is a request failure carrying the stream's error (#4311)", async () => {
+	const source = webhook({ path: "/hooks/ci" });
+	const handle = run(source);
+	const url = await source.listening();
+	const broken = errnoError("EPIPE");
+	httpProbe.beforeRequest = (req) => {
+		httpProbe.beforeRequest = undefined;
+		setImmediate(() => req.destroy(broken));
+	};
+	const connection = await rawConnection(portOf(url));
+	connection.write("POST /hooks/ci HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nab");
+	await waitFor(() => source.requestFailures().count === 1, "the stream failure to be recorded");
+	const { last } = source.requestFailures();
+	assert.equal(last?.cause, broken);
+	assert.equal(last?.detail, "EPIPE");
+	assert.deepEqual(handle.events, []);
+	assert.equal((await fetch(url, { method: "POST", body: "x" })).status, 202);
+});
+
+test("a client that leaves mid-upload is not a request failure (#4311)", async () => {
+	const source = webhook({ path: "/hooks/ci" });
+	run(source);
+	const url = await source.listening();
+	const arrived = nextRequest(lastServer());
+	const connection = await rawConnection(portOf(url));
+	connection.write("POST /hooks/ci HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nab");
+	const response = await bounded(arrived, "the request");
+	connection.destroy();
+	await waitFor(() => response.writableEnded, "the abandoned request to be settled");
+	assert.deepEqual(source.requestFailures(), { count: 0, last: undefined });
+});
+
+test("a failure after the response began destroys the connection instead of writing a second response (#4311)", async () => {
+	const source = webhook({ path: "/hooks/ci" });
+	run(source);
+	const url = await source.listening();
+	httpProbe.beforeRequest = (_req, res) => {
+		httpProbe.beforeRequest = undefined;
+		res.writeHead(200, { "content-length": "100" });
+		res.flushHeaders();
+	};
+	const connection = await rawConnection(portOf(url));
+	connection.write("POST /hooks/ci HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx");
+	await bounded(connection.closed, "the server to drop the connection");
+	assert.equal(source.requestFailures().count, 1);
+	assert.equal(source.requestFailures().last?.detail, "ERR_HTTP_HEADERS_SENT");
+	assert.equal((await fetch(url, { method: "POST", body: "x" })).status, 202);
+});
+
 test("webhook tells a sender that the subscription is closed with a 503 body", async () => {
 	const source = webhook({ path: "/hooks/ci" });
 	runWithEmit(source, () => {
@@ -1399,7 +1594,7 @@ test("webhook keeps its url when the same source is started a second time", asyn
 	const url = await source.listening();
 	const error = await rejection(Promise.resolve(source.start(new AbortController().signal, () => undefined)));
 	assert.ok(error instanceof SubscriptionConfigError);
-	assert.equal(error.reason, "duplicate-id");
+	assert.equal(error.reason, "duplicate-path");
 	assert.equal(await source.listening(), url);
 });
 
@@ -1420,6 +1615,22 @@ test("webhook fails with a listen error when its server breaks after it listens,
 	assert.equal(server.listenerCount("error"), 0);
 	assert.equal(getEventListeners(handle.controller.signal, "abort").length, 0);
 	assert.ok((await rejection(fetch(url, { method: "POST", body: "x" }))) instanceof Error);
+});
+
+test("a broken shared server fails every source that listens on it, and leaves no error listener behind (#4311)", async () => {
+	const ci = await startWebhook({ path: "/hooks/ci" });
+	const deploy = await startWebhook({ path: "/hooks/deploy" });
+	const server = lastServer();
+	assert.equal(server.listenerCount("error"), 1);
+	const failure = errnoError("EMFILE");
+	server.emit("error", failure);
+	for (const handle of [ci.handle, deploy.handle]) {
+		const error = await rejection(handle.finished);
+		assert.ok(error instanceof EventSourceError);
+		assert.deepEqual([error.phase, error.detail, error.cause], ["listen", "EMFILE", failure]);
+	}
+	assert.equal(server.listenerCount("error"), 0);
+	assert.equal(getEventListeners(ci.handle.controller.signal, "abort").length, 0);
 });
 
 test("webhook stopped at the moment its server breaks resolves instead of failing", async () => {
@@ -1621,7 +1832,7 @@ test("a failed poll renders one credential-free message that names the phase and
 	assert.equal(
 		error.message,
 		"Event source failed during poll (gh failed): github-checks:acme/widgets#7 (source-failed). " +
-			"Check the source's configuration and access (for GitHub sources, `gh auth status`), then subscribe again.",
+			"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.",
 	);
 });
 
@@ -1834,7 +2045,7 @@ function installFakeGh(script: string): string {
 }
 
 function commandFailure(error: EventSourceError) {
-	const cause = error.cause;
+	const cause = error.cause instanceof SubscriptionSetupError ? error.cause.cause : error.cause;
 	assert.ok(cause instanceof Error && cause.name === "GitHubCommandError");
 	assert.ok("exitCode" in cause && "spawnCode" in cause && "stderr" in cause);
 	return { exitCode: cause.exitCode, spawnCode: cause.spawnCode, stderr: cause.stderr, cause: cause.cause };
@@ -1875,17 +2086,152 @@ test.runIf(process.platform !== "win32")(
 	},
 );
 
-test.runIf(process.platform !== "win32")("the default runner reports a gh that is not installed", async () => {
-	process.env.PATH = tempDir();
-	const source = githubChecks({ repo: "acme/widgets", pr: 7 });
+test.runIf(process.platform !== "win32")(
+	"a missing gh fails the source factory at once, before anything is journaled or spawned (#4311)",
+	() => {
+		const empty = tempDir();
+		const notExecutable = tempDir();
+		writeTextSync(join(notExecutable, "gh"), "#!/bin/sh\ntouch started\n");
+		const directoryNamedGh = tempDir();
+		mkdirSync(join(directoryNamedGh, "gh"));
+		for (const path of [
+			"",
+			empty,
+			`${delimiter}${empty}`,
+			notExecutable,
+			directoryNamedGh,
+			join(empty, "does-not-exist"),
+		]) {
+			process.env.PATH = path;
+			for (const factory of [githubChecks, githubReviews]) {
+				const error = setupError(() => factory({ repo: "acme/widgets", pr: 7 }));
+				assert.deepEqual([error.code, error.missing, error.retryable], ["setup-missing", "gh-cli", false]);
+				assert.match(error.hint ?? "", /cli\.github\.com.*`gh auth login`/);
+			}
+		}
+		assert.equal(fileExistsSync(join(notExecutable, "started")), false);
+		delete process.env.PATH;
+		assert.equal(setupError(() => githubChecks({ repo: "acme/widgets", pr: 7 })).missing, "gh-cli");
+		process.env.PATH = empty;
+		const { gh } = fakeGh({});
+		assert.ok(githubChecks({ repo: "acme/widgets", pr: 7, gh }));
+		const bad = configError(() => githubChecks({ repo: "nope", pr: 7 }));
+		assert.equal(bad.reason, "not-owner-repo");
+	},
+);
+
+function setupError(factory: () => unknown): SubscriptionSetupError {
+	try {
+		factory();
+	} catch (error) {
+		assert.ok(isSubscriptionSetupError(error));
+		assert.ok(error instanceof SubscriptionSetupError);
+		return error;
+	}
+	return assert.fail("expected the factory to throw");
+}
+
+test.runIf(process.platform !== "win32")(
+	"an empty PATH entry is skipped, not read as the current directory (#4311)",
+	() => {
+		const dir = installFakeGh("exit 0");
+		const empty = tempDir();
+		const cwd = process.cwd();
+		process.chdir(dir);
+		try {
+			process.env.PATH = `${delimiter}${empty}`;
+			assert.equal(setupError(() => githubChecks({ repo: "acme/widgets", pr: 7 })).missing, "gh-cli");
+		} finally {
+			process.chdir(cwd);
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a gh on the PATH, also after empty PATH entries, lets the factory pass",
+	() => {
+		installFakeGh("exit 0");
+		process.env.PATH = `${delimiter}${process.env.PATH ?? ""}`;
+		assert.ok(githubReviews({ repo: "acme/widgets", pr: 7 }));
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a gh that disappears after the factory ran fails the poll as a non-retryable setup problem (#4311)",
+	async () => {
+		installFakeGh("exit 0");
+		const source = githubChecks({ repo: "acme/widgets", pr: 7 });
+		process.env.PATH = tempDir();
+		const failure = await rejection(Promise.resolve(source.start(new AbortController().signal, () => undefined)));
+		assert.ok(failure instanceof EventSourceError);
+		assert.equal(failure.phase, "poll");
+		assert.equal(failure.detail, "gh could not be run (ENOENT)");
+		assert.equal(failure.retryable, false);
+		assert.equal(isRetryableSubscriptionError(failure), false);
+		const setup = failure.cause;
+		assert.ok(setup instanceof SubscriptionSetupError);
+		assert.equal(setup.missing, "gh-cli");
+		assert.equal(failure.hint, setup.hint);
+		assert.equal(isSubscriptionSetupError(failure), true);
+		const cause = commandFailure(failure);
+		assert.equal(cause.spawnCode, "ENOENT");
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a gh that cannot be executed after the factory ran is a setup problem too (#4311)",
+	async () => {
+		const dir = installFakeGh("exit 0");
+		const source = githubReviews({ repo: "acme/widgets", pr: 7 });
+		chmodSync(join(dir, "gh"), 0o644);
+		process.env.PATH = dir;
+		const failure = await rejection(Promise.resolve(source.start(new AbortController().signal, () => undefined)));
+		assert.ok(failure instanceof EventSourceError);
+		assert.equal(failure.detail, "gh could not be run (EACCES)");
+		assert.equal(failure.retryable, false);
+		assert.equal((failure.cause as SubscriptionSetupError).missing, "gh-cli");
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"gh exit code 4 means a login is missing: non-retryable, with the login hint (#4311)",
+	async () => {
+		installFakeGh("echo 'To get started with GitHub CLI, please run: gh auth login' >&2\nexit 4");
+		const source = githubChecks({ repo: "acme/widgets", pr: 7 });
+		const failure = await rejection(Promise.resolve(source.start(new AbortController().signal, () => undefined)));
+		assert.ok(failure instanceof EventSourceError);
+		assert.equal(failure.phase, "poll");
+		assert.equal(failure.detail, "gh exited with code 4");
+		assert.equal(failure.retryable, false);
+		const setup = failure.cause;
+		assert.ok(setup instanceof SubscriptionSetupError);
+		assert.deepEqual([setup.code, setup.missing, setup.retryable], ["setup-missing", "gh-auth", false]);
+		assert.equal(failure.hint, "Run `gh auth login`, then subscribe again.");
+		assert.equal(commandFailure(failure).exitCode, 4);
+		assert.equal(JSON.stringify(failure.fields()).includes("gh auth login"), false);
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"any other failing gh exit stays retryable with the GitHub hint (#4311)",
+	async () => {
+		installFakeGh("exit 1");
+		const failure = await pollFailureFromDefaultRunner();
+		assert.equal(failure.retryable, true);
+		assert.equal(isSubscriptionSetupError(failure), false);
+		assert.equal(
+			failure.hint,
+			"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.",
+		);
+	},
+);
+
+async function pollFailureFromDefaultRunner(): Promise<EventSourceError> {
+	const source = githubReviews({ repo: "acme/widgets", pr: 7 });
 	const failure = await rejection(Promise.resolve(source.start(new AbortController().signal, () => undefined)));
 	assert.ok(failure instanceof EventSourceError);
-	assert.equal(failure.detail, "gh could not be run (ENOENT)");
-	assert.equal(failure.retryable, true);
-	const cause = commandFailure(failure);
-	assert.equal(cause.exitCode, undefined);
-	assert.equal(cause.spawnCode, "ENOENT");
-});
+	return failure;
+}
 
 test.runIf(process.platform !== "win32")("the default runner reports a gh that was killed by a signal", async () => {
 	installFakeGh("kill -9 $$");
@@ -1929,12 +2275,13 @@ test("github sources validate repo, pr and interval before any command runs", ()
 		]) {
 			const error = configError(() => factory({ repo, pr: 1, gh }));
 			assert.equal(error.field, `${name}.repo`);
-			assert.equal(error.reason, "not-string");
+			assert.equal(error.reason, "not-owner-repo");
+			assert.equal(error.expected, "a repository as owner/name, for example acme/widgets");
 		}
 		for (const repo of [undefined, 42, ["acme/widgets"], { toString: () => "acme/widgets" }]) {
 			const error = configError(() => factory({ repo: repo as never, pr: 1, gh }));
 			assert.equal(error.field, `${name}.repo`);
-			assert.equal(error.reason, "not-string");
+			assert.equal(error.reason, "not-owner-repo");
 		}
 		const notFunction = configError(() => factory({ repo: "acme/widgets", pr: 1, gh: "gh" as never }));
 		assert.equal(notFunction.field, `${name}.gh`);

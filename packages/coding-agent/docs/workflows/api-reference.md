@@ -541,7 +541,7 @@ Subscribes a long-lived stage to an event stream without putting every event int
 - `child.task(options)` runs the event's own short-lived, tracked child stage. It takes the same options as `ctx.task`. The prompt is your handling instructions followed by the event's id, type and payload. The child stage also gets a `report_to_subscriber` tool, so its model decides whether the event matters.
 - `child.report(text)` sends a short report to the subscriber. The `report_to_subscriber` tool calls it too.
 
-The subscriber's context grows only by reports. Each report arrives as one steering message in the `subscriber` stage: `Report from event child "<name>" (event <id>):` followed by your text. A subscription without a `subscriber` records its reports as run notices instead.
+The subscriber's context grows only by reports. Each report arrives as one steering message in the `subscriber` stage: `Report from event child "<name>" (event <id>):` followed by your text. After a resume, a subscriber stage replayed from the journal takes its reports in its retained session, which reopens as a stage chat does after a run. If that session cannot be reopened, the report fails with `SubscriptionSubscriberUnavailableError`. A subscription without a `subscriber` records its reports as run notices instead.
 
 ```typescript
 const watcher = ctx.stage("ci-watcher");
@@ -616,13 +616,13 @@ Built-in sources, exported from `@bastani/atomic` and `@bastani/atomic/workflows
 
 | Source | Events |
 |--------|--------|
-| `githubChecks({ repo, pr, intervalMs? })` | One `check_run` event per check-run state of the pull request's head commit, polled with the `gh` CLI every `intervalMs` (default 30 s). Every page of check runs is read. The id changes with each status and conclusion. |
-| `githubReviews({ repo, pr, intervalMs? })` | One `pull_request_review` event per submitted review, polled with `gh`. Every page of reviews is read. |
+| `githubChecks({ repo, pr, intervalMs? })` | One `check_run` event per check-run state of the pull request's head commit, polled with the `gh` CLI every `intervalMs` (default 30 s). Every page of check runs is read. The id changes with each status and conclusion. Without a `gh` on the `PATH` the factory throws `SubscriptionSetupError` at once, before anything is recorded. |
+| `githubReviews({ repo, pr, intervalMs? })` | One `pull_request_review` event per submitted review, polled with `gh`. Every page of reviews is read. It needs `gh` like `githubChecks`. |
 | `logTail(path, { pollMs? })` | One `line` event per line appended after the subscription starts. The id carries the follow's start time, a file generation and the line's byte offset. The generation advances when the file is truncated or recreated, so the first lines of a rotated file are delivered, not mistaken for lines already handled. A follow that starts later begins at the end of the file and gets new ids. |
-| `webhook({ path, port?, hostname?, maxBodyBytes? })` | One event per `POST` to `path`. The id comes from `X-GitHub-Delivery`, `X-Request-Id`, `Idempotency-Key` or the body's `id`. `listening()` resolves the URL to give the sender. Sources on the same fixed port share one server. |
+| `webhook({ path, port?, hostname?, maxBodyBytes? })` | One event per `POST` to `path`. The id comes from `X-GitHub-Delivery`, `X-Request-Id`, `Idempotency-Key` or the body's `id`. `listening()` resolves the URL to give the sender. Sources on the same host and port share one server and route by `path`, so any number of webhook subscriptions on the default port hold one socket; two sources cannot use the same `path`. `requestFailures()` returns the count and the latest typed error of deliveries that failed inside the source, which were answered with `500`. A sender that disconnects is not a failure. |
 | `interval(ms)` | A `tick` event every `ms` milliseconds. |
 
-Polling sources need no timer of their own: every source and rate limit waits on one shared wake dispatcher.
+Polling sources need no timer of their own: every source and rate limit waits on one shared wake dispatcher, and an idle subscriber holds no timer, listener or socket of its own.
 
 ### `publishEvent(subscriptionId, event)`
 
@@ -645,12 +645,14 @@ Every subscription failure extends `SubscriptionError` (`code`, `hint`, `retryab
 
 | Class (guard) | `code` | When | Fields | What to do |
 |---------------|--------|------|--------|------------|
-| `SubscriptionClosedError` (`isSubscriptionClosedError`) | `subscription-closed` | `publishEvent`, a source's `emit`, or `report` reached a subscription that is closed or not open in this process. | `subscriptionId`, `operation` (`publish`, `emit`, `report`) | Publish to an open subscription's `id`; stop emitting after `signal` aborts. |
-| `SubscriptionConfigError` (`isSubscriptionConfigError`) | `invalid-option` | An option is invalid. Thrown by `ctx.subscribe`, `ctx.events`, `session.subscribe` or a source factory before anything starts or is recorded. | `source` (`sdk`), `field`, `reason` | Fix the named field. |
+| `SubscriptionClosedError` (`isSubscriptionClosedError`) | `subscription-closed` | `publishEvent`, a source's `emit`, or `report` reached a subscription that is closed or not open in this process, or `session.subscribe` ran on a closed session. | `subscriptionId`, `operation` (`publish`, `emit`, `report`, `subscribe`) | Publish to an open subscription's `id`; stop emitting after `signal` aborts; subscribe while the session is open. |
+| `SubscriptionConfigError` (`isSubscriptionConfigError`) | `invalid-option` | An option is invalid. Thrown by `ctx.subscribe`, `ctx.events`, `session.subscribe` or a source factory before anything starts or is recorded. | `source` (`sdk`), `field`, `reason` (`duplicate-id`, `duplicate-path`, `not-absolute-path`, `not-event-source`, `not-function`, `not-owner-repo`, `not-positive-integer`, `not-stage`, `not-string`, `out-of-range`), `expected` (what a valid value looks like) | Fix the named field to match `expected`. |
 | `SubscriptionEventError` (`isSubscriptionEventError`) | `invalid-event` | A source or `publishEvent` passed something other than an object with a string `id`. | `subscriptionId`, `reason` (`not-object`, `missing-id`) | Emit `{ id, type?, payload? }`. |
-| `EventSourceError` (`isEventSourceError`) | `source-failed` | A source failed: `start` rejected, a poll failed, a file read failed or the webhook could not listen. | `sourceId`, `phase` (`start`, `listen`, `poll`, `read`), `detail` | Check the source's configuration and access. `retryable` is `true` for failed `gh` polls. |
+| `EventSourceError` (`isEventSourceError`) | `source-failed` | A source failed: `start` rejected, a poll failed, a file read failed, the webhook could not listen, or a webhook delivery failed inside the source (`request`, recorded by `requestFailures()`). | `sourceId`, `phase` (`start`, `listen`, `poll`, `read`, `request`), `detail` | Follow the `hint`, which names the fix for that source. `retryable` is `true` for failed `gh` polls and webhook deliveries, `false` when a `gh` setup problem is the `cause`. |
 | `SubscriptionHandlerError` (`isSubscriptionHandlerError`) | `handler-failed` | Your handler threw for an event; the subscription stopped. | `subscriptionId`, `eventId`; `cause` is your error | Fix the handler and subscribe again. Processed events are not repeated. |
 | `SubscriptionChildUnavailableError` (`isSubscriptionChildUnavailableError`) | `child-unavailable` | `child.task` in `session.subscribe` ran on a session that cannot start child sessions. | `subscriptionId`, `sessionId` | Create the session with `createAgentSession()`, or call `child.report` directly. |
+| `SubscriptionSetupError` (`isSubscriptionSetupError`) | `setup-missing` | `githubChecks` or `githubReviews` needs the GitHub CLI: `gh` is not on the `PATH` (thrown by the factory, before anything is recorded), or a poll found it missing or logged out (`gh` exit code 4), in which case it is the `cause` of an `EventSourceError`. Never retryable. | `missing` (`gh-cli`, `gh-auth`) | Install `gh` (https://cli.github.com) and run `gh auth login`, then subscribe again. |
+| `SubscriptionSubscriberUnavailableError` (`isSubscriptionSubscriberUnavailableError`) | `subscriber-unavailable` | A report could not reach its subscriber stage because that stage was replayed from a checkpoint after a resume and its retained session could not be reopened. | `subscriptionId`, `subscriber` (stage name), `reason` | Subscribe from a stage that runs in this run, or start the run again instead of resuming it. |
 
 `isRetryableSubscriptionError(error)` reads `retryable` from the first subscription error in the chain. Cancellation is never wrapped: a cancelled subscription rejects `done` with the cancellation reason itself.
 

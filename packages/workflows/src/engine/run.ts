@@ -104,6 +104,7 @@ import { createChainPrimitive } from "./primitives/chain.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createParallelPrimitive } from "./primitives/parallel.js";
 import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
+import { deliverSubscriberReport } from "./primitives/subscriber-report.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
@@ -1024,6 +1025,22 @@ async function executeRun(
 		subscriberStageId: (subscriber) => stageIdByContext.get(subscriber)?.(),
 		recordReportNotice: (id, message) =>
 			activeStore.recordNotice({ id, runId, level: "info", message, createdAt: Date.now() }),
+		deliverReport: (subscriber, message, subscriptionId) => {
+			const stageId = stageIdByContext.get(subscriber)?.();
+			return deliverSubscriberReport({
+				runId,
+				subscriber,
+				stage: activeStore.run(runId)?.stages.find((stage) => stage.id === stageId),
+				subscriptionId,
+				message,
+				postMortem: {
+					registry: stageRegistry,
+					adapters: opts.adapters,
+					cwd: workflowInvocationCwd,
+					defaultSessionDir: opts.defaultSessionDir,
+				},
+			});
+		},
 		watch: (promise) => rejectionScope.watch(promise),
 	});
 	const createdStageId = (

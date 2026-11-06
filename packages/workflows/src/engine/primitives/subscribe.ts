@@ -49,6 +49,15 @@ export interface WorkflowEventRuntime {
 	readonly subscriberStageId: (subscriber: WorkflowEventSubscriber) => string | undefined;
 	/** Records a report as a run notice when the subscription has no subscriber stage. */
 	readonly recordReportNotice: (id: string, message: string) => void;
+	/**
+	 * Delivers a report into the subscriber stage. A stage replayed from the journal after a resume has no live session,
+	 * so its retained session takes the report instead.
+	 */
+	readonly deliverReport: (
+		subscriber: WorkflowEventSubscriber,
+		message: string,
+		subscriptionId: string,
+	) => Promise<void>;
 	/** Lets an unobserved subscription failure fail the run. */
 	readonly watch: <T>(promise: Promise<T>) => Promise<T>;
 }
@@ -146,7 +155,7 @@ export function createWorkflowEventPrimitives(runtime: WorkflowEventRuntime): Wo
 						reportCount += 1;
 						runtime.recordReportNotice(`${id}:report:${reportCount}`, message);
 					} else {
-						await subscriber.sendUserMessage(message, { deliverAs: "steer" });
+						await runtime.deliverReport(subscriber, message, id);
 					}
 					handle.recordReport();
 				};

@@ -6,7 +6,9 @@ export type SubscriptionErrorCode =
 	| "invalid-event"
 	| "source-failed"
 	| "handler-failed"
-	| "child-unavailable";
+	| "child-unavailable"
+	| "setup-missing"
+	| "subscriber-unavailable";
 
 export type SubscriptionErrorName =
 	| "SubscriptionError"
@@ -15,7 +17,9 @@ export type SubscriptionErrorName =
 	| "SubscriptionEventError"
 	| "EventSourceError"
 	| "SubscriptionHandlerError"
-	| "SubscriptionChildUnavailableError";
+	| "SubscriptionChildUnavailableError"
+	| "SubscriptionSetupError"
+	| "SubscriptionSubscriberUnavailableError";
 
 export type SubscriptionErrorFieldValue = string | number | boolean | null;
 export type SubscriptionErrorFields = Readonly<Record<string, SubscriptionErrorFieldValue>>;
@@ -68,9 +72,9 @@ export class SubscriptionError extends Error {
 	}
 }
 
-export type SubscriptionClosedOperation = "publish" | "emit" | "report";
+export type SubscriptionClosedOperation = "publish" | "emit" | "report" | "subscribe";
 
-/** An event or report was sent to a subscription that is closed, or not open in this process. */
+/** An event or report was sent to a subscription that is closed or not open in this process, or `session.subscribe` ran on a closed session. */
 export class SubscriptionClosedError extends SubscriptionError {
 	override readonly name = "SubscriptionClosedError" as const;
 	declare readonly code: "subscription-closed";
@@ -78,7 +82,10 @@ export class SubscriptionClosedError extends SubscriptionError {
 	readonly operation: SubscriptionClosedOperation;
 
 	constructor(subscriptionId: string, operation: SubscriptionClosedOperation, options?: { readonly cause?: unknown }) {
-		const hint = "Use the id of an open subscription; a closed subscription accepts no events or reports.";
+		const hint =
+			operation === "subscribe"
+				? "Subscribe while the session is open; a closed session accepts no subscriptions."
+				: "Use the id of an open subscription; a closed subscription accepts no events or reports.";
 		super(
 			"subscription-closed",
 			failureMessage("Subscription is closed", subscriptionId, "subscription-closed", hint),
@@ -98,11 +105,28 @@ export class SubscriptionClosedError extends SubscriptionError {
 
 export type SubscriptionConfigReason =
 	| "duplicate-id"
+	| "duplicate-path"
+	| "not-absolute-path"
 	| "not-event-source"
 	| "not-function"
+	| "not-owner-repo"
 	| "not-positive-integer"
 	| "not-stage"
-	| "not-string";
+	| "not-string"
+	| "out-of-range";
+
+const EXPECTED_BY_REASON: Readonly<Record<SubscriptionConfigReason, string>> = {
+	"duplicate-id": "a value that no other open subscription in this process uses",
+	"duplicate-path": "a path that no other open webhook source on this host and port uses",
+	"not-absolute-path": "a path that starts with /, for example /hooks/ci",
+	"not-event-source": "an EventSource with a string id and a start(signal, emit) function",
+	"not-function": "a function",
+	"not-owner-repo": "a repository as owner/name, for example acme/widgets",
+	"not-positive-integer": "a positive integer",
+	"not-stage": "a stage returned by ctx.stage()",
+	"not-string": "a non-empty string",
+	"out-of-range": "a value inside the allowed range",
+};
 
 /** A subscription option is invalid. Thrown before the subscription opens or anything is recorded. */
 export class SubscriptionConfigError extends SubscriptionError {
@@ -111,25 +135,20 @@ export class SubscriptionConfigError extends SubscriptionError {
 	readonly source: "sdk";
 	readonly field: string;
 	readonly reason: SubscriptionConfigReason;
+	/** What a valid value looks like, for example `an integer from 0 to 65535`. */
+	readonly expected: string;
 
-	constructor(field: string, reason: SubscriptionConfigReason) {
-		const expected: Record<SubscriptionConfigReason, string> = {
-			"duplicate-id": "a value that no other open subscription in this process uses",
-			"not-event-source": "an EventSource with a string id and a start(signal, emit) function",
-			"not-function": "a function",
-			"not-positive-integer": "a positive integer",
-			"not-stage": "a stage returned by ctx.stage()",
-			"not-string": "a non-empty string",
-		};
-		const hint = `Pass ${expected[reason]} for ${field}.`;
+	constructor(field: string, reason: SubscriptionConfigReason, expected: string = EXPECTED_BY_REASON[reason]) {
+		const hint = `Pass ${expected} for ${field}.`;
 		super("invalid-option", failureMessage("Invalid subscription option", field, "invalid-option", hint), { hint });
 		this.source = "sdk";
 		this.field = field;
 		this.reason = reason;
+		this.expected = expected;
 	}
 
 	override fields(): SubscriptionErrorFields {
-		return { source: this.source, field: this.field, reason: this.reason };
+		return { source: this.source, field: this.field, reason: this.reason, expected: this.expected };
 	}
 }
 
@@ -157,9 +176,20 @@ export class SubscriptionEventError extends SubscriptionError {
 	}
 }
 
-export type EventSourcePhase = "start" | "listen" | "poll" | "read";
+export type EventSourcePhase = "start" | "listen" | "poll" | "read" | "request";
 
-/** An event source failed. `detail` is a short, credential-free description of the underlying failure. */
+const DEFAULT_SOURCE_HINT: Readonly<Record<EventSourcePhase, string>> = {
+	start: "Check the source's configuration and access, then subscribe again.",
+	listen: "Choose a free port or hostname for the webhook source, then subscribe again.",
+	poll: "Check the source's configuration and access, then subscribe again.",
+	read: "Check the source's configuration and access, then subscribe again.",
+	request: "Inspect the cause; the sender can send the delivery again.",
+};
+
+/**
+ * An event source failed. `detail` is a short, credential-free description of the underlying failure. `hint`
+ * overrides the default for the phase when the source knows the fix for its own failure.
+ */
 export class EventSourceError extends SubscriptionError {
 	override readonly name = "EventSourceError" as const;
 	declare readonly code: "source-failed";
@@ -170,12 +200,14 @@ export class EventSourceError extends SubscriptionError {
 	constructor(
 		sourceId: string,
 		phase: EventSourcePhase,
-		options?: { readonly cause?: unknown; readonly detail?: string; readonly retryable?: boolean },
+		options?: {
+			readonly cause?: unknown;
+			readonly detail?: string;
+			readonly retryable?: boolean;
+			readonly hint?: string;
+		},
 	) {
-		const hint =
-			phase === "listen"
-				? "Choose a free port or hostname for the webhook source, then subscribe again."
-				: "Check the source's configuration and access (for GitHub sources, `gh auth status`), then subscribe again.";
+		const hint = options?.hint ?? DEFAULT_SOURCE_HINT[phase];
 		super(
 			"source-failed",
 			failureMessage(
@@ -246,6 +278,72 @@ export class SubscriptionChildUnavailableError extends SubscriptionError {
 	}
 }
 
+export type SubscriptionSetupMissing = "gh-cli" | "gh-auth";
+
+const SETUP_SUBJECT: Readonly<Record<SubscriptionSetupMissing, string>> = {
+	"gh-cli": "the GitHub CLI (gh) that githubChecks and githubReviews run",
+	"gh-auth": "a GitHub login for gh",
+};
+
+const SETUP_HINT: Readonly<Record<SubscriptionSetupMissing, string>> = {
+	"gh-cli":
+		"Install the GitHub CLI from https://cli.github.com (for example `brew install gh` or `winget install GitHub.cli`), then run `gh auth login`.",
+	"gh-auth": "Run `gh auth login`, then subscribe again.",
+};
+
+/** A source needs something that is not set up on this machine. Retrying cannot help until the setup is done. */
+export class SubscriptionSetupError extends SubscriptionError {
+	override readonly name = "SubscriptionSetupError" as const;
+	declare readonly code: "setup-missing";
+	readonly missing: SubscriptionSetupMissing;
+
+	constructor(missing: SubscriptionSetupMissing, options?: { readonly cause?: unknown }) {
+		const hint = SETUP_HINT[missing];
+		super(
+			"setup-missing",
+			failureMessage("Subscription setup is missing", SETUP_SUBJECT[missing], "setup-missing", hint),
+			{ hint, ...(options?.cause === undefined ? {} : { cause: options.cause }) },
+		);
+		this.missing = missing;
+	}
+
+	override fields(): SubscriptionErrorFields {
+		return { missing: this.missing };
+	}
+}
+
+/** A report could not reach its subscriber stage, because that stage was replayed from a checkpoint after a resume. */
+export class SubscriptionSubscriberUnavailableError extends SubscriptionError {
+	override readonly name = "SubscriptionSubscriberUnavailableError" as const;
+	declare readonly code: "subscriber-unavailable";
+	readonly subscriptionId: string;
+	readonly subscriber: string;
+	/** Why the subscriber's retained session could not take the report. */
+	readonly reason: string;
+
+	constructor(subscriptionId: string, subscriber: string, reason: string, options?: { readonly cause?: unknown }) {
+		const hint =
+			"The subscriber stage was replayed after a resume and its retained session could not be reopened; subscribe from a stage that runs in this run, or start the run again instead of resuming it.";
+		super(
+			"subscriber-unavailable",
+			failureMessage(
+				`Subscriber stage "${subscriber}" cannot take reports (${reason})`,
+				subscriptionId,
+				"subscriber-unavailable",
+				hint,
+			),
+			{ hint, ...(options?.cause === undefined ? {} : { cause: options.cause }) },
+		);
+		this.subscriptionId = subscriptionId;
+		this.subscriber = subscriber;
+		this.reason = reason;
+	}
+
+	override fields(): SubscriptionErrorFields {
+		return { subscriptionId: this.subscriptionId, subscriber: this.subscriber, reason: this.reason };
+	}
+}
+
 const CODE_BY_NAME: Readonly<Record<string, SubscriptionErrorCode>> = {
 	SubscriptionClosedError: "subscription-closed",
 	SubscriptionConfigError: "invalid-option",
@@ -253,6 +351,8 @@ const CODE_BY_NAME: Readonly<Record<string, SubscriptionErrorCode>> = {
 	EventSourceError: "source-failed",
 	SubscriptionHandlerError: "handler-failed",
 	SubscriptionChildUnavailableError: "child-unavailable",
+	SubscriptionSetupError: "setup-missing",
+	SubscriptionSubscriberUnavailableError: "subscriber-unavailable",
 };
 
 const SUBSCRIPTION_ERROR_CODES: ReadonlySet<string> = new Set<SubscriptionErrorCode>(Object.values(CODE_BY_NAME));
@@ -306,6 +406,11 @@ export const isSubscriptionHandlerError = guard(SubscriptionHandlerError, "Subsc
 export const isSubscriptionChildUnavailableError = guard(
 	SubscriptionChildUnavailableError,
 	"SubscriptionChildUnavailableError",
+);
+export const isSubscriptionSetupError = guard(SubscriptionSetupError, "SubscriptionSetupError");
+export const isSubscriptionSubscriberUnavailableError = guard(
+	SubscriptionSubscriberUnavailableError,
+	"SubscriptionSubscriberUnavailableError",
 );
 
 /** First subscription error in the cause chain, if any. */
@@ -375,6 +480,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				return new SubscriptionConfigError(
 					stringField(fields, "field"),
 					stringField(fields, "reason") as SubscriptionConfigReason,
+					stringField(fields, "expected") || undefined,
 				);
 			case "SubscriptionEventError":
 				return new SubscriptionEventError(
@@ -389,6 +495,7 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 					{
 						cause,
 						retryable: serialized.retryable,
+						...(serialized.hint === undefined ? {} : { hint: serialized.hint }),
 						...(typeof detail === "string" ? { detail } : {}),
 					},
 				);
@@ -403,6 +510,14 @@ export function deserializeSubscriptionError(serialized: SerializedSubscriptionE
 				return new SubscriptionChildUnavailableError(
 					stringField(fields, "subscriptionId"),
 					stringField(fields, "sessionId"),
+				);
+			case "SubscriptionSetupError":
+				return new SubscriptionSetupError(stringField(fields, "missing") as SubscriptionSetupMissing);
+			case "SubscriptionSubscriberUnavailableError":
+				return new SubscriptionSubscriberUnavailableError(
+					stringField(fields, "subscriptionId"),
+					stringField(fields, "subscriber"),
+					stringField(fields, "reason"),
 				);
 			default: {
 				const base = new SubscriptionError(serialized.code, serialized.message, {

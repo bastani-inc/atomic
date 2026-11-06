@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	type AgentSession,
 	type EventSource,
 	isSubscriptionClosedError,
 	isSubscriptionConfigError,
 	isSubscriptionHandlerError,
+	isSubscriptionSubscriberUnavailableError,
 	publishEvent,
 	SUBSCRIPTION_REPORT_TOOL_NAME,
 	type SubscriptionEvent,
@@ -12,6 +16,7 @@ import {
 	type ToolDefinition,
 } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
+import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	completedWorkflowSnapshot,
@@ -19,6 +24,11 @@ import {
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+	type StageControlRegistry,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type {
 	WorkflowEventStream,
@@ -1418,4 +1428,164 @@ test("a subscriber declared and prompted while the run is paused parents childre
 	assert.equal(result.status, "completed", result.error);
 	const watcher = result.stages.find((stage) => stage.name === "watcher")!;
 	assert.deepEqual(result.stages.find((stage) => stage.name === "early/x1")!.parentIds, [watcher.id]);
+});
+
+interface ReplayedSubscriberCase {
+	readonly runId: string;
+	readonly retained: boolean;
+	readonly registry?: StageControlRegistry;
+	readonly beforeResume?: (watcherStageId: string) => void;
+}
+
+/** Runs a subscriber whose first event fails before reporting, then resumes so the subscriber is replayed. */
+async function runReplayedSubscriber(scenario: ReplayedSubscriberCase) {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-subscriber-replay-"));
+	const sessionStore = await JsonlSessionStore.open(directory, { exactDirectory: true });
+	const sessionId = "watcher-session";
+	const sessionFile = join(directory, "watcher.jsonl");
+	if (scenario.retained) {
+		writeFileSync(
+			sessionFile,
+			`${[
+				JSON.stringify({
+					type: "session",
+					version: 4,
+					id: sessionId,
+					createdAt: new Date(0).toISOString(),
+					cwd: directory,
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "watcher-message",
+					parentId: null,
+					timestamp: new Date(0).toISOString(),
+					message: { role: "user", content: "watch", timestamp: 0 },
+				}),
+			].join("\n")}\n`,
+		);
+	}
+	const deliveries: Array<{ readonly session: string; readonly text: string; readonly deliverAs?: string }> = [];
+	let watcherSessions = 0;
+	const watcherSession = (): StageSessionRuntime => {
+		watcherSessions += 1;
+		const label = watcherSessions === 1 ? "live" : "reopened";
+		return {
+			...mockSession(),
+			sessionId,
+			sessionFile,
+			async sendUserMessage(content, options) {
+				deliveries.push({
+					session: label,
+					text: typeof content === "string" ? content : "",
+					...(options?.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }),
+				});
+			},
+		};
+	};
+	let failFirst = true;
+	const failures: unknown[] = [];
+	const definition = workflow({
+		name: "replayed-subscriber",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			await watcher.prompt("watch");
+			await ctx
+				.subscribe(
+					listSource("ci", [{ id: "e1" }]),
+					async (_event, child) => {
+						if (failFirst) {
+							failFirst = false;
+							throw new Error("crashed before reporting");
+						}
+						await child.report("e1 failed");
+					},
+					{ subscriber: watcher },
+				)
+				.done.catch((error: unknown) => failures.push(error));
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const options = {
+		runId: scenario.runId,
+		cwd: directory,
+		durableBackend: await createMemoryTestBackend(),
+		...(scenario.registry === undefined ? {} : { stageControlRegistry: scenario.registry }),
+		adapters: {
+			sessionStore,
+			agentSession: {
+				create: async (_options: unknown, meta?: { readonly stageName: string }) =>
+					meta?.stageName === "watcher" ? watcherSession() : subscriberSession(),
+			},
+		},
+	};
+	try {
+		const first = await run(definition, {}, { ...options, store: createStore() });
+		assert.equal(first.status, "completed", first.error);
+		scenario.beforeResume?.(first.stages.find((stage) => stage.name === "watcher")!.id);
+		const resumed = await run(definition, {}, { ...options, store: createStore() });
+		return { resumed, deliveries, failures: failures.slice(1) };
+	} finally {
+		await sessionStore.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+test("a subscriber replayed after a resume takes reports in its retained session (#4311)", async () => {
+	const { resumed, deliveries, failures } = await runReplayedSubscriber({
+		runId: "abababab-abab-4bab-8bab-000000004311",
+		retained: true,
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(failures, []);
+	assert.deepEqual(deliveries, [
+		{ session: "reopened", text: 'Report from event child "ci/e1" (event e1):\n\ne1 failed', deliverAs: "steer" },
+	]);
+});
+
+test("a replayed subscriber whose session cannot be reopened fails the report with a typed error (#4311)", async () => {
+	const { resumed, deliveries, failures } = await runReplayedSubscriber({
+		runId: "acacacac-acac-4cac-8cac-000000004311",
+		retained: false,
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(deliveries, []);
+	assert.equal(failures.length, 1);
+	assert.equal(isSubscriptionHandlerError(failures[0]), true);
+	const cause = (failures[0] as { cause?: unknown }).cause;
+	assert.equal(isSubscriptionSubscriberUnavailableError(cause), true);
+	assert.deepEqual(
+		{
+			code: (cause as { code: string }).code,
+			subscriber: (cause as { subscriber: string }).subscriber,
+			reason: (cause as { reason: string }).reason,
+			retryable: (cause as { retryable: boolean }).retryable,
+		},
+		{ code: "subscriber-unavailable", subscriber: "watcher", reason: "invalid_session", retryable: false },
+	);
+	assert.equal((cause as { subscriptionId: string }).subscriptionId, "acacacac-acac-4cac-8cac-000000004311/ci#1");
+});
+
+test("a replayed subscriber whose chat handle cannot admit messages fails the report with a typed error (#4311)", async () => {
+	const registry = createStageControlRegistry();
+	const runId = "adadadad-adad-4dad-8dad-000000004311";
+	const { resumed, deliveries, failures } = await runReplayedSubscriber({
+		runId,
+		retained: true,
+		registry,
+		beforeResume: (watcherStageId) => {
+			registry.getOrCreateDetached(
+				runId,
+				watcherStageId,
+				() => ({ runId, stageId: watcherStageId, stageName: "watcher", isDisposed: false }) as StageControlHandle,
+			);
+		},
+	});
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(deliveries, []);
+	const cause = (failures[0] as { cause?: unknown }).cause;
+	assert.equal(isSubscriptionSubscriberUnavailableError(cause), true);
+	assert.equal((cause as { reason: string }).reason, "no_message_admission");
 });

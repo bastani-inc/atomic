@@ -3,11 +3,17 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { accessSync, constants, statSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve as resolvePath } from "node:path";
-import { EventSourceError, SubscriptionClosedError, SubscriptionConfigError } from "./errors.js";
+import { delimiter, join, resolve as resolvePath } from "node:path";
+import {
+	EventSourceError,
+	SubscriptionClosedError,
+	SubscriptionConfigError,
+	SubscriptionSetupError,
+} from "./errors.js";
 import type { EmitSubscriptionEvent, EventSource, SubscriptionEvent, SubscriptionEventPayload } from "./types.js";
 import { sharedWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.js";
 
@@ -21,11 +27,15 @@ const DEFAULT_WEBHOOK_MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_GITHUB_INTERVAL_MS = 30_000;
 const GH_MAX_OUTPUT_BYTES = 16 * 1_048_576;
 const GH_MAX_STDERR_CHARS = 1_000;
+const LOG_READ_HINT = "Check that the log file and its directory are readable by this process, then subscribe again.";
+const GITHUB_POLL_HINT =
+	"Check access to the repository with `gh auth status` and that GitHub is reachable, then subscribe again.";
 const REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
 
 function requireTimerMs(value: number, field: string): void {
-	if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_TIMER_MS) {
-		throw new SubscriptionConfigError(field, "not-positive-integer");
+	if (!Number.isSafeInteger(value) || value <= 0) throw new SubscriptionConfigError(field, "not-positive-integer");
+	if (value > MAX_TIMER_MS) {
+		throw new SubscriptionConfigError(field, "out-of-range", `an integer from 1 to ${MAX_TIMER_MS} milliseconds`);
 	}
 }
 
@@ -216,7 +226,7 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 			} catch (error) {
 				if (signal.aborted) return;
 				if (errnoCode(error) !== "ENOENT") {
-					throw new EventSourceError(id, "read", { cause: error, detail: errnoCode(error) });
+					throw new EventSourceError(id, "read", { cause: error, detail: errnoCode(error), hint: LOG_READ_HINT });
 				}
 			}
 			while (!signal.aborted) {
@@ -225,7 +235,7 @@ export function logTail(path: string, options?: LogTailOptions): EventSource {
 					chunk = await pollOnce();
 				} catch (error) {
 					if (signal.aborted) return;
-					throw new EventSourceError(id, "read", { cause: error, detail: errnoCode(error) });
+					throw new EventSourceError(id, "read", { cause: error, detail: errnoCode(error), hint: LOG_READ_HINT });
 				}
 				for (const { offset, line } of chunk.lines) {
 					if (signal.aborted) return;
@@ -252,9 +262,18 @@ export interface WebhookOptions {
 	readonly maxBodyBytes?: number;
 }
 
+export interface WebhookRequestFailures {
+	/** Deliveries answered with 500 (or dropped) because of an internal failure. Client aborts are not counted. */
+	readonly count: number;
+	/** The most recent such failure, an `EventSourceError` in phase `request` with the underlying error as `cause`. */
+	readonly last: EventSourceError | undefined;
+}
+
 export interface WebhookEventSource extends EventSource {
 	/** Resolves with the base URL, including the path, once the server listens. Rejects if listening fails. */
 	listening(): Promise<string>;
+	/** Internal failures while taking deliveries so far; each delivery that failed was answered, never swallowed. */
+	requestFailures(): WebhookRequestFailures;
 }
 
 function present(text: string | undefined): string | undefined {
@@ -314,14 +333,23 @@ function deliveryType(req: IncomingMessage, fields: JsonObject): string | undefi
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 
+interface WebhookRoute {
+	/** Takes one request. It answers it itself and never rejects. */
+	readonly handle: RouteHandler;
+	/** The server broke: the source that owns the route fails with a listen error. */
+	readonly fail: (error: unknown) => void;
+}
+
 interface WebhookListener {
 	readonly server: Server;
-	readonly routes: Map<string, RouteHandler>;
+	readonly routes: Map<string, WebhookRoute>;
+	/** The server's one `error` listener, removed when the last route goes. */
+	readonly onError: (error: unknown) => void;
 	/** Resolves once the server listens; rejects with the listen error. */
 	readonly ready: Promise<void>;
 }
 
-/** Webhook servers by `hostname:port`. Sources on one fixed port share a server; each start on port 0 has its own. */
+/** Webhook servers by `hostname:port`. Every source on the same host and port, port 0 included, shares one server. */
 const sharedListeners = new Map<string, WebhookListener>();
 
 function requestPath(req: IncomingMessage): string {
@@ -331,16 +359,25 @@ function requestPath(req: IncomingMessage): string {
 }
 
 function openListener(key: string, hostname: string, port: number): WebhookListener {
-	const routes = new Map<string, RouteHandler>();
+	const routes = new Map<string, WebhookRoute>();
 	const server = createServer((req, res) => {
 		const route = routes.get(requestPath(req));
-		if (typeof route !== "function") {
+		if (typeof route?.handle !== "function") {
 			respondJson(res, 404, { error: "not-found" });
 			return;
 		}
-		route(req, res).catch(() => respondJson(res, 500, { error: "internal-error" }));
+		void route.handle(req, res);
 	});
-	const listener: WebhookListener = { server, routes, ready: once(server, "listening").then(() => undefined) };
+	const onError = (error: unknown): void => {
+		for (const route of [...routes.values()]) route.fail(error);
+	};
+	server.on("error", onError);
+	const listener: WebhookListener = {
+		server,
+		routes,
+		onError,
+		ready: once(server, "listening").then(() => undefined),
+	};
 	sharedListeners.set(key, listener);
 	server.listen(port, hostname);
 	return listener;
@@ -356,16 +393,17 @@ function listenerUrl(server: Server, path: string): string {
  * Listens for `POST <path>` and emits each delivery as an event. The id comes from `x-github-delivery`,
  * `x-request-id`, `idempotency-key` or the body's `id`, so a redelivered webhook is deduplicated.
  *
- * Sources that listen on the same fixed `hostname` and `port` share one HTTP server, which closes when the last of
- * them stops; two of them cannot use the same path. With the default port 0 each source gets its own server.
+ * Sources that listen on the same `hostname` and `port` share one HTTP server, which closes when the last of them
+ * stops; two of them cannot use the same path. With the default port 0 all of a process's sources on one `hostname`
+ * share the one server the operating system gave a port, so any number of webhook subscriptions hold one socket.
  */
 export function webhook(options: WebhookOptions): WebhookEventSource {
 	const path = options?.path;
 	requireNonEmptyString(path, "webhook.path");
-	if (!path.startsWith("/")) throw new SubscriptionConfigError("webhook.path", "not-string");
+	if (!path.startsWith("/")) throw new SubscriptionConfigError("webhook.path", "not-absolute-path");
 	const port = options.port ?? 0;
 	if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-		throw new SubscriptionConfigError("webhook.port", "not-positive-integer");
+		throw new SubscriptionConfigError("webhook.port", "out-of-range", "an integer from 0 to 65535");
 	}
 	const hostname = options.hostname ?? "127.0.0.1";
 	requireNonEmptyString(hostname, "webhook.hostname");
@@ -391,8 +429,27 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 		}
 	}
 
+	let requestFailureCount = 0;
+	let lastRequestFailure: EventSourceError | undefined;
+
+	/** Records an internal failure while taking a delivery, and answers the sender once; a client that left is no failure. */
+	function requestFailed(error: unknown, res: ServerResponse): void {
+		if (errnoCode(error) === "ECONNRESET") {
+			res.end();
+			return;
+		}
+		requestFailureCount += 1;
+		lastRequestFailure = new EventSourceError(id, "request", {
+			cause: error,
+			detail: errnoCode(error),
+			retryable: true,
+		});
+		if (res.headersSent) res.destroy();
+		else respondJson(res, 500, { error: "internal-error" });
+	}
+
 	function routeFor(signal: AbortSignal, emit: EmitSubscriptionEvent): RouteHandler {
-		return async (req, res) => {
+		const handle: RouteHandler = async (req, res) => {
 			if (req.method !== "POST") {
 				respondJson(res, 405, { error: "method-not-allowed" }, { allow: "POST" });
 				return;
@@ -427,6 +484,13 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 			}
 			respondJson(res, 202, { accepted: true, id: eventId });
 		};
+		return async (req, res) => {
+			try {
+				await handle(req, res);
+			} catch (error) {
+				requestFailed(error, res);
+			}
+		};
 	}
 
 	return {
@@ -439,36 +503,37 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 			}
 			return "url" in outcome ? Promise.resolve(outcome.url) : Promise.reject(outcome.failure);
 		},
+		requestFailures: () => ({ count: requestFailureCount, last: lastRequestFailure }),
 		async start(signal, emit) {
 			if (signal.aborted) {
 				settle({ failure: signal.reason });
 				return;
 			}
-			const key = port === 0 ? `ephemeral:${randomUUID()}` : `${hostname}:${port}`;
+			const key = `${hostname}:${port}`;
 			const existing = sharedListeners.get(key);
 			if (existing?.routes.has(path)) {
-				const failure = new SubscriptionConfigError("webhook.path", "duplicate-id");
+				const failure = new SubscriptionConfigError("webhook.path", "duplicate-path");
 				settle({ failure });
 				throw failure;
 			}
 			const listener = existing ?? openListener(key, hostname, port);
-			listener.routes.set(path, routeFor(signal, emit));
-
 			const runtime: { failure?: { readonly error: unknown } } = {};
 			const ended = Promise.withResolvers<void>();
 			const stop = (): void => ended.resolve();
-			const onServerError = (error: unknown): void => {
-				runtime.failure = { error };
-				stop();
-			};
+			listener.routes.set(path, {
+				handle: routeFor(signal, emit),
+				fail: (error) => {
+					runtime.failure = { error };
+					stop();
+				},
+			});
 			signal.addEventListener("abort", stop);
-			listener.server.on("error", onServerError);
 
 			const release = (): Promise<void> => {
 				signal.removeEventListener("abort", stop);
-				listener.server.off("error", onServerError);
 				listener.routes.delete(path);
 				if (listener.routes.size > 0) return Promise.resolve();
+				listener.server.off("error", listener.onError);
 				sharedListeners.delete(key);
 				return new Promise<void>((resolve) => {
 					listener.server.close(() => resolve());
@@ -554,6 +619,37 @@ class GitHubResponseError extends Error {
 	}
 }
 
+/** `gh` exits with this status when it needs a login (`gh help exit-codes`). */
+const GH_EXIT_AUTH_REQUIRED = 4;
+
+/** True when `path` is a regular file this process may execute. */
+function isExecutableFile(path: string): boolean {
+	try {
+		accessSync(path, constants.X_OK);
+		return statSync(path).isFile();
+	} catch {
+		return false; // a missing or unreadable candidate only means this PATH entry has no gh
+	}
+}
+
+/** True when the PATH names an executable `gh`; the default runner spawns it by name. */
+function ghOnPath(): boolean {
+	const name = process.platform === "win32" ? "gh.exe" : "gh";
+	return (process.env.PATH ?? "")
+		.split(delimiter)
+		.some((directory) => directory !== "" && isExecutableFile(join(directory, name)));
+}
+
+/** The setup `error` shows is missing, or `undefined` when the failure is not about setup. */
+function missingSetup(error: unknown): SubscriptionSetupError | undefined {
+	if (!(error instanceof GitHubCommandError)) return undefined;
+	if (error.spawnCode === "ENOENT" || error.spawnCode === "EACCES") {
+		return new SubscriptionSetupError("gh-cli", { cause: error });
+	}
+	if (error.exitCode === GH_EXIT_AUTH_REQUIRED) return new SubscriptionSetupError("gh-auth", { cause: error });
+	return undefined;
+}
+
 const runGh: GitHubCommandRunner = (args, signal) =>
 	new Promise((resolve, reject) => {
 		execFile(
@@ -621,13 +717,15 @@ function validateGitHubOptions(
 } {
 	const { repo, pr } = options;
 	if (typeof repo !== "string" || !REPO_PATTERN.test(repo))
-		throw new SubscriptionConfigError(`${name}.repo`, "not-string");
+		throw new SubscriptionConfigError(`${name}.repo`, "not-owner-repo");
 	if (!Number.isSafeInteger(pr) || pr <= 0) throw new SubscriptionConfigError(`${name}.pr`, "not-positive-integer");
 	const intervalMs = options.intervalMs ?? DEFAULT_GITHUB_INTERVAL_MS;
 	requireTimerMs(intervalMs, `${name}.intervalMs`);
 	const gh = options.gh ?? runGh;
 	if (typeof gh !== "function") throw new SubscriptionConfigError(`${name}.gh`, "not-function");
-	return { repo, pr, intervalMs, gh, dispatcher: resolveDispatcher(options.dispatcher, `${name}.dispatcher`) };
+	const dispatcher = resolveDispatcher(options.dispatcher, `${name}.dispatcher`);
+	if (options.gh === undefined && !ghOnPath()) throw new SubscriptionSetupError("gh-cli");
+	return { repo, pr, intervalMs, gh, dispatcher };
 }
 
 function pollingSource(
@@ -645,10 +743,12 @@ function pollingSource(
 					events = await poll(signal);
 				} catch (error) {
 					if (signal.aborted) return;
+					const setup = missingSetup(error);
 					throw new EventSourceError(id, "poll", {
-						cause: error,
+						cause: setup ?? error,
 						detail: pollFailureDetail(error),
-						retryable: !(error instanceof GitHubResponseError),
+						retryable: setup === undefined && !(error instanceof GitHubResponseError),
+						hint: setup?.hint ?? GITHUB_POLL_HINT,
 					});
 				}
 				for (const item of events) {

@@ -20,6 +20,8 @@ export {
 	isSubscriptionError,
 	isSubscriptionEventError,
 	isSubscriptionHandlerError,
+	isSubscriptionSetupError,
+	isSubscriptionSubscriberUnavailableError,
 	type SerializedSubscriptionError,
 	type SerializedSubscriptionErrorCause,
 	SubscriptionChildUnavailableError,
@@ -35,6 +37,9 @@ export {
 	SubscriptionEventError,
 	type SubscriptionEventReason,
 	SubscriptionHandlerError,
+	SubscriptionSetupError,
+	type SubscriptionSetupMissing,
+	SubscriptionSubscriberUnavailableError,
 	serializeSubscriptionError,
 } from "./errors.js";
 export {
@@ -65,6 +70,7 @@ export {
 	type SourceTimingOptions,
 	type WebhookEventSource,
 	type WebhookOptions,
+	type WebhookRequestFailures,
 	webhook,
 } from "./sources.js";
 export type {

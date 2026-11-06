@@ -207,7 +207,9 @@ describe("AgentSession.subscribe(source, handler)", () => {
 			(error) =>
 				isSubscriptionClosedError(error) &&
 				(error as { subscriptionId: string }).subscriptionId === `${harness.session.sessionId}/late` &&
-				(error as { operation: string }).operation === "emit",
+				(error as { operation: string }).operation === "subscribe" &&
+				(error as { hint: string }).hint ===
+					"Subscribe while the session is open; a closed session accepts no subscriptions.",
 		);
 	});
 

@@ -152,7 +152,7 @@ export function subscribeSession(
 	}
 	validateSubscriptionAdmission(options, "options");
 	if (session._disposed)
-		throw new SubscriptionClosedError(`${session.sessionId}/${options.name ?? source.id}`, "emit");
+		throw new SubscriptionClosedError(`${session.sessionId}/${options.name ?? source.id}`, "subscribe");
 	const name = options.name ?? source.id;
 	let ordinals = ordinalsBySession.get(session);
 	if (ordinals === undefined) {
