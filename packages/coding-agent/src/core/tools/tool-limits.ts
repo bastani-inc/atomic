@@ -20,14 +20,6 @@ export const DEFAULT_MAX_RESULT_SIZE_CHARS = 50_000;
 /** Subdirectory (within the session directory) for persisted tool results. */
 export const TOOL_RESULTS_SUBDIR = "tool-results";
 
-/**
- * Subdirectory (within the agent directory) for the oversized tool results of released workflow stages, a stage
- * waiting with its session closed: `<agentDir>/blobs/tool-output/<sessionId>/<sha256>.txt`. No sweeper reaches it: it
- * is neither under a sessions root nor a `tool-results` directory. Deleting the session removes its directory.
- * Results of calls that ran inline stay in the swept locations.
- */
-export const TOOL_RESULT_BLOBS_SUBDIR = "blobs/tool-output";
-
 /** XML tags wrapping a persisted-output preview message. */
 export const PERSISTED_OUTPUT_TAG = "<persisted-output>";
 export const PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>";

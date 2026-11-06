@@ -12,6 +12,7 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
 import { createHistoryRouter } from "../tools/history-protocol.ts";
 import { composeInternalRouters } from "../tools/resource-selectors.ts";
+import { createToolOutputRouter } from "../tools/tool-output-protocol.ts";
 import type {
 	ForkHandler,
 	NavigateTreeHandler,
@@ -305,12 +306,19 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				sessionStore: () => manager.getSessionStore(),
 				workflows: () => source.getWorkflowRunControl?.(),
 			});
-			if (!sessionDir) return history;
+			const sessionRouters = composeInternalRouters(
+				createToolOutputRouter({
+					sessionId: () => manager.getSessionId(),
+					sessionStore: () => manager.getSessionStore(),
+				}),
+				history,
+			);
+			if (!sessionDir) return sessionRouters;
 			const artifactsDir = join(sessionDir, "artifacts");
 			registerArtifactDir(artifactsDir);
 			return composeInternalRouters(
 				createArtifactRouter(() => [artifactsDir]),
-				history,
+				sessionRouters,
 			);
 		},
 		get orchestrationContext() {

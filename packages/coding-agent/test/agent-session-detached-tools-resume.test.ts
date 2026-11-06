@@ -3,7 +3,8 @@
  * that never held the call's tool, a transcript with no call at all, and where an oversized result is spilled.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
@@ -14,11 +15,9 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
-import { getTempRootDir } from "../src/core/tools/session-temp-dir.js";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_TAG,
-	TOOL_RESULT_BLOBS_SUBDIR,
 	TOOL_RESULTS_SUBDIR,
 } from "../src/core/tools/tool-limits.js";
 import { isToolDetachmentError } from "../src/index.js";
@@ -140,7 +139,7 @@ describe("where a result is spilled (#4309)", () => {
 	async function savedAfterDetaching(options: {
 		readonly firstManager: SessionManager;
 		readonly reopenedManager: () => Promise<SessionManager>;
-		readonly storageAgentDir?: string;
+		readonly onReopened?: (reopened: Harness) => void;
 	}): Promise<string> {
 		const tool = waitTool();
 		const first = await createHarness({ customTools: [tool.definition], sessionManager: options.firstManager });
@@ -152,9 +151,9 @@ describe("where a result is spilled (#4309)", () => {
 		const reopened = await createHarness({
 			customTools: [tool.definition],
 			sessionManager: await options.reopenedManager(),
-			...(options.storageAgentDir === undefined ? {} : { storageAgentDir: options.storageAgentDir }),
 		});
 		harnesses.push(reopened);
+		options.onReopened?.(reopened);
 		reopened.setResponses([fauxAssistantMessage("done")]);
 
 		await reopened.session.resumeDetachedTurn([
@@ -170,23 +169,45 @@ describe("where a result is spilled (#4309)", () => {
 		return path;
 	}
 
-	test("a session that is not persisted keeps the temp tree even when it has an agent directory (#4309)", async () => {
-		const agentDir = temporaryDirectory("atomic-spill-unpersisted-");
+	/** What the model gets back when it reads the first line of `location` in the reopened session. */
+	async function readByModel(reader: Harness, location: string): Promise<string> {
+		reader.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", { path: `${location}:1-1:raw` }, { id: "read-1" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("read it"),
+		]);
+		await reader.session.prompt("show the first line of the report");
+		const read = reader.sessionManager
+			.buildSessionProjection()
+			.messages.find((message) => message.role === "toolResult" && message.toolCallId === "read-1");
+		assert.ok(read?.role === "toolResult");
+		assert.equal(read.isError, false, getMessageText(read));
+		return getMessageText(read);
+	}
+
+	test("a session in memory keeps a released stage's result as a blob of the session, which the model reads (#4379)", async () => {
 		const store = new MemorySessionStore();
 		const manager = await SessionManager.create(store, process.cwd());
+		let reader: Harness | undefined;
 
-		const path = await savedAfterDetaching({
+		const location = await savedAfterDetaching({
 			firstManager: manager,
 			reopenedManager: () => SessionManager.open(store, manager.getSessionId()),
-			storageAgentDir: agentDir,
+			onReopened: (reopened) => {
+				reader = reopened;
+			},
 		});
 
-		assert.ok(!relative(getTempRootDir(), path).startsWith(".."), `${path} is outside the temp tree`);
-		assert.ok(relative(agentDir, path).startsWith(".."), `${path} is inside the agent directory`);
+		const text = (oversized().content[0] as { readonly text: string }).text;
+		const hash = createHash("sha256").update(text, "utf8").digest("hex");
+		assert.equal(location, `tool-output://${hash}`);
+		assert.equal(Buffer.from((await store.getBlob(manager.getSessionId(), hash))!).toString("utf8"), text);
+		assert.match(await readByModel(reader!, location), /^BEGIN\b/);
 	});
 
-	test("a persisted session with no agent directory keeps the temp tree (#4309)", async () => {
-		const directory = temporaryDirectory("atomic-spill-no-agent-dir-");
+	test("the model reads a released stage's result back through the session's tool-output URL (#4379)", async () => {
+		const directory = temporaryDirectory("atomic-spill-sql-");
 		const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
 		const store = await SqlSessionStore.open(database);
 		closers.push(async () => {
@@ -194,14 +215,17 @@ describe("where a result is spilled (#4309)", () => {
 			await database.close();
 		});
 		const manager = await SessionManager.create(store, process.cwd());
+		let reader: Harness | undefined;
 
-		const path = await savedAfterDetaching({
+		const location = await savedAfterDetaching({
 			firstManager: manager,
 			reopenedManager: () => SessionManager.open(store, manager.getSessionId()),
+			onReopened: (reopened) => {
+				reader = reopened;
+			},
 		});
-
-		assert.ok(!relative(getTempRootDir(), path).startsWith(".."), `${path} is outside the temp tree`);
-		assert.ok(!path.includes(TOOL_RESULT_BLOBS_SUBDIR), `${path} is among the agent blobs`);
+		assert.match(await readByModel(reader!, location), /^BEGIN\b/);
+		assert.equal(existsSync(location), false, "no file stands behind the URL");
 	});
 
 	test("a session kept in a session directory spills into that directory's tool results (#4309)", async () => {

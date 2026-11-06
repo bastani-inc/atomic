@@ -14,20 +14,10 @@ import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
+import { sessionBlobOutput } from "./session-tool-output.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
-import { getReleasedStageBlobDir } from "./tools/tool-output-blobs.ts";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
-
-/**
- * Where a released stage's oversized result is spilled when its session is kept in a persistent store: a per-session
- * directory of the agent directory's blobs, which outlives the sweeper and is removed with the session. Every other
- * result uses the location the sweeper reaps.
- */
-function releasedStageBlobDir(session: AgentSession): string | undefined {
-	if (session._storageAgentDir === undefined || !session.sessionManager.isPersisted()) return undefined;
-	return getReleasedStageBlobDir(session._storageAgentDir, session.sessionManager.getSessionId());
-}
 
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args }) => {
@@ -88,7 +78,7 @@ export interface ToolResultToFinalize {
 	readonly isError: boolean;
 	/** The tool call this one is nested in, when a tool called it; its output then stays uncapped. */
 	readonly parentToolCallId: string | undefined;
-	/** The result arrived after the stage was released, so its spill is kept as long as the session. */
+	/** The result arrived after the stage was released, so its spill is kept as a blob of the session when it can be. */
 	readonly releasedStage?: boolean;
 }
 
@@ -155,7 +145,7 @@ export async function finalizeToolResult(
 		isError: finalIsError,
 		sessionId: session.sessionManager.getSessionId(),
 		sessionDir: session.sessionManager.getSessionDir() || undefined,
-		blobDir: releasedStage === true ? releasedStageBlobDir(session) : undefined,
+		persist: releasedStage === true ? sessionBlobOutput(session.sessionManager, toolCall.id) : undefined,
 		maxResultSizeChars: session.getToolDefinition(toolCall.name)?.maxResultSizeChars,
 	});
 	return redirectReplacement

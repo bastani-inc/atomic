@@ -73,7 +73,6 @@ import {
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
-import { removeReleasedStageBlobs } from "./tools/tool-output-blobs.ts";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
@@ -88,7 +87,6 @@ export class SessionManager {
 	private sessionFile: string | undefined;
 	private sessionDir: string;
 	private cwd: string;
-	private agentDir: string | undefined;
 	private store: SessionStore;
 	private lastSeq = 0;
 	private mutation: Promise<void> = Promise.resolve();
@@ -266,11 +264,6 @@ export class SessionManager {
 		return this.store;
 	}
 
-	/** @internal The agent directory that holds this manager's sessions' released-stage tool results. */
-	bindAgentDir(agentDir: string): void {
-		this.agentDir = agentDir;
-	}
-
 	async deleteSession(sessionId: string): Promise<void> {
 		assertValidSessionId(sessionId);
 		if (sessionId === this.sessionId) {
@@ -281,7 +274,6 @@ export class SessionManager {
 		} catch (error) {
 			if (!(error instanceof SessionNotFoundError)) throw error;
 		}
-		await removeReleasedStageBlobs(this.agentDir ?? getAgentDir(), sessionId);
 	}
 
 	/** @internal Finalize provisional startup storage after project trust resolves. */

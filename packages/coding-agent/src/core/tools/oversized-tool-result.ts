@@ -48,13 +48,22 @@ export interface RedirectOversizedToolResultInput<TDetails = unknown> {
 	sessionId: string;
 	sessionDir?: string;
 	/**
-	 * Directory the sweeper never reaches, for a released stage's result in a session kept in a store rather than a
-	 * session directory: `getReleasedStageBlobDir`. Ignored when `sessionDir` is set.
+	 * Keeps the output somewhere other than a file, for a released stage's result in a session store that holds blobs.
+	 * Its failure is the redirect's failure. Ignored when `sessionDir` is set.
 	 */
-	blobDir?: string;
+	persist?: PersistToolOutput;
 	/** Optional per-tool character cap; clamped by {@link DEFAULT_MAX_RESULT_SIZE_CHARS}. */
 	maxResultSizeChars?: number;
 }
+
+/** Where a persisted output can be read back from, and the SHA-256 of what was stored. */
+export interface PersistedToolOutput {
+	readonly location: string;
+	readonly sha256: string;
+}
+
+/** Keeps the capped output text and says where it is. */
+export type PersistToolOutput = (stored: string) => Promise<PersistedToolOutput>;
 
 export interface OversizedToolResultReplacement {
 	content: TextContent[];
@@ -134,13 +143,13 @@ export function generatePreview(content: string, maxBytes: number): { preview: s
  */
 function buildPersistedOutputMessage(input: {
 	originalSizeBytes: number;
-	filepath: string;
+	location: string;
 	sha256: string;
 	preview: string;
 	hasMore: boolean;
 }): string {
 	let message = `${PERSISTED_OUTPUT_TAG}\n`;
-	message += `Output too large (${formatFileSize(input.originalSizeBytes)}). Full output saved to: ${input.filepath}\n`;
+	message += `Output too large (${formatFileSize(input.originalSizeBytes)}). Full output saved to: ${input.location}\n`;
 	message += `Content: sha256:${input.sha256}\n\n`;
 	message += `Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`;
 	message += input.preview;
@@ -152,26 +161,19 @@ function buildPersistedOutputMessage(input: {
 /**
  * Directory for persisted tool results, which are named by the SHA-256 of their content.
  *
- * A disk-backed session owns `<sessionDir>/tool-results`; a session kept in a store
- * (SQLite, libSQL or memory) uses the agent directory's `blobs/tool-output`
- * (`TOOL_RESULT_BLOBS_SUBDIR`), which no sweeper touches, so a result outlives
- * a session released while it waits. Either is created here and then chmodded,
+ * A disk-backed session owns `<sessionDir>/tool-results`, created here and then chmodded,
  * because `mode` on mkdir is only a request the process umask narrows — a umask of
  * 0o777 otherwise leaves a directory at 000 that nothing, this process included,
  * can write into.
  *
- * Without either, the result falls back to the owner- and session-scoped temp tree,
+ * Without one, the result falls back to the owner- and session-scoped temp tree,
  * so the sweeper can reap it once the session is gone — and that path goes through
  * {@link ensureTempDir}, which validates every component below the system temp
  * directory instead of letting `mkdir -p` follow a planted link.
  */
-async function ensureToolResultsDir(input: {
-	sessionDir?: string;
-	blobDir?: string;
-	sessionId: string;
-}): Promise<string> {
-	const durable = input.sessionDir?.trim() ? join(input.sessionDir, TOOL_RESULTS_SUBDIR) : input.blobDir;
-	if (durable) {
+async function ensureToolResultsDir(input: { sessionDir?: string; sessionId: string }): Promise<string> {
+	if (input.sessionDir?.trim()) {
+		const durable = join(input.sessionDir, TOOL_RESULTS_SUBDIR);
 		await mkdir(durable, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
 		if (process.platform !== "win32") {
 			await chmod(durable, SESSION_TEMP_DIR_MODE);
@@ -273,7 +275,8 @@ async function adoptExistingResultFile(filepath: string): Promise<boolean> {
 	}
 }
 /**
- * Persist the full tool output to a file named by the SHA-256 of what is stored, and return its path and digest.
+ * Persist the full tool output and return where it can be read and its digest: through `persist` when given and the
+ * session has no directory, otherwise to a file named by the SHA-256 of what is stored.
  *
  * Identical outputs share one file: the write uses the `wx` flag and treats `EEXIST`
  * as success — this also makes repeated calls (e.g. replay/compaction) idempotent
@@ -283,9 +286,11 @@ async function adoptExistingResultFile(filepath: string): Promise<boolean> {
 async function persistToolOutput(input: {
 	text: string;
 	sessionDir?: string;
-	blobDir?: string;
+	persist?: PersistToolOutput;
 	sessionId: string;
-}): Promise<{ readonly filepath: string; readonly sha256: string } | undefined> {
+}): Promise<PersistedToolOutput | undefined> {
+	const stored = capPersistedText(input.text);
+	if (!input.sessionDir?.trim() && input.persist !== undefined) return input.persist(stored);
 	let dir: string;
 	try {
 		dir = await ensureToolResultsDir(input);
@@ -294,7 +299,6 @@ async function persistToolOutput(input: {
 		// rather than pointing the model at a directory we do not own.
 		return undefined;
 	}
-	const stored = capPersistedText(input.text);
 	const sha256 = createHash("sha256").update(stored, "utf8").digest("hex");
 	const filepath = join(dir, `${sha256}.txt`);
 	try {
@@ -309,11 +313,11 @@ async function persistToolOutput(input: {
 		if (getErrnoCode(error) === "EEXIST") {
 			// Already persisted — reuse the existing file, but only after confirming
 			// it is still ours and still owner-only.
-			return (await adoptExistingResultFile(filepath)) ? { filepath, sha256 } : undefined;
+			return (await adoptExistingResultFile(filepath)) ? { location: filepath, sha256 } : undefined;
 		}
 		return undefined;
 	}
-	return { filepath, sha256 };
+	return { location: filepath, sha256 };
 }
 
 /**
@@ -347,7 +351,7 @@ export async function redirectOversizedToolResult<TDetails = unknown>(
 	const persisted = await persistToolOutput({
 		text,
 		sessionDir: input.sessionDir,
-		blobDir: input.blobDir,
+		persist: input.persist,
 		sessionId: input.sessionId,
 	});
 	// Graceful degradation: if persistence failed, leave the original result unchanged.
@@ -358,7 +362,7 @@ export async function redirectOversizedToolResult<TDetails = unknown>(
 	const { preview, hasMore } = generatePreview(text, PREVIEW_SIZE_BYTES);
 	const message = buildPersistedOutputMessage({
 		originalSizeBytes: Buffer.byteLength(text, "utf8"),
-		filepath: persisted.filepath,
+		location: persisted.location,
 		sha256: persisted.sha256,
 		preview,
 		hasMore,

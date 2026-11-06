@@ -68,7 +68,7 @@ function formatTimeoutSeconds(timeoutMs: number): string {
 	const seconds = timeoutMs / 1000;
 	return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
 }
-const VIRTUAL_INTERNAL_SCHEMES = ["history", "conflict"] as const;
+const VIRTUAL_INTERNAL_SCHEMES = ["history", "conflict", "tool-output"] as const;
 function isExistingFile(candidate: string): boolean {
 	try {
 		return statSync(candidate).isFile();
