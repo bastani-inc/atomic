@@ -83,15 +83,28 @@ function processedIds(session: AgentSession, subscription: string): ReadonlySet<
 	return ids;
 }
 
+const cleanupFailuresByError = new WeakMap<object, unknown[]>();
+
 function attachCleanupCause(primary: unknown, cleanupCause: unknown): void {
-	if (Object.isExtensible(primary)) {
-		Object.defineProperty(primary as object, "cleanupCause", { value: cleanupCause, enumerable: false });
-	}
+	if (!Object.isExtensible(primary)) return;
+	const target = primary as object;
+	const earlier = Object.getOwnPropertyDescriptor(target, "cleanupCause");
+	if (earlier?.configurable === false) return;
+	const failures = cleanupFailuresByError.get(target) ?? (earlier === undefined ? [] : [earlier.value]);
+	failures.push(cleanupCause);
+	cleanupFailuresByError.set(target, failures);
+	const value =
+		failures.length === 1
+			? cleanupCause
+			: new AggregateError(failures, `${failures.length} cleanups failed after the same error`);
+	Object.defineProperty(target, "cleanupCause", { value, enumerable: false, configurable: true });
 }
 
 /**
  * Runs `work`, then `dispose`. When `work` failed, a disposal failure is attached to its error as `cleanupCause`
- * instead of replacing it; after a successful `work`, a disposal failure propagates.
+ * instead of replacing it; after a successful `work`, a disposal failure propagates. Children of one subscription
+ * share its cancellation reason, so when several of their disposals fail, `cleanupCause` becomes an `AggregateError`
+ * of those failures in the order they happened.
  */
 export async function runThenDispose<T>(work: () => Promise<T>, dispose: () => Promise<void>): Promise<T> {
 	let result: T;

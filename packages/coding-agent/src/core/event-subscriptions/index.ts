@@ -54,6 +54,7 @@ export {
 	formatEventReport,
 	SUBSCRIPTION_REPORT_TOOL_NAME,
 	seedEventPrompt,
+	toolsWithReport,
 } from "./prompts.js";
 export {
 	EVENT_REPORT_MESSAGE_TYPE,

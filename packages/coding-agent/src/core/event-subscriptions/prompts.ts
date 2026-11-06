@@ -2,6 +2,7 @@
 
 import { Type } from "typebox";
 import { defineTool } from "../extensions/tool-types.ts";
+import { isToolModifier } from "../settings-merge.ts";
 import type { SubscriptionEvent } from "./types.js";
 
 export const SUBSCRIPTION_REPORT_TOOL_NAME = "report_to_subscriber";
@@ -25,12 +26,12 @@ export function seedEventPrompt(instructions: string, subscription: string, even
 }
 
 /**
- * An explicit tool allowlist keeps `report_to_subscriber` available. A list of only `+name`/`-name` modifiers changes
- * the defaults and leaves custom tools enabled, so it needs no entry.
+ * An explicit tool allowlist keeps `report_to_subscriber` available. A list of `+name`/`-name` modifiers changes the
+ * defaults and leaves custom tools enabled, so it needs no entry; a list that mixes names and modifiers is passed on
+ * unchanged and fails with the usual tool-list error.
  */
 export function toolsWithReport(tools: readonly string[]): string[] {
-	const modifiersOnly = tools.length > 0 && tools.every((entry) => /^[+-]/.test(entry));
-	if (modifiersOnly || tools.includes(SUBSCRIPTION_REPORT_TOOL_NAME)) return [...tools];
+	if (tools.some(isToolModifier) || tools.includes(SUBSCRIPTION_REPORT_TOOL_NAME)) return [...tools];
 	return [...tools, SUBSCRIPTION_REPORT_TOOL_NAME];
 }
 

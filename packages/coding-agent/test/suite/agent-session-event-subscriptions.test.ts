@@ -768,4 +768,73 @@ describe("runThenDispose", () => {
 		assert.equal(disposed, true);
 		assert.equal("cleanupCause" in plain, false);
 	});
+
+	it("collects the disposal failures of children that share one cancellation reason (#4311)", async () => {
+		const reason = new DOMException("The subscribing session closed", "AbortError");
+		const failures = [
+			new Error("child 1 abort failed"),
+			new Error("child 2 abort failed"),
+			new Error("child 3 abort failed"),
+		];
+		const outcomes = await Promise.all(
+			failures.map((failure) =>
+				runThenDispose(
+					async () => {
+						throw reason;
+					},
+					async () => {
+						throw failure;
+					},
+				).catch((error: unknown) => error),
+			),
+		);
+		assert.deepEqual(outcomes, [reason, reason, reason]);
+		const cleanupCause = (reason as DOMException & { cleanupCause?: unknown }).cleanupCause;
+		assert.ok(cleanupCause instanceof AggregateError);
+		assert.deepEqual(
+			cleanupCause.errors.map((error: unknown) => failures.indexOf(error as Error)),
+			[0, 1, 2],
+		);
+		assert.equal(cleanupCause.message, "3 cleanups failed after the same error");
+		assert.deepEqual(Object.keys(reason), []);
+	});
+
+	it("keeps a cleanupCause that was already on the error as the first collected failure (#4311)", async () => {
+		const earlier = new Error("storage close failed");
+		const primary = Object.defineProperty(new Error("prompt failed"), "cleanupCause", {
+			value: earlier,
+			configurable: true,
+		});
+		const cleanup = new Error("dispose failed");
+		await assert.rejects(
+			runThenDispose(
+				async () => {
+					throw primary;
+				},
+				async () => {
+					throw cleanup;
+				},
+			),
+			(error) => error === primary,
+		);
+		const cleanupCause = (primary as Error & { cleanupCause?: unknown }).cleanupCause;
+		assert.ok(cleanupCause instanceof AggregateError);
+		assert.equal(cleanupCause.errors.length, 2);
+		assert.equal(cleanupCause.errors[0], earlier);
+		assert.equal(cleanupCause.errors[1], cleanup);
+		assert.equal(cleanupCause.message, "2 cleanups failed after the same error");
+		const fixed = Object.defineProperty(new Error("prompt failed"), "cleanupCause", { value: earlier });
+		await assert.rejects(
+			runThenDispose(
+				async () => {
+					throw fixed;
+				},
+				async () => {
+					throw cleanup;
+				},
+			),
+			(error) => error === fixed,
+		);
+		assert.equal((fixed as Error & { cleanupCause?: unknown }).cleanupCause, earlier);
+	});
 });
