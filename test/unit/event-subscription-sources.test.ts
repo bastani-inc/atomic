@@ -2473,3 +2473,38 @@ test("a webhook answers 202 once a delivery is queued in memory, and deliveries 
 	assert.deepEqual(handled, ["d1"]);
 	assert.equal(subscription.stats().queued, 0);
 });
+
+test("idle subscriptions hold no abort listener: sleeping sources and listening webhooks wait through their subscription (#4311)", async () => {
+	const signals: AbortSignal[] = [];
+	const watched = (source: EventSource): EventSource => ({
+		id: source.id,
+		start: (signal, emit) => {
+			signals.push(signal);
+			return source.start(signal, emit);
+		},
+	});
+	const idle = tempDir();
+	const { gh } = fakeGh({ [REVIEWS]: "[[]]" });
+	const sources = [
+		watched(interval(3_600_000)),
+		watched(logTail(join(idle, "idle.log"), { pollMs: 3_600_000 })),
+		watched(githubReviews({ repo: "acme/widgets", pr: 7, intervalMs: 3_600_000, gh })),
+		watched(webhook({ path: "/hooks/idle" })),
+	];
+	const pendingBefore = sharedWakeDispatcher.pending;
+	const subscriptions = sources.map((source, index) =>
+		openEventSubscription({ id: `idle-listeners-${index}`, source, handle: async () => {} }),
+	);
+	await waitFor(() => sharedWakeDispatcher.pending - pendingBefore === 3, "every polling source to sleep");
+	assert.equal(signals.length, sources.length);
+	assert.deepEqual(
+		signals.map((signal) => getEventListeners(signal, "abort").length),
+		[0, 0, 0, 0],
+	);
+	await Promise.all(subscriptions.map((subscription) => subscription.close()));
+	assert.equal(sharedWakeDispatcher.pending, pendingBefore);
+	assert.deepEqual(
+		signals.map((signal) => signal.aborted),
+		[true, true, true, true],
+	);
+});

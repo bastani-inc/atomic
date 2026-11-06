@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { afterEach, test, vi } from "vitest";
 import {
+	createOwnedAbortController,
 	createWakeDispatcher,
 	type WakeTimerHost,
+	whenAborted,
 } from "../../packages/coding-agent/src/core/event-subscriptions/wake-dispatcher.js";
 
 afterEach(() => {
@@ -90,4 +92,27 @@ test("a sleep leaves no abort listener on the signal, after it ends or after it 
 	await assert.rejects(interrupted, (error) => error === "stop");
 	assert.equal(getEventListeners(aborted.signal, "abort").length, 0);
 	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a signal from an owned abort controller gets no listener, and aborting it still ends every wait on it (#4311)", async () => {
+	vi.useFakeTimers();
+	const dispatcher = createWakeDispatcher();
+	const owner = createOwnedAbortController();
+	const sleeps = [dispatcher.sleep(10_000, owner.signal), dispatcher.sleep(20_000, owner.signal)];
+	const watched: string[] = [];
+	const stopWatching = whenAborted(owner.signal, () => watched.push("stopped watching"));
+	whenAborted(owner.signal, () => watched.push("watching"));
+	stopWatching();
+	assert.equal(getEventListeners(owner.signal, "abort").length, 0);
+	assert.equal(dispatcher.pending, 2);
+	owner.abort("closed");
+	owner.abort("closed twice");
+	for (const sleeping of sleeps) await assert.rejects(sleeping, (error) => error === "closed");
+	assert.deepEqual(watched, ["watching"]);
+	assert.equal(dispatcher.pending, 0);
+	assert.equal(vi.getTimerCount(), 0);
+	const late: string[] = [];
+	whenAborted(owner.signal, () => late.push("already aborted"));
+	assert.deepEqual(late, ["already aborted"]);
+	await assert.rejects(dispatcher.sleep(10, owner.signal), (error) => error === "closed");
 });

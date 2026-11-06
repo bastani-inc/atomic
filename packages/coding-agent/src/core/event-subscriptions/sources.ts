@@ -18,7 +18,7 @@ import {
 	SubscriptionTimeoutError,
 } from "./errors.js";
 import type { EmitSubscriptionEvent, EventSource, SubscriptionEvent, SubscriptionEventPayload } from "./types.js";
-import { sharedWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.js";
+import { sharedWakeDispatcher, type WakeDispatcher, whenAborted } from "./wake-dispatcher.js";
 
 type JsonObject = { readonly [key: string]: SubscriptionEventPayload };
 
@@ -522,10 +522,10 @@ export function webhook(options: WebhookOptions): WebhookEventSource {
 					stop();
 				},
 			});
-			signal.addEventListener("abort", stop);
+			const stopWatching = whenAborted(signal, stop);
 
 			const release = (): Promise<void> => {
-				signal.removeEventListener("abort", stop);
+				stopWatching();
 				listener.routes.delete(path);
 				if (listener.routes.size > 0) return Promise.resolve();
 				listener.server.off("error", listener.onError);

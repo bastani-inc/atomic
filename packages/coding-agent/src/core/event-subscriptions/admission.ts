@@ -17,7 +17,12 @@ import type {
 	SubscriptionEvent,
 	SubscriptionStats,
 } from "./types.js";
-import { type ScheduledWake, sharedWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.js";
+import {
+	createOwnedAbortController,
+	type ScheduledWake,
+	sharedWakeDispatcher,
+	type WakeDispatcher,
+} from "./wake-dispatcher.js";
 
 export const DEFAULT_SUBSCRIPTION_MAX_CONCURRENT = 4;
 
@@ -149,7 +154,7 @@ export function openEventSubscription(input: OpenEventSubscriptionInput): EventS
 	const dispatcher = input.dispatcher ?? sharedWakeDispatcher;
 	const maxConcurrent = input.admission?.maxConcurrent ?? DEFAULT_SUBSCRIPTION_MAX_CONCURRENT;
 	const rate = input.admission?.maxRate;
-	const sourceStop = new AbortController();
+	const sourceStop = createOwnedAbortController();
 	const handlerStop = new AbortController();
 	const seen = new Set<string>();
 	const queue: SubscriptionEvent[] = [];

@@ -44,6 +44,56 @@ const systemTimerHost: WakeTimerHost = {
 	},
 };
 
+/** Abort callbacks registered on owned signals; their owner runs them, so the signal itself holds no listener. */
+const ownedAborts = new WeakMap<AbortSignal, Set<() => void>>();
+
+export interface OwnedAbortController {
+	readonly signal: AbortSignal;
+	/** Aborts the signal, then runs every callback registered through `whenAborted`. */
+	abort(reason?: unknown): void;
+}
+
+/**
+ * An abort controller that owns the waiting on its signal: `whenAborted` registers callbacks with it instead of adding
+ * listeners to the signal. The subscription engine starts its sources with such a signal, so a sleeping source or a
+ * listening webhook holds no abort listener of its own.
+ */
+export function createOwnedAbortController(): OwnedAbortController {
+	const controller = new AbortController();
+	const callbacks = new Set<() => void>();
+	ownedAborts.set(controller.signal, callbacks);
+	return {
+		signal: controller.signal,
+		abort(reason) {
+			if (controller.signal.aborted) return;
+			controller.abort(reason);
+			const pending = [...callbacks];
+			callbacks.clear();
+			for (const callback of pending) callback();
+		},
+	};
+}
+
+/**
+ * Calls `onAbort` once when `signal` aborts, at once when it already has, and returns a function that stops watching.
+ * A signal from `createOwnedAbortController` gets no listener; any other signal gets a one-shot abort listener.
+ */
+export function whenAborted(signal: AbortSignal, onAbort: () => void): () => void {
+	if (signal.aborted) {
+		onAbort();
+		return () => {};
+	}
+	const owned = ownedAborts.get(signal);
+	if (owned !== undefined) {
+		owned.add(onAbort);
+		return () => {
+			owned.delete(onAbort);
+		};
+	}
+	signal.addEventListener("abort", onAbort, { once: true });
+	return () => signal.removeEventListener("abort", onAbort);
+}
+
 function before(left: WakeEntry, right: WakeEntry): boolean {
 	return left.at < right.at || (left.at === right.at && left.sequence < right.sequence);
 }
@@ -148,15 +198,14 @@ export function createWakeDispatcher(host: WakeTimerHost = systemTimerHost): Wak
 					reject(signal.reason);
 					return;
 				}
-				const onAbort = (): void => {
-					scheduled.cancel();
-					reject(signal.reason);
-				};
 				const scheduled = schedule(ms, () => {
-					signal.removeEventListener("abort", onAbort);
+					stopWatching();
 					resolve();
 				});
-				signal.addEventListener("abort", onAbort, { once: true });
+				const stopWatching = whenAborted(signal, () => {
+					scheduled.cancel();
+					reject(signal.reason);
+				});
 			}),
 		get pending() {
 			return live;
