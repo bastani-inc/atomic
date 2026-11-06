@@ -135,6 +135,7 @@
 - A disposed workflow stage session is no longer kept reachable by the stage that opened it: the stage's message admission, the reason it closed its generation and its task host used to hold the first session for as long as the stage lived ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 - When a tool call's message could not be saved, the call's blocked result is no longer saved either, so a session never holds a tool result without its call ([#4309](https://github.com/bastani-inc/atomic/issues/4309))
 - `read` no longer loads a whole file to show some of its lines, which took several times the file's size in memory and failed on files over 2 GB. It streams plain-text files and keeps only the lines it shows, with the same output as before. Custom `ReadOperations` can stream too by providing the new optional `createReadStream`. A cancelled `read` stops reading and throws `FileToolAbortedError` with the signal's reason as `cause` ([#4353](https://github.com/bastani-inc/atomic/issues/4353))
+- A response cut off by the length limit is continued even when the session store takes longer than 100 ms to record that the cut-off attempt is left out of the model's context. The continuation used to start before that write finished, fail with "Cannot continue from message role: assistant", and end the turn on the partial answer ([#4476](https://github.com/bastani-inc/atomic/issues/4476))
 
 ## [0.9.71] - 2026-11-03
 
