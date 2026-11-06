@@ -133,7 +133,7 @@ test(
 	CHAOS_SCENARIO_TIMEOUT_MS,
 );
 
-test(
+test.skipIf(process.platform === "win32")(
 	"SIGSTOP the owner: a skewed clock cannot steal its lease; a takeover fences it with a typed error on SIGCONT (#4311)",
 	async () => {
 		const directory = makeTempDirectory("subscription-chaos-stop-");
