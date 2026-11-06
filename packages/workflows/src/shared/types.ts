@@ -222,6 +222,11 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	durableRestartFromPrompt?: boolean;
 	/** Internal durable resume hook: transcript of a stage checkpointed before #3700, imported when the ID is missing. */
 	resumeFromLegacySessionFile?: string;
+	/**
+	 * Internal durable resume hook: the stage's previous process stopped inside the call its first call replays. A
+	 * transcript that already ends on the model's final answer to that call finishes it without another model call.
+	 */
+	resumeInsideCall?: boolean;
 	/** Persisted automatic selection; revalidated without another decision on resume. */
 	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/** Restrictions inherited from task/default declarations; all must hold. */

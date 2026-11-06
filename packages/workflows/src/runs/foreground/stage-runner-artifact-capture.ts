@@ -47,6 +47,11 @@ export class StageArtifactCapture {
 		this.provisional = undefined;
 	}
 
+	/** The answer a durably resumed stage finished its call with from the transcript, as this generation's (#4375). */
+	adoptAnswer(message: Message): void {
+		if (!this.closed) this.capture(message);
+	}
+
 	close(): void {
 		this.scan();
 		this.closed = true;

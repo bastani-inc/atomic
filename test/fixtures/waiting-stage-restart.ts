@@ -21,7 +21,12 @@ import { expireWorkflowLease } from "../helpers/workflow-lease.js";
  * holds it unused across a long wait, so the run's idle scan releases it; nothing more is sent. In `wait` mode the long
  * wait never ends and the test kills the process once every stage waits released.
  *
- * `resume`: the same run resumes from the journal; the tool now finishes at once and the long wait is over.
+ * Scenario `finished`: every stage prompts once (even stages with `ctx.stage`, odd ones with `ctx.task`) and the model
+ * gives its final answer, but in `wait` mode the call never returns, as when the process stops after the turn and
+ * before the stage records its completion; the test kills the process once every stage has its answer.
+ *
+ * `resume`: the same run resumes from the journal; the tool now finishes at once and the long wait is over. The values
+ * the workflow received from its stages are written to `resumed-results.json`.
  */
 const [mode, directory, stageCountText, runIdArgument, scenarioArgument] = process.argv.slice(2);
 assert.ok(mode === "wait" || mode === "answer" || mode === "resume");
@@ -30,7 +35,7 @@ const STAGES = Number(stageCountText ?? "20");
 assert.ok(runIdArgument);
 const runId = runIdArgument;
 const scenario = scenarioArgument ?? "tool";
-assert.ok(scenario === "tool" || scenario === "release" || scenario === "idle");
+assert.ok(scenario === "tool" || scenario === "release" || scenario === "idle" || scenario === "finished");
 const TOOL = "wait_for_ci";
 const effects = join(directory, "effects.txt");
 const journalPath = join(directory, "journal.sqlite");
@@ -57,6 +62,13 @@ function dispatch(toolCallId: string, stageName: string): DetachedToolCall {
 	};
 }
 
+/** The text of the transcript's last assistant message, as a session reports its last answer. */
+function lastAnswer(messages: ReturnType<SessionManager["buildSessionProjection"]>["messages"]): string | undefined {
+	const last = [...messages].reverse().find((message) => message.role === "assistant");
+	if (last?.role !== "assistant") return undefined;
+	return last.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+}
+
 /** How a prompt reads in the effects log: the author's own text by its first word, anything else as `other`. */
 function promptKind(text: string): string {
 	const first = text.split(" ")[0] ?? "";
@@ -74,10 +86,14 @@ const usage = {
 
 /** The long wait the workflow holds its stages across: endless before the kill, over at once on resume. */
 const longWait = mode === "resume" ? Promise.resolve() : new Promise<void>(() => {});
-const expectedWait: StageWaitKind = scenario === "tool" ? "tool" : scenario;
+const expectedWait: StageWaitKind | undefined =
+	scenario === "tool" ? "tool" : scenario === "finished" ? undefined : scenario;
 
 let waiting = 0;
 let answered = 0;
+let finished = 0;
+/** What each stage's call returned to the workflow, by stage name. */
+const results: Record<string, string> = {};
 const definition = workflow({
 	name: "waiting-stage-restart",
 	description: "",
@@ -86,12 +102,18 @@ const definition = workflow({
 	async run(ctx) {
 		await Promise.all(
 			Array.from({ length: STAGES }, async (_, index) => {
+				const name = `stage-${index}`;
 				if (scenario === "tool") {
-					await ctx.task(`stage-${index}`, { prompt: `watch ci ${index}` });
+					await ctx.task(name, { prompt: `watch ci ${index}` });
 					return;
 				}
-				const stage = ctx.stage(`stage-${index}`);
-				await stage.prompt(`plan ${index}`);
+				if (scenario === "finished" && index % 2 === 1) {
+					results[name] = (await ctx.task(name, { prompt: `plan ${index}` })).text;
+					return;
+				}
+				const stage = ctx.stage(name);
+				const answer = await stage.prompt(`plan ${index}`);
+				if (scenario === "finished") results[name] = answer;
 				if (scenario === "release") await stage.release();
 				await longWait;
 				if (scenario === "release") await stage.sendUserMessage(`report ${index}`);
@@ -110,8 +132,9 @@ try {
 			cwd: directory,
 			store: createStore(),
 			durableBackend: backend,
-			// An explicitly released stage does not depend on the threshold; keep the idle scan away from it.
-			releaseWhenWaiting: { afterMs: scenario === "release" ? 600_000 : 0 },
+			// An explicitly released stage, or one that never waits, does not depend on the threshold; keep the idle scan
+			// away from it.
+			releaseWhenWaiting: { afterMs: scenario === "release" || scenario === "finished" ? 600_000 : 0 },
 			onStageLifecycleEvent: (_runId, event) => {
 				if (event.type !== "stage_waiting" || event.wait.kind !== expectedWait) return;
 				waiting += 1;
@@ -142,6 +165,12 @@ try {
 										stopReason: "stop",
 										timestamp: Date.now(),
 									});
+									if (scenario === "finished" && mode === "wait") {
+										finished += 1;
+										if (finished === STAGES) await writeFile(join(directory, "finished-ready"), "ready");
+										// The answer is stored; the stage never records its completion. The process is killed here.
+										await new Promise<never>(() => {});
+									}
 									return;
 								}
 								await manager.appendMessage({
@@ -205,14 +234,22 @@ try {
 							agent: undefined as never,
 							model: undefined as never,
 							thinkingLevel: "off",
-							messages: [] as never,
+							// The `finished` stages read their transcript; the others keep none, as before.
+							get messages() {
+								return (scenario === "finished" ? transcript() : []) as never;
+							},
 							isStreaming: false,
 							navigateTree: (async () => ({ cancelled: false })) as never,
 							compact: (async () => ({})) as never,
 							abortCompaction() {},
 							async abort() {},
 							dispose() {},
-							getLastAssistantText: () => (scenario === "tool" ? "ci passed" : "answered"),
+							getLastAssistantText: () =>
+								scenario === "finished"
+									? lastAnswer(transcript())
+									: scenario === "tool"
+										? "ci passed"
+										: "answered",
 						};
 					},
 				},
@@ -221,6 +258,7 @@ try {
 	);
 	assert.equal(result.status, "completed", JSON.stringify(result.error));
 	await writeFile(join(directory, "resumed-stages.json"), JSON.stringify(result.stages.map((stage) => stage.status)));
+	await writeFile(join(directory, "resumed-results.json"), JSON.stringify(results));
 } finally {
 	await backend.close();
 	await sessionStore.close();

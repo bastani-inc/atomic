@@ -10,9 +10,9 @@ import {
 	stageCheckpointWithOutput,
 } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
-import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt } from "../../packages/workflows/src/shared/timing.js";
+import type { StageOptions, WorkflowTaskOptions } from "../../packages/workflows/src/shared/types.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -148,14 +148,14 @@ describe("durable stage session resume", () => {
 			deps(),
 			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior.jsonl" }),
 		);
-		let observed: string | undefined;
+		let observed: StageOptions | undefined;
 		let observedPrompt: string | undefined;
 		const stage = createDurableStagePrimitive({
 			workflowId: WORKFLOW_ID,
 			backend,
 			nextReplayKey: () => replayKey,
 			stage: (_name, options) => {
-				observed = options?.resumeFromSessionId;
+				observed = options;
 				return Object.assign(fakeStageContext("resumed") as object, {
 					prompt: async (text: string) => {
 						observedPrompt = text;
@@ -165,9 +165,62 @@ describe("durable stage session resume", () => {
 			},
 		});
 
-		assert.equal(await stage("analyze").prompt("continue"), "resumed");
-		assert.equal(observed, "stage-session");
-		assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
+		assert.equal(await stage("analyze").prompt("analyze the change"), "resumed");
+		assert.equal(observed?.resumeFromSessionId, "stage-session");
+		// The stage stopped inside its call: its runner finishes the call from a transcript that already holds the
+		// answer to this prompt, and continues the turn otherwise, so the prompt reaches it as written (#4375).
+		assert.equal(observed?.resumeInsideCall, true);
+		assert.equal(observedPrompt, "analyze the change");
+	});
+
+	test("a stage that waited between turns resumes released, not inside a call, and sends its next prompt as written (#4375)", async () => {
+		const replayKey = "stage:analyze:1";
+		await recordStageSessionCheckpoint(
+			deps(),
+			makeStage({
+				replayKey,
+				sessionId: "stage-session",
+				wait: { kind: "release", since: 1500, promptsCompleted: 0 },
+			}),
+		);
+		let observed: StageOptions | undefined;
+		let observedPrompt: string | undefined;
+		const stage = createDurableStagePrimitive({
+			workflowId: WORKFLOW_ID,
+			backend,
+			nextReplayKey: () => replayKey,
+			stage: (_name, options) => {
+				observed = options;
+				return Object.assign(fakeStageContext("reported") as object, {
+					prompt: async (text: string) => {
+						observedPrompt = text;
+						return "reported";
+					},
+				}) as never;
+			},
+		});
+
+		assert.equal(await stage("analyze").prompt("report"), "reported");
+		assert.equal(observed?.resumeFromSessionId, "stage-session");
+		assert.equal(observed?.resumeInsideCall, false);
+		assert.equal(observedPrompt, "report");
+	});
+
+	test("a stage with no session record starts fresh, neither reopening a session nor resuming inside a call (#4375)", async () => {
+		let observed: StageOptions | undefined;
+		const stage = createDurableStagePrimitive({
+			workflowId: WORKFLOW_ID,
+			backend,
+			nextReplayKey: () => "stage:analyze:1",
+			stage: (_name, options) => {
+				observed = options;
+				return fakeStageContext("fresh");
+			},
+		});
+
+		await stage("analyze").prompt("analyze");
+		assert.equal(observed?.resumeFromSessionId, undefined);
+		assert.equal(observed?.resumeInsideCall, undefined);
 	});
 
 	test("hydrates the durable source identity of an active stage session", async () => {
@@ -216,7 +269,7 @@ describe("durable stage session resume", () => {
 			deps(1700),
 			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior-task.jsonl" }),
 		);
-		let observedOptions: { resumeFromSessionId?: string; durableAccumulatedDurationMs?: number } | undefined;
+		let observedOptions: WorkflowTaskOptions | undefined;
 		const task = createDurableTaskPrimitive({
 			workflowId: WORKFLOW_ID,
 			backend,
@@ -229,6 +282,7 @@ describe("durable stage session resume", () => {
 
 		assert.equal((await task("analyze", { prompt: "continue" })).text, "resumed task");
 		assert.equal(observedOptions?.resumeFromSessionId, "stage-session");
+		assert.equal(observedOptions?.resumeInsideCall, true);
 		assert.equal(observedOptions?.durableAccumulatedDurationMs, 700);
 	});
 
@@ -252,6 +306,23 @@ describe("durable stage session resume", () => {
 		await task("event-child", { prompt: "the seeded event", durableRestartFromPrompt: true });
 		assert.equal(observedOptions?.resumeFromSessionId, undefined);
 		assert.equal(observedOptions?.durableAccumulatedDurationMs, undefined);
+	});
+
+	test("a task with no session record runs fresh, not inside a call (#4375)", async () => {
+		let observedOptions: WorkflowTaskOptions | undefined;
+		const task = createDurableTaskPrimitive({
+			workflowId: WORKFLOW_ID,
+			backend,
+			nextReplayKey: () => "stage:task:analyze:1",
+			task: async (_name, options) => {
+				observedOptions = options;
+				return { name: "analyze", stageName: "analyze", text: "fresh task" };
+			},
+		});
+
+		assert.equal((await task("analyze", { prompt: "analyze" })).text, "fresh task");
+		assert.equal(observedOptions?.resumeFromSessionId, undefined);
+		assert.equal(observedOptions?.resumeInsideCall, undefined);
 	});
 
 	test("mid-session resume does not eagerly read throwing StageContext getters", async () => {
@@ -286,8 +357,8 @@ describe("durable stage session resume", () => {
 			},
 		});
 
-		assert.equal(await stage("analyze").prompt("continue"), "resumed");
-		assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
+		assert.equal(await stage("analyze").prompt("analyze the change"), "resumed");
+		assert.equal(observedPrompt, "analyze the change");
 	});
 
 	test("updates session metadata across repeated resumes", async () => {

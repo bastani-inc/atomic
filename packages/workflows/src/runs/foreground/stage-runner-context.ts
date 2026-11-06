@@ -1,5 +1,6 @@
 import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
+import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type { StageExecutionMeta, StageOutputOptions } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
 import {
@@ -107,7 +108,10 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 			const hasOutputArtifact = typeof outputOptions.output === "string" && outputOptions.output.length > 0;
 			// The runtime owns the artifact write, so it states that contract itself
 			// rather than relying on every workflow definition to describe it.
-			const promptText = `${text}${stageOutputInstruction(outputOptions, structuredOutputCapture !== undefined)}`;
+			const outputInstruction = stageOutputInstruction(outputOptions, structuredOutputCapture !== undefined);
+			const promptText = `${text}${outputInstruction}`;
+			// What a call a durable resume replays inside its turn sends, unless the turn already holds its answer.
+			const continuationText = `${RESUME_CONTINUATION_PROMPT}${outputInstruction}`;
 			if (structuredOutputCapture?.called) {
 				throw new Error(
 					"atomic-workflows: stage schema supports one prompt() call per stage context because structured_output may be called exactly once. Create a new ctx.stage(...) for each additional schema-backed prompt.",
@@ -156,7 +160,13 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 					controller.beginStructuredOutputCandidateCycle();
 					while (!structuredOutputCapture.called) {
 						controller.resetStructuredOutputToolError();
-						await controller.promptWithFallback(nextPrompt, sdkOptions, "prompt", newSessionPrompt);
+						await controller.promptWithFallback(
+							nextPrompt,
+							sdkOptions,
+							undefined,
+							newSessionPrompt,
+							continuationText,
+						);
 						if (structuredOutputCapture.called) break;
 						structuredOutputError = controller.structuredOutputFailureReason();
 						executionFailure ??= controller.structuredOutputExecutionFailure();
@@ -208,7 +218,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 				if (hasOutputArtifact) structuredArtifactFinalized = true;
 				return executionSnapshot.value as never;
 			}
-			await controller.promptWithFallback(promptText, sdkOptions);
+			await controller.promptWithFallback(promptText, sdkOptions, undefined, undefined, continuationText);
 			if (artifactOptions) return (await exportArtifact()) as never;
 			const rawText = controller.lastAssistantText(lastAssistantText) ?? "";
 			lastAssistantText = await finalizePromptOutput(
