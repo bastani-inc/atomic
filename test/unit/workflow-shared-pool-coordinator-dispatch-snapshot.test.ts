@@ -276,6 +276,88 @@ test.skipIf(process.platform === "win32")(
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
 
+test.skipIf(process.platform === "win32")(
+	"a root that works past the grace window before its first child keeps its snapshot's blobs, and the child restores it on a cold host (#4492)",
+	async () => {
+		const sandbox = new GitSandbox();
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
+		sandbox.write(join(clone, "a.txt"), "uncommitted\n");
+		const placed = await recordedPlacement({
+			placement: "shared",
+			workspace: workspace({ repo: clone, branch: "main", base: "main", worktree: clone }),
+		});
+		const binding = placed.placement.workspace!;
+		const captures = vi.spyOn(DispatchSnapshots.prototype, "capture");
+		const refreshes = vi.spyOn(SqlSnapshotBlobStore.prototype, "refreshBlobs");
+		const f = await fixture("shared-dispatch-snapshot-idle-root", {
+			workspace: binding,
+			workspaceWorktree: placed.worktree,
+			snapshotRefreshMs: 0,
+		});
+		const child = await boundChild();
+		const working = Promise.withResolvers<void>();
+		const outcomes: string[] = [];
+		const parent = workflow({
+			name: "shared-dispatch-snapshot-idle-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				// The root's own work, before it dispatches anything.
+				await working.promise;
+				outcomes.push((await ctx.workflow(child as never, { inputs: {} })).status);
+				return {};
+			},
+		});
+		const execution = run(
+			parent,
+			{},
+			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+		);
+		let cold: Awaited<ReturnType<typeof coldHost>> | undefined;
+		try {
+			while (captures.mock.results.length === 0) await sleep(25);
+			const snapshot = (await captures.mock.results[0]!.value) as WorktreeSnapshot | undefined;
+			assert.ok(snapshot !== undefined, "the root captured its binding as it started");
+			// No child waits yet; the snapshot's blobs outlive a grace window meanwhile.
+			const hashes = snapshotBlobHashes(snapshot);
+			const blobs = rootBlobs(f);
+			const { database } = blobs as unknown as { readonly database: SqliteDatabase };
+			await database.run(`UPDATE ${blobs.table} SET created_at = created_at - 7200`);
+			const before = refreshes.mock.calls.length;
+			const deadline = Date.now() + 10_000;
+			while (
+				Date.now() < deadline &&
+				!refreshes.mock.calls.slice(before).some(([refreshed]) => hashes.every((hash) => refreshed.includes(hash)))
+			)
+				await sleep(25);
+			const { deleted } = await collectSnapshotGarbage(blobs, { graceSeconds: 3600 });
+			assert.deepEqual(
+				deleted.filter((hash) => hashes.includes(hash)),
+				[],
+				"the root kept its snapshot's blobs from collection before any child carried it",
+			);
+			working.resolve();
+			cold = await coldHost(f);
+			const result = await execution;
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			assert.deepEqual(outcomes, ["completed"]);
+			const [[claimer, , cwd]] = f.claims() as [[string, unknown, string | undefined]];
+			assert.equal(claimer, "host-c");
+			assert.equal(readFileSync(join(cwd!, "a.txt"), "utf8"), "uncommitted\n", "uncommitted content restored");
+		} finally {
+			working.resolve();
+			captures.mockRestore();
+			refreshes.mockRestore();
+			await cold?.host.stop();
+			await execution.catch(() => {});
+			await f.close();
+			sandbox.dispose();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
+
 /** The failure of the one child of a root bound to `options`' worktree, run while a cold host serves it. */
 async function unrestorable(
 	label: string,

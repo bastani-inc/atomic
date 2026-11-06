@@ -413,6 +413,10 @@ export class LocalWorkerPool {
 	private readonly dispatchSnapshots: DispatchSnapshots;
 	/** The snapshot of the root's binding, captured when the root starts, for its unbound children to carry (#4492). */
 	private rootSnapshot?: Promise<WorktreeSnapshot | undefined>;
+	/** Lets go of the root's snapshot, which the pool keeps from collection from `prepare()` until it closes. */
+	private releaseRootSnapshot?: () => void;
+	/** Keeps the blobs of every carried snapshot from collection, as often as the grace window needs (#4492). */
+	private snapshotKeeper?: ReturnType<typeof setInterval>;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -513,6 +517,7 @@ export class LocalWorkerPool {
 		this.dispatchSnapshots = new DispatchSnapshots({
 			blobs: backend.snapshotJournal.snapshotBlobs,
 			unavailable: (reason) => this.snapshotUnavailable(reason),
+			graceSeconds: options.snapshots?.graceSeconds,
 			refreshMs: options.snapshotRefreshMs,
 		});
 	}
@@ -565,7 +570,11 @@ export class LocalWorkerPool {
 			worktree === undefined
 				? Promise.resolve(undefined)
 				: this.dispatchSnapshots.capture(worktree, this.options.snapshots);
-		await this.rootSnapshot;
+		const rootSnapshot = await this.rootSnapshot;
+		// The root's snapshot is kept from collection for as long as the pool serves the root, children waiting or not:
+		// a child dispatched after a long stretch of the root's own work still carries it (#4492).
+		this.releaseRootSnapshot ??= this.dispatchSnapshots.carry(rootSnapshot);
+		this.snapshotKeeper ??= setInterval(() => this.keepCarriedSnapshots(), POOL_SUMMARY_INTERVAL_MS).unref();
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(
@@ -1390,7 +1399,6 @@ export class LocalWorkerPool {
 		this.ticker ??= setInterval(() => {
 			this.evaluateBudget();
 			this.signalChange();
-			this.keepCarriedSnapshots();
 		}, POOL_SUMMARY_INTERVAL_MS).unref();
 		const releaseSnapshot = this.dispatchSnapshots.carry(carriedSnapshot(work.execution));
 		try {
@@ -1442,7 +1450,8 @@ export class LocalWorkerPool {
 		}
 	}
 	/**
-	 * Keeps the blobs of the worktree snapshots waiting children carry from collection, as often as that is due (#4492).
+	 * Keeps the blobs of the root's snapshot and of those waiting children carry from collection, as often as the grace
+	 * window needs (#4492).
 	 * A refresh that fails is a health warning: the child still runs if its host restores before the blobs are gone.
 	 */
 	private keepCarriedSnapshots(): void {
@@ -1776,6 +1785,9 @@ export class LocalWorkerPool {
 		this.stopSharingDebugSetting?.();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
+		clearInterval(this.snapshotKeeper);
+		this.snapshotKeeper = undefined;
+		this.releaseRootSnapshot?.();
 		this.releaseStageSource?.();
 		// A pool that failed takes its unfinished children with it: show them failed rather than
 		// running forever (#3996). A graceful quit leaves them resumable.

@@ -13,9 +13,9 @@ import {
 const REMEMBERED_WORKTREES = 256;
 
 /**
- * How often, at most, the root restarts the age of the blobs its waiting children's snapshots reference. Collection
- * keeps an unreferenced blob for its grace window (`snapshots.graceSeconds`, an hour by default), and no recorded
- * checkpoint references a snapshot that work carries.
+ * How often, at most, the root restarts the age of the blobs its carried snapshots reference. Collection keeps an
+ * unreferenced blob for its grace window (`snapshots.graceSeconds`, an hour by default), and no recorded checkpoint
+ * references a snapshot that work carries; a grace window shorter than three times this is refreshed every third of it.
  */
 export const CARRIED_SNAPSHOT_REFRESH_MS = 5 * 60_000;
 
@@ -24,11 +24,19 @@ export interface DispatchSnapshotsOptions {
 	readonly blobs: SnapshotBlobStore | undefined;
 	/** Receives the typed reason a worktree could not be captured; its work is queued without a snapshot. */
 	readonly unavailable: (reason: Error) => void;
-	/** Internal, tests only: the refresh interval in place of {@link CARRIED_SNAPSHOT_REFRESH_MS}. */
+	/**
+	 * The collection grace window in seconds (`snapshots.graceSeconds`), which the refresh interval stays inside. With 0,
+	 * collection protects no unreferenced blob, so nothing keeps a carried snapshot: a warning says so once.
+	 */
+	readonly graceSeconds?: number;
+	/** Internal, tests only: the refresh interval in place of the one the grace window gives. */
 	readonly refreshMs?: number;
 	/** Internal, tests only: what captures a worktree in place of `captureWorktreeSnapshot`. */
 	readonly capture?: typeof captureWorktreeSnapshot;
 }
+
+/** Whether this process already warned that carried snapshots are unprotected with a zero grace window. */
+let warnedUnprotected = false;
 
 /**
  * The worktree snapshots a root with shared placement captures on its own host as it dispatches bound work (#4492): of
@@ -42,8 +50,12 @@ export class DispatchSnapshots {
 	private readonly queues = new Map<string, Promise<void>>();
 	private readonly carried = new Map<string, { readonly snapshot: WorktreeSnapshot; holders: number }>();
 	private refreshedAt = Date.now();
+	private readonly refreshMs: number;
 
-	constructor(private readonly options: DispatchSnapshotsOptions) {}
+	constructor(private readonly options: DispatchSnapshotsOptions) {
+		const graceMs = (options.graceSeconds ?? Number.POSITIVE_INFINITY) * 1_000;
+		this.refreshMs = options.refreshMs ?? Math.min(CARRIED_SNAPSHOT_REFRESH_MS, graceMs > 0 ? graceMs / 3 : Infinity);
+	}
 
 	/**
 	 * The snapshot of the checkout at `worktree` as it is now, with its blobs stored, or undefined when snapshots are
@@ -88,6 +100,13 @@ export class DispatchSnapshots {
 	/** Keeps `snapshot`'s blobs from collection while the work that carries it waits; the returned function lets go. */
 	carry(snapshot: WorktreeSnapshot | undefined): () => void {
 		if (snapshot === undefined) return () => {};
+		if (this.options.graceSeconds === 0 && !warnedUnprotected) {
+			warnedUnprotected = true;
+			process.emitWarning(
+				"snapshots.graceSeconds is 0, so collection may delete the blobs of a worktree snapshot that dispatched work carries before a worker host restores it; set a grace window to keep them (#4492)",
+				{ code: "ATOMIC_DISPATCH_SNAPSHOT_UNPROTECTED" },
+			);
+		}
 		const entry = this.carried.get(snapshot.id) ?? { snapshot, holders: 0 };
 		entry.holders++;
 		this.carried.set(snapshot.id, entry);
@@ -102,8 +121,7 @@ export class DispatchSnapshots {
 	 */
 	async refresh(now: number): Promise<void> {
 		const blobs = this.options.blobs;
-		if (blobs === undefined || now - this.refreshedAt < (this.options.refreshMs ?? CARRIED_SNAPSHOT_REFRESH_MS))
-			return;
+		if (blobs === undefined || now - this.refreshedAt < this.refreshMs) return;
 		this.refreshedAt = now;
 		const hashes = new Set([...this.carried.values()].flatMap(({ snapshot }) => snapshotBlobHashes(snapshot)));
 		if (hashes.size > 0) await blobs.refreshBlobs([...hashes]);

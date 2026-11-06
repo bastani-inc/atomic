@@ -286,6 +286,19 @@ test("the blobs of carried snapshots are refreshed once per interval while their
 	assert.equal(blobs.refreshed.length, 3, "a journal without snapshot blobs has nothing to refresh");
 });
 
+test("carried snapshots are refreshed every third of a grace window shorter than five minutes (#4492)", async () => {
+	const blobs = refreshing();
+	const { dispatch } = snapshots(blobs, { graceSeconds: 60 });
+	dispatch.carry(carried("s1", ["p1"], "b1"));
+	const first = Date.now() + 20_000;
+	await dispatch.refresh(first);
+	assert.deepEqual(blobs.refreshed, [["b1", "p1"]], "a third of the 60 s grace window after the last refresh");
+	await dispatch.refresh(first + 19_999);
+	assert.equal(blobs.refreshed.length, 1);
+	await dispatch.refresh(first + 20_000);
+	assert.equal(blobs.refreshed.length, 2, "again within the grace window, never past it");
+});
+
 test("carried snapshots are refreshed every five minutes by default (#4492)", async () => {
 	assert.equal(CARRIED_SNAPSHOT_REFRESH_MS, 300_000);
 	const blobs = refreshing();
