@@ -3,10 +3,11 @@
  * a shared run journal. Each handled event appends `<label> <event id>` to `handled.txt` with an fsync, so the parent
  * can kill or stop this process at any point and compare side effects with the journal's processed records.
  *
- * The journal is the SQLite file `<directory>/journal.sqlite`, unless `ATOMIC_AGENT_DIR` points at an agent directory
- * whose settings select another journal (for example a shared libSQL server in a distributed run). `resume` expires
+ * The journal is the SQLite file `<directory>/journal.sqlite`, unless `ATOMIC_CHAOS_SHARED_JOURNAL=1` asks for the
+ * journal that the settings in `ATOMIC_CODING_AGENT_DIR` select (for example a shared libSQL server in a distributed
+ * run). Shared mode refuses to start without an explicit agent directory, so it can never fall back to a default journal. `resume` expires
  * the crashed owner's SQLite lease; `takeover` instead waits, with no manual step, until the journal's own clock
- * reports the owner's lease stale.
+ * reports the owner's lease stale. `steal` makes one resume attempt against a live owner and exits 0 when it is refused.
  */
 import assert from "node:assert/strict";
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
@@ -30,7 +31,8 @@ const eventCount = Number(countText ?? "60");
 const handlerDelayMs = Number(delayText ?? "20");
 const maxConcurrent = Number(concurrencyText ?? "4");
 const SUBSCRIPTION_KEY = "chaos#1";
-const sharedJournal = process.env.ATOMIC_AGENT_DIR !== undefined;
+const sharedJournal = process.env.ATOMIC_CHAOS_SHARED_JOURNAL === "1";
+assert.ok(!sharedJournal || process.env.ATOMIC_CODING_AGENT_DIR, "shared mode needs ATOMIC_CODING_AGENT_DIR");
 if (!sharedJournal) process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
 if (mode === "resume") expireWorkflowLease(join(directory, "journal.sqlite"), runId);
 const backend = await initializeDurableBackend();
@@ -86,7 +88,14 @@ const definition = workflow({
 	},
 }) as WorkflowDefinition;
 
-const adapters = { complete: { complete: async (text: string) => text } };
+const adapters = {
+	complete: {
+		complete: async (text: string) => {
+			appendDurably(join(directory, "anchor.txt"), `${label} ${runId}`);
+			return text;
+		},
+	},
+};
 const store = createStore();
 if (mode === "records") {
 	await backend.hydrateWorkflow(runId);
@@ -96,6 +105,11 @@ if (mode === "records") {
 		.filter((checkpoint) => checkpoint.checkpointId.startsWith("workflow-subscription-event:")).length;
 	console.log(JSON.stringify({ processed, eventRecords }));
 	await backend.close();
+} else if (mode === "steal") {
+	const runtime = createExtensionRuntime({ definitions: [definition], cwd: directory, store, adapters });
+	const resumed = await runtime.resumeDurableWorkflow(runId);
+	console.log(JSON.stringify({ acquired: resumed.ok, ...(resumed.ok ? {} : { reason: resumed.reason }) }));
+	process.exit(resumed.ok ? 4 : 0);
 } else if (mode === "resume" || mode === "takeover") {
 	const runtime = createExtensionRuntime({ definitions: [definition], cwd: directory, store, adapters });
 	const takeoverDeadline = Date.now() + 600_000;

@@ -119,6 +119,11 @@ test(
 			assert.deepEqual(after.processed, allIds);
 			assert.equal(after.eventRecords, EVENTS);
 			assert.equal(integrity(directory), "ok");
+			assert.deepEqual(
+				(await readText(join(directory, "anchor.txt"))).trim().split("\n"),
+				[`first ${runId}`],
+				"the resumed run replays its completed anchor stage instead of running it again",
+			);
 		} finally {
 			if (first.exitCode === null) first.kill("SIGKILL");
 			await first.exited;

@@ -227,6 +227,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 						model,
 						settingsManager: SettingsManager.inMemory(options.settings),
 						resourceLoader: createTestResourceLoader(),
+						builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
 						noTools: "builtin",
 						...child,
 					}),
