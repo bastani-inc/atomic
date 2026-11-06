@@ -23,6 +23,9 @@ const { IntercomClient, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS } = await import("../
 
 const RUN_ID = "route-timeout-run";
 const REGISTRATION_START_MS = 1_234;
+const OTHER_RUN_ID = "route-timeout-other-run";
+/** How long after the first registration a second one on the same connection is sent. */
+const LATER_REGISTRATION_MS = 6_000;
 const GROUP = `workflow:${RUN_ID}`;
 const clients: InstanceType<typeof IntercomClient>[] = [];
 const sockets = new Set<net.Socket>();
@@ -91,8 +94,9 @@ async function connect() {
 	return client;
 }
 
-async function brokerReceived(type: string): Promise<void> {
-	while (!received.includes(type)) await new Promise<void>((resolve) => receivedWaiters.push(resolve));
+async function brokerReceived(type: string, count = 1): Promise<void> {
+	while (received.filter((received) => received === type).length < count)
+		await new Promise<void>((resolve) => receivedWaiters.push(resolve));
 }
 
 function rosterRows(count: number) {
@@ -154,6 +158,38 @@ test("a route registration timeout on a silent broker carries the failed health 
 	assert.equal(error.elapsedMs, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
 	assert.ok(error.cause instanceof IntercomBrokerTimeoutError);
 	assert.equal(isIntercomPendingStageRouteTimeoutError(error.cause), false);
+	assert.equal(client.isConnected(), false);
+});
+
+test("a silent broker fails another run's registration with the connection's failure, not this run's timeout (#4376)", async () => {
+	answersHealthCheck = false;
+	const client = await connect();
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const settled = (registration: Promise<void>) =>
+		registration.then(
+			() => assert.fail("the broker never answered the registration"),
+			(error: unknown) => error,
+		);
+	const first = settled(
+		client.registerPendingStageRouteAcknowledged(RUN_ID, GROUP, "route-capability", rosterRows(2)),
+	);
+	await brokerReceived("register_pending_stage_route");
+	vi.advanceTimersByTime(LATER_REGISTRATION_MS);
+	const later = settled(
+		client.registerPendingStageRouteAcknowledged(OTHER_RUN_ID, GROUP, "other-capability", rosterRows(1)),
+	);
+	await brokerReceived("register_pending_stage_route", 2);
+	vi.advanceTimersByTime(PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS - LATER_REGISTRATION_MS);
+	await brokerReceived("list_groups");
+	// The health check gives up before the later registration's own bound expires.
+	vi.advanceTimersByTime(PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS / 2);
+	const [firstError, laterError] = await Promise.all([first, later]);
+	assert.ok(firstError instanceof IntercomPendingStageRouteTimeoutError);
+	assert.equal(firstError.runId, RUN_ID);
+	assert.equal(firstError.stageCount, 2);
+	assert.ok(laterError instanceof IntercomBrokerTimeoutError);
+	assert.equal(isIntercomPendingStageRouteTimeoutError(laterError), false, "the later run had not timed out");
+	assert.equal(laterError, firstError.cause, "both report the connection's own failure");
 	assert.equal(client.isConnected(), false);
 });
 
