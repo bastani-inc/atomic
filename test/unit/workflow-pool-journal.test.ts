@@ -8,7 +8,10 @@ import {
 	prepareDurableChildInvocation,
 } from "../../packages/workflows/src/durable/boundary-topology.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import {
+	openSqlPoolQueue,
+	type PoolWorkDescriptor,
+} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type Lease, RUN_EVENT_TYPES, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { poolAppendRefused, poolNotInitialized, staleLease, staleWorkLease } from "../helpers/pool-errors.js";
@@ -597,6 +600,70 @@ test("a resumed root runs its unfinished children under its own execution mode, 
 		await pool.releasePreviousIncarnations(without);
 		// A resume without an execution mode runs it without one.
 		assert.deepEqual((await pool.enqueue(without, { ...work, execution: {} }, boundary)).execution, {});
+	} finally {
+		await f.close();
+	}
+});
+
+test("a resumed root's child carries the worktree snapshot the resume captured, or keeps its earlier one, and is the same child either way (#4492)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		const carrying = (id: string, execution: PoolWorkDescriptor["execution"] = {}) => ({
+			...work,
+			execution: { ...execution, workspaceBinding: { tree: "t" }, workspaceSnapshot: { id, capturedAt: id } },
+		});
+		const unsnapshotted = { ...work, execution: { workspaceBinding: { tree: "t" } } };
+		const launched = await pool.enqueue(f.lease, carrying("s1"), boundary);
+		const again = await pool.enqueue(f.lease, carrying("s2"), boundary);
+		assert.equal(again.id, launched.id, "another capture of the same child is the same queued child");
+		assert.deepEqual(
+			again.execution.workspaceSnapshot,
+			{ id: "s1", capturedAt: "s1" },
+			"kept as this incarnation queued it",
+		);
+		await pool.claim(f.lease, "dead-worker", [work], 60_000);
+
+		const lease = await resumeRoot(f, "resumed-coordinator");
+		await pool.releasePreviousIncarnations(lease);
+		await assert.rejects(pool.enqueue(lease, carrying("s3", { cwd: "/elsewhere" }), boundary), /identity conflict/);
+		const resumed = await pool.enqueue(lease, carrying("s3"), boundary);
+		assert.deepEqual([resumed.id, resumed.state, resumed.epoch], [launched.id, "ready", lease.epoch]);
+		assert.deepEqual(
+			resumed.execution,
+			carrying("s3").execution,
+			"the resume's own capture replaces the earlier one",
+		);
+		const claimed = await pool.claim(lease, "resumed-worker", [work], 60_000);
+		assert.deepEqual(claimed?.execution, carrying("s3").execution, "and is what a host claims");
+
+		const bare = await resumeRoot(f, "resumed-without-worktree");
+		await pool.releasePreviousIncarnations(bare);
+		const kept = await pool.enqueue(bare, unsnapshotted, boundary);
+		assert.deepEqual(kept.execution, carrying("s3").execution, "a resume that captured none keeps the earlier one");
+		assert.deepEqual((await pool.inspect("root"))[0]?.execution, carrying("s3").execution);
+
+		const rebound = await resumeRoot(f, "resumed-in-another-mode");
+		await pool.releasePreviousIncarnations(rebound);
+		const mode = { executionMode: "non_interactive" };
+		const moved = await pool.enqueue(
+			rebound,
+			{ ...unsnapshotted, execution: { ...unsnapshotted.execution, ...mode } },
+			boundary,
+		);
+		assert.deepEqual(moved.execution, carrying("s3", mode).execution, "a child rebound to another mode keeps it too");
+
+		const fresh = poolWorkFixture("fresh");
+		const never = await pool.enqueue(rebound, fresh.work, fresh.boundary);
+		const reset = await resumeRoot(f, "resumed-last");
+		await pool.releasePreviousIncarnations(reset);
+		assert.deepEqual(
+			(await pool.enqueue(reset, fresh.work, fresh.boundary)).execution,
+			{},
+			"a child that never carried one carries none",
+		);
+		assert.equal(never.execution.workspaceSnapshot, undefined);
 	} finally {
 		await f.close();
 	}

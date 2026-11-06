@@ -7,12 +7,14 @@ import { fileURLToPath } from "node:url";
 import {
 	applyProviderRateLimitObservation,
 	createChildProcessEnvironment,
+	isBoundWorkspace,
 	isBunBinary,
 	observeProviderRateLimits,
 	onDebugSettingChange,
 	providerRateLimitObservations,
 	type QuestionnaireResult,
 	reportDebug,
+	serializeWorkspaceError,
 } from "@bastani/atomic";
 import { JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
@@ -81,6 +83,7 @@ import {
 	workerDefinitionSources,
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
+import { DispatchSnapshots } from "./dispatch-snapshot.js";
 import {
 	HeldPromptAnswers,
 	type HeldPromptOutcome,
@@ -90,7 +93,7 @@ import {
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
-import { childPlacement } from "./placement-choice.js";
+import { carriedSnapshot, childPlacement } from "./placement-choice.js";
 import { WorkerPlacementConfigError } from "./placement-errors.js";
 import { PoolCoordinator, projectRootRun, traceAnchor, workerLogDirectory } from "./pool-coordinator.js";
 import {
@@ -404,6 +407,8 @@ export class LocalWorkerPool {
 	private stopSharingDebugSetting?: () => void;
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
 	private registrations?: Promise<PooledStageRegistrations>;
+	/** What the root captures of the worktrees its children are bound to as it dispatches them (#4492). */
+	private readonly dispatchSnapshots: DispatchSnapshots;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -423,6 +428,11 @@ export class LocalWorkerPool {
 			readonly shared?: SharedPoolCoordination;
 			/** The repository state the root's pooled children run against, with shared placement (#4310). */
 			readonly workspace?: WorkspaceBinding;
+			/**
+			 * Internal, tests only: how often the blobs of the snapshots waiting children carry are kept from collection.
+			 * Public options never set it.
+			 */
+			readonly snapshotRefreshMs?: number;
 			readonly rootId?: string;
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
@@ -489,6 +499,11 @@ export class LocalWorkerPool {
 		this.heartbeatMs = timing.heartbeatMs;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
+		this.dispatchSnapshots = new DispatchSnapshots({
+			blobs: backend.snapshotJournal.snapshotBlobs,
+			unavailable: (reason) => this.snapshotUnavailable(reason),
+			refreshMs: options.snapshotRefreshMs,
+		});
 	}
 	/** Health events of the pool: worker cleanups it could not confirm. None of them failed a child. */
 	get health(): readonly string[] {
@@ -1308,6 +1323,13 @@ export class LocalWorkerPool {
 		const recorded = this.backend.getStageCheckpoint(root, `boundary-start:${options.durableScope.scopePrefix}`);
 		const boundary = isChildBoundary(recorded) ? recorded : this.backend.listCheckpoints(root).find(isChildBoundary);
 		if (boundary?.kind !== "stage") throw new Error("Missing durable child boundary");
+		const shared = this.options.shared !== undefined;
+		// A child of a shared pool bound to a workspace of its own carries a snapshot of that worktree, captured here as it
+		// is dispatched, so a host without the tree can restore it (#4492).
+		const workspaceSnapshot =
+			shared && isBoundWorkspace(options.workspace)
+				? await this.dispatchSnapshots.capture(options.workspace.worktree, options.snapshots, options.signal)
+				: undefined;
 		const execution = JSON.parse(
 			JSON.stringify({
 				cwd: options.cwd,
@@ -1320,7 +1342,8 @@ export class LocalWorkerPool {
 				workspace: options.workspace,
 				// A child of a shared pool, bound to a workspace of its own or to its root's, runs only where that tree is
 				// warm or restored (#4310, #4416).
-				...childPlacement(this.options.shared !== undefined, this.options.workspace, options.workspace),
+				...childPlacement(shared, this.options.workspace, options.workspace),
+				workspaceSnapshot,
 			}),
 		) as WorkflowSerializableObject;
 		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;
@@ -1349,7 +1372,9 @@ export class LocalWorkerPool {
 		this.ticker ??= setInterval(() => {
 			this.evaluateBudget();
 			this.signalChange();
+			this.keepCarriedSnapshots();
 		}, POOL_SUMMARY_INTERVAL_MS).unref();
+		const releaseSnapshot = this.dispatchSnapshots.carry(carriedSnapshot(work.execution));
 		try {
 			for (;;) {
 				options.signal?.throwIfAborted();
@@ -1391,11 +1416,28 @@ export class LocalWorkerPool {
 				await this.nextChange(options.signal);
 			}
 		} finally {
+			releaseSnapshot();
 			if (--this.waiting === 0) {
 				clearInterval(this.ticker);
 				this.ticker = undefined;
 			}
 		}
+	}
+	/**
+	 * Keeps the blobs of the worktree snapshots waiting children carry from collection, as often as that is due (#4492).
+	 * A refresh that fails is a health warning: the child still runs if its host restores before the blobs are gone.
+	 */
+	private keepCarriedSnapshots(): void {
+		this.dispatchSnapshots
+			.refresh(Date.now())
+			.catch((error: Error) =>
+				this.recordHealth(`keeping the worktree snapshots of waiting children failed: ${error.message}`),
+			);
+	}
+	/** The first typed reason a worktree its children are bound to could not be captured, on the root run (#4492). */
+	private snapshotUnavailable(reason: Error): void {
+		const run = this.store?.run(this.root!);
+		if (run !== undefined) run.snapshotUnavailable ??= serializeWorkspaceError(reason);
 	}
 	/**
 	 * A child that failed alone, while the pool keeps running, shows failed with its nested runs rather than

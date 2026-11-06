@@ -1,4 +1,4 @@
-import { isBoundWorkspace } from "@bastani/atomic";
+import { isBoundWorkspace, type WorktreeSnapshot } from "@bastani/atomic";
 import type { PoolClaimCandidate, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import { bindingIdentity, type WorkspaceBinding } from "./workspace-binding.js";
@@ -59,6 +59,14 @@ export function placedExecution(execution: WorkflowSerializableObject, worktree:
 	const workspace = execution.workspace;
 	if (!isBoundWorkspace(workspace)) return { ...execution, cwd: worktree };
 	return { ...execution, cwd: worktree, workspace: { ...(workspace as WorkflowSerializableObject), worktree } };
+}
+
+/**
+ * The worktree snapshot a placed work item carries: what its root captured of the work's bound worktree on its own host
+ * when it dispatched the work (#4492), for a host without the tree to restore. Undefined when it carries none.
+ */
+export function carriedSnapshot(execution: WorkflowSerializableObject): WorktreeSnapshot | undefined {
+	return execution.workspaceSnapshot as unknown as WorktreeSnapshot | undefined;
 }
 
 /** What the root's coordinator of a shared pool does about one work item that other hosts may run. */
