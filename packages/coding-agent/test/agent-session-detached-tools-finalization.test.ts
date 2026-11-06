@@ -6,9 +6,13 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, type ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, PERSISTED_OUTPUT_TAG } from "../src/core/tools/tool-limits.js";
+import {
+	resetWindowsDirectorySecurityStateForTesting,
+	setWindowsDirectorySecurityReaderForTesting,
+} from "../src/core/tools/windows-directory-security.js";
 import {
 	harnessPool,
 	reopenedAfterDetaching,
@@ -20,7 +24,23 @@ import {
 import { getMessageText, type Harness } from "./suite/harness.js";
 
 const pool = harnessPool();
-afterEach(() => pool.cleanup());
+
+beforeEach(() => {
+	const owner = "S-1-5-21-4309-4309-4309-1001";
+	setWindowsDirectorySecurityReaderForTesting(() => ({
+		currentSid: owner,
+		ownerSid: owner,
+		dacl: "D:",
+		accessRules: [],
+	}));
+});
+afterEach(async () => {
+	try {
+		await pool.cleanup();
+	} finally {
+		resetWindowsDirectorySecurityStateForTesting();
+	}
+});
 
 type Route = "inline" | "detached";
 const ROUTES: readonly Route[] = ["inline", "detached"];
