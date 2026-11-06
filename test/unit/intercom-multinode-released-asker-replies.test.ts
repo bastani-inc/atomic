@@ -470,6 +470,7 @@ describe("replies to released askers across nodes (#4386)", () => {
 			presence = read;
 			await retry(attempt, `owner's presence ${read}`)("queued");
 		}
+		assert.ok(vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("presence read failed")));
 		presence = "answers";
 		for (const release of stalledReads.splice(0)) release();
 		const handoff = only(handoffsTo(owner), "handoffs");
@@ -599,6 +600,8 @@ describe("replies to released askers across nodes (#4386)", () => {
 				timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000,
 				interval: 5,
 			});
+			if (lookup === "stalls")
+				assert.deepEqual(vi.mocked(console.error).mock.calls, [], "a stalled lookup reports nothing");
 		}
 		assert.ok(
 			vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("released-ask lookup failed")),
@@ -1291,7 +1294,7 @@ describe("released-asker replies under races and faults (#4386)", () => {
 		assert.deepEqual(await settled(sender, message.id), { type: "delivered", messageId: message.id, attemptId });
 	});
 
-	test("a departing supervised child writes its questions to the shared store only when it has any, and only with a name (#4386)", async () => {
+	test("a departing child writes its questions to the shared store only when it is supervised, has any, and has a name (#4386)", async () => {
 		const kept: number[] = [];
 		const shared = await cluster();
 		const a = await startNode(shared, (state) => ({
@@ -1320,7 +1323,15 @@ describe("released-asker replies under races and faults (#4386)", () => {
 			messageId: randomUUID(),
 		});
 		await leave(a, nameless);
-		assert.deepEqual(kept, [], "no write for a child with no questions or no name");
+		const unsupervised = session("unsupervised");
+		await register(a, unsupervised);
+		await a.state.pendingAsks.record({
+			senderSessionId: unsupervised.info.id,
+			targetSessionId: randomUUID(),
+			messageId: randomUUID(),
+		});
+		await leave(a, unsupervised);
+		assert.deepEqual(kept, [], "no write for a child with no questions, no name or no owner");
 		await releaseChild(a, owner, "asking", session("replier"));
 		assert.deepEqual(kept, [1]);
 	});
@@ -1922,6 +1933,44 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 				1,
 				"rebinds once",
 			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a session that registered while the broker it left still held its presence is delivered to once a renewal takes it over (#4386)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const shared = await cluster();
+			const [b, c] = [await startNode(shared), await startNode(shared)];
+			const sender = session("sender");
+			await register(b, sender);
+			const previous = session("worker");
+			await register(b, previous);
+			const returned = reconnected(previous);
+			await register(c, returned);
+			await leave(b, previous);
+			const message = { id: randomUUID(), timestamp: 1, content: { text: "after the handover" } };
+			b.router.routeSend({
+				socket: sender.socket,
+				from: sender,
+				clientMessage: { type: "send", to: returned.info.id, message },
+				message,
+				target: returned.info.id,
+				signature: JSON.stringify([returned.info.id, message.content.text]),
+				supervisorSend: false,
+				requirePendingReply: false,
+				resolveReplyTarget: false,
+				awaitRestoringRecipient: false,
+				notFound: () => assert.fail("not found"),
+			});
+			const deliveredTo = () =>
+				framesOf(returned).filter((frame) => frame.type === "message" && frame.message.id === message.id);
+			await vi.waitFor(async () => assert.equal((await c.state.outbox.read(message.id)).status, "found"), waitFor);
+			await flush();
+			assert.deepEqual(deliveredTo(), [], "nothing takes the queued message before the renewal");
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(deliveredTo().length, 1), waitFor);
 		} finally {
 			vi.useRealTimers();
 		}

@@ -969,7 +969,6 @@ export class MultiNodeRouter {
 		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, request.message.replyTo)) {
 			return undefined;
 		}
-		await Promise.all([...this.settling]);
 		return releasedAskAnswered(this.state, request);
 	}
 
