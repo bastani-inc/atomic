@@ -294,6 +294,14 @@ const windowsTest = process.platform === "win32" ? test : test.skip;
 const REAL_IMAGE_LOCK_TIMEOUT_MS = 90_000;
 const HOLDER_START_DEADLINE_MS = 60_000;
 const HOLDER_LIFETIME_MS = 30_000;
+const HOLDER_SOURCE = [
+	'const { existsSync, readFileSync, writeFileSync } = require("node:fs");',
+	'const { join } = require("node:path");',
+	'const { ready, release, lifetimeMs } = JSON.parse(readFileSync(join(__dirname, "holder.json"), "utf8"));',
+	'writeFileSync(ready, "");',
+	"const giveUpAt = Date.now() + lifetimeMs;",
+	"const poll = setInterval(() => { if (existsSync(release) || Date.now() > giveUpAt) clearInterval(poll); }, 20);",
+].join("\n");
 
 windowsTest(
 	"a running image from the tree blocks one removal attempt but not the retried removal once it exits (#4483)",
@@ -309,14 +317,10 @@ windowsTest(
 			const ready = join(control, "ready");
 			const holderScript = join(control, "holder.cjs");
 			writeFileSync(
-				holderScript,
-				[
-					'const { existsSync, writeFileSync } = require("node:fs");',
-					`writeFileSync(${JSON.stringify(ready)}, "");`,
-					`const giveUpAt = Date.now() + ${HOLDER_LIFETIME_MS};`,
-					`const poll = setInterval(() => { if (existsSync(${JSON.stringify(release)}) || Date.now() > giveUpAt) clearInterval(poll); }, 20);`,
-				].join("\n"),
+				join(control, "holder.json"),
+				JSON.stringify({ ready, release, lifetimeMs: HOLDER_LIFETIME_MS }),
 			);
+			writeFileSync(holderScript, HOLDER_SOURCE);
 			const holder = spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${image}" "${holderScript}""`], {
 				windowsVerbatimArguments: true,
 				stdio: "ignore",
