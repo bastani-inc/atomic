@@ -38,6 +38,10 @@ import {
 	IntercomBrokerTimeoutError,
 	IntercomClientDisconnectedError,
 } from "../recoverable-disconnect.js";
+import {
+	IntercomPendingStageRouteTimeoutError,
+	type IntercomPendingStageRouteTimeoutFields,
+} from "../pending-stage-route-timeout-error.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
@@ -407,10 +411,10 @@ export class IntercomClient extends EventEmitter {
       ? new IntercomBrokerTimeoutError(error.message, { cause: failure })
       : failure;
     if (this.socket === socket && !this.disconnecting) {
-      this.disconnectError ??= reported;
+      // The other requests on this connection fail with the connection's own failure, not with this request's.
+      this.disconnectError ??= failure;
       this.failPending(this.disconnectError);
       socket.destroy();
-      return this.disconnectError;
     }
     return reported;
   }
@@ -1590,9 +1594,20 @@ export class IntercomClient extends EventEmitter {
 		}
 		return new Promise((resolve, reject) => {
 			const requestId = randomUUID();
+			const startedAt = performance.now();
+			let timedOut: IntercomPendingStageRouteTimeoutFields | undefined;
 			const timeout = setTimeout(() => {
-				if (!this.pendingStageRouteRegistrations.delete(requestId)) return;
-				void this.requestTimeout(socket, new IntercomBrokerTimeoutError("Pending-stage route registration timeout")).then(reject);
+				timedOut = {
+					runId,
+					stageCount: stages?.length ?? 0,
+					timeoutMs: PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS,
+					elapsedMs: Math.round(performance.now() - startedAt),
+				};
+				// The broker answers this connection's frames in order, so an acknowledgement that arrived while this
+				// process was too busy to read it is read before the health check's answer and still settles the request.
+				void this.requestTimeout(socket, new IntercomPendingStageRouteTimeoutError(timedOut)).then((error) => {
+					if (this.pendingStageRouteRegistrations.delete(requestId)) reject(error);
+				});
 			}, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
 			this.pendingStageRouteRegistrations.set(requestId, {
 				resolve: () => {
@@ -1601,7 +1616,12 @@ export class IntercomClient extends EventEmitter {
 				},
 				reject: (error) => {
 					clearTimeout(timeout);
-					reject(error);
+					// A broker that went silent during this registration's own timeout fails it as that timeout.
+					reject(
+						timedOut !== undefined && error instanceof IntercomBrokerTimeoutError
+							? new IntercomPendingStageRouteTimeoutError(timedOut, { cause: error })
+							: error,
+					);
 				},
 			});
 			try {

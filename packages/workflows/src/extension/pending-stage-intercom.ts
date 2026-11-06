@@ -171,10 +171,29 @@ export function registerPendingStageIntercomBridge(
 	// Keep rejected completions separate from the publication cache: failure is not
 	// an absent optional consumer, even if it settled before a stage began waiting.
 	const routeCompletions = new Map<string, Promise<void>>();
-	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, (runId) => {
-		announceIfPending();
-		return routeCompletions.get(runId);
-	});
+	/**
+	 * Per claimed publication, settles once its consumer answered it, acknowledged or refused, and the event loop has
+	 * turned since it went out. The entry is removed when it settles.
+	 */
+	const unansweredPublications = new WeakMap<Promise<void>, Promise<void>>();
+	/**
+	 * A starting stage waits for a publication of its run's changes. While the run's last publication is unanswered,
+	 * a stage with changes to announce waits for that answer, then announces every change made meanwhile once, so a
+	 * burst of starting stages costs two roster publications rather than one each (#4376).
+	 */
+	const routeReady = (runId: string): Promise<void> | undefined => {
+		const latest = routeCompletions.get(runId);
+		const unanswered = latest && unansweredPublications.get(latest);
+		if (unanswered === undefined || !announcementPending) {
+			announceIfPending();
+			return routeCompletions.get(runId);
+		}
+		return unanswered.then(() => {
+			announceIfPending();
+			return routeCompletions.get(runId);
+		});
+	};
+	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, routeReady);
 	// Root ownership, boundary hops and possible-stage rows carry over between announcements and
 	// recompute only what changed; a root run's rows and their delivery states keep their identity
 	// while unchanged, so its announcement is compared by row identity rather than re-serialized.
@@ -325,6 +344,12 @@ export function registerPendingStageIntercomBridge(
 			unpublishedRunIds.add(run.id);
 		} else {
 			routeCompletions.set(run.id, completion);
+			unansweredPublications.set(
+				completion,
+				Promise.allSettled([completion, nextEventLoopTurn()]).then(() => {
+					unansweredPublications.delete(completion);
+				}),
+			);
 			completion.catch(() => {
 				// Identity, not signature: an older rejected A must not evict the
 				// newer A published after A → B → A. Reporting is the relay's job.
@@ -668,6 +693,11 @@ function stageRouteTarget(
 ): string {
 	const boundarySegments = runId === rootRunId ? [] : resolveBoundarySegments(runId);
 	return formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [runId]), stageId);
+}
+
+/** Settles after the work already queued on the event loop, as the answer of a consumer across a socket would. */
+function nextEventLoopTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 function isPendingStageMessageEvent(value: unknown): value is PendingStageMessageEvent &
