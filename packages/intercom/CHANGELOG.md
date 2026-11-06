@@ -29,6 +29,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 - A queued workflow send to a path outside the run's known stages no longer shows the "not in the workflow's known stage set" warning; the result is a plain `Message queued for <target>`. A path the decision model judged unlikely gets one `No stage named <x> is expected; did you mean <closest>?` line, and the `intercom.showUnknownTargetWarnings` setting restores the old warning. Delivery is unchanged ([#4359](https://github.com/bastani-inc/atomic/issues/4359))
 - A pending workflow-stage route requested after its Intercom runtime ended now fails with `IntercomRuntimeInactiveError` (`code: "intercom_unavailable"`), which workflows treat as a retryable infrastructure fault by its type ([#4327](https://github.com/bastani-inc/atomic/issues/4327))
+- A workflow run's pending-stage route registration that the broker does not acknowledge within 10 seconds now fails with `IntercomPendingStageRouteTimeoutError` (`code: "pending_stage_route_timeout"`), which names the run, how many roster stages the registration carried, the bound and how long it waited, and is still a recoverable broker timeout ([#4376](https://github.com/bastani-inc/atomic/issues/4376))
 
 ### Fixed
 

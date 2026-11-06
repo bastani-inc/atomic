@@ -58,6 +58,14 @@ When a workflow stage starts, its session registers a live Intercom route with t
 
 A stage name reused by a later occurrence in the same run (for example `reviewer-a` in a second review round while the first round's completed session is still connected) is not a duplicate owner. The later stage registers under its stage id, and the reused name is ambiguous: neither occurrence keeps a live name alias, so a send to that name is routed through the workflow owner rather than delivered to whichever occurrence registered first. Address such stages by the id-form target that `intercom list` shows.
 
+Before a workflow stage's session starts, the stage waits for the broker to acknowledge its run's stage roster. If the broker does not acknowledge a registration within 10 seconds, the waiting stage fails with `IntercomPendingStageRouteTimeoutError`:
+
+| Class | `code` | When it happens | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `IntercomPendingStageRouteTimeoutError` | `pending_stage_route_timeout` | The broker accepted the run's route registration but did not acknowledge it in time. | `runId`, `stageCount` (roster stages the registration carried), `timeoutMs`, `elapsedMs`, `phase` (`"pending-stage-route-registration"`), `hint`, `retryable: true`; `cause` is the failed health check when the broker stopped answering altogether | Resume the run; Intercom registers its route again. Run `atomic intercom restart` if the broker keeps timing out. |
+
+The class is not exported. Recognize it by `code === "pending_stage_route_timeout"`.
+
 ## How It Works
 
 The local broker starts on first use and exits after five seconds without registered sessions. Clients reconnect automatically using delays of 1, 2, 5, 10, then 30 seconds. Explicit connection failures remain visible while background recovery continues.
