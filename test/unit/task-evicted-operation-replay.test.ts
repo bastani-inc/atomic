@@ -189,7 +189,7 @@ test("a conflicting command replay refuses before a pending process admission co
 	}
 });
 
-test("a refused command leaves no cached host launch record (#4385)", async () => {
+test("a refused command leaves no cached host launch record or cadence (#4385, #4451)", async () => {
 	const h = await harness();
 	try {
 		const refused = await h.supervisor.startCommandTask(
@@ -202,7 +202,98 @@ test("a refused command leaves no cached host launch record (#4385)", async () =
 		);
 		assert.equal(refused.ok ? undefined : refused.error.code, "SpawnFailed");
 		assert.equal(taskHostStateSizesForTesting(h.owner).commandStarts, 0);
+		assert.equal(taskHostStateSizesForTesting(h.owner).launchHeartbeats, 0);
 	} finally {
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+const startLost = new Error("native start lost");
+test.each<{ outcome: string; start: () => ReturnType<native.TaskSupervisor["startCommandTask"]>; cause?: Error }>([
+	{ outcome: "rejects", start: () => Promise.reject(startLost), cause: startLost },
+	{
+		outcome: "refuses with an unrecognized code",
+		start: () => Promise.resolve({ ok: false, error: { code: "Unrecognized", message: "unrecognized refusal" } }),
+	},
+])("a command whose native start $outcome forgets the cadence it recorded (#4451)", async ({ start, cause }) => {
+	const h = await harness();
+	const recorded: number[] = [];
+	const door = vi.spyOn(native.TaskSupervisor.prototype, "startCommandTask").mockImplementation(() => {
+		recorded.push(taskHostStateSizesForTesting(h.owner).launchHeartbeats);
+		return start();
+	});
+	try {
+		const failure = await h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED).then(
+			() => undefined,
+			(error: Error) => error,
+		);
+		assert.ok(failure instanceof Error, "the launch fails");
+		assert.equal(failure.cause, cause, "its failure keeps the native cause");
+		assert.deepEqual(
+			{ recorded, after: taskHostStateSizesForTesting(h.owner).launchHeartbeats },
+			{ recorded: [1], after: 0 },
+		);
+	} finally {
+		door.mockRestore();
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+test("a command launched without a cadence records none, not even while it is admitted (#4451)", async () => {
+	const h = await harness();
+	delete h.defaults.heartbeatMs;
+	const admitting: number[] = [];
+	const original = native.TaskSupervisor.prototype.startCommandTask;
+	const door = vi.spyOn(native.TaskSupervisor.prototype, "startCommandTask").mockImplementation(function (
+		this: native.TaskSupervisor,
+		...args: Parameters<typeof original>
+	) {
+		admitting.push(taskHostStateSizesForTesting(h.owner).launchHeartbeats);
+		return original.apply(this, args);
+	});
+	try {
+		const command = await h.settle(value(await h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED)));
+		assert.equal(h.record(command)?.heartbeatMs, undefined);
+		assert.deepEqual(
+			{ admitting, admitted: taskHostStateSizesForTesting(h.owner).launchHeartbeats },
+			{ admitting: [0], admitted: 0 },
+		);
+	} finally {
+		door.mockRestore();
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+test("a command admitted as its owner closes leaves no cadence behind (#4451)", async () => {
+	const h = await harness();
+	const admitted = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const original = native.TaskSupervisor.prototype.startCommandTask;
+	const door = vi.spyOn(native.TaskSupervisor.prototype, "startCommandTask").mockImplementation(async function (
+		this: native.TaskSupervisor,
+		...args: Parameters<typeof original>
+	) {
+		const result = await original.apply(this, args);
+		admitted.resolve();
+		await resume.promise;
+		return result;
+	});
+	const started = h.supervisor.startCommandTask(h.owner, commandIntent, REPLAYED);
+	try {
+		await admitted.promise;
+		value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+		assert.equal(
+			taskHostStateSizesForTesting(h.owner).launchHeartbeats,
+			0,
+			"the close forgot the provisional cadence",
+		);
+		resume.resolve();
+		value(await started);
+		assert.equal(taskHostStateSizesForTesting(h.owner).launchHeartbeats, 0, "the late admission records none");
+	} finally {
+		resume.resolve();
+		door.mockRestore();
+		await started;
 		await h.supervisor.closeTaskOwner(h.owner, "session-close");
 	}
 });
