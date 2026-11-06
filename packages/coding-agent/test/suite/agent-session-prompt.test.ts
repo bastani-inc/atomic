@@ -769,7 +769,7 @@ describe("AgentSession prompt characterization", () => {
 		const promptPromise = harness.session.prompt("start");
 		await sawToolStart;
 
-		await expect(harness.session.prompt("second")).rejects.toMatchObject({
+		await assert.rejects(harness.session.prompt("second"), {
 			name: "AgentSessionBusyError",
 			code: "agent_session_busy",
 			hint: "Specify streamingBehavior ('steer' or 'followUp') to queue the message.",

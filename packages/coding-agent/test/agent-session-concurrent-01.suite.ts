@@ -178,7 +178,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(session.isStreaming).toBe(true);
 
 		// Second prompt should reject
-		await expect(session.prompt("Second message")).rejects.toMatchObject({
+		await assert.rejects(session.prompt("Second message"), {
 			name: "AgentSessionBusyError",
 			code: "agent_session_busy",
 		});
