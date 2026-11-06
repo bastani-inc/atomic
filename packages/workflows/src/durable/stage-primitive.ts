@@ -500,15 +500,17 @@ export function createDurableTaskPrimitive(input: {
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		const replayKey = input.nextReplayKey(`task:${name}`);
-		const replayed = replayableTaskResult(name, input.backend, input.workflowId, replayKey);
+		const restartFromPrompt = options.durableRestartFromPrompt === true;
+		const replayed = restartFromPrompt
+			? undefined
+			: replayableTaskResult(name, input.backend, input.workflowId, replayKey);
 		if (replayed !== undefined) {
 			await input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
 			return replayed.result;
 		}
-		const session =
-			options.durableRestartFromPrompt === true
-				? undefined
-				: input.backend.getStageSession(input.workflowId, replayKey);
+		const supersedesRecordedResult =
+			restartFromPrompt && input.backend.getStageOutput(input.workflowId, replayKey) !== undefined;
+		const session = restartFromPrompt ? undefined : input.backend.getStageSession(input.workflowId, replayKey);
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
 		const durableIntercomGroup =
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
@@ -545,14 +547,17 @@ export function createDurableTaskPrimitive(input: {
 		try {
 			await input.beforeCheckpoint?.();
 			if (signal?.aborted) throw abortReasonError(signal);
+			const completedAt = Date.now();
 			const checkpoint: DurableStageCheckpoint = {
 				kind: "stage",
 				workflowId: input.workflowId,
-				checkpointId: stableCheckpointId("task", replayKey),
+				checkpointId: supersedesRecordedResult
+					? supersedingTaskCheckpointId(replayKey, completedAt)
+					: stableCheckpointId("task", replayKey),
 				name,
 				replayKey,
 				output: result,
-				completedAt: Date.now(),
+				completedAt,
 				...taskCheckpointMetadata(result),
 				...(completedTopology !== undefined ? { topology: completedTopology } : {}),
 			};
@@ -966,6 +971,16 @@ export function createStageReplayKeyGenerator(_workflowId: string): (stageName: 
 
 export function stableCheckpointId(kind: string, replayKey: string): string {
 	return `${kind}:${replayKey}`;
+}
+
+/**
+ * The record of a task restarted from its prompt after a result of it was recorded, such as an event child whose event
+ * is handled again after a resume. A journal keeps the first record written under an id, so the restarted task's record
+ * gets its own id. It keeps the replay key, so the run's stage outputs and its completed snapshot take the later record
+ * for that stage in place of the earlier one.
+ */
+function supersedingTaskCheckpointId(replayKey: string, completedAt: number): string {
+	return `${stableCheckpointId("task", replayKey)}:${durableHash({ completedAt })}`;
 }
 
 /**

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	type AgentSession,
 	type EventSource,
@@ -18,11 +19,14 @@ import {
 } from "@bastani/atomic";
 import { afterEach, test, vi } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	completedWorkflowSnapshot,
 	listOpenableCompletedWorkflows,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { subscriptionEventProcessed } from "../../packages/workflows/src/durable/subscription-records.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -40,6 +44,8 @@ import type {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
 	closeMemoryTestBackends,
@@ -965,13 +971,13 @@ test("inline streams record their mode, honour maxRate, and close or throw clean
 	assert.deepEqual(processed.sort(), ["x"]);
 });
 
-test("an event child replayed from cache after a resume stays detached while replayed main-line stages stay attached (#4311)", async () => {
+test("an event child run again after a resume stays detached while replayed main-line stages stay attached (#4311)", async () => {
 	const backend = await createMemoryTestBackend();
 	const runId = "bbbbbbbb-bbbb-4bbb-8bbb-000000004311";
 	let failFirst = true;
 	let pass = 0;
 	const definition = workflow({
-		name: "cached-event-child",
+		name: "rerun-event-child",
 		description: "",
 		inputs: {},
 		outputs: {},
@@ -981,7 +987,7 @@ test("an event child replayed from cache after a resume stays detached while rep
 			await ctx.task("plain", { prompt: "main-line work" });
 			await ctx
 				.subscribe(
-					listSource("cached", [{ id: "c1" }]),
+					listSource("rerun", [{ id: "c1" }]),
 					async (_event, child) => {
 						await child.task({ prompt: "inspect" });
 						if (failFirst) {
@@ -1005,7 +1011,7 @@ test("an event child replayed from cache after a resume stays detached while rep
 	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
 	const second = await run(definition, {}, { ...options, store: createStore() });
 	assert.equal(second.status, "completed", second.error);
-	const child = second.stages.find((stage) => stage.name === "cached#1/c1");
+	const child = second.stages.find((stage) => stage.name === "rerun#1/c1");
 	assert.ok(child !== undefined, JSON.stringify(second.stages.map((stage) => stage.name)));
 	const after = second.stages.find((stage) => stage.name === "after-2")!;
 	assert.equal(after.parentIds.includes(child.id), false);
@@ -2314,6 +2320,246 @@ test("a report returns once the subscriber admits it, without waiting for the su
 		'Report from event child "alerts#1/c" (event c):\n\nc matters',
 	]);
 });
+
+/** A journal a test resumes runs on; a persistent one is opened again for each run, as a restarted process would. */
+type ReopenableJournal = JournalDurableBackend & { reopen(): Promise<ReopenableJournal> };
+
+async function openLibsqlJournal(url: string): Promise<ReopenableJournal> {
+	const backend = await JournalDurableBackend.open(await SqlRunJournal.open(await openLibsqlDatabase({ url })));
+	return Object.assign(backend, {
+		async reopen(): Promise<ReopenableJournal> {
+			await backend.close();
+			return openLibsqlJournal(url);
+		},
+	});
+}
+
+async function memoryJournal(): Promise<ReopenableJournal> {
+	const backend = await createMemoryTestBackend();
+	const journal: ReopenableJournal = Object.assign(backend, { reopen: async () => journal });
+	return journal;
+}
+
+const REPORT_A = 'Report from event child "alerts#1/a" (event a):\n\na matters';
+
+/**
+ * Event "a" reaches its child while the subscriber stage is in a turn: the child reports, which queues the report into
+ * that turn, and finishes with `answer <attempt>`. In each of the first `stops` runs the process stops before the turn
+ * takes the report; the run after them lets the subscriber take it.
+ */
+async function runStoppedReports(input: {
+	readonly runId: string;
+	readonly stops: number;
+	readonly journal: ReopenableJournal;
+}) {
+	let attempt = 0;
+	let stopping = false;
+	let watcherInTurn = false;
+	let stopProcess = new AbortController();
+	const savedReports: string[] = [];
+	const childAttempts: number[] = [];
+	const runs: { readonly status: string; readonly error?: string; readonly processed: boolean }[] = [];
+	const directory = mkdtempSync(join(tmpdir(), "atomic-stopped-reports-"));
+	const sessionStore = await JsonlSessionStore.open(directory, { exactDirectory: true });
+	// Each resumed run reopens the watcher's interrupted session from the store.
+	const sessionFile = writeRetainedSession(directory, "watcher-session");
+	const watcherSession = (): StageSessionRuntime => {
+		const listeners = new Set<(event: { readonly type: string; readonly message?: unknown }) => void>();
+		const emit = (type: string, message?: { readonly role: string }): void => {
+			for (const listener of [...listeners]) listener({ type, ...(message === undefined ? {} : { message }) });
+		};
+		return {
+			...mockSession(),
+			sessionId: "watcher-session",
+			sessionFile,
+			get isStreaming() {
+				return watcherInTurn;
+			},
+			async prompt() {
+				watcherInTurn = true;
+				emit("agent_start");
+				// The process stops during this turn, before the turn takes the report queued into it.
+				if (stopping) await new Promise<void>(() => {});
+				watcherInTurn = false;
+				emit("agent_end");
+			},
+			async sendUserMessage(content) {
+				if (watcherInTurn) return;
+				emit("agent_start");
+				savedReports.push(typeof content === "string" ? content : "");
+				emit("message_end", { role: "user" });
+				emit("agent_end");
+			},
+			subscribe(listener) {
+				listeners.add(listener as never);
+				return () => listeners.delete(listener as never);
+			},
+		};
+	};
+	const childSession = (customTools: readonly ToolDefinition[] | undefined): StageSessionRuntime => {
+		const answer = `answer ${attempt}`;
+		return {
+			...mockSession(),
+			async prompt() {
+				childAttempts.push(attempt);
+				const report = customTools?.find((tool) => tool.name === SUBSCRIPTION_REPORT_TOOL_NAME);
+				await report!.execute("call-a", { text: "a matters" }, undefined, undefined, undefined as never);
+			},
+			getLastAssistantText: () => answer,
+		};
+	};
+	const definition = workflow({
+		name: "stopped-reports",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const watcher = ctx.stage("watcher");
+			const watching = watcher.prompt("watch");
+			if (stopping) await turnsUntil(() => watcherInTurn);
+			else await watching;
+			await ctx.subscribe(
+				listSource("alerts", [{ id: "a" }]),
+				async (_event, child) => {
+					await child.task({ prompt: "inspect" });
+					if (stopping) stopProcess.abort(new Error("the process stopped"));
+				},
+				{ subscriber: watcher },
+			).done;
+			await watching;
+			return {};
+		},
+	}) as WorkflowDefinition;
+	let journal = input.journal;
+	try {
+		for (attempt = 1; attempt <= input.stops + 1; attempt++) {
+			if (attempt > 1) journal = await journal.reopen();
+			stopping = attempt <= input.stops;
+			watcherInTurn = false;
+			stopProcess = new AbortController();
+			const result = await run(
+				definition,
+				{},
+				{
+					runId: input.runId,
+					cwd: directory,
+					durableBackend: journal,
+					store: createStore(),
+					signal: stopProcess.signal,
+					adapters: {
+						sessionStore,
+						agentSession: {
+							create: async (
+								options: { readonly customTools?: readonly ToolDefinition[] },
+								meta?: { readonly stageName: string },
+							) => (meta?.stageName === "watcher" ? watcherSession() : childSession(options.customTools)),
+						},
+					},
+				},
+			);
+			runs.push({
+				status: result.status,
+				...(result.error === undefined ? {} : { error: result.error }),
+				processed: subscriptionEventProcessed(journal, input.runId, "alerts#1", "a"),
+			});
+		}
+		return { runs, savedReports, childAttempts, journal };
+	} finally {
+		await sessionStore.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+test("an event child that finished while its report waited in a busy subscriber reports again when a resume handles its event (#4311)", async () => {
+	const { runs, savedReports, childAttempts } = await runStoppedReports({
+		runId: "b4b4b4b4-b4b4-4b4b-8b4b-000000004311",
+		stops: 1,
+		journal: await memoryJournal(),
+	});
+	assert.deepEqual(runs, [
+		{ status: "killed", error: "workflow killed", processed: false },
+		{ status: "completed", processed: true },
+	]);
+	assert.deepEqual(childAttempts, [1, 2]);
+	assert.deepEqual(savedReports, [REPORT_A]);
+});
+
+/** The memory and SQLite journals are closed after each test by their helpers; a libSQL one by `release`. */
+const resumeJournals: readonly {
+	readonly store: string;
+	readonly runId: string;
+	readonly open: () => Promise<{
+		readonly journal: ReopenableJournal;
+		readonly release: (current: ReopenableJournal) => Promise<void>;
+	}>;
+}[] = [
+	{
+		store: "in-memory",
+		runId: "b5b5b5b5-b5b5-4b5b-8b5b-000000004311",
+		open: async () => ({ journal: await memoryJournal(), release: async () => {} }),
+	},
+	{
+		store: "SQLite",
+		runId: "b6b6b6b6-b6b6-4b6b-8b6b-000000004311",
+		open: async () => ({ journal: await JournalTestBackend.create(), release: async () => {} }),
+	},
+	{
+		store: "libSQL",
+		runId: "b7b7b7b7-b7b7-4b7b-8b7b-000000004311",
+		open: async () => {
+			const directory = makeLibsqlDirectory();
+			return {
+				journal: await openLibsqlJournal(pathToFileURL(join(directory, "journal.sqlite")).href),
+				release: async (current) => {
+					await current.close();
+					await removeLibsqlDirectory(directory);
+				},
+			};
+		},
+	},
+];
+
+for (const { store, runId, open } of resumeJournals) {
+	test(`resuming twice on a ${store} journal runs the event child again each time and keeps its last result as the stage's (#4311)`, async () => {
+		const opened = await open();
+		let journal = opened.journal;
+		try {
+			const scenario = await runStoppedReports({ runId, stops: 2, journal });
+			journal = await scenario.journal.reopen();
+			assert.deepEqual(scenario.runs, [
+				{ status: "killed", error: "workflow killed", processed: false },
+				{ status: "killed", error: "workflow killed", processed: false },
+				{ status: "completed", processed: true },
+			]);
+			assert.deepEqual(scenario.childAttempts, [1, 2, 3]);
+			assert.deepEqual(scenario.savedReports, [REPORT_A]);
+			// Every attempt's result is kept, in order, under the child's one replay key.
+			const results = journal
+				.listCheckpoints(runId)
+				.flatMap((checkpoint) =>
+					checkpoint.kind === "stage" && checkpoint.name === "alerts#1/a" && checkpoint.output !== undefined
+						? [{ replayKey: checkpoint.replayKey, result: checkpoint.result }]
+						: [],
+				);
+			assert.deepEqual([...new Set(results.map(({ result }) => result))], ["answer 1", "answer 2", "answer 3"]);
+			const replayKeys = [...new Set(results.map(({ replayKey }) => replayKey))];
+			assert.equal(replayKeys.length, 1);
+			const effective = journal.getStageOutput(runId, replayKeys[0]!) as { readonly text?: string } | undefined;
+			assert.equal(effective?.text, "answer 3");
+			const entry = (await listOpenableCompletedWorkflows(journal)).find(
+				(candidate) => candidate.workflowId === runId,
+			);
+			assert.ok(entry !== undefined);
+			const snapshot = await completedWorkflowSnapshot(journal, entry);
+			assert.deepEqual(
+				snapshot?.stages.filter((stage) => stage.name === "alerts#1/a").map((stage) => stage.result),
+				["answer 3"],
+			);
+		} finally {
+			await opened.release(journal);
+		}
+	});
+}
 
 test("a run settles the turns its reports started before it completes, and cancelling it meanwhile ends it (#4311)", async () => {
 	const listeners = new Set<(event: { readonly type: string; readonly message?: unknown }) => void>();

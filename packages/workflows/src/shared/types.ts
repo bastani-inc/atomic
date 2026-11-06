@@ -215,7 +215,10 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	sessionStore?: import("@bastani/atomic").SessionStore;
 	/** Internal durable resume hook: reopen this ID in the selected store instead of forking. */
 	resumeFromSessionId?: string;
-	/** Internal durable resume hook: after a resume, start a fresh session from the original prompt instead of reopening the recorded one. */
+	/**
+	 * Internal durable resume hook: after a resume, start a fresh session from the original prompt instead of reopening
+	 * the recorded one or replaying a recorded result; the new result supersedes a recorded one.
+	 */
 	durableRestartFromPrompt?: boolean;
 	/** Internal durable resume hook: transcript of a stage checkpointed before #3700, imported when the ID is missing. */
 	resumeFromLegacySessionFile?: string;
