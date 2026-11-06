@@ -21,10 +21,11 @@ function describeStore(store: SessionStore, selectedBy: string): string {
 
 async function openRunSessionStore(
 	storage: ResumeSessionStorage,
+	callerStoreLabel: string,
 ): Promise<{ readonly store: SessionStore; readonly storage: string; readonly owned: boolean }> {
 	const callerStore = storage.adapters?.sessionStore;
 	if (callerStore !== undefined)
-		return { store: callerStore, storage: describeStore(callerStore, "SDK sessionStore option"), owned: false };
+		return { store: callerStore, storage: describeStore(callerStore, callerStoreLabel), owned: false };
 	if (storage.defaultSessionDir !== undefined) {
 		const store = await JsonlSessionStore.open(storage.defaultSessionDir, {
 			exactDirectory: true,
@@ -44,15 +45,22 @@ async function openRunSessionStore(
  * file-backed directory is found by its file. A stage that kept its session in the store its own `sessionStore`
  * option supplied is not looked up here: that store is known only once the workflow calls the stage again, and
  * {@link assertStageOwnedSessionExists} checks it then, before the stage does any work.
+ *
+ * A child run (`rootRunId` given) is checked the same way before its body runs, in the store its parent or its worker
+ * pool hands it; the error then names the root run to resume (#4440).
  */
 export async function assertWaitingStageSessionsExist(
 	waiting: readonly DurableWaitingStage[],
 	runId: string,
 	storage: ResumeSessionStorage,
+	rootRunId?: string,
 ): Promise<void> {
 	const inRunStore = waiting.filter((stage) => stage.sessionStorage !== "stage");
 	if (inRunStore.length === 0) return;
-	const opened = await openRunSessionStore(storage);
+	const opened = await openRunSessionStore(
+		storage,
+		rootRunId === undefined ? "SDK sessionStore option" : "child workflow session store",
+	);
 	try {
 		const missing: string[] = [];
 		const checked = new Set<string>();
@@ -66,7 +74,7 @@ export async function assertWaitingStageSessionsExist(
 		}
 		if (missing.length > 0)
 			throw new StageRehydrationError(
-				{ runId, sessionIds: missing, storage: opened.storage },
+				{ runId, ...(rootRunId === undefined ? {} : { rootRunId }), sessionIds: missing, storage: opened.storage },
 				{ code: "session-not-found" },
 			);
 	} finally {

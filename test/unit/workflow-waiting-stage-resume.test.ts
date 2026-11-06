@@ -391,23 +391,26 @@ describe("resuming stages that waited between turns (#4309)", () => {
 		await seeded.backend.close();
 	});
 
-	test("a child run reads no session of the stages its root left waiting (#4309)", async () => {
+	test("a child run reads no session of the stages its root left waiting, which are outside its scope (#4309)", async () => {
 		const seeded = await seedStoppedRun([{ name: "alpha", kind: "release", promptsCompleted: 1, saved: false }]);
 		const reads = vi.spyOn(seeded.sessionStore, "readHeader");
 		const body = bodyOnly();
 
-		await run(
+		const result = await run(
 			body.definition,
 			{},
 			{
-				runId: seeded.runId,
+				runId: crypto.randomUUID(),
 				store: createStore(),
 				durableBackend: seeded.backend,
-				parentRun: { runId: crypto.randomUUID(), stageId: "parent-stage", rootRunId: crypto.randomUUID() },
+				durableRootBackend: seeded.backend,
+				durableScope: { rootWorkflowId: seeded.runId, scopePrefix: "workflow:child:1" },
+				parentRun: { runId: seeded.runId, stageId: "parent-stage", rootRunId: seeded.runId },
 				adapters: { sessionStore: seeded.sessionStore, ...PROMPT_ONLY },
 			},
-		).catch((error: Error) => assert.ok(!isStageRehydrationError(error), error.message));
+		);
 
+		assert.equal(result.status, "completed", result.error);
 		assert.equal(reads.mock.calls.length, 0);
 		assert.equal(body.ran(), true);
 		await seeded.backend.close();

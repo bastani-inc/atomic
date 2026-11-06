@@ -176,13 +176,18 @@ export interface DurableWaitingStage {
 }
 
 /**
- * Every stage of the run that its previous process left waiting, from one pass over the run's checkpoints. Only the
- * run's own stages: a pooled root's journal also holds the checkpoints of its pool's children, whose sessions live in
- * the pool's stores, and a child run reopens its own stages (#4318).
+ * Every stage of the run that its previous process left waiting, from one pass over the run's checkpoints (`latest`,
+ * when the caller already made that pass). Only the run's own stages: a pooled root's journal also holds the
+ * checkpoints of its pool's children, whose sessions live in the pool's stores, and a child run checks its own stages
+ * through its scoped view before its body runs (#4318, #4440).
  */
-export function durableWaitingStages(backend: DurableWorkflowBackend, workflowId: string): DurableWaitingStage[] {
+export function durableWaitingStages(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	latest: ReadonlyMap<string, DurableStageCheckpoint> = latestStageSessionCheckpoints(backend, workflowId),
+): DurableWaitingStage[] {
 	const waiting: DurableWaitingStage[] = [];
-	for (const checkpoint of latestStageSessionCheckpoints(backend, workflowId).values()) {
+	for (const checkpoint of latest.values()) {
 		if (checkpoint.wait === undefined || checkpoint.sessionId === undefined) continue;
 		const ownerRunId = checkpoint.topology?.run?.runId;
 		if (ownerRunId !== undefined && ownerRunId !== workflowId) continue;
@@ -207,9 +212,10 @@ export function durableWaitingStages(backend: DurableWorkflowBackend, workflowId
 export function durableRecordedToolResults(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
+	latest: ReadonlyMap<string, DurableStageCheckpoint> = latestStageSessionCheckpoints(backend, workflowId),
 ): Map<string, readonly StageWaitToolResult[]> {
 	const recorded = new Map<string, readonly StageWaitToolResult[]>();
-	for (const checkpoint of latestStageSessionCheckpoints(backend, workflowId).values())
+	for (const checkpoint of latest.values())
 		if (checkpoint.waitResults !== undefined && checkpoint.waitResults.length > 0)
 			recorded.set(checkpoint.replayKey, checkpoint.waitResults);
 	return recorded;

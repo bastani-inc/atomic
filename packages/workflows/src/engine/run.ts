@@ -20,6 +20,7 @@ import {
 	createStageReplayKeyGenerator,
 	durableRecordedToolResults,
 	durableWaitingStages,
+	latestStageSessionCheckpoints,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
@@ -701,8 +702,18 @@ async function executeRun(
 	});
 	// A stage whose previous process recorded the results its detached calls delivered continues its turn from them
 	// on resume, instead of running the calls again (#4309).
-	for (const [replayKey, results] of durableRecordedToolResults(durableBackend, runId))
+	const priorStageSessions = latestStageSessionCheckpoints(durableBackend, runId);
+	for (const [replayKey, results] of durableRecordedToolResults(durableBackend, runId, priorStageSessions))
 		runtime.wakeDispatcher.keepResultsForResume(replayKey, stageWaitToolResults(results));
+	// A root checked its waiting stages before it took its lease; a child, also a worker pool's, has them in its own
+	// scoped view only, and reopens them from the store its parent or worker hands it (#4440).
+	const childPreflight =
+		opts.parentRun === undefined
+			? undefined
+			: {
+					rootRunId: opts.parentRun.rootRunId,
+					waiting: durableWaitingStages(durableBackend, runId, priorStageSessions),
+				};
 	const workflowBoundaryReplayCounts = new Map<string, number>();
 	const nextWorkflowBoundaryReplayKey = (name: string): string => {
 		const durableScopePrefix = pendingChildDurableInvocation?.scope.scopePrefix;
@@ -1203,6 +1214,9 @@ async function executeRun(
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
+		// Before the child does any work: a session it cannot reopen fails it typed, as a failed run, not a lost worker.
+		if (childPreflight !== undefined)
+			await assertWaitingStageSessionsExist(childPreflight.waiting, runId, opts, childPreflight.rootRunId);
 		const worktreeBinding = def.inputBindings?.worktree;
 		await prepareRunGit(
 			ownController.signal,

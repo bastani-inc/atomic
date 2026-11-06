@@ -113,6 +113,38 @@ describe("what a waiting stage's errors say (#4309)", () => {
 		);
 	});
 
+	test("a child workflow's missing sessions tell the user to resume its root run, from either kind of storage (#4440)", () => {
+		const error = new StageRehydrationError(
+			{
+				runId: "child-1",
+				rootRunId: "root-1",
+				sessionIds: ["s-1"],
+				storage: "child workflow session store: pool-journal",
+			},
+			{ code: "session-not-found" },
+		);
+		assert.equal(
+			error.message,
+			"Cannot rehydrate the waiting stages of run child-1: session s-1 is not in the session store (session-not-found). " +
+				"Resume root run root-1 with the storage it was started with (child workflow session store: pool-journal). " +
+				"A child workflow reopens its stages from the root run's session storage (--storage, ATOMIC_SESSIONS_STORAGE or ATOMIC_STORAGE, the sessions.storage setting, or the SDK sessionStore option); " +
+				"a worker pool's child reopens them from the pool's session store, which the root run's journal selects (--storage, ATOMIC_WORKFLOWS_JOURNAL or ATOMIC_STORAGE, the workflows.journal setting, or the SDK journal option), on the machine that ran a local pool. " +
+				'Run "atomic storage status" to see which storage this process selects.',
+		);
+		assert.ok(error.message.endsWith(error.hint));
+		const rebuilt = deserializeStageWaitError(JSON.parse(JSON.stringify(error.toJSON())));
+		assert.ok(rebuilt instanceof StageRehydrationError);
+		assert.deepEqual(rebuilt.fields, error.fields);
+		assert.equal(rebuilt.hint, error.hint);
+		assert.equal(
+			new StageRehydrationError(
+				{ runId: "child-1", rootRunId: "root-1" },
+				{ code: "session-not-found" },
+			).hint.startsWith("Resume root run root-1 with the storage it was started with. A child workflow"),
+			true,
+		);
+	});
+
 	test("a refused release and a refused setting name the stage or the run they concern (#4309)", () => {
 		assert.ok(
 			new StageReleaseError("stage-busy", STAGE).message.startsWith(
