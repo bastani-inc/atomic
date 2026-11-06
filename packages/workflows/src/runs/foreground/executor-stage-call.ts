@@ -6,6 +6,7 @@ import type {
 	WorkflowModelUsage,
 	WorkflowSerializableValue,
 } from "../../shared/types.js";
+import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { closeBlockedStageForGoodWhenRunEnds } from "./blocked-stage-close.js";
 import { raceAbort, WORKFLOW_KILLED_ABORT_REASON } from "./executor-abort.js";
@@ -287,6 +288,8 @@ export function createTrackedStageCaller(input: {
 		// A recoverable failure blocks the stage resumably (the run stays `active_blocked`): its subagent children stay
 		// resumable with it, rather than ending as for a stage that closed for good.
 		let blockedResumably = false;
+		// This call's own classified failure, published for the run when a peer call still runs (#4450).
+		let stageFailure: WorkflowFailure | undefined;
 		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
 		if (trackStageLifecycle) lifecycleUsers += 1;
 		try {
@@ -543,6 +546,7 @@ export function createTrackedStageCaller(input: {
 				}
 			} else if (trackStageLifecycle && !runtime.signal.aborted && !runtime.state.skippedForParallelFailFast) {
 				const failure = runtime.classifyExecutorFailure(err);
+				stageFailure = failure;
 				blockedResumably = failure.disposition === "active_blocked" && failure.recoverability === "recoverable";
 				applyTerminalStageState = () => applyFailureToStage(runtime.stageSnapshot, failure);
 			}
@@ -558,8 +562,10 @@ export function createTrackedStageCaller(input: {
 					applyTerminalStageState = overlapFailure.apply;
 					blockedResumably = overlapFailure.blockedResumably;
 				}
-			} else if (applyTerminalStageState !== undefined && !terminalStateIsSuccess) {
-				overlapFailure ??= { apply: applyTerminalStageState, blockedResumably };
+			} else if (applyTerminalStageState !== undefined && !terminalStateIsSuccess && overlapFailure === undefined) {
+				overlapFailure = { apply: applyTerminalStageState, blockedResumably };
+				// Before this call rejects: a run that fails with its rejection names the stage it will fail (#4450).
+				if (stageFailure !== undefined) runtime.scheduler.publishPendingStageFailure(runtime.stageId, stageFailure);
 			}
 			// Finalization, handle release, and limiter release are each independent.
 			// If finalizeStageSnapshot() throws, the limiter must still be released
@@ -624,6 +630,7 @@ export function createTrackedStageCaller(input: {
 				} catch (err) {
 					finalizationError ??= { thrown: true, error: err };
 				}
+				runtime.scheduler.settlePendingStageFailure(runtime.stageId);
 				try {
 					if (
 						runtime.state.stageClosedByWorkflowExit ||

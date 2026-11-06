@@ -1,6 +1,8 @@
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { Store } from "../../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
+import type { WorkflowFailure } from "../../shared/workflow-failures.js";
+import { applyFailureToStage } from "./executor-lifecycle.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 
 interface ReleaseBarrier {
@@ -35,6 +37,18 @@ export interface StageScheduler {
 	markCascadePaused(stageId: string, ownerStageId: string): void;
 	releaseCascadePauseOwner(stageId: string, ownerStageId: string): boolean;
 	hasCascadePauseOwners(stageId: string): boolean;
+	/**
+	 * Publish the failure a still-running stage will end with: one of its overlapping calls failed while a peer still
+	 * runs, and the stage records the first such failure once its last call ends (#4450). The first one published for
+	 * a stage wins.
+	 */
+	publishPendingStageFailure(stageId: string, failure: WorkflowFailure): void;
+	/** The stage ended: drop its pending failure and release whoever waits for it to settle. */
+	settlePendingStageFailure(stageId: string): void;
+	/** The run's stages, each one with a pending failure shown as it will end. */
+	stagesAsTheyWillEnd(): readonly StageSnapshot[];
+	/** Settles once no stage has a pending failure left. */
+	pendingStageFailuresSettled(): Promise<void>;
 }
 
 export function createStageScheduler(input: {
@@ -46,6 +60,10 @@ export function createStageScheduler(input: {
 }): StageScheduler {
 	const releaseBarriers = new Map<string, ReleaseBarrier>();
 	const cascadePauseOwners = new Map<string, Set<string>>();
+	const pendingStageFailures = new Map<
+		string,
+		{ readonly failure: WorkflowFailure; readonly settled: PromiseWithResolvers<void> }
+	>();
 	let runBarrier: ReleaseBarrier | undefined;
 
 	const makeReleaseBarrier = (): ReleaseBarrier => {
@@ -193,6 +211,15 @@ export function createStageScheduler(input: {
 		}
 	};
 
+	const stagesAsTheyWillEnd = (): readonly StageSnapshot[] =>
+		input.runSnapshot.stages.map((stage) => {
+			const pending = pendingStageFailures.get(stage.id);
+			if (pending === undefined || isTerminalStage(stage)) return stage;
+			const ending: StageSnapshot = { ...stage };
+			applyFailureToStage(ending, pending.failure);
+			return ending;
+		});
+
 	return {
 		tracker: input.tracker,
 		isRunPaused: () => runBarrier !== undefined,
@@ -222,5 +249,20 @@ export function createStageScheduler(input: {
 		markCascadePaused,
 		releaseCascadePauseOwner,
 		hasCascadePauseOwners: (stageId) => cascadePauseOwners.has(stageId),
+		publishPendingStageFailure: (stageId, failure) => {
+			if (!pendingStageFailures.has(stageId))
+				pendingStageFailures.set(stageId, { failure, settled: Promise.withResolvers<void>() });
+		},
+		settlePendingStageFailure: (stageId) => {
+			const pending = pendingStageFailures.get(stageId);
+			if (pending === undefined) return;
+			pendingStageFailures.delete(stageId);
+			pending.settled.resolve();
+		},
+		stagesAsTheyWillEnd,
+		pendingStageFailuresSettled: async () => {
+			while (pendingStageFailures.size > 0)
+				await Promise.all([...pendingStageFailures.values()].map((pending) => pending.settled.promise));
+		},
 	};
 }

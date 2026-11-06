@@ -3,12 +3,17 @@ import { afterEach, test, vi } from "vitest";
 import type { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import type { StageSessionCheckpointOptions } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition, WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
+import { WorkflowInstanceOwnershipError } from "../../packages/workflows/src/shared/workflow-instance-ownership-error.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createStore, mockSession, run, workflow } from "./executor-shared.js";
 
@@ -289,6 +294,180 @@ test("a message that fails recoverably blocks the stage resumably, even when a p
 	assert.equal(afterBoth?.ends, 1);
 	assert.equal(afterBoth?.closed, false, "a resumably blocked stage keeps its generation open");
 	assert.equal(stage.moment().closed, true, "the generation closes for good once the run ends");
+});
+
+/**
+ * Stage "a" gets two overlapping messages, and the workflow awaits both with `Promise.all`: the first fails with
+ * `failure` while the second waits for its gate, so the workflow rejects while the stage still runs. Returns once the
+ * run recorded that failure. A resume that sends the stage a message again finds a third gate waiting for it.
+ */
+async function rejectWhilePeerRuns(failure: Error) {
+	const a = gatedStage([failure, undefined, undefined], { handOff: true });
+	const store = createStore();
+	const stage = observeStage(store, a);
+	let second: Promise<Outcome> | undefined;
+	const definition = stageWorkflow("overlap-failure-rejects-run", async (ctx) => {
+		const a0 = ctx.stage("a");
+		const firstCall = a0.sendUserMessage("first");
+		await a.entered[0]!.promise;
+		const secondCall = a0.sendUserMessage("second");
+		second ??= outcome(secondCall);
+		await a.entered[1]!.promise;
+		a.gates[0]!.resolve();
+		await Promise.all([firstCall, secondCall]);
+		return {};
+	});
+	const running = run(definition, {}, { store, adapters: a.adapters, config: CONFIG, onStageEnd: stage.onStageEnd });
+	await vi.waitFor(() => {
+		const recorded = store.runs()[0];
+		assert.ok(recorded?.blockedAt !== undefined || recorded?.endedAt !== undefined, "the run records its failure");
+	});
+	let reopened = false;
+	void a.entered[2]!.promise.then(() => {
+		reopened = true;
+	});
+	const jobs = createJobTracker();
+	return {
+		a,
+		store,
+		stage,
+		running,
+		runId: store.runs()[0]!.id,
+		whilePeerRan: structuredClone(store.runs()[0]),
+		second: () => second,
+		reopened: () => reopened,
+		jobs,
+		runtime: createExtensionRuntime({
+			store,
+			registry: createRegistry([definition]),
+			jobs,
+			adapters: a.adapters,
+			config: CONFIG,
+		}),
+	};
+}
+
+test("a run whose workflow rejects with an overlapping message's recoverable failure stays blocked on its stage (#4450)", async () => {
+	const limited = new Error("HTTP 429 rate limit exceeded");
+	const { a, stage, running, whilePeerRan, second } = await rejectWhilePeerRuns(limited);
+
+	assert.deepEqual(stage.moment(), RUNNING);
+	assert.equal(whilePeerRan?.failureDisposition, "active_blocked");
+	assert.equal(whilePeerRan?.resumable, true);
+	assert.equal(whilePeerRan?.failedStageId, stage.record()?.id);
+	a.gates[1]!.resolve();
+	const result = await running;
+	assert.equal(result.status, "running", result.error);
+	assert.deepEqual(await second(), { ok: true });
+	assert.deepEqual(
+		stage.ends.map((end) => [end.status, end.failureMessage, end.failureDisposition]),
+		[["failed", limited.message, "active_blocked"]],
+	);
+});
+
+test("a run whose workflow rejects with an overlapping message's terminal failure names the stage it fails (#4450)", async () => {
+	const boom = new Error("first message failed");
+	const { a, stage, running, whilePeerRan, second } = await rejectWhilePeerRuns(boom);
+
+	assert.deepEqual(stage.moment(), RUNNING);
+	assert.equal(whilePeerRan?.status, "failed");
+	assert.equal(whilePeerRan?.failureDisposition, "terminal_failed");
+	assert.equal(whilePeerRan?.failedStageId, stage.record()?.id);
+	a.gates[1]!.resolve();
+	assert.equal((await running).status, "failed");
+	assert.deepEqual(await second(), { ok: true });
+	assert.deepEqual(
+		stage.ends.map((end) => [end.status, end.failureMessage]),
+		[["failed", boom.message]],
+	);
+});
+
+test("a resume that arrives while the blocked stage's peer message still runs is refused until that stage ends (#4450)", async () => {
+	const { a, store, stage, running, runId, reopened, jobs, runtime } = await rejectWhilePeerRuns(
+		new Error("HTTP 429 rate limit exceeded"),
+	);
+
+	const early = await runtime.resumeFailedRun(runId);
+	assert.equal(early.ok, false);
+	assert.equal(early.ok ? undefined : early.reason, "not_resumable");
+	assert.equal(jobs.get(runId), undefined);
+	assert.equal(reopened(), false, "the stage is not sent the resume while its peer message runs");
+	assert.deepEqual(stage.moment(), RUNNING);
+
+	a.gates[1]!.resolve();
+	assert.equal((await running).status, "running");
+	const resumed = await runtime.resumeFailedRun(runId);
+	assert.equal(resumed.ok, true, resumed.ok ? undefined : resumed.message);
+	a.gates[2]!.resolve();
+	await jobs.get(runId)?.promise;
+	assert.equal(store.run(runId)?.status, "completed");
+	assert.deepEqual(
+		stage.ends.map((end) => [end.status, end.failureDisposition]),
+		[["failed", "active_blocked"]],
+		"the stage the first run blocked on ended once",
+	);
+});
+
+test("a quit while the blocked stage's peer message still runs leaves the stage to it: a resume is refused until it ends (#4450)", async () => {
+	const { a, store, stage, running, runId, reopened, jobs, runtime } = await rejectWhilePeerRuns(
+		new Error("HTTP 429 rate limit exceeded"),
+	);
+
+	const quit = await quitRun(runId, { store });
+	assert.equal(quit.ok, true);
+	await assert.rejects(runtime.resumeDurableWorkflow(runId), WorkflowInstanceOwnershipError);
+	assert.equal(reopened(), false, "the stage is not sent the resume while its peer message runs");
+	assert.equal(stage.ends.length, 0, "the stage has not ended while its peer message runs");
+
+	a.gates[1]!.resolve();
+	await running;
+	assert.deepEqual(
+		stage.ends.map((end) => [end.status, end.failureDisposition]),
+		[["failed", "active_blocked"]],
+	);
+	assert.equal(store.run(runId)?.resumable, true);
+	// The stage's end changed the run's journal since the refused resume read it, so the list is read again.
+	await runtime.prepareDurableResumable(runId);
+	const resumed = await runtime.resumeDurableWorkflow(runId);
+	assert.equal(resumed.ok, true, resumed.ok ? undefined : resumed.message);
+	a.gates[2]!.resolve();
+	await jobs.get(runId)?.promise;
+	assert.equal(store.run(runId)?.status, "completed");
+	assert.equal(stage.ends.length, 1, "the stage the quit run left ended once");
+});
+
+test("once the stage whose failed message a peer outlived ends, the run no longer waits for it (#4450)", async () => {
+	const limited = new Error("HTTP 429 rate limit exceeded");
+	const a = gatedStage([limited, undefined], { handOff: true });
+	const store = createStore();
+	const stage = observeStage(store, a);
+	let settled: readonly PromiseSettledResult<unknown>[] = [];
+	const result = await run(
+		stageWorkflow("overlap-failure-settles", async (ctx) => {
+			const a0 = ctx.stage("a");
+			const firstCall = a0.sendUserMessage("first");
+			await a.entered[0]!.promise;
+			const secondCall = a0.sendUserMessage("second");
+			await a.entered[1]!.promise;
+			a.gates[0]!.resolve();
+			await firstCall.catch(() => {});
+			a.gates[1]!.resolve();
+			settled = await Promise.allSettled([firstCall, secondCall]);
+			return {};
+		}),
+		{},
+		{ store, adapters: a.adapters, config: CONFIG, onStageEnd: stage.onStageEnd },
+	);
+
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(
+		settled.map((call) => call.status),
+		["rejected", "fulfilled"],
+	);
+	assert.deepEqual(
+		stage.ends.map((end) => [end.status, end.failureDisposition]),
+		[["failed", "active_blocked"]],
+	);
 });
 
 test("messages sent after an overlapping message blocked the stage resumably run as after the stage ended (#4450)", async () => {
