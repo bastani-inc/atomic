@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	FIXTURE_REMOVAL_MAX_ATTEMPTS,
 	FixtureRemovalError,
@@ -57,6 +57,10 @@ function recorder(failures: readonly unknown[]): Recorder {
 function exhaustedFailures(): NodeJS.ErrnoException[] {
 	return Array.from({ length: FIXTURE_REMOVAL_MAX_ATTEMPTS }, () => errno("EPERM"));
 }
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 test("a removal that succeeds at once neither pauses nor warns (#4483)", () => {
 	const run = recorder([]);
@@ -170,6 +174,20 @@ test("isFixtureRemovalError matches a FixtureRemovalError by name and code after
 	assert.equal(isFixtureRemovalError(errno("EPERM")), false);
 	assert.equal(isFixtureRemovalError(null), false);
 	assert.equal(isFixtureRemovalError("FixtureRemovalError"), false);
+	assert.equal(isFixtureRemovalError(undefined), false);
+});
+
+test("the default pause blocks the thread for the backoff delay instead of returning at once (#4483)", () => {
+	const wait = vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
+	const run = recorder([errno("EBUSY"), errno("EBUSY")]);
+	assert.equal(removeFixtureTree(TREE, { remove: run.options.remove, warn: run.options.warn }).attempts, 3);
+	assert.deepEqual(
+		wait.mock.calls.map(([array, index, value, timeout]) => [array.length, index, value, timeout]),
+		[
+			[1, 0, 0, 50],
+			[1, 0, 0, 100],
+		],
+	);
 });
 
 test("a real tree is removed with the default remover, and a missing tree counts as removed (#4483)", () => {

@@ -372,8 +372,8 @@ test("Windows installer initializes cleanup state before preflight and API resol
 		"$transactionCommitted = $false",
 		"$transactionMissingDirectories = New-Object System.Collections.ArrayList",
 		"$rollbackRetryLimit = 3",
-		"$tempCleanupRetryLimit = 5",
-		"$tempCleanupRetryDelayMilliseconds = 125",
+		"$tempCleanupRetryLimit = 9",
+		"$tempCleanupRetryDelayMilliseconds = 250",
 		"$primaryError = $null",
 		"$tempCleanupError = $null",
 	]) {
@@ -798,6 +798,21 @@ test("Windows installer removes its temporary download directory with bounded ve
 	}
 });
 
+test("Windows installer waits out a transient lock on its just-executed payload before failing temp cleanup (#4483)", () => {
+	const source = installerSource();
+	const retryLimit = Number(/^\$tempCleanupRetryLimit = (\d+)\r?$/mu.exec(source)?.[1]);
+	const retryDelayMilliseconds = Number(/^\$tempCleanupRetryDelayMilliseconds = (\d+)\r?$/mu.exec(source)?.[1]);
+	const pausesBeforeGivingUp = Array.from(
+		{ length: retryLimit - 1 },
+		(_, index) => retryDelayMilliseconds * (index + 1),
+	);
+	const totalBackoffMilliseconds = pausesBeforeGivingUp.reduce((total, pause) => total + pause, 0);
+	assert.ok(
+		totalBackoffMilliseconds >= 9_000,
+		`temp cleanup gives up after ${totalBackoffMilliseconds} ms of backoff; 1.25 s did not outlast a just-executed payload's lock`,
+	);
+});
+
 interface PowerShellEngine {
 	executable: string;
 	major: number;
@@ -853,6 +868,7 @@ const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
 const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
 const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
 const TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS = 180_000;
+const BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS = 180_000;
 
 if (powershellEngines.length === 0) {
 	test.skip("available PowerShell engines isolate literal IEX failure state", () => {});
@@ -3984,7 +4000,9 @@ function runPowerShellFixture(
 						? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
 						: scenario === "temp-cleanup"
 							? TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
-							: POWERSHELL_FIXTURE_TIMEOUT_MS;
+							: scenario === "backup-cleanup"
+								? BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
+								: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
 				powershellExecutable,
@@ -4100,9 +4118,13 @@ powershellTest(
 	},
 );
 
-powershellTest("PowerShell 5.1 fixture retries a briefly locked version backup and leaves no residue", () => {
-	runPowerShellFixture("backup-cleanup");
-});
+powershellTest(
+	"PowerShell 5.1 fixture retries a briefly locked version backup and leaves no residue",
+	() => {
+		runPowerShellFixture("backup-cleanup");
+	},
+	BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);
 
 powershellTest(
 	"PowerShell 5.1 fixture removes every temporary download directory against real open handles",
