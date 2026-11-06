@@ -740,6 +740,7 @@ export function registerRestoringReservationStoreConformance(
 		group: "team",
 		dormant: false,
 		wake: false,
+		wakeGeneration: 0,
 		fencingToken,
 		...overrides,
 	});
@@ -855,6 +856,7 @@ export function registerRestoringReservationStoreConformance(
 			...expected(takeover.lease.fencingToken),
 			ownerSessionId: "restarted-supervisor",
 			ownerBrokerId: "broker-c",
+			wakeGeneration: 1,
 			targets: ["worker", "atomic-session-7", "intercom-old-7", "extra-alias"],
 		});
 		assert.deepEqual(await c.renew(takeover.lease), { status: "renewed" });
@@ -975,6 +977,7 @@ export function registerRestoringReservationStoreConformance(
 				expectStatus(await a.read(RESERVATION_KEY), "active").reservation,
 				expected(first.lease.fencingToken, {
 					wake: false,
+					wakeGeneration: 1,
 					targets: ["worker", "fresh-alias"],
 				}),
 			);

@@ -30,6 +30,7 @@ type ReservationRow = SqliteRow & {
 	reservation_group: string;
 	dormant: number;
 	wake: number;
+	wake_generation: number;
 	fencing_token: number;
 	reservation_order: number;
 	gone_json: string | null;
@@ -54,6 +55,7 @@ function reservationOf(row: ReservationRow): RestoringReservation {
 		group: row.reservation_group,
 		dormant: row.dormant === 1,
 		wake: row.wake === 1,
+		wakeGeneration: row.wake_generation,
 		fencingToken: row.fencing_token,
 		...(row.gone_json === null ? {} : { gone: JSON.parse(row.gone_json) as string }),
 	};
@@ -98,6 +100,7 @@ export async function openSqlRestoringReservationStore({
 	const validPrefix = validateStoragePrefix(prefix);
 	const table = `${validPrefix}intercom_restoring_reservations`;
 	const counters = `${validPrefix}intercom_restoring_reservation_counters`;
+	const wakeClaims = `${validPrefix}intercom_restoring_wake_claims`;
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -119,11 +122,17 @@ export async function openSqlRestoringReservationStore({
 			CREATE INDEX IF NOT EXISTS ${table}_active ON ${table}(end_json, "order");
 			CREATE TABLE IF NOT EXISTS ${counters}(name TEXT PRIMARY KEY, value INTEGER NOT NULL);
 			INSERT INTO ${counters}(name, value) VALUES ('order', 0), ('token', 0) ON CONFLICT(name) DO NOTHING;
+			CREATE TABLE IF NOT EXISTS ${wakeClaims}(
+				reservation_key TEXT NOT NULL,
+				fencing_token INTEGER NOT NULL,
+				message_id TEXT NOT NULL,
+				PRIMARY KEY(reservation_key, fencing_token, message_id)
+			);
 		`),
 	);
 	// #4326: added later; a table from an older broker gets the columns, and an older broker ignores them.
 	const known = await database.all<{ name: string }>(`PRAGMA table_info(${table})`);
-	for (const column of ["wake", "wake_requested"]) {
+	for (const column of ["wake", "wake_requested", "wake_generation"]) {
 		if (known.some((existing) => existing.name === column)) continue;
 		try {
 			await database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
@@ -139,7 +148,7 @@ export async function openSqlRestoringReservationStore({
 		`CREATE INDEX IF NOT EXISTS ${table}_wake_requested ON ${table}(owner_broker_id) WHERE wake_requested = 1`,
 	);
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
-		targets_json, "group" AS reservation_group, dormant, wake, fencing_token, "order" AS reservation_order,
+		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,
 		MAX(0, ${STORE_NOW} - renewed_at) AS age_ms`;
 	const readRow = (executor: SqliteExecutor, reservationKey: string) =>
@@ -201,6 +210,12 @@ export async function openSqlRestoringReservationStore({
 					return { status: "not-owner", ownerSessionId: existing.owner_session_id };
 				}
 				const superseded: string[] = [];
+				// Parking starts a new wake epoch; moving brokers replays any wake a broker crash lost.
+				const newWakeGeneration = existing !== undefined &&
+					((existing.wake === 1 && request.wake !== true) || existing.owner_broker_id !== request.ownerBrokerId);
+				if (existing === undefined || existing.end_json !== null || newWakeGeneration) {
+					await tx.run(`DELETE FROM ${wakeClaims} WHERE reservation_key = ?`, request.reservationKey);
+				}
 				let fencingToken: number;
 				if (existing !== undefined && existing.end_json === null) {
 					fencingToken =
@@ -209,12 +224,15 @@ export async function openSqlRestoringReservationStore({
 							: await next(tx, "token");
 					await tx.run(
 						`UPDATE ${table} SET owner_session_id = ?, owner_broker_id = ?, "group" = ?, dormant = ?, wake = ?,
+						 wake_generation = ?, wake_requested = CASE WHEN ? THEN 0 ELSE wake_requested END,
 						 fencing_token = ?, targets_json = ?, renewed_at = ${STORE_NOW} WHERE reservation_key = ?`,
 						request.ownerSessionId,
 						request.ownerBrokerId,
 						request.group,
 						request.dormant ? 1 : 0,
 						request.wake ? 1 : 0,
+						newWakeGeneration ? existing.wake_generation + 1 : existing.wake_generation,
+						newWakeGeneration ? 1 : 0,
 						fencingToken,
 						JSON.stringify(
 							request.replaceAliases === true
@@ -277,14 +295,29 @@ export async function openSqlRestoringReservationStore({
 			if (found === undefined) return { status: "none" };
 			return { status: found.gone_json === null ? "reserved" : "gone", reservation: reservationOf(found) };
 		},
-		async requestWake(reservationKey): Promise<RestoringReservationRequestWakeResult> {
+		async requestWake(reservationKey, claim): Promise<RestoringReservationRequestWakeResult> {
 			if (reservationKey.length === 0) return invalid("empty-reservation-key");
-			const { changes } = await database.run(
-				`UPDATE ${table} SET wake_requested = 1
-				 WHERE reservation_key = ? AND end_json IS NULL AND gone IS NULL AND wake = 1`,
-				reservationKey,
-			);
-			return { status: changes > 0 ? "requested" : "not-wakeable" };
+			return database.transaction(async (tx) => {
+				if (claim !== undefined) {
+					const { changes } = await tx.run(
+						`INSERT OR IGNORE INTO ${wakeClaims}(reservation_key, fencing_token, message_id)
+						 SELECT reservation_key, fencing_token, ? FROM ${table}
+						 WHERE reservation_key = ? AND fencing_token = ? AND wake_generation = ?
+						 AND end_json IS NULL AND gone IS NULL AND wake = 1`,
+						claim.messageId,
+						reservationKey,
+						claim.fencingToken,
+						claim.wakeGeneration,
+					);
+					if (changes === 0) return { status: "not-wakeable" };
+				}
+				const { changes } = await tx.run(
+					`UPDATE ${table} SET wake_requested = 1
+					 WHERE reservation_key = ? AND end_json IS NULL AND gone IS NULL AND wake = 1`,
+					reservationKey,
+				);
+				return { status: changes > 0 ? "requested" : "not-wakeable" };
+			});
 		},
 		async takeWakeRequests(ownerBrokerId): Promise<RestoringReservationTakeWakeResult> {
 			if (ownerBrokerId.length === 0) return invalid("empty-broker-id");
@@ -382,11 +415,14 @@ export async function openSqlRestoringReservationStore({
 			return { status: "active", reservation: reservationOf(row), ageMs: row.age_ms };
 		},
 		async prune(olderThanMs): Promise<number> {
-			const { changes } = await database.run(
-				`DELETE FROM ${table} WHERE ${STORE_NOW} - COALESCE(ended_at, renewed_at) > ?`,
-				olderThanMs,
-			);
-			return changes;
+			return database.transaction(async (tx) => {
+				const { changes } = await tx.run(
+					`DELETE FROM ${table} WHERE ${STORE_NOW} - COALESCE(ended_at, renewed_at) > ?`,
+					olderThanMs,
+				);
+				await tx.run(`DELETE FROM ${wakeClaims} WHERE reservation_key NOT IN (SELECT reservation_key FROM ${table})`);
+				return changes;
+			});
 		},
 	};
 }

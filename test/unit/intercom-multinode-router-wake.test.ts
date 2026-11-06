@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type net from "node:net";
+import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
 	MultiNodeRouter,
@@ -32,6 +34,14 @@ import { SupervisorChannelCache } from "../../packages/intercom/broker/superviso
 import type { WakeUpBus, WakeUpHint } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
+import {
+	handleReleasedChildWakes,
+	subagentWakeKey,
+} from "../../packages/subagents/src/runs/foreground/released-children.js";
+import {
+	SUBAGENT_CHILD_RECORD_TYPE,
+	SUBAGENT_CHILD_RELEASED_STATUS,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
 	openMemoryHeldSendFixture,
 	openMemoryKnownSessionFixture,
@@ -205,10 +215,10 @@ async function startNode(
 		},
 		reservations: {
 			...inner.reservations,
-			requestWake: async (key) => {
+			requestWake: async (key, claim) => {
 				spied.requestWakeCalls.push(key);
 				if (options.requestWakeStatus !== undefined) return { status: options.requestWakeStatus };
-				return inner.reservations.requestWake(key);
+				return inner.reservations.requestWake(key, claim);
 			},
 			takeWakeRequests: async (brokerId) => {
 				spied.takeWakeCalls.push(brokerId);
@@ -1431,5 +1441,105 @@ describe("released child sends queued across faults (#4401)", () => {
 		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
 		await flush();
 		assert.equal(node.spied.heldListCalls, 3 * children.length, "the next poll checks each reservation again");
+	});
+
+	test("overlapping owner and sender checks wake one held send once, and a later send after re-release wakes again (#4488)", async () => {
+		const heldWrite = closedGate();
+		const ownerListing = closedGate();
+		const senderRead = closedGate();
+		const shared = await cluster();
+		const ownerNode = await startNode(shared, { heldListGate: ownerListing.gate });
+		const senderNode = await startNode(shared, { holdGate: heldWrite.gate });
+		const owner = session("owner");
+		const sender = session("sender");
+		ownerNode.sessions.set(owner.info.id, owner);
+		senderNode.sessions.set(sender.info.id, sender);
+		const manager = SessionManager.inMemory("/work");
+		owner.info.id = manager.getSessionId();
+		ownerNode.sessions.clear();
+		ownerNode.sessions.set(owner.info.id, owner);
+		await manager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			version: 1,
+			childId: "run:0",
+			runId: "run",
+			index: 0,
+			agent: "worker",
+			cwd: "/work",
+			state: "terminal",
+			terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+			owner: { kind: "session", sessionId: owner.info.id },
+			intercomTarget: "child",
+		});
+		const dispatcher = new AgentWakeDispatcher();
+		const restoring = closedGate();
+		let restores = 0;
+		const stop = handleReleasedChildWakes(
+			{ sessionManager: manager } as unknown as ExtensionContext,
+			{
+				wake: async () => {
+					restores++;
+					await restoring.gate;
+				},
+				hold: async () => {},
+			},
+			dispatcher,
+		);
+		cleanups.push(async () => {
+			restoring.open();
+			stop();
+		});
+		const deliveries: Promise<void>[] = [];
+		const frames = framesOf(owner);
+		const push = frames.push.bind(frames);
+		vi.spyOn(frames, "push").mockImplementation((...notices) => {
+			for (const notice of notices)
+				if (notice.type === "restoring_recipient_wake") {
+					deliveries.push(
+						dispatcher.deliver(subagentWakeKey(owner.info.id, "run:0"), {
+							id: `intercom:${randomUUID()}`,
+							kind: "intercom",
+						}),
+					);
+				}
+			return push(...notices);
+		});
+		const key = releasedReservationKey("child");
+		reserve(ownerNode, key, owner, false);
+		await flush();
+		const first = remoteSend(sender, "child", true);
+		senderNode.router.routeSend(first.request);
+		await flush();
+		reserve(ownerNode, key, owner, true);
+		await flush();
+		const read = senderNode.state.reservations.read;
+		vi.spyOn(senderNode.state.reservations, "read").mockImplementationOnce(async (reservationKey) => {
+			const answer = await read(reservationKey);
+			assert.equal(answer.status === "active" && answer.reservation.wake, true);
+			await senderRead.gate;
+			return answer;
+		});
+		heldWrite.open();
+		await flush();
+		ownerListing.open();
+		await flush();
+		assert.equal(wakeFramesOf(owner).length, 1, "owner found the held send first");
+		senderRead.open();
+		await flush();
+		assert.equal(wakeFramesOf(owner).length, 1, "the sender's delayed answer must not restore it twice");
+		assert.equal(restores, 1, "only one restore starts while its run is pending");
+		restoring.open();
+		await Promise.all(deliveries);
+		assert.equal(restores, 1, "no duplicate restore runs after the first re-releases");
+
+		await senderNode.state.heldSends.drop(first.id);
+		reserve(ownerNode, key, owner, false);
+		await flush();
+		reserve(ownerNode, key, owner, true);
+		await flush();
+		senderNode.router.routeSend(remoteSend(sender, "child", true).request);
+		await flush();
+		assert.equal(wakeFramesOf(owner).length, 2, "a new send after re-release must still wake");
+		await Promise.all(deliveries);
+		assert.equal(restores, 2, "the later send restores the re-released child");
 	});
 });

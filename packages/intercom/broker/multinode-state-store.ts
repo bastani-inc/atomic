@@ -324,6 +324,8 @@ export interface RestoringReservation {
 	readonly group: string;
 	readonly dormant: boolean;
 	readonly wake: boolean;
+	/** Increases when this reservation is parked again or moves to another broker. */
+	readonly wakeGeneration: number;
 	readonly fencingToken: number;
 	/** Set once the owner reports the child gone; verbatim. */
 	readonly gone?: string;
@@ -445,9 +447,13 @@ export interface RestoringReservationStore {
 	): Promise<RestoringReservationReleaseResult>;
 	/**
 	 * Ask the broker that owns this active, non-gone `wake` reservation to wake its child: the request stays until
-	 * that broker takes it. Asking again before then is the same single request.
+	 * that broker takes it. Asking again before then is the same single request. With a claim, the same send and
+	 * fencing token cannot request another wake in that generation even after take; stale epochs cannot wake a later release.
 	 */
-	requestWake(reservationKey: string): Promise<RestoringReservationRequestWakeResult>;
+	requestWake(
+		reservationKey: string,
+		claim?: { readonly fencingToken: number; readonly wakeGeneration: number; readonly messageId: string },
+	): Promise<RestoringReservationRequestWakeResult>;
 	/** Atomically remove and return the wake requests of the active reservations owned by this broker, once each. */
 	takeWakeRequests(ownerBrokerId: string): Promise<RestoringReservationTakeWakeResult>;
 	/**

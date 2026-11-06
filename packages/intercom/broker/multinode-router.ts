@@ -765,8 +765,11 @@ export class MultiNodeRouter {
 	private async wakeWaitingChild(reservationKey: string): Promise<void> {
 		const mirror = this.mirrored.get(reservationKey);
 		if (mirror?.wake !== true || mirror.woken === true) return;
-		if (!(await this.sendsWaitFor(reservationKey, mirror.aliases, mirror.group)) || mirror.woken === true) return;
-		await this.requestWake(reservationKey, this.brokerId);
+		const reservation = await this.activeReservation(reservationKey);
+		if (reservation?.wake !== true) return;
+		const messageId = await this.sendsWaitFor(reservationKey, mirror.aliases, mirror.group);
+		if (messageId === undefined || mirror.woken === true) return;
+		await this.requestWake(reservation, messageId);
 	}
 
 	/**
@@ -776,9 +779,9 @@ export class MultiNodeRouter {
 	 * owner was away, still finds the sends queued for it: under the delivery identities a session registered with that
 	 * id in the reserved group has (#4401).
 	 */
-	private async sendsWaitFor(reservationKey: string, aliases: readonly string[], group: string): Promise<boolean> {
+	private async sendsWaitFor(reservationKey: string, aliases: readonly string[], group: string): Promise<string | undefined> {
 		const held = await this.state.heldSends.list(reservationKey);
-		if (held.status === "listed" && held.sends.length > 0) return true;
+		if (held.status === "listed" && held.sends.length > 0) return held.sends[0].request.message.id;
 		for (const alias of aliases) {
 			const known = await this.state.knownSessions.lookup(alias, KNOWN_SESSION_RETENTION_MS);
 			if (known.status !== "found") continue;
@@ -793,15 +796,16 @@ export class MultiNodeRouter {
 				const presence = await this.state.leases.read({ kind: "presence", targetIdentity });
 				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
 				const queued = await this.state.outbox.listUndelivered(targetIdentity);
-				if (queued.status === "listed" && queued.rows.length > 0) return true;
+				if (queued.status === "listed" && queued.rows.length > 0) return queued.rows[0].messageId;
 			}
 		}
-		return false;
+		return undefined;
 	}
 
 	/** Ask the broker that owns a released child's reservation to wake it; this broker when it is the owner. */
-	private async requestWake(reservationKey: string, ownerBrokerId: string): Promise<void> {
-		const requested = await this.state.reservations.requestWake(reservationKey);
+	private async requestWake(reservation: RestoringReservation, messageId: string): Promise<void> {
+		const { reservationKey, ownerBrokerId, fencingToken, wakeGeneration } = reservation;
+		const requested = await this.state.reservations.requestWake(reservationKey, { fencingToken, wakeGeneration, messageId });
 		if (requested.status !== "requested") return;
 		if (ownerBrokerId === this.brokerId) await this.deliverWakeRequests();
 		else await this.bus.publish({ brokerId: ownerBrokerId, reason: "outcome", version: 0 });
@@ -1527,7 +1531,9 @@ export class MultiNodeRouter {
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			timeoutMs: RESTORING_RECIPIENT_HOLD_MS,
 		});
-		if (current?.wake === true && count === 0) await this.requestWake(reservation.reservationKey, current.ownerBrokerId);
+		if (current?.wake === true && count === 0) {
+			await this.requestWake(current, message.id);
+		}
 		return true;
 	}
 
