@@ -34,6 +34,7 @@ import {
 	type OutboxRow,
 	type RecipientPresenceSubject,
 	type ReleasedAskerReplyFrame,
+	type ReleasedAskRecord,
 	type RestoringReservationLease,
 	reservationKeyFor,
 } from "./multinode-state-store.js";
@@ -43,10 +44,12 @@ import {
 	decideReleasedAskerReply,
 	isReleasedReplyCandidate,
 	keepReleasedAsks,
+	ownerOfReleasedReplyRow,
 	type ReleasedRegistration,
 	type ReleasedReplyDelivery,
 	type ReleasedTarget,
 	rebindParkedAsks,
+	releasedAskAnswered,
 	releasedReplyAckOutcome,
 	releasedReplyHandoffRefusal,
 	settleAsksToDeparted,
@@ -940,8 +943,8 @@ export class MultiNodeRouter {
 	}
 
 	/** #4386: a reply to a released asker's question goes to the asker's owner, once; true when it was one. */
-	private async routeReleasedReply(request: RemoteSendRequest): Promise<boolean> {
-		const decision = await decideReleasedAskerReply(this.state, request);
+	private async routeReleasedReply(request: RemoteSendRequest, answered?: ReleasedAskRecord): Promise<boolean> {
+		const decision = await decideReleasedAskerReply(this.state, request, answered);
 		if (decision === undefined) return false;
 		switch (decision.kind) {
 			case "refused":
@@ -955,16 +958,33 @@ export class MultiNodeRouter {
 
 	/**
 	 * #4386: a released asker that woke on this broker, under the id it asked with, resolves here, but its question to
-	 * this reply's sender is kept only in the shared state; a reply this broker's own ask routes do not answer goes to
-	 * its owner as on any other broker.
+	 * this reply's sender is kept only in the shared state. The question, for a reply to it that this broker's own ask
+	 * routes do not answer: the reply goes to the asker's owner as on any other broker.
 	 */
-	private async routeMovedReleasedReply(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
-		if (!isReleasedReplyCandidate(request)) return false;
+	private async movedReleasedAsk(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+	): Promise<ReleasedAskRecord | undefined> {
+		if (!isReleasedReplyCandidate(request)) return undefined;
 		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, request.message.replyTo)) {
-			return false;
+			return undefined;
 		}
 		await Promise.all([...this.settling]);
-		return this.routeReleasedReply(request);
+		return releasedAskAnswered(this.state, request);
+	}
+
+	/** Where a send answered from its row went: a released asker's owner for its reply, otherwise the local session. */
+	private async rowRecipient(row: OutboxRow, target: BrokerConnectedSession): Promise<RemoteTarget> {
+		if (row.frame.type === "released_child_reply") {
+			return { ...(await ownerOfReleasedReplyRow(this.state, row)), groups: new Set(), gates: {} };
+		}
+		return {
+			identity: deliveryTargetIdentity(target),
+			sessionId: target.info.id,
+			groups: sessionGroups(target.info),
+			gates: target.info,
+			hostBrokerId: this.brokerId,
+		};
 	}
 
 	/** Enqueue the owner's frame; a same-id retry is answered from the row it already has, exactly as any send. */
@@ -1037,38 +1057,38 @@ export class MultiNodeRouter {
 	 * A send that resolved to a session on this broker: a same-id retry of a send that already went through the shared
 	 * outbox (its recipient has since moved here) is answered from that row, never delivered again; a reply to a
 	 * question that a released asker, since woken here, asked through another broker goes to its owner; any other send
-	 * takes the local path. A lookup the shared database does not answer within `LOCAL_RETRY_LOOKUP_BOUND_MS` takes the
-	 * local path too, and its late answer is ignored: the send has been answered once already.
+	 * takes the local path. Lookups the shared database does not answer within `LOCAL_RETRY_LOOKUP_BOUND_MS` take the
+	 * local path too, and their late answers are ignored: the send has been answered once already.
 	 */
 	private async answerLocalRetry(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
 		const lookup = this.state.outbox.read(request.message.id);
+		const released = this.movedReleasedAsk(request, target).catch((error: Error) => {
+			this.report(error);
+			return undefined;
+		});
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		const expired = new Promise<"expired">((resolve) => {
 			bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
 			bound.unref?.();
 		});
-		const existing = await Promise.race([lookup, expired]).finally(() => clearTimeout(bound));
-		if (existing === "expired") {
-			lookup.catch((error: Error) => this.report(error));
+		try {
+			const existing = await Promise.race([lookup, expired]);
+			if (existing === "expired") {
+				lookup.catch((error: Error) => this.report(error));
+				request.notFound();
+				return;
+			}
+			if (existing.status === "found") {
+				const digest = crossNodeDigest(request.signature);
+				await this.answerExistingRow(request, await this.rowRecipient(existing.row, target), digest, existing.row);
+				return;
+			}
+			const moved = await Promise.race([released, expired]);
+			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
 			request.notFound();
-			return;
+		} finally {
+			clearTimeout(bound);
 		}
-		if (existing.status !== "found") {
-			if (!(await this.routeMovedReleasedReply(request, target))) request.notFound();
-			return;
-		}
-		await this.answerExistingRow(
-			request,
-			{
-				identity: deliveryTargetIdentity(target),
-				sessionId: target.info.id,
-				groups: sessionGroups(target.info),
-				gates: target.info,
-				hostBrokerId: this.brokerId,
-			},
-			crossNodeDigest(request.signature),
-			existing.row,
-		);
 	}
 
 	/**

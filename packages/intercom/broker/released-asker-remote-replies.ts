@@ -5,6 +5,7 @@ import {
 	type IntercomBrokerStateStore,
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
+	type OutboxRow,
 	type RecipientPresenceSubject,
 	type ReboundPendingAsk,
 	type ReleasedAsk,
@@ -90,7 +91,7 @@ function refusalFor(ask: ReleasedAskRecord, messageId: string): ReleasedReplyDec
 
 /** The first live presence that matches, with the broker hosting it. */
 async function liveSession(
-	state: ReleasedReplyState,
+	state: Pick<ReleasedReplyState, "leases">,
 	matches: (subject: RecipientPresenceSubject) => boolean,
 ): Promise<ReleasedReplyOwner | undefined> {
 	for (const lease of await state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)) {
@@ -132,11 +133,32 @@ async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promis
 }
 
 /** A reply already sent, retried, goes where its row went, whoever holds the asker now. */
+export async function ownerOfReleasedReplyRow(
+	state: Pick<ReleasedReplyState, "leases">,
+	row: Pick<OutboxRow, "targetIdentity">,
+): Promise<ReleasedReplyOwner> {
+	const identity = row.targetIdentity;
+	return (await liveSession(state, (subject) => subject.targetIdentity === identity)) ?? { identity, sessionId: "" };
+}
+
 async function ownerOfRow(state: ReleasedReplyState, messageId: string): Promise<ReleasedReplyOwner | undefined> {
 	const read = await state.outbox.read(messageId);
-	if (read.status !== "found") return undefined;
-	const identity = read.row.targetIdentity;
-	return (await liveSession(state, (subject) => subject.targetIdentity === identity)) ?? { identity, sessionId: "" };
+	return read.status === "found" ? ownerOfReleasedReplyRow(state, read.row) : undefined;
+}
+
+/** The released asker's question kept in the shared state that this reply answers, addressed to that asker, if any. */
+export async function releasedAskAnswered(
+	state: Pick<ReleasedReplyState, "releasedAsks">,
+	request: ReleasedReplyRequest,
+): Promise<ReleasedAskRecord | undefined> {
+	if (!isReleasedReplyCandidate(request)) return undefined;
+	const found = await state.releasedAsks.lookup({
+		questionId: request.message.replyTo,
+		replierSessionId: request.from.info.id,
+	});
+	return found.status === "found" && addressesReleasedAsker(found.ask, request.target, request.expectedRecipientId)
+		? found.ask
+		: undefined;
 }
 
 /** How another reply's hold on the ask stands: still in force, or abandoned and takeable after `staleAfterMs`. */
@@ -162,20 +184,18 @@ async function otherReplyHold(state: ReleasedReplyState, ask: ReleasedAskRecord,
  * Decide whether a reply answers a released asker's question, and claim the question for it. A reply already sent is
  * answered from its row and never claims again; a question another reply holds refuses this one with a typed error,
  * unless that reply's claim can no longer settle. Anything that is not such a reply is `undefined`: route it as any
- * other send.
+ * other send. `answered` is the question this reply was already found to answer (`releasedAskAnswered`).
  */
 export async function decideReleasedAskerReply(
 	state: ReleasedReplyState,
 	request: ReleasedReplyRequest,
+	answered?: ReleasedAskRecord,
 ): Promise<ReleasedReplyDecision | undefined> {
 	if (!isReleasedReplyCandidate(request)) return undefined;
+	const ask = answered ?? (await releasedAskAnswered(state, request));
+	if (ask === undefined) return undefined;
 	const replyTo = request.message.replyTo;
 	const key = { questionId: replyTo, replierSessionId: request.from.info.id };
-	const found = await state.releasedAsks.lookup(key);
-	if (found.status !== "found" || !addressesReleasedAsker(found.ask, request.target, request.expectedRecipientId)) {
-		return undefined;
-	}
-	const { ask } = found;
 	const messageId = request.message.id;
 	const frame: ReleasedAskerReplyFrame = {
 		type: "released_child_reply",

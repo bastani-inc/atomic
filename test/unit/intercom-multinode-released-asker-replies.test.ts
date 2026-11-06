@@ -6,7 +6,9 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const { MultiNodeRouter } = await import("../../packages/intercom/broker/multinode-router.js");
+const { LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter } = await import(
+	"../../packages/intercom/broker/multinode-router.js"
+);
 const { PendingQuestionIndex } = await import("../../packages/intercom/broker/pending-question-index.js");
 const { SupervisorChannelCache } = await import("../../packages/intercom/broker/supervisor-channel.js");
 const { releasedReservationKey } = await import("../../packages/intercom/broker/released-children.js");
@@ -391,8 +393,23 @@ describe("replies to released askers across nodes (#4386)", () => {
 		);
 	});
 
-	test("a reply reaches the owner of a released asker that woke on the replier's broker under the same id (#4386)", async () => {
-		const { a, b, owner, replier, children } = await releasedScene();
+	test("a reply reaches the owner of a released asker that woke on the replier's broker under the same id, and its retries are answered from its row (#4386)", async () => {
+		let lookup: "answers" | "stalls" | "fails" = "answers";
+		let lookups = 0;
+		const { a, b, owner, replier, children } = await releasedScene({
+			wrapB: (state) => ({
+				...state,
+				releasedAsks: {
+					...state.releasedAsks,
+					lookup: (key) => {
+						if (lookup === "stalls") return new Promise<never>(() => {});
+						if (lookup === "fails") return Promise.reject(new Error("released-ask lookup failed"));
+						lookups++;
+						return state.releasedAsks.lookup(key);
+					},
+				},
+			}),
+		});
 		const [{ child, questionId }] = children as [{ child: Session; questionId: string }];
 		const woken = reconnected(child);
 		b.sessions.set(woken.info.id, woken);
@@ -406,10 +423,51 @@ describe("replies to released askers across nodes (#4386)", () => {
 		b.router.routeSend({ ...sent.request, localTarget: woken });
 		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
 		assert.deepEqual(sent.notFound, [], "not delivered on the local path");
+		assert.equal(lookups, 1, "the question is looked up once");
 		const handoff = only(handoffsTo(owner), "handoffs");
 		assert.equal(handoff.message.id, sent.id);
 		a.router.releasedReplyAcknowledged(owner, sent.id, handoff.handoffId, true);
 		assert.equal((await settled(replier, sent.id)).type, "delivered");
+		for (const [attempt, retried] of [
+			[2, "stalls"],
+			[3, "fails"],
+		] as const) {
+			lookup = retried;
+			const retry = reply(replier, child.info.id, questionId, { id: sent.id, expectedRecipientId: child.info.id });
+			b.router.routeSend({ ...retry.request, localTarget: woken });
+			assert.equal((await settled(replier, sent.id, attempt)).type, "delivered", retried);
+			assert.deepEqual(retry.notFound, [], retried);
+		}
+		assert.equal(handoffsTo(owner).length, 1);
+	});
+
+	test("a reply whose released-ask lookup stalls or fails takes the local path within the local bound (#4386)", async () => {
+		for (const lookup of ["stalls", "fails"] as const) {
+			const shared = await cluster();
+			const b = await startNode(shared, (state) => ({
+				...state,
+				releasedAsks: {
+					...state.releasedAsks,
+					lookup: () =>
+						lookup === "stalls"
+							? new Promise<never>(() => {})
+							: Promise.reject(new Error("released-ask lookup failed")),
+				},
+			}));
+			const asker = session("asker");
+			await register(b, asker);
+			const replier = session("replier");
+			await register(b, replier);
+			const sent = reply(replier, asker.info.id, randomUUID());
+			b.router.routeSend({ ...sent.request, localTarget: asker });
+			await vi.waitFor(() => assert.deepEqual(sent.notFound, [sent.id], lookup), {
+				timeout: LOCAL_RETRY_LOOKUP_BOUND_MS + 1_000,
+				interval: 5,
+			});
+		}
+		assert.ok(
+			vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("released-ask lookup failed")),
+		);
 	});
 
 	test("a reply this broker's own ask routes answer takes the local path without reading the shared state (#4386)", async () => {
