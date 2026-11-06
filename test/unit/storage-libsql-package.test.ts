@@ -279,16 +279,16 @@ function v8Collection(): () => void {
 }
 
 test("a file database closed on a Bun host collects with Bun.gc(true) (#4433)", async () => {
-	const host = globalThis as { Bun?: unknown };
+	const host = globalThis as { Bun?: { gc(force: boolean): void } };
 	assert.equal(host.Bun, undefined);
 	const directory = makeTempDirectory("storage-libsql-release-");
 	try {
 		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
 		await database.get("SELECT 1");
 		const collect = v8Collection();
-		const forced: unknown[] = [];
+		const forced: boolean[] = [];
 		host.Bun = {
-			gc(force: unknown) {
+			gc(force: boolean) {
 				forced.push(force);
 				collect();
 			},
