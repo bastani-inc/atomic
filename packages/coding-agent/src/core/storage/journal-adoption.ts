@@ -512,10 +512,47 @@ async function heldByResume(database: SqliteDatabase, runId: string): Promise<bo
 	return lease?.holder_id != null && !lease.holder_id.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX);
 }
 
-/** Whether `holder`, a consolidation, still holds the lease of a run in a journal: no resume took it over. */
-async function fenceIsOurs(database: SqliteDatabase, runId: string, holder: string): Promise<boolean> {
+/** Whether a consolidation, this one or another, fences the lease of a run in a journal. */
+async function fencedByConsolidation(database: SqliteDatabase, runId: string): Promise<boolean> {
 	const lease = await database.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
-	return lease?.holder_id === holder;
+	return lease?.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX) === true;
+}
+
+/**
+ * How long a consolidation's fence goes unrenewed before another consolidation takes it over: the window after which a
+ * resume takes over a consolidation's fence too. Consolidations never renew their fences, so a fence this old belongs to
+ * a consolidation that stopped, or to one so slow that a resume could take its run from it anyway.
+ */
+const STALE_CONSOLIDATION_FENCE_MS = 120_000;
+
+/** Whether a run's lease in a journal is a consolidation's fence left unrenewed for longer than the stale window. */
+async function staleFence(executor: SqliteExecutor, runId: string): Promise<boolean> {
+	const stale = await executor.get(
+		`SELECT run_id FROM ${TABLES.leases} WHERE run_id = ? AND holder_id LIKE ? AND renewed_at < ${STORE_NOW} - ?`,
+		runId,
+		`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`,
+		STALE_CONSOLIDATION_FENCE_MS,
+	);
+	return stale !== undefined;
+}
+
+/**
+ * Whether `holder`, a consolidation, holds the lease of a run in a journal, taking it over first from another
+ * consolidation whose fence is stale, as lease takeover does: in one transaction, at the next epoch. A lease a resume
+ * holds, a lease nobody holds and a fresh fence are never taken.
+ */
+async function takeOverFence(database: SqliteDatabase, runId: string, holder: string): Promise<boolean> {
+	return database.transaction(async (tx) => {
+		const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		if (lease?.holder_id === holder) return true;
+		if (!(await staleFence(tx, runId))) return false;
+		await tx.run(
+			`UPDATE ${TABLES.leases} SET holder_id = ?, epoch = epoch + 1, renewed_at = ${STORE_NOW} WHERE run_id = ?`,
+			holder,
+			runId,
+		);
+		return true;
+	}, CONSOLIDATION_TRANSACTION);
 }
 
 async function liftFence(database: SqliteDatabase, runId: string): Promise<void> {
@@ -575,8 +612,9 @@ async function readRun(database: SqliteExecutor, runId: string): Promise<RunSnap
 /**
  * Copies a fenced run into the target journal in one transaction and says whether the target now holds it. A run the
  * target already holds is left alone, and its lease with it: it counts when that copy holds everything the source does,
- * and not when it differs. Only a copy this call inserts gets a lease, fenced by `holder` at an epoch above any lease
- * row the target kept for the run.
+ * and not when it differs. A copy holding only the first part of the source's history under another consolidation's
+ * stale fence was left by a consolidation that stopped, and is replaced. Only a copy this call inserts gets a lease,
+ * fenced by `holder` at an epoch above any lease row the target kept for the run.
  */
 async function copy(
 	source: SqliteDatabase,
@@ -589,7 +627,12 @@ async function copy(
 		await ensureJournalTables(source, tx);
 		const { run } = snapshot;
 		const existing = await readRun(tx, run.run_id);
-		if (existing !== undefined) return holdsSnapshot(snapshot, existing);
+		if (existing !== undefined) {
+			if (holdsSnapshot(snapshot, existing)) return true;
+			if (!holdsSnapshot(existing, snapshot) || !(await staleFence(tx, run.run_id))) return false;
+			await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, run.run_id);
+			await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, run.run_id);
+		}
 		await tx.run(
 			`INSERT INTO ${TABLES.runs}(run_id, name, cwd, created_at, status, header_json) VALUES (?, ?, ?, ?, ?, ?)`,
 			run.run_id,
@@ -679,12 +722,54 @@ function conflictRun(catalog: JournalCatalog, from: number, destination: Journal
 }
 
 /**
+ * Moves a run's catalog entry from `destination` back to `from`, whose copy holds more of the run, then settles the
+ * destination's copy in one transaction on it. A copy holding events the source lacks, or that a resume holds, is where
+ * the run belongs, and the catalog goes back there. Otherwise the catalog stays on the source, which holds every event:
+ * the copy is deleted while `holder` fences it or nobody holds it, unless another consolidation fences it or the source
+ * and may still select it. Whether the catalog stays on the source.
+ */
+async function returnToSource(
+	catalog: JournalCatalog,
+	from: JournalShardRecord,
+	destination: JournalShardRecord,
+	source: SqliteDatabase,
+	database: SqliteDatabase,
+	runId: string,
+	holder: string,
+): Promise<boolean> {
+	await catalog.moveRun(runId, destination.id, from.id);
+	const stays = await database.transaction(async (tx) => {
+		const there = await readRun(tx, runId);
+		if (there === undefined) return true;
+		const left = await readRun(source, runId);
+		if (left === undefined || !holdsSnapshot(there, left)) return false;
+		const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		if (lease?.holder_id != null && lease.holder_id !== holder)
+			return lease.holder_id.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX);
+		const kept = await source.get<SqliteRow & { holder_id: string | null }>(
+			`SELECT leases.holder_id FROM ${TABLES.runs} AS runs LEFT JOIN ${TABLES.leases} AS leases ON leases.run_id = runs.run_id WHERE runs.run_id = ?`,
+			runId,
+		);
+		if (kept === undefined) return false;
+		if (kept.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX) && kept.holder_id !== holder) return true;
+		await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
+		await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
+		await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		return true;
+	}, CONSOLIDATION_TRANSACTION);
+	if (stays) return true;
+	await catalog.moveRun(runId, from.id, destination.id);
+	return false;
+}
+
+/**
  * Finishes a move whose catalog entry already names `destination`: checks that the destination holds everything the
  * fenced source does (copying the run again if it lost it), deletes the source only while `holder` still fences it, and
  * lifts the fence on the destination. A fence another process took over leaves the source alone; if that process added
- * events the destination lacks, the catalog goes back to the source and the destination copy this call inserted is
- * removed. Every step compares holders, so overlapping consolidations and a resume that took over an expired fence
- * lose nothing, and the destination's own lease is never overwritten.
+ * events the destination lacks, the catalog goes back to the source and the destination copy is removed under
+ * `holder`'s fence, taken over first from a consolidation whose fence went stale. Every step compares holders, so
+ * overlapping consolidations and a resume that took over an expired fence lose nothing, and a resume's lease on the
+ * destination is never overwritten.
  */
 async function settleMove(
 	catalog: JournalCatalog,
@@ -711,12 +796,9 @@ async function settleMove(
 		const left = await readRun(source, runId);
 		const there = await readRun(database, runId);
 		const ahead = left !== undefined && there !== undefined && there.events.length > left.events.length;
-		if (ahead || !(await fenceIsOurs(database, runId, holder))) return keptOnDestination();
-		await catalog.moveRun(runId, destination.id, from.id);
-		if (await removeRun(database, runId, holder))
+		if (ahead || !(await takeOverFence(database, runId, holder))) return keptOnDestination();
+		if (await returnToSource(catalog, from, destination, source, database, runId, holder))
 			return { runId, from: from.id, outcome: "skipped", reason: "leased" };
-		// A resume took the destination's fence between the check and the delete: the run belongs there again.
-		await catalog.moveRun(runId, from.id, destination.id);
 		return keptOnDestination();
 	};
 	const snapshot = await readRun(source, runId);
@@ -751,7 +833,8 @@ async function settleMove(
  * its journal) and it is not in the pre-0.9.38 table format; every other run stays where it is, with the reason. Each
  * run moves on its own: it is fenced in its journal, copied into a shard in one transaction, repointed in the
  * catalog, and only then deleted from its journal. A consolidation that is interrupted leaves every run readable in
- * exactly one place through the catalog, and running it again finishes the move.
+ * exactly one place through the catalog, and running it again finishes the move, or returns the run to its journal
+ * when the move was being abandoned or undone.
  */
 export async function consolidateJournalStore(store: string | JournalCatalog): Promise<JournalConsolidationReport> {
 	return withCatalog(store, async (catalog) => {
@@ -788,7 +871,10 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 					await withCleanup(
 						async () => {
 							const legacyOnly = !(await hasJournalTables(source));
-							if (!legacyOnly) results.push(...(await finishInterruptedMoves(catalog, source, shard, target)));
+							if (!legacyOnly) {
+								results.push(...(await finishInterruptedMoves(catalog, source, shard, target)));
+								results.push(...(await returnStrandedRuns(catalog, source, shard, holder, target)));
+							}
 							for (const run of await catalog.runs({ shard: shard.id }))
 								results.push(
 									legacyOnly
@@ -805,6 +891,73 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 		const moved = results.filter((run) => run.outcome === "moved").length;
 		return { moved, skipped: results.length - moved, runs: results };
 	});
+}
+
+/**
+ * Returns to this journal the runs a crashed consolidation stranded on another shard: a run this journal holds, with no
+ * consolidation fencing it here, whose catalog entry names a shard that lost the run, or that holds only the first part
+ * of its history under a consolidation's stale fence. That consolidation was abandoning or undoing the move, so
+ * `finishInterruptedMoves` has nothing to finish; the moves that follow find the run here again. A fresh fence may
+ * belong to a consolidation still undoing the move, and is left to it. A run whose shard cannot be opened is reported.
+ * A run whose named copy lacks events this journal holds and cannot be returned is reported a conflict, and both copies
+ * are kept: the two histories differ, as when resumes wrote to both copies during an interrupted move, or a resume
+ * holds the named copy.
+ */
+async function returnStrandedRuns(
+	catalog: JournalCatalog,
+	source: SqliteDatabase,
+	from: JournalShardRecord,
+	holder: string,
+	target: (record: JournalShardRecord) => Promise<SqliteDatabase>,
+): Promise<JournalConsolidationRun[]> {
+	const skipped: JournalConsolidationRun[] = [];
+	const listed = new Set((await catalog.runs({ shard: from.id })).map((run) => run.runId));
+	const unfenced = await source.all<SqliteRow & { run_id: string }>(
+		`SELECT run_id FROM ${TABLES.runs} WHERE run_id NOT IN (SELECT run_id FROM ${TABLES.leases} WHERE holder_id LIKE ?) ORDER BY run_id`,
+		`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`,
+	);
+	for (const { run_id: runId } of unfenced.filter((row) => !listed.has(row.run_id))) {
+		const destination = (await catalog.locate(runId))?.shard;
+		if (destination === undefined) continue;
+		let database: SqliteDatabase;
+		try {
+			database = await target(destination);
+		} catch (error) {
+			if (!(error instanceof JournalShardUnavailableError)) throw error;
+			skipped.push({
+				runId,
+				from: from.id,
+				to: destination.id,
+				outcome: "skipped",
+				reason: "shard-unavailable",
+				error,
+			});
+			continue;
+		}
+		const left = await readRun(source, runId);
+		const there = await readRun(database, runId);
+		if (left === undefined) continue;
+		if (there === undefined) {
+			await source.transaction(async (tx) => {
+				const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+				if (lease?.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX)) return;
+				if ((await readRun(tx, runId)) !== undefined && (await readRun(database, runId)) === undefined)
+					await catalog.moveRun(runId, destination.id, from.id);
+			}, CONSOLIDATION_TRANSACTION);
+			continue;
+		}
+		if (holdsSnapshot(left, there)) continue;
+		if (holdsSnapshot(there, left)) {
+			if (await takeOverFence(database, runId, holder)) {
+				if (await returnToSource(catalog, from, destination, source, database, runId, holder)) continue;
+			} else if (await fencedByConsolidation(database, runId)) continue;
+		}
+		const kept = await readRun(source, runId);
+		const named = await readRun(database, runId);
+		if (kept !== undefined && named !== undefined && !holdsSnapshot(kept, named))
+			skipped.push(conflictRun(catalog, from.id, destination, runId));
+	}
+	return skipped;
 }
 
 /**
