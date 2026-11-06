@@ -56,7 +56,7 @@ export function realHomeAtomicRoots(env: NodeJS.ProcessEnv = process.env): strin
 /** The file a node:sqlite location opens: a path, `file:` URL, SQLite URI filename or Buffer. In-memory is `undefined`. */
 export function sqliteLocationPath(location: SqliteLocation): string | undefined {
 	if (location instanceof URL) return location.protocol === "file:" ? fileURLToPath(location) : undefined;
-	const text = typeof location === "string" ? location : location.toString("utf8");
+	const text = location.toString();
 	if (text === "" || text === ":memory:") return undefined;
 	if (!text.startsWith("file:")) return text;
 	const withoutAuthority = text.slice("file:".length).replace(/^\/\/[^/]*/u, "");
@@ -123,8 +123,8 @@ function guardConstructor(sqlite: { DatabaseSync: GuardedDatabaseSync }): GuardS
 		assertNoViolations: () => {
 			const found = violations;
 			violations = [];
-			if (found.length === 1) throw found[0];
 			if (found.length > 1) throw new AggregateError(found, `${found.length} real-home SQLite opens were rejected`);
+			if (found.length === 1) throw found[0];
 		},
 	};
 	const guarded = new Proxy(sqlite.DatabaseSync, {
@@ -139,12 +139,7 @@ function guardConstructor(sqlite: { DatabaseSync: GuardedDatabaseSync }): GuardS
 		},
 		get: (target, key, receiver) => (key === GUARD ? guard : Reflect.get(target, key, receiver)),
 	});
-	Object.defineProperty(sqlite, "DatabaseSync", {
-		value: guarded,
-		configurable: true,
-		enumerable: true,
-		writable: true,
-	});
+	sqlite.DatabaseSync = guarded;
 	syncBuiltinESMExports();
 	return guard;
 }

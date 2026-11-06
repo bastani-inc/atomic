@@ -46,6 +46,7 @@ describe("sqliteLocationPath", () => {
 		assert.equal(sqliteLocationPath("file:/home/u/journal.sqlite?mode=ro#part"), "/home/u/journal.sqlite");
 		assert.equal(sqliteLocationPath("file://localhost/home/u/a%20b.sqlite"), "/home/u/a b.sqlite");
 		assert.equal(sqliteLocationPath("file:///C:/Users/u/journal.sqlite"), "C:/Users/u/journal.sqlite");
+		assert.equal(sqliteLocationPath("file:/data/c:/journal.sqlite"), "/data/c:/journal.sqlite");
 		assert.equal(sqliteLocationPath("file:relative//journal.sqlite"), "relative//journal.sqlite");
 		const absolute = join(scratch, "url.sqlite");
 		assert.equal(sqliteLocationPath(pathToFileURL(absolute)), absolute);
@@ -74,6 +75,18 @@ test("failTestsThatOpenRealHomeStorage checks the guard after each test and afte
 	assert.deepEqual(registered, ["afterEach", "afterAll"]);
 	for (const check of checks) check();
 	assert.equal(checked, 2);
+});
+
+test("RealHomeStorageOpenError names the opened path, its code and the fix", () => {
+	const fix =
+		"Give the test its own agent directory: point ATOMIC_CODING_AGENT_DIR at a temporary directory, or pass the store an explicit temporary path";
+	const error = new RealHomeStorageOpenError("/home/u/.atomic/workflows/journal.sqlite", "/home/u/.atomic");
+	assert.equal(error.name, "RealHomeStorageOpenError");
+	assert.equal(error.hint, fix);
+	assert.equal(
+		error.message,
+		`Test opened a SQLite database under the real home directory: /home/u/.atomic/workflows/journal.sqlite (real-home-storage-open). ${fix}.`,
+	);
 });
 
 test("foldsCase is true exactly for the platforms whose default filesystems ignore case", () => {
@@ -185,6 +198,7 @@ describe("installRealHomeStorageGuard", () => {
 				() => guard.assertNoViolations(),
 				(error: AggregateError) => {
 					assert.ok(error instanceof AggregateError);
+					assert.equal(error.message, "2 real-home SQLite opens were rejected");
 					assert.deepEqual(
 						error.errors.map((rejection: RealHomeStorageOpenError) => [rejection.code, rejection.path]),
 						[
@@ -222,14 +236,11 @@ describe("installRealHomeStorageGuard", () => {
 			guard.assertNoViolations();
 		});
 
-		test("installing again adds new roots to the guard already in place, once each", () => {
+		test("installing again adds new roots to the guard the shared setup installed, once each", () => {
 			const other = join(scratch, "other-home", ".atomic");
 			const again = installRealHomeStorageGuard([root, other, other]);
 			assert.equal(again, guard);
-			assert.deepEqual(
-				again.roots.filter((protectedRoot) => protectedRoot === root || protectedRoot === other),
-				[root, other],
-			);
+			assert.deepEqual(again.roots, [...realHomeAtomicRoots(), root, other]);
 			assert.throws(
 				() => new DatabaseSync(join(other, "journal.sqlite")),
 				isGuardRejection(join(other, "journal.sqlite"), other),
