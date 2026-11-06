@@ -6,12 +6,18 @@
  * once it has).
  */
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-// Some cases deliberately start workers before the main thread imports the SDK.
+// Some cases deliberately start workers before the main thread opens a store.
 
 const [agentDir, mode] = (isMainThread ? process.argv.slice(2) : workerData) as [string, string];
 
 if (isMainThread && mode !== "worker-no-listener" && mode !== "workers-late-import")
-	await import("../../src/core/storage/provider.ts");
+	await openMainStore();
+
+async function openMainStore(): Promise<void> {
+	const { StorageProvider } = await import("../../src/core/storage/provider.ts");
+	const store = await new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir, domain: "sessions" });
+	await store.close();
+}
 
 async function releaseOne(): Promise<void> {
 	const { StorageProvider } = await import("../../src/core/storage/provider.ts");
@@ -41,7 +47,7 @@ if (!isMainThread) {
 	for (const worker of workers) worker.on("message", async () => {
 		if (++ready !== workers.length) return;
 		if (mode === "workers-late-import") {
-			await import("../../src/core/storage/provider.ts");
+			await openMainStore();
 			// Allow the main-thread listener and already-running workers to exchange registrations.
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
