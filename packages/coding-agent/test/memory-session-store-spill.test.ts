@@ -57,16 +57,24 @@ function holdNextOpen(failure?: Error): () => void {
  * writes nothing to disk. Operations are counted, not timed.
  */
 const agentDir = useTemporaryAgentDir();
+function setTempRoot(path: string): () => void {
+	const keys = ["TMPDIR", "TEMP", "TMP"] as const;
+	const previous = keys.map((key) => process.env[key]);
+	for (const key of keys) process.env[key] = path;
+	return () => {
+		for (const [index, key] of keys.entries()) {
+			const value = previous[index];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+}
+
 let restoreTmpdir: () => void = () => {};
 beforeAll(() => {
 	const tmp = join(agentDir, "tmp");
 	mkdirSync(tmp, { recursive: true });
-	const previous = process.env.TMPDIR;
-	process.env.TMPDIR = tmp;
-	restoreTmpdir = () => {
-		if (previous === undefined) delete process.env.TMPDIR;
-		else process.env.TMPDIR = previous;
-	};
+	restoreTmpdir = setTempRoot(tmp);
 });
 afterAll(() => restoreTmpdir());
 
@@ -469,11 +477,25 @@ describe("a released session's history leaves process memory (#4502)", () => {
 
 	test("releasing a session held in one buffer writes that buffer without copying it", async () => {
 		const store = newStore();
+		const encode = vi.spyOn(TextEncoder.prototype, "encode");
 		await store.create(header("s"), entries("e", 20));
-		const set = vi.spyOn(Uint8Array.prototype, "set");
+		const encoded = encode.mock.results.at(-1)?.value;
+		assert.ok(encoded instanceof Uint8Array);
+		encode.mockRestore();
+		const written: Uint8Array[] = [];
+		open.mockImplementationOnce(async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			return {
+				write: (data: Uint8Array, offset: number, length: number, position: number) => {
+					written.push(data);
+					return handle.write(data, offset, length, position);
+				},
+				close: () => handle.close(),
+			} as fsPromises.FileHandle;
+		});
 		await store.releaseSession("s");
-		assert.equal(set.mock.calls.length, 0);
-		set.mockRestore();
+		assert.equal(written.length, 1);
+		assert.equal(written[0], encoded);
 		assert.deepEqual((await store.load("s")).entries, entries("e", 20));
 	});
 
@@ -775,14 +797,13 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		const store = newStore();
 		await created(store, "s", entries("e", 3));
 		vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-		const previous = process.env.TMPDIR;
 		const file = join(agentDir, "not-a-directory");
 		writeFileSync(file, "");
-		process.env.TMPDIR = file;
+		const restore = setTempRoot(file);
 		try {
 			await store.releaseSession("s");
 		} finally {
-			process.env.TMPDIR = previous;
+			restore();
 		}
 		const [degradation, ...others] = store.spillDegradation();
 		assert.deepEqual(others, []);
