@@ -49,7 +49,8 @@ afterEach(() => {
 	git.status = () => ({ source: "system", version: "2.45.0", path: "/usr/bin/git" });
 });
 
-async function hostStats(directory: string, restore: boolean, gitPath?: string) {
+/** A host's git source and whether it restores: given a restore function, by default, or with `restore: false`. */
+async function hostStats(directory: string, restore: "given" | "default" | false, gitPath?: string) {
 	const host = await startWorkflowWorkerHost({
 		journal: {
 			adapter: libsql,
@@ -59,7 +60,7 @@ async function hostStats(directory: string, restore: boolean, gitPath?: string) 
 		agentDir: join(directory, "agent"),
 		maxWorkers: 1,
 		hostId: "host-g",
-		...(restore ? { restore: async () => directory } : {}),
+		...(restore === "given" ? { restore: async () => directory } : restore === false ? { restore: false } : {}),
 		...(gitPath === undefined ? {} : { git: { path: gitPath, env: {} } }),
 	});
 	try {
@@ -77,7 +78,7 @@ test.skipIf(process.platform === "win32")(
 		try {
 			for (const source of ["system", "provisioned"] as const) {
 				git.resolve = async () => ({ path: `/git/${source}`, env: {}, source, version: "2.45.0" });
-				assert.deepEqual(await hostStats(directory, true), [source, true]);
+				assert.deepEqual(await hostStats(directory, "given"), [source, true]);
 			}
 			assert.equal(git.resolutions, 2);
 		} finally {
@@ -87,13 +88,21 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a worker host without a restore port never downloads git: it reports the git this machine has (#4310)",
+	"a worker host without a restore function never downloads git: it restores by default only with the git this machine has (#4416)",
 	async () => {
 		const directory = makeLibsqlDirectory();
 		try {
-			assert.deepEqual(await hostStats(directory, false), ["system", false]);
+			assert.deepEqual(await hostStats(directory, "default"), ["system", true], "the snapshot restore by default");
+			assert.deepEqual(await hostStats(directory, false), ["system", false], "none with restore: false");
+			git.status = () => ({ source: "provisioned", version: "2.45.0", path: "/home/user/.atomic/bin/git" });
+			assert.deepEqual(
+				await hostStats(directory, "default"),
+				["provisioned", true],
+				"a git Atomic installed before",
+			);
 			git.status = () => ({ source: "unavailable", error: NOT_INSTALLED.toJSON() });
-			assert.deepEqual(await hostStats(directory, false), ["unavailable", false], "it starts without git");
+			assert.deepEqual(await hostStats(directory, "default"), ["unavailable", false], "it starts without git");
+			assert.deepEqual(await hostStats(directory, false), ["unavailable", false]);
 			assert.equal(git.resolutions, 0, "nothing was resolved, so nothing was downloaded");
 		} finally {
 			await removeLibsqlDirectory(directory);
@@ -146,7 +155,12 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const directory = makeLibsqlDirectory();
 		try {
-			assert.deepEqual(await hostStats(directory, true, "git"), ["system", true]);
+			assert.deepEqual(await hostStats(directory, "given", "git"), ["system", true]);
+			assert.deepEqual(await hostStats(directory, "default", "git"), ["system", true]);
+			assert.deepEqual(await hostStats(directory, "default", join(directory, "no-such-git")), [
+				"unavailable",
+				false,
+			]);
 			assert.equal(git.resolutions, 0);
 		} finally {
 			await removeLibsqlDirectory(directory);

@@ -248,6 +248,7 @@ test.skipIf(process.platform === "win32")(
 				},
 				agentDir: join(f.directory, "host", "agent"),
 				maxWorkers: 1,
+				restore: false,
 				hostId: "host-b",
 				workerEntry: stubWorker,
 			});
@@ -307,6 +308,7 @@ test.skipIf(process.platform === "win32")(
 				},
 				agentDir: join(f.directory, "host", "agent"),
 				maxWorkers: 1,
+				restore: false,
 				hostId: "host-b",
 				workerEntry: stubWorker,
 				placement: { prefer: async () => warm },
@@ -361,6 +363,7 @@ test.skipIf(process.platform === "win32")(
 				},
 				agentDir: join(f.directory, "host", "agent"),
 				maxWorkers: 1,
+				restore: false,
 				hostId: "host-b",
 				workerEntry: stubWorker,
 			});
@@ -467,6 +470,7 @@ test.skipIf(process.platform === "win32")(
 				journal: selection,
 				agentDir: join(directory, hostId, "agent"),
 				maxWorkers: 1,
+				restore: false,
 				hostId,
 				workerEntry: stubWorker,
 			});
@@ -560,6 +564,7 @@ test.skipIf(process.platform === "win32")(
 				},
 				agentDir: join(f.directory, "host", "agent"),
 				maxWorkers: 1,
+				restore: false,
 				hostId: "host-b",
 				workerEntry: stubWorker,
 			});
@@ -613,6 +618,7 @@ test.skipIf(process.platform === "win32")(
 				},
 				agentDir: join(f.directory, "host", "agent"),
 				maxWorkers: 1,
+				restore: false,
 				hostId: "host-b",
 				workerEntry: stubWorker,
 				placement: { prefer: async () => warm },

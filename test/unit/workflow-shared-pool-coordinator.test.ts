@@ -171,6 +171,7 @@ test(
 				[typed.code, typed.reason, typed.claimWindowMs, typed.binding.tree],
 				["workspace-restore-unavailable", "no-capable-host", 300, "t1"],
 			);
+			assert.equal(typed.cause, undefined, "no host failed to restore it, so nothing caused it (#4416)");
 			assert.equal((await f.shared.stats("root")).failed, 1);
 		} finally {
 			await host?.stopSatellite();

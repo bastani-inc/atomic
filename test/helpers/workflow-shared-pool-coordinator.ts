@@ -20,6 +20,7 @@ import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import type { AdmissionConfiguration } from "../../packages/workflows/src/workers/resource-admission.js";
+import type { RestoreBackoff } from "../../packages/workflows/src/workers/restore-backoff.js";
 import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { sleep } from "../helpers/runtime.js";
@@ -55,6 +56,8 @@ export async function fixture(
 	label: string,
 	options: {
 		workspace?: WorkspaceBinding;
+		/** Records what the root binds its children to in the shared journal before the pool starts, and returns it. */
+		bind?: (backend: JournalDurableBackend) => Promise<WorkspaceBinding>;
 		claimWindowMs?: number;
 		admission?: AdmissionConfiguration;
 		maxLoadPerCpu?: number;
@@ -74,6 +77,7 @@ export async function fixture(
 	const journal = await resolveRunJournal({ agentDir: join(directory, "root", "agent"), journal: selection });
 	const hostJournal = await resolveRunJournal({ agentDir: join(directory, "host", "agent"), journal: selection });
 	const backend = await JournalDurableBackend.open(journal);
+	const bound = options.bind === undefined ? options.workspace : await options.bind(backend);
 	const child = await loadWorkerDefinition({
 		path: childPath,
 		exportName: "boundChild",
@@ -87,7 +91,7 @@ export async function fixture(
 			host: "root-host",
 			claimWindowMs: options.claimWindowMs ?? 60_000,
 		},
-		...(options.workspace === undefined ? {} : { workspace: options.workspace }),
+		...(bound === undefined ? {} : { workspace: bound }),
 		...(options.admission === undefined ? {} : { admission: options.admission }),
 		...(options.maxLoadPerCpu === undefined ? {} : { maxLoadPerCpu: options.maxLoadPerCpu }),
 		...(options.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: options.maxWorkerRssBytes }),
@@ -179,6 +183,7 @@ export async function satellite(
 	placement: {
 		prefer?: (binding: WorkspaceBinding) => Promise<string | undefined>;
 		restore?: (binding: WorkspaceBinding, options: { readonly signal: AbortSignal }) => Promise<string>;
+		restoreBackoff?: RestoreBackoff;
 	},
 	failures: Error[] = [],
 	host = "host-b",

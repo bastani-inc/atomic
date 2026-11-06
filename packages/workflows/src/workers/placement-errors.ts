@@ -329,9 +329,10 @@ export class SharedPoolSetupError extends WorkerPlacementError {
 }
 
 /**
- * Bound work that no host can run in its recorded workspace: the host has no restore port (`no-restore-port`), or no
- * capable live host claimed the work within the root's claim window (`no-capable-host`). Bound work never runs in the
- * recorded working directory of another host.
+ * Bound work that no host can run in its recorded workspace: a host's restore cannot run there, as its git does not
+ * run (`no-restore-port`), or no capable live host claimed the work within the root's claim window (`no-capable-host`),
+ * where a host backing off from a binding whose restores failed is not capable of it, and its last failure is the
+ * `cause`. Bound work never runs in the recorded working directory of another host.
  */
 export class WorkspaceRestoreUnavailableError extends WorkerPlacementError {
 	override readonly name = "WorkspaceRestoreUnavailableError" as const;
@@ -347,12 +348,12 @@ export class WorkspaceRestoreUnavailableError extends WorkerPlacementError {
 	) {
 		const hint =
 			reason === "no-restore-port"
-				? "Configure restore on startWorkflowWorkerHost, or run the work on a host that already has this tree."
+				? "Install git on this host or pass a git that runs as git: { path } to startWorkflowWorkerHost, or run the work on a host that already has this tree."
 				: "Start a worker host that has this tree or can restore it (a restore port and git), then resume the root.";
 		const subject = `tree ${binding.tree} at ${binding.head}${binding.remotes.length === 0 ? "" : ` of ${binding.remotes.join(", ")}`}`;
 		const where =
 			reason === "no-restore-port"
-				? "this host has no restore port"
+				? "this host cannot run a restore"
 				: `no capable live host claimed ${context.childRunId === undefined ? "the work" : `child ${context.childRunId}`} within ${context.claimWindowMs} ms`;
 		super(
 			"workspace-restore-unavailable",
@@ -521,6 +522,27 @@ function serializeAt(error: WorkerPlacementError, depth: number): SerializedWork
 /** A placement error as JSON, for a process boundary; {@link rehydrateWorkerPlacementError} restores it. */
 export function serializeWorkerPlacementError(error: WorkerPlacementError): SerializedWorkerPlacementError {
 	return serializeAt(error, 0);
+}
+
+/** A failure as a worker host records it for other processes: a placement error whole, any other by name and message. */
+export type RecordedFailure = NonNullable<SerializedWorkerPlacementError["cause"]>;
+
+/**
+ * `error` as a worker host records it, in its stats or the shared journal; {@link rehydrateRecordedFailure} reads it
+ * back.
+ */
+export function recordedFailure(error: Error): RecordedFailure {
+	return error instanceof WorkerPlacementError
+		? serializeWorkerPlacementError(error)
+		: { name: error.name, message: error.message };
+}
+
+/**
+ * The error a {@link recordedFailure} describes: a placement error as its own class, any other an `Error` with its name;
+ * undefined for no failure.
+ */
+export function rehydrateRecordedFailure(failure: RecordedFailure | undefined): Error | undefined {
+	return rehydrateCause(failure) as Error | undefined;
 }
 
 function rehydrateCause(cause: SerializedWorkerPlacementError["cause"]): unknown {

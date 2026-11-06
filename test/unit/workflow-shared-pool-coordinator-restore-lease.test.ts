@@ -3,11 +3,13 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import type { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
+import { workspaceAffinityKey } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { sleep } from "../helpers/runtime.js";
 import {
 	binding,
@@ -46,6 +48,9 @@ test(
 			const root = await f.root();
 			const failures: Error[] = [];
 			let restores = 0;
+			// The journal refuses to record the backoff and to clear it: the host backs off and runs the child all the same.
+			vi.spyOn(SqlSharedPool.prototype, "recordRestoreBackoff").mockRejectedValueOnce(new Error("recording failed"));
+			vi.spyOn(SqlSharedPool.prototype, "clearRestoreBackoff").mockRejectedValueOnce(new Error("clearing failed"));
 			host = await satellite(
 				f,
 				root,
@@ -65,8 +70,8 @@ test(
 			assert.deepEqual(outcomes, ["completed"]);
 			assert.deepEqual(
 				failures.map((failure) => failure.message),
-				["the remote is unreachable"],
-				"the failed restore is reported as the host's placement failure",
+				["the remote is unreachable", "recording failed", "clearing failed"],
+				"the failed restore is reported as the host's placement failure, and so are the backoff records that failed",
 			);
 			assert.equal(restores, 2, "a restore that outlasts the work lease is not run again");
 			assert.deepEqual(
@@ -74,7 +79,13 @@ test(
 				[["host-b", restored]],
 				"the child ran once, at the restored path",
 			);
+			assert.deepEqual(
+				(await f.shared.stageWorkspaces("root")).map((record) => record.generation),
+				[1],
+				"the failed restore was no attempt of the child (#4416)",
+			);
 		} finally {
+			vi.restoreAllMocks();
 			await host?.stopSatellite();
 			await host?.shutdown();
 			await execution.catch(() => {});
@@ -194,6 +205,11 @@ test(
 			const [refusal] = failures;
 			assert.ok(isStaleWorkLeaseError(refusal), String(refusal));
 			assert.equal(refusal.reason, "generation-mismatch");
+			assert.equal(
+				await f.shared.restoreFailure(workspaceAffinityKey(binding)),
+				undefined,
+				"a replaced attempt is no failed restore: the host does not back off from the binding (#4416)",
+			);
 			assert.equal(host.detached, false, "the root's lease held: the host keeps serving it");
 		} finally {
 			await host?.stopSatellite().catch(() => {});

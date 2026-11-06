@@ -1,10 +1,12 @@
+import type { WorktreeSnapshot } from "@bastani/atomic";
 import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
+import type { WorkerHostFailure } from "../../workers/worker-host-types.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
-import type { Lease, RunJournal } from "./types.js";
+import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
 import { validateText } from "./values.js";
 
 export type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
@@ -104,9 +106,10 @@ export function workerHost(worker: string): string {
 
 /**
  * The shared-placement state of pools whose tables live in a journal every host opens (#4310): the roots' published
- * configuration, the worker host registry, activity relayed from other hosts, and each stage's ordered inputs, stage
- * lease and workspace record. Every table derives from the journal's own `runs` table name, so it is scoped by the
- * journal's prefix, and none exists in a journal that never ran a shared pool.
+ * configuration, the worker host registry, activity relayed from other hosts, each stage's ordered inputs, stage lease
+ * and workspace record, and the bindings whose restore each host backs off from (#4416). Every table derives from the
+ * journal's own `runs` table name, so it is scoped by the journal's prefix, and none exists in a journal that never ran
+ * a shared pool.
  */
 export class SqlSharedPool {
 	private readonly shared: string;
@@ -115,6 +118,7 @@ export class SqlSharedPool {
 	private readonly inputs: string;
 	private readonly stageLeases: string;
 	private readonly workspaces: string;
+	private readonly backoffs: string;
 	private readonly work: string;
 	private constructor(
 		private readonly storage: SqlPoolStorage,
@@ -127,6 +131,7 @@ export class SqlSharedPool {
 		this.inputs = `${runs}_stage_inputs`;
 		this.stageLeases = `${runs}_stage_leases`;
 		this.workspaces = `${runs}_stage_workspaces`;
+		this.backoffs = `${runs}_pool_restore_backoffs`;
 		this.work = `${runs}_work`;
 	}
 
@@ -170,6 +175,10 @@ export class SqlSharedPool {
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, generation INTEGER NOT NULL,
 					host TEXT NOT NULL, worktree TEXT NOT NULL, binding TEXT, recorded_at INTEGER NOT NULL,
 					PRIMARY KEY(root, run_id, stage_id)
+				);
+				CREATE TABLE IF NOT EXISTS ${pool.backoffs}(
+					host TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,
+					recorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)
 				);
 			`),
 		);
@@ -254,9 +263,12 @@ export class SqlSharedPool {
 		);
 	}
 
-	/** Removes a stopped worker host from the registry. */
+	/** Removes a stopped worker host from the registry, with the restore backoffs it recorded. */
 	async forgetHost(host: string): Promise<void> {
-		await this.storage.transaction((tx) => tx.run(`DELETE FROM ${this.hosts} WHERE host = ?`, host));
+		await this.storage.transaction(async (tx) => {
+			await tx.run(`DELETE FROM ${this.hosts} WHERE host = ?`, host);
+			await tx.run(`DELETE FROM ${this.backoffs} WHERE host = ?`, host);
+		});
 	}
 
 	/** Every registered worker host. */
@@ -265,19 +277,86 @@ export class SqlSharedPool {
 	}
 
 	/**
-	 * Whether a host serving `root` that can restore any binding (a restore port and git) reported within `ttlMs`. A host
-	 * that does not serve the root, such as one without its worker definitions, never claims its work.
+	 * Whether a host serving `root` could restore the binding with affinity key `binding` now: it has a restore port and
+	 * git, reported within `ttlMs`, and does not back off from restoring that binding after its restores failed (#4416).
+	 * A host that does not serve the root, such as one without its worker definitions, never claims its work.
 	 */
-	async capableHostLive(root: string, ttlMs: number): Promise<boolean> {
+	async capableHostLive(root: string, ttlMs: number, binding: string): Promise<boolean> {
 		const row = await this.storage.read((executor) =>
 			executor.get(
-				`SELECT 1 AS live FROM ${this.hosts} WHERE restore = 1 AND git != 'unavailable' AND heartbeat_at >= ${STORE_NOW} - ?
-				AND EXISTS (SELECT 1 FROM json_each(roots) WHERE value = ?) LIMIT 1`,
+				`SELECT 1 AS live FROM ${this.hosts} h WHERE restore = 1 AND git != 'unavailable' AND heartbeat_at >= ${STORE_NOW} - ?
+				AND EXISTS (SELECT 1 FROM json_each(roots) WHERE value = ?)
+				AND NOT EXISTS (SELECT 1 FROM ${this.backoffs} b WHERE b.host = h.host AND b.binding = ? AND b.until > ${STORE_NOW})
+				LIMIT 1`,
 				ttlMs,
 				root,
+				binding,
 			),
 		);
 		return row !== undefined;
+	}
+
+	/**
+	 * Records that `host` waits `waitMs` before it restores the binding with affinity key `binding` again, and the
+	 * failure it waits after (#4416). Until then it is no capable host for that binding.
+	 */
+	async recordRestoreBackoff(
+		host: string,
+		binding: string,
+		waitMs: number,
+		failure: WorkerHostFailure,
+	): Promise<void> {
+		validateText("key", host);
+		await this.storage.transaction((tx) =>
+			tx.run(
+				`INSERT INTO ${this.backoffs}(host, binding, until, failure, recorded_at) VALUES (?, ?, ${STORE_NOW} + ?, ?, ${STORE_NOW})
+				ON CONFLICT(host, binding) DO UPDATE SET until = excluded.until, failure = excluded.failure, recorded_at = excluded.recorded_at`,
+				host,
+				binding,
+				waitMs,
+				JSON.stringify(failure),
+			),
+		);
+	}
+
+	/** Records that `host` restored the binding with affinity key `binding`: it no longer backs off from it. */
+	async clearRestoreBackoff(host: string, binding: string): Promise<void> {
+		await this.storage.transaction((tx) =>
+			tx.run(`DELETE FROM ${this.backoffs} WHERE host = ? AND binding = ?`, host, binding),
+		);
+	}
+
+	/** The restore failure a host recorded last for the binding with affinity key `binding`, if any did (#4416). */
+	async restoreFailure(binding: string): Promise<WorkerHostFailure | undefined> {
+		const row = await this.storage.read((executor) =>
+			executor.get<SqliteRow & { failure: string }>(
+				`SELECT failure FROM ${this.backoffs} WHERE binding = ? ORDER BY recorded_at DESC, rowid DESC LIMIT 1`,
+				binding,
+			),
+		);
+		return row === undefined ? undefined : (JSON.parse(String(row.failure)) as WorkerHostFailure);
+	}
+
+	/**
+	 * The worktree snapshots recorded anywhere in this journal whose tree and head are `binding`'s, oldest first (#4416):
+	 * those of every run's checkpoints, whichever run recorded them. One read of the journal's checkpoint events.
+	 */
+	async recordedSnapshots(binding: Pick<WorkspaceBinding, "head" | "tree">): Promise<readonly WorktreeSnapshot[]> {
+		const rows = await this.storage.read((executor) =>
+			executor.all<SqliteRow & { payload: string }>(
+				`SELECT payload FROM ${this.storage.tables.events} WHERE type = ? AND instr(payload, ?) > 0 ORDER BY rowid`,
+				RUN_EVENT_TYPES.checkpointRecorded,
+				binding.tree,
+			),
+		);
+		return rows.flatMap(
+			(row) =>
+				(
+					JSON.parse(String(row.payload)) as { readonly worktreeSnapshots?: readonly WorktreeSnapshot[] }
+				).worktreeSnapshots?.filter(
+					(snapshot) => snapshot.tree === binding.tree && snapshot.head === binding.head,
+				) ?? [],
+		);
 	}
 
 	/**

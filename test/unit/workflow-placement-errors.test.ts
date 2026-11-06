@@ -8,6 +8,8 @@ import {
 	isWorkerPlacementConfigError,
 	isWorkerPlacementError,
 	isWorkspaceRestoreUnavailableError,
+	recordedFailure,
+	rehydrateRecordedFailure,
 	rehydrateWorkerPlacementError,
 	type SerializedWorkerPlacementError,
 	SharedPoolSetupError,
@@ -20,7 +22,7 @@ import {
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "../../packages/workflows/src/workers/placement-errors.js";
-import { restoreUnavailable, type WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
+import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
 
 /** A #3109 bound workspace carries more than the binding's identity: its branch, among others. */
 const binding: WorkspaceBinding & { readonly branch: string } = {
@@ -112,9 +114,7 @@ test("a setup error lists every missing piece with its remedy, without secret va
 });
 
 test("a restore-unavailable error carries the binding's identity without credentials (#4310)", async () => {
-	const refused = await restoreUnavailable(binding, { signal: new AbortController().signal }).catch(
-		(error: Error) => error,
-	);
+	const refused = new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding));
 	assert.ok(isWorkspaceRestoreUnavailableError(refused));
 	assert.equal(refused.code, "workspace-restore-unavailable");
 	assert.equal(refused.reason, "no-restore-port");
@@ -401,7 +401,7 @@ test("restore and stale-stage errors carry exactly their facts (#4310)", () => {
 	const port = new WorkspaceRestoreUnavailableError("no-restore-port", identity);
 	assert.equal(
 		port.message,
-		"Workspace restore unavailable: tree t at h (workspace-restore-unavailable): this host has no restore port. Configure restore on startWorkflowWorkerHost, or run the work on a host that already has this tree.",
+		"Workspace restore unavailable: tree t at h (workspace-restore-unavailable): this host cannot run a restore. Install git on this host or pass a git that runs as git: { path } to startWorkflowWorkerHost, or run the work on a host that already has this tree.",
 	);
 	assert.deepEqual(port.fields(), { reason: "no-restore-port", binding: identity });
 	assert.deepEqual([port.childRunId, port.claimWindowMs, port.retryable], [undefined, undefined, false]);
@@ -554,4 +554,36 @@ test("an error carries only what it was given: no cause own property without one
 	);
 	const staleCopy = acrossProcesses(stale) as StaleStageLeaseError;
 	assert.equal((staleCopy.cause as Error).message, "lease taken");
+});
+
+test("a failure a worker host records comes back as its class, and a typed refusal carries it as its cause (#4416)", () => {
+	const plain = new TypeError("the remote is unreachable");
+	assert.deepEqual(recordedFailure(plain), { name: "TypeError", message: "the remote is unreachable" });
+	assert.equal(rehydrateRecordedFailure(undefined), undefined, "no failure recorded, no error");
+	const back = rehydrateRecordedFailure(JSON.parse(JSON.stringify(recordedFailure(plain))))!;
+	assert.deepEqual(
+		[back.name, back.message, back instanceof WorkerPlacementError],
+		["TypeError", "the remote is unreachable", false],
+	);
+	const refusal = new WorkspaceRestoreUnavailableError("no-restore-port", workspaceBindingIdentity(binding), {
+		cause: plain,
+	});
+	const recorded = recordedFailure(refusal);
+	assert.deepEqual(recorded, serializeWorkerPlacementError(refusal));
+	const rehydrated = rehydrateRecordedFailure(JSON.parse(JSON.stringify(recorded)));
+	assert.ok(rehydrated instanceof WorkspaceRestoreUnavailableError);
+	assert.deepEqual(
+		[rehydrated.reason, rehydrated.binding, (rehydrated.cause as Error).name],
+		["no-restore-port", refusal.binding, "TypeError"],
+	);
+	const unclaimed = new WorkspaceRestoreUnavailableError("no-capable-host", refusal.binding, {
+		childRunId: "child-1",
+		claimWindowMs: 5,
+		cause: rehydrated,
+	});
+	const crossed = rehydrateWorkerPlacementError(JSON.parse(JSON.stringify(serializeWorkerPlacementError(unclaimed))));
+	assert.ok(isWorkspaceRestoreUnavailableError(crossed));
+	assert.deepEqual([crossed.reason, crossed.childRunId, crossed.claimWindowMs], ["no-capable-host", "child-1", 5]);
+	const cause = crossed.cause;
+	assert.ok(cause instanceof WorkspaceRestoreUnavailableError && cause.reason === "no-restore-port");
 });
