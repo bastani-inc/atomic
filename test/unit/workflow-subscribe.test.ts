@@ -2344,17 +2344,20 @@ const REPORT_A = 'Report from event child "alerts#1/a" (event a):\n\na matters';
 
 /**
  * Event "a" reaches its child while the subscriber stage is in a turn: the child reports, which queues the report into
- * that turn, and finishes with `answer <attempt>`. In each of the first `stops` runs the process stops before the turn
- * takes the report; the run after them lets the subscriber take it.
+ * that turn, and finishes with `answer <attempt>` in session `event-child-<attempt>`. In each of the first `stops` runs
+ * the process stops before the turn takes the report; the run after them lets the subscriber take it. The processes that
+ * stop can run with a clock `stoppedClockAheadMs` ahead of the last one's.
  */
 async function runStoppedReports(input: {
 	readonly runId: string;
 	readonly stops: number;
 	readonly journal: ReopenableJournal;
+	readonly stoppedClockAheadMs?: number;
 }) {
 	let attempt = 0;
 	let stopping = false;
 	let watcherInTurn = false;
+	let watcherTurnStarted = Promise.withResolvers<void>();
 	let stopProcess = new AbortController();
 	const savedReports: string[] = [];
 	const childAttempts: number[] = [];
@@ -2378,6 +2381,7 @@ async function runStoppedReports(input: {
 			async prompt() {
 				watcherInTurn = true;
 				emit("agent_start");
+				watcherTurnStarted.resolve();
 				// The process stops during this turn, before the turn takes the report queued into it.
 				if (stopping) await new Promise<void>(() => {});
 				watcherInTurn = false;
@@ -2400,6 +2404,7 @@ async function runStoppedReports(input: {
 		const answer = `answer ${attempt}`;
 		return {
 			...mockSession(),
+			sessionId: `event-child-${attempt}`,
 			async prompt() {
 				childAttempts.push(attempt);
 				const report = customTools?.find((tool) => tool.name === SUBSCRIPTION_REPORT_TOOL_NAME);
@@ -2416,7 +2421,7 @@ async function runStoppedReports(input: {
 		run: async (ctx) => {
 			const watcher = ctx.stage("watcher");
 			const watching = watcher.prompt("watch");
-			if (stopping) await turnsUntil(() => watcherInTurn);
+			if (stopping) await watcherTurnStarted.promise;
 			else await watching;
 			await ctx.subscribe(
 				listSource("alerts", [{ id: "a" }]),
@@ -2436,7 +2441,13 @@ async function runStoppedReports(input: {
 			if (attempt > 1) journal = await journal.reopen();
 			stopping = attempt <= input.stops;
 			watcherInTurn = false;
+			watcherTurnStarted = Promise.withResolvers<void>();
 			stopProcess = new AbortController();
+			const now = Date.now.bind(Date);
+			const clock =
+				stopping && input.stoppedClockAheadMs !== undefined
+					? vi.spyOn(Date, "now").mockImplementation(() => now() + input.stoppedClockAheadMs!)
+					: undefined;
 			const result = await run(
 				definition,
 				{},
@@ -2457,6 +2468,7 @@ async function runStoppedReports(input: {
 					},
 				},
 			);
+			clock?.mockRestore();
 			runs.push({
 				status: result.status,
 				...(result.error === undefined ? {} : { error: result.error }),
@@ -2560,6 +2572,36 @@ for (const { store, runId, open } of resumeJournals) {
 		}
 	});
 }
+
+test("a rerun recorded by a process whose clock is behind the stopped one's still replaces the event child's result and session (#4311)", async () => {
+	const runId = "b8b8b8b8-b8b8-4b8b-8b8b-000000004311";
+	const scenario = await runStoppedReports({
+		runId,
+		stops: 1,
+		journal: await JournalTestBackend.create(),
+		stoppedClockAheadMs: 60 * 60 * 1000,
+	});
+	const journal = await scenario.journal.reopen();
+	assert.deepEqual(scenario.runs, [
+		{ status: "killed", error: "workflow killed", processed: false },
+		{ status: "completed", processed: true },
+	]);
+	const [replayKey] = journal
+		.listCheckpoints(runId)
+		.flatMap((checkpoint) =>
+			checkpoint.kind === "stage" && checkpoint.name === "alerts#1/a" ? [checkpoint.replayKey] : [],
+		);
+	assert.ok(replayKey !== undefined);
+	assert.equal((journal.getStageOutput(runId, replayKey) as { readonly text?: string } | undefined)?.text, "answer 2");
+	assert.equal(journal.getStageSession(runId, replayKey)?.sessionId, "event-child-2");
+	const entry = (await listOpenableCompletedWorkflows(journal)).find((candidate) => candidate.workflowId === runId);
+	assert.ok(entry !== undefined);
+	const snapshot = await completedWorkflowSnapshot(journal, entry);
+	assert.deepEqual(
+		snapshot?.stages.filter((stage) => stage.name === "alerts#1/a").map((stage) => stage.result),
+		["answer 2"],
+	);
+});
 
 test("a run settles the turns its reports started before it completes, and cancelling it meanwhile ends it (#4311)", async () => {
 	const listeners = new Set<(event: { readonly type: string; readonly message?: unknown }) => void>();

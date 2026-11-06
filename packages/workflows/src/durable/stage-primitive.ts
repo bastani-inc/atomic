@@ -547,7 +547,9 @@ export function createDurableTaskPrimitive(input: {
 		try {
 			await input.beforeCheckpoint?.();
 			if (signal?.aborted) throw abortReasonError(signal);
-			const completedAt = Date.now();
+			const completedAt = supersedesRecordedResult
+				? Math.max(Date.now(), latestStageRecordAt(input.backend, input.workflowId, replayKey) + 1)
+				: Date.now();
 			const checkpoint: DurableStageCheckpoint = {
 				kind: "stage",
 				workflowId: input.workflowId,
@@ -981,6 +983,19 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
  */
 function supersedingTaskCheckpointId(replayKey: string, completedAt: number): string {
 	return `${stableCheckpointId("task", replayKey)}:${durableHash({ completedAt })}`;
+}
+
+/**
+ * The latest `completedAt` of a stage's records. A run orders a stage's records, and picks its session, by `completedAt`,
+ * so a record that supersedes them must come after this even when the process that wrote them had a clock ahead of ours.
+ */
+function latestStageRecordAt(backend: DurableWorkflowBackend, workflowId: string, replayKey: string): number {
+	let latest = 0;
+	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+		if (checkpoint.kind === "stage" && checkpoint.replayKey === replayKey)
+			latest = Math.max(latest, checkpoint.completedAt);
+	}
+	return latest;
 }
 
 /**
