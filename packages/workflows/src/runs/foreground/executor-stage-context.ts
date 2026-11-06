@@ -1,5 +1,6 @@
 import { formatModelLabel } from "@bastani/atomic";
 import type { DurableReleasedStageResume } from "../../durable/types.js";
+import { isStageReleasedError } from "../../shared/stage-wait-errors.js";
 import type { TrackedStageCaller } from "./executor-stage-call.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageNoticeInput } from "./executor-stage-types.js";
 import type { InternalStageContext, LiveInternalStageContext } from "./stage-runner.js";
@@ -55,6 +56,14 @@ export function createStageContext(input: {
 	};
 
 	const innerCtx: LiveInternalStageContext = runtime.innerCtx;
+	const knownThinkingLevel = (): string | undefined => {
+		try {
+			return noticeValue(innerCtx.thinkingLevel);
+		} catch (error) {
+			if (isStageReleasedError(error) && error.fields?.property === "thinkingLevel") return undefined;
+			throw error;
+		}
+	};
 	const sendStreamingUserMessage: InternalStageContext["sendUserMessage"] = async (text, options) => {
 		runtime.mcpScope.apply();
 		try {
@@ -116,9 +125,9 @@ export function createStageContext(input: {
 		},
 		setThinkingLevel: async (level) => {
 			runtime.throwIfStageMutationBlocked();
-			const from = noticeValue(innerCtx.thinkingLevel);
+			const from = knownThinkingLevel();
 			await innerCtx.setThinkingLevel(level);
-			recordStageNotice({ kind: "thinking", from, to: noticeValue(level) });
+			recordStageNotice({ kind: "thinking", ...(from === undefined ? {} : { from }), to: noticeValue(level) });
 		},
 		cycleModel: async () => {
 			runtime.throwIfStageMutationBlocked();
