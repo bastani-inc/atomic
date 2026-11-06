@@ -2,7 +2,7 @@ import type { AssistantMessage, Message, TextContent, ToolResultMessage } from "
 import { cleanupSessionResources } from "@bastani/pi-ai/compat";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { abortBash } from "./agent-session-bash.ts";
-import { withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
+import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
@@ -742,6 +742,7 @@ export function closeAgentSession(
 		}
 		await attempt("terminal workflow summaries", () => drainTerminalWorkflowSummaries(session));
 		await attempt("active work", () => drainSessionWork(session));
+		await attempt("detached calls", () => releaseDetachedCallHolds(session));
 		await attempt("events", async () => {
 			await session._agentEventQueue.catch(() => {});
 			const failures = shutdownEventFailures.get(session);
