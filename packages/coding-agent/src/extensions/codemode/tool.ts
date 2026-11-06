@@ -10,6 +10,7 @@ import type { ModelRegistry } from "../../core/model-registry.ts";
 import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
 import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts";
+import { resolveSchemaRef } from "../../utils/json-schema-ref.ts";
 import { codemodeRenderers } from "./renderer.js";
 
 export const CODEMODE_TOOL_NAME = "codemode";
@@ -162,20 +163,22 @@ export function createCodemodeDescription(
 /**
  * The field names of an object schema, `{ output, exit_code, full_output_path? }`, with the fields of
  * object-typed fields `depth` levels deep: `{ content, structuredContent?: { results } }`, and the
- * value of `const` fields: `{ action: "start", id }`. Undefined for other schemas.
+ * value of `const` fields: `{ action: "start", id }`. Undefined for other schemas. Local `$ref`s resolve
+ * against `root`.
  */
-function describeFields(schema: unknown, depth: number): string | undefined {
-	if (typeof schema !== "object" || schema === null) return undefined;
-	const { type, properties, required } = schema as Record<string, unknown>;
+function describeFields(schema: unknown, root: CodemodeJsonSchema, depth: number): string | undefined {
+	const resolved = followRef(schema, root);
+	if (typeof resolved !== "object" || resolved === null) return undefined;
+	const { type, properties, required } = resolved as Record<string, unknown>;
 	if (type !== "object" || typeof properties !== "object" || properties === null) return undefined;
 	const requiredNames = new Set(Array.isArray(required) ? required : []);
 	const fields = Object.entries(properties).map(([name, field]) => {
-		const constValue = (field as Record<string, unknown> | null)?.const;
+		const constValue = (followRef(field, root) as Record<string, unknown> | null)?.const;
 		const nested =
 			constValue !== undefined
 				? JSON.stringify(constValue)
 				: depth > 0
-					? describeFields(field, depth - 1)
+					? describeFields(field, root, depth - 1)
 					: undefined;
 		return `${name}${requiredNames.has(name) ? "" : "?"}${nested ? `: ${nested}` : ""}`;
 	});
@@ -190,7 +193,8 @@ function describeFields(schema: unknown, depth: number): string | undefined {
 function describeOutput(name: string, schema: CodemodeJsonSchema | undefined): string {
 	const type = renderToolOutputType(schema);
 	if (type === "string") return "a string";
-	const fields = describeFields(schema, 1) ?? describeUnionFields(schema);
+	const fields =
+		schema === undefined ? undefined : (describeFields(schema, schema, 1) ?? describeUnionFields(schema, schema));
 	if (fields) return `\`${fields}\``;
 	if (!type.includes("\n")) return `\`${type}\``;
 	return `a value; \`await describeTool(${JSON.stringify(name)})\` shows its type`;
@@ -199,13 +203,43 @@ function describeOutput(name: string, schema: CodemodeJsonSchema | undefined): s
  * The field names of each variant of an `anyOf`/`oneOf` whose variants are all objects, joined by
  * `|`.
  */
-function describeUnionFields(schema: unknown): string | undefined {
-	if (typeof schema !== "object" || schema === null) return undefined;
-	const { anyOf, oneOf } = schema as Record<string, unknown>;
+function describeUnionFields(schema: unknown, root: CodemodeJsonSchema): string | undefined {
+	const resolved = followRef(schema, root);
+	if (typeof resolved !== "object" || resolved === null) return undefined;
+	const { anyOf, oneOf } = resolved as Record<string, unknown>;
 	const variants = anyOf ?? oneOf;
 	if (!Array.isArray(variants) || variants.length === 0) return undefined;
-	const described = variants.map((variant) => describeFields(variant, 0));
+	const described = variants.map((variant) => describeFields(variant, root, 0));
 	return described.every((fields) => fields !== undefined) ? described.join(" | ") : undefined;
+}
+/**
+ * `schema` with the subschemas its local `$ref` chain names in `root`, so MCP output schemas that put their models in
+ * `$defs` still show field names. JSON Schema applies a `$ref` together with the keywords beside it, so the schema
+ * holding a reference keeps its own keywords (`{ $ref, const: "start" }` keeps its `const`), and its `properties` and
+ * `required` add to the referenced ones. Remote, missing, boolean, and cyclic references end the chain.
+ */
+function followRef(schema: unknown, root: CodemodeJsonSchema): unknown {
+	const seen = new Set<unknown>([schema]);
+	let current = schema;
+	while (typeof current === "object" && current !== null) {
+		const { $ref, ...own } = current as Record<string, unknown>;
+		if (typeof $ref !== "string") break;
+		const target = resolveSchemaRef($ref, root);
+		if (typeof target !== "object" || seen.has(target)) break;
+		seen.add(target);
+		const combined: Record<string, unknown> = { ...target, ...own };
+		if (isSchemaObject(target.properties) && isSchemaObject(own.properties)) {
+			combined.properties = { ...target.properties, ...own.properties };
+		}
+		if (Array.isArray(target.required) && Array.isArray(own.required)) {
+			combined.required = [...target.required, ...own.required];
+		}
+		current = combined;
+	}
+	return current;
+}
+function isSchemaObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function describeScriptCall(tool: AgentTool): string {
 	return `${tool.description.trim()}\n\nCodemode: \`tools.${toCodemodeIdentifier(tool.name)}(args)\` resolves to ${describeOutput(tool.name, toCodemodeDeclaration(tool).outputSchema)}.`;

@@ -1,5 +1,6 @@
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition, ToolInfo, ToolNamespace } from "../../core/extensions/types.ts";
+import { resolveSchemaRef } from "../../utils/json-schema-ref.ts";
 import { createMcpToolName } from "../mcp/tools.ts";
 
 export const TOOL_SEARCH_TOOL_NAME = "tool_search";
@@ -69,17 +70,29 @@ export function tokenize(text: string): string[] {
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function schemaText(schema: unknown, parts: string[]): void {
+/**
+ * Schema descriptions and property names, recursively, following local `$ref`s into `root`. `seen` holds the
+ * subschemas already reached through a reference, so recursive and shared definitions are read once, and
+ * definitions no property references are not read.
+ */
+function schemaText(schema: unknown, root: unknown, parts: string[], seen: Set<unknown>): void {
 	if (!isObject(schema)) return;
+	if (typeof schema.$ref === "string") {
+		const target = resolveSchemaRef(schema.$ref, root);
+		if (isObject(target) && !seen.has(target)) {
+			seen.add(target);
+			schemaText(target, root, parts, seen);
+		}
+	}
 	if (typeof schema.description === "string") parts.push(schema.description);
 	if (isObject(schema.properties))
 		for (const [name, property] of Object.entries(schema.properties)) {
 			parts.push(name);
-			schemaText(property, parts);
+			schemaText(property, root, parts, seen);
 		}
-	schemaText(schema.items, parts);
+	schemaText(schema.items, root, parts, seen);
 	for (const key of ["anyOf", "oneOf", "allOf"])
-		if (Array.isArray(schema[key])) for (const variant of schema[key]) schemaText(variant, parts);
+		if (Array.isArray(schema[key])) for (const variant of schema[key]) schemaText(variant, root, parts, seen);
 }
 /**
  * Search text of a tool: the description and the schema descriptions and property names, and
@@ -90,7 +103,7 @@ export function createToolSearchDocument(
 	namespace?: ToolNamespace,
 ): ToolSearchDocument {
 	const parts = [tool.description];
-	schemaText(tool.parameters, parts);
+	schemaText(tool.parameters, tool.parameters, parts, new Set([tool.parameters]));
 	const namespaceText = namespace
 		? [namespace.name, namespace.description ?? "", namespace.instructions ?? ""].join(" ")
 		: "";
