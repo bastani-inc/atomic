@@ -20,7 +20,8 @@ export type ForkErrorCode =
 	| "claim-release-failed"
 	| "session-unavailable"
 	| "cleanup-failed"
-	| "session-claim-refused";
+	| "session-claim-refused"
+	| "pool-sessions-unavailable";
 
 export type ForkErrorName =
 	| "ForkTargetNotFoundError"
@@ -37,7 +38,8 @@ export type ForkErrorName =
 	| "ForkClaimReleaseError"
 	| "ForkSessionUnavailableError"
 	| "ForkCleanupError"
-	| "ForkSessionClaimError";
+	| "ForkSessionClaimError"
+	| "ForkPoolSessionsUnavailableError";
 
 export type ForkErrorFieldValue =
 	| string
@@ -108,6 +110,7 @@ const FORK_ERROR_CODE_BY_NAME: Readonly<Record<ForkErrorName, ForkErrorCode>> = 
 	ForkSessionUnavailableError: "session-unavailable",
 	ForkCleanupError: "cleanup-failed",
 	ForkSessionClaimError: "session-claim-refused",
+	ForkPoolSessionsUnavailableError: "pool-sessions-unavailable",
 };
 
 interface ForkErrorInit {
@@ -899,6 +902,50 @@ export class ForkSessionClaimError extends ForkError {
 	}
 }
 
+/**
+ * Where a run's local workers keep their pool tables, and so the stage sessions of its child workflows: in the journal
+ * itself for a root with shared placement (`shared`), otherwise on the machine that runs them (`machine`).
+ */
+export type ForkPoolPlacement = "shared" | "machine";
+
+const POOL_TABLES_AT: Record<ForkPoolPlacement, string> = {
+	shared: "the journal, which keeps the pool of a root with shared placement",
+	machine: "the pool tables this machine keeps for the journal",
+};
+
+/**
+ * A fork of a run with local workers found no pool session tables where its placement keeps them, so its child
+ * workflows' stage sessions have nowhere its workers can take them over from. Thrown before the fork run is written;
+ * copies already made are removed.
+ */
+export class ForkPoolSessionsUnavailableError extends ForkError {
+	declare readonly name: "ForkPoolSessionsUnavailableError";
+	declare readonly code: "pool-sessions-unavailable";
+	declare readonly retryable: false;
+	readonly runId: string;
+	readonly forkRunId: string;
+	readonly placement: ForkPoolPlacement;
+
+	constructor(input: { readonly runId: string; readonly forkRunId: string; readonly placement: ForkPoolPlacement }) {
+		const fromStage = `fork it from a stage before its child workflows ran with /workflow fork ${input.runId} --from <stage>`;
+		super({
+			name: "ForkPoolSessionsUnavailableError",
+			code: "pool-sessions-unavailable",
+			what: "Fork pool sessions unavailable",
+			subject: `fork ${input.forkRunId} of run ${input.runId} has no pool session tables in ${POOL_TABLES_AT[input.placement]}`,
+			hint:
+				input.placement === "shared"
+					? `Nothing was written. No pool of run ${input.runId} ran on this journal; ${fromStage}.`
+					: `Nothing was written. Fork run ${input.runId} on the machine that ran its local workers, or ${fromStage}.`,
+			retryable: false,
+			fields: { runId: input.runId, forkRunId: input.forkRunId, placement: input.placement },
+		});
+		this.runId = input.runId;
+		this.forkRunId = input.forkRunId;
+		this.placement = input.placement;
+	}
+}
+
 export type KnownForkError =
 	| ForkTargetNotFoundError
 	| ForkDefinitionMismatchError
@@ -914,7 +961,8 @@ export type KnownForkError =
 	| ForkClaimReleaseError
 	| ForkSessionUnavailableError
 	| ForkCleanupError
-	| ForkSessionClaimError;
+	| ForkSessionClaimError
+	| ForkPoolSessionsUnavailableError;
 
 interface ForkErrorShape {
 	readonly name?: string;
@@ -975,6 +1023,10 @@ export function isForkSessionClaimError(value: unknown): boolean {
 	}
 	return false;
 }
+export const isForkPoolSessionsUnavailableError = guard(
+	ForkPoolSessionsUnavailableError,
+	"ForkPoolSessionsUnavailableError",
+);
 
 /** The first fork error in `value`'s cause chain, walking at most {@link FORK_ERROR_MAX_CAUSE_DEPTH} links. */
 export function findForkError(value: unknown): ForkError | undefined {
@@ -1183,6 +1235,12 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 			scope: text(f, "scope"),
 			replayKey: text(f, "replayKey"),
 			stageRunId: text(f, "stageRunId"),
+		}),
+	ForkPoolSessionsUnavailableError: (f) =>
+		new ForkPoolSessionsUnavailableError({
+			runId: text(f, "runId"),
+			forkRunId: text(f, "forkRunId"),
+			placement: text(f, "placement") as ForkPoolPlacement,
 		}),
 	ForkCleanupError: (f, cause) =>
 		new ForkCleanupError(

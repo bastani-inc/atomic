@@ -9,9 +9,11 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	ForkCleanupError,
 	ForkCopyFailedError,
+	ForkPoolSessionsUnavailableError,
 	ForkSessionNotFoundError,
 	ForkSessionUnavailableError,
 	isForkCleanupError,
+	isForkPoolSessionsUnavailableError,
 	isForkSessionNotFoundError,
 	isForkSessionUnavailableError,
 	isRetryableForkError,
@@ -401,8 +403,8 @@ test("a fork whose journal write fails removes its copies from the pool tables a
 
 interface SourceStage {
 	readonly name: string;
-	/** The run the stage belongs to: a child run, the root, or none recorded. */
-	readonly run: "child" | "root" | "none";
+	/** The run the stage belongs to: a child run, the root, none recorded, or a topology that names no run. */
+	readonly run: "child" | "root" | "none" | "unnamed";
 	/** Where its session is: the journal's pool tables or the host's store. */
 	readonly home: "pool" | "host";
 }
@@ -451,7 +453,16 @@ async function stagedSource(
 			replayKey: `workflow:impl:fp:1:stage:${stage.name}:1`,
 			sessionId: session.getSessionId(),
 			completedAt: index + 1,
-			...(stage.run === "none" ? {} : { topology: { version: 1, stageId: `${stage.name}-id`, parentIds: [], run } }),
+			...(stage.run === "none"
+				? {}
+				: {
+						topology: {
+							version: 1,
+							stageId: `${stage.name}-id`,
+							parentIds: [],
+							...(stage.run === "unnamed" ? {} : { run }),
+						},
+					}),
 		});
 	}
 	await pool?.close();
@@ -490,24 +501,33 @@ test("a fork copies every child stage session into one pool session store, which
 	}
 });
 
-test("a fork of a run with local workers fails before writing when the journal has no pool session tables for its copies (#4321)", async () => {
+test("a fork of a run with local workers fails with ForkPoolSessionsUnavailableError before copying anything when no pool session tables are on this machine (#4321, #4357)", async () => {
 	const source = await stagedSource("fork-pool-no-tables", {
 		localWorkers: true,
 		poolTables: false,
-		stages: [{ name: "implement", run: "child", home: "host" }],
+		stages: [
+			{ name: "plan", run: "root", home: "host" },
+			{ name: "implement", run: "child", home: "host" },
+		],
 	});
 	const destination = new MemorySessionStore();
 	await assert.rejects(
 		forkDurableRun(source.backend, forkRequest(source.runId, source.directory, source.host, destination)),
 		(error: unknown) => {
-			assert.ok(error instanceof ForkCopyFailedError);
-			assert.deepEqual([error.code, error.phase, error.retryable], ["copy-failed", "sessions", true]);
-			assert.ok(error.cause instanceof Error);
-			assert.equal(error.cause.message, "The journal has no pool session tables for the fork's workers");
+			assert.ok(error instanceof ForkPoolSessionsUnavailableError, String(error));
+			assert.ok(isForkPoolSessionsUnavailableError(error));
+			assert.deepEqual(
+				[error.code, error.runId, error.placement, error.retryable],
+				["pool-sessions-unavailable", source.runId, "machine", false],
+			);
+			assert.equal(
+				error.hint,
+				`Nothing was written. Fork run ${source.runId} on the machine that ran its local workers, or fork it from a stage before its child workflows ran with /workflow fork ${source.runId} --from <stage>.`,
+			);
 			return true;
 		},
 	);
-	assert.deepEqual(await sessionIds(destination), []);
+	assert.deepEqual(await sessionIds(destination), [], "the root stage's session was not copied first");
 	assert.deepEqual(
 		(await source.backend.journal.listRuns()).map((run) => run.runId),
 		[source.runId],
@@ -515,13 +535,15 @@ test("a fork of a run with local workers fails before writing when the journal h
 });
 
 test("a fork keeps a session in the fork's store when its run has no local workers, or its stage names no run (#4321)", async () => {
-	for (const [label, localWorkers, run] of [
-		["no local workers", false, "child"],
-		["no recorded run", true, "none"],
+	for (const [label, localWorkers, run, poolTables] of [
+		["no local workers", false, "child", true],
+		["no local workers or pool tables", false, "child", false],
+		["no recorded run", true, "none", true],
+		["a topology that names no run", true, "unnamed", true],
 	] as const) {
 		const source = await stagedSource(`fork-pool-stays-${label.replaceAll(" ", "-")}`, {
 			localWorkers,
-			poolTables: true,
+			poolTables,
 			stages: [{ name: "implement", run, home: "host" }],
 		});
 		const destination = new MemorySessionStore();

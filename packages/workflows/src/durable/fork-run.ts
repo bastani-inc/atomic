@@ -38,6 +38,7 @@ import {
 	type ForkJournalPhase,
 	ForkJournalUnavailableError,
 	ForkJournalUnsupportedError,
+	ForkPoolSessionsUnavailableError,
 	ForkSessionNotFoundError,
 	ForkSessionUnavailableError,
 	ForkSourceBusyError,
@@ -362,6 +363,8 @@ interface SourceSessions {
 	readonly backend: JournalDurableBackend;
 	/** The source's root run, whose shard of the journal store holds its pool's sessions (#4325). */
 	readonly rootRunId: string;
+	/** The root's recorded resources: its placement says where its pool keeps their sessions (#4357). */
+	readonly resources: DurableWorkflowHandle["resources"];
 	pool?: { readonly store: SessionStore | undefined };
 }
 
@@ -372,14 +375,16 @@ async function sourceSessionStoreFor(
 	cwd: string,
 ): Promise<SourceSessions> {
 	const rootRunId = handle.rootWorkflowId ?? handle.workflowId;
+	const { resources } = handle;
 	return options.sourceSessionStore === undefined
 		? {
 				store: await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd ?? cwd }),
 				owned: true,
 				backend,
 				rootRunId,
+				resources,
 			}
-		: { store: options.sourceSessionStore, owned: false, backend, rootRunId };
+		: { store: options.sourceSessionStore, owned: false, backend, rootRunId, resources };
 }
 
 async function closeSourceSessions(sessions: SourceSessions | undefined, cleanup: ForkCleanup): Promise<void> {
@@ -418,7 +423,9 @@ async function loadSession(sessions: SourceSessions, sessionId: string, context:
 async function loadPoolSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	const storage = journalStorage(sessions.backend.journal);
 	try {
-		sessions.pool ??= { store: await poolSessionStore(sessions.backend, sessions.rootRunId) };
+		sessions.pool ??= {
+			store: await poolSessionStore(sessions.backend, sessions.rootRunId, sessions.resources),
+		};
 		return await sessions.pool.store?.load(sessionId);
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
@@ -1288,9 +1295,10 @@ async function readSessions(
 
 /**
  * Copies the source's stage sessions under new ids, each where the fork's stage reopens it. A run with local workers
- * runs its child workflows on them, so the session of a stage in a child run is copied into the journal's pool tables,
- * which the child's work takes over once queued (`claimSessions`). Every other session goes to the fork's session
- * store. A copy's header names the stage's own run, as the session it copies does.
+ * runs its child workflows on them, so the session of a stage in a child run is copied into the pool tables where the
+ * fork's placement keeps them, which the child's work takes over once queued (`claimSessions`): the journal itself for
+ * a root with shared placement, otherwise the ones on this machine (#4357). Every other session goes to the fork's
+ * session store. A copy's header names the stage's own run, as the session it copies does.
  */
 async function copySessions(
 	source: ForkSource,
@@ -1311,8 +1319,14 @@ async function copySessions(
 	const destinationFor = async (pooled: boolean): Promise<CopiedSessions> => {
 		if (pooled) {
 			if (pool === undefined) {
-				const store = await poolSessionStore(source.backend, ids.forkRunId);
-				if (store === undefined) throw new Error("The journal has no pool session tables for the fork's workers");
+				const resources = source.handle.resources;
+				const store = await poolSessionStore(source.backend, ids.forkRunId, resources);
+				if (store === undefined)
+					throw new ForkPoolSessionsUnavailableError({
+						runId: source.runId,
+						forkRunId: ids.forkRunId,
+						placement: resources?.workers?.placement === "shared" ? "shared" : "machine",
+					});
 				pool = { store, copies: [], owned: true };
 				copied.push(pool);
 			}
@@ -1330,14 +1344,18 @@ async function copySessions(
 		}
 		return project;
 	};
+	const pooled = (checkpoint: DurableStageCheckpoint): boolean => {
+		const stageRun = checkpoint.topology?.run?.runId;
+		return source.handle.resources?.localWorkers !== undefined && stageRun !== undefined && stageRun !== source.runId;
+	};
 	try {
+		// The fork's pool tables are found before anything is copied.
+		if ([...snapshots.values()].some(({ checkpoint }) => pooled(checkpoint))) await destinationFor(true);
 		for (const [sessionId, { entries, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
 			const stageRun = checkpoint.topology?.run?.runId;
-			const destination = await destinationFor(
-				source.handle.resources?.localWorkers !== undefined && stageRun !== undefined && stageRun !== source.runId,
-			);
+			const destination = await destinationFor(pooled(checkpoint));
 			const id = randomUUID();
 			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
 			destination.copies.push({ id, runId });
@@ -1365,8 +1383,9 @@ async function copySessions(
 		await removeCopies(copied, ids.forkRunId, cleanup);
 		await closeCopies(copied, ids.forkRunId, cleanup);
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;
-		// A source taken over mid-copy is the claim's failure, not a failure of the copy itself.
-		if (error instanceof ForkSourceBusyError) throw error;
+		// A source taken over mid-copy is the claim's failure, and missing pool tables are missing setup: neither is a
+		// failure of the copy itself.
+		if (error instanceof ForkSourceBusyError || error instanceof ForkPoolSessionsUnavailableError) throw error;
 		throw new ForkCopyFailedError(
 			{ runId: source.runId, forkRunId: ids.forkRunId, phase: "sessions" },
 			{ cause: error as Error },

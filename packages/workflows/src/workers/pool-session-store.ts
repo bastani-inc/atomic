@@ -3,6 +3,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { existingRootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import { poolJournalOf } from "./pool-journal.js";
+import type { WorkflowExecutionResources } from "./public-options.js";
 
 /**
  * The sessions of stages that ran on local workers (#3996).
@@ -12,21 +13,23 @@ import { poolJournalOf } from "./pool-journal.js";
  * so a finished pooled stage's transcript can be read and reopened for post-mortem chat,
  * in the same process and after a restart. Undefined when no pool ever ran on the journal.
  * In the journal store those tables are in the shard of `rootRunId`. A root whose pool runs in the journal itself, as a
- * root with shared placement does, keeps them there, whatever other pools ran on this machine (#4310).
+ * root with shared placement does, keeps them there, whatever other pools ran on this machine (#4310). The root's
+ * recorded `resources` say so when the caller has its run; a fork's run, whose pool has not run yet, is placed only by
+ * them (#4357). Without them, the pool's own record in the journal does.
  * The caller owns the returned store.
  */
 export async function poolSessionStore(
 	backend: DurableWorkflowBackend,
 	rootRunId: string,
+	resources?: WorkflowExecutionResources,
 ): Promise<SessionStore | undefined> {
 	const journal = (backend as { readonly journal?: Parameters<typeof sqlPoolStorage>[0] }).journal;
 	if (journal === undefined) return undefined;
 	const rootJournal = await existingRootRunJournal(journal, rootRunId);
 	// A journal in another database keeps its pool's sessions in the machine's coordination database, except for a root
 	// whose pool runs in the journal itself, which every host opens.
-	return openPoolSessionStore(
-		(await poolRunsIn(rootJournal, rootRunId)) ? rootJournal : await poolJournalOf(rootJournal),
-	);
+	const inJournal = resources?.workers?.placement === "shared" || (await poolRunsIn(rootJournal, rootRunId));
+	return openPoolSessionStore(inJournal ? rootJournal : await poolJournalOf(rootJournal));
 }
 
 /** Whether `rootRunId`'s pool keeps its tables in `journal` itself, read without the write lock. */
