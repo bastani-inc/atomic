@@ -29,6 +29,7 @@ vi.mock("../src/utils/shell.js", async (importOriginal) => {
 	};
 });
 
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const launchShell = process.platform === "win32" ? "powershell" : "bash";
 const commands = {
 	powershell: "$value = [Console]::ReadLine(); Write-Output 'registry completed once'; exit 7",
@@ -251,16 +252,21 @@ async function sdkSession(
 	root: string,
 	options: Pick<CreateAgentSessionOptions, "orchestrationContext" | "subagentPolicy"> = {},
 ) {
-	const { session } = await createAgentSession({
+	const { session, extensionsResult } = await createAgentSession({
 		cwd: root,
 		agentDir: root,
 		sessionManager: SessionManager.inMemory(root),
 		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
 		tools: ["bash", "powershell"],
+		builtins: NO_BUILTINS,
 		...options,
 	});
 	session.pauseQueuedMessages();
+	assert.deepEqual(
+		extensionsResult.extensions.map((extension) => extension.path),
+		[],
+	);
 	return session;
 }
 

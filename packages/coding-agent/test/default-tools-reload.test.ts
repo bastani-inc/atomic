@@ -14,8 +14,11 @@ import { createAgentSession } from "../src/core/sdk.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { isSyntheticPath } from "../src/core/source-info.js";
 import { getDefaultToolNames } from "../src/core/tools/index.js";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 let tempDir: string;
 let agentDir: string;
@@ -87,7 +90,7 @@ async function createFileSession(
 		resourceLoader,
 		model: getModel("anthropic", "claude-sonnet-4-5"),
 		sessionManager: SessionManager.inMemory(tempDir),
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: NO_BUILTINS,
 		...options,
 	});
 	sessions.push(session);
@@ -187,6 +190,7 @@ test("child SDK modifiers preserve permitted custom tools and respect removals",
 				execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
 			},
 		],
+		builtins: NO_BUILTINS,
 	};
 	const parent = await createFileSession(parentOptions, true, parentOptions.settingsManager);
 	const availableTools = parent.getAllTools().map((tool) => tool.name);
@@ -202,6 +206,13 @@ test("child SDK modifiers preserve permitted custom tools and respect removals",
 		);
 		const child = await createFileSession(options, true, parentOptions.settingsManager);
 		assert.deepEqual(child.getActiveToolNames().sort(), expected);
+		assert.deepEqual(
+			child.resourceLoader
+				.getExtensions()
+				.extensions.map((extension) => extension.path)
+				.filter((path) => !isSyntheticPath(path)),
+			[],
+		);
 		assert.deepEqual(
 			child
 				.getAllTools()

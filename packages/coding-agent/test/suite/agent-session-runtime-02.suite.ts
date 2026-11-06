@@ -1,9 +1,11 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
+import type { AgentSession } from "../../src/core/agent-session.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -12,9 +14,18 @@ import {
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import { isSyntheticPath } from "../../src/core/source-info.js";
 import type { ExtensionAPI, ExtensionFactory } from "../../src/index.ts";
 
 useTemporaryAgentDir();
+
+function packageExtensionDirs(session: AgentSession): string[] {
+	return session.resourceLoader
+		.getExtensions()
+		.extensions.map((extension) => extension.path)
+		.filter((path) => !isSyntheticPath(path))
+		.map((path) => basename(dirname(path)));
+}
 
 describe("AgentSessionRuntime characterization", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -50,6 +61,7 @@ describe("AgentSessionRuntime characterization", () => {
 			model: options?.bootstrapModel === false ? undefined : faux.getModel(),
 			thinkingLevel: options?.bootstrapThinkingLevel === false ? undefined : undefined,
 			resourceLoaderOptions: {
+				builtinPackagePaths: [],
 				extensionFactories: [
 					(pi: ExtensionAPI) => {
 						pi.registerProvider(faux.getModel().provider, {
@@ -122,6 +134,7 @@ describe("AgentSessionRuntime characterization", () => {
 			agentDir: tempDir,
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
+				builtinPackagePaths: [],
 				extensionFactories: [
 					(pi: ExtensionAPI) => {
 						pi.registerProvider(faux.getModel().provider, {
@@ -180,6 +193,8 @@ describe("AgentSessionRuntime characterization", () => {
 
 		expect(realpathSync(runtime.session.sessionManager.getCwd())).toBe(realpathSync(secondDir));
 		expect(realpathSync(runtime.cwd)).toBe(realpathSync(secondDir));
+		assert.deepEqual(packageExtensionDirs(otherRuntime.session), ["intercom"]);
+		assert.deepEqual(packageExtensionDirs(runtime.session), ["intercom"]);
 	});
 	it("restores model and thinking state from the destination session", async () => {
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, {

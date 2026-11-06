@@ -16,6 +16,7 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { BUILTIN_PATH_PREFIX } from "../src/core/source-info.js";
 import { resolveDeferredStartupModel } from "../src/main-deferred-startup.js";
 
 const PROVIDER = "github-copilot";
@@ -23,6 +24,7 @@ const API_KEY: Credential = { type: "api_key", key: "github_pat_example_token" }
 const OAUTH_ACCESS = "tid=example;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com";
 /** A real built-in Copilot model, read from the catalog so the test names no model itself. */
 const CATALOG_MODEL_ID = Object.keys(GITHUB_COPILOT_MODELS)[0] ?? "";
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 function accountEntry(
 	id: string,
@@ -133,13 +135,21 @@ async function resumeSession(modelRuntime: ModelRuntime, modelId: string) {
 	const sessionManager = SessionManager.inMemory(cwd);
 	await sessionManager.appendModelChange(PROVIDER, modelId);
 	await sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "resume" }], timestamp: 0 });
-	return createAgentSession({
+	const resumed = await createAgentSession({
 		cwd,
 		agentDir,
 		modelRuntime,
 		sessionManager,
 		settingsManager: SettingsManager.inMemory({}),
+		builtins: NO_BUILTINS,
 	});
+	assert.deepEqual(
+		resumed.extensionsResult.extensions
+			.map((extension) => extension.path)
+			.filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
+		[],
+	);
+	return resumed;
 }
 
 async function availableIds(modelRuntime: ModelRuntime): Promise<string[]> {

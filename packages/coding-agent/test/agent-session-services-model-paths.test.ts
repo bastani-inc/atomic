@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
@@ -8,6 +9,7 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.js";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const originalHome = process.env.HOME;
@@ -143,6 +145,7 @@ describe("agent session service model paths", () => {
 			agentDir,
 			settingsManager: SettingsManager.create(cwd, agentDir),
 			resourceLoaderOptions: {
+				builtinPackagePaths: [],
 				noSkills: true,
 				noPromptTemplates: true,
 				noThemes: true,
@@ -159,12 +162,19 @@ describe("agent session service model paths", () => {
 			},
 		});
 		expect(services.modelRuntime.getRegisteredProviderIds()).toContain(providerId);
-		const { session } = await createAgentSessionFromServices({
+		const { session, extensionsResult } = await createAgentSessionFromServices({
 			services,
 			sessionManager: SessionManager.inMemory(),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 		});
 		try {
+			assert.deepEqual(
+				extensionsResult.extensions
+					.map((extension) => extension.path)
+					.filter((path) => !isSyntheticPath(path))
+					.map((path) => basename(dirname(path))),
+				["intercom"],
+			);
 			registerProvider = false;
 			await session.reload({ reason: "reload", failOnExtensionErrors: true });
 			expect(session.modelRuntime.getRegisteredProviderIds()).not.toContain(providerId);
