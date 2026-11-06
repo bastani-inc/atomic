@@ -162,7 +162,10 @@ export class AgentWakeDispatcher {
 		this.handlers.set(namespace, handler);
 		const slots = this.slots.get(namespace);
 		if (slots === undefined) this.slots.set(namespace, { maxConcurrent, active: 0, waiting: [] });
-		else slots.maxConcurrent = maxConcurrent;
+		else {
+			slots.maxConcurrent = maxConcurrent;
+			this.grantWaiting(slots);
+		}
 		return () => {
 			if (this.handlers.get(namespace) !== handler) return;
 			this.handlers.delete(namespace);
@@ -243,9 +246,8 @@ export class AgentWakeDispatcher {
 		const slots = this.slots.get(namespace);
 		if (slots === undefined) return () => {};
 		const free = () => {
-			const next = slots.waiting.shift();
-			if (next !== undefined) return next();
 			slots.active -= 1;
+			this.grantWaiting(slots);
 			this.forgetIdleSlots(namespace);
 		};
 		if (slots.active < slots.maxConcurrent) {
@@ -253,6 +255,16 @@ export class AgentWakeDispatcher {
 			return free;
 		}
 		return new Promise<() => void>((resolve) => slots.waiting.push(() => resolve(free)));
+	}
+
+	/** Hand free slots to waiting keys, first in, first out, while the namespace's current limit allows. */
+	private grantWaiting(slots: NamespaceSlots): void {
+		while (slots.active < slots.maxConcurrent) {
+			const next = slots.waiting.shift();
+			if (next === undefined) return;
+			slots.active += 1;
+			next();
+		}
 	}
 
 	private async drain(wakeKey: string, state: KeyState): Promise<void> {

@@ -564,6 +564,66 @@ describe("AgentWakeDispatcher concurrency (#4326)", () => {
 		assert.equal(dispatcher.stats().keys, 0);
 	});
 
+	test("a replacement handler's lower limit holds back waiting keys until running keys fit under it (#4326)", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const started: string[] = [];
+		const gates = new Map<string, () => void>();
+		let active = 0;
+		let maxActiveAfterReplace = 0;
+		let replaced = false;
+		const blockingHandler = async (key: string) => {
+			started.push(key);
+			active += 1;
+			if (replaced) maxActiveAfterReplace = Math.max(maxActiveAfterReplace, active);
+			await new Promise<void>((resolve) => gates.set(key, resolve));
+			active -= 1;
+		};
+		dispatcher.handle("bench", blockingHandler, { maxConcurrent: 2 });
+		const keys = ["bench:a", "bench:b", "bench:c", "bench:d"];
+		const delivered = keys.map((key) => dispatcher.deliver(key, wake("1")));
+		await flush();
+		assert.deepEqual(started, ["bench:a", "bench:b"]);
+		dispatcher.handle("bench", blockingHandler, { maxConcurrent: 1, replace: true });
+		replaced = true;
+		gates.get("bench:a")?.();
+		await flush();
+		assert.deepEqual(started, ["bench:a", "bench:b"], "a freed slot above the new limit is not handed on");
+		gates.get("bench:b")?.();
+		await flush();
+		assert.deepEqual(started, ["bench:a", "bench:b", "bench:c"]);
+		gates.get("bench:c")?.();
+		await flush();
+		gates.get("bench:d")?.();
+		await Promise.all(delivered);
+		assert.deepEqual(started, keys);
+		assert.equal(maxActiveAfterReplace, 1);
+		assert.equal(dispatcher.stats().keys, 0);
+	});
+
+	test("a replacement handler's higher limit starts waiting keys at once (#4326)", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const started: string[] = [];
+		const gates = new Map<string, () => void>();
+		const blockingHandler = async (key: string) => {
+			started.push(key);
+			await new Promise<void>((resolve) => gates.set(key, resolve));
+		};
+		dispatcher.handle("bench", blockingHandler, { maxConcurrent: 1 });
+		const keys = ["bench:a", "bench:b", "bench:c", "bench:d"];
+		const delivered = keys.map((key) => dispatcher.deliver(key, wake("1")));
+		await flush();
+		assert.deepEqual(started, ["bench:a"]);
+		dispatcher.handle("bench", blockingHandler, { maxConcurrent: 3, replace: true });
+		await flush();
+		assert.deepEqual(started, ["bench:a", "bench:b", "bench:c"], "waiting keys take the slots the new limit adds");
+		for (const key of ["bench:a", "bench:b", "bench:c"]) gates.get(key)?.();
+		await flush();
+		assert.deepEqual(started, keys);
+		gates.get("bench:d")?.();
+		await Promise.all(delivered);
+		assert.equal(dispatcher.stats().keys, 0);
+	});
+
 	test("an invalid cap is refused as a config error before the handler is registered", () => {
 		const dispatcher = new AgentWakeDispatcher();
 		for (const [value, shown] of [
