@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { appendFile, mkdir, rm, truncate, unlink, writeFile } from "node:fs/promises";
+import { appendFile, truncate, unlink, writeFile } from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { delimiter, join } from "node:path";
@@ -491,10 +491,9 @@ test("logTail resolves on abort and emits nothing afterwards", async () => {
 });
 
 test("logTail rejects a read failure other than ENOENT with the errno code as detail", async () => {
-	const dir = tempDir();
-	const notDirectory = join(dir, "file");
-	await writeFile(notDirectory, "x");
-	const failing = run(logTail(join(notDirectory, "child.log"), { pollMs: POLL_MS }));
+	const file = join(tempDir(), "app.log");
+	fsProbe.statFaults.push(() => Promise.reject(errnoError("ENOTDIR")));
+	const failing = run(logTail(file, { pollMs: POLL_MS }));
 	const error = await rejection(failing.finished);
 	assert.ok(isEventSourceError(error));
 	assert.ok(error instanceof EventSourceError);
@@ -694,16 +693,12 @@ test("logTail stops delivering a batch of lines once its signal aborts", async (
 });
 
 test("logTail rejects a read failure in the middle of a run with the errno code as detail", async () => {
-	const dir = tempDir();
-	const folder = join(dir, "sub");
-	await mkdir(folder);
-	const file = join(folder, "app.log");
+	const file = join(tempDir(), "app.log");
 	await writeFile(file, "old\n");
 	const clock = manualDispatcher();
 	const handle = run(logTail(file, { pollMs: POLL_MS, dispatcher: clock.dispatcher }));
 	await waitFor(() => clock.dispatcher.pending === 1, "the first poll");
-	await rm(folder, { recursive: true });
-	await writeFile(folder, "now a file");
+	fsProbe.statFaults.push(() => Promise.reject(errnoError("ENOTDIR")));
 	clock.advance(POLL_MS);
 	const error = await rejection(handle.finished);
 	assert.ok(error instanceof EventSourceError);
