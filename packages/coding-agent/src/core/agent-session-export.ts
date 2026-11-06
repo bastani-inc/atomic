@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
@@ -12,6 +12,7 @@ import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import { inlineToolOutput } from "./session-tool-output.ts";
 import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
+import { attachCleanupCause } from "./storage/cleanup.js";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
@@ -174,10 +175,11 @@ export async function exportToJsonl(
 		mkdirSync(dir, { recursive: true });
 	}
 
+	const sessionId = this.sessionManager.getSessionId();
 	const header: SessionHeader = {
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
-		id: this.sessionManager.getSessionId(),
+		id: sessionId,
 		createdAt: new Date().toISOString(),
 		cwd: this.sessionManager.getCwd(),
 	};
@@ -191,39 +193,56 @@ export async function exportToJsonl(
 			: sessionSnapshotBlobs(store.snapshotBlobs, this.sessionManager.getEntries()),
 	);
 	const branchEntries =
-		options.toolOutputContent === false
-			? snapshotEntries
-			: await inlineToolOutput(snapshotEntries, store, this.sessionManager.getSessionId());
-	const lines = [JSON.stringify(header)];
+		options.toolOutputContent === false ? snapshotEntries : inlineToolOutput(snapshotEntries, store, sessionId);
+	const shareEntry = (parentId: string | null) => ({
+		type: "custom",
+		id: randomUUID(),
+		parentId,
+		timestamp: new Date().toISOString(),
+		customType: "atomic.share",
+		data: {
+			systemPrompt: this.systemPrompt,
+			tools: this.agent.state.tools.map(({ name, description, parameters }) => ({
+				name,
+				description,
+				parameters,
+			})),
+		},
+	});
 
-	// Re-chain parentIds to form a linear sequence
-	let prevId: string | null = null;
-	for (const entry of branchEntries) {
-		const linear = { ...entry, parentId: prevId };
-		lines.push(JSON.stringify(linear));
-		prevId = entry.id;
+	// One line at a time into a file beside the target, moved into place when complete: carried tool outputs can be
+	// large enough that the whole file would not fit in one string, and a failed export leaves the target as it was.
+	const partialPath = `${filePath}.${randomUUID()}.partial`;
+	try {
+		const file = openSync(partialPath, "w");
+		try {
+			writeLine(file, JSON.stringify(header));
+			// Re-chain parentIds to form a linear sequence
+			let prevId: string | null = null;
+			for await (const entry of branchEntries) {
+				writeLine(file, JSON.stringify({ ...entry, parentId: prevId }));
+				prevId = entry.id;
+			}
+			if (options.includeShareContext) writeLine(file, JSON.stringify(shareEntry(prevId)));
+		} finally {
+			closeSync(file);
+		}
+		renameSync(partialPath, filePath);
+	} catch (error) {
+		try {
+			rmSync(partialPath, { force: true });
+		} catch (cleanupCause) {
+			attachCleanupCause(error, cleanupCause);
+		}
+		throw error;
 	}
-	if (options.includeShareContext) {
-		const shareEntry = {
-			type: "custom",
-			id: randomUUID(),
-			parentId: prevId,
-			timestamp: new Date().toISOString(),
-			customType: "atomic.share",
-			data: {
-				systemPrompt: this.systemPrompt,
-				tools: this.agent.state.tools.map(({ name, description, parameters }) => ({
-					name,
-					description,
-					parameters,
-				})),
-			},
-		};
-		lines.push(JSON.stringify(shareEntry));
-	}
-
-	writeFileSync(filePath, `${lines.join("\n")}\n`);
 	return filePath;
+}
+
+/** Writes `text` and a line break to `file`, all of it: one write may take only part of a large string. */
+function writeLine(file: number, text: string): void {
+	const bytes = Buffer.from(`${text}\n`);
+	for (let written = 0; written < bytes.length; ) written += writeSync(file, bytes, written);
 }
 
 // =========================================================================

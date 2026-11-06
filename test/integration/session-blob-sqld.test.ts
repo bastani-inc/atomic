@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import {
 	copySessionBlobs,
 	inlineToolOutput,
@@ -35,6 +36,12 @@ const header = (id: string, cwd = "/project") => ({
 	createdAt: new Date(0).toISOString(),
 	cwd,
 });
+
+/**
+ * A blob of 64 MiB crosses HTTP as 64 chunk statements each way to a real server, and a test stores, reads, copies and
+ * exports blobs of up to that size, so its cost is the server's, not a slow test: the default budget is too short.
+ */
+const REAL_SERVER_BLOB_TIMEOUT_MS = 300_000;
 
 let database: SqliteDatabase;
 let store: SqlSessionStore;
@@ -69,50 +76,60 @@ const sha256 = (data: Uint8Array) => createHash("sha256").update(data).digest("h
 
 describe.skipIf(serverUrl === undefined)("session blobs on a libSQL server (#4379)", () => {
 	for (const size of [4_900_000, 5_000_000, 6 * MiB, 20 * MiB, 64 * MiB]) {
-		test(`a blob of ${size} bytes is stored once and read back whole`, async () => {
-			const id = await session();
-			const bytes = bytesOf(size);
+		test(
+			`a blob of ${size} bytes is stored once and read back whole`,
+			async () => {
+				const id = await session();
+				const bytes = bytesOf(size);
 
-			const blob = await store.putBlob(id, bytes);
-			const read = await store.getBlob(id, blob.hash);
+				const blob = await store.putBlob(id, bytes);
+				const read = await store.getBlob(id, blob.hash);
 
-			assert.deepEqual(blob, { hash: sha256(bytes), bytes: size });
-			assert.ok(read !== undefined && Buffer.from(read).equals(Buffer.from(bytes)));
-			assert.deepEqual(await store.putBlob(id, bytes), blob, "the same bytes again");
-			await store.delete(id);
-			assert.equal(await store.getBlob(id, blob.hash), undefined, "deleted with the session");
-		}, 300_000);
+				assert.deepEqual(blob, { hash: sha256(bytes), bytes: size });
+				assert.ok(read !== undefined && Buffer.from(read).equals(Buffer.from(bytes)));
+				assert.deepEqual(await store.putBlob(id, bytes), blob, "the same bytes again");
+				await store.delete(id);
+				assert.equal(await store.getBlob(id, blob.hash), undefined, "deleted with the session");
+			},
+			REAL_SERVER_BLOB_TIMEOUT_MS,
+		);
 	}
 
-	test("a released stage's 6 MiB result is stored, previewed, copied and exported (#4379)", async () => {
-		const output = `BEGIN a released stage's output\n${"s".repeat(6 * MiB)}`;
-		const first = await SessionManager.create(store, "/project");
-		created.push(first.getSessionId());
+	test(
+		"a released stage's 6 MiB result is stored, previewed, copied and exported (#4379)",
+		async () => {
+			const output = `BEGIN a released stage's output\n${"s".repeat(6 * MiB)}`;
+			const first = await SessionManager.create(store, "/project");
+			created.push(first.getSessionId());
 
-		const replacement = await redirectOversizedToolResult({
-			toolName: "bash",
-			toolCallId: "call-1",
-			result: { content: [{ type: "text", text: output }], details: undefined },
-			isError: false,
-			sessionId: first.getSessionId(),
-			persist: sessionBlobOutput(first, "call-1"),
-		});
+			const replacement = await redirectOversizedToolResult({
+				toolName: "bash",
+				toolCallId: "call-1",
+				result: { content: [{ type: "text", text: output }], details: undefined },
+				isError: false,
+				sessionId: first.getSessionId(),
+				persist: sessionBlobOutput(first, "call-1"),
+			});
 
-		const message = replacement?.content[0];
-		assert.ok(message?.type === "text");
-		assert.match(message.text, /Full output saved to: tool-output:\/\/[0-9a-f]{64}\n/);
-		const hash = sha256(new TextEncoder().encode(output));
-		assert.equal(Buffer.from((await store.getBlob(first.getSessionId(), hash))!).toString("utf8"), output);
-		const forkTarget = await session();
-		await copySessionBlobs(store, first.getSessionId(), store, forkTarget, [hash]);
-		assert.equal(Buffer.from((await store.getBlob(forkTarget, hash))!).toString("utf8"), output);
-		const exported = await inlineToolOutput(first.getEntries(), store, first.getSessionId());
-		const { entries, blobs } = takeInlineToolOutput(exported, "imported");
-		assert.equal(blobs.length, 1);
-		assert.equal(
-			entries.filter((entry) => entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE).length,
-			1,
-		);
-		assert.equal(sha256(blobs[0]!.data), hash);
-	}, 300_000);
+			const message = replacement?.content[0];
+			assert.ok(message?.type === "text");
+			assert.match(message.text, /Full output saved to: tool-output:\/\/[0-9a-f]{64}\n/);
+			const hash = sha256(new TextEncoder().encode(output));
+			assert.equal(Buffer.from((await store.getBlob(first.getSessionId(), hash))!).toString("utf8"), output);
+			const forkTarget = await session();
+			await copySessionBlobs(store, first.getSessionId(), store, forkTarget, [hash]);
+			assert.equal(Buffer.from((await store.getBlob(forkTarget, hash))!).toString("utf8"), output);
+			const exported: SessionEntry[] = [];
+			for await (const entry of inlineToolOutput(first.getEntries(), store, first.getSessionId()))
+				exported.push(entry);
+			const { entries, blobs } = takeInlineToolOutput(exported, "imported");
+			assert.equal(blobs.length, 1);
+			assert.equal(
+				entries.filter((entry) => entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE).length,
+				1,
+			);
+			assert.equal(sha256(blobs[0]!.data), hash);
+		},
+		REAL_SERVER_BLOB_TIMEOUT_MS,
+	);
 });

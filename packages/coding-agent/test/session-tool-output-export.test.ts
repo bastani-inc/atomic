@@ -4,7 +4,16 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
@@ -25,6 +34,11 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 useTemporaryAgentDir();
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return { ...actual, writeSync: vi.fn(actual.writeSync) };
+});
 
 const directories: string[] = [];
 const closers: (() => Promise<void>)[] = [];
@@ -230,4 +244,90 @@ test("a persisted session reads its tool output and its artifacts through one re
 	assert.match(getMessageText(output), /^BEGIN\b/);
 	assert.equal(artifact.isError, false, getMessageText(artifact));
 	assert.match(getMessageText(artifact), /an artifact line/);
+});
+
+/** A session in its own database whose released stages kept one blob each, ready to export. */
+async function sessionWithOutputs(directory: string, count: number) {
+	const store = await sqlStore(directory, "source");
+	const manager = await SessionManager.create(store, process.cwd());
+	const harness = await createHarness({ sessionManager: manager });
+	harnesses.push(harness);
+	await manager.appendMessage({ role: "user", content: "run the reports", timestamp: Date.now() });
+	const hashes: string[] = [];
+	for (let index = 0; index < count; index++) {
+		const kept = await sessionBlobOutput(manager, `call-${index}`)!(`output ${index}\n${"x".repeat(5000)}`);
+		hashes.push(kept.sha256);
+	}
+	return { store, manager, harness, hashes };
+}
+
+test("an export carries the outputs of the session it was started for, even when the manager moves on while it waits (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-moved-");
+	const { manager, harness } = await sessionWithOutputs(directory, 1);
+	let moved = false;
+	const sessionId = manager.getSessionId();
+	vi.spyOn(manager, "getSessionId").mockImplementation(() => (moved ? "another-session" : sessionId));
+	const getEntries = manager.getEntries.bind(manager);
+	// The export collects the session's entries just before it waits on the snapshot content.
+	vi.spyOn(manager, "getEntries").mockImplementation(() => {
+		moved = true;
+		return getEntries();
+	});
+
+	const path = await harness.session.exportToJsonl(join(directory, "export.jsonl"));
+
+	assert.equal(moved, true);
+	const [carried] = references(fileLines(path));
+	assert.equal(typeof carried?.base64, "string", "the output of the exported session is in the file");
+});
+
+test("an export holds one carried output at a time, writing each entry before it reads the next output (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-stream-");
+	const { store, harness } = await sessionWithOutputs(directory, 3);
+	const events: string[] = [];
+	const getBlob = store.getBlob.bind(store);
+	store.getBlob = async (sessionId, hash) => {
+		events.push("read");
+		return getBlob(sessionId, hash);
+	};
+	const actualWrite = (await vi.importActual<typeof import("node:fs")>("node:fs")).writeSync;
+	vi.mocked(writeSync).mockImplementation(((...args: Parameters<typeof actualWrite>) => {
+		events.push("write");
+		return actualWrite(...args);
+	}) as never);
+	let path: string;
+	try {
+		path = await harness.session.exportToJsonl(join(directory, "export.jsonl"));
+	} finally {
+		vi.mocked(writeSync).mockImplementation(actualWrite as never);
+	}
+
+	assert.equal(references(fileLines(path)).filter((reference) => reference.base64 !== undefined).length, 3);
+	assert.equal(events.filter((event) => event === "read").length, 3);
+	assert.ok(
+		!events.some((event, index) => event === "read" && events[index + 1] === "read"),
+		`two outputs were read in a row: ${events.join(" ")}`,
+	);
+});
+
+test("an export that fails part way leaves the file it was to replace as it was, and no partial file (#4379)", async () => {
+	const directory = temporaryDirectory("atomic-tool-output-export-failed-");
+	const { store, harness } = await sessionWithOutputs(directory, 3);
+	const target = join(directory, "export.jsonl");
+	writeFileSync(target, "previous export");
+	const failure = new Error("disk read failed");
+	const getBlob = store.getBlob.bind(store);
+	let reads = 0;
+	store.getBlob = async (sessionId, hash) => {
+		if (++reads === 2) throw failure;
+		return getBlob(sessionId, hash);
+	};
+
+	await assert.rejects(harness.session.exportToJsonl(target), (error) => error === failure);
+
+	assert.equal(readFileSync(target, "utf8"), "previous export");
+	assert.deepEqual(
+		readdirSync(directory).filter((name) => name.endsWith(".partial")),
+		[],
+	);
 });

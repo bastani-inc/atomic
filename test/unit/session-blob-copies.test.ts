@@ -24,6 +24,13 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
+/** `inlineToolOutput`'s entries, all of them. */
+async function inlined(...args: Parameters<typeof inlineToolOutput>): Promise<SessionEntry[]> {
+	const entries: SessionEntry[] = [];
+	for await (const entry of inlineToolOutput(...args)) entries.push(entry);
+	return entries;
+}
+
 function sha256(data: string | Uint8Array): string {
 	return createHash("sha256").update(data).digest("hex");
 }
@@ -174,7 +181,7 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		const entries = manager.getBranch();
 		assert.deepEqual(toolOutputHashes(entries), [hash]);
 
-		const exported = await inlineToolOutput(entries, store, manager.getSessionId());
+		const exported = await inlined(entries, store, manager.getSessionId());
 
 		const carried = exported.flatMap((entry) =>
 			entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
@@ -210,6 +217,30 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		);
 	});
 
+	test("an export reads each output when its entry is reached and keeps none, however many a session has (#4379)", async () => {
+		const store = new MemorySessionStore();
+		const { manager } = await sessionWithOutput(store);
+		await spillReleased(manager, "call-2", "second output ".repeat(5000));
+		await spillReleased(manager, "call-3", "third output ".repeat(5000));
+		const reads: string[] = [];
+		const getBlob = store.getBlob.bind(store);
+		store.getBlob = async (sessionId, hash) => {
+			reads.push(hash);
+			return getBlob(sessionId, hash);
+		};
+		const carried: string[] = [];
+
+		for await (const entry of inlineToolOutput(manager.getBranch(), store, manager.getSessionId())) {
+			if (entry.type === "custom" && (entry.data as { base64?: string }).base64 !== undefined) {
+				carried.push(entry.id);
+				assert.equal(reads.length, carried.length, "the next output is read only once this one was taken");
+			}
+		}
+
+		assert.equal(carried.length, 3);
+		assert.deepEqual(reads.length, 3);
+	});
+
 	test("an export leaves out an output its store no longer holds, keeping the reference, and says so once (#4379)", async () => {
 		const store = new MemorySessionStore();
 		const { manager, hash } = await sessionWithOutput(store);
@@ -220,7 +251,7 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		});
 		const reported: unknown[] = [];
 
-		const exported = await inlineToolOutput(entries, withoutBlobs, manager.getSessionId(), {
+		const exported = await inlined(entries, withoutBlobs, manager.getSessionId(), {
 			onMissingBlob: (error) => reported.push(error),
 		});
 
@@ -234,7 +265,7 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		assert.equal(error.missing, 2);
 		assert.match(error.message, new RegExp(`${hash} and 1 more in session`));
 		const blobless = Object.assign(Object.create(store) as MemorySessionStore, { getBlob: undefined });
-		assert.deepEqual(await inlineToolOutput(entries, blobless, manager.getSessionId()), entries);
+		assert.deepEqual(await inlined(entries, blobless, manager.getSessionId()), entries);
 	});
 
 	test("with no listener a missing blob is a process warning, and a listener that throws changes nothing (#4379)", async () => {
@@ -246,9 +277,9 @@ describe("tool-output references in copies and exports (#4379)", () => {
 		});
 		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
 		try {
-			await inlineToolOutput(entries, withoutBlobs, manager.getSessionId());
+			await inlined(entries, withoutBlobs, manager.getSessionId());
 			const listener = new Error("listener failed");
-			const exported = await inlineToolOutput(entries, withoutBlobs, manager.getSessionId(), {
+			const exported = await inlined(entries, withoutBlobs, manager.getSessionId(), {
 				onMissingBlob: () => {
 					throw listener;
 				},

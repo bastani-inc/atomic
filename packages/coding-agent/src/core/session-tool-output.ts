@@ -163,37 +163,35 @@ export function copySessionBlobs(
 }
 
 /**
- * `entries` with the bytes of each tool output `store` holds for the session carried inline, each once, so an
- * exported file restores without the storage. An output the store no longer holds keeps only its reference, and is
- * reported once through `onMissingBlob`.
+ * `entries`, one at a time, each tool output `store` holds for the session carried inline once, so an exported file
+ * restores without the storage. A blob is read when its entry is reached and not kept, so an export holds one output
+ * at a time however many a session has. An output the store no longer holds keeps only its reference, and is reported
+ * once, after the last entry, through `onMissingBlob`.
  */
-export async function inlineToolOutput(
+export async function* inlineToolOutput(
 	entries: readonly SessionEntry[],
 	store: SessionStore,
 	sessionId: string,
 	options: BlobCopyOptions = {},
-): Promise<SessionEntry[]> {
-	if (store.getBlob === undefined) return [...entries];
+): AsyncGenerator<SessionEntry, void> {
 	const seen = new Set<string>();
 	const missing: string[] = [];
-	const inlined: SessionEntry[] = [];
 	for (const entry of entries) {
 		const reference = referenceOf(entry);
-		if (reference === undefined || seen.has(reference.hash)) {
-			inlined.push(entry);
+		if (store.getBlob === undefined || reference === undefined || seen.has(reference.hash)) {
+			yield entry;
 			continue;
 		}
 		seen.add(reference.hash);
 		const data = await store.getBlob(sessionId, reference.hash);
 		if (data === undefined) {
 			missing.push(reference.hash);
-			inlined.push(entry);
+			yield entry;
 			continue;
 		}
-		inlined.push({ ...entry, data: { ...reference, base64: Buffer.from(data).toString("base64") } } as SessionEntry);
+		yield { ...entry, data: { ...reference, base64: Buffer.from(data).toString("base64") } } as SessionEntry;
 	}
 	reportMissingBlobs(options, sessionId, missing);
-	return inlined;
 }
 
 /**
