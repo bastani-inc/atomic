@@ -155,7 +155,38 @@ describe.each(MEMBERS)("$name (#4538)", (member) => {
 		}
 		assert.equal(member.guard({ name: member.name, code: "broker-future" }), false);
 		assert.equal(member.guard({ ...JSON.parse(JSON.stringify(member.make())), name: "Error" }), false);
+		for (const value of [null, undefined, member.name, 7]) assert.equal(member.guard(value), false, String(value));
 	});
+
+	test("a copy that kept its name, code and facts is a member of the family", () => {
+		const copy = JSON.parse(JSON.stringify(member.make())) as object;
+		assert.ok(isIntercomBrokerError(copy));
+		assert.ok(member.guard(copy));
+		assert.equal(isIntercomBrokerError({ ...copy, code: "broker-future" }), false);
+		assert.equal(isIntercomBrokerError({ ...copy, name: "IntercomBrokerFutureError" }), false);
+	});
+});
+
+test("an upgrade copy is recognized for either phase it names, and not for another (#4538)", () => {
+	for (const phase of ["stop", "start"] as const) {
+		const copy = JSON.parse(
+			JSON.stringify(new IntercomBrokerUpgradeError({ phase, previousPid: 9, previousProtocolMax: 1 })),
+		) as object;
+		assert.ok(isIntercomBrokerUpgradeError(copy), phase);
+		assert.equal(isIntercomBrokerUpgradeError({ ...copy, phase: "restart" }), false);
+	}
+	assert.equal(
+		new IntercomBrokerUpgradeError({ phase: "stop", previousPid: 9, previousProtocolMax: 1 }).message,
+		"Could not replace the older Intercom broker (pid 9, protocol 1) while stopping it (broker-upgrade-failed). This session keeps using the older broker, on this machine only. Run `atomic intercom restart` to replace it.",
+	);
+	assert.equal(
+		new IntercomBrokerStopTimeoutError({ pid: 9, timeoutMs: 10_000, elapsedMs: 10_050 }).message,
+		"The Intercom broker (pid 9) did not exit within 10000 ms of its shutdown request (broker-stop-timeout). Wait for the broker process to exit, or end it yourself, then retry.",
+	);
+	assert.equal(
+		new IntercomBrokerProtocolError(PROTOCOL_FIELDS).message,
+		"The Intercom broker speaks protocol 1 to 1, older than the protocol 2 that reserve_released_children needs (broker-protocol-unsupported). Run `atomic intercom restart` so a broker of this Atomic version replaces the older one, then retry.",
+	);
 });
 
 test("an upgrade that failed starting the successor says so and points at the reconnect, not at the older broker (#4538)", () => {

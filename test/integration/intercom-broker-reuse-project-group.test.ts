@@ -312,7 +312,8 @@ type StatusFault =
 	| "multi-node"
 	| "legacy"
 	| "legacy-shared"
-	| "legacy-multi-node";
+	| "legacy-multi-node"
+	| "future";
 
 interface FaultyBroker {
 	statusRequests: number;
@@ -329,6 +330,7 @@ const REGISTERING_FAULTS: ReadonlySet<StatusFault> = new Set([
 	"legacy",
 	"legacy-shared",
 	"legacy-multi-node",
+	"future",
 ]);
 
 function faultyStatusReport(fault: StatusFault): Record<string, JsonWireValue> | undefined {
@@ -347,6 +349,8 @@ function faultyStatusReport(fault: StatusFault): Record<string, JsonWireValue> |
 			return { pid: 1, sessions: 0, storage: { digest: "d", source: "env" }, multiNode: { status: "off" } };
 		case "legacy-multi-node":
 			return { pid: 1, sessions: 0, multiNode: { status: "on" } };
+		case "future":
+			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 3, max: 4 } };
 		case "malformed":
 			return { pid: "unknown" };
 		default:
@@ -381,7 +385,7 @@ async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
 					}
 					if (message.type === "register_verified") {
 						broker.verifiedRegistrations += 1;
-						if (fault.startsWith("legacy")) socket.destroy();
+						if (fault.startsWith("legacy") || fault === "future") socket.destroy();
 					}
 					if (message.type === "list")
 						writeMessage(socket, { type: "sessions", requestId: message.requestId, sessions: [] });
@@ -660,9 +664,47 @@ test("an older broker that this session cannot replace is used on this machine o
 	);
 });
 
-for (const [fault, label, storage] of [
-	["legacy-shared", "the session selects multi-node storage", true],
-	["legacy-multi-node", "the broker reports multi-node routing", false],
+test("a broker that shares no protocol version with this session is left running and used on this machine only, with one warning (#4538)", async () => {
+	const faulty = await startFaultyBroker("future");
+	const notices: string[] = [];
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "future-broker", notices);
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.deepEqual([faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations], [0, 0, 1]);
+	assert.equal(notices.length, 1, notices.join("\n"));
+	assert.match(notices[0] ?? "", LOCAL_ONLY_WARNING);
+	assert.doesNotMatch(notices[0] ?? "", /Replacing it failed/);
+});
+
+test("a session without a UI writes the single-machine warning to stderr once (#4538)", async () => {
+	const { resetLocalOnlyBrokerWarningWithoutUi } = await import("../../packages/intercom/local-only-broker.js");
+	resetLocalOnlyBrokerWarningWithoutUi();
+	const written = vi.spyOn(console, "error").mockImplementation(() => {});
+	const faulty = await startFaultyBroker("unsupported");
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "headless-local");
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.equal(faulty.registrations, 1);
+	const warnings = written.mock.calls
+		.map(([line]) => String(line))
+		.filter((line) => line.startsWith("Warning: The running Intercom broker"));
+	assert.equal(warnings.length, 1, warnings.join("\n"));
+	assert.match(warnings[0] ?? "", /\(broker_status: unsupported\)/);
+	written.mockRestore();
+	resetLocalOnlyBrokerWarningWithoutUi();
+});
+
+for (const [fault, label, storage, shutdownsUnlessItsStorageDiffers] of [
+	["legacy-shared", "the session selects multi-node storage", true, 0],
+	["legacy-multi-node", "the broker reports multi-node routing", false, 1],
 ] as const) {
 	test(`an older broker that cannot verify a registration is refused with broker-routing-unavailable when ${label} (#4320, #4538)`, async () => {
 		const faulty = await startFaultyBroker(fault);
@@ -676,7 +718,10 @@ for (const [fault, label, storage] of [
 		assert.equal(denied.isError, true, denied.content[0]?.text);
 		assert.equal(denied.details?.code, "broker-routing-unavailable");
 		assert.equal(denied.details?.retryable, true);
-		assert.deepEqual([faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations], [1, 0, 0]);
+		assert.deepEqual(
+			[faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations],
+			[shutdownsUnlessItsStorageDiffers, 0, 0],
+		);
 		await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
 		assert.deepEqual([faulty.verifiedRegistrations, faulty.registrations], [0, 0]);
 	});

@@ -298,6 +298,23 @@ describe("registering unverified with a broker of protocol 1 (#4538)", () => {
 		}
 	});
 
+	test("a client that is not registered fails a request of protocol 2 as not connected, not with the protocol error", async () => {
+		const client = new IntercomClient("client-under-test", { connectTimeoutMs: 2_000 });
+		const error = await client
+			.reserveReleasedChildren([{ childName: "worker", wake: false }])
+			.catch((caught: unknown) => caught);
+		assert.ok(error instanceof Error, String(error));
+		assert.equal(isIntercomBrokerProtocolError(error), false);
+		assert.match(error.message, /Not connected/);
+		assert.equal(
+			isIntercomBrokerProtocolError(
+				await client.acknowledgeReleasedChildWake("worker").catch((caught: unknown) => caught),
+			),
+			false,
+		);
+		assert.equal(client.acknowledgeReleasedChildReply({} as never, true), false);
+	});
+
 	test("a broker that advertises protocol 2 receives the request, and its range is the client's", async () => {
 		const received = await fakeBroker((socket) =>
 			writeMessage(socket, { type: "registered", sessionId: "fake-session", protocol: { min: 1, max: 2 } }),

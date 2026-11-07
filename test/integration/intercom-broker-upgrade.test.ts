@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -373,18 +373,23 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 	);
 });
 
-/**
- * A broker of protocol 1 at the agent directory's socket: its pid is a real process that ends when it shuts down.
- * With `exitDelayMs` it keeps accepting connections that long after acknowledging the shutdown, as a Windows named
- * pipe does until its process has exited, and only then closes and ends its process.
- */
-async function startFakeLegacyBroker(
-	exitDelayMs = 0,
-	storage?: { digest: string; source: "env" | "settings" },
-): Promise<{
+interface FakeLegacyBrokerOptions {
+	/** How long it keeps accepting connections after acknowledging a shutdown, as a Windows named pipe does until its process has exited. */
+	readonly exitDelayMs?: number;
+	readonly storage?: { digest: string; source: "env" | "settings" };
+	readonly sessions?: number;
+	/** `malformed`: an unreadable status report. `dropped`: closes the status request, as a broker older than it does. */
+	readonly status?: "report" | "malformed" | "dropped";
+	/** `dropped`: closes the shutdown request unanswered. `ignored`: acknowledges it and never exits. */
+	readonly shutdown?: "exits" | "dropped" | "ignored";
+}
+
+/** A broker of protocol 1 at the agent directory's socket: its pid is a real process that ends when it shuts down. */
+async function startFakeLegacyBroker(options: FakeLegacyBrokerOptions = {}): Promise<{
 	shutdownRequests: () => number;
 	statusRequests: () => number;
 	exitedAt: () => number | undefined;
+	pid: number;
 }> {
 	const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 	const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
@@ -408,20 +413,32 @@ async function startFakeLegacyBroker(
 					if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return;
 					if (frame.type === "broker_status") {
 						statuses += 1;
+						if (options.status === "dropped") {
+							socket.destroy();
+							return;
+						}
 						writeMessage(socket, {
 							type: "broker_status",
 							requestId: frame.requestId,
-							report: {
-								pid: holder.pid ?? 0,
-								sessions: 1,
-								...(storage === undefined ? {} : { storage }),
-								multiNode: { status: "off" },
-							},
+							report:
+								options.status === "malformed"
+									? { pid: "unknown" }
+									: {
+											pid: holder.pid ?? 0,
+											sessions: options.sessions ?? 1,
+											...(options.storage === undefined ? {} : { storage: options.storage }),
+											multiNode: { status: "off" },
+										},
 						});
 					}
 					if (frame.type === "shutdown") {
 						shutdowns += 1;
+						if (options.shutdown === "dropped") {
+							socket.destroy();
+							return;
+						}
 						writeMessage(socket, { type: "shutdown_ack", requestId: frame.requestId });
+						if (options.shutdown === "ignored") return;
 						setTimeout(() => {
 							for (const open of sockets) open.destroy();
 							server.close();
@@ -429,7 +446,7 @@ async function startFakeLegacyBroker(
 							void holder.exited.then(() => {
 								exitedAt = performance.now();
 							});
-						}, exitDelayMs);
+						}, options.exitDelayMs ?? 0);
 					}
 				},
 				() => {},
@@ -443,7 +460,12 @@ async function startFakeLegacyBroker(
 		if (holder.exitCode === null) holder.kill("SIGKILL");
 		await holder.exited;
 	});
-	return { shutdownRequests: () => shutdowns, statusRequests: () => statuses, exitedAt: () => exitedAt };
+	return {
+		shutdownRequests: () => shutdowns,
+		statusRequests: () => statuses,
+		exitedAt: () => exitedAt,
+		pid: holder.pid ?? 0,
+	};
 }
 
 describe("replacing an older broker (#4538)", () => {
@@ -470,7 +492,7 @@ describe("replacing an older broker (#4538)", () => {
 	test(
 		"the successor starts only once the older broker's process has exited, as a Windows named pipe requires",
 		async () => {
-			const legacy = await startFakeLegacyBroker(1_000);
+			const legacy = await startFakeLegacyBroker({ exitDelayMs: 1_000 });
 			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 			assert.equal(await upgradeBroker("bun", [], 30_000), "upgraded");
 			const exitedAt = legacy.exitedAt();
@@ -489,11 +511,77 @@ describe("replacing an older broker (#4538)", () => {
 	test(
 		"an older broker that reads another storage selection than its successor would is left running, so its sessions keep their routing",
 		async () => {
-			const legacy = await startFakeLegacyBroker(0, { digest: "selection-of-another-process", source: "env" });
+			const legacy = await startFakeLegacyBroker({
+				storage: { digest: "selection-of-another-process", source: "env" },
+			});
 			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 			assert.equal(await upgradeBroker("bun", [], 30_000), "storage-differs");
 			assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [1, 0]);
 			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a broker whose status cannot be read is left alone",
+		async () => {
+			const legacy = await startFakeLegacyBroker({ status: "malformed" });
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			assert.equal(await upgradeBroker("bun", [], 30_000), "current");
+			assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [1, 0]);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"an older broker that does not exit in time fails the replacement at the stop, typed, and nothing is started",
+		async () => {
+			const legacy = await startFakeLegacyBroker({ shutdown: "ignored" });
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const error = await upgradeBroker("bun", [], 30_000).catch((caught: unknown) => caught);
+			const { isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+			assert.deepEqual([error.phase, error.previousPid, error.previousProtocolMax], ["stop", legacy.pid, 1]);
+			assert.ok(isIntercomBrokerStopTimeoutError(error.cause), String(error.cause));
+			assert.equal(error.cause.pid, legacy.pid);
+			assert.equal(legacy.shutdownRequests(), 1);
+			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a successor that cannot start fails the replacement at the start, typed, with the spawn failure as its cause",
+		async () => {
+			const legacy = await startFakeLegacyBroker();
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const error = await upgradeBroker("atomic-test-missing-broker-runtime-4538", [], 5_000).catch(
+				(caught: unknown) => caught,
+			);
+			const { isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+			assert.deepEqual([error.phase, error.previousPid], ["start", legacy.pid]);
+			assert.ok(error.cause instanceof Error);
+			assert.equal(legacy.shutdownRequests(), 1);
+			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a session that cannot take the spawn lock within the bound does nothing",
+		async () => {
+			const legacy = await startFakeLegacyBroker();
+			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
+			writeFileSync(lockPath, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
+			try {
+				const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+				assert.equal(await upgradeBroker("bun", [], 1), "busy");
+				assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [0, 0]);
+				assert.equal(existsSync(lockPath), true, "another process's lock is left as it is");
+			} finally {
+				rmSync(lockPath, { force: true });
+			}
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
@@ -547,6 +635,37 @@ describe("atomic intercom upgrade against a 0.9.71 broker (#4538)", () => {
 				clearInterval(keepAlive);
 			}
 			assert.deepEqual(await upgradeIntercomBroker(agentDir), { status: "not-running" });
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"leaves a broker too old to report its sessions running, and fails typed when an older broker cannot be stopped",
+		async () => {
+			const { upgradeIntercomBroker } = await control();
+			const { isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			const unreported = await startFakeLegacyBroker({ status: "dropped" });
+			assert.deepEqual(await upgradeIntercomBroker(agentDir), { status: "unreported" });
+			writeFileSync(join(agentDir, "intercom", "broker.pid"), `${unreported.pid}\n`);
+			assert.deepEqual(await upgradeIntercomBroker(agentDir), { status: "unreported", pid: unreported.pid });
+			assert.equal(unreported.shutdownRequests(), 0);
+			for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+			rmSync(join(agentDir, "intercom", "broker.pid"), { force: true });
+
+			const unanswered = await startFakeLegacyBroker({ sessions: 0, shutdown: "dropped" });
+			const refused = await upgradeIntercomBroker(agentDir).catch((caught: unknown) => caught);
+			assert.ok(isIntercomBrokerUpgradeError(refused), String(refused));
+			assert.deepEqual([refused.phase, refused.previousPid, refused.cause], ["stop", unanswered.pid, undefined]);
+			for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+
+			const stuck = await startFakeLegacyBroker({ sessions: 0, shutdown: "ignored" });
+			const timedOut = await upgradeIntercomBroker(agentDir, { stopTimeoutMs: 200 }).catch(
+				(caught: unknown) => caught,
+			);
+			assert.ok(isIntercomBrokerUpgradeError(timedOut), String(timedOut));
+			assert.equal(timedOut.phase, "stop");
+			assert.ok(isIntercomBrokerStopTimeoutError(timedOut.cause), String(timedOut.cause));
+			assert.deepEqual([timedOut.cause.pid, timedOut.cause.timeoutMs], [stuck.pid, 200]);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
