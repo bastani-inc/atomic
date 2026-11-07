@@ -83,7 +83,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loading = false;
 	private reloadPending = false;
 	private loadingEarlier = false;
-	private historical = false;
+	/** A history-only transcript changed while the reader was away from its end; it is read again when they return. */
+	private behind = false;
 	private disposed = false;
 
 	constructor(source: TaskViewSource, taskId: TaskId, env: TaskTranscriptEnvironment, requestRender: () => void) {
@@ -135,12 +136,24 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (this.disposed) return;
 		const follow = this.source.followTaskTranscript(this.taskId);
 		if (follow?.session !== undefined && follow.session === this.followed) return;
-		// A history-only transcript the reader paged back through stays where it is.
-		if (follow?.historyOnly === true && this.historical) return;
+		// Reading a history-only transcript again replaces what is shown, so it waits while the reader is above the end.
+		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
+			this.behind = true;
+			return;
+		}
 		void this.load();
 	}
 
 	handleInput(data: string): boolean {
+		const handled = this.route(data);
+		if (this.behind && this.chat.bodyScrollFromBottom() === 0) {
+			this.behind = false;
+			void this.load();
+		}
+		return handled;
+	}
+
+	private route(data: string): boolean {
 		if (data === TRANSCRIPT_JUMP_TO_END_URL) {
 			this.chat.scrollToBottom();
 			this.requestRender();
@@ -193,7 +206,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.replaceMessages(page.value.messages);
 		this.chat.hydrateCompactionStatus(page.value.compactionReason);
 		this.cursor = page.value.nextCursor;
-		this.historical = false;
 		this.status = "";
 		if (session === this.followed) return;
 		this.unsubscribe?.();
@@ -220,7 +232,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					this.status = page.error.message;
 					return;
 				}
-				this.historical = true;
 				this.cursor = page.value.nextCursor;
 				this.chat.prependMessages(page.value.messages);
 			} catch (error) {

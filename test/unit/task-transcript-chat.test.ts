@@ -28,6 +28,8 @@ const flush = async () => {
 	for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 };
 const CTRL_HOME = "\x1b[1;5H";
+const CTRL_END = "\x1b[1;5F";
+const PAGE_UP = "\x1b[5~";
 /** The editor's cursor marker; it is not printable text. */
 const APPLICATION_COMMAND = /\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
@@ -174,6 +176,66 @@ test("PageUp is a plain scroll and earlier history loads once near the top, hold
 		host.frame();
 		await flush();
 		assert.equal(reads.length, 3, "nothing is left to load before the first retained message");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a transcript read again on each change holds still while the reader is above its end and follows once they return (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	const append = (i: number) =>
+		session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	for (let i = 0; i < 250; i++) await append(i);
+	const reads: Array<string | undefined> = [];
+	let taskChanged = () => {};
+	const host = await openTranscript(session, {
+		source: (owner) =>
+			Object.assign(Object.create(owner) as TaskViewSource, {
+				readTaskTranscript: (id: TaskId, cursor?: string) => {
+					reads.push(cursor);
+					return owner.readTaskTranscript(id, cursor);
+				},
+				subscribe: (listener: () => void) => {
+					taskChanged = listener;
+					return owner.subscribe(listener);
+				},
+			}),
+	});
+	const change = async (i: number) => {
+		await append(i);
+		taskChanged();
+		await flush();
+	};
+	try {
+		assert.match(host.text(), /M-249/);
+		assert.equal(host.inspector.handleInput(PAGE_UP), true);
+		const above = firstMessage(host.frame());
+		const readsAbove = reads.length;
+		await change(250);
+		assert.equal(reads.length, readsAbove, "nothing is read again while the reader is above the end");
+		assert.equal(firstMessage(host.frame()), above, "the rows the reader is looking at stay put");
+		assert.doesNotMatch(host.text(), /M-250/);
+
+		host.inspector.handleInput(CTRL_END);
+		await flush();
+		assert.equal(reads.length, readsAbove + 1, "returning to the end reads the latest page once");
+		assert.match(host.text(), /M-250/);
+		await change(251);
+		assert.match(host.text(), /M-251/, "at the end each change is followed");
+
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.ok(
+			reads.some((cursor) => cursor !== undefined),
+			"earlier history loaded near the top",
+		);
+		await change(252);
+		host.inspector.handleInput(CTRL_END);
+		await flush();
+		assert.match(host.text(), /M-252/, "loading earlier history does not stop the transcript following");
+		await change(253);
+		assert.match(host.text(), /M-253/);
 	} finally {
 		await host.dispose();
 	}
