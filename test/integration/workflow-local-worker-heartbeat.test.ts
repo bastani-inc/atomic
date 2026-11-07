@@ -19,10 +19,10 @@ const HEARTBEAT_OBSERVATION_TIMEOUT_MS = 12_000;
 const RELEASE_OBSERVATION_TIMEOUT_MS = 10_000;
 const LOCAL_WORKER_HEARTBEAT_TEST_TIMEOUT_MS = 60_000;
 const TOOL_CALLS_WHILE_ACTIVITY_IS_HELD = 40;
-const COALESCED_ACTIVITY_REQUESTS_AFTER_RELEASE = 3;
+const COALESCED_CATCHUP_ACTIVITY_REQUESTS = 1;
 
 test(
-	"a held activity acknowledgement does not stop coalesced heartbeats and coalesces later activity (#3869, #4313)",
+	"a held activity acknowledgement does not stop coalesced heartbeats and coalesces later activity (#3869, #4313, #4537)",
 	async () => {
 		// Exercise the shipped worker, not a cold jiti transpilation of the entire source graph.
 		const workerEntry = fileURLToPath(
@@ -66,6 +66,7 @@ test(
 			const held: number[] = [];
 			let claimed = false;
 			let released = false;
+			let activityDrained = false;
 			worker = fork(
 				workerEntry,
 				[
@@ -76,14 +77,24 @@ test(
 						definitions: [{ path: definitionPath, exportName: "child", digest }],
 					}),
 				],
-				{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
+				{
+					stdio: ["ignore", "ignore", "pipe", "ipc"],
+					execArgv: [
+						"--import",
+						new URL("../fixtures/pool-heartbeat-publication-probe.mjs", import.meta.url).href,
+					],
+				},
 			);
 			let stderr = "";
 			worker.stderr?.on("data", (chunk) => {
 				stderr += String(chunk);
 			});
 			const reply = (id: number, value?: unknown) => worker?.connected && worker.send({ id, value });
-			worker.on("message", (message: WorkerRequest) => {
+			worker.on("message", (message: WorkerRequest | { kind: "activity-drained" }) => {
+				if (message.kind === "activity-drained") {
+					activityDrained = true;
+					return;
+				}
 				requests.push(message);
 				if (message.kind === "activity" && !released) {
 					held.push(message.id);
@@ -135,15 +146,30 @@ test(
 			);
 			assert.equal(held.length, 1, "repeated invalidations leave one unacknowledged activity request");
 			const activityBeforeRelease = count("activity");
+			// Acknowledge the entire queue, but keep the fixture blocked: recordRunEnd/finishRun cannot invalidate
+			// the store yet. The preload gates the independent activity timer and observes the child IPC drain.
+			// With every tool already recorded, the dirty boolean must yield exactly one catch-up, not a serial queue.
+			activityDrained = false;
 			released = true;
+			for (const id of held.splice(0)) reply(id);
+			await until(() => activityDrained, RELEASE_OBSERVATION_TIMEOUT_MS);
+			assert.ok(activityDrained, "the worker drains every catch-up acknowledgement before the fixture finishes");
+			assert.equal(
+				count("activity") - activityBeforeRelease,
+				COALESCED_CATCHUP_ACTIVITY_REQUESTS,
+				"the entire held batch produces exactly one catch-up activity request",
+			);
+			const catchupActivity = requests.filter((request) => request.kind === "activity").at(-1);
+			assert.equal(
+				catchupActivity?.kind === "activity"
+					? catchupActivity.runs.find((run) => run.id === "child")?.toolNodes.length
+					: undefined,
+				TOOL_CALLS_WHILE_ACTIVITY_IS_HELD,
+				"the coalesced snapshot carries every held tool call before the fixture finishes",
+			);
 			writeTextSync(releasePath, "");
-			for (const id of held) reply(id);
 			await until(() => count("complete") > 0, RELEASE_OBSERVATION_TIMEOUT_MS);
 			assert.ok(count("complete") > 0, "the worker completes its attempt once the held activity is acknowledged");
-			assert.ok(
-				count("activity") - activityBeforeRelease <= COALESCED_ACTIVITY_REQUESTS_AFTER_RELEASE,
-				`${count("activity") - activityBeforeRelease} activity requests followed the release`,
-			);
 			const finalActivity = requests.filter((request) => request.kind === "activity").at(-1);
 			assert.equal(
 				finalActivity?.kind === "activity"
