@@ -1098,6 +1098,24 @@ function Add-AtomicBinDirToPath {
     return $userPathChanged
 }
 
+# Replace an Intercom broker the previous version left running, when that is safe (#4538). The install is already
+# committed when this runs, so a failure only warns.
+function Invoke-AtomicIntercomUpgrade {
+    param([string]$ShimPath)
+
+    try {
+        $upgradeCommand = '"' + $ShimPath + '" intercom upgrade'
+        & $env:ComSpec /d /c $upgradeCommand | Out-Host
+        $upgradeExitCode = $LASTEXITCODE
+        if ($upgradeExitCode -ne 0) {
+            Write-Warning -Message "Installed atomic, but 'atomic intercom upgrade' exited with code $upgradeExitCode; run it manually if new sessions do not start." -WarningAction Continue
+        }
+    }
+    catch {
+        Write-Warning -Message "Installed atomic, but 'atomic intercom upgrade' failed: $_; run it manually if new sessions do not start." -WarningAction Continue
+    }
+}
+
 function Write-AtomicInstallSummary {
     param([bool]$UserPathAdded)
 
@@ -1476,18 +1494,7 @@ try {
         throw $commitError
     }
 
-    # Replace an Intercom broker the previous version left running, when that is safe (#4538).
-    # The install is already committed, so a failure here only warns.
-    try {
-        $upgradeCommand = '"' + $shimPath + '" intercom upgrade'
-        & $env:ComSpec /d /c $upgradeCommand | Out-Host
-        $upgradeExitCode = $LASTEXITCODE
-        if ($upgradeExitCode -ne 0) {
-            Write-Warning -Message "Installed atomic, but 'atomic intercom upgrade' exited with code $upgradeExitCode; run it manually if new sessions do not start." -WarningAction Continue
-        }
-    }
-    catch { Write-Warning -Message "Installed atomic, but 'atomic intercom upgrade' failed: $_; run it manually if new sessions do not start." -WarningAction Continue }
-
+    Invoke-AtomicIntercomUpgrade $shimPath
     Write-AtomicInstallSummary $transaction.UserPathChangeIntended
 }
 catch {

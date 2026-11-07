@@ -153,19 +153,21 @@ test("Windows installer runs 'intercom upgrade' through the new shim after the c
 	const source = installerSource();
 	const committed = source.indexOf("$transactionCommitted = $true");
 	const backupCleanup = source.indexOf("Remove-AtomicTransactionBackups $transaction", committed);
-	const upgrade = source.indexOf("intercom upgrade", backupCleanup);
+	const upgrade = source.indexOf("    Invoke-AtomicIntercomUpgrade $shimPath", backupCleanup);
 	const summary = source.indexOf("Write-AtomicInstallSummary $transaction.UserPathChangeIntended", upgrade);
 	assert.ok(committed >= 0 && backupCleanup > committed, "the commit must be recorded before backups are removed");
 	assert.ok(upgrade > backupCleanup, "'intercom upgrade' must run after the install is committed");
 	assert.ok(summary > upgrade, "'intercom upgrade' must run before the install summary");
 
-	const upgradeBlock = source.slice(source.lastIndexOf("try {", upgrade), summary);
+	const definition = source.indexOf("function Invoke-AtomicIntercomUpgrade {");
+	const upgradeBlock = source.slice(definition, source.indexOf("\nfunction ", definition + 1));
+	assert.ok(definition >= 0 && definition < committed);
 	assert.match(
 		upgradeBlock,
-		/^try \{[\s\S]*\$shimPath \+ '" intercom upgrade'[\s\S]*\$env:ComSpec \/d \/c \$upgradeCommand/u,
+		/try \{[\s\S]*\$ShimPath \+ '" intercom upgrade'[\s\S]*\$env:ComSpec \/d \/c \$upgradeCommand/u,
 	);
 	assert.match(upgradeBlock, /\$LASTEXITCODE[\s\S]*Write-Warning/u);
-	assert.match(upgradeBlock, /catch \{ Write-Warning /u);
+	assert.match(upgradeBlock, /catch \{\s+Write-Warning /u);
 	assert.doesNotMatch(upgradeBlock, /\bthrow\b/u, "a failing 'intercom upgrade' must never fail the installer");
 });
 
