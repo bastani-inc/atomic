@@ -1526,6 +1526,34 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 	});
 
+	test("a matching checkout needs no setup hook of its own while another checkout without dependency inputs is restored", async () => {
+		const { clone } = await editedClone();
+		const { clone: plain } = await sandbox.remoteWithClone("plain", { "README.md": "plain\n" });
+		sandbox.write(join(plain, "README.md"), "edited in the plain repository\n");
+		const manager = await recordSession(clone);
+		const capture = await captureWorktreeSnapshot(plain, {
+			settings,
+			blobs: manager.getSessionStore().snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(plain, capture.snapshot.id, capture.snapshot);
+		const checkout = sandbox.path("node-b", "repo");
+		mkdirSync(sandbox.path("node-b"));
+		renameSync(clone, checkout);
+		renameSync(plain, sandbox.path("plain-gone"));
+
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ launchCwd: checkout, setup: { command: undefined, trusted: () => false } }),
+		);
+
+		assert.equal(cwdOf(prepared), checkout);
+		assert.deepEqual(
+			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
+			[clone, plain],
+		);
+	});
+
 	test("a matching checkout of the first repository is used and the second repository is still restored", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
