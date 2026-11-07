@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -583,8 +583,17 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 		assert.equal(mapPathForCwd("/nodeA/repository/x", "/nodeB/wt"), "/nodeA/repository/x");
 		assert.equal(mapPathForCwd("/etc/hosts", "/nodeB/wt"), "/etc/hosts");
 		assert.equal(mapPathForCwd("/nodeB/wt/x", "/nodeB/wt"), "/nodeB/wt/x");
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/elsewhere"), "/nodeA/repo/x");
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/wtx"), "/nodeA/repo/x");
+	});
+
+	test("from a cwd outside every restored root, a path follows the restore only when its old root is not here", () => {
+		const here = join(root, "checkout-here");
+		mkdirSync(here);
+		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt"), mapping(here, join(root, "restored"))]);
+
+		assert.equal(mapPathForCwd("/nodeA/repo/x", "/elsewhere"), resolve("/nodeB/wt/x"));
+		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/wtx"), resolve("/nodeB/wt/x"));
+		assert.equal(mapPathForCwd(join(here, "x"), "/elsewhere"), join(here, "x"));
+		assert.equal(mapPathForCwd("/nodeA/repository/x", "/elsewhere"), "/nodeA/repository/x");
 	});
 
 	test("a chain of restores maps every earlier root to the newest worktree", () => {
@@ -720,9 +729,14 @@ describe("tool path mapping edge cases (#4329)", () => {
 	});
 
 	test("a directory whose name starts with two dots is inside the root; the root's parent is not", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")]);
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/wt/..cache"), resolve("/nodeB/wt/x"));
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB"), "/nodeA/repo/x");
+		const old = mkdtempSync(join(tmpdir(), "atomic-old-root-"));
+		try {
+			registerWorktreeRootMappings([mapping(old, "/nodeB/wt")]);
+			assert.equal(mapPathForCwd(join(old, "x"), "/nodeB/wt/..cache"), resolve("/nodeB/wt/x"));
+			assert.equal(mapPathForCwd(join(old, "x"), "/nodeB"), join(old, "x"));
+		} finally {
+			rmSync(old, { recursive: true, force: true });
+		}
 	});
 
 	test("the restored root that contains the cwd decides even when registered first", () => {
@@ -887,8 +901,13 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 	});
 
 	test("a sibling of the restored root is outside it", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")]);
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/other"), "/nodeA/repo/x");
+		const old = mkdtempSync(join(tmpdir(), "atomic-old-root-"));
+		try {
+			registerWorktreeRootMappings([mapping(old, "/nodeB/wt")]);
+			assert.equal(mapPathForCwd(join(old, "x"), "/nodeB/other"), join(old, "x"));
+		} finally {
+			rmSync(old, { recursive: true, force: true });
+		}
 	});
 
 	test("the innermost restored root wins whatever order the roots were registered in", () => {

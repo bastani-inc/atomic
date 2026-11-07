@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { mapRestoredPath } from "../session-worktree-snapshots.ts";
 import type { WorktreeRootMapping } from "../worktree-snapshot/types.ts";
@@ -36,7 +37,9 @@ export function clearWorktreeRootMappings(): void {
 /**
  * `path` as it resolves for work in `cwd` on this host: when `cwd` is inside a restored root and `path` is outside it
  * but inside a root recorded on another node (or an earlier checkout), the path moves to the same place in the
- * restored root. Every other path is returned unchanged.
+ * restored root. From any other `cwd`, a path inside a recorded root that does not exist on this host moves to where
+ * that root was restored, as for a session that continues in a checkout of its own and had another one restored.
+ * Every other path is returned unchanged.
  */
 export function mapPathForCwd(path: string, cwd: string): string {
 	const base = resolve(cwd);
@@ -44,7 +47,21 @@ export function mapPathForCwd(path: string, cwd: string): string {
 	for (const candidate of mappingsByRoot.keys()) {
 		if (isInside(candidate, base) && (root === undefined || candidate.length > root.length)) root = candidate;
 	}
-	if (root === undefined || isInside(root, resolve(path))) return path;
+	if (root === undefined) return mapPathFromMissingRoot(path);
+	if (isInside(root, resolve(path))) return path;
 	const mapped = mapRestoredPath(path, [...mappingsByRoot.get(root)!.values()]);
 	return mapped === resolve(path) ? path : mapped;
+}
+
+function mapPathFromMissingRoot(path: string): string {
+	const target = resolve(path);
+	for (const mappings of mappingsByRoot.values()) {
+		for (const mapping of mappings.values()) {
+			const from = resolve(mapping.from);
+			if (!isInside(from, target) || existsSync(from)) continue;
+			const mapped = mapRestoredPath(path, [...mappings.values()]);
+			return mapped === target ? path : mapped;
+		}
+	}
+	return path;
 }

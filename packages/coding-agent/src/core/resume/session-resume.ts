@@ -24,11 +24,11 @@ import {
 	type ResumePreflightIo,
 } from "./preflight.ts";
 import {
-	assertResumeSetupAvailable,
 	ensureResumeSetup,
 	predictedSetupProblem,
 	type ResumeSetupConfig,
 	readResumeSetupLedger,
+	reserveResumeSetup,
 } from "./setup-hook.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
@@ -231,7 +231,7 @@ export async function prepareSessionResume(
 		storeDir,
 		signal: options.signal,
 		sessionDirectory: options.sessionDirectory,
-		beforeRecord: (restored) => assertRestoredSetupAvailable(restored, snapshots, storeDir, options),
+		beforeRecord: (restored) => reserveRestoredSetup(restored, snapshots, storeDir, options),
 		pendingMappings: reused === undefined ? [] : [reused],
 	});
 	const mappings = opened.sessionManager.getWorktreeRootMappings();
@@ -309,16 +309,17 @@ async function checkoutsToRestore(
 
 /**
  * Checks that each worktree #4245's resume just restored has the setup hook it needs, before that resume records any
- * of them, so a missing hook leaves no record of a worktree that is removed again.
+ * of them, so a missing hook leaves no record of a worktree that is removed again, and enters each hook that will run
+ * in the ledger as not run yet.
  */
-async function assertRestoredSetupAvailable(
+async function reserveRestoredSetup(
 	restored: readonly WorktreeRootMapping[],
 	snapshots: ReadonlyMap<string, WorktreeSnapshot>,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
 ): Promise<void> {
 	for (const mapping of restored) {
-		await assertResumeSetupAvailable({
+		await reserveResumeSetup({
 			entryPoint: options.entryPoint,
 			worktree: mapping.to,
 			envHash: snapshots.get(mapping.snapshotId)!.envHash,

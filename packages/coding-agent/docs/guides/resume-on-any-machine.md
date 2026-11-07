@@ -64,7 +64,7 @@ A restored worktree contains the repository's files but not installed dependenci
 }
 ```
 
-This applies to sessions and to workflow runs. The hook runs in each worktree a resume restores, once per lockfile state. In a worktree an earlier resume of the session restored, it runs again only when its last run there failed, since later lockfile changes are the session's own work. It receives `ATOMIC_RESUME_WORKTREE` and `ATOMIC_ENV_HASH` in its environment, may run for up to 15 minutes, and its output goes to a log file under `~/.atomic/agent/worktree-snapshots/setup-logs`. Keep its output in ignored paths such as `node_modules`; files it leaves in the worktree count as changes the next time the session resumes.
+This applies to sessions and to workflow runs. The hook runs in each worktree a resume restores, once per lockfile state. In a worktree an earlier resume of the session restored, it runs again only when its last run there failed or never finished, since later lockfile changes are the session's own work. It receives `ATOMIC_RESUME_WORKTREE` and `ATOMIC_ENV_HASH` in its environment, may run for up to 15 minutes, and its output goes to a log file under `~/.atomic/agent/worktree-snapshots/setup-logs`. Keep its output in ignored paths such as `node_modules`; files it leaves in the worktree count as changes the next time the session resumes.
 
 ## What can stop a resume
 
