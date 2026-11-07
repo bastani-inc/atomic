@@ -472,7 +472,7 @@ describe.each([
 				await written.journal.append(lease, statusEvent("big", { status: "running" }, "RunStarted"));
 				await database.run(
 					`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-					INSERT INTO snapshot_blobs (hash, bytes, data, created_at) SELECT 'padded-' || i, 1, x'00', 0 FROM n`,
+					INSERT INTO snapshot_blobs (hash, bytes, data, created_at) SELECT 'padded-' || i, 1, x'00', 1 FROM n`,
 					EVENTS,
 				);
 				await database.run(
@@ -485,7 +485,7 @@ describe.each([
 				);
 				await written.journal.append(lease, statusEvent("big", { status: "failed" }));
 				await written.journal.snapshotBlobs.putBlobs([textBlob("unreferenced a"), textBlob("unreferenced b")]);
-				await database.run("UPDATE snapshot_blobs SET created_at = 0");
+				await database.run("UPDATE snapshot_blobs SET created_at = 1");
 				await written.journal.close();
 				await written.sessions.close();
 				await dropSnapshotIndex(database);
