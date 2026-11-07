@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
@@ -181,4 +182,94 @@ test("a resume whose shared journal cannot be reached fails as a retryable looku
 		[error.code, error.subject, error.id, error.storage, error.retryable, error.cause],
 		["catalog-unavailable", "run", runId, "libsql", true, unreachable],
 	);
+});
+
+/** What `test/fixtures/gated-run-journal-adapter.mjs` reads and counts through the global object. */
+interface GatedJournal {
+	opens: number;
+	closes: number;
+	closeFailure?: Error;
+	opened: () => void;
+	firstOpen: Promise<void>;
+}
+
+/** A journal on the gated adapter whose first open waits for `releaseFirstOpen`, and a run that resumes from it. */
+function gatedJournal() {
+	let releaseFirstOpen = () => {};
+	let firstOpened = () => {};
+	const opened = new Promise<void>((resolveOpened) => {
+		firstOpened = resolveOpened;
+	});
+	const gate: GatedJournal = {
+		opens: 0,
+		closes: 0,
+		opened: () => firstOpened(),
+		firstOpen: new Promise<void>((release) => {
+			releaseFirstOpen = release;
+		}),
+	};
+	(globalThis as typeof globalThis & { __gatedJournal?: GatedJournal }).__gatedJournal = gate;
+	const adapter = fileURLToPath(new URL("../fixtures/gated-run-journal-adapter.mjs", import.meta.url));
+	const journal = { adapter, options: { path: join(directory, "journal.sqlite") } };
+	const runId = randomUUID();
+	/** Resumes `runId` and lets its lookup deadline pass while the first open still waits. */
+	const timedOutResume = async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const first = run(empty, {}, { runId, journal, store: createStore() }).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		await opened;
+		await vi.advanceTimersByTimeAsync(RESUME_CATALOG_TIMEOUT_MS);
+		assert.ok(isResumeCatalogTimeoutError(await first));
+		vi.useRealTimers();
+	};
+	return { gate, journal, runId, releaseFirstOpen, timedOutResume };
+}
+
+test("a retry after a run lookup timed out opens the journal again, and the opening that answers late is closed (#4329)", async () => {
+	const { gate, journal, runId, releaseFirstOpen, timedOutResume } = gatedJournal();
+	await timedOutResume();
+
+	const retried = await run(empty, {}, { runId, journal, store: createStore() });
+
+	assert.deepEqual([retried.status, gate.opens, gate.closes], ["completed", 2, 0]);
+	releaseFirstOpen();
+	await vi.waitFor(() => assert.equal(gate.closes, 1));
+});
+
+test("a run still waiting on an opening whose resume timed out keeps it open and runs on it (#4329)", async () => {
+	const { gate, journal, releaseFirstOpen, timedOutResume } = gatedJournal();
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const waiting = run(empty, {}, { journal, store: createStore() });
+	vi.useRealTimers();
+	await timedOutResume();
+
+	releaseFirstOpen();
+	const result = await waiting;
+
+	assert.deepEqual([result.status, gate.opens, gate.closes], ["completed", 1, 0]);
+});
+
+test("a failure to close an opening that answered after its resume timed out is reported, not dropped (#4329)", async () => {
+	const { gate, releaseFirstOpen, timedOutResume } = gatedJournal();
+	gate.closeFailure = new Error("close failed");
+	const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+	const exitCode = process.exitCode;
+	try {
+		await timedOutResume();
+		releaseFirstOpen();
+		await vi.waitFor(() => assert.equal(gate.closes, 1));
+		await vi.waitFor(() =>
+			assert.ok(
+				reported.mock.calls.some(
+					([error]) => error instanceof StorageUnavailableError && error.cause === gate.closeFailure,
+				),
+			),
+		);
+		assert.equal(process.exitCode, 1);
+	} finally {
+		process.exitCode = exitCode;
+		reported.mockRestore();
+	}
 });
