@@ -128,14 +128,16 @@ export function renderMarkdown(report) {
 		"| Suite | Profile | Status | Target | Effect observed | Recovered | Observed |",
 		"| --- | --- | --- | --- | --- | --- | --- |",
 	);
+	// One row per fault record, so a profile a suite applied to several targets (or scenarios) shows each of them.
 	for (const item of report.coverage) {
-		const fault = report.suites
+		const faults = report.suites
 			.filter((suite) => item.suite === undefined || suite.name === item.suite)
 			.flatMap((suite) => suite.faults ?? [])
-			.find((entry) => entry.profile === item.profile);
-		lines.push(
-			`| ${item.suite ?? ""} | ${item.profile} | ${item.status} | ${fault?.target ?? ""} | ${fault?.effectObserved ?? ""} | ${fault?.recovered ?? ""} | ${cell(fault?.error?.message ?? fault?.observed ?? "")} |`,
-		);
+			.filter((entry) => entry.profile === item.profile);
+		for (const fault of faults.length === 0 ? [undefined] : faults)
+			lines.push(
+				`| ${item.suite ?? ""} | ${item.profile} | ${item.status} | ${fault?.target ?? ""} | ${fault?.effectObserved ?? ""} | ${fault?.recovered ?? ""} | ${cell(fault?.error?.message ?? fault?.observed ?? "")} |`,
+			);
 	}
 	lines.push("", "## Invariants", "", "| Invariant | Passed | Expected | Actual |", "| --- | --- | --- | --- |");
 	for (const suite of report.suites)
