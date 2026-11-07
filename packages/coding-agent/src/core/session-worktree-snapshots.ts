@@ -263,6 +263,11 @@ export interface ResumeSessionWorktreeOptions {
 	/** Host directory for shared object stores and restored worktrees. Default ~/.atomic/agent/worktree-snapshots. */
 	readonly storeDir?: string;
 	readonly signal?: AbortSignal;
+	/**
+	 * Called with the new mappings once every checkout is restored and before any of them is recorded. When it throws,
+	 * nothing is recorded and the restored worktrees are removed, as for a failed restore.
+	 */
+	readonly beforeRecord?: (mappings: readonly WorktreeRootMapping[]) => Promise<void>;
 }
 
 /**
@@ -361,6 +366,7 @@ export async function resumeSessionWorktree(
 				}),
 			);
 		}
+		if (mappings.length > 0) await options.beforeRecord?.(mappings);
 		for (const mapping of mappings) {
 			options.signal?.throwIfAborted();
 			await sessionManager.appendWorktreeSnapshot(

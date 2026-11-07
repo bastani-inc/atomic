@@ -11,12 +11,11 @@ import { gitText } from "../worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "../worktree-snapshot/head-advance.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
-	removeRestoredWorktree,
 	type VerifyWorktreeOptions,
 	verifyWorktree,
 } from "../worktree-snapshot/restore.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeSnapshotSettings } from "../worktree-snapshot/types.ts";
-import { isResumePreconditionError, type ResumeEntryPoint, type ResumePreconditionProblem } from "./errors.ts";
+import type { ResumeEntryPoint, ResumePreconditionProblem } from "./errors.ts";
 import { isInside, registerWorktreeRootMappings } from "./path-mapping.ts";
 import {
 	assertResumePreconditions,
@@ -24,7 +23,12 @@ import {
 	gitUnavailableProblem,
 	type ResumePreflightIo,
 } from "./preflight.ts";
-import { ensureResumeSetup, predictedSetupProblem, type ResumeSetupConfig } from "./setup-hook.ts";
+import {
+	assertResumeSetupAvailable,
+	ensureResumeSetup,
+	predictedSetupProblem,
+	type ResumeSetupConfig,
+} from "./setup-hook.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
 export type DirtyCheckoutChoice = "restore" | "use" | "cancel";
@@ -182,9 +186,9 @@ async function hasLocalChanges(root: string, signal: AbortSignal | undefined): P
  * Every other
  * checkout the session recorded that is gone or changed here is restored: every precondition of those restores is
  * checked in one pass first (Git, and a setup hook for each snapshot with dependency inputs), then #4245's
- * {@link openSessionInWorktree} restores them into fresh worktrees. Each worktree Atomic restored gets its setup hook
- * once per environment; those restored by this call are removed again when a hook turns out not to exist. Every
- * restore registers its root mapping for tool path resolution.
+ * {@link openSessionInWorktree} restores them into fresh worktrees. A restored worktree that turns out to have no
+ * setup hook it needs is removed again before its restore is recorded. Each worktree Atomic restored gets its setup
+ * hook once per environment. Every restore registers its root mapping for tool path resolution.
  */
 export async function prepareSessionResume(
 	sessionManager: SessionManager,
@@ -215,19 +219,18 @@ export async function prepareSessionResume(
 		git ??= { unavailable: await io.probeGit(options.signal) };
 		await assertRestorePreconditions(sessionManager, restoring, storeDir, options, git.unavailable);
 	}
-	const restoresBefore = sessionManager.getWorktreeRootMappings().length;
+	const snapshots = sessionManager.getWorktreeSnapshotRecords();
 	const opened = await openSessionInWorktree(sessionManager, {
 		settings: options.settings,
 		storeDir,
 		signal: options.signal,
 		sessionDirectory: options.sessionDirectory,
+		beforeRecord: (restored) => assertRestoredSetupAvailable(restored, snapshots, storeDir, options),
 	});
 	const mappings = opened.sessionManager.getWorktreeRootMappings();
 	registerWorktreeRootMappings(mappings);
 	notices.push(...opened.notices);
-	notices.push(
-		...(await setUpRestoredCheckouts(opened.sessionManager, mappings.slice(restoresBefore), storeDir, options)),
-	);
+	notices.push(...(await setUpRestoredCheckouts(opened.sessionManager, storeDir, options)));
 	return { status: "ready", sessionManager: opened.sessionManager, notices };
 }
 
@@ -279,13 +282,30 @@ async function checkoutsToRestore(
 }
 
 /**
- * Runs the setup hook of every worktree Atomic restored for the session, once per worktree and environment. When a
- * hook turns out not to exist, the worktrees restored by this call (`restoredNow`) are removed again, keeping any
- * removal failure as the error's `cleanupCause`.
+ * Checks that each worktree #4245's resume just restored has the setup hook it needs, before that resume records any
+ * of them, so a missing hook leaves no record of a worktree that is removed again.
  */
+async function assertRestoredSetupAvailable(
+	restored: readonly WorktreeRootMapping[],
+	snapshots: ReadonlyMap<string, WorktreeSnapshot>,
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<void> {
+	for (const mapping of restored) {
+		await assertResumeSetupAvailable({
+			entryPoint: options.entryPoint,
+			worktree: mapping.to,
+			envHash: snapshots.get(mapping.snapshotId)!.envHash,
+			storeDir,
+			config: options.setup,
+			signal: options.signal,
+		});
+	}
+}
+
+/** Runs the setup hook of every worktree Atomic restored for the session, once per worktree and environment. */
 async function setUpRestoredCheckouts(
 	sessionManager: SessionManager,
-	restoredNow: readonly WorktreeRootMapping[],
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
 ): Promise<ResumeNotice[]> {
@@ -299,34 +319,12 @@ async function setUpRestoredCheckouts(
 			storeDir,
 			config: options.setup,
 			signal: options.signal,
-		}).catch(async (error: unknown) => {
-			if (isResumePreconditionError(error)) await removeRestoredNow(restoredNow, storeDir, error);
-			throw error;
 		});
 		if (setup.status === "ran") {
 			notices.push({ type: "info", message: `Ran setup hook ${setup.hook} in ${root} (output: ${setup.logPath})` });
 		}
 	}
 	return notices;
-}
-
-async function removeRestoredNow(
-	restoredNow: readonly WorktreeRootMapping[],
-	storeDir: string,
-	failure: Error,
-): Promise<void> {
-	const cleanups: unknown[] = [];
-	for (const mapping of restoredNow) {
-		await removeRestoredWorktree(mapping.to, { storeDir }).catch((cleanup: unknown) => {
-			cleanups.push(cleanup);
-		});
-	}
-	if (cleanups.length > 0) {
-		Object.defineProperty(failure, "cleanupCause", {
-			value: cleanups.length === 1 ? cleanups[0] : new AggregateError(cleanups, "worktree cleanup failed"),
-			enumerable: false,
-		});
-	}
 }
 
 /**

@@ -243,6 +243,29 @@ function hookEnv(worktree: string, envHash: string): NodeJS.ProcessEnv {
 }
 
 /**
+ * The hook a restored worktree needs before work continues in it, or undefined when it needs none: it has no
+ * dependency inputs, or the ledger has a successful run for the recorded `envHash`. Throws
+ * {@link ResumePreconditionError} (`setup-hook-missing`) when one is needed and none is available.
+ */
+async function neededHook(options: EnsureResumeSetupOptions): Promise<ResolvedHook | undefined> {
+	const worktree = resolve(options.worktree);
+	const ledger = await readResumeSetupLedger(options.storeDir, worktree);
+	if (ledger?.envHash === options.envHash && ledger.exitStatus === 0) return undefined;
+	if (!(await hasEnvironmentInputs(worktree))) return undefined;
+	const hook = await resolveHook(worktree, options.config);
+	if (hook === undefined || hook === "untrusted") throw missingHookError(options, hook === "untrusted");
+	return hook;
+}
+
+/**
+ * Checks, without running anything, that a restored worktree has the setup hook it needs: throws
+ * {@link ResumePreconditionError} (`setup-hook-missing`) exactly when {@link ensureResumeSetup} would.
+ */
+export async function assertResumeSetupAvailable(options: EnsureResumeSetupOptions): Promise<void> {
+	await neededHook(options);
+}
+
+/**
  * Runs the setup hook a restored worktree needs before work continues in it, and records the result in the host's
  * setup ledger. The hook is needed when the worktree has dependency inputs and the ledger has no successful run for
  * the recorded `envHash`, so a worktree is set up once per environment. Throws {@link ResumePreconditionError}
@@ -250,11 +273,8 @@ function hookEnv(worktree: string, envHash: string): NodeJS.ProcessEnv {
  */
 export async function ensureResumeSetup(options: EnsureResumeSetupOptions): Promise<ResumeSetupOutcome> {
 	const worktree = resolve(options.worktree);
-	const ledger = await readResumeSetupLedger(options.storeDir, worktree);
-	if (ledger?.envHash === options.envHash && ledger.exitStatus === 0) return { status: "not-needed" };
-	if (!(await hasEnvironmentInputs(worktree))) return { status: "not-needed" };
-	const hook = await resolveHook(worktree, options.config);
-	if (hook === undefined || hook === "untrusted") throw missingHookError(options, hook === "untrusted");
+	const hook = await neededHook(options);
+	if (hook === undefined) return { status: "not-needed" };
 	const timeoutMs = options.config.timeoutMs ?? DEFAULT_RESUME_SETUP_TIMEOUT_MS;
 	const logPath = join(
 		options.storeDir,
