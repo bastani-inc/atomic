@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -40,6 +40,7 @@ import {
 	isResumeCatalogTimeoutError,
 	isResumeCatalogUnavailableError,
 	isResumePreconditionError,
+	isResumeSetupHookError,
 	isRetryableResumeError,
 	type ResumePreflightIo,
 	resolveWorkspace,
@@ -52,7 +53,7 @@ import {
 	openCliSession,
 	startupResumeDiagnostics,
 } from "../src/main-session.ts";
-import { appendLineCommand, shellPath } from "./helpers/hook-commands.ts";
+import { appendLineCommand, nodeCommand, shellPath } from "./helpers/hook-commands.ts";
 
 useTemporaryAgentDir();
 
@@ -651,10 +652,10 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
 	});
 
-	test("rehydrating on a node where the recorded path holds another tree continues in a restored worktree, not there", async () => {
+	test("rehydrating on a node where the recorded path holds another clone continues in a restored worktree, not there", async () => {
 		const agentDir = sandbox.path("agent");
 		const { clone, sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
-		cpSync(sandbox.path("node-a-offline"), clone, { recursive: true });
+		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), clone);
 		sandbox.write(join(clone, "README.md"), "another tree at the same path\n");
 		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: "true" } });
 
@@ -664,6 +665,35 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots")), cwd);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
 		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "another tree at the same path\n");
+	});
+
+	test("rehydrating a session in its own checkout here continues there after the checkout changed, with no setup hook", async () => {
+		const agentDir = sandbox.path("agent");
+		const { clone, sessionId } = await recordSessionWithSnapshot(sqliteSelection("shared"), {
+			"package-lock.json": "{}\n",
+		});
+		sandbox.write(join(clone, "written-after-the-release.txt"), "later\n");
+		const { runtime } = await runtimeOn(agentDir, {});
+
+		const woken = await runtime.rehydrate(sessionId);
+
+		assert.equal(woken.sessionManager.getCwd(), clone);
+		assert.deepEqual(woken.sessionManager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
+	});
+
+	test("rehydrating again after a failed setup hook runs the hook again in the worktree it restored", async () => {
+		const agentDir = sandbox.path("agent");
+		const marker = sandbox.path("setup-runs");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), { "package-lock.json": "{}\n" });
+		const failing = await runtimeOn(agentDir, { resume: { setupCommand: nodeCommand("process.exit(3)") } });
+		await assert.rejects(failing.runtime.rehydrate(sessionId), isResumeSetupHookError);
+
+		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: appendLineCommand(marker, "ran") } });
+		const woken = await runtime.rehydrate(sessionId);
+
+		assert.ok(woken.sessionManager.getCwd().startsWith(join(agentDir, "worktree-snapshots")));
+		assert.equal(readFileSync(marker, "utf8"), "ran\n");
 	});
 
 	/** A session that node B woke in a restored worktree, edited there and released again. */
