@@ -37,7 +37,9 @@ import {
 	isResumePreconditionError,
 	isRetryableResumeError,
 	type ResumePreflightIo,
+	resolveWorkspace,
 	setWorktreeSnapshotGit,
+	workspace,
 } from "../src/index.ts";
 import {
 	cliSessionStorageSelection,
@@ -597,6 +599,81 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(runtime.session.sessionId, sessionId);
 	});
 
+	test("a /resume whose shared storage cannot be reached fails as a retryable lookup error for the session", async () => {
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
+		const store = runtime.session.sessionManager.getSessionStore();
+		Object.defineProperty(store, "descriptor", {
+			value: { ...store.descriptor, adapter: "libsql" },
+			configurable: true,
+		});
+		const unreachable = new StorageUnavailableError(
+			{ adapter: "libsql", location: "remote" },
+			new Error("ECONNRESET"),
+		);
+		store.load = async () => Promise.reject(unreachable);
+		await assert.rejects(runtime.switchSession(sessionId), (error: unknown) => {
+			assert.ok(isResumeCatalogUnavailableError(error), String(error));
+			assert.deepEqual(
+				[error.subject, error.id, error.retryable, error.cause],
+				["session", sessionId, true, unreachable],
+			);
+			return true;
+		});
+	});
+
+	test("rehydrating a session released on another node restores its checkout before it continues", async () => {
+		const agentDir = sandbox.path("agent");
+		const { clone, sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: "true" } });
+		const woken = await runtime.rehydrate(sessionId);
+		const cwd = woken.sessionManager.getCwd();
+		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots")), cwd);
+		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
+		assert.deepEqual(
+			woken.sessionManager.getWorktreeRootMappings().map((mapping) => mapping.from),
+			[clone],
+		);
+		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
+	});
+
+	test("rehydrating a session whose checkout is here starts it there without preparing anything", async () => {
+		const agentDir = sandbox.path("agent");
+		const { clone, sessionId } = await recordSessionWithSnapshot(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(agentDir, {});
+		setWorktreeSnapshotGit(async () => {
+			throw new Error("a session whose checkout is here needs no Git to wake");
+		});
+		const woken = await runtime.rehydrate(sessionId);
+		assert.equal(woken.sessionManager.getCwd(), clone);
+		assert.deepEqual(woken.sessionManager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
+	});
+
+	test("a rehydration whose shared storage does not answer fails at the lookup deadline", async () => {
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
+		const store = runtime.session.sessionManager.getSessionStore();
+		Object.defineProperty(store, "descriptor", {
+			value: { ...store.descriptor, adapter: "libsql" },
+			configurable: true,
+		});
+		store.readHeader = () => new Promise(() => {});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const pending = runtime.rehydrate(sessionId).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await vi.advanceTimersByTimeAsync(RESUME_CATALOG_TIMEOUT_MS);
+			const error = await pending;
+			assert.ok(isResumeCatalogTimeoutError(error), String(error));
+			assert.deepEqual([error.subject, error.id], ["session", sessionId]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a /resume that needs a restore on a node without Git fails as a switch-session precondition", async () => {
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
@@ -668,6 +745,28 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		cleanups.push(() => session.dispose());
 		return session;
 	};
+
+	test("a supplied session bound with workspace is not prepared: the binding decides where it runs", async () => {
+		const selection = sqliteSelection("shared");
+		const { clone } = await sandbox.remoteWithClone("bound", { "README.md": "bound\n" });
+		const bound = await resolveWorkspace(workspace({ repo: clone, branch: "feat/bound" }));
+		const sub = join(bound.worktree, "sub");
+		mkdirSync(sub);
+		const store = await storeFor(selection);
+		const sessionManager = await SessionManager.create(store, sub);
+		await sessionManager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
+		const capture = await captureWorktreeSnapshot(bound.worktree, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			blobs: store.snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await sessionManager.appendWorktreeSnapshot(bound.worktree, capture.snapshot.id, capture.snapshot);
+		writeFileSync(join(bound.worktree, "README.md"), "changed after the snapshot\n");
+		const session = await createOn({ settingsManager: settings(), sessionManager, workspace: bound });
+		assert.deepEqual(session.sessionManager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+		assert.equal(readFileSync(join(bound.worktree, "README.md"), "utf8"), "changed after the snapshot\n");
+	});
 
 	test("a trusted repository's .atomic/setup runs for the restored worktree", async () => {
 		const marker = sandbox.path("setup-ran");

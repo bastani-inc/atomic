@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -33,6 +34,7 @@ import {
 	GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceDriftError,
+	isWorkspaceGitError,
 	isWorkspaceSnapshotError,
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
@@ -266,8 +268,11 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 		const manager = await recordSession(clone, sandbox.root);
 		renameSync(clone, sandbox.path("node-a-gone"));
 		const io = new CountingGitIo();
+		const launchClone = sandbox.path("node-b", "repo");
+		mkdirSync(sandbox.path("node-b"));
+		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), launchClone);
 
-		const prepared = await prepareSessionResume(manager, options({ io }));
+		const prepared = await prepareSessionResume(manager, options({ io, launchCwd: launchClone }));
 
 		assert.equal(prepared.status, "ready");
 		const mappings = manager.getWorktreeRootMappings();
@@ -283,6 +288,55 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 		assert.match(prepared.status === "ready" ? prepared.notices[0]!.message : "", /^Restored worktree snapshot/);
 	});
 });
+
+describe.skipIf(process.platform === "win32")(
+	"prepareSessionResume when Git fails in the launch checkout (#4329)",
+	() => {
+		/** A Git that fails `command` with exit status 2, only when it runs in `dir`, and otherwise runs the real Git. */
+		function gitFailingIn(dir: string, command: string): string {
+			const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+			const shim = sandbox.path("failing-git");
+			writeFileSync(
+				shim,
+				`#!/bin/sh\ncase "$(pwd -P):$*" in "${realpathSync(dir)}":*"${command}"*) echo "simulated failure" >&2; exit 2;; esac\nexec "${realGit}" "$@"\n`,
+			);
+			chmodSync(shim, 0o755);
+			return shim;
+		}
+
+		async function launchedInAnotherClone() {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone);
+			renameSync(clone, sandbox.path("node-a-gone"));
+			const launch = sandbox.path("node-b", "repo");
+			mkdirSync(sandbox.path("node-b"));
+			await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), launch);
+			return { manager, launch };
+		}
+
+		test("a Git failure while locating the launch checkout stops the resume instead of being read as no checkout", async () => {
+			const { manager, launch } = await launchedInAnotherClone();
+			const shim = gitFailingIn(launch, "rev-parse --show-toplevel");
+			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+			await assert.rejects(prepareSessionResume(manager, options({ launchCwd: launch })), (error: unknown) => {
+				assert.ok(isWorkspaceGitError(error), String(error));
+				return true;
+			});
+			assert.equal(existsSync(sandbox.path("host")), false);
+		});
+
+		test("a Git failure while comparing the launch checkout stops the resume instead of being read as drift", async () => {
+			const { manager, launch } = await launchedInAnotherClone();
+			const shim = gitFailingIn(launch, "cat-file");
+			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+			await assert.rejects(prepareSessionResume(manager, options({ launchCwd: launch })), (error: unknown) => {
+				assert.ok(isWorkspaceGitError(error), String(error));
+				return true;
+			});
+			assert.equal(existsSync(sandbox.path("host")), false);
+		});
+	},
+);
 
 describe("prepareSessionResume started in a checkout of the session's repository (#4329)", () => {
 	async function movedCheckout() {
