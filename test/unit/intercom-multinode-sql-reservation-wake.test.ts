@@ -107,7 +107,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		const database = await openDatabase();
 		await openSqlRestoringReservationStore({ database, prefix: "" });
 		const columns = await columnsOf(database);
-		for (const name of ["wake", "wake_requested"]) {
+		for (const name of ["wake", "wake_requested", "wake_generation"]) {
 			const column = columns.find((existing) => existing.name === name);
 			assert.deepEqual(column && { type: column.type, notnull: column.notnull, dflt: column.dflt_value }, {
 				type: "INTEGER",
@@ -132,7 +132,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		const store = await openSqlRestoringReservationStore({ database, prefix: "" });
 		assert.deepEqual(
 			(await columnsOf(database)).map((column) => column.name).filter((name) => name.startsWith("wake")),
-			["wake", "wake_requested"],
+			["wake", "wake_requested", "wake_generation"],
 		);
 		assert.deepEqual(
 			await database.get(`SELECT wake, wake_requested FROM ${TABLE} WHERE reservation_key = 'legacy'`),
@@ -158,7 +158,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		assert.deepEqual(wrapped.alters, []);
 	});
 
-	test("opening an old table adds exactly the two columns, each once (#4326)", async () => {
+	test("opening an old table adds each wake column once (#4326)", async () => {
 		const database = await openDatabase();
 		await database.exec(OLD_SCHEMA);
 		const borrowed = borrowedDatabase(database);
@@ -176,6 +176,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		assert.deepEqual(alters, [
 			`ALTER TABLE ${TABLE} ADD COLUMN wake INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE ${TABLE} ADD COLUMN wake_requested INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE ${TABLE} ADD COLUMN wake_generation INTEGER NOT NULL DEFAULT 0`,
 		]);
 	});
 
@@ -190,7 +191,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 			await openSqlRestoringReservationStore({ database, prefix: "" });
 			const wrapped = failingAlter(database, wording, true);
 			await openSqlRestoringReservationStore({ database: wrapped.database, prefix: "" });
-			assert.equal(wrapped.alters.length, 2);
+			assert.equal(wrapped.alters.length, 3);
 		}
 	});
 
@@ -225,6 +226,66 @@ describe("SQL reservation store wake rows (#4326)", () => {
 		group: "crew",
 		dormant: false,
 	};
+
+	test("a wake claim survives taking its notice, while later sends and new wake epochs remain wakeable (#4488)", async () => {
+		const { store, database } = await open();
+		const location = await database.get<SqliteRow & { file: string }>("PRAGMA database_list");
+		assert.ok(location);
+		const peerDatabase = await openNodeSqliteDatabase(location.file);
+		cleanups.push(() => peerDatabase.close());
+		const peer = await openSqlRestoringReservationStore({ database: peerDatabase, prefix: "" });
+		const request = { ...base, reservationKey: "released:child", wake: true };
+		await store.reserve(request);
+		const read = await store.read(request.reservationKey);
+		assert.equal(read.status, "active");
+		if (read.status !== "active") return;
+		const claim = {
+			fencingToken: read.reservation.fencingToken,
+			wakeGeneration: read.reservation.wakeGeneration,
+			messageId: "send-1",
+		};
+		const claims = await Promise.all([
+			store.requestWake(request.reservationKey, claim),
+			peer.requestWake(request.reservationKey, claim),
+		]);
+		assert.equal(claims.filter((result) => result.status === "requested").length, 1);
+		const first = await store.takeWakeRequests(base.ownerBrokerId);
+		assert.equal(first.status === "taken" && first.requests.length, 1);
+		assert.deepEqual(await peer.requestWake(request.reservationKey, claim), { status: "not-wakeable" });
+		assert.deepEqual(await store.takeWakeRequests(base.ownerBrokerId), { status: "taken", requests: [] });
+		assert.deepEqual(await peer.requestWake(request.reservationKey, { ...claim, messageId: "send-2" }), {
+			status: "requested",
+		});
+		await store.takeWakeRequests(base.ownerBrokerId);
+
+		await store.reserve({ ...request, wake: false });
+		await store.reserve(request);
+		assert.deepEqual(
+			await peer.requestWake(request.reservationKey, claim),
+			{ status: "not-wakeable" },
+			"a delayed sender cannot claim a later release",
+		);
+		const later = await store.read(request.reservationKey);
+		assert.equal(later.status, "active");
+		if (later.status !== "active") return;
+		assert.ok(later.reservation.wakeGeneration > claim.wakeGeneration);
+		const nextClaim = { ...claim, wakeGeneration: later.reservation.wakeGeneration };
+		assert.deepEqual(
+			await store.requestWake(request.reservationKey, nextClaim),
+			{ status: "requested" },
+			"the same still-waiting send can wake a new epoch",
+		);
+		await store.takeWakeRequests(base.ownerBrokerId);
+		await store.reserve({ ...request, ownerBrokerId: "replacement-broker" });
+		const moved = await store.read(request.reservationKey);
+		assert.equal(moved.status, "active");
+		if (moved.status !== "active") return;
+		assert.deepEqual(
+			await peer.requestWake(request.reservationKey, { ...claim, wakeGeneration: moved.reservation.wakeGeneration }),
+			{ status: "requested" },
+			"a replacement broker replays a lost wake",
+		);
+	});
 
 	test("the wake flag round-trips through insert and update and stays out of unrelated rows (#4326)", async () => {
 		const { store, database } = await open();
@@ -348,6 +409,31 @@ describe("SQL reservation consumption of released and dormant rows (#4326)", () 
 		const { store } = await seeded();
 		const consumed = await store.consume("unrelated", { childTarget: "child", groups: ["elsewhere"] });
 		assert.deepEqual(consumed, { status: "consumed", reservationKeys: [] });
+	});
+
+	test("a registration ends by name only the rows inserted up to the mark it read as it began (#4488)", async () => {
+		const database = await openDatabase();
+		const store = await openSqlRestoringReservationStore({ database, prefix: "" });
+		const releasedKey = releasedReservationKey("child");
+		const before = await store.insertionMark();
+		// The child is released after its registration began: its owner's reservation is inserted after the mark.
+		await reserveRow(store, releasedKey, "owner-released", true);
+		const after = await store.insertionMark();
+		assert.equal(after, before + 1);
+		const registered = { childTarget: "child", groups: crew, authorizedBy: "owner-released" };
+		assert.deepEqual(
+			await store.consume("unrelated", { ...registered, insertedBy: before }),
+			{ status: "consumed", reservationKeys: [] },
+			"a reservation inserted after the registration began stays",
+		);
+		assert.equal((await store.read(releasedKey)).status, "active");
+		// An update keeps the reservation's insertion: the mark moves only with inserts.
+		await reserveRow(store, releasedKey, "owner-released", false);
+		assert.equal(await store.insertionMark(), after);
+		assert.deepEqual(await store.consume("unrelated", { ...registered, insertedBy: after }), {
+			status: "consumed",
+			reservationKeys: [releasedKey],
+		});
 	});
 });
 

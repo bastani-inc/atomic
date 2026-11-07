@@ -928,6 +928,28 @@ interface UnsentInput {
 }
 
 /**
+ * Recover what the child's earlier process left unfinished in its session. A child woken onto the turn it was waiting
+ * in answers that turn before anything else (#4326), whether it is handed the calls' results or runs the calls again:
+ * a delivery its recovery replays waits in its queue for that turn, instead of starting a turn on top of the calls the
+ * transcript is still waiting on (#4488).
+ */
+async function recoverChildSession(
+	session: AgentSession,
+	spec: Pick<ChildSpec, "resumeToolResults" | "redispatchDetachedCalls">,
+): Promise<void> {
+	if (!spec.resumeToolResults?.length && spec.redispatchDetachedCalls !== true) {
+		await session.startPendingRecovery("resume");
+		return;
+	}
+	session.pauseQueuedMessages();
+	try {
+		await session.startPendingRecovery("resume");
+	} finally {
+		await session.resumeQueuedMessages();
+	}
+}
+
+/**
  * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
  * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
  */
@@ -1758,7 +1780,7 @@ export class SubagentControlRuntime {
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
-			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
+			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
 			if (redispatched !== undefined) unsent.task = unsent.followUps.shift();

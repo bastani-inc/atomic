@@ -35,6 +35,7 @@ import {
 	type RecipientPresenceSubject,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
+	type RestoringReservation,
 	type RestoringReservationLease,
 	reservationKeyFor,
 } from "./multinode-state-store.js";
@@ -261,6 +262,8 @@ interface ConsumedReservation {
 	readonly childName?: string;
 	readonly groups: ReadonlySet<string>;
 	readonly authorizedBy?: string;
+	/** The reservations' insertion mark when the registration began: later ones never end by the child's name (#4488). */
+	readonly insertedBy?: number;
 }
 
 interface MirroredReservation {
@@ -273,6 +276,11 @@ interface MirroredReservation {
 	readonly group: string;
 	/** This broker told the owner to wake the child while this reservation stands (#4401). */
 	woken?: true;
+	/**
+	 * The reservations this one took over, and those they took over: sends held for them wait for this one, and are
+	 * handed on when the child consumes it (#4488).
+	 */
+	readonly superseded?: readonly string[];
 }
 
 /** How a mirrored reservation differs from a plain restoring one. */
@@ -392,6 +400,9 @@ export class MultiNodeRouter {
 		const entry: PresenceEntry = {};
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
+		// #4488: read as the registration begins, so a reservation a release of the child makes from here on is newer.
+		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
+		insertedBy?.catch(() => {});
 		return new Promise<void>((resolve) => {
 			const bound = setTimeout(resolve, PRESENCE_REGISTRATION_BOUND_MS);
 			bound.unref?.();
@@ -405,7 +416,20 @@ export class MultiNodeRouter {
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
 					}
 					if (consumed !== undefined) {
-						await this.consumeReservation(consumed);
+						// #4488: the child may have been released since the registration began, while its presence was being
+						// taken over. A reservation its owner made for that release must stay, or the released child is
+						// unreachable: by the child's name, only reservations older than the registration end, and none
+						// once the session left; the capability's own one always ends.
+						const ownOnly: ConsumedReservation = {
+							groups: consumed.groups,
+							...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
+						};
+						const mark = await insertedBy;
+						await this.consumeReservation(
+							this.presence.get(session) !== entry
+								? ownOnly
+								: { ...consumed, ...(mark === undefined ? {} : { insertedBy: mark }) },
+						);
 						const { childName, authorizedBy } = consumed;
 						if (childName !== undefined && authorizedBy !== undefined) {
 							const registration = { childName, authorizedBy };
@@ -523,6 +547,9 @@ export class MultiNodeRouter {
 				await this.wakeWaitingOrigins(identity);
 			}
 			await this.recordKnown(session, entry);
+			// #4488: a released child's departure queues again what it never confirmed, and ends its presence, only now.
+			// Its owner's broker may have looked for sends waiting for it before then, as it made the child wakeable.
+			this.wakeIfWaitedFor(session);
 			for (const hold of holds) await this.state.heldSends.drop(hold.messageId);
 			for (const [key, mirror] of [...this.mirrored]) {
 				if (mirror.lease.ownerSessionId !== sessionId) continue;
@@ -531,6 +558,17 @@ export class MultiNodeRouter {
 				await this.wakeHeldOrigins(key);
 			}
 		});
+	}
+
+	/** #4488: behind any reserve of it still checking, look again whether sends wait for a released child that left. */
+	private wakeIfWaitedFor(session: BrokerConnectedSession): void {
+		const ids = new Set(
+			[session.info.id, session.registrationReturnAddress].flatMap((id) => (id === undefined ? [] : [normalizeTarget(id)])),
+		);
+		for (const [key, mirror] of this.mirrored) {
+			if (!mirror.wake || mirror.woken === true || !mirror.aliases.some((alias) => ids.has(normalizeTarget(alias)))) continue;
+			this.serial(`reservation:${key}`, () => this.wakeWaitingChild(key));
+		}
 	}
 
 	/** #3761 `received` from a local recipient; true when it confirms a message row this broker claimed for it. */
@@ -699,12 +737,20 @@ export class MultiNodeRouter {
 			}
 			const woken =
 				wake && previous?.woken === true && previous.lease.fencingToken === reserved.lease.fencingToken;
+			const superseded = new Set(
+				previous?.lease.fencingToken === reserved.lease.fencingToken ? previous.superseded : undefined,
+			);
+			for (const key of reserved.superseded) {
+				superseded.add(key);
+				for (const earlier of this.mirrored.get(key)?.superseded ?? []) superseded.add(earlier);
+			}
 			this.mirrored.set(reservationKey, {
 				lease: reserved.lease,
 				wake,
 				aliases,
 				group,
 				...(woken ? { woken } : {}),
+				...(superseded.size > 0 ? { superseded: [...superseded] } : {}),
 				...(isReleasedReservationKey(capability) ? {} : { capability }),
 			});
 			await this.wakeWaitingChild(reservationKey);
@@ -719,8 +765,11 @@ export class MultiNodeRouter {
 	private async wakeWaitingChild(reservationKey: string): Promise<void> {
 		const mirror = this.mirrored.get(reservationKey);
 		if (mirror?.wake !== true || mirror.woken === true) return;
-		if (!(await this.sendsWaitFor(reservationKey, mirror.aliases, mirror.group)) || mirror.woken === true) return;
-		await this.requestWake(reservationKey, this.brokerId);
+		const reservation = await this.activeReservation(reservationKey);
+		if (reservation?.wake !== true) return;
+		const messageId = await this.sendsWaitFor(reservationKey, mirror.aliases, mirror.group);
+		if (messageId === undefined || mirror.woken === true) return;
+		await this.requestWake(reservation, messageId);
 	}
 
 	/**
@@ -730,9 +779,9 @@ export class MultiNodeRouter {
 	 * owner was away, still finds the sends queued for it: under the delivery identities a session registered with that
 	 * id in the reserved group has (#4401).
 	 */
-	private async sendsWaitFor(reservationKey: string, aliases: readonly string[], group: string): Promise<boolean> {
+	private async sendsWaitFor(reservationKey: string, aliases: readonly string[], group: string): Promise<string | undefined> {
 		const held = await this.state.heldSends.list(reservationKey);
-		if (held.status === "listed" && held.sends.length > 0) return true;
+		if (held.status === "listed" && held.sends.length > 0) return held.sends[0].request.message.id;
 		for (const alias of aliases) {
 			const known = await this.state.knownSessions.lookup(alias, KNOWN_SESSION_RETENTION_MS);
 			if (known.status !== "found") continue;
@@ -747,15 +796,16 @@ export class MultiNodeRouter {
 				const presence = await this.state.leases.read({ kind: "presence", targetIdentity });
 				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
 				const queued = await this.state.outbox.listUndelivered(targetIdentity);
-				if (queued.status === "listed" && queued.rows.length > 0) return true;
+				if (queued.status === "listed" && queued.rows.length > 0) return queued.rows[0].messageId;
 			}
 		}
-		return false;
+		return undefined;
 	}
 
 	/** Ask the broker that owns a released child's reservation to wake it; this broker when it is the owner. */
-	private async requestWake(reservationKey: string, ownerBrokerId: string): Promise<void> {
-		const requested = await this.state.reservations.requestWake(reservationKey);
+	private async requestWake(reservation: RestoringReservation, messageId: string): Promise<void> {
+		const { reservationKey, ownerBrokerId, fencingToken, wakeGeneration } = reservation;
+		const requested = await this.state.reservations.requestWake(reservationKey, { fencingToken, wakeGeneration, messageId });
 		if (requested.status !== "requested") return;
 		if (ownerBrokerId === this.brokerId) await this.deliverWakeRequests();
 		else await this.bus.publish({ brokerId: ownerBrokerId, reason: "outcome", version: 0 });
@@ -814,12 +864,17 @@ export class MultiNodeRouter {
 						groups: [...consumed.groups],
 						...(consumed.authorizedBy === undefined ? {} : { authorizedBy: consumed.authorizedBy }),
 						...(consumed.capability === undefined ? { releasedOnly: true as const } : {}),
+						...(consumed.insertedBy === undefined ? {} : { insertedBy: consumed.insertedBy }),
 					},
 		);
 		if (result.status !== "consumed") return;
 		for (const key of result.reservationKeys) {
+			const superseded = this.mirrored.get(key)?.superseded ?? [];
 			this.mirrored.delete(key);
 			await this.wakeHeldOrigins(key);
+			// #4488: a send held for a reservation this one took over, such as a released child's before its wake
+			// restored it, is handed on now that the child is back, not at its origin's next outcome poll.
+			for (const earlier of superseded) await this.wakeHeldOrigins(earlier);
 		}
 	}
 
@@ -1449,6 +1504,12 @@ export class MultiNodeRouter {
 			result = await this.state.heldSends.hold(held);
 		}
 		if (result.status !== "held") return true;
+		// #4488: a released child is parked while its owner releases it, then made wakeable, and its owner's broker looks
+		// for held sends as it makes it wakeable. When that look came before this send was written and this send found it
+		// still parked, only a read made now that the send is written sees it wakeable: one of the two asks for the wake.
+		const current =
+			reservation.wake || count > 0 ? reservation : await this.activeReservation(reservation.reservationKey);
+		const wake = current?.wake === true;
 		const previous = this.holds.get(message.id);
 		if (previous !== undefined) clearTimeout(previous.timer);
 		const timer = setTimeout(() => void this.expireHold(message.id), RESTORING_RECIPIENT_HOLD_MS);
@@ -1461,7 +1522,7 @@ export class MultiNodeRouter {
 			senderId: from.info.id,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			clientMessage: request.clientMessage,
-			reasonCode,
+			reasonCode: wake ? unrestoredReasonCode(reservation.reservationKey, true) : reasonCode,
 			timer,
 		});
 		this.host.write(request.socket, {
@@ -1470,8 +1531,15 @@ export class MultiNodeRouter {
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			timeoutMs: RESTORING_RECIPIENT_HOLD_MS,
 		});
-		if (reservation.wake && count === 0) await this.requestWake(reservation.reservationKey, reservation.ownerBrokerId);
+		if (current?.wake === true && count === 0) {
+			await this.requestWake(current, message.id);
+		}
 		return true;
+	}
+
+	private async activeReservation(reservationKey: string): Promise<RestoringReservation | undefined> {
+		const read = await this.state.reservations.read(reservationKey);
+		return read.status === "active" && read.reservation.gone === undefined ? read.reservation : undefined;
 	}
 
 	private async expireHold(messageId: string): Promise<void> {

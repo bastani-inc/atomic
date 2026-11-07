@@ -175,7 +175,9 @@ systemd units.
 
 - **Owner.** A session with the built-in Intercom and subagents extensions and a scripted model launches 20 background
   subagents. Each starts a long shell task in the background and waits on it, so it is released. The owner's sessions
-  stay in a SQLite file on its own node. Its unit restarts on failure, and a restarted owner reopens the same session.
+  stay in a SQLite file on its own node. Its unit restarts on failure, and a restarted owner reopens the same session
+  and runs its recovery (`startPendingRecovery("resume")`), as an interactive session does, which restores the
+  children the killed process left running.
 - **Senders.** Each sender connects through its own node's broker, in the project group the Intercom extension joins
   when routing is multi-node, and sends numbered messages (`ADT <sender> <child> <k>`) to every child, one message per
   child at a time, so each sender's order to a child is defined. A send that loses its broker connection is retried with the same message id after Intercom's reconnect
@@ -211,8 +213,8 @@ The owner is stopped, and every child's transcript is read back from its session
 - no wake was lost: every accepted send arrived, and no child recorded a wake failure;
 - every child was released again before the owner stopped;
 - `PRAGMA integrity_check` is `ok` for the shared database and the owner's store, and every child's session reads back;
-- after each SIGKILL the owner restarted by itself, reopened its session with every child, and deliveries resumed,
-  with no other crash.
+- after each SIGKILL the owner restarted by itself, reopened its session with every child, ran its recovery, and
+  deliveries resumed, with no other crash.
 
 The report's metrics count outcomes by kind, non-deliveries by reason or error name, retried sends, broker
 connections per sender, the latency of delivered sends, and how long the children took to settle.

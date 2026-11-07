@@ -62,6 +62,15 @@ function ownerLog(kills = 0): OwnerRecord[] {
 	for (let kill = 0; kill < kills; kill++) {
 		records.push({ event: "owner-start", reopened: true, children: 2, at: 50 });
 		records.push({ event: "owner-rebound", children: 2, released: 2, running: 0, other: 0, wakeFailures: 0, at: 51 });
+		records.push({
+			event: "owner-recovery",
+			children: 2,
+			released: 2,
+			running: 0,
+			other: 0,
+			wakeFailures: 0,
+			at: 52,
+		});
 	}
 	records.push({ event: "final-status", children: 2, released: 2, running: 0, other: 0, wakeFailures: 0, at: 200 });
 	return records;
@@ -158,12 +167,13 @@ test("a clean run passes every released-subagent invariant (#4394)", () => {
 		{
 			name: "owner-recovered",
 			passed: true,
-			expected: { starts: 1, rebound: 0, children: 2, crashes: 0 },
+			expected: { starts: 1, rebound: 0, recovered: 0, children: 2, crashes: 0 },
 			actual: {
 				starts: 1,
 				reopened: 0,
 				rebound: 0,
 				reboundChildren: [],
+				recovered: 0,
 				crashes: [],
 				shutdownCrashes: [],
 				deliveredAfterLastStart: 8,
@@ -593,12 +603,13 @@ test("the owner restarts by itself after each kill, reopens its session and rebi
 	assert.deepEqual(result(killed, "owner-recovered"), {
 		name: "owner-recovered",
 		passed: true,
-		expected: { starts: 2, rebound: 1, children: 2, crashes: 0 },
+		expected: { starts: 2, rebound: 1, recovered: 1, children: 2, crashes: 0 },
 		actual: {
 			starts: 2,
 			reopened: 1,
 			rebound: 1,
 			reboundChildren: [2],
+			recovered: 1,
 			crashes: [],
 			shutdownCrashes: [],
 			deliveredAfterLastStart: 8,
@@ -612,6 +623,7 @@ test("the owner restarts by itself after each kill, reopens its session and rebi
 		...ownerLog(1).slice(0, -1),
 		{ event: "owner-start", reopened: true, children: 2, at: 500 },
 		{ event: "owner-rebound", children: 2, released: 2, running: 0, other: 0, at: 501 },
+		{ event: "owner-recovery", children: 2, released: 2, running: 0, other: 0, at: 502 },
 		...ownerLog(0).slice(-1),
 	];
 	assert.equal(field(result(evidence({ owner: twiceKilled, ownerKills: 2 }), "owner-recovered").actual, "starts"), 3);
@@ -652,6 +664,12 @@ test("the owner restarts by itself after each kill, reopens its session and rebi
 	assert.equal(result(evidence({ owner: partial, ownerKills: 1 }), "owner-recovered").passed, false);
 	const unbound = ownerLog(1).filter((record) => record.event !== "owner-rebound");
 	assert.equal(result(evidence({ owner: unbound, ownerKills: 1 }), "owner-recovered").passed, false);
+	const unrecovered = ownerLog(1).filter((record) => record.event !== "owner-recovery");
+	assert.equal(
+		field(result(evidence({ owner: unrecovered, ownerKills: 1 }), "owner-recovered").actual, "recovered"),
+		0,
+	);
+	assert.equal(result(evidence({ owner: unrecovered, ownerKills: 1 }), "owner-recovered").passed, false);
 	const [start, final] = ownerLog(0) as [OwnerRecord, OwnerRecord];
 	for (const event of ["uncaught", "fatal"]) {
 		const crashed = [start, { event, error: { name: "StorageUnavailableError", code: "unavailable" } }, final];

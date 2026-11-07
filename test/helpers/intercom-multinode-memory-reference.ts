@@ -379,7 +379,9 @@ interface ReservationRecord {
 	group: string;
 	dormant: boolean;
 	wake: boolean;
+	wakeGeneration: number;
 	wakeRequested: boolean;
+	wakeClaims: Set<string>;
 	fencingToken: number;
 	gone?: string;
 	renewedAt: number;
@@ -404,6 +406,7 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 		group: record.group,
 		dormant: record.dormant,
 		wake: record.wake,
+		wakeGeneration: record.wakeGeneration,
 		fencingToken: record.fencingToken,
 		...(record.gone === undefined ? {} : { gone: record.gone }),
 	});
@@ -465,8 +468,10 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 					targets: [request.childTarget],
 					group: request.group,
 					dormant: request.dormant,
+					wakeGeneration: 0,
 					wake: request.wake,
 					wakeRequested: false,
+					wakeClaims: new Set(),
 					fencingToken: shared.nextToken++,
 					renewedAt: Date.now(),
 				};
@@ -483,6 +488,11 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 					superseded.push(previous.reservationKey);
 				}
 				shared.records.set(request.reservationKey, record);
+			}
+			if ((record.wake && request.wake !== true) || record.ownerBrokerId !== request.ownerBrokerId) {
+				record.wakeGeneration++;
+				record.wakeClaims.clear();
+				record.wakeRequested = false;
 			}
 			record.ownerBrokerId = request.ownerBrokerId;
 			record.group = request.group;
@@ -513,11 +523,21 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 			if (found === undefined) return { status: "none" };
 			return { status: found.gone === undefined ? "reserved" : "gone", reservation: reservation(found) };
 		},
-		async requestWake(reservationKey) {
+		async requestWake(reservationKey, claim) {
 			if (reservationKey.length === 0) return invalid("empty-reservation-key");
 			const record = shared.records.get(reservationKey);
 			if (record === undefined || record.end !== undefined || record.gone !== undefined || !record.wake) {
 				return { status: "not-wakeable" };
+			}
+			if (claim !== undefined) {
+				const key = JSON.stringify([claim.fencingToken, claim.messageId]);
+				if (
+					claim.fencingToken !== record.fencingToken ||
+					claim.wakeGeneration !== record.wakeGeneration ||
+					record.wakeClaims.has(key)
+				)
+					return { status: "not-wakeable" };
+				record.wakeClaims.add(key);
 			}
 			record.wakeRequested = true;
 			return { status: "requested" };
@@ -566,6 +586,7 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 					record.gone === undefined &&
 					((record === own && !isReleasedReservationKey(record.reservationKey)) ||
 						(registered !== undefined &&
+							(registered.insertedBy === undefined || record.order <= registered.insertedBy) &&
 							(isReleasedReservationKey(record.reservationKey)
 								? record.ownerSessionId === registered.authorizedBy
 								: record.dormant && registered.releasedOnly !== true) &&
@@ -577,6 +598,9 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 				ended.push(record.reservationKey);
 			}
 			return { status: "consumed", reservationKeys: ended };
+		},
+		async insertionMark() {
+			return shared.nextOrder - 1;
 		},
 		async read(reservationKey) {
 			if (reservationKey.length === 0) return invalid("empty-reservation-key");

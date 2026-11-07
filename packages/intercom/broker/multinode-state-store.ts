@@ -324,6 +324,8 @@ export interface RestoringReservation {
 	readonly group: string;
 	readonly dormant: boolean;
 	readonly wake: boolean;
+	/** Increases when this reservation is parked again or moves to another broker. */
+	readonly wakeGeneration: number;
 	readonly fencingToken: number;
 	/** Set once the owner reports the child gone; verbatim. */
 	readonly gone?: string;
@@ -360,6 +362,11 @@ export interface RestoringReservationRegistration {
 	readonly releasedOnly?: true;
 	/** The supervisor whose capability the registering child proved; a released child's reservation ends only with its owner's. */
 	readonly authorizedBy?: string;
+	/**
+	 * The `insertionMark` read when the child began registering. Only reservations inserted up to it end by the child's
+	 * name: a later one was made by a release of the child after its registration began (#4488).
+	 */
+	readonly insertedBy?: number;
 }
 
 export interface RestoringReservationReleaseOutcome {
@@ -440,9 +447,13 @@ export interface RestoringReservationStore {
 	): Promise<RestoringReservationReleaseResult>;
 	/**
 	 * Ask the broker that owns this active, non-gone `wake` reservation to wake its child: the request stays until
-	 * that broker takes it. Asking again before then is the same single request.
+	 * that broker takes it. Asking again before then is the same single request. With a claim, the same send and
+	 * fencing token cannot request another wake in that generation even after take; stale epochs cannot wake a later release.
 	 */
-	requestWake(reservationKey: string): Promise<RestoringReservationRequestWakeResult>;
+	requestWake(
+		reservationKey: string,
+		claim?: { readonly fencingToken: number; readonly wakeGeneration: number; readonly messageId: string },
+	): Promise<RestoringReservationRequestWakeResult>;
 	/** Atomically remove and return the wake requests of the active reservations owned by this broker, once each. */
 	takeWakeRequests(ownerBrokerId: string): Promise<RestoringReservationTakeWakeResult>;
 	/**
@@ -454,6 +465,11 @@ export interface RestoringReservationStore {
 		reservationKey: string,
 		registered?: RestoringReservationRegistration,
 	): Promise<RestoringReservationConsumeResult>;
+	/**
+	 * The insertion order of the latest reservation inserted so far: one inserted after this was read has a greater
+	 * one (#4488).
+	 */
+	insertionMark(): Promise<number>;
 	read(reservationKey: string): Promise<RestoringReservationReadResult>;
 	/** Delete ended records ended, and reservations last renewed, more than `olderThanMs` ago; returns the count. */
 	prune(olderThanMs: number): Promise<number>;
