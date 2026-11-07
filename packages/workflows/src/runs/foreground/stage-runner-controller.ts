@@ -3,6 +3,7 @@ import {
 	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
 	convertToLlm,
+	currentWorktreeRootMappings,
 	type DetachedToolCall,
 	type DetachedToolResult,
 	isExtensionStartupFailure,
@@ -18,6 +19,7 @@ import {
 	type SessionStore,
 	type StructuredOutputCapture,
 	setsProviders,
+	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { raceAbort } from "../../shared/abort.js";
 import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
@@ -416,6 +418,8 @@ export class StageSessionController {
 	/** What only the resident session needs; dropped when the session is released. Created on first need. */
 	private residencyState: StageResidency | undefined;
 	private readonly hasExplicitModelFallbackConfig: boolean;
+	/** The restores of the run this stage belongs to, which every session it opens follows, wherever it reopens. */
+	private readonly runWorktreeRootMappings = currentWorktreeRootMappings();
 	private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
 	private modelRoute: ModelRoute | undefined;
@@ -3002,7 +3006,7 @@ export class StageSessionController {
 				this.residency.startupWait.signal,
 			)) as StageSessionCreateOptions;
 			this.callerSessionManager = createOptions.sessionManager;
-			created = await adapter.create(createOptions, {
+			const createMeta: Parameters<typeof adapter.create>[1] = {
 				...this.meta,
 				startupSignal: this.residency.startupWait.signal,
 				isFallbackAttempt: candidate !== undefined && candidate !== (await this.modelCandidates())[0],
@@ -3014,7 +3018,12 @@ export class StageSessionController {
 				...(this.sharedOrchestrationContext !== undefined
 					? { orchestrationContext: this.sharedOrchestrationContext }
 					: {}),
-			});
+			};
+			created = await withWorktreeRootMappings(
+				[],
+				() => adapter.create(createOptions, createMeta),
+				this.runWorktreeRootMappings,
+			);
 		} catch (error) {
 			if (error instanceof StageSessionBindingCleanupFailure) {
 				this.bindingCleanupFailure = error;

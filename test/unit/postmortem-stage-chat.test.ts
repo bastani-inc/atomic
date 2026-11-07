@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "@bastani/atomic";
+import { currentWorktreeRootMappings, SessionManager, type WorktreeRootMapping } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import {
@@ -119,6 +119,39 @@ describe("ensurePostMortemStageHandle", () => {
 		assert.equal(counter.creates, 1);
 		assert.deepEqual(promptCalls, ["What next?"]);
 		assert.equal(stage.status, "completed");
+	});
+
+	test("reopens the session of a restored run's stage in the run's restores (#4329)", async () => {
+		const restore = {
+			from: "/node-a/repo",
+			to: "/node-b/worktree",
+			snapshotId: "s".repeat(64),
+			tree: "t".repeat(40),
+			restoredAt: "2026-11-07T00:00:00.000Z",
+		};
+		const { sessionFile, sessionId } = retainedSession("restored");
+		const scopes: (readonly WorktreeRootMapping[])[] = [];
+		const adapters: StageAdapters = {
+			sessionStore,
+			agentSession: {
+				async create() {
+					scopes.push(currentWorktreeRootMappings());
+					return { ...mockSession(), sessionFile };
+				},
+			},
+		};
+
+		const result = await ensurePostMortemStageHandle("run-1", completedStage({ sessionId, sessionFile }), {
+			registry: createStageControlRegistry(),
+			adapters,
+			cwd: tempDir,
+			worktreeRootMappings: [restore],
+		});
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		await result.handle.prompt("What next?");
+
+		assert.deepEqual(scopes, [[restore]]);
 	});
 
 	test("reopens a removed custom-store stage handle without falling back to the host store", async () => {

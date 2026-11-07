@@ -26,7 +26,7 @@
  *   - src/shared/session-transcript.ts (retained-session validation)
  */
 
-import type { SessionStore } from "@bastani/atomic";
+import { type SessionStore, type WorktreeRootMapping, withWorktreeRootMappings } from "@bastani/atomic";
 import { isReopenableSession } from "../../shared/session-transcript.js";
 import { stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
@@ -64,6 +64,8 @@ export interface PostMortemStageChatDeps {
 	 * the stage's session is not in the selected store (#3996).
 	 */
 	readonly pooledSessionStore?: () => Promise<SessionStore | undefined>;
+	/** The restores the stage's run recorded, which the reopened session follows. */
+	readonly worktreeRootMappings?: readonly WorktreeRootMapping[];
 }
 
 /** The store that reopens the stage's retained session: the selected store, else the pooled one. */
@@ -140,7 +142,9 @@ export async function ensurePostMortemStageHandle(
 
 	const adapters = deps.adapters;
 	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
-		createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
+		withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
+			createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
+		),
 	);
 	return { ok: true, handle };
 }
@@ -168,7 +172,9 @@ export async function acquirePostMortemStageHandle(
 	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 	const adapters = deps.adapters;
 	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
-		createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
+		withWorktreeRootMappings(deps.worktreeRootMappings ?? [], () =>
+			createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
+		),
 	);
 	return { ok: true, lease };
 }

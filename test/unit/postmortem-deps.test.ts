@@ -125,6 +125,47 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 	}
 });
 
+test("a nested stage's post-mortem chat follows the restores its root run recorded (#4329)", async () => {
+	const restore = {
+		from: "/node-a/repo",
+		to: join(tempRoot, "restored"),
+		snapshotId: "s".repeat(64),
+		tree: "t".repeat(40),
+		restoredAt: "2026-11-07T00:00:00.000Z",
+	};
+	const deps = (runId: string) =>
+		postMortemDepsForRun(runId, { adapters: {}, resolveDefaultStageSessionDir: () => tempRoot });
+	assert.equal(deps("child-run").worktreeRootMappings, undefined);
+	const backend = await createMemoryTestBackend();
+	setDurableBackend(backend);
+	await backend.commitWorkflowRegistration({
+		workflowId: "root-run",
+		rootWorkflowId: "root-run",
+		name: "root-workflow",
+		inputs: {},
+		createdAt: 1,
+		status: "completed",
+		invocationCwd: tempRoot,
+		worktreeRootMappings: [restore],
+	});
+	store.recordRunStart({
+		id: "child-run",
+		name: "nested-workflow",
+		inputs: {},
+		status: "completed",
+		toolNodes: [],
+		stages: [],
+		startedAt: 2,
+		endedAt: 3,
+		parentRunId: "root-run",
+		parentStageId: "nested-call",
+		rootRunId: "root-run",
+	});
+
+	assert.deepEqual(deps("child-run").worktreeRootMappings, [restore]);
+	assert.deepEqual(deps("root-run").worktreeRootMappings, [restore]);
+});
+
 const POOLED_SCOPE = "workflow:pooled-child:1";
 const NESTED_SCOPE = `${POOLED_SCOPE}:workflow:nested:1`;
 

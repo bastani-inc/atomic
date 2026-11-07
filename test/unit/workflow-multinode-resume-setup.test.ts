@@ -13,6 +13,7 @@ import {
 import { join, resolve } from "node:path";
 import {
 	captureWorktreeSnapshot,
+	currentWorktreeRootMappings,
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	type GitUnavailableError,
 	isResumePreconditionError,
@@ -22,13 +23,17 @@ import {
 	restoreRunWorktree,
 	restoreWorktree,
 	runRestorePreconditionError,
+	SessionManager,
 	setUpRestoredRunWorktrees,
 	setWorktreeSnapshotGit,
+	type WorktreeRootMapping,
 	type WorktreeSnapshot,
+	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { resolveToCwd } from "../../packages/coding-agent/src/core/tools/path-utils.ts";
 import {
 	appendLineCommand,
@@ -43,6 +48,10 @@ import { restorePreconditionsChecked } from "../../packages/workflows/src/durabl
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import {
+	StageWakeDispatcher,
+	stageWakeKey,
+} from "../../packages/workflows/src/runs/foreground/stage-wake-dispatcher.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { hostRestorePort } from "../../packages/workflows/src/workers/worker-host.js";
@@ -51,6 +60,7 @@ import { testRunId } from "../helpers/run-id.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { openSqlSnapshotJournal, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { createStageContext, type InternalStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 useTemporaryAgentDir();
 
@@ -917,5 +927,65 @@ describe("the restore port of a worker host (#4329)", () => {
 				isResumePreconditionError(error) &&
 				error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
 		);
+	});
+});
+
+describe("a stage of a restored run, reopened from outside the run (#4329)", () => {
+	const restore = {
+		from: "/node-a/repo",
+		to: "/node-b/worktree",
+		snapshotId: "s".repeat(64),
+		tree: "t".repeat(40),
+		restoredAt: "2026-11-07T00:00:00.000Z",
+	};
+
+	test("opens every session it holds in the run's restores, also after it was released (#4329)", async () => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, process.cwd());
+		await manager.appendMessage({ role: "user", content: "plan", timestamp: 1 });
+		const dispatcher = new StageWakeDispatcher("run-restored", undefined);
+		const wakeKey = stageWakeKey("run-restored", "stage-restored");
+		dispatcher.open({ runId: "run-restored", stageId: "stage-restored", wakeKey });
+		const scopes: (readonly WorktreeRootMapping[])[] = [];
+		const ctx = withWorktreeRootMappings([restore], () =>
+			createStageContext(
+				makeOpts({
+					runId: "run-restored",
+					stageId: "stage-restored",
+					stageName: "implement",
+					waiting: {
+						policy: { afterMs: 0 },
+						dispatcher,
+						wakeKey,
+						async enter() {},
+						async recordResults() {},
+						resultsInTranscript() {},
+						async leave() {},
+						async reopenFailed() {},
+						async rehydrated() {},
+						resident() {},
+					},
+					adapters: {
+						sessionStore: store,
+						agentSession: {
+							async create(options) {
+								scopes.push(currentWorktreeRootMappings());
+								const opened = options.sessionManager as SessionManager | undefined;
+								return makeMockSession({ sessionId: opened?.getSessionId() ?? "session" }).session;
+							},
+						},
+					},
+					stageOptions: { sessionStore: store },
+				}),
+			),
+		) as InternalStageContext;
+
+		ctx.__startReleased?.({ kind: "release", since: 1, promptsCompleted: 1 }, manager.getSessionId());
+		await ctx.rehydrate();
+		await ctx.release();
+		await ctx.rehydrate();
+
+		assert.deepEqual(scopes, [[restore], [restore]]);
+		assert.deepEqual(currentWorktreeRootMappings(), []);
 	});
 });

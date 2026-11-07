@@ -12,6 +12,7 @@
  *   - src/tui/overlay-adapter.ts (attach pane wiring)
  * */
 
+import type { WorktreeRootMapping } from "@bastani/atomic";
 import { readDurableCheckpoints } from "../durable/backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
@@ -48,6 +49,16 @@ function resolveStageCwd(runId: string, runStore: Store): string | undefined {
 	}
 }
 
+/** The restores the root of `runId`'s run tree recorded, which every stage of the tree follows. */
+function resolveRunWorktreeRootMappings(runId: string, runStore: Store): readonly WorktreeRootMapping[] | undefined {
+	const backend = availableStoreDurableBackend(runStore, runId);
+	if (backend === undefined) return undefined;
+	const owningHandle = backend.getWorkflow(runId);
+	const rootRunId = readGraphStoreRun(runStore, runId)?.rootRunId ?? owningHandle?.rootWorkflowId;
+	const rootHandle = rootRunId === undefined ? owningHandle : (backend.getWorkflow(rootRunId) ?? owningHandle);
+	return rootHandle?.worktreeRootMappings;
+}
+
 /** Resolver deps for a specific run, keyed so revived handles use the real run cwd. */
 export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps): PostMortemStageChatDeps {
 	return {
@@ -56,6 +67,7 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
 		sessionStore: deps.adapters.sessionStore,
 		cwd: resolveStageCwd(runId, deps.store ?? store),
 		defaultSessionDir: deps.resolveDefaultStageSessionDir(),
+		worktreeRootMappings: resolveRunWorktreeRootMappings(runId, deps.store ?? store),
 		pooledSessionStore: async () => {
 			const runStore = deps.store ?? store;
 			const backend = requireStoreDurableBackend(runStore, runId);
