@@ -443,8 +443,11 @@ test("a pooled child is accepted only when it was restored where it finished, se
 		...passing,
 		"pooled-setup-hook-ran-once-where-restored": false,
 	});
-	// The git-less host ran a child at some point, even one it gave back.
-	assert.deepEqual(check({ hosts: { ...pool.hosts, C: { ...pool.hosts.C, maxBusy: 1 } } }), {
+	// A git-less host that asked for work while the child waited counts a busy worker during each claim request, but
+	// declined it: that alone is no violation.
+	assert.deepEqual(check({ hosts: { ...pool.hosts, C: { ...pool.hosts.C, maxBusy: 1 } } }), passing);
+	// The child was claimed once more than by the two hosts that held it: by the git-less host, which then gave it back.
+	assert.deepEqual(check({ work: [{ state: "completed", generation: 3, worker: "A/1" }] }), {
 		...passing,
 		"pooled-bound-work-never-on-the-gitless-host": false,
 	});

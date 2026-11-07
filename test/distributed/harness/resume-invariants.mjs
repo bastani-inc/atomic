@@ -311,21 +311,29 @@ export function checkResumeInvariants(evidence) {
 			actual: { source: pool?.source ?? null, reclaimed: pool?.reclaimed ?? null },
 		},
 		{
+			// A host's `busy` count includes a worker whose claim request is in flight, which an idle host without a
+			// restore port has every time it asks for work and declines the bound child; the journal's claim count is what
+			// shows who took the child.
 			name: "pooled-bound-work-never-on-the-gitless-host",
 			passed:
 				pool?.hosts?.A?.restore === true &&
 				pool.hosts.B?.restore === true &&
 				pool.hosts.C?.restore === false &&
 				pool.hosts.C.git === "unavailable" &&
-				pool.hosts.C.maxBusy === 0 &&
 				pool.heldOnGitless === 0 &&
 				setup?.C?.length === 0 &&
 				pooled.length > 0 &&
 				pooled.every((item) => item.firstHost !== "C" && item.finalHost !== "C") &&
-				(pool.work ?? []).every((row) => row.worker?.startsWith("C/") !== true),
+				(pool.work ?? []).length === 1 &&
+				(pool.work ?? []).every((row) => row.generation === 2 && row.worker?.startsWith("C/") !== true),
 			expected:
-				"n3's host has no Git and no restore port, and never ran a child, including while the reclaimed one waited",
-			actual: { hosts: pool?.hosts ?? null, heldOnGitless: pool?.heldOnGitless ?? null, setup: setup ?? null },
+				"n3's host has no Git and no restore port and never claimed the child, including while the reclaimed one waited: no marker or setup there, and the child's only claims were n2's host's and n1's host's (generation 2)",
+			actual: {
+				hosts: pool?.hosts ?? null,
+				heldOnGitless: pool?.heldOnGitless ?? null,
+				setup: setup ?? null,
+				work: pool?.work ?? null,
+			},
 		},
 		{
 			name: "pooled-setup-hook-ran-once-where-restored",
