@@ -264,8 +264,9 @@ export interface ResumeSessionWorktreeOptions {
 	readonly storeDir?: string;
 	readonly signal?: AbortSignal;
 	/**
-	 * Called with the new mappings once every checkout is restored and before any of them is recorded. When it throws,
-	 * nothing is recorded and the restored worktrees are removed, as for a failed restore.
+	 * Called with the new mappings, none when nothing needed restoring, once every checkout is restored and before any
+	 * of them is recorded. When it throws, nothing is recorded and the restored worktrees are removed, as for a failed
+	 * restore.
 	 */
 	readonly beforeRecord?: (mappings: readonly WorktreeRootMapping[]) => Promise<void>;
 }
@@ -366,7 +367,7 @@ export async function resumeSessionWorktree(
 				}),
 			);
 		}
-		if (mappings.length > 0) await options.beforeRecord?.(mappings);
+		await options.beforeRecord?.(mappings);
 		for (const mapping of mappings) {
 			options.signal?.throwIfAborted();
 			await sessionManager.appendWorktreeSnapshot(
