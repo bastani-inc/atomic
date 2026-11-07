@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
+import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import {
 	AgentRehydrateError,
 	type AgentReleaseConfigError,
@@ -39,14 +40,19 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import type { ResourceAdmission } from "../src/core/sdk-types.ts";
 import { sessionLifecycleScopes } from "../src/core/session-lifecycle-scope.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
+import { releasedHistoryFiles } from "../src/core/storage/session/released-history-files.ts";
 import type { SessionStore, StorageDescriptor } from "../src/core/storage/session/types.ts";
 import type { OperationId, TaskResult } from "../src/core/tasks/contracts.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS } from "../src/core/tool-detachment-errors.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 /** Delegates to a memory store and counts every operation, so tests prove a failure happened before any work. */
-function countingStore(inner: SessionStore = new MemorySessionStore(), adapter?: StorageDescriptor["adapter"]) {
+function countingStore(
+	inner: MemorySessionStore = new MemorySessionStore(undefined, releasedHistoryFiles(agentDir)),
+	adapter?: StorageDescriptor["adapter"],
+) {
 	const counts = new Map<string, number>();
 	const count = (name: string) => counts.set(name, (counts.get(name) ?? 0) + 1);
 	const counted =
@@ -68,14 +74,23 @@ function countingStore(inner: SessionStore = new MemorySessionStore(), adapter?:
 		list: counted("list", inner.list.bind(inner)),
 		findMostRecent: counted("findMostRecent", inner.findMostRecent.bind(inner)),
 		close: counted("close", inner.close.bind(inner)),
+		releaseSession: counted("releaseSession", inner.releaseSession.bind(inner)),
 	};
 	return {
 		store,
+		inner,
 		total: () => [...counts.values()].reduce((sum, value) => sum + value, 0),
 		get: (name: string) => counts.get(name) ?? 0,
 		reset: () => counts.clear(),
 	};
 }
+
+/** Entries as a store gives them back: their JSON, without the properties that are `undefined` in memory. */
+function asStored(entries: readonly SessionEntry[]): SessionEntry[] {
+	return JSON.parse(JSON.stringify(entries)) as SessionEntry[];
+}
+
+const agentDir = useTemporaryAgentDir();
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -342,6 +357,8 @@ describe("releaseWhenIdle (#4326)", () => {
 		assert.equal((await released).sessionId, h.session.sessionId);
 		assert.equal(internal(h.session)._disposed, true);
 		assert.equal(armedIdleSessionCount(), 0);
+		await h.session.release();
+		await dispatcher.whenIdle();
 		assert.deepEqual(dispatcher.stats(), {
 			keys: 0,
 			queued: 0,
@@ -462,6 +479,7 @@ async function runtimeHost(
 	});
 	cleanups.push(async () => {
 		await runtime.dispose();
+		await store.inner.close();
 		faux.unregister();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
@@ -498,6 +516,59 @@ describe("AgentSessionRuntime.rehydrate (#4326)", () => {
 		assert.equal(getMessageText(woken.messages.at(-1)), "second answer");
 		await woken.release();
 		assert.equal(runtime.rehydratedSessionCount, 0);
+	});
+
+	test("a released session's history leaves memory, and a wake restores all of it from one read (#4502)", async () => {
+		const host = await runtimeHost();
+		const { runtime, faux, store } = host;
+		faux.setResponses([
+			fauxAssistantMessage("first answer"),
+			fauxAssistantMessage("second answer"),
+			fauxAssistantMessage("third answer"),
+		]);
+		const original = runtime.session;
+		await original.prompt("first question");
+		await original.prompt("second question");
+		const sessionId = original.sessionId;
+		const history = asStored(original.sessionManager.getEntries());
+		const historyBytes = Buffer.byteLength(JSON.stringify(history)) - 2;
+		const headerBytes = Buffer.byteLength(JSON.stringify(await store.inner.readHeader(sessionId)));
+		const held = store.inner.historyBytes();
+		assert.equal(held.onDisk, 0);
+		assert.ok(held.inMemory > headerBytes + historyBytes * 0.99, `${held.inMemory} bytes held before release`);
+		store.reset();
+
+		await original.release();
+
+		assert.equal(store.get("releaseSession"), 1);
+		assert.deepEqual(store.inner.historyBytes(), { inMemory: headerBytes, onDisk: historyBytes });
+		store.reset();
+		const woken = await runtime.rehydrate(sessionId);
+		assert.deepEqual(asStored(woken.sessionManager.getEntries()), history);
+		assert.deepEqual(
+			woken.messages
+				.filter((message) => message.role !== "system")
+				.map((message) => [message.role, getMessageText(message)]),
+			[
+				["user", "first question"],
+				["assistant", "first answer"],
+				["user", "second question"],
+				["assistant", "second answer"],
+			],
+		);
+		assert.equal(store.get("readHeader"), 1);
+		assert.equal(store.get("load"), 1);
+		assert.equal(store.inner.historyBytes().inMemory, headerBytes, "a wake leaves the history on disk");
+
+		await woken.prompt("third question");
+		const continued = asStored(woken.sessionManager.getEntries());
+		assert.deepEqual(continued.slice(0, history.length), history);
+		await woken.release();
+		assert.deepEqual(store.inner.historyBytes(), {
+			inMemory: headerBytes,
+			onDisk: Buffer.byteLength(JSON.stringify(continued)) - 2,
+		});
+		assert.deepEqual((await store.inner.load(sessionId)).entries, continued);
 	});
 
 	test("a session not in this node's local-only storage fails at once, naming the team join command", async () => {

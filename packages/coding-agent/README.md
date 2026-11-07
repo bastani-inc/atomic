@@ -243,7 +243,7 @@ Sessions auto-save to `~/.atomic/agent/sessions/` organized by working directory
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
-atomic --no-session        # Ephemeral mode (don't save)
+atomic --no-session        # No resumable session (released history may use disk)
 atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
 atomic --import <file>       # Import a format-4 JSONL export into session storage
 atomic --session-id <id>   # Use/create an exact project-local session ID
@@ -598,7 +598,7 @@ cat README.md | atomic -p "Summarize this text"
 | `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--name <name>`, `-n <name>` | Set the session display name |
-| `--no-session` | Ephemeral mode (don't save) |
+| `--no-session` | No resumable session; [released history may use disk](docs/sessions.md) |
 
 ### Tool Options
 

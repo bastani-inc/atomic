@@ -14,7 +14,6 @@ import type { ExtensionContext } from "../../../packages/coding-agent/src/core/e
 import type { CreateAgentSessionOptions } from "../../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { MemorySessionStore } from "../../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../../../packages/coding-agent/src/core/storage/session/types.js";
 import { AgentTaskHost } from "../../../packages/coding-agent/src/core/tasks/agent-adapter.js";
@@ -35,7 +34,7 @@ import type { SubagentChildRestoreDeps } from "../../../packages/subagents/src/r
 import { subagentRegistrySizes } from "../../../packages/subagents/src/runs/foreground/subagent-registry-sizes.js";
 import { runAgentTask } from "../../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { IntercomEventBus } from "../../../packages/subagents/src/shared/types.js";
-import type { AgentHost, HostOptions, StoredBytes } from "./agent-host.js";
+import { type AgentHost, type HostOptions, memoryStore, type StoredBytes } from "./agent-host.js";
 import { liveAsyncResources, trackAsyncResources } from "./async-resources.js";
 import {
 	agentOf,
@@ -98,7 +97,7 @@ export async function createSubagentHost(options: HostOptions): Promise<AgentHos
 	const sessionDir = join(options.root, `children-${options.index}`);
 	const sqlitePath = join(options.root, `journal-${options.index}.sqlite`);
 	const database = options.store === "sqlite" ? await openNodeSqliteDatabase(sqlitePath) : undefined;
-	const store: SessionStore = database === undefined ? new MemorySessionStore() : await SqlSessionStore.open(database);
+	const store: SessionStore = database === undefined ? await memoryStore() : await SqlSessionStore.open(database);
 	const owner = await SessionManager.create(store, cwd);
 	const ownerSessionId = owner.getSessionId();
 	const taskHost = new AgentTaskHost({ scope: { kind: "session", sessionId: ownerSessionId }, authorizeLaunch() {} });

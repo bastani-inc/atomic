@@ -34,7 +34,7 @@ Common options:
 - `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
 - `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
 - `--name <name>` / `-n <name>`: Set the session display name at startup
-- `--no-session`: Disable session persistence
+- `--no-session`: No resumable session; [released history may use disk](/sessions)
 - `--session-dir <path>`: Custom session storage directory
 - `--storage '<json>'` / `--storage-file <path>`: Select storage for this process's sessions and workflow runs
 

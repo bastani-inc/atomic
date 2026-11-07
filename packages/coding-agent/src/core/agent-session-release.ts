@@ -82,7 +82,8 @@ const releases = new WeakMap<AgentSession, Promise<ReleasedAgentSession>>();
 
 /**
  * Let go of everything the session holds in memory (its agent loop, extension instances, tool registry, listeners,
- * timers, Intercom and MCP connections, provider caches) and keep only its stored history. Refused with a retryable
+ * timers, Intercom and MCP connections, provider caches) and keep only its stored history, which a store that keeps
+ * history in memory then moves out of it (`SessionStore.releaseSession`). Refused with a retryable
  * `session-busy` {@link AgentRehydrateError} while a run, compaction, shell command, queued message or background
  * task is pending, and with a `not-reopenable` one when its history is in a private in-memory store that nothing
  * could reopen it from. A close that fails rejects with a `release-failed` one whose `cause` is the close failure.
@@ -92,7 +93,8 @@ export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 	const existing = releases.get(this);
 	if (existing !== undefined) return existing;
 	const sessionId = this.sessionManager.getSessionId();
-	const unreopenable = notReopenable(sessionId, this.sessionManager.getSessionStore());
+	const store = this.sessionManager.getSessionStore();
+	const unreopenable = notReopenable(sessionId, store);
 	if (unreopenable !== undefined) return Promise.reject(unreopenable);
 	const activity = sessionActivity(this);
 	if (activity !== undefined) return Promise.reject(new AgentRehydrateError("session-busy", { sessionId, activity }));
@@ -105,16 +107,18 @@ export function release(this: AgentSession): Promise<ReleasedAgentSession> {
 	this._emit({ type: "session_released", released });
 	if (this._orchestrationContext !== undefined && !isSubagentChildSession(this))
 		parkWorkflowStageForRelease(this._orchestrationContext);
-	const closing = this.dispose().then(
-		() => released,
-		(error: Error) => {
-			throw new AgentRehydrateError(
-				"release-failed",
-				{ sessionId, storage: this.sessionManager.getSessionStore().descriptor.adapter },
-				{ cause: error },
-			);
-		},
-	);
+	const closing = this.dispose()
+		.then(() => store.releaseSession?.(sessionId))
+		.then(
+			() => released,
+			(error: Error) => {
+				throw new AgentRehydrateError(
+					"release-failed",
+					{ sessionId, storage: store.descriptor.adapter },
+					{ cause: error },
+				);
+			},
+		);
 	releases.set(this, closing);
 	return closing;
 }

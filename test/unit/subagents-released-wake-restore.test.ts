@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DetachedToolResult, ExtensionContext } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
@@ -29,6 +30,7 @@ import {
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	awaitSubagentChildRestoration,
 	restoreSubagentChild,
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
@@ -492,6 +494,66 @@ test("a child restored after a restart reads the results held for it as messages
 	assert.equal(run?.options.resumeTaskLiteral, true);
 	assert.deepEqual(run?.options.resumeToolResults, []);
 	assert.equal(run?.options.skipTaskPrompt, undefined);
+});
+
+test("a restart's restore whose read of a child's history fails in a way that passes leaves the child as it was, for the next restore (#4502)", async () => {
+	const h = harness();
+	h.original = "waits";
+	await h.admit("restart-transient");
+	await h.waitForLatest("restart-transient:0", (candidate) => candidate.launchLeafId !== undefined);
+	await h.closeOwnerAndReopen("session-close");
+	await h.waitForLatest(
+		"restart-transient:0",
+		(candidate) => candidate.state === "running" && candidate.childSessionFile !== undefined,
+	);
+	const record = h.latest("restart-transient:0") as SubagentChildRecord;
+	let fail!: (error: Error) => void;
+	const open = vi.spyOn(SessionManager, "open").mockImplementationOnce(
+		() =>
+			new Promise((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+
+	const restoring = restoreSubagentChildren(h.deps, h.ctx);
+	await vi.waitFor(() => assert.equal(open.mock.calls.length, 1));
+	const send = awaitSubagentChildRestoration(
+		record.owner.sessionId,
+		h.sessionManager.getEntries(),
+		record.childSessionId ?? record.intercomTarget ?? "",
+		10_000,
+	);
+	fail(new SessionSpillError("spill-read-failed", { directory: "d", sessionId: "s", bytes: 1, errno: "EMFILE" }));
+	assert.deepEqual(await restoring, [], "left out, not reported gone");
+	assert.match((await send) ?? "", /could not be restored just now: .*spill-read-failed.*try again shortly/);
+	open.mockRestore();
+	assert.equal(h.latest("restart-transient:0")?.state, "running");
+
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.equal(outcome?.kind, "restored");
+	assert.ok(outcome?.kind === "restored");
+	await settled(h, outcome.taskId);
+});
+
+test("a restart's restore whose read of a child's history fails for good reports the child gone (#4502)", async () => {
+	const h = harness();
+	h.original = "waits";
+	await h.admit("restart-lost");
+	await h.waitForLatest("restart-lost:0", (candidate) => candidate.launchLeafId !== undefined);
+	await h.closeOwnerAndReopen("session-close");
+	await h.waitForLatest(
+		"restart-lost:0",
+		(candidate) => candidate.state === "running" && candidate.childSessionFile !== undefined,
+	);
+	vi.spyOn(SessionManager, "open").mockRejectedValueOnce(
+		new SessionSpillError("spill-missing", { directory: "d", sessionId: "s", bytes: 1, errno: "ENOENT" }),
+	);
+
+	const [outcome, ...others] = await restoreSubagentChildren(h.deps, h.ctx);
+	vi.restoreAllMocks();
+	assert.deepEqual(others, []);
+	assert.equal(outcome?.kind, "unrestorable");
+	assert.match(outcome?.kind === "unrestorable" ? outcome.reason : "", /spill-missing/);
 });
 
 test("a background child with an owner is released while it waits, after the default delay (#4326)", async () => {

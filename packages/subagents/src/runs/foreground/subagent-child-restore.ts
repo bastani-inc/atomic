@@ -7,6 +7,7 @@ import {
 	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
+	isRetryableStorageError,
 	isStaleExtensionContextError,
 	type SessionEntry,
 	type SessionManager,
@@ -707,7 +708,8 @@ async function relaunched(
  * Accepts the child id (`<runId>:<index>`), its launch task id, or its Intercom name.
  * Records that a fork copied from another session name that session as their owner, so they are never restored here.
  * With `resume`, an explicit `subagent({ action: "resume" })` reopens a settled child the same way; the caller
- * decides which settled children are resumable.
+ * decides which settled children are resumable. A failure that passes (`isRetryableStorageError`) rejects with that
+ * failure and leaves the child as it was, never gone.
  */
 export async function restoreSubagentChild(
 	deps: SubagentChildRestoreDeps,
@@ -789,6 +791,13 @@ export async function restoreSubagentChild(
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
 			releaseWorktree();
+			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
+			// child as it was, for a later wake or resume; only a lasting one makes it gone.
+			if (isRetryableStorageError(error)) {
+				release();
+				await hold?.release();
+				throw error;
+			}
 			await markGone(error.message);
 			return { kind: "unrestorable", childId: record.childId, record, reason: error.message };
 		},
@@ -838,17 +847,24 @@ export function restoredChildrenAwaitingIntercom(ownerSessionId: string): Subage
 	return peers;
 }
 
-/** Restore every background child this session launched that had not settled when it was interrupted. */
+/**
+ * Restore every background child this session launched that had not settled when it was interrupted. A child whose
+ * restoration met a failure that passes is left out, as it was, to be resumed.
+ */
 export async function restoreSubagentChildren(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 ): Promise<SubagentChildRestoreOutcome[]> {
 	const owned = readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
-	return Promise.all(
-		[...owned.values()]
-			.filter(isRestorableSubagentChild)
-			.map((record) => restoreSubagentChild(deps, ctx, record.childId)),
+	const outcomes = await Promise.all(
+		[...owned.values()].filter(isRestorableSubagentChild).map((record) =>
+			restoreSubagentChild(deps, ctx, record.childId).catch((error: Error) => {
+				if (!isRetryableStorageError(error)) throw error;
+				return undefined;
+			}),
+		),
 	);
+	return outcomes.filter((outcome) => outcome !== undefined);
 }
 
 /**
@@ -911,7 +927,13 @@ export async function awaitSubagentChildRestoration(
 	}
 	if (active) {
 		const label = active.record.intercomTarget ?? targetName.trim();
-		const outcome = await settleWithin(active.outcome, deadline - Date.now());
+		let outcome: SubagentChildRestoreOutcome | undefined;
+		try {
+			outcome = await settleWithin(active.outcome, deadline - Date.now());
+		} catch (error) {
+			// Only a failure that passes rejects a restoration: the child is as it was, and may be restored next time.
+			return `Subagent \`${label}\` could not be restored just now: ${(error as Error).message}. The message was not sent; try again shortly.`;
+		}
 		if (!outcome)
 			return `Subagent \`${label}\` is still being restored after the restart. The message was not sent; try again shortly.`;
 		if (outcome.kind === "unrestorable") return goneChildRefusal(label, outcome.reason);

@@ -21,12 +21,14 @@ For SQLite, resume with `atomic --session-store "/data/project A/sessions.sqlite
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
-atomic --no-session        # Ephemeral mode; do not save
+atomic --no-session        # No resumable session (released history may use disk)
 atomic --name "my task"    # Set session display name at startup
 atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
 atomic --import <file>       # Import a JSONL export into session storage
 atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
+
+`--no-session` saves nothing to a resumable session store, but does not promise disk-free history. While the process runs, a session released while it waits, such as a background subagent's, has its history moved out of memory into a file under the agent directory, in `released-history/<host-identity>/<pid>-<start>-<nonce>/`, and read back when it wakes. The random owner nonce isolates concurrent processes even when their PID and unknown start time match. Directories and files are owner-only (0700/0600) on POSIX; Windows inherits the agent directory's ACL. Those files are removed when the process exits, including when Atomic's own SIGTERM or SIGHUP handling ends it. A process killed with SIGKILL or by a signal Atomic does not handle leaves them on disk. A later Atomic start with the same agent directory, hostname, PID namespace and boot removes them once the owner is provably gone; other identities, older host-only directories and uncertain owners are left untouched. See [Releasing idle sessions](/sdk#releasing-idle-sessions), including worker-only SDK cleanup limitations.
 
 Use `/session` in interactive mode to see the current session ID, message count, tokens, and cost. A JSONL session also has a file location. You can use it while a run is active; its totals update after each completed message, not each streaming text chunk. Detailed cost and cache-waste breakdowns are shown after the run finishes only when the available session history matches those totals; otherwise, only the total cost is shown.
 

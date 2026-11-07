@@ -193,6 +193,11 @@ export async function resolveSessionStore(cwd: string, options: SessionStorageOp
 	const selection = selectSessionStorage(cwd, options);
 	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
 	const agentDir = options.agentDir ?? getAgentDir();
+	// Released sessions' history that a killed process left in this agent directory goes, once per process (#4502).
+	void import("./storage/session/released-history-files.js").then(
+		({ sweepReleasedHistoryOnce }) => sweepReleasedHistoryOnce(agentDir),
+		() => undefined,
+	);
 	try {
 		const opened = await provider.openSessionStore(selection, { agentDir, domain: "sessions" });
 		const store = isDefaultDatabase(selection, agentDir)

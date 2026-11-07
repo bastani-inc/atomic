@@ -153,7 +153,7 @@ const READ_SECURITY_TIMEOUT_MS = 30_000;
 /** PowerShell hosts to try, most specific first: an absolute Windows
  * PowerShell path immune to a stripped `PATH`, then whichever of
  * `powershell.exe`/`pwsh.exe` the environment resolves. */
-function powershellCandidates(): string[] {
+export function powershellCandidates(): string[] {
 	const candidates: string[] = [];
 	const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
 	candidates.push(`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);

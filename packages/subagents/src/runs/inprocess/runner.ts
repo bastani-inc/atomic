@@ -2006,6 +2006,8 @@ export class SubagentControlRuntime {
 			const disposal = (async (): Promise<SessionDisposal> => {
 				try {
 					await session?.dispose();
+					if (releasedAttempt && transcriptManager !== undefined)
+						await transcriptManager.getSessionStore().releaseSession?.(transcriptManager.getSessionId());
 					return { cleanup: { kind: "reaped" } };
 				} catch (error) {
 					return {

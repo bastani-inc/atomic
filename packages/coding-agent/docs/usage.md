@@ -125,7 +125,7 @@ Sessions are saved automatically to `~/.atomic/agent/sessions/`, organized by wo
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select a session
-atomic --no-session        # Ephemeral mode; do not save
+atomic --no-session        # No resumable session (released history may use disk; see Sessions)
 atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
 atomic --import <file>       # Import a format-4 JSONL export into session storage
 atomic --session-id <id>   # Use/create an exact project-local session ID
