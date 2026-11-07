@@ -757,6 +757,7 @@ export {
 export {
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
+	mapRestoredPath,
 	openSessionInWorktree,
 	type ResumeSessionWorktreeOptions,
 	resumeSessionWorktree,

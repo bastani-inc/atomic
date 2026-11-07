@@ -1,10 +1,12 @@
 import {
+	currentWorktreeRootMappings,
 	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
+	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
@@ -170,6 +172,12 @@ export interface SubagentChildRecord {
 	readonly heldToolResults?: readonly DetachedToolResult[];
 	readonly ownerGeneration?: string;
 	readonly wakeFailure?: SubagentChildWakeFailure;
+	/**
+	 * The restores of the session or run the child was launched in, which the child follows for every path its tools
+	 * resolve, also when it is woken outside that work. A wake adds those the owner recorded since, such as a worktree
+	 * restored on another machine. Absent when the launch had none.
+	 */
+	readonly worktreeRootMappings?: readonly WorktreeRootMapping[];
 }
 
 export interface SubagentChildWakeFailure {
@@ -586,6 +594,7 @@ export function createSubagentChildRecordSink(
 	const owner = subagentChildOwner(ctx);
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
+	const worktreeRootMappings = currentWorktreeRootMappings();
 	let appended: Promise<void> = Promise.resolve();
 	return {
 		ownerSessionId: owner.sessionId,
@@ -594,6 +603,7 @@ export function createSubagentChildRecordSink(
 				version: 1,
 				childId: subagentChildId(input.runId, input.index),
 				owner,
+				...(worktreeRootMappings.length > 0 ? { worktreeRootMappings } : {}),
 				...input,
 			};
 			appended = appendInOrder(pi, record);

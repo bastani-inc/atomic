@@ -1,14 +1,24 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DetachedToolResult, ExtensionContext } from "@bastani/atomic";
+import {
+	currentWorktreeRootMappings,
+	type DetachedToolResult,
+	type ExtensionContext,
+	type WorktreeRootMapping,
+	withWorktreeRootMappings,
+} from "@bastani/atomic";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import { captureWorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.js";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -48,6 +58,10 @@ import { cleanupWorktrees, createWorktrees } from "../../packages/subagents/src/
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+useTemporaryAgentDir();
 
 const ORIGINAL_TASK = "original task";
 const WAIT_CALL = { toolCallId: "ci-1", toolName: "wait_for_ci" } as const;
@@ -72,7 +86,7 @@ interface Harness {
 	readonly sessionManager: SessionManager;
 	readonly ctx: ExtensionContext;
 	readonly deps: ExecutorDeps;
-	readonly runs: Array<{ task: string; options: RunSyncOptions }>;
+	readonly runs: Array<{ task: string; options: RunSyncOptions; scope: readonly WorktreeRootMapping[] }>;
 	readonly holds: Array<{ reserve: string; dormant?: true } | { release: string }>;
 	readonly stageState?: Map<string, object>;
 	host: AgentTaskHost;
@@ -98,12 +112,12 @@ function newHost(): AgentTaskHost {
 	});
 }
 
-function harness(options: { stage?: boolean } = {}): Harness {
+function harness(options: { stage?: boolean; sessionManager?: SessionManager } = {}): Harness {
 	const cwd = makeTempDirectory("subagent-wake-restore-");
 	let host = newHost();
 	const stageState = options.stage ? new Map<string, object>() : undefined;
 	const stageBoundary = options.stage ? new WorkflowStageAdmissionBoundary() : undefined;
-	const sessionManager = SessionManager.inMemory(cwd);
+	const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
 	const runs: Harness["runs"] = [];
 	const holds: Harness["holds"] = [];
 	let authorizations = 0;
@@ -233,7 +247,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 	};
 	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
 		const [parentCwd, agents, agentName, task, options] = args;
-		runs.push({ task, options });
+		runs.push({ task, options, scope: currentWorktreeRootMappings() });
 		if (task !== ORIGINAL_TASK) {
 			const { resumeToolResults: _results, skipTaskPrompt: _skip, ...rest } = options;
 			return runSync(parentCwd, agents, agentName, task, { ...rest, testSession: { output: "resumed" } });
@@ -755,4 +769,164 @@ test("the worktree of a child its workflow stage paused keeps its unsaved work f
 	await sleep(KEPT_SETTLE_MS);
 
 	assert.equal(existsSync(draft), true);
+});
+
+const restoreOf = (from: string, to: string): WorktreeRootMapping => ({
+	from,
+	to,
+	snapshotId: "s".repeat(64),
+	tree: "t".repeat(40),
+	restoredAt: "2026-11-07T00:00:00.000Z",
+});
+
+test("a released child woken outside the work it was launched in still follows that work's restores (#4329)", async () => {
+	const h = harness();
+	const launchRestore = restoreOf("/node-a/repo", join(h.cwd, "restored-for-the-launch"));
+
+	const record = await withWorktreeRootMappings([launchRestore], () => releasedChild(h, "wake-scope"));
+
+	assert.deepEqual(record.worktreeRootMappings, [launchRestore]);
+	assert.deepEqual(
+		h.runs[0]?.scope,
+		[launchRestore],
+		"the original launch ran inside the restores it was launched in",
+	);
+	assert.deepEqual(currentWorktreeRootMappings(), [], "the test itself is outside any work");
+	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+	assert.deepEqual(h.runs.at(-1)?.scope, [launchRestore]);
+	assert.deepEqual(h.latest(record.childId)?.worktreeRootMappings, [launchRestore], "a later wake keeps them too");
+});
+
+/** An owner session in a database store, which keeps the snapshot blobs a restore reads, as shared storage does. */
+async function sqlOwner(): Promise<SessionManager> {
+	const directory = makeTempDirectory("subagent-wake-owner-");
+	const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+		removeTempDirectory(directory);
+	});
+	return SessionManager.create(store, directory);
+}
+
+/** The owner records that its checkout `from` was restored into `to`, as a resume on another machine does. */
+async function ownerRestores(h: Harness, sandbox: GitSandbox, from: string, to: string): Promise<WorktreeRootMapping> {
+	const { clone } = await sandbox.remoteWithClone("owner-repo", { "README.md": "owner\n" });
+	const capture = await captureWorktreeSnapshot(clone, {
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		blobs: h.sessionManager.getSessionStore().snapshotBlobs,
+	});
+	if (capture.status !== "captured") throw new Error(capture.status);
+	await h.sessionManager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	const mapping = { ...restoreOf(from, to), snapshotId: capture.snapshot.id, tree: capture.snapshot.tree };
+	await h.sessionManager.appendWorktreeSnapshot(to, mapping.snapshotId, undefined, mapping);
+	return mapping;
+}
+
+test("a woken child follows the restores its owner recorded since, over those of its launch, for the same checkout (#4329)", async () => {
+	const sandbox = new GitSandbox();
+	cleanups.push(() => sandbox.dispose());
+	const h = harness({ sessionManager: await sqlOwner() });
+	const launched = restoreOf("/node-a/repo", "/node-a/old-worktree");
+	const record = await withWorktreeRootMappings([launched], () => releasedChild(h, "wake-owner-scope"));
+	const ownerRestore = await ownerRestores(h, sandbox, "/node-a/repo", join(h.cwd, "restored-for-the-owner"));
+
+	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+
+	assert.deepEqual(h.runs.at(-1)?.scope, [ownerRestore]);
+});
+
+test("a child whose directory is gone here continues in the worktree its owner restored for it (#4329)", async () => {
+	const sandbox = new GitSandbox();
+	cleanups.push(() => sandbox.dispose());
+	const h = harness({ sessionManager: await sqlOwner() });
+	const recorded = makeTempDirectory("subagent-wake-node-a-");
+	const worktree = makeTempDirectory("subagent-wake-node-b-");
+	cleanups.push(() => removeTempDirectory(worktree));
+	h.original = "released";
+	await settled(h, await h.admit("wake-moved", { cwd: recorded }));
+	const record = await h.waitForLatest(
+		"wake-moved:0",
+		(candidate) => candidate.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+	assert.equal(record.cwd, recorded);
+	removeTempDirectory(recorded);
+
+	const gone = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "carry on" });
+	assert.equal(gone.kind, "unrestorable", "without a restore of its directory it cannot continue");
+	assert.match(gone.kind === "unrestorable" ? gone.reason : "", /working directory no longer exists/);
+
+	await ownerRestores(h, sandbox, recorded, worktree);
+	const run = await restored(h, record.childId, { prompt: "carry on" });
+
+	assert.equal(run.cwd, worktree);
+	assert.equal(run.sessionManager?.getCwd(), worktree);
+});
+
+test("a child whose own checkout is gone here is restored from its own snapshot before it continues (#4329)", async () => {
+	const sandbox = new GitSandbox();
+	cleanups.push(() => sandbox.dispose());
+	const h = harness({ sessionManager: await sqlOwner() });
+	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	const store = h.sessionManager.getSessionStore();
+	const child = await SessionManager.create(store, clone);
+	await child.appendMessage({ role: "user", content: "edit", timestamp: 1 });
+	sandbox.write(join(clone, "README.md"), "edited by the child on node A\n");
+	const capture = await captureWorktreeSnapshot(clone, {
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		blobs: store.snapshotBlobs,
+	});
+	if (capture.status !== "captured") throw new Error(capture.status);
+	await child.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	const released = await releasedChild(h, "wake-own-checkout");
+	await appendRecord(h, {
+		...released,
+		cwd: clone,
+		childSessionId: child.getSessionId(),
+		childSessionFile: undefined,
+	});
+	renameSync(clone, sandbox.path("node-a-offline"));
+
+	const run = await restored(h, released.childId, { prompt: "carry on" });
+
+	const worktree = run.cwd;
+	assert.ok(worktree !== undefined && worktree !== clone && existsSync(worktree), String(worktree));
+	assert.equal(readFileSync(join(worktree, "README.md"), "utf8"), "edited by the child on node A\n");
+	assert.equal(run.sessionManager?.getCwd(), worktree);
+	assert.deepEqual(
+		run.sessionManager?.getWorktreeRootMappings().map((mapping) => [mapping.from, mapping.to]),
+		[[clone, worktree]],
+	);
+});
+
+test("a child whose own checkout is still here as it worked in it keeps it, with no Git involved in moving it (#4329)", async () => {
+	const sandbox = new GitSandbox();
+	cleanups.push(() => sandbox.dispose());
+	const h = harness({ sessionManager: await sqlOwner() });
+	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	const store = h.sessionManager.getSessionStore();
+	const child = await SessionManager.create(store, clone);
+	await child.appendMessage({ role: "user", content: "edit", timestamp: 1 });
+	sandbox.write(join(clone, "README.md"), "edited by the child\n");
+	const capture = await captureWorktreeSnapshot(clone, {
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		blobs: store.snapshotBlobs,
+	});
+	if (capture.status !== "captured") throw new Error(capture.status);
+	await child.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	const released = await releasedChild(h, "wake-own-here");
+	await appendRecord(h, {
+		...released,
+		cwd: clone,
+		childSessionId: child.getSessionId(),
+		childSessionFile: undefined,
+	});
+	sandbox.write(join(clone, "later.txt"), "written after the release\n");
+
+	const run = await restored(h, released.childId, { prompt: "carry on" });
+
+	assert.equal(run.cwd, clone);
+	assert.deepEqual(run.sessionManager?.getWorktreeRootMappings(), []);
+	assert.equal(readFileSync(join(clone, "later.txt"), "utf8"), "written after the release\n");
 });

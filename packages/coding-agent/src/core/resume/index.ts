@@ -59,12 +59,15 @@ export {
 	setUpRestoredRunWorktrees,
 } from "./run-setup.ts";
 export {
+	continueSessionWhereItWorked,
 	type DirtyCheckoutChoice,
 	type DirtyCheckoutPrompt,
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	type ResumeNotice,
+	savedProjectTrust,
+	sessionResumeOptions,
 	worktreeNeedsRestore,
 } from "./session-resume.ts";
 export {

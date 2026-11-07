@@ -4,13 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentTaskHost,
+	continueSessionWhereItWorked,
+	currentWorktreeRootMappings,
 	type DetachedToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
+	getAgentDir,
 	isRetryableStorageError,
 	isStaleExtensionContextError,
+	mapRestoredPath,
 	type SessionEntry,
 	type SessionManager,
+	SettingsManager,
+	savedProjectTrust,
+	sessionResumeOptions,
+	type WorktreeRootMapping,
+	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
@@ -313,6 +322,48 @@ function launchIntercomGroup(record: SubagentChildRecord, ctx: ExtensionContext)
 	return record.inherited ? record.intercomGroup : (record.intercomGroup ?? inheritedIntercomGroup(ctx));
 }
 
+/** The restores recorded with the child's launch, leaving out anything a damaged record holds. */
+function recordedWorktreeRootMappings(
+	record: Pick<SubagentChildRecord, "worktreeRootMappings">,
+): WorktreeRootMapping[] {
+	const entries: readonly Partial<WorktreeRootMapping>[] = Array.isArray(record.worktreeRootMappings)
+		? record.worktreeRootMappings
+		: [];
+	return entries.filter(
+		(entry): entry is WorktreeRootMapping =>
+			typeof entry?.from === "string" &&
+			typeof entry.to === "string" &&
+			typeof entry.snapshotId === "string" &&
+			typeof entry.tree === "string" &&
+			typeof entry.restoredAt === "string",
+	);
+}
+
+/**
+ * Where a child's reopened session continues, decided as a woken session's is (`rehydrate()`): each checkout it worked
+ * in on this machine stays, and the others, as when it was woken on another machine, are restored from its snapshots
+ * into worktrees of this machine first, setting them up as a resume does.
+ */
+async function continueChildWhereItWorked(
+	ctx: ExtensionContext,
+	launchCwd: string,
+	opened: SessionManager,
+): Promise<SessionManager> {
+	const inherited = ctx.getChildSessionOptions?.({});
+	const agentDir = inherited?.agentDir ?? getAgentDir();
+	const settingsManager = inherited?.settingsManager ?? SettingsManager.create(launchCwd, agentDir);
+	return continueSessionWhereItWorked(
+		opened,
+		sessionResumeOptions(
+			"rehydrate",
+			launchCwd,
+			agentDir,
+			settingsManager,
+			savedProjectTrust(agentDir, settingsManager),
+		),
+	);
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -350,11 +401,41 @@ async function relaunchChild(
 			await ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx),
 		);
 	}
-	if (!existsSync(record.cwd)) return unrestorable(`its working directory no longer exists: ${record.cwd}`);
 	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
 	const fresh =
 		record.childSessionId === undefined && record.childSessionFile === undefined ? record.launch : undefined;
-	const discovered = rediscoverAgent(deps, record.cwd, record.agent, record.agentSource);
+	// Where the child worked, after the restores of the session it belongs to: on another machine its own directory may
+	// be gone, and the worktree that was restored for that directory is where it continues.
+	const scope = currentWorktreeRootMappings();
+	let cwd = mapRestoredPath(record.cwd, scope);
+	let sessionManager: SessionManager | undefined;
+	if (fresh) {
+		if (!existsSync(cwd)) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
+		if (fresh.forkSession) {
+			const branch = await reopenChildSession(ctx, {
+				cwd,
+				childSessionId: fresh.forkSession.id,
+				...(fresh.forkSession.file ? { childSessionFile: fresh.forkSession.file } : {}),
+			});
+			if ("reason" in branch)
+				return unrestorable(
+					`the session forked from its parent's conversation for it could not be reopened: ${branch.reason}`,
+				);
+			sessionManager = branch.sessionManager;
+		}
+		onReopened(undefined);
+	} else {
+		const reopened = await reopenChildSession(ctx, { ...record, cwd });
+		if ("reason" in reopened) return unrestorable(reopened.reason);
+		sessionManager = await continueChildWhereItWorked(ctx, cwd, reopened.sessionManager);
+		cwd = mapRestoredPath(sessionManager.getCwd(), scope);
+		if (!existsSync(cwd)) return unrestorable(`its working directory no longer exists: ${cwd}`);
+		const previousIntercomId = readPreviousIntercomId(sessionManager);
+		onReopened(previousIntercomId);
+		if (previousIntercomId) await hold?.add(previousIntercomId);
+	}
+	const discovered = rediscoverAgent(deps, cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
@@ -367,34 +448,10 @@ async function relaunchChild(
 					deps.pi.getSessionName(),
 					ctx.sessionManager.getSessionId(),
 				),
-				cwd: record.cwd,
+				cwd,
 			})
 		: undefined;
 	const agent = bridge?.active ? applyIntercomBridgeToAgent(discovered, bridge) : discovered;
-	let sessionManager: SessionManager | undefined;
-	if (fresh) {
-		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
-		if (fresh.forkSession) {
-			const branch = await reopenChildSession(ctx, {
-				cwd: record.cwd,
-				childSessionId: fresh.forkSession.id,
-				...(fresh.forkSession.file ? { childSessionFile: fresh.forkSession.file } : {}),
-			});
-			if ("reason" in branch)
-				return unrestorable(
-					`the session forked from its parent's conversation for it could not be reopened: ${branch.reason}`,
-				);
-			sessionManager = branch.sessionManager;
-		}
-		onReopened(undefined);
-	} else {
-		const reopened = await reopenChildSession(ctx, record);
-		if ("reason" in reopened) return unrestorable(reopened.reason);
-		sessionManager = reopened.sessionManager;
-		const previousIntercomId = readPreviousIntercomId(sessionManager);
-		onReopened(previousIntercomId);
-		if (previousIntercomId) await hold?.add(previousIntercomId);
-	}
 	// The owner as it was when it admitted the child, not as it is now (#3784); an older record has only the latter.
 	const inherited = record.inherited ?? {
 		...(ctx.model ? { model: currentModelFullId(ctx.model), modelProvider: ctx.model.provider } : {}),
@@ -464,7 +521,7 @@ async function relaunchChild(
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
 		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
-		cwd: record.cwd,
+		cwd: cwd,
 		runId: record.runId,
 		index: record.index,
 		sessionDir:
@@ -526,7 +583,7 @@ async function relaunchChild(
 			agentSource: agent.source,
 			forked: record.forked === true,
 			task: prompts.task,
-			cwd: record.cwd,
+			cwd: cwd,
 			options,
 			...(ownerSignal ? { ownerSignal } : {}),
 			recordChild,
@@ -774,7 +831,13 @@ export async function restoreSubagentChild(
 		} else {
 			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx));
 		}
-		return relaunchChild(deps, ctx, record, hold, release, onReopened, resume);
+		// The child follows the restores of the session that owns it, after those it was launched in: a wake comes from
+		// outside any work, so neither is in scope here.
+		return withWorktreeRootMappings(
+			ctx.sessionManager.getWorktreeRootMappings(),
+			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume),
+			recordedWorktreeRootMappings(record),
+		);
 	})().then(
 		async (outcome) => {
 			previousIntercomId.resolve(undefined);
