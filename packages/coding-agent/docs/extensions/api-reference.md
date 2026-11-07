@@ -980,7 +980,7 @@ unsubscribe();
 
 `pi.events` belongs to the extension instance that received it. Register listeners again when that instance reloads, and do not retain the object for later use: calling `on()` or `emit()` through a captured handle after reload or disposal throws. To keep in-memory state across `/reload`, pass this facade to [`sessionScopedExtensionState`](/extensions/authoring#session-scoped-in-memory-state); do not capture the facade itself.
 
-If you implement an `ExtensionRuntime` for an embedded host, provide `trackEventBusSubscription(unsubscribe)` and retain each returned subscription until that extension runtime is reloaded or disposed. `ExtensionUIContext.getChatRenderSettings()` must return `markdownTransformers`; it may also return `renderLatex` to control terminal math rendering. These fields keep event subscriptions and display transforms scoped to the active extension instance.
+If you implement an `ExtensionRuntime` for an embedded host, provide `trackEventBusSubscription(unsubscribe)` and retain each returned subscription until that extension runtime is reloaded or disposed. `ExtensionUIContext.getChatRenderSettings()` must return `markdownTransformers`; it may also return `renderLatex` to control terminal math rendering, and `fullscreenScrollbar` and `fullscreenWheelScrollLines` for transcripts that an overlay scrolls itself, such as attached workflow chats. These fields keep event subscriptions and display transforms scoped to the active extension instance.
 
 
 ### Native providers

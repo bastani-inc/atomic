@@ -151,7 +151,7 @@ See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-sha
 
 Interactive sessions use fullscreen, with a scrolling transcript above the docked editor and status area. Wheel and trackpad input goes to a focused workflow graph or stage chat first, then the transcript when not consumed. Scrolling, scrollbar dragging, and selection remain available outside overlays.
 
-Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail and chat views.
+Adjust **Fullscreen wheel scroll lines** in `/settings`, or set `fullscreenWheelScrollLines` to `"auto"` or a number from 1 to 100. This also applies to fullscreen tool detail views, attached workflow chats, and `/tasks` transcripts.
 
 Selection copies automatically unless `fullscreenCopyOnSelect` is false. Ctrl+X returns tool detail or stage chat to the graph, returns the graph to main chat, or clears a scoped-model selection. It does not copy; `/copy` copies the last assistant message.
 

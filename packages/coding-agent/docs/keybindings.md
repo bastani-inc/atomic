@@ -105,7 +105,9 @@ Local copy operations require a working native clipboard or platform command. On
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, click "Jump to latest message" or use `tui.altScreen.bottom` to return to live output. Attached workflow chats have their own jump link; other OSC 8 links open in the default handler.
+Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, click "Jump to latest message" or use `tui.altScreen.bottom` to return to live output. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
+
+Attached workflow stage chats and `/tasks` transcripts scroll the same way as the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls their scrollbar, and `tui.altScreen.top`, `tui.altScreen.bottom`, `tui.altScreen.previousPrompt`, `tui.altScreen.nextPrompt`, `tui.altScreen.halfPageUp`, and `tui.altScreen.halfPageDown` act on them. In those views `pageUp` and `pageDown` always page the view, `tui.altScreen.lineUp` and `tui.altScreen.lineDown` do nothing, and the scrollbar shows the position but cannot be dragged.
 
 Dragging selects and copies text by default. Set `fullscreenCopyOnSelect: false` to highlight without copying. See [Terminal setup](/terminal-setup) for mouse and trackpad behavior.
 
@@ -139,8 +141,8 @@ On short terminals, the dialog is bounded to preserve that visible strip. The ac
 | `tui.altScreen.halfPageDown` | *(none)* | Scroll the transcript down by half a page |
 | `tui.altScreen.lineUp` | *(none)* | Scroll the transcript up by one line |
 | `tui.altScreen.lineDown` | *(none)* | Scroll the transcript down by one line |
-| `tui.altScreen.previousPrompt` | `ctrl+shift+up` | Jump to the previous marked message |
-| `tui.altScreen.nextPrompt` | `ctrl+shift+down` | Jump to the next marked message |
+| `tui.altScreen.previousPrompt` | `ctrl+shift+up`, `ctrl+up` (`ctrl+up` alone on Windows and WSL) | Jump to the previous marked message |
+| `tui.altScreen.nextPrompt` | `ctrl+shift+down`, `ctrl+down` (`ctrl+down` alone on Windows and WSL) | Jump to the next marked message |
 | `tui.altScreen.top` | `ctrl+home` | Scroll to the beginning of the transcript |
 | `tui.altScreen.bottom` | `ctrl+end` | Scroll to the transcript end and follow new output |
 
