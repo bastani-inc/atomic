@@ -214,6 +214,8 @@ interface Waiter {
 	readonly socket: BrokerConnectedSession["socket"];
 	readonly attemptId?: string;
 	readonly senderSessionId: string;
+	/** The sender's groups: the released child's reservation it may read when its send is queued (#4512). */
+	readonly senderGroups: readonly string[];
 	readonly expectsReply: boolean;
 	readonly resolveReplyTarget: boolean;
 	readonly targetSessionId: string;
@@ -1379,6 +1381,7 @@ export class MultiNodeRouter {
 			socket: request.socket,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			senderSessionId: request.from.info.id,
+			senderGroups: [...sessionGroups(request.from.info)],
 			expectsReply: message.expectsReply === true,
 			resolveReplyTarget: request.resolveReplyTarget,
 			targetSessionId: target.sessionId,
@@ -1440,7 +1443,30 @@ export class MultiNodeRouter {
 		this.armWaiter(queued, DELIVERED_MESSAGE_TTL_MS);
 		this.waiters.set(queued.messageId, queued);
 		this.host.write(queued.socket, queuedFrame(queued.messageId, queued.attemptId, position));
+		void this.wakeReleasedRecipient(queued).catch((error: Error) => this.report(error));
 		return true;
+	}
+
+	/**
+	 * #4512: a send routed to a released child's presence but written only after the child left, and after its
+	 * departure looked for sends waiting for it, is queued with nothing to wake the child before its owner's broker's
+	 * next backup poll. This broker makes that check itself: the same reservation, found by the exact ids the
+	 * recipient had, the same sends found by the ids its owner reserved, and the same claim on the send it finds, so
+	 * the two checks never wake the child twice for one send.
+	 */
+	private async wakeReleasedRecipient(waiter: Waiter): Promise<void> {
+		const sender = { sessionId: waiter.senderSessionId, groups: waiter.senderGroups };
+		for (const id of [waiter.targetSessionId, returnAddressOf(waiter.targetIdentity)]) {
+			if (id === undefined) continue;
+			const lookup = await this.state.reservations.lookup(normalizeTarget(id), sender, BROKER_LEASE_STALE_AFTER_MS);
+			if (lookup.status !== "reserved") continue;
+			const { reservation } = lookup;
+			if (!reservation.wake) return;
+			const aliases = reservation.targets.filter((target) => target !== reservation.childTarget);
+			const messageId = await this.sendsWaitFor(reservation.reservationKey, aliases, reservation.group);
+			if (messageId !== undefined) await this.requestWake(reservation, messageId);
+			return;
+		}
 	}
 
 	/**
