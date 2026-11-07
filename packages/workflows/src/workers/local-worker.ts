@@ -42,7 +42,7 @@ import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
-import { remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
+import { completedAttemptResult, remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
 import {
 	WORKER_ACTIVITY_INTERVAL_MS,
@@ -682,7 +682,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// still closing after the bound writes nothing more: its writes would land in the attempt served next.
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
-				await request({ kind: "complete", result });
+				await request({ kind: "complete", result: completedAttemptResult(result, store) });
 			} catch (error) {
 				if (!replies.attemptFenced) throw error;
 				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.

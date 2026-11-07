@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type {
 	AgentSessionAdapter,
@@ -15,6 +16,7 @@ import type {
 	StageSnapshot,
 } from "../../packages/workflows/src/shared/store-types.js";
 import {
+	completedAttemptResult,
 	createPooledStageDelivery,
 	createWorkerStageDelivery,
 	type PooledStageDeliveryOptions,
@@ -448,6 +450,44 @@ test("a stage on another host records each session's messages on the stage once,
 		{},
 		"its session's sink is handed over all the same",
 	);
+});
+
+test("an attempt completes with the stage receipts of its nested runs in store order, and its own run's stay in its result (#4513)", () => {
+	const store = createStore();
+	const own = { ...stage("agent-1", "agent"), intercomReceipts: { sessionId: "own-session", messageIds: ["own"] } };
+	store.recordRunStart({ ...childRun(), stages: [own] });
+	const nested = (id: string, stages: StageSnapshot[]): RunSnapshot => ({
+		...childRun(),
+		id,
+		parentRunId: CHILD,
+		parentStageId: "agent-1",
+		stages,
+	});
+	store.recordRunStart(
+		nested("nested-a", [
+			stage("quiet", "quiet"),
+			{ ...stage("a-1", "first"), intercomReceipts: { sessionId: "session-a", messageIds: ["m1", "m2"] } },
+			{ ...stage("a-2", "second"), intercomReceipts: { sessionId: "session-b", messageIds: ["m3"] } },
+		]),
+	);
+	store.recordRunStart(
+		nested("nested-b", [
+			{ ...stage("b-1", "third"), intercomReceipts: { sessionId: "session-c", messageIds: ["m4"] } },
+		]),
+	);
+	const result: RunResult = { runId: CHILD, status: "completed", stages: [own], toolNodes: [] };
+	const { nestedStageReceipts, ...completed } = completedAttemptResult(result, store);
+	assert.deepEqual(nestedStageReceipts, [
+		{ runId: "nested-a", stageId: "a-1", stageName: "first", sessionId: "session-a", messageIds: ["m1", "m2"] },
+		{ runId: "nested-a", stageId: "a-2", stageName: "second", sessionId: "session-b", messageIds: ["m3"] },
+		{ runId: "nested-b", stageId: "b-1", stageName: "third", sessionId: "session-c", messageIds: ["m4"] },
+	]);
+	assert.deepEqual(completed, result);
+	// An attempt whose nested stages took nothing completes with its result as it is.
+	const quiet = createStore();
+	quiet.recordRunStart({ ...childRun(), stages: [own] });
+	quiet.recordRunStart(nested("nested-a", [stage("quiet", "quiet")]));
+	assert.equal(completedAttemptResult(result, quiet), result);
 });
 
 /** A stage session as a worker's adapter creates it, closing as `close` does. */

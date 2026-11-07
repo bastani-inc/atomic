@@ -28,6 +28,7 @@ import {
 } from "../shared/worker-pool-errors.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
 import { stageInputRefusal, stageInputRefusedReason } from "./placement-errors.js";
+import type { PooledRunResult, StageReceipts } from "./protocol.js";
 import { isRunChanges, type PublishedRun, type RunChanges, type RunHeader } from "./run-changes.js";
 
 type PendingDelivery = ReturnType<typeof createWorkflowPendingStageDelivery>;
@@ -372,9 +373,9 @@ export class PoolStageHandoff {
 		});
 	}
 
-	async complete(work: Pick<PoolWork, "id" | "childRunId" | "scope">): Promise<void> {
+	async complete(work: Pick<PoolWork, "id" | "childRunId" | "scope" | "generation">): Promise<void> {
 		const root = this.lease.runId;
-		const result = (await this.queue.result(root, work.id)) as RunResult | undefined;
+		const result = (await this.queue.result(root, work.id)) as PooledRunResult | undefined;
 		await this.backend.catchUpWorkflow(root);
 		if (result === undefined) return;
 		await this.recordResultReceipts(work, result);
@@ -394,25 +395,47 @@ export class PoolStageHandoff {
 	}
 
 	/**
-	 * Records the receipts the child's result reports for its stages on another host before the child settles (#4505):
-	 * the publication that showed such a stage ended may never have reached the root, which refuses an attempt's
-	 * activity once its work completed. A stage's running drains settle first, and receipts the attempt recorded already
-	 * are not recorded again. The result is final, so no attempt is checked; a failure is reported on the root run. A
-	 * child the root never held a run of has no queued messages to record.
+	 * Records the receipts the child's result reports for its stages on another host before the child settles (#4505),
+	 * its nested runs' stages included (#4513): the publication that showed such a stage ended may never have reached the
+	 * root, which refuses an attempt's activity once its work completed. A stage's running drains settle first, and
+	 * receipts the attempt recorded already are not recorded again. The result is final, so no attempt is checked; a
+	 * failure is reported on the root run, as is a receipt for a run outside the child's, which is refused. A run the
+	 * root never held has no queued messages to record.
 	 */
-	private async recordResultReceipts(work: Pick<PoolWork, "id" | "childRunId">, result: RunResult): Promise<void> {
-		if (this.store.run(work.childRunId) === undefined) return;
-		const recorded = this.attempts.get(work.id)?.receipts;
-		for (const stage of result.stages) {
-			const receipts = stage.intercomReceipts;
-			if (receipts === undefined) continue;
-			await this.drains.get(JSON.stringify([work.childRunId, stage.id]))?.catch(() => undefined);
-			if (recorded?.has(JSON.stringify([work.childRunId, stage.id, receipts.sessionId])) === true) continue;
-			await recordPendingStageReceipts(this.store, work.childRunId, stage.id, stage.name, (action) => action(), {
-				sessionId: receipts.sessionId,
-				receivedMessageIds: receipts.messageIds,
+	private async recordResultReceipts(
+		work: Pick<PoolWork, "id" | "childRunId" | "generation">,
+		result: PooledRunResult,
+	): Promise<void> {
+		const attempt = this.attempts.get(work.id);
+		for (const { runId, stageId, stageName, sessionId, messageIds } of resultReceipts(work.childRunId, result)) {
+			if (this.store.run(runId) === undefined) continue;
+			if (!this.descendsFrom(runId, work.childRunId)) {
+				this.recordDeliveryIssue(
+					this.outside({ id: work.id, generation: attempt?.generation ?? work.generation }, runId),
+				);
+				continue;
+			}
+			await this.drains.get(JSON.stringify([runId, stageId]))?.catch(() => undefined);
+			if (attempt?.receipts.has(JSON.stringify([runId, stageId, sessionId])) === true) continue;
+			await recordPendingStageReceipts(this.store, runId, stageId, stageName, (action) => action(), {
+				sessionId,
+				receivedMessageIds: messageIds,
 			}).catch((error: Error) => this.recordDeliveryIssue(error));
 		}
+	}
+
+	/** Whether the run `runId` is the run `ancestorId` or hangs from it, by the parent links the store holds. */
+	private descendsFrom(runId: string, ancestorId: string): boolean {
+		const seen = new Set<string>();
+		for (
+			let id: string | undefined = runId;
+			id !== undefined && !seen.has(id);
+			id = this.store.run(id)?.parentRunId
+		) {
+			if (id === ancestorId) return true;
+			seen.add(id);
+		}
+		return false;
 	}
 
 	private settle(
@@ -978,6 +1001,14 @@ function byId<T extends { readonly id: string }>(nodes: readonly T[]): ReadonlyM
 
 function hostKey(runId: string | undefined, stageId: string | undefined): string {
 	return JSON.stringify([runId, stageId]);
+}
+
+/** Every stage receipt a child's result reports: its own stages', then its nested runs' stages' (#4513). */
+function* resultReceipts(childRunId: string, result: PooledRunResult): Generator<StageReceipts> {
+	for (const { id, name, intercomReceipts } of result.stages)
+		if (intercomReceipts !== undefined)
+			yield { runId: childRunId, stageId: id, stageName: name, ...intercomReceipts };
+	if (result.nestedStageReceipts !== undefined) yield* result.nestedStageReceipts;
 }
 
 /**
