@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	copyFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, dirname, join, relative } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
@@ -37,7 +50,13 @@ interface NodeOutput {
 	readonly userMessages?: number;
 	readonly toolResult?: readonly { type: string; text?: string }[];
 	readonly readFile?: string;
-	readonly error?: { name?: string; code?: string; message?: string };
+	readonly error?: {
+		name?: string;
+		code?: string;
+		message?: string;
+		problems?: readonly { code: string; subject: string }[];
+		cause?: { name?: string; code?: string };
+	};
 }
 
 interface NodeRun {
@@ -120,6 +139,43 @@ function treeFiles(dir: string): Map<string, string> {
 	};
 	walk(dir);
 	return files;
+}
+
+/**
+ * This machine's Git packed as Atomic's portable Git archive (`bin/git`, `libexec/git-core`, templates, an empty system
+ * config and CA bundle), with its SHA-256 and version, so a node without Git can provision a working one offline.
+ */
+function portableGitArchive(): { archive: string; sha256: string; version: string } {
+	const execPath = execFileSync(gitPath, ["--exec-path"]).toString().trim();
+	const source = join(root, "portable-git");
+	for (const dir of ["bin", "libexec", "share/git-core", "etc", "ssl"])
+		mkdirSync(join(source, dir), { recursive: true });
+	copyFileSync(realpathSync(gitPath), join(source, "bin", "git"));
+	chmodSync(join(source, "bin", "git"), 0o755);
+	cpSync(execPath, join(source, "libexec", "git-core"), { recursive: true, verbatimSymlinks: true });
+	const templates = join(execPath, "..", "..", "share", "git-core", "templates");
+	if (existsSync(templates)) cpSync(templates, join(source, "share", "git-core", "templates"), { recursive: true });
+	else mkdirSync(join(source, "share", "git-core", "templates"));
+	writeFileSync(join(source, "etc", "gitconfig"), "");
+	writeFileSync(join(source, "ssl", "cacert.pem"), "");
+	const archive = join(root, "portable-git.tar.gz");
+	execFileSync("tar", ["czf", archive, "-C", source, "."]);
+	const version = /git version (\S+)/.exec(execFileSync(gitPath, ["--version"]).toString())?.[1] ?? "";
+	return { archive, sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), version };
+}
+
+/** A directory holding only the tools Git provisioning unpacks with, for a PATH without Git. */
+function provisioningTools(): string {
+	const tools = join(root, "provisioning-tools");
+	if (existsSync(tools)) return tools;
+	mkdirSync(tools, { recursive: true });
+	for (const tool of ["tar", "gzip"]) {
+		const located = execFileSync("sh", ["-c", `command -v ${tool}`])
+			.toString()
+			.trim();
+		symlinkSync(located, join(tools, tool));
+	}
+	return tools;
 }
 
 /** A loopback TCP server that accepts connections and never answers, as a partitioned database looks to a client. */
@@ -208,14 +264,18 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			const gitless = await startNode(
 				"resume",
 				{ sessionId, launchCwd: join(root, "node-c", "home"), readPath: join(clone, "notes", "agent-wrote.txt") },
-				nodeEnv("node-c", { PATH: `${nodeCPath}:${dirname(bunExecutable())}` }),
+				nodeEnv("node-c", { PATH: `${nodeCPath}:${dirname(bunExecutable())}`, ATOMIC_OFFLINE: "1" }),
 			).run;
 			assert.equal(gitless.code, 2, gitless.stderr);
 			assert.deepEqual(
 				[gitless.output?.error?.name, gitless.output?.error?.code],
 				["ResumePreconditionError", "preconditions-unmet"],
 			);
-			assert.match(gitless.output?.error?.message ?? "", /git \(git\) \(git-unavailable\)/);
+			assert.deepEqual(gitless.output?.error?.problems, [
+				{ code: "git-unavailable", subject: "git (offline)" },
+				{ code: "setup-hook-missing", subject: "setup hook" },
+			]);
+			assert.deepEqual(gitless.output?.error?.cause, { name: "GitUnavailableError", code: "offline" });
 			assert.equal(existsSync(join(root, "node-c", "agent", "worktree-snapshots")), false);
 
 			const partition = await silentServer();
@@ -405,6 +465,81 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			assert.deepEqual(resumed.output?.mappings?.map((mapping) => mapping.from).sort(), [alpha, beta].sort());
 			assert.match(resumed.output?.toolResult?.map((part) => part.text ?? "").join("") ?? "", /beta from node A/);
 			assert.equal(readFileSync(setupMarker, "utf8"), "ran\nran\n");
+		},
+		MULTINODE_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"scenario 6: a git-less node provisions Git to restore and continue a session; a failed download is a typed precondition error that writes nothing",
+		async () => {
+			const recordedClone = join(root, "prov-node-a", "home", "repo");
+			mkdirSync(dirname(recordedClone), { recursive: true });
+			git(root, "clone", "-q", join(root, "remote.git"), recordedClone);
+			writeFileSync(join(recordedClone, "README.md"), "edited on the node with Git\n");
+			const nodeA = startNode(
+				"record",
+				{ cwd: recordedClone, file: join(recordedClone, "provisioned.txt"), content: "from the node with Git\n" },
+				nodeEnv("prov-node-a"),
+			);
+			const recorded = await new Promise<NodeOutput>((resolveRecorded, reject) => {
+				let buffer = "";
+				nodeA.child.stdout?.on("data", (chunk) => {
+					buffer += chunk.toString();
+					const line = buffer.split("\n").find((candidate) => candidate.startsWith("{"));
+					if (line) resolveRecorded(JSON.parse(line) as NodeOutput);
+				});
+				void nodeA.run.then((run) => reject(new Error(`node A exited early: ${run.stderr}`)));
+			});
+			nodeA.child.kill("SIGKILL");
+			await nodeA.run;
+			const offline = join(root, "prov-node-a-gone");
+			renameSync(join(root, "prov-node-a"), offline);
+			const portable = portableGitArchive();
+			const gitless = (extra: NodeJS.ProcessEnv = {}) =>
+				nodeEnv("prov-node-d", {
+					PATH: `${provisioningTools()}:${dirname(bunExecutable())}`,
+					ATOMIC_OFFLINE: "",
+					PROVISION_ARCHIVE: portable.archive,
+					PROVISION_SHA256: portable.sha256,
+					PROVISION_VERSION: portable.version,
+					...extra,
+				});
+			const agentDir = join(root, "prov-node-d", "agent");
+			const resumeArgs = {
+				sessionId: recorded.sessionId,
+				launchCwd: join(root, "prov-node-d", "home"),
+				readPath: join(recordedClone, "provisioned.txt"),
+				setupCommand: "true",
+			};
+
+			const failed = await startNode("resume", resumeArgs, gitless({ PROVISION_FAIL: "1" })).run;
+			assert.equal(failed.code, 2, failed.stderr);
+			assert.deepEqual(
+				[failed.output?.error?.name, failed.output?.error?.code],
+				["ResumePreconditionError", "preconditions-unmet"],
+			);
+			assert.deepEqual(failed.output?.error?.problems, [
+				{ code: "git-unavailable", subject: "git (download-failed)" },
+			]);
+			assert.deepEqual(failed.output?.error?.cause, { name: "GitUnavailableError", code: "download-failed" });
+			assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
+			assert.equal(existsSync(join(agentDir, "bin", "git", "bin", "git")), false);
+
+			const resumed = await startNode("resume", resumeArgs, gitless()).run;
+			assert.equal(resumed.code, 0, `${resumed.stderr}\n${JSON.stringify(resumed.output)}`);
+			assert.ok(existsSync(join(agentDir, "bin", "git", "bin", "git")), "Git was provisioned into Atomic home");
+			const restoredRoot = resumed.output?.mappings?.[0]?.to ?? "";
+			assert.deepEqual(
+				resumed.output?.mappings?.map((mapping) => mapping.from),
+				[recordedClone],
+			);
+			assert.ok(restoredRoot.startsWith(join(agentDir, "worktree-snapshots", "worktrees")), restoredRoot);
+			assert.deepEqual(treeFiles(restoredRoot), treeFiles(join(offline, "home", "repo")));
+			assert.equal(resumed.output?.userMessages, 2);
+			assert.match(
+				resumed.output?.toolResult?.map((part) => part.text ?? "").join("") ?? "",
+				/from the node with Git/,
+			);
 		},
 		MULTINODE_SCENARIO_TIMEOUT_MS,
 	);

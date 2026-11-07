@@ -2436,7 +2436,7 @@ describe("unbound children and binding failures (#3109)", () => {
 		assert.equal(Object.hasOwn(children[1] as object, "changeSet"), false);
 	});
 
-	test("a resumed child re-creates a vanished branch only when its earlier attempt recorded no checkpoint (#3109)", async () => {
+	test("without worktree snapshots, a resumed child re-creates a vanished branch only when its earlier attempt recorded no checkpoint (#3109)", async () => {
 		const grandchild = workflow({
 			name: "stops-at-once",
 			description: "",
@@ -2478,7 +2478,12 @@ describe("unbound children and binding failures (#3109)", () => {
 			const failed = await run(
 				parent,
 				{},
-				{ store: createStore(), durableBackend: firstBackend, adapters: recordingAdapter().adapters },
+				{
+					store: createStore(),
+					durableBackend: firstBackend,
+					adapters: recordingAdapter().adapters,
+					snapshots: { enabled: false },
+				},
 			);
 			assert.equal(failed.status, "failed");
 			const [start] = boundaryStarts(firstBackend.listCheckpoints(failed.runId));
@@ -2496,6 +2501,7 @@ describe("unbound children and binding failures (#3109)", () => {
 					store: createStore(),
 					durableBackend: resumedBackend,
 					adapters: recordingAdapter().adapters,
+					snapshots: { enabled: false },
 				},
 			);
 			await resumedBackend.close();
@@ -2511,6 +2517,64 @@ describe("unbound children and binding failures (#3109)", () => {
 				assert.equal(git(recorded.worktree, "rev-parse", "HEAD"), recorded.head);
 			}
 		}
+	});
+
+	test("a resumed child whose recorded worktree and branch are gone here continues in the worktree its snapshot restored (#4329)", async () => {
+		const journalPath = join(dirs.root, "snapshot-bound.sqlite");
+		const repo = createRepository(dirs.root, "snapshot-bound");
+		let failFirst = true;
+		let steps = 0;
+		const child = workflow({
+			name: "snapshot-bound-child",
+			description: "",
+			inputs: {},
+			outputs: { cwd: Type.String(), notes: Type.String() },
+			run: async (ctx) => {
+				const cwd = ctx.cwd ?? "";
+				await ctx.tool("step", {}, async () => {
+					steps++;
+					writeFileSync(join(cwd, "notes.txt"), "uncommitted step work\n");
+					return "done once";
+				});
+				if (failFirst) throw new Error("node stopped");
+				return ctx.tool("finish", {}, async () => ({ cwd, notes: readFileSync(join(cwd, "notes.txt"), "utf8") }));
+			},
+		});
+		const parent = workflow({
+			name: "snapshot-bound-parent",
+			description: "",
+			inputs: {},
+			outputs: { cwd: Type.String(), notes: Type.String() },
+			run: async (ctx) => {
+				const result = await ctx.workflow(child, { workspace: workspace({ repo, branch: "snapshot-bound" }) });
+				return result.status === "completed" ? result.outputs : { cwd: "", notes: "" };
+			},
+		});
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const failed = await run(parent, {}, { store: createStore(), durableBackend: firstBackend });
+		assert.equal(failed.status, "failed");
+		const [start] = boundaryStarts(firstBackend.listCheckpoints(failed.runId));
+		const recorded = start?.topology?.boundary?.workspace as BoundWorkspace;
+		await firstBackend.close();
+		git(repo, "worktree", "remove", "--force", recorded.worktree);
+		git(repo, "branch", "-D", "snapshot-bound");
+		failFirst = false;
+		const resumedBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const resumed = await run(
+			parent,
+			{},
+			{ runId: failed.runId, store: createStore(), durableBackend: resumedBackend },
+		);
+		await resumedBackend.close();
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.equal(steps, 1, "the recorded step is not run again");
+		assert.equal(resumed.result?.notes, "uncommitted step work\n");
+		assert.notEqual(resumed.result?.cwd, recorded.worktree);
+		assert.ok(
+			String(resumed.result?.cwd).startsWith(join(dirs.home, "agent", "worktree-snapshots")),
+			resumed.result?.cwd,
+		);
+		assert.equal(existsSync(recorded.worktree), false, "the recorded path is left alone");
 	});
 
 	test("replay snapshots copy a child's changeSet only when it has one (#3109)", () => {

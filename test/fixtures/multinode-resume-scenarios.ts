@@ -56,6 +56,10 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 			{ module: ATOMIC, name: "workspace", dependency: "#3109" },
 			{ module: ATOMIC, name: "restoreWorkspace", dependency: "#3109" },
 		],
+		implementedBy: {
+			file: "test/integration/multinode-resume-runs.test.ts",
+			test: "scenario 2: a workflow bound to two repositories is killed mid-step on node A and resumed on node B without repeating or misplacing work",
+		},
 	},
 	{
 		id: 3,
@@ -76,6 +80,10 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 			{ module: WORKFLOWS, name: "forkRun", dependency: "#4321" },
 			{ module: WORKFLOWS, name: "listForkPoints", dependency: "#4321" },
 		],
+		implementedBy: {
+			file: "test/integration/multinode-resume-runs.test.ts",
+			test: "scenario 4: forkRun from an earlier stage on a third node materializes that stage's snapshot, also after a SIGKILL mid-restore",
+		},
 	},
 	{
 		id: 5,
@@ -92,6 +100,10 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 		invariants: ["Git is provisioned automatically", "an impossible provision is a typed GitUnavailableError"],
 		chaos: ["provisioning download fails"],
 		prerequisites: [{ module: ATOMIC, name: "resolveGit", dependency: "#4322" }],
+		implementedBy: {
+			file: "test/integration/multinode-resume.test.ts",
+			test: "scenario 6: a git-less node provisions Git to restore and continue a session; a failed download is a typed precondition error that writes nothing",
+		},
 	},
 	{
 		id: 7,
@@ -100,5 +112,9 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 		chaos: ["SIGKILL mid-restore", "database partition during the catalog lookup"],
 		prerequisites: [],
 		scenarios: [1, 2, 3, 4, 5, 6],
+		implementedBy: {
+			file: "test/integration/multinode-resume-runs.test.ts",
+			test: "scenario 7: a database partition during the run lookup and a SIGKILL mid-restore end typed or in a retry that succeeds, never in a half-restored worktree",
+		},
 	},
 ];

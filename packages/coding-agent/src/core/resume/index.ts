@@ -37,7 +37,13 @@ export {
 	serializeResumeError,
 } from "./errors.ts";
 export { isResumeFailure, resumeFailureMessage } from "./failure.ts";
-export { resumeLookupError, resumeNotFoundError } from "./not-found.ts";
+export {
+	RESUME_CATALOG_TIMEOUT_MS,
+	type ResumeLookupTarget,
+	resumeLookupError,
+	resumeNotFoundError,
+	withResumeLookupDeadline,
+} from "./not-found.ts";
 export { mapPathForCwd, registerWorktreeRootMappings } from "./path-mapping.ts";
 export {
 	checkResumeStoragePreconditions,

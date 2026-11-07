@@ -143,12 +143,16 @@ export function gitUnavailableProblem(error: GitProvisionError, why: string): Re
 	return { code: "git-unavailable", subject: `git (${error.code})`, why, fix: error.hint };
 }
 
-/** Throws one {@link ResumePreconditionError} listing every problem, or returns when there are none. */
+/**
+ * Throws one {@link ResumePreconditionError} listing every problem, with `cause` (the typed reason Git is unavailable,
+ * when that is one of them) as its cause, or returns when there are none.
+ */
 export function assertResumePreconditions(
 	entryPoint: ResumeEntryPoint,
 	problems: readonly ResumePreconditionProblem[],
+	cause?: Error,
 ): void {
-	if (problems.length > 0) throw new ResumePreconditionError({ entryPoint, problems });
+	if (problems.length > 0) throw new ResumePreconditionError({ entryPoint, problems }, cause);
 }
 
 /** Checks the storage `targets` select before any of it is opened, and throws every unmet precondition together. */

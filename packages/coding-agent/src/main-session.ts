@@ -300,7 +300,7 @@ async function createSessionManagerWithStore(
 
 			case "not_found":
 				console.error(
-					chalk.red(`Error: ${resumeNotFoundError("session", resolved.arg, store.descriptor).message}`),
+					chalk.red(`Error: ${resumeNotFoundError(resolved.arg, store.descriptor).message}`),
 				);
 				process.exit(1);
 		}
@@ -338,7 +338,7 @@ async function createSessionManagerWithStore(
 
 			case "not_found":
 				console.error(
-					chalk.red(`Error: ${resumeNotFoundError("session", resolved.arg, store.descriptor).message}`),
+					chalk.red(`Error: ${resumeNotFoundError(resolved.arg, store.descriptor).message}`),
 				);
 				process.exit(1);
 		}
