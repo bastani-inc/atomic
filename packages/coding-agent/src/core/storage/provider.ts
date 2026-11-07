@@ -27,6 +27,11 @@ import type { SessionStore } from "./session/types.js";
  * process's memory, which is never serialized; see {@link inMemorySecret}.
  */
 export type SecretRef = { readonly env: string } | { readonly file: string } | InMemorySecretRef;
+
+/** Where a `secrets` `{ file }` reference points: an absolute path, or a path relative to Atomic home. */
+export function secretFilePath(file: string, agentDir: string): string {
+	return isAbsolute(file) ? file : join(dirname(agentDir), file);
+}
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
 export type RunJournalOption =
 	| { path: string; prefix?: string }
@@ -293,7 +298,7 @@ export async function resolveAdapterOptions(
 		} else {
 			let text: string;
 			try {
-				text = await readFile(isAbsolute(ref.file) ? ref.file : join(dirname(context.agentDir), ref.file), "utf8");
+				text = await readFile(secretFilePath(ref.file, context.agentDir), "utf8");
 			} catch (cause) {
 				throw new StorageUnavailableError(
 					{ adapter: selection.module, location: ref.file },

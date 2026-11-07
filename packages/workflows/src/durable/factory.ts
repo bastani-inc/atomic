@@ -39,6 +39,39 @@ export interface DurableBackendOptions {
 	 * shared process-wide until exit.
 	 */
 	holder?: object;
+	/**
+	 * Aborted once the caller stopped waiting for the selected journal, as when its lookup deadline passed. The pending
+	 * opening leaves the process cache, so the next call opens the journal again instead of waiting on it, and when no
+	 * other caller waits on it, a journal that opens later is closed.
+	 */
+	abandonSignal?: AbortSignal;
+	/**
+	 * Called once the selected journal has opened, before its runs are listed: the point at which its storage answered.
+	 * Not called when the opening fails.
+	 */
+	onJournalAnswered?: () => void;
+}
+
+const callersOfOpening = new WeakMap<SelectedDurableBackend, number>();
+
+function abandonOpening(
+	selected: Map<string | object, SelectedDurableBackend>,
+	key: string | object,
+	entry: SelectedDurableBackend,
+): void {
+	if (selected.get(key) === entry) selected.delete(key);
+	const callers = callersOfOpening.get(entry)! - 1;
+	callersOfOpening.set(entry, callers);
+	if (callers > 0) return;
+	void entry.ready
+		.then(
+			() => entry.close?.(),
+			() => undefined,
+		)
+		.catch((error: Error) => {
+			console.error(error);
+			process.exitCode = 1;
+		});
 }
 
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
@@ -69,8 +102,10 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	owner.selectedBackends ??= new Map();
 	const selected = owner.selectedBackends;
 	const existing = selected.get(key);
+	const opening = existing === undefined ? openSelectedRunJournal(selection, agentDir) : undefined;
 	const entry: SelectedDurableBackend = existing ?? {
-		ready: openSelectedRunJournal(selection, agentDir)
+		answered: opening,
+		ready: opening!
 			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal, runs: [] }))
 			.then(async (opened) => {
 				// Every run is listed from its latest snapshot; a run's history is folded only when it is needed (#3892).
@@ -94,5 +129,14 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	if (existing === undefined) selected.set(key, entry);
 	if (holder === undefined) entry.pinned = true;
 	else entry.holders.add(holder);
+	callersOfOpening.set(entry, (callersOfOpening.get(entry) ?? 0) + 1);
+	options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
+	const answered = options.onJournalAnswered;
+	if (answered !== undefined) {
+		void (entry.answered ?? entry.ready).then(
+			() => answered(),
+			() => undefined,
+		);
+	}
 	return withRunJournalConfigSource(selection, () => entry.ready);
 }

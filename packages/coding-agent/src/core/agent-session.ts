@@ -61,6 +61,7 @@ import type {
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
+import { currentWorktreeRootMappings } from "./resume/path-mapping.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "./session-worktree-snapshots.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -256,6 +257,8 @@ class AgentSessionBase {
 	protected _extensionProviderIds = new Set<string>();
 	protected _toolRegistry: Map<string, AgentTool> = new Map();
 	protected readonly _toolExecutionScheduler = new ToolExecutionScheduler();
+	/** The restores of the sessions and runs this session was opened in, which its tools follow before its own. */
+	protected readonly _outerWorktreeRootMappings = currentWorktreeRootMappings();
 	protected _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	protected _toolPromptSnippets: Map<string, string> = new Map();
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();

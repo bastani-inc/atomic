@@ -1,6 +1,7 @@
 import { accessSync, constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
+import { mapPathForCwd } from "../resume/path-mapping.ts";
 
 const NARROW_NO_BREAK_SPACE = "\u202F";
 
@@ -43,10 +44,11 @@ export function expandPath(filePath: string): string {
 
 /**
  * Resolve a path relative to the given cwd.
- * Handles ~ expansion and absolute paths.
+ * Handles ~ expansion and absolute paths. A path under a checkout root that was restored on this host into the
+ * worktree `cwd` is in resolves to the same place in that worktree.
  */
 export function resolveToCwd(filePath: string, cwd: string): string {
-	return resolvePath(filePath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
+	return mapPathForCwd(resolvePath(filePath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true }), cwd);
 }
 
 export function resolveReadPath(filePath: string, cwd: string): string {

@@ -5,6 +5,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { createStore, loadWorkerWorkflow, run, workflow } from "../../packages/workflows/src/index.js";
+import { isWorkerPlacementError, SharedPoolSetupError } from "../../packages/workflows/src/sdk-surface.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 const REAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
@@ -64,7 +65,15 @@ test(
 					},
 				);
 			if (process.platform === "win32") {
-				await assert.rejects(execute(), /Local worker containment is unavailable on Windows/);
+				await assert.rejects(execute(), (error: unknown) => {
+					assert.ok(error instanceof SharedPoolSetupError, String(error));
+					assert.ok(isWorkerPlacementError(error));
+					assert.deepEqual(
+						[error.code, error.operation, error.retryable, error.problems.map((problem) => problem.fields)],
+						["process-containment-unavailable", "local-pool", false, [{ platform: "win32" }]],
+					);
+					return true;
+				});
 				return;
 			}
 			const result = await execute();

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/pi-ai";
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -20,6 +20,18 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";
+import type { ResumeEntryPoint } from "./resume/errors.ts";
+import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline } from "./resume/not-found.ts";
+import { isInside } from "./resume/path-mapping.ts";
+import {
+	holdsSnapshotCommit,
+	type PrepareSessionResumeOptions,
+	prepareSessionResume,
+	resumeStoreDir,
+	retryFailedSessionSetup,
+	savedProjectTrust,
+	sessionResumeOptions,
+} from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
@@ -32,10 +44,11 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
-import { openSessionInWorktree } from "./session-worktree-snapshots.ts";
+import { currentWorktreeSnapshots, mapRestoredPath } from "./session-worktree-snapshots.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
+import type { WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
 /**
  * Result returned by runtime creation.
@@ -579,12 +592,50 @@ export class AgentSessionRuntime {
 	}
 
 	/**
-	 * Resumes a session's worktree: verifies its checkout against the last recorded snapshot and, when it drifted or
-	 * is missing, restores it into a fresh worktree under Atomic home. Returns the session opened where it continues.
+	 * `lookup`, a read of session `sessionId` from this runtime's session store. In shared storage it fails as a
+	 * retryable `ResumeCatalogTimeoutError` when the storage does not answer within {@link RESUME_CATALOG_TIMEOUT_MS},
+	 * and as `ResumeCatalogUnavailableError` when it cannot be reached, instead of waiting for the network to give up.
 	 */
-	private async resumeWorktree(sessionManager: SessionManager, sessionDirectory?: string): Promise<SessionManager> {
-		const settings = this.services.settingsManager.getWorktreeSnapshotSettings();
-		return (await openSessionInWorktree(sessionManager, { settings, sessionDirectory })).sessionManager;
+	private boundedSessionLookup<T>(lookup: Promise<T>, sessionId: string): Promise<T> {
+		const { adapter } = this.session.sessionManager.getSessionStore().descriptor;
+		if (isLocalOnlySessionStorage(adapter)) return lookup;
+		return withResumeLookupDeadline(
+			lookup,
+			{ subject: "session", id: sessionId, storage: adapter },
+			RESUME_CATALOG_TIMEOUT_MS,
+		).catch((error: unknown) => {
+			throw resumeLookupError(error, "session", sessionId);
+		});
+	}
+
+	/**
+	 * Prepares a resumed session's checkout on this host (see {@link prepareSessionResume}) and returns the session
+	 * opened where it continues. Without a UI here, a dirty checkout of the session's repository is never used; the
+	 * snapshot is restored into a fresh worktree instead.
+	 */
+	private async resumeWorktree(
+		sessionManager: SessionManager,
+		sessionDirectory?: string,
+		entryPoint: ResumeEntryPoint = "switch-session",
+		keepInPlace?: ReadonlySet<string>,
+	): Promise<SessionManager> {
+		const prepared = await prepareSessionResume(sessionManager, {
+			...this.resumeOptions(entryPoint),
+			sessionDirectory,
+			keepInPlace,
+		});
+		return prepared.status === "ready" ? prepared.sessionManager : sessionManager;
+	}
+
+	private resumeOptions(entryPoint: ResumeEntryPoint): PrepareSessionResumeOptions {
+		const settings = this.services.settingsManager;
+		return sessionResumeOptions(
+			entryPoint,
+			this.cwd,
+			this.services.agentDir,
+			settings,
+			savedProjectTrust(this.services.agentDir, settings),
+		);
 	}
 
 	async switchSession(
@@ -604,10 +655,9 @@ export class AgentSessionRuntime {
 			}
 
 			const previousSessionId = this.session.sessionId;
-			const opened = await this.session.sessionManager.openSessionById(
+			const opened = await this.boundedSessionLookup(
+				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory),
 				sessionId,
-				options?.cwdOverride,
-				options?.sessionDirectory,
 			);
 			const sessionManager = await this.resumeWorktree(opened, options?.sessionDirectory);
 			assertSessionCwdExists(sessionManager, this.cwd);
@@ -750,7 +800,9 @@ export class AgentSessionRuntime {
 	 * runtime's services when the cwd matches. It runs beside `session` and does not replace it; release it again
 	 * with `release()`. A session that is live already is returned as it is, and concurrent calls for one id share
 	 * one rehydration. A session this node's storage does not hold fails at once with a `session-not-found`
-	 * {@link AgentRehydrateError}, before the factory runs.
+	 * {@link AgentRehydrateError}, before the factory runs. A session whose working directory is not on this node, as
+	 * when another node released it, has its checkouts prepared first, as `/resume` prepares them, and continues where
+	 * they were restored. Lookups in shared storage are bounded as `/resume`'s are.
 	 */
 	rehydrate(sessionId: string): Promise<AgentSession> {
 		return this.admit(async () => {
@@ -770,9 +822,46 @@ export class AgentSessionRuntime {
 		});
 	}
 
+	/**
+	 * Where a rehydrated session continues. Each checkout it recorded that it worked in on this node stays as it is, since
+	 * work done in it after the release belongs to the session, and a setup hook that did not finish in a worktree this
+	 * node restored for it runs again. Every other checkout, as when it is missing or another clone sits at its path on
+	 * another node, is prepared as `/resume` prepares it. When every checkout stays, it continues in the directory it last
+	 * worked in, after the restores it recorded.
+	 */
+	private async continueWhereItWorked(opened: SessionManager): Promise<SessionManager> {
+		const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
+		const checkouts = currentWorktreeSnapshots(opened);
+		const own = await this.checkoutsWorkedHere(checkouts, cwd);
+		if (own.size < checkouts.size) {
+			return this.resumeWorktree(opened, undefined, "rehydrate", own);
+		}
+		await retryFailedSessionSetup(opened, this.resumeOptions("rehydrate"));
+		if (cwd === resolve(opened.getCwd())) return opened;
+		return this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId());
+	}
+
+	/**
+	 * The roots of the `checkouts` a session recorded that are here as checkouts it worked in on this node, as it left them
+	 * or changed since: a worktree this node restored for it, or a checkout whose repository holds the commit of its latest
+	 * snapshot. The checkout the session works in counts only while its working directory `cwd` is here too.
+	 */
+	private async checkoutsWorkedHere(
+		checkouts: ReadonlyMap<string, WorktreeSnapshot>,
+		cwd: string,
+	): Promise<Set<string>> {
+		const storeDir = resumeStoreDir(this.services.agentDir);
+		const own = new Set<string>();
+		for (const [root, snapshot] of checkouts) {
+			if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
+			if (isInside(storeDir, root) || (await holdsSnapshotCommit(snapshot, root))) own.add(root);
+		}
+		return own;
+	}
+
 	private async rehydrateFromStore(sessionId: string): Promise<AgentSession> {
 		const store = this.session.sessionManager.getSessionStore();
-		if ((await store.readHeader(sessionId)) === undefined) {
+		if ((await this.boundedSessionLookup(store.readHeader(sessionId), sessionId)) === undefined) {
 			const storage = store.descriptor.adapter;
 			throw new AgentRehydrateError("session-not-found", {
 				sessionId,
@@ -780,7 +869,8 @@ export class AgentSessionRuntime {
 				localOnly: isLocalOnlySessionStorage(storage),
 			});
 		}
-		const sessionManager = await this.session.sessionManager.openSessionById(sessionId);
+		const opened = await this.boundedSessionLookup(this.session.sessionManager.openSessionById(sessionId), sessionId);
+		const sessionManager = await this.continueWhereItWorked(opened);
 		const cwd = sessionManager.getCwd();
 		const result = await sessionLifecycleCreation.run({ scope: {} }, () =>
 			this.sessionFactory({

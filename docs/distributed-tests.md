@@ -126,7 +126,7 @@ Before any scenario, the gate checks and records:
 | Suite | Issue | On a ref without the feature |
 | --- | --- | --- |
 | `smoke` | #4331 | always runs |
-| `multi-node-resume` | #4329 | skips: no `WorkspaceError` export |
+| `multi-node-resume` | #4329 | skips: no `ResumeError` export |
 | `cross-host-pools` | #4310 | skips: no `WorkerPlacementError` export |
 | `shard-contention` | #4325 | skips: no `JournalShardUnavailableError` export |
 | `idle-density` | #4309/#4326, #4394 | skips: no `AgentSessionRuntime.rehydrate` |
@@ -141,7 +141,7 @@ A skip is a result with `status: "skipped"` and a typed reason: `feature-unavail
 export the interface, `scenario-pending` when it does but the suite's scenarios have not been written yet. A failed
 import, a broken deployment or a failing call into an available feature is a failure, never a skip. The PR that adds a
 feature adds its scenarios under `test/distributed/harness/` and sets `implemented: true` on its probe in
-`suites.mjs`. `smoke` and `idle-density` have scenarios; the others skip as `scenario-pending` on a ref that has their
+`suites.mjs`. `smoke`, `idle-density` and `multi-node-resume` have scenarios; the others skip as `scenario-pending` on a ref that has their
 interface.
 
 ### The smoke suite
@@ -165,6 +165,63 @@ At the end the suite checks:
 - a writer completed after the last fault, without intervention;
 - the replica caught up with the primary;
 - a node with a skewed clock never took over a live lease.
+
+### The multi-node-resume suite
+
+The suite needs at least three nodes, including the git-less node, and covers all seven acceptance scenarios of #4329.
+It runs the same session, workflow, released-session and pooled-child fixtures as the reduced multi-process acceptance
+tests, with each node's own Atomic home and one shared, authenticated sqld namespace. A pinned Bun 1.4.4 binary is
+copied over the private control path and checked on each node. A run's synthetic Git remotes are copied to the same
+path on each node; the nodes and database never need a public endpoint. Below, n1 is the first node, n2 the second and
+n3 the git-less node.
+
+1. **Session.** n1 records a session with uncommitted and untracked files plus an unpushed commit, then is SIGKILLed.
+   n2 observes a typed timeout during a database partition, is SIGKILLed during restore, then resumes the session; the
+   suite checks the tree, HEAD, conversation, mapped path, setup count and absence of partial worktrees.
+2. **Two repositories.** n1 runs children bound to two repositories, with completed `ctx.tool` effects, and is
+   SIGKILLed mid-step. n2 waits for the real owner lease to expire, checks that a database partition gives a typed run
+   lookup timeout, then resumes both children and checks their trees and that each effect ran once.
+3. **Pooled campaign.** A root on n1 runs with `workers: { placement: "shared" }` on the sqld journal, through
+   `@bastani/atomic-storage-libsql`, with a table prefix of its own. Worker hosts (`startWorkflowWorkerHost`) serve on
+   n2 and n3 first, and each host's own agent directory sets `resume.setupCommand` to a command that records the
+   worktree it sets up. The root's tree has a lockfile, so a host that restores it runs the hook. Once n2's host holds
+   the child in a worktree it restored, a capable host joins on n1 and n2's host is SIGKILLed with its workers. The
+   suite checks that the child was claimed again and finished on n1's host, in a worktree restored with the recorded
+   tree and commit (manifest equality), replaying its completed first step instead of running it again; that each host
+   that restored the child ran the hook exactly once, in that worktree, before the child ran; and that n3's host, which
+   has no Git and no restore port, never claimed the child, including while the reclaimed one waited: the journal
+   records exactly two claims, n2's host's and n1's host's.
+4. **Fork on a third node.** n1 runs a two-stage workflow. After scenario 6 provisioned Git on n3, a fork from the
+   second stage runs on n3, is SIGKILLed right after `git worktree add`, and is retried; the retried fork's stage must
+   see the state the first stage left, in a restored worktree, with no partial worktree left.
+5. **Released session.** n1 records and releases two sessions, then is SIGKILLed. n2 wakes the first with
+   `AgentSessionRuntime.rehydrate` while it is cut off from the database: the wake must fail with a retryable
+   `ResumeCatalogTimeoutError` or `ResumeCatalogUnavailableError` and restore nothing. After the partition heals, the
+   retry must restore the recorded tree (manifest equality) and commit, and n1's absolute path must resolve in it. For
+   the second session, n2 first holds a different checkout of the same repository at exactly the recorded path: the
+   woken session must continue in a restored worktree with the recorded tree, and leave that checkout as it was.
+6. **Git-less node.** On n3 an unsuccessful provision must fail typed before restoration, and a lookup during a
+   database partition must fail typed before anything is provisioned or restored. The suite then provisions Git from a
+   synthetic archive of n1's Git and restores the session. The provision uses the same CI driver's fetch override, not
+   Internet egress from the private node.
+7. **Chaos during each.** Every scenario above is hit by at least one fault, as the table below shows.
+
+| Scenario | `partition` | `sigkill` |
+| --- | --- | --- |
+| 1 | session lookup on n2 | session restore on n2 |
+| 2 | run lookup on n2 | workflow owner mid-step on n1 |
+| 3 | | n2's worker host while it holds a bound child |
+| 4 | | fork restore on n3 |
+| 5 | wake on n2 | |
+| 6 | session lookup on n3 | |
+
+Each fault record names its scenario, the report's chaos coverage lists every record, and the suite's metrics include
+`chaosByScenario`, the profiles that hit each scenario, with scenario 7 as their union. The invariant
+`chaos-hit-every-scenario` fails unless every fault in the table was applied, observed and recovered from. The lost
+owner of scenario 2 and the lost worker host of scenario 3 are part of their scenarios, so they are killed whichever
+profiles are selected; they are recorded as faults only when `sigkill` is. A scenario that fails is recorded with its
+error, and the scenarios that do not depend on it still run. The suite also checks the shared database's integrity.
+Its `partition` and `sigkill` profiles are required for full acceptance.
 
 ### The idle-density suite
 
@@ -222,10 +279,11 @@ connections per sender, the latency of delivered sends, and how long the childre
 ## Chaos profiles
 
 `--chaos smoke` (the default) runs every profile each selected suite supports: all of them in `smoke`, the eight listed
-above in `idle-density`. `--chaos none` runs none; a profile name or a comma-separated list runs those, and a profile
-that none of the selected suites runs is rejected before any side effect. Coverage is reported per suite, and a profile
-a suite exercises twice (the two SIGKILLs of `idle-density`) counts as exercised only when both were. The table below
-describes the profiles as `smoke` runs them.
+above in `idle-density`, `partition` and `sigkill` in `multi-node-resume`. `--chaos none` runs none; a profile name or a
+comma-separated list runs those, and a profile that none of the selected suites runs is rejected before any side effect.
+Coverage is reported per suite, with a row for each target a profile hit, and a profile a suite exercises more than once
+(the two SIGKILLs of `idle-density`, the four partitions and four SIGKILLs of `multi-node-resume`) counts as exercised
+only when every one was. The table below describes the profiles as `smoke` runs them.
 
 | Profile | Mechanism | Counts as exercised when |
 | --- | --- | --- |

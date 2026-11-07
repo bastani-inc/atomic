@@ -356,6 +356,15 @@
         }
       }
     },
+    "resume": {
+      "type": "object",
+      "properties": {
+        "setupCommand": {
+          "type": "string",
+          "description": "Command run in a worktree restored on resume when its dependencies were never installed on this machine. A repository's trusted .atomic/setup runs instead when present."
+        }
+      }
+    },
     "retry": {
       "type": "object",
       "properties": {

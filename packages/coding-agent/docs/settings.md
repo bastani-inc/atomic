@@ -376,6 +376,12 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 |---------|------|---------|-------------|
 | `sessionSummary.enabled` | boolean | `true` | Generate a one-line summary of each session for the `/resume` picker once the agent goes idle |
 
+### Resume
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `resume.setupCommand` | string | unset | Command run in a worktree restored on resume, or by a worker host for a pooled child, when its lockfiles were never installed on this machine; a trusted repository's `.atomic/setup` runs instead. Read from global settings only; a project's settings cannot set it. See [Resume on any machine](/guides/resume-on-any-machine) |
+
 ### Snapshots
 
 | Setting | Type | Default | Description |

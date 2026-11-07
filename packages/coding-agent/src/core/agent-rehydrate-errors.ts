@@ -99,6 +99,15 @@ export function isLocalOnlySessionStorage(adapter: string): boolean {
 /** The command that joins this node to shared storage, named in hints when a lookup misses on local-only storage. */
 export const TEAM_JOIN_COMMAND = "atomic team join <url> --token-file <path>";
 
+/** The command that points this node's storage at a shared database, keeping the rest of its layout. */
+export const STORAGE_JOIN_COMMAND = "atomic storage join <url> --token-file <path>";
+
+/**
+ * How a node puts its sessions in shared storage, named in hints when a session lookup misses on local-only storage.
+ * `atomic team join` keeps sessions on each machine, so a machine joined that way leaves the team first.
+ */
+export const SESSION_STORAGE_JOIN = `\`${STORAGE_JOIN_COMMAND}\` (after \`atomic team leave\` on a machine joined with \`atomic team join\`, which keeps sessions on each machine)`;
+
 /** How deep cause chains are serialized and walked. */
 const MAX_CAUSE_DEPTH = 8;
 
@@ -132,7 +141,7 @@ function hintFor(code: AgentRehydrateErrorCode, fields: AgentRehydrateErrorField
 			return fields.storage === "memory"
 				? "This node keeps this session store in memory, and a session released from a private in-memory session manager is gone with it. Pass the MemorySessionStore the host keeps as `sessionStore`, or use a SQLite or JSONL session store."
 				: fields.localOnly === true
-					? `This node keeps sessions in local-only storage (${fields.storage}) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with \`${TEAM_JOIN_COMMAND}\`, or pass the id of a session saved on this node.`
+					? `This node keeps sessions in local-only storage (${fields.storage}) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with ${SESSION_STORAGE_JOIN}, or pass the id of a session saved on this node.`
 					: `Check the session id: the ${fields.storage} storage this node uses has no session with it.`;
 		case "no-wake-handler":
 			return `Register a handler for the "${fields.namespace}" wake namespace with AgentWakeDispatcher.handle() before delivering wakes to its keys.`;

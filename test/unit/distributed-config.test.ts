@@ -24,6 +24,9 @@ import {
 	isDistributedConfigError,
 	isDistributedPrerequisiteError,
 } from "../distributed/harness/errors.mjs";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+useTemporaryAgentDir();
 
 const topologyJson = JSON.parse(readFileSync(new URL("../distributed/topology.json", import.meta.url), "utf8"));
 const topology = parseTopology(topologyJson);
@@ -1114,4 +1117,19 @@ test("every nested topology field is reported by its full path (#4331)", () => {
 		fieldOf((c) => (c.database.gatewayPort = "8443")),
 		"database.gatewayPort",
 	);
+});
+
+test("multi-node resume requires three nodes and accepts SSH from one private host (#4329)", () => {
+	for (const n of ["1", "2"]) {
+		const error = configError(() => options(["--ref", "m", "--suite", "multi-node-resume", "--nodes", n]));
+		assert.equal(error.fields.field, "--nodes");
+		assert.equal(error.fields.expected, "at least 3: the multi-node-resume suite needs three nodes, one without git");
+	}
+	assert.equal(options(["--ref", "m", "--suite", "multi-node-resume", "--nodes", "3"]).nodes, 3);
+	const control = parseControlEnv({
+		ATOMIC_DISTRIBUTED_CONTROL_RESOURCE_GROUP: "control",
+		ATOMIC_DISTRIBUTED_CONTROL_VNET: "vnet",
+		ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX: "10.0.1.4/32",
+	});
+	assert.equal(control.sshSourcePrefix, "10.0.1.4/32");
 });

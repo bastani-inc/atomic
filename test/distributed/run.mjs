@@ -71,6 +71,7 @@ import {
 	stageSecret,
 } from "./harness/remote.mjs";
 import { overallStatus, suiteStatus, writeReport } from "./harness/report.mjs";
+import { runMultiNodeResume } from "./harness/resume-suite.mjs";
 import { createRunSecrets, loadRunSecrets } from "./harness/secrets.mjs";
 import { bindViolations, gateVerdict, publicAddressChecks } from "./harness/security.mjs";
 import { loadState, reuseCommand } from "./harness/state.mjs";
@@ -971,7 +972,10 @@ async function main() {
 			for (const suite of selectedSuites(options.suite)) {
 				const issue = /** @type {Record<string, string>} */ (SUITES)[suite];
 				const skip = featureSkip(suite, /** @type {import("./harness/suites.mjs").Capabilities} */ (capabilities));
-				if (skip !== undefined || (suite !== "smoke" && suite !== "idle-density")) {
+				if (
+					skip !== undefined ||
+					(suite !== "smoke" && suite !== "idle-density" && suite !== "multi-node-resume")
+				) {
 					report.suites.push({
 						name: suite,
 						issue,
@@ -1004,7 +1008,9 @@ async function main() {
 					/** @returns {Promise<SuiteOutcome>} */ () =>
 						suite === "smoke"
 							? runSmoke({ ...context, replica, azure: /** @type {AzureRun} */ (azure) })
-							: runReleased(context),
+							: suite === "multi-node-resume"
+								? runMultiNodeResume(context)
+								: runReleased(context),
 				).catch((error) => {
 					report.suites.push({
 						name: suite,
