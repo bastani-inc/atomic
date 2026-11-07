@@ -449,6 +449,46 @@ test("a run whose checkout is still here resumes in place without a setup hook (
 	assert.deepEqual(restoredWorktrees(), []);
 });
 
+test("a run on a backend without a snapshot journal resumes with no restore check (#4329)", async () => {
+	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	cleanups.push(() => fixture.close());
+	const store = createStore();
+	let attempts = 0;
+	const definition = workflow({
+		name: "without-snapshot-journal",
+		description: "",
+		inputs: {},
+		outputs: { ok: Type.Boolean() },
+		run: async (ctx) => {
+			await ctx.tool("write", {}, async () => "written");
+			if (attempts++ === 0) throw new Error("stopped");
+			return { ok: true };
+		},
+	});
+	const first = await run(definition, {}, { cwd: clone, durableBackend: fixture.backend, store });
+	assert.equal(first.status, "failed");
+	const withoutJournal = new Proxy(fixture.backend, {
+		get(target, key) {
+			if (key === "snapshotJournal") return undefined;
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	const jobs = createJobTracker();
+
+	const result = await resumeDurableWorkflow(first.runId, {
+		registry: createRegistry().register(definition),
+		durableBackend: withoutJournal,
+		baseRunOpts: { cwd: clone, store: createStore(), durableBackend: withoutJournal },
+		jobs,
+	});
+	assert.equal(result.ok, true, result.message);
+	await jobs.get(first.runId)?.promise;
+
+	assert.equal(attempts, 2);
+});
+
 test("the hook's settings are read where the run runs, so another project's setup command does not count (#4329)", async () => {
 	writeSettings({});
 	mkdirSync(sandbox.path(".atomic"), { recursive: true });
