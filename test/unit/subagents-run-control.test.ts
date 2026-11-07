@@ -3605,6 +3605,13 @@ test("a wake waits until the child's previous run has closed its session before 
 	assert.equal(h.runs.length, runsBeforeWake + 1);
 });
 
+async function untilNotices(h: Harness, count: number): Promise<number> {
+	const NOTICE_DELIVERY_SETTLE_MS = 250;
+	const deadline = Date.now() + NOTICE_DELIVERY_SETTLE_MS;
+	while (h.notices.length < count && Date.now() < deadline) await sleep(10);
+	return h.notices.length;
+}
+
 test("a wake that cannot restore its child keeps what it carried in the child's record with a typed failure, tells the owner once, and resume then delivers it once (#4326)", async () => {
 	const h = harness();
 	const dispatcher = agentWakeDispatcher();
@@ -3637,7 +3644,8 @@ test("a wake that cannot restore its child keeps what it carried in the child's 
 		.catch((error) => dispatcher.reportUnobservedFailure(error));
 	assert.equal(await drained(dispatcher), 0);
 	await subagentChildRecordsAppended(h.sessionManager.getSessionId());
-	assert.equal(h.notices.length, 1, "the owner is told once, however often the wake fails");
+	// Failure reporting emits notices after dispatcher/record completion. Give a duplicate time to arrive.
+	assert.equal(await untilNotices(h, 2), 1, "the owner is told once, however often the wake fails");
 	const status = await h.call({ action: "status", id: "wakefail1:0" });
 	assert.match(
 		text(status),
