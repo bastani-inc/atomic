@@ -308,7 +308,8 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 						).length === CHILDREN,
 					[rootA, ...hosts.values()],
 				);
-				assert.equal((await statsOf("C")).busy, 0, "the host without git took none of the waiting work");
+				// The host without git took none of the waiting work: its busy count may include a claim request in flight,
+				// so what it holds and the work rows' claims show it, not that count.
 				assert.deepEqual(heldBy(c.directory, "C"), []);
 
 				// Node E joins late, with none of the tree, and takes both children over.
