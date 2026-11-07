@@ -248,6 +248,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 						getChatRenderSettings: ui.getChatRenderSettings,
 						getToolsExpanded: ui.getToolsExpanded,
 						setToolsExpanded: ui.setToolsExpanded,
+						notify: ui.notify,
 					},
 					store,
 					text.slice(6).trim() || undefined,

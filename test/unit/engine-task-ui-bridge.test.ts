@@ -170,15 +170,19 @@ const renderSettings = (settings: Partial<ChatRenderSettings>) => settings as Ch
 test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O there changes only its own (#4521)", () => {
 	let engineExpanded = false;
 	let host: EngineHostRenderSettings | undefined;
+	const notices: string[] = [];
 	const custom = (() => Promise.resolve(undefined)) as ExtensionUIContext["custom"];
 	const ui = engineTaskInspectorUi(
 		{
 			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: true, toolOutputExpanded: engineExpanded }),
 			getToolsExpanded: () => engineExpanded,
+			notify: (message, type) => notices.push(`${type}:${message}`),
 		},
 		{ custom, getHostRenderSettings: () => host },
 	);
 	assert.equal(ui.custom, custom);
+	ui.notify?.("Intercom did not deliver the message", "warning");
+	assert.deepEqual(notices, ["warning:Intercom did not deliver the message"], "notices reach the engine's chat");
 	engineExpanded = true;
 	assert.equal(ui.getToolsExpanded?.(), true, "before a render carried the host's settings the engine's stand in");
 	assert.deepEqual(ui.getChatRenderSettings?.(), { hideThinkingBlock: true, toolOutputExpanded: true });
@@ -200,12 +204,20 @@ test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O the
 	assert.equal(ui.getToolsExpanded?.(), false);
 	assert.equal(engineExpanded, false, "the engine's own chat state is untouched");
 	const reopened = engineTaskInspectorUi(
-		{ getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }), getToolsExpanded: () => true },
+		{
+			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }),
+			getToolsExpanded: () => true,
+			notify: () => {},
+		},
 		{ custom, getHostRenderSettings: () => ({ ...host!, toolOutputExpanded: true }) },
 	);
 	assert.equal(reopened.getToolsExpanded?.(), true, "a new inspector starts from the host chat again");
 	const withoutHost = engineTaskInspectorUi(
-		{ getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }), getToolsExpanded: () => true },
+		{
+			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }),
+			getToolsExpanded: () => true,
+			notify: () => {},
+		},
 		{ custom },
 	);
 	assert.deepEqual(withoutHost.getChatRenderSettings?.(), { hideThinkingBlock: false, toolOutputExpanded: true });

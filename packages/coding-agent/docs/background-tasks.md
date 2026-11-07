@@ -224,7 +224,7 @@ Agent rows and completion cards show the resolved model and reasoning setting, f
 
 Agent details include recent retained tool activity, the prompt, a latest-response preview, and error or attention information. Transcript inspection shows the agent's conversation as a chat: retained messages, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and extension notices, with a compaction status while the agent compacts. Earlier pages do not jump back to the latest page when background activity arrives.
 
-Messages you send from a transcript reach the agent the way an Intercom message does, and appear in its transcript once the agent receives them. An agent without an Intercom target cannot receive messages; the transcript says so when you press Enter. If Intercom does not deliver or confirm a message, the transcript shows why and keeps your text in the prompt.
+Messages you send from a transcript reach the agent the way an Intercom message does, and appear in its transcript once the agent receives them. An agent without an Intercom target cannot receive messages; the transcript says so when you press Enter. If Intercom does not deliver or confirm a message, the transcript shows why and keeps your text in the prompt. If you already left the transcript, the task pages show why (or the chat does, once you closed them), and the text is back in the prompt when you open that transcript again.
 
 An agent's detail and transcript pages end with a status row for that task's own extension status lines, such as a tokens-per-second counter set by an extension the subagent loaded. It updates live, is separate from the chat's own status row, and disappears when the task ends. The compact picker and shell pages show none.
 

@@ -21,6 +21,20 @@ export interface TaskTranscriptEnvironment {
 	readonly getChatRenderSettings?: ChatSessionHostOpts["getChatRenderSettings"];
 	readonly getToolsExpanded?: () => boolean;
 	readonly setToolsExpanded?: (expanded: boolean) => void;
+	/** Tells the reader about a message that failed after they left its transcript and the task pages. */
+	readonly notify?: (message: string) => void;
+}
+
+/** A message that failed after its reader left the transcript, kept for when they open it again. */
+interface UndeliveredMessage {
+	readonly text: string;
+	readonly reason: string;
+}
+
+const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
+
+function failureText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /** What the task inspector shows under a task's title while its transcript is open. */
@@ -87,11 +101,21 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private behind = false;
 	private disposed = false;
 
-	constructor(source: TaskViewSource, taskId: TaskId, env: TaskTranscriptEnvironment, requestRender: () => void) {
+	private readonly reportLate: (reason: string) => void;
+
+	/** `reportLate` shows the reason a message failed after the reader left this transcript. */
+	constructor(
+		source: TaskViewSource,
+		taskId: TaskId,
+		env: TaskTranscriptEnvironment,
+		requestRender: () => void,
+		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
+	) {
 		this.source = source;
 		this.taskId = taskId;
 		this.env = env;
 		this.requestRender = requestRender;
+		this.reportLate = reportLate;
 		this.chat = env.createChat({
 			style: env.style,
 			tui: env.tui,
@@ -106,6 +130,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			onNearTop: () => this.loadEarlier(),
 			commands: { send: (text) => this.send(text) },
 		});
+		this.restoreUndelivered();
 	}
 
 	async load(): Promise<void> {
@@ -253,7 +278,30 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private async send(text: string): Promise<void> {
 		const send = this.source.sendTaskMessage;
 		if (send === undefined) throw new TaskMessageError("messages-unsupported", { taskId: this.taskId });
-		await send.call(this.source, this.taskId, text);
+		try {
+			await send.call(this.source, this.taskId, text);
+		} catch (error) {
+			if (!this.disposed) throw error;
+			this.keepUndelivered(text, failureText(error));
+		}
+	}
+
+	/** The reader left before the answer: report it once, and give the text back when they return. */
+	private keepUndelivered(text: string, reason: string): void {
+		const kept = undeliveredMessages.get(this.source) ?? new Map<TaskId, UndeliveredMessage>();
+		const earlier = kept.get(this.taskId);
+		kept.set(this.taskId, { text: earlier === undefined ? text : `${earlier.text}\n${text}`, reason });
+		undeliveredMessages.set(this.source, kept);
+		this.reportLate(reason);
+	}
+
+	private restoreUndelivered(): void {
+		const kept = undeliveredMessages.get(this.source);
+		const message = kept?.get(this.taskId);
+		if (message === undefined) return;
+		kept?.delete(this.taskId);
+		this.chat.setInputText(message.text);
+		this.chat.showWarning(message.reason);
 	}
 }
 

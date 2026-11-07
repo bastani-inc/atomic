@@ -49,7 +49,8 @@ export class TaskInspector implements Component {
 	private transcript?: TaskTranscriptPage;
 	private status = "";
 	/** Why the last stop did not reach its task; shown under the list until the next key. */
-	private stopFailure = "";
+	/** A failure shown once on the task pages, until the next key. */
+	private failureNotice = "";
 	private scroll = 0;
 	private detailContent: Omit<TaskDetailContent, "stdinAvailable"> = {};
 	private detailTaskId?: TaskId;
@@ -95,7 +96,7 @@ export class TaskInspector implements Component {
 			cancel: (task) => {
 				void this.store.cancelTask(task.ref.taskId).then((result) => {
 					// A stop that did not reach the task says so, instead of leaving it looking untouched.
-					this.stopFailure = result.ok ? "" : `Could not stop the task: ${result.error.message}`;
+					this.failureNotice = result.ok ? "" : `Could not stop the task: ${result.error.message}`;
 					this.requestRender();
 				});
 			},
@@ -197,9 +198,24 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return;
 		} else
-			this.transcript = new TaskAgentTranscriptPage(this.store, task.ref.taskId, environment, this.requestRender);
+			this.transcript = new TaskAgentTranscriptPage(
+				this.store,
+				task.ref.taskId,
+				environment,
+				this.requestRender,
+				(reason) => this.reportLate(reason, environment),
+			);
 		this.requestRender();
 		void this.transcript.load();
+	}
+	/** A transcript's message failed after the reader left it: on the task pages if they are open, else through the host. */
+	private reportLate(reason: string, environment: TaskTranscriptEnvironment): void {
+		if (this.disposed) {
+			environment.notify?.(reason);
+			return;
+		}
+		this.failureNotice = reason;
+		this.requestRender();
 	}
 	private closeTranscript(): void {
 		this.transcript?.dispose();
@@ -251,7 +267,7 @@ export class TaskInspector implements Component {
 		return this.route(data) || !isHostThinkingToggle(data);
 	}
 	private route(data: string): boolean {
-		this.stopFailure = "";
+		this.failureNotice = "";
 		if (this.confirmation) {
 			if (data === "y" || data === "n" || matchesKey(data, "escape")) {
 				const answer = this.confirmation;
@@ -362,7 +378,7 @@ export class TaskInspector implements Component {
 			.filter(Boolean)
 			.join(" · ");
 		const footer = [...(notes ? [notes] : []), hints].map((line) => fitWidth(theme.fg("dim", line)));
-		const failure = this.stopFailure ? [fitWidth(theme.fg("warning", this.stopFailure))] : [];
+		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
 		const room = Math.max(1, budget - header.length - footer.length - failure.length - statusRows.length);
 		const body = transcript.render(width, room);
@@ -418,7 +434,7 @@ export class TaskInspector implements Component {
 						.filter(Boolean)
 						.join(" · ");
 		const footer = theme.fg("dim", truncateToWidth(`/tasks · ${hints}`, width));
-		const failure = this.stopFailure ? [theme.fg("warning", truncateToWidth(this.stopFailure, width))] : [];
+		const failure = this.failureNotice ? [theme.fg("warning", truncateToWidth(this.failureNotice, width))] : [];
 		if (!framed)
 			return [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows]
 				.map((line) => truncateToWidth(line, width))

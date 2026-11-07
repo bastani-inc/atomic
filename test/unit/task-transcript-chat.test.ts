@@ -517,6 +517,68 @@ test("a refused message comes back above what the reader typed while it was on i
 	}
 });
 
+test("a message that fails after the reader left its transcript is shown on the task pages and comes back on reopening (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Waiting for guidance", timestamp: 0 });
+	const answer = Promise.withResolvers<void>();
+	const notices: string[] = [];
+	const host = await openTranscript(session, {
+		environment: { notify: (message) => notices.push(message) },
+		source: (owner) =>
+			Object.assign(Object.create(owner) as TaskViewSource, {
+				sendTaskMessage: () => answer.promise,
+			}),
+	});
+	try {
+		await host.type("late note");
+		host.inspector.handleInput("\r");
+		await flush();
+		host.inspector.handleInput("\x1b");
+		assert.match(host.text(), /Inspect transcript/, "the reader left for the task's detail page");
+		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
+		await flush();
+		assert.match(host.text(), /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+		assert.deepEqual(notices, [], "the open task pages show it, so the host is not told as well");
+		host.inspector.handleInput("\r");
+		await flush();
+		const reopened = host.text();
+		assert.match(reopened, /late note/, "the text is back in the transcript's prompt");
+		assert.match(reopened, /Intercom did not deliver the message/);
+		host.inspector.handleInput("\x1b");
+		host.inspector.handleInput("\r");
+		await flush();
+		assert.doesNotMatch(host.text(), /late note/, "it comes back once");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a message that fails after the task pages closed is reported through the host, once (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Waiting for guidance", timestamp: 0 });
+	const answer = Promise.withResolvers<void>();
+	const notices: string[] = [];
+	const host = await openTranscript(session, {
+		environment: { notify: (message) => notices.push(message) },
+		source: (owner) =>
+			Object.assign(Object.create(owner) as TaskViewSource, {
+				sendTaskMessage: () => answer.promise,
+			}),
+	});
+	try {
+		await host.type("late note");
+		host.inspector.handleInput("\r");
+		await flush();
+		host.inspector.dispose();
+		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
+		await flush();
+		assert.equal(notices.length, 1);
+		assert.match(notices[0] ?? "", /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("a transcript whose source cannot message tasks is read-only (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Read only", timestamp: 0 });
